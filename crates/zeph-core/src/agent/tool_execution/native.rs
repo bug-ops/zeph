@@ -216,11 +216,22 @@ impl<C: Channel> Agent<C> {
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
 
-        let dump_id = self
-            .debug_state
-            .debug_dumper
-            .as_ref()
-            .map(|d: &crate::debug_dump::DebugDumper| d.dump_request(&self.messages));
+        let dump_id =
+            self.debug_state
+                .debug_dumper
+                .as_ref()
+                .map(|d: &crate::debug_dump::DebugDumper| {
+                    d.dump_request(&crate::debug_dump::RequestDebugDump {
+                        model_name: &self.runtime.model_name,
+                        messages: &self.messages,
+                        tools: tool_defs,
+                        provider_request: self.provider.debug_request_json(
+                            &self.messages,
+                            tool_defs,
+                            false,
+                        ),
+                    })
+                });
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         let chat_fut = tokio::time::timeout(

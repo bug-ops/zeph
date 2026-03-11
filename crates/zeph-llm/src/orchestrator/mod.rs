@@ -478,6 +478,18 @@ impl LlmProvider for ModelOrchestrator {
         self.providers.get(&name).and_then(LlmProvider::last_usage)
     }
 
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        self.providers.get(&self.default_provider).map_or_else(
+            || crate::provider::default_debug_request_json(messages, tools),
+            |provider| provider.debug_request_json(messages, tools, stream),
+        )
+    }
+
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "orchestrator"

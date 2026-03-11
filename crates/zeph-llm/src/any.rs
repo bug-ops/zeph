@@ -284,6 +284,15 @@ impl LlmProvider for AnyProvider {
     fn last_usage(&self) -> Option<(u64, u64)> {
         delegate_provider!(self, |p| p.last_usage())
     }
+
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        delegate_provider!(self, |p| p.debug_request_json(messages, tools, stream))
+    }
 }
 
 #[cfg(test)]

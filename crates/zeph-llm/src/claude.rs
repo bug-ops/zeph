@@ -986,6 +986,83 @@ impl LlmProvider for ClaudeProvider {
         self.last_usage.lock().ok().and_then(|g| *g)
     }
 
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
+        if thinking_param.is_none()
+            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
+        {
+            temperature = Some(t);
+        }
+        let output_config = effort.map(|e| OutputConfig { effort: e });
+        let auto_cache = if messages.len() > 1 {
+            Some(CacheControl {
+                cache_type: CacheType::Ephemeral,
+            })
+        } else {
+            None
+        };
+
+        if !tools.is_empty() {
+            let (system, chat_messages) =
+                split_messages_structured(messages, self.cache_user_messages);
+            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let api_tools = self.get_or_build_api_tools(tools);
+            let body = ToolRequestBody {
+                model: &self.model,
+                max_tokens: self.max_tokens,
+                system: system_blocks,
+                messages: &chat_messages,
+                tools: &api_tools,
+                thinking: thinking_param,
+                output_config,
+                temperature,
+                cache_control: auto_cache,
+            };
+            return serde_json::to_value(&body)
+                .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
+        }
+
+        if Self::has_image_parts(messages) {
+            let (system, chat_messages) =
+                split_messages_structured(messages, self.cache_user_messages);
+            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let body = VisionRequestBody {
+                model: &self.model,
+                max_tokens: self.max_tokens,
+                system: system_blocks,
+                messages: &chat_messages,
+                stream,
+                thinking: thinking_param,
+                output_config,
+                temperature,
+                cache_control: auto_cache,
+            };
+            return serde_json::to_value(&body)
+                .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
+        }
+
+        let (system, chat_messages) = split_messages(messages);
+        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let body = RequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system_blocks,
+            messages: &chat_messages,
+            stream,
+            thinking: thinking_param,
+            output_config,
+            temperature,
+            cache_control: auto_cache,
+        };
+        serde_json::to_value(&body)
+            .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
+    }
+
     async fn chat_with_tools(
         &self,
         messages: &[Message],

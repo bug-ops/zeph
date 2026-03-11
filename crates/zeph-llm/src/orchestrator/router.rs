@@ -189,6 +189,21 @@ impl LlmProvider for SubProvider {
         }
     }
 
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        match self {
+            Self::Ollama(p) => p.debug_request_json(messages, tools, stream),
+            Self::Claude(p) => p.debug_request_json(messages, tools, stream),
+            Self::OpenAi(p) => p.debug_request_json(messages, tools, stream),
+            #[cfg(feature = "candle")]
+            Self::Candle(p) => p.debug_request_json(messages, tools, stream),
+        }
+    }
+
     fn supports_structured_output(&self) -> bool {
         match self {
             Self::Ollama(p) => p.supports_structured_output(),

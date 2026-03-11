@@ -111,6 +111,23 @@ pub type EmbedFn = Box<dyn Fn(&str) -> EmbedFuture + Send + Sync>;
 /// Sender for emitting status events (retries, fallbacks) to the UI.
 pub type StatusTx = tokio::sync::mpsc::UnboundedSender<String>;
 
+/// Best-effort fallback for debug dump request payloads when a provider does not expose
+/// its concrete API request body.
+#[must_use]
+pub fn default_debug_request_json(
+    messages: &[Message],
+    tools: &[ToolDefinition],
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": serde_json::Value::Null,
+        "max_tokens": serde_json::Value::Null,
+        "messages": serde_json::to_value(messages).unwrap_or(serde_json::Value::Array(vec![])),
+        "tools": serde_json::to_value(tools).unwrap_or(serde_json::Value::Array(vec![])),
+        "temperature": serde_json::Value::Null,
+        "cache_control": serde_json::Value::Null,
+    })
+}
+
 /// Partial LLM generation parameter overrides for experiment variation injection.
 ///
 /// Applied by the experiment engine to clone-and-patch a provider before evaluation,
@@ -428,6 +445,19 @@ pub trait LlmProvider: Send + Sync {
     /// Returns `(input_tokens, output_tokens)`.
     fn last_usage(&self) -> Option<(u64, u64)> {
         None
+    }
+
+    /// Return the request payload that will be sent to the provider, for debug dumps.
+    ///
+    /// Implementations should mirror the provider's request body as closely as practical.
+    #[must_use]
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        _stream: bool,
+    ) -> serde_json::Value {
+        default_debug_request_json(messages, tools)
     }
 
     /// Return the list of model identifiers this provider can serve.

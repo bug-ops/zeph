@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
 
 /// Output format for debug dump files.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +30,13 @@ pub struct DebugDumper {
     dir: PathBuf,
     counter: AtomicU32,
     format: DumpFormat,
+}
+
+pub struct RequestDebugDump<'a> {
+    pub model_name: &'a str,
+    pub messages: &'a [Message],
+    pub tools: &'a [ToolDefinition],
+    pub provider_request: serde_json::Value,
 }
 
 impl DebugDumper {
@@ -72,12 +79,11 @@ impl DebugDumper {
     /// Dump the messages about to be sent to the LLM.
     ///
     /// Returns an ID that must be passed to [`dump_response`] to correlate request and response.
-    pub fn dump_request(&self, messages: &[Message]) -> u32 {
+    pub fn dump_request(&self, request: &RequestDebugDump<'_>) -> u32 {
         let id = self.next_id();
         let json = match self.format {
-            DumpFormat::Json => serde_json::to_string_pretty(messages)
-                .unwrap_or_else(|e| format!("serialization error: {e}")),
-            DumpFormat::Raw => messages_to_api_json(messages),
+            DumpFormat::Json => json_dump(request),
+            DumpFormat::Raw => raw_dump(request),
         };
         self.write(&format!("{id:04}-request.json"), json.as_bytes());
         id
@@ -118,6 +124,88 @@ impl DebugDumper {
     }
 }
 
+fn json_dump(request: &RequestDebugDump<'_>) -> String {
+    let payload = serde_json::json!({
+        "model": extract_model(&request.provider_request, request.model_name),
+        "max_tokens": extract_max_tokens(&request.provider_request),
+        "messages": serde_json::to_value(request.messages)
+            .unwrap_or(serde_json::Value::Array(vec![])),
+        "tools": extract_tools(&request.provider_request, request.tools),
+        "temperature": request
+            .provider_request
+            .get("temperature")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        "cache_control": request
+            .provider_request
+            .get("cache_control")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|e| format!("serialization error: {e}"))
+}
+
+fn raw_dump(request: &RequestDebugDump<'_>) -> String {
+    let mut payload = if request.provider_request.is_object() {
+        request.provider_request.clone()
+    } else {
+        serde_json::json!({})
+    };
+    let generic = messages_to_api_value(request.messages);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.entry("model")
+            .or_insert_with(|| extract_model(&request.provider_request, request.model_name));
+        obj.entry("max_tokens")
+            .or_insert_with(|| extract_max_tokens(&request.provider_request));
+        obj.entry("tools")
+            .or_insert_with(|| extract_tools(&request.provider_request, request.tools));
+        obj.entry("temperature").or_insert_with(|| {
+            request
+                .provider_request
+                .get("temperature")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        });
+        obj.entry("cache_control").or_insert_with(|| {
+            request
+                .provider_request
+                .get("cache_control")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        });
+        if !obj.contains_key("messages")
+            && !obj.contains_key("system")
+            && let Some(generic_obj) = generic.as_object()
+        {
+            for (key, value) in generic_obj {
+                obj.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|e| format!("serialization error: {e}"))
+}
+
+fn extract_model(payload: &serde_json::Value, fallback: &str) -> serde_json::Value {
+    payload
+        .get("model")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(fallback))
+}
+
+fn extract_max_tokens(payload: &serde_json::Value) -> serde_json::Value {
+    payload
+        .get("max_tokens")
+        .cloned()
+        .or_else(|| payload.get("max_completion_tokens").cloned())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn extract_tools(payload: &serde_json::Value, fallback: &[ToolDefinition]) -> serde_json::Value {
+    payload.get("tools").cloned().unwrap_or_else(|| {
+        serde_json::to_value(fallback).unwrap_or(serde_json::Value::Array(vec![]))
+    })
+}
+
 fn sanitize_dump_name(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -133,7 +221,7 @@ fn sanitize_dump_name(name: &str) -> String {
 /// Render messages as the API payload format (mirrors `split_messages_structured` in the
 /// Claude provider): system extracted, `agent_visible = false` messages filtered out,
 /// parts converted to typed content blocks (`text`, `tool_use`, `tool_result`, etc.).
-fn messages_to_api_json(messages: &[Message]) -> String {
+fn messages_to_api_value(messages: &[Message]) -> serde_json::Value {
     let system: String = messages
         .iter()
         .filter(|m| m.metadata.agent_visible && m.role == Role::System)
@@ -182,8 +270,7 @@ fn messages_to_api_json(messages: &[Message]) -> String {
         })
         .collect();
 
-    let payload = serde_json::json!({ "system": system, "messages": chat });
-    serde_json::to_string_pretty(&payload).unwrap_or_else(|e| format!("serialization error: {e}"))
+    serde_json::json!({ "system": system, "messages": chat })
 }
 
 fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::Value> {
@@ -249,5 +336,98 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
                 "data": base64::engine::general_purpose::STANDARD.encode(&img.data),
             },
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn sample_messages() -> Vec<Message> {
+        vec![
+            Message::from_legacy(Role::System, "system prompt"),
+            Message::from_legacy(Role::User, "hello"),
+        ]
+    }
+
+    fn sample_tools() -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+            }),
+        }]
+    }
+
+    fn read_request_dump(dir: &Path) -> serde_json::Value {
+        let session = std::fs::read_dir(dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        serde_json::from_str(&std::fs::read_to_string(session.join("0000-request.json")).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn json_dump_request_includes_request_metadata() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let messages = sample_messages();
+        let tools = sample_tools();
+
+        dumper.dump_request(&RequestDebugDump {
+            model_name: "claude-sonnet-test",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({
+                "model": "claude-sonnet-test",
+                "max_tokens": 4096,
+                "tools": [{ "name": "read_file" }],
+                "temperature": 0.7,
+                "cache_control": { "type": "ephemeral" }
+            }),
+        });
+
+        let payload = read_request_dump(dir.path());
+        assert_eq!(payload["model"], "claude-sonnet-test");
+        assert_eq!(payload["max_tokens"], 4096);
+        assert_eq!(payload["tools"][0]["name"], "read_file");
+        assert_eq!(payload["temperature"], 0.7);
+        assert_eq!(payload["cache_control"]["type"], "ephemeral");
+        assert_eq!(payload["messages"][1]["content"], "hello");
+    }
+
+    #[test]
+    fn raw_dump_request_includes_request_metadata() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).unwrap();
+        let messages = sample_messages();
+        let tools = sample_tools();
+
+        dumper.dump_request(&RequestDebugDump {
+            model_name: "gpt-5-mini",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({
+                "model": "gpt-5-mini",
+                "max_completion_tokens": 2048,
+                "messages": [{ "role": "user", "content": "hello" }],
+                "tools": [{ "type": "function", "function": { "name": "read_file" } }],
+                "temperature": 0.3,
+                "cache_control": null
+            }),
+        });
+
+        let payload = read_request_dump(dir.path());
+        assert_eq!(payload["model"], "gpt-5-mini");
+        assert_eq!(payload["max_tokens"], 2048);
+        assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(payload["temperature"], 0.3);
+        assert_eq!(payload["messages"][0]["content"], "hello");
     }
 }

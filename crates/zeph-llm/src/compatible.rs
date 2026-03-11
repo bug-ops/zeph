@@ -141,6 +141,15 @@ impl LlmProvider for CompatibleProvider {
     fn last_usage(&self) -> Option<(u64, u64)> {
         self.inner.last_usage()
     }
+
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        self.inner.debug_request_json(messages, tools, stream)
+    }
 }
 
 #[cfg(test)]

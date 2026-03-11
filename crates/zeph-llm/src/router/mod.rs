@@ -433,6 +433,25 @@ impl LlmProvider for RouterProvider {
         .await
     }
 
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        let candidate = if tools.is_empty() {
+            self.ordered_providers().into_iter().next()
+        } else {
+            self.ordered_providers()
+                .into_iter()
+                .find(super::provider::LlmProvider::supports_tool_use)
+        };
+        candidate.map_or_else(
+            || crate::provider::default_debug_request_json(messages, tools),
+            |provider| provider.debug_request_json(messages, tools, stream),
+        )
+    }
+
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         None
     }

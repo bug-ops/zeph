@@ -220,11 +220,22 @@ impl<C: Channel> Agent<C> {
         let start = std::time::Instant::now();
         let prompt_estimate = self.cached_prompt_tokens;
 
-        let dump_id = self
-            .debug_state
-            .debug_dumper
-            .as_ref()
-            .map(|d: &crate::debug_dump::DebugDumper| d.dump_request(&self.messages));
+        let dump_id =
+            self.debug_state
+                .debug_dumper
+                .as_ref()
+                .map(|d: &crate::debug_dump::DebugDumper| {
+                    d.dump_request(&crate::debug_dump::RequestDebugDump {
+                        model_name: &self.runtime.model_name,
+                        messages: &self.messages,
+                        tools: &[],
+                        provider_request: self.provider.debug_request_json(
+                            &self.messages,
+                            &[],
+                            self.provider.supports_streaming(),
+                        ),
+                    })
+                });
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         if self.provider.supports_streaming() {

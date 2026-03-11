@@ -275,6 +275,53 @@ impl LlmProvider for OllamaProvider {
         true
     }
 
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        _stream: bool,
+    ) -> serde_json::Value {
+        if !tools.is_empty() {
+            let ollama_tools: Vec<ToolInfo> = tools
+                .iter()
+                .map(|t| ToolInfo {
+                    tool_type: ToolType::Function,
+                    function: ToolFunctionInfo {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: serde_json::from_value(t.parameters.clone())
+                            .unwrap_or_default(),
+                    },
+                })
+                .collect();
+            let ollama_messages: Vec<ChatMessage> =
+                messages.iter().map(convert_message_structured).collect();
+            let mut request =
+                ChatMessageRequest::new(self.model.clone(), ollama_messages).tools(ollama_tools);
+            if let Some(ref ov) = self.generation_overrides {
+                request = apply_generation_overrides(request, ov);
+            }
+            return serde_json::to_value(&request)
+                .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
+        }
+
+        let has_images = messages
+            .iter()
+            .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
+        let model = if has_images {
+            self.vision_model.as_deref().unwrap_or(&self.model)
+        } else {
+            &self.model
+        };
+        let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
+        let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
+        if let Some(ref ov) = self.generation_overrides {
+            request = apply_generation_overrides(request, ov);
+        }
+        serde_json::to_value(&request)
+            .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
+    }
+
     fn supports_tool_use(&self) -> bool {
         self.tool_use
     }

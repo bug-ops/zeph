@@ -470,6 +470,90 @@ impl LlmProvider for OpenAiProvider {
         self.last_usage.lock().ok().and_then(|g| *g)
     }
 
+    fn debug_request_json(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        let reasoning = self
+            .reasoning_effort
+            .as_deref()
+            .map(|effort| Reasoning { effort });
+        let (temperature, top_p, frequency_penalty, presence_penalty) = self
+            .generation_overrides
+            .as_ref()
+            .map(|ov| {
+                (
+                    ov.temperature,
+                    ov.top_p,
+                    ov.frequency_penalty,
+                    ov.presence_penalty,
+                )
+            })
+            .unwrap_or_default();
+
+        if !tools.is_empty() {
+            let api_messages = convert_messages_structured(messages);
+            let api_tools: Vec<OpenAiTool<'_>> = tools
+                .iter()
+                .map(|t| OpenAiTool {
+                    r#type: "function",
+                    function: OpenAiFunction {
+                        name: &t.name,
+                        description: &t.description,
+                        parameters: &t.parameters,
+                    },
+                })
+                .collect();
+            let body = ToolChatRequest {
+                model: &self.model,
+                messages: &api_messages,
+                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+                tools: &api_tools,
+                reasoning,
+                temperature,
+                top_p,
+                frequency_penalty,
+                presence_penalty,
+            };
+            return serde_json::to_value(&body)
+                .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
+        }
+
+        if has_image_parts(messages) {
+            let vision_messages = convert_messages_vision(messages);
+            let body = VisionChatRequest {
+                model: &self.model,
+                messages: vision_messages,
+                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+                stream,
+                reasoning,
+                temperature,
+                top_p,
+                frequency_penalty,
+                presence_penalty,
+            };
+            return serde_json::to_value(&body)
+                .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
+        }
+
+        let api_messages = convert_messages(messages);
+        let body = ChatRequest {
+            model: &self.model,
+            messages: &api_messages,
+            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            stream,
+            reasoning,
+            temperature,
+            top_p,
+            frequency_penalty,
+            presence_penalty,
+        };
+        serde_json::to_value(&body)
+            .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
+    }
+
     fn supports_structured_output(&self) -> bool {
         true
     }
