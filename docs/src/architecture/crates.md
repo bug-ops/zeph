@@ -131,15 +131,16 @@ Tool execution abstraction and shell backend. This crate has no dependency on `z
 
 ## zeph-index
 
-AST-based code indexing, semantic retrieval, and repo map generation (always-on base dependency). This crate does not depend directly on `qdrant-client`; all vector operations go through the `VectorStore` trait from `zeph-memory`, keeping the crate decoupled from the Qdrant client library.
+AST-based code indexing, semantic retrieval, and repo map generation (always-on — no feature flag). All tree-sitter language grammars (Rust, Python, JavaScript/TypeScript, Go, and config formats) are compiled unconditionally. This crate does not depend directly on `qdrant-client`; all vector operations go through the `VectorStore` trait from `zeph-memory`, keeping the crate decoupled from the Qdrant client library.
 
-- `Lang` enum — supported languages with tree-sitter grammar registry, feature-gated per language group
+- `Lang` enum — supported languages with tree-sitter grammar registry
 - `chunk_file()` — AST-based chunking with greedy sibling merge, scope chains, import extraction
 - `contextualize_for_embedding()` — prepends file path, scope, language, imports to code for better embedding quality
 - `CodeStore` — dual-write storage: vector store via `VectorStore` trait (`zeph_code_chunks` collection) + SQLite metadata with BLAKE3 content-hash change detection; vector operations are delegated to `QdrantOps` which implements `VectorStore`
 - `CodeIndexer<P>` — project indexer orchestrator: walk, chunk, embed, store with incremental skip of unchanged chunks
 - `CodeRetriever<P>` — hybrid retrieval with query classification (Semantic / Grep / Hybrid), budget-aware chunk packing
-- `generate_repo_map()` — compact structural view via tree-sitter signature extraction, budget-constrained
+- `generate_repo_map()` — compact structural view via tree-sitter ts-query, extracting `SymbolInfo` (name, kind, visibility, line) for all supported languages; injected unconditionally for all providers regardless of Qdrant availability
+- `hover_symbol_at()` — tree-sitter hover pre-filter for LSP context injection; resolves the symbol under cursor for any supported language (replaces previous Rust-only regex)
 
 ## zeph-gateway
 

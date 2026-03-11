@@ -59,7 +59,7 @@ Queued messages are processed sequentially with full context rebuilding between 
 - **Errors:** `thiserror` for all crates with typed error enums (`ChannelError`, `AgentError`, `LlmError`, etc.); `anyhow` only for top-level orchestration in `runner.rs`
 - **Lints:** workspace-level `clippy::all` + `clippy::pedantic` + `clippy::nursery`; `unsafe_code = "deny"`
 - **Dependencies:** versions only in root `[workspace.dependencies]`; crates inherit via `workspace = true`
-- **Feature gates:** optional crates (`zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary; `zeph-index` is always-on
+- **Feature gates:** optional crates (`zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary; `zeph-index` is always-on with all tree-sitter language grammars (Rust, Python, JS/TS, Go) compiled unconditionally
 - **Context engineering:** proportional budget allocation, semantic recall injection, message trimming, runtime compaction, environment context injection, progressive skill loading, ZEPH.md project config discovery
 - **Graceful shutdown:** Ctrl-C triggers ordered teardown — the agent loop exits cleanly, MCP server connections are closed, and pending async tasks are drained before process exit
 - **LoopbackChannel:** headless `Channel` implementation using two linked tokio mpsc pairs (`input_tx`/`input_rx` for user messages, `output_tx`/`output_rx` for `LoopbackEvent` variants). Auto-approves confirmations. Used by daemon mode to bridge the A2A task processor with the agent loop

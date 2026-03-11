@@ -2,7 +2,7 @@
 
 AST-based code indexing and semantic retrieval for project-aware context. The `zeph-index` crate parses source files via tree-sitter, chunks them by AST structure, embeds the chunks in Qdrant, and retrieves relevant code via hybrid search (semantic + grep routing) for injection into the agent context window.
 
-Disabled by default. Enable via `[index] enabled = true` in config.
+`zeph-index` is always-on — no feature flag is required. Enable indexing at runtime via `[index] enabled = true` in config.
 
 ## Why Code RAG
 
@@ -146,20 +146,37 @@ watch = false
 
 ## Repo Map
 
-A lightweight structural map of the project, generated via tree-sitter signature extraction (no function bodies). Included in the system prompt and cached with a configurable TTL (default: 5 minutes) to avoid per-message filesystem traversal.
+A lightweight structural map of the project generated via tree-sitter ts-query. Included in the system prompt and cached with a configurable TTL (default: 5 minutes) to avoid per-message filesystem traversal.
+
+For each supported language, tree-sitter queries extract `SymbolInfo` records — name, kind (function, struct, class, impl, etc.), visibility (pub/private), and line number — directly from the AST. This replaces the previous heuristic regex approach and adds accurate multi-language support.
+
+The repo map is injected unconditionally for all providers (Claude, OpenAI, Ollama, and others). Qdrant semantic retrieval remains provider-dependent and only runs when embeddings are available.
 
 Example output:
 
 ```text
 <repo_map>
-  src/agent.rs :: struct:Agent, impl:Agent, fn:new, fn:run, fn:prepare_context
-  src/config.rs :: struct:Config, fn:load
-  src/main.rs :: fn:main, fn:setup_logging
+  src/agent.rs :: pub struct Agent (line 12), pub fn new (line 45), pub fn run (line 78), fn prepare_context (line 110)
+  src/config.rs :: pub struct Config (line 5), pub fn load (line 30)
+  src/main.rs :: pub fn main (line 1), fn setup_logging (line 15)
   ... and 12 more files
 </repo_map>
 ```
 
 The map is budget-constrained (default: 1024 tokens) and sorted by symbol count (files with more symbols appear first). It gives the model a structural overview of the project without consuming significant context.
+
+## LSP Hover Pre-filter
+
+When the `lsp-context` feature is enabled, `zeph-index` pre-filters hover requests before forwarding them to the language server. Previously this filter used a Rust-only regex; it now uses tree-sitter to identify the symbol under the cursor for all supported languages (Rust, Python, JavaScript, TypeScript, Go).
+
+The tree-sitter hover pre-filter:
+
+1. Parses the file with the appropriate grammar.
+2. Finds the AST node at the cursor position.
+3. Walks up the tree to the nearest named symbol (identifier, field expression, call expression, etc.).
+4. Passes the resolved symbol to the MCP LSP server for a hover lookup.
+
+This makes hover-based context injection accurate across all indexed languages, not just Rust.
 
 ## Budget-Aware Retrieval
 
@@ -231,7 +248,7 @@ budget_ratio = 0.40
 
 ## Supported Languages
 
-Language support is controlled by feature flags on the `zeph-index` crate. All default features are enabled.
+All tree-sitter grammars are compiled into every build. Language sub-features on `zeph-index` (`lang-rust`, `lang-python`, `lang-js`, `lang-go`, `lang-config`) are all enabled by default and cannot be individually disabled in the standard build.
 
 | Language | Feature | Extensions |
 |----------|---------|------------|
