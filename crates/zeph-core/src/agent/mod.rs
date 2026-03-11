@@ -9,7 +9,6 @@ pub mod error;
 mod experiment_cmd;
 pub(super) mod feedback_detector;
 mod graph_commands;
-#[cfg(feature = "index")]
 mod index;
 mod learning;
 pub(crate) mod learning_engine;
@@ -159,7 +158,6 @@ pub(super) struct McpState {
     pub(super) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
 }
 
-#[cfg(feature = "index")]
 pub(super) struct IndexState {
     pub(super) retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever>>,
     pub(super) repo_map_tokens: usize,
@@ -210,7 +208,6 @@ pub struct Agent<C: Channel> {
     metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     pub(super) runtime: RuntimeConfig,
     pub(super) mcp: McpState,
-    #[cfg(feature = "index")]
     pub(super) index: IndexState,
     cancel_signal: Arc<Notify>,
     cancel_token: CancellationToken,
@@ -408,7 +405,6 @@ impl<C: Channel> Agent<C> {
                 max_dynamic: 10,
                 shared_tools: None,
             },
-            #[cfg(feature = "index")]
             index: IndexState {
                 retriever: None,
                 repo_map_tokens: 0,
@@ -3057,11 +3053,8 @@ impl<C: Channel> Agent<C> {
         self.memory_state.cross_session_score_threshold =
             config.memory.cross_session_score_threshold;
 
-        #[cfg(feature = "index")]
-        {
-            self.index.repo_map_ttl =
-                std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
-        }
+        self.index.repo_map_tokens = config.index.repo_map_tokens;
+        self.index.repo_map_ttl = std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
 
         tracing::info!("config reloaded");
     }

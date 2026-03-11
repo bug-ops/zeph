@@ -454,17 +454,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    #[cfg(feature = "index")]
+    #[must_use]
+    pub fn with_repo_map(mut self, token_budget: usize, ttl_secs: u64) -> Self {
+        self.index.repo_map_tokens = token_budget;
+        self.index.repo_map_ttl = std::time::Duration::from_secs(ttl_secs);
+        self
+    }
+
     #[must_use]
     pub fn with_code_retriever(
         mut self,
         retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever>,
-        repo_map_tokens: usize,
-        repo_map_ttl_secs: u64,
     ) -> Self {
         self.index.retriever = Some(retriever);
-        self.index.repo_map_tokens = repo_map_tokens;
-        self.index.repo_map_ttl = std::time::Duration::from_secs(repo_map_ttl_secs);
         self
     }
 

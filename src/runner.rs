@@ -40,7 +40,6 @@ use crate::commands::vault::handle_vault_command;
 use crate::daemon::run_daemon;
 #[cfg(all(feature = "tui", feature = "a2a"))]
 use crate::tui_remote::run_tui_remote;
-#[cfg(feature = "index")]
 use zeph_llm::provider::LlmProvider;
 
 use zeph_core::config::Config;
@@ -457,13 +456,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     )
     .await;
 
-    #[cfg(feature = "index")]
     let index_pool = memory.sqlite().pool().clone();
-    #[cfg(feature = "index")]
     let index_provider = provider.clone();
-    #[cfg(feature = "index")]
     let provider_has_tools = provider.supports_tool_use();
-    #[cfg(feature = "index")]
     let index_qdrant_ops = app.qdrant_ops().cloned();
     let config_path = app.config_path().to_owned();
     let cache_pool = memory.sqlite().pool().clone();
@@ -647,7 +642,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
 
-    #[cfg(feature = "index")]
     let (agent, _index_watcher) = agent_setup::apply_code_index(
         agent,
         &config.index,

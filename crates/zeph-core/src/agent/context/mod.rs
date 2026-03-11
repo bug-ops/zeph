@@ -80,7 +80,6 @@ pub(super) enum ContextSlot {
     SemanticRecall(Option<Message>),
     DocumentRag(Option<Message>),
     Corrections(Option<Message>),
-    #[cfg(feature = "index")]
     CodeContext(Option<String>),
     GraphFacts(Option<Message>),
 }

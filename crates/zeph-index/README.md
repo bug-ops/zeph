@@ -26,7 +26,7 @@ Parses source files with tree-sitter to extract symbols, chunks them for embeddi
 cargo add zeph-index
 ```
 
-Enabled via the `index` feature flag on the root `zeph` crate.
+Always-on base dependency — no feature flag required.
 
 > [!NOTE]
 > `zeph-index` does not depend on `qdrant-client` directly. Vector storage is delegated to `zeph-memory`, which owns the Qdrant client lifecycle.

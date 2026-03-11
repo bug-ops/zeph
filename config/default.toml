@@ -256,8 +256,7 @@ keyword_weight = 0.3
 # mmr_lambda = 0.7
 
 # Code RAG: AST-based code indexing and hybrid retrieval
-# Requires Qdrant and tree-sitter grammars (feature "index", not enabled by default)
-# Enable with: cargo build --features index
+# Requires Qdrant for semantic retrieval; tree-sitter grammars are always available
 [index]
 # Enable code indexing and retrieval (requires Qdrant)
 enabled = false

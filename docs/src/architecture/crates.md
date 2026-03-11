@@ -131,7 +131,7 @@ Tool execution abstraction and shell backend. This crate has no dependency on `z
 
 ## zeph-index
 
-AST-based code indexing, semantic retrieval, and repo map generation (optional, feature-gated). This crate does not depend directly on `qdrant-client`; all vector operations go through the `VectorStore` trait from `zeph-memory`, keeping the crate decoupled from the Qdrant client library.
+AST-based code indexing, semantic retrieval, and repo map generation (always-on base dependency). This crate does not depend directly on `qdrant-client`; all vector operations go through the `VectorStore` trait from `zeph-memory`, keeping the crate decoupled from the Qdrant client library.
 
 - `Lang` enum — supported languages with tree-sitter grammar registry, feature-gated per language group
 - `chunk_file()` — AST-based chunking with greedy sibling merge, scope chains, import extraction

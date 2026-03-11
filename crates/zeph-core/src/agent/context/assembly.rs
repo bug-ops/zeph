@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::fmt::Write;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures::StreamExt as _;
 use futures::stream::FuturesUnordered;
@@ -529,7 +530,6 @@ impl<C: Channel> Agent<C> {
         self.remove_recall_messages();
         self.remove_document_rag_messages();
         self.remove_correction_messages();
-        #[cfg(feature = "index")]
         self.remove_code_context_messages();
         self.remove_graph_facts_messages();
 
@@ -556,7 +556,6 @@ impl<C: Channel> Agent<C> {
         let mut recall_msg: Option<Message> = None;
         let mut doc_rag_msg: Option<Message> = None;
         let mut corrections_msg: Option<Message> = None;
-        #[cfg(feature = "index")]
         let mut code_rag_text: Option<String> = None;
         let mut graph_facts_msg: Option<Message> = None;
 
@@ -572,7 +571,6 @@ impl<C: Channel> Agent<C> {
             let tc = self.token_counter.clone();
             let router = self.context_manager.build_router();
             let memory_state = &self.memory_state;
-            #[cfg(feature = "index")]
             let index = &self.index;
 
             let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
@@ -610,7 +608,6 @@ impl<C: Channel> Agent<C> {
                     .await
                     .map(ContextSlot::Corrections)
             }));
-            #[cfg(feature = "index")]
             fetchers.push(Box::pin(async {
                 Self::fetch_code_rag(index, &query, alloc.code_context)
                     .await
@@ -630,7 +627,6 @@ impl<C: Channel> Agent<C> {
                         ContextSlot::SemanticRecall(msg) => recall_msg = msg,
                         ContextSlot::DocumentRag(msg) => doc_rag_msg = msg,
                         ContextSlot::Corrections(msg) => corrections_msg = msg,
-                        #[cfg(feature = "index")]
                         ContextSlot::CodeContext(text) => code_rag_text = text,
                         ContextSlot::GraphFacts(msg) => graph_facts_msg = msg,
                     },
@@ -675,7 +671,6 @@ impl<C: Channel> Agent<C> {
             tracing::debug!("injected summaries into context");
         }
 
-        #[cfg(feature = "index")]
         if let Some(text) = code_rag_text {
             // Sanitize before injection: indexed repo files can contain injection patterns
             // embedded in comments, docstrings, or string literals (ContentSourceKind::ToolResult
@@ -1159,19 +1154,21 @@ impl<C: Channel> Agent<C> {
             system_prompt.push_str(&project_context);
         }
 
-        #[cfg(feature = "index")]
-        if self.index.retriever.is_some() && self.index.repo_map_tokens > 0 {
+        if self.index.repo_map_tokens > 0 {
             let now = std::time::Instant::now();
             let map = if let Some((ref cached, generated_at)) = self.index.cached_repo_map
                 && now.duration_since(generated_at) < self.index.repo_map_ttl
             {
                 cached.clone()
             } else {
-                let fresh = zeph_index::repo_map::generate_repo_map(
-                    &cwd,
-                    self.index.repo_map_tokens,
-                    &self.token_counter,
-                )
+                let cwd2 = cwd.clone();
+                let token_budget = self.index.repo_map_tokens;
+                let tc = Arc::clone(&self.token_counter);
+                let fresh = tokio::task::spawn_blocking(move || {
+                    zeph_index::repo_map::generate_repo_map(&cwd2, token_budget, &tc)
+                })
+                .await
+                .unwrap_or_else(|_| Ok(String::new()))
                 .unwrap_or_default();
                 self.index.cached_repo_map = Some((fresh.clone(), now));
                 fresh

@@ -231,7 +231,7 @@ budget_ratio = 0.40
 
 ## Supported Languages
 
-Language support is controlled by feature flags on the `zeph-index` crate. All default features are enabled when the `index` binary feature is active.
+Language support is controlled by feature flags on the `zeph-index` crate. All default features are enabled.
 
 | Language | Feature | Extensions |
 |----------|---------|------------|

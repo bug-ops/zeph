@@ -11,7 +11,7 @@ pub(crate) mod chunker;
 pub(crate) mod context;
 pub mod error;
 pub mod indexer;
-pub(crate) mod languages;
+pub mod languages;
 pub mod repo_map;
 pub mod retriever;
 pub mod store;

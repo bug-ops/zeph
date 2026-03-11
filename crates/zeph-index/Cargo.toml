@@ -12,14 +12,6 @@ categories.workspace = true
 description = "AST-based code indexing and semantic retrieval for Zeph"
 readme = "README.md"
 
-[features]
-default = ["lang-rust", "lang-python", "lang-js", "lang-go", "lang-config"]
-lang-rust = ["dep:tree-sitter-rust"]
-lang-python = ["dep:tree-sitter-python"]
-lang-js = ["dep:tree-sitter-javascript", "dep:tree-sitter-typescript"]
-lang-go = ["dep:tree-sitter-go"]
-lang-config = ["dep:tree-sitter-bash", "dep:tree-sitter-toml-ng", "dep:tree-sitter-json", "dep:tree-sitter-md"]
-
 [dependencies]
 blake3.workspace = true
 ignore.workspace = true
@@ -36,15 +28,15 @@ uuid = { workspace = true, features = ["v4"] }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 
-tree-sitter-bash = { workspace = true, optional = true }
-tree-sitter-go = { workspace = true, optional = true }
-tree-sitter-javascript = { workspace = true, optional = true }
-tree-sitter-json = { workspace = true, optional = true }
-tree-sitter-md = { workspace = true, optional = true }
-tree-sitter-python = { workspace = true, optional = true }
-tree-sitter-rust = { workspace = true, optional = true }
-tree-sitter-toml-ng = { workspace = true, optional = true }
-tree-sitter-typescript = { workspace = true, optional = true }
+tree-sitter-bash.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-md.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-toml-ng.workspace = true
+tree-sitter-typescript.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

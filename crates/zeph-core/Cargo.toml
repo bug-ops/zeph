@@ -17,7 +17,6 @@ default = []
 candle = ["zeph-llm/candle"]
 cuda = ["zeph-llm/cuda"]
 experiments = ["dep:ordered-float", "zeph-memory/experiments"]
-index = ["dep:zeph-index"]
 metal = ["zeph-llm/metal"]
 lsp-context = []
 
@@ -47,7 +46,8 @@ toml_edit.workspace = true
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 tempfile.workspace = true
-zeph-index = { workspace = true, optional = true }
+tree-sitter.workspace = true
+zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-mcp.workspace = true
 zeph-memory.workspace = true

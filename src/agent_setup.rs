@@ -85,17 +85,14 @@ pub(crate) async fn build_tool_setup(
 }
 
 use zeph_core::agent::Agent;
-#[cfg(feature = "index")]
 use zeph_core::config::IndexConfig;
 use zeph_core::cost::CostTracker;
-#[cfg(feature = "index")]
 use zeph_index::{
     indexer::{CodeIndexer, IndexerConfig},
     retriever::{CodeRetriever, RetrievalConfig},
     store::CodeStore,
     watcher::IndexWatcher,
 };
-#[cfg(feature = "index")]
 use zeph_memory::QdrantOps;
 
 pub(crate) fn spawn_ctrl_c_handler(
@@ -186,7 +183,6 @@ pub(crate) fn apply_quarantine_provider<C: Channel>(
     }
 }
 
-#[cfg(feature = "index")]
 pub(crate) async fn apply_code_index<C: Channel>(
     agent: Agent<C>,
     config: &IndexConfig,
@@ -195,10 +191,20 @@ pub(crate) async fn apply_code_index<C: Channel>(
     pool: sqlx::SqlitePool,
     provider_has_tools: bool,
 ) -> (Agent<C>, Option<IndexWatcher>) {
-    if !config.enabled || provider_has_tools {
-        if config.enabled && provider_has_tools {
-            tracing::info!("code index skipped: provider supports native tool_use");
-        }
+    if !config.enabled {
+        return (agent, None);
+    }
+
+    // Repo map is purely structural (tree-sitter only) — inject regardless of provider type.
+    let agent = if config.repo_map_tokens > 0 {
+        agent.with_repo_map(config.repo_map_tokens, config.repo_map_ttl_secs)
+    } else {
+        agent
+    };
+
+    // Qdrant semantic retrieval requires vector store and is skipped for native tool_use providers.
+    if provider_has_tools {
+        tracing::info!("code index (Qdrant retrieval) skipped: provider supports native tool_use");
         return (agent, None);
     }
 
@@ -252,11 +258,7 @@ pub(crate) async fn apply_code_index<C: Channel>(
             } else {
                 None
             };
-            let agent = agent.with_code_retriever(
-                std::sync::Arc::new(retriever),
-                config.repo_map_tokens,
-                config.repo_map_ttl_secs,
-            );
+            let agent = agent.with_code_retriever(std::sync::Arc::new(retriever));
             (agent, watcher)
         }
         Err(e) => {

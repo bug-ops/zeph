@@ -4,8 +4,76 @@
 //! Language detection and tree-sitter grammar registry.
 
 use std::path::Path;
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
+
+// ts-query source strings for symbol and method extraction.
+
+const RUST_SYM_Q: &str = "
+(function_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(struct_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(enum_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(trait_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(impl_item type: (_) @name) @def
+(type_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(const_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(static_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(mod_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(macro_definition name: (identifier) @name) @def
+";
+
+const RUST_METHOD_Q: &str = "
+(impl_item body: (declaration_list
+  (function_item (visibility_modifier)? @vis name: (identifier) @name) @def))
+";
+
+const PYTHON_SYM_Q: &str = "
+(function_definition name: (identifier) @name) @def
+(class_definition name: (identifier) @name) @def
+";
+
+const PYTHON_METHOD_Q: &str = "
+(class_definition body: (block
+  (function_definition name: (identifier) @name) @def))
+";
+
+const JS_SYM_Q: &str = "
+(function_declaration name: (identifier) @name) @def
+(class_declaration name: (identifier) @name) @def
+(method_definition name: (property_identifier) @name) @def
+(export_statement declaration: (function_declaration name: (identifier) @name)) @def
+(export_statement declaration: (class_declaration name: (identifier) @name)) @def
+(lexical_declaration (variable_declarator name: (identifier) @name)) @def
+";
+
+const TS_SYM_Q: &str = "
+(function_declaration name: (identifier) @name) @def
+(class_declaration name: (type_identifier) @name) @def
+(method_definition name: (property_identifier) @name) @def
+(interface_declaration name: (type_identifier) @name) @def
+(type_alias_declaration name: (type_identifier) @name) @def
+(export_statement declaration: (function_declaration name: (identifier) @name)) @def
+(export_statement declaration: (class_declaration name: (type_identifier) @name)) @def
+(lexical_declaration (variable_declarator name: (identifier) @name)) @def
+";
+
+const GO_SYM_Q: &str = "
+(function_declaration name: (identifier) @name) @def
+(method_declaration name: (field_identifier) @name) @def
+(type_declaration (type_spec name: (type_identifier) @name)) @def
+(const_declaration (const_spec name: (identifier) @name)) @def
+";
+
+fn compile_query(
+    lang: &tree_sitter::Language,
+    source: &str,
+    label: &'static str,
+) -> Option<tree_sitter::Query> {
+    tree_sitter::Query::new(lang, source)
+        .map_err(|e| tracing::warn!("{label} query compile failed: {e}"))
+        .ok()
+}
 
 /// Supported language with its tree-sitter grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -39,30 +107,89 @@ impl Lang {
         }
     }
 
-    /// Get the tree-sitter grammar. Returns `None` if the
-    /// corresponding feature is not enabled.
+    /// Get the tree-sitter grammar for this language.
     #[must_use]
     pub fn grammar(self) -> Option<tree_sitter::Language> {
         match self {
-            #[cfg(feature = "lang-rust")]
             Self::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
-            #[cfg(feature = "lang-python")]
             Self::Python => Some(tree_sitter_python::LANGUAGE.into()),
-            #[cfg(feature = "lang-js")]
             Self::JavaScript => Some(tree_sitter_javascript::LANGUAGE.into()),
-            #[cfg(feature = "lang-js")]
             Self::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-            #[cfg(feature = "lang-go")]
             Self::Go => Some(tree_sitter_go::LANGUAGE.into()),
-            #[cfg(feature = "lang-config")]
             Self::Bash => Some(tree_sitter_bash::LANGUAGE.into()),
-            #[cfg(feature = "lang-config")]
             Self::Toml => Some(tree_sitter_toml_ng::LANGUAGE.into()),
-            #[cfg(feature = "lang-config")]
             Self::Json => Some(tree_sitter_json::LANGUAGE.into()),
-            #[cfg(feature = "lang-config")]
             Self::Markdown => Some(tree_sitter_md::LANGUAGE.into()),
-            #[allow(unreachable_patterns)]
+        }
+    }
+
+    /// Compiled ts-query for extracting top-level symbols (name + visibility capture).
+    ///
+    /// Returns `None` when the query fails to compile (e.g. grammar version mismatch).
+    /// Callers fall back to heuristic extraction.
+    #[must_use]
+    pub fn symbol_query(self) -> Option<&'static tree_sitter::Query> {
+        match self {
+            Self::Rust => {
+                static Q: LazyLock<Option<tree_sitter::Query>> = LazyLock::new(|| {
+                    let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+                    compile_query(&lang, RUST_SYM_Q, "rust symbol")
+                });
+                Q.as_ref()
+            }
+            Self::Python => {
+                static Q: LazyLock<Option<tree_sitter::Query>> = LazyLock::new(|| {
+                    let lang: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
+                    compile_query(&lang, PYTHON_SYM_Q, "python symbol")
+                });
+                Q.as_ref()
+            }
+            Self::JavaScript => {
+                static Q: LazyLock<Option<tree_sitter::Query>> = LazyLock::new(|| {
+                    let lang: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
+                    compile_query(&lang, JS_SYM_Q, "js symbol")
+                });
+                Q.as_ref()
+            }
+            Self::TypeScript => {
+                static Q: LazyLock<Option<tree_sitter::Query>> = LazyLock::new(|| {
+                    let lang: tree_sitter::Language =
+                        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+                    compile_query(&lang, TS_SYM_Q, "ts symbol")
+                });
+                Q.as_ref()
+            }
+            Self::Go => {
+                static Q: LazyLock<Option<tree_sitter::Query>> = LazyLock::new(|| {
+                    let lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
+                    compile_query(&lang, GO_SYM_Q, "go symbol")
+                });
+                Q.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    /// Compiled ts-query for extracting methods inside impl/class bodies.
+    ///
+    /// Returns `None` when query compilation fails.
+    #[must_use]
+    pub fn method_query(self) -> Option<&'static tree_sitter::Query> {
+        match self {
+            Self::Rust => {
+                static Q: LazyLock<Option<tree_sitter::Query>> = LazyLock::new(|| {
+                    let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+                    compile_query(&lang, RUST_METHOD_Q, "rust method")
+                });
+                Q.as_ref()
+            }
+            Self::Python => {
+                static Q: LazyLock<Option<tree_sitter::Query>> = LazyLock::new(|| {
+                    let lang: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
+                    compile_query(&lang, PYTHON_METHOD_Q, "python method")
+                });
+                Q.as_ref()
+            }
             _ => None,
         }
     }
@@ -198,30 +325,20 @@ mod tests {
     }
 
     #[test]
-    fn grammar_returns_some_for_enabled_features() {
-        #[cfg(feature = "lang-rust")]
+    fn grammar_returns_some_for_all_langs() {
         assert!(Lang::Rust.grammar().is_some());
-        #[cfg(feature = "lang-python")]
         assert!(Lang::Python.grammar().is_some());
-        #[cfg(feature = "lang-js")]
-        {
-            assert!(Lang::JavaScript.grammar().is_some());
-            assert!(Lang::TypeScript.grammar().is_some());
-        }
-        #[cfg(feature = "lang-go")]
+        assert!(Lang::JavaScript.grammar().is_some());
+        assert!(Lang::TypeScript.grammar().is_some());
         assert!(Lang::Go.grammar().is_some());
-        #[cfg(feature = "lang-config")]
-        {
-            assert!(Lang::Bash.grammar().is_some());
-            assert!(Lang::Toml.grammar().is_some());
-            assert!(Lang::Json.grammar().is_some());
-            assert!(Lang::Markdown.grammar().is_some());
-        }
+        assert!(Lang::Bash.grammar().is_some());
+        assert!(Lang::Toml.grammar().is_some());
+        assert!(Lang::Json.grammar().is_some());
+        assert!(Lang::Markdown.grammar().is_some());
     }
 
     #[test]
     fn is_indexable_known_extension() {
-        #[cfg(feature = "lang-rust")]
         assert!(is_indexable(Path::new("src/main.rs")));
     }
 

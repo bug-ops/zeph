@@ -14,7 +14,7 @@ zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
 ├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
 ├── zeph-channels   Telegram adapter (teloxide) with streaming
 ├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor, TrustLevel
-├── zeph-index      AST-based code indexing, hybrid retrieval, repo map (optional)
+├── zeph-index      AST-based code indexing, hybrid retrieval, repo map (always-on)
 ├── zeph-mcp        MCP client via rmcp, multi-server lifecycle, unified tool matching (optional)
 ├── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
 └── zeph-tui        ratatui TUI dashboard with real-time metrics (optional)
@@ -30,7 +30,7 @@ zeph (binary)
   │     ├── zeph-memory (leaf)
   │     ├── zeph-channels (leaf)
   │     ├── zeph-tools (leaf)
-  │     ├── zeph-index (optional, leaf)
+  │     ├── zeph-index (leaf)
   │     ├── zeph-mcp (optional, leaf)
   │     └── zeph-tui (optional, leaf)
   └── zeph-a2a (optional, wired by binary, not by zeph-core)
@@ -59,7 +59,7 @@ Queued messages are processed sequentially with full context rebuilding between 
 - **Errors:** `thiserror` for all crates with typed error enums (`ChannelError`, `AgentError`, `LlmError`, etc.); `anyhow` only for top-level orchestration in `runner.rs`
 - **Lints:** workspace-level `clippy::all` + `clippy::pedantic` + `clippy::nursery`; `unsafe_code = "deny"`
 - **Dependencies:** versions only in root `[workspace.dependencies]`; crates inherit via `workspace = true`
-- **Feature gates:** optional crates (`zeph-index`, `zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary
+- **Feature gates:** optional crates (`zeph-mcp`, `zeph-a2a`, `zeph-tui`) are feature-gated in the binary; `zeph-index` is always-on
 - **Context engineering:** proportional budget allocation, semantic recall injection, message trimming, runtime compaction, environment context injection, progressive skill loading, ZEPH.md project config discovery
 - **Graceful shutdown:** Ctrl-C triggers ordered teardown — the agent loop exits cleanly, MCP server connections are closed, and pending async tasks are drained before process exit
 - **LoopbackChannel:** headless `Channel` implementation using two linked tokio mpsc pairs (`input_tx`/`input_rx` for user messages, `output_tx`/`output_rx` for `LoopbackEvent` variants). Auto-approves confirmations. Used by daemon mode to bridge the A2A task processor with the agent loop
