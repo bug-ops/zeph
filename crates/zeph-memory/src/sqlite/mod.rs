@@ -15,6 +15,7 @@ mod trust;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::error::MemoryError;
 
@@ -29,6 +30,8 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
     /// Open (or create) the `SQLite` database and run migrations.
     ///
     /// Enables foreign key constraints at connection level so that
@@ -61,6 +64,7 @@ impl SqliteStore {
         let opts = SqliteConnectOptions::from_str(&url)?
             .create_if_missing(true)
             .foreign_keys(true)
+            .busy_timeout(Self::DEFAULT_BUSY_TIMEOUT)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
@@ -109,6 +113,25 @@ mod tests {
             .expect("PRAGMA query");
 
         assert_eq!(mode, "wal", "expected WAL journal mode, got: {mode}");
+    }
+
+    #[tokio::test]
+    async fn busy_timeout_enabled_on_file_db() {
+        let file = NamedTempFile::new().expect("tempfile");
+        let path = file.path().to_str().expect("valid path");
+
+        let store = SqliteStore::new(path).await.expect("SqliteStore::new");
+
+        let timeout_ms: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(store.pool())
+            .await
+            .expect("PRAGMA query");
+
+        assert_eq!(
+            timeout_ms,
+            SqliteStore::DEFAULT_BUSY_TIMEOUT.as_millis() as i64,
+            "expected busy_timeout pragma to match configured timeout"
+        );
     }
 
     #[tokio::test]

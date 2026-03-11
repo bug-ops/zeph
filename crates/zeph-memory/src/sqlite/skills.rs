@@ -152,7 +152,9 @@ impl SqliteStore {
         error_context: Option<&str>,
         outcome_detail: Option<&str>,
     ) -> Result<(), MemoryError> {
-        let mut tx = self.pool.begin().await?;
+        // Acquire the write lock up front to avoid DEFERRED read->write upgrades
+        // failing with SQLITE_BUSY_SNAPSHOT under concurrent WAL writers.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
         let mut version_map: std::collections::HashMap<String, Option<i64>> =
             std::collections::HashMap::new();
@@ -508,6 +510,11 @@ impl SqliteStore {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use sqlx::Connection;
+    use tokio::time::sleep;
+
     use super::*;
 
     async fn test_store() -> SqliteStore {
@@ -953,5 +960,58 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(row.0.as_deref(), Some("timeout"));
+    }
+
+    #[tokio::test]
+    async fn record_skill_outcomes_batch_waits_for_active_writer() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = file.path().to_str().expect("valid path").to_owned();
+        let store = SqliteStore::with_pool_size(&path, 2)
+            .await
+            .expect("with_pool_size");
+
+        let vid = store
+            .save_skill_version("git", 1, "body", "desc", "manual", None, None)
+            .await
+            .unwrap();
+        store.activate_skill_version("git", vid).await.unwrap();
+
+        let mut writer = store.pool().acquire().await.expect("acquire writer");
+        let mut writer_tx = writer
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("begin immediate");
+        sqlx::query("INSERT INTO conversations DEFAULT VALUES")
+            .execute(&mut *writer_tx)
+            .await
+            .expect("hold write lock");
+
+        let batch_store = store.clone();
+        let batch = tokio::spawn(async move {
+            batch_store
+                .record_skill_outcomes_batch(
+                    &["git".to_string()],
+                    None,
+                    "success",
+                    None,
+                    Some("waited_for_writer"),
+                )
+                .await
+        });
+
+        sleep(Duration::from_millis(100)).await;
+        writer_tx.commit().await.expect("commit writer");
+
+        batch
+            .await
+            .expect("join batch task")
+            .expect("record outcomes");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM skill_outcomes WHERE skill_name = 'git'")
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "expected batch insert to succeed after writer commits");
     }
 }
