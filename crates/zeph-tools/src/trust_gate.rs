@@ -157,6 +157,30 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.inner.execute_tool_call(call).await
     }
 
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        // Bypass check_trust: caller already obtained user approval.
+        // Still enforce Blocked/Quarantined trust level constraints.
+        match self.effective_trust() {
+            TrustLevel::Blocked => {
+                return Err(ToolError::Blocked {
+                    command: "all tools blocked (trust=blocked)".to_owned(),
+                });
+            }
+            TrustLevel::Quarantined => {
+                if QUARANTINE_DENIED.contains(&call.tool_id.as_str()) {
+                    return Err(ToolError::Blocked {
+                        command: format!("{} denied (trust=quarantined)", call.tool_id),
+                    });
+                }
+            }
+            TrustLevel::Trusted | TrustLevel::Verified => {}
+        }
+        self.inner.execute_tool_call(call).await
+    }
+
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.inner.set_skill_env(env);
     }

@@ -559,6 +559,64 @@ impl<C: Channel> Agent<C> {
             tool_results.push(Ok(None));
         }
 
+        // Phase 2a: Handle ConfirmationRequired results.
+        // ConfirmationRequired requires an interactive channel.confirm() prompt which needs
+        // &mut self — it cannot run inside the parallel Phase 1 futures. Handled here
+        // sequentially after join_all, same as transient retry in Phase 2.
+        for idx in 0..tool_results.len() {
+            if cancel.is_cancelled() {
+                self.tool_executor.set_skill_env(None);
+                tracing::info!("tool execution cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                self.persist_cancelled_tool_results(tool_calls).await;
+                return Ok(());
+            }
+
+            let new_result =
+                if let Err(zeph_tools::ToolError::ConfirmationRequired { ref command }) =
+                    tool_results[idx]
+                {
+                    let tc = &tool_calls[idx];
+                    let prompt = if command.is_empty() {
+                        format!("Allow tool: {}?", tc.name)
+                    } else {
+                        format!("Allow command: {command}?")
+                    };
+                    Some(if self.channel.confirm(&prompt).await? {
+                        // execute_tool_call_confirmed_erased bypasses check_trust; a second
+                        // ConfirmationRequired here indicates a misconfigured executor stack
+                        // and is treated as a regular tool error.
+                        self.tool_executor
+                            .execute_tool_call_confirmed_erased(&calls[idx])
+                            .await
+                    } else {
+                        // User declined — not an error, just a cancellation.
+                        Ok(Some(zeph_tools::ToolOutput {
+                            tool_name: tc.name.clone(),
+                            summary: "[cancelled by user]".to_owned(),
+                            blocks_executed: 0,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                        }))
+                    })
+                } else {
+                    None
+                };
+            if let Some(result) = new_result {
+                if let Err(ref e) = result
+                    && let Some(ref d) = self.debug_state.debug_dumper
+                {
+                    d.dump_tool_error(&tool_calls[idx].name, e);
+                }
+                tool_results[idx] = result;
+            }
+        }
+
         // Phase 2: Sequential retry for transient failures on retryable executors.
         // Only idempotent operations (e.g. HTTP GET via WebScrapeExecutor) are retried.
         // Shell commands and other non-idempotent tools keep their error result as-is.
