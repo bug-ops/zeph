@@ -269,6 +269,15 @@ pub trait ToolExecutor: Send + Sync {
 
     /// Set the effective trust level for the currently active skill. No-op by default.
     fn set_effective_trust(&self, _level: crate::TrustLevel) {}
+
+    /// Whether the executor can safely retry this tool call on a transient error.
+    ///
+    /// Only idempotent operations (e.g. read-only HTTP GET) should return `true`.
+    /// Shell commands and other non-idempotent operations must keep the default `false`
+    /// to prevent double-execution of side-effectful commands.
+    fn is_tool_retryable(&self, _tool_id: &str) -> bool {
+        false
+    }
 }
 
 /// Object-safe erased version of [`ToolExecutor`] using boxed futures.
@@ -298,6 +307,9 @@ pub trait ErasedToolExecutor: Send + Sync {
 
     /// Set the effective trust level for the currently active skill. No-op by default.
     fn set_effective_trust(&self, _level: crate::TrustLevel) {}
+
+    /// Whether the executor can safely retry this tool call on a transient error.
+    fn is_tool_retryable_erased(&self, tool_id: &str) -> bool;
 }
 
 impl<T: ToolExecutor> ErasedToolExecutor for T {
@@ -335,6 +347,10 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
 
     fn set_effective_trust(&self, level: crate::TrustLevel) {
         ToolExecutor::set_effective_trust(self, level);
+    }
+
+    fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
+        ToolExecutor::is_tool_retryable(self, tool_id)
     }
 }
 
@@ -382,6 +398,10 @@ impl ToolExecutor for DynExecutor {
 
     fn set_effective_trust(&self, level: crate::TrustLevel) {
         ErasedToolExecutor::set_effective_trust(self.0.as_ref(), level);
+    }
+
+    fn is_tool_retryable(&self, tool_id: &str) -> bool {
+        self.0.is_tool_retryable_erased(tool_id)
     }
 }
 

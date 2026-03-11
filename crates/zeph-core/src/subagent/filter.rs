@@ -172,6 +172,10 @@ impl ErasedToolExecutor for FilteredToolExecutor {
     fn set_skill_env(&self, env: Option<HashMap<String, String>>) {
         self.inner.set_skill_env(env);
     }
+
+    fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_retryable_erased(tool_id)
+    }
 }
 
 // ── Plan mode executor ────────────────────────────────────────────────────────
@@ -235,6 +239,10 @@ impl ErasedToolExecutor for PlanModeExecutor {
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.inner.set_skill_env(env);
+    }
+
+    fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+        false
     }
 }
 
@@ -398,6 +406,10 @@ mod tests {
             }));
             Box::pin(std::future::ready(result))
         }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
     }
 
     fn fenced_stub_box(tag: &'static str) -> Arc<dyn ErasedToolExecutor> {
@@ -461,6 +473,10 @@ mod tests {
                 raw_response: None,
             }));
             Box::pin(std::future::ready(result))
+        }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
         }
     }
 

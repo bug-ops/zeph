@@ -54,6 +54,10 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
         }
         self.second.execute_tool_call(call).await
     }
+
+    fn is_tool_retryable(&self, tool_id: &str) -> bool {
+        self.first.is_tool_retryable(tool_id) || self.second.is_tool_retryable(tool_id)
+    }
 }
 
 #[cfg(test)]

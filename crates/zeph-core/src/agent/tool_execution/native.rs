@@ -14,6 +14,11 @@ use zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER;
 use zeph_skills::evolution::FailureKind;
 use zeph_tools::executor::ToolCall;
 
+type ToolExecFut = futures::future::BoxFuture<
+    'static,
+    Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+>;
+
 impl<C: Channel> Agent<C> {
     pub(super) async fn call_chat_with_tools_retry(
         &mut self,
@@ -477,39 +482,29 @@ impl<C: Channel> Agent<C> {
         // max_tool_iterations budget — the budget only decrements on LLM round-trips.
         // The retry budget per tool call is bounded independently by max_tool_retries.
         let max_retries = self.tool_orchestrator.max_tool_retries;
-        let max_parallel = self.runtime.timeouts.max_parallel_tools;
+        // Clamp to 1 to prevent Semaphore(0) deadlock when config is set to 0.
+        let max_parallel = self.runtime.timeouts.max_parallel_tools.max(1);
         let cancel = self.cancel_token.clone();
 
-        // For repeat-blocked calls, produce error result immediately without execution.
-        // For other calls, execute with retry for transient errors.
-        // We run each call sequentially when retry is needed to avoid complex async bookkeeping
-        // for the retry state across parallel futures.
-        let mut tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> =
-            Vec::with_capacity(calls.len());
+        // Phase 1: Parallel execution bounded by a semaphore.
+        // All N futures are built upfront; for typical batches (2-5 tools) this is negligible.
+        // The semaphore limits concurrent execution, not future allocation.
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel));
+
+        let mut phase1_futs: Vec<ToolExecFut> = Vec::with_capacity(calls.len());
 
         for ((call, tc), &blocked) in calls
             .iter()
             .zip(tool_calls.iter())
             .zip(repeat_blocked.iter())
         {
-            if cancel.is_cancelled() {
-                self.tool_executor.set_skill_env(None);
-                tracing::info!("tool execution cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
-                // persisted above is always paired in the DB (prevents cross-session orphan).
-                self.persist_cancelled_tool_results(tool_calls).await;
-                return Ok(());
-            }
-
             if blocked {
                 let msg = format!(
                     "[error] Repeated identical call to {} detected. \
                      Use different arguments or a different approach.",
                     tc.name
                 );
-                tool_results.push(Ok(Some(zeph_tools::ToolOutput {
+                let out = zeph_tools::ToolOutput {
                     tool_name: tc.name.clone(),
                     summary: msg,
                     blocks_executed: 0,
@@ -519,113 +514,168 @@ impl<C: Channel> Agent<C> {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
-                })));
+                };
+                phase1_futs.push(Box::pin(std::future::ready(Ok(Some(out)))));
                 continue;
             }
 
-            // Execute with retry for transient errors.
-            let mut attempt = 0_usize;
-            let retry_start = std::time::Instant::now();
-            let max_retry_duration_secs = self.tool_orchestrator.max_retry_duration_secs;
-            let result = loop {
-                let exec_result = tokio::select! {
-                    r = self.tool_executor.execute_tool_call_erased(call).instrument(
-                        tracing::info_span!("tool_exec", tool_name = %tc.name, idx = %tc.id)
-                    ) => r,
-                    () = cancel.cancelled() => {
-                        self.tool_executor.set_skill_env(None);
-                        tracing::info!("tool execution cancelled by user");
-                        self.update_metrics(|m| m.cancellations += 1);
-                        self.channel.send("[Cancelled]").await?;
-                        // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
-                        // persisted above is always paired in the DB (prevents cross-session orphan).
-                        self.persist_cancelled_tool_results(tool_calls).await;
-                        return Ok(());
-                    }
-                };
-
-                match exec_result {
-                    Err(ref e)
-                        if e.kind() == zeph_tools::ErrorKind::Transient
-                            && attempt < max_retries =>
-                    {
-                        let elapsed_secs = retry_start.elapsed().as_secs();
-                        if max_retry_duration_secs > 0 && elapsed_secs >= max_retry_duration_secs {
-                            tracing::warn!(
-                                tool = %tc.name,
-                                elapsed_secs,
-                                max_retry_duration_secs,
-                                "tool retry budget exceeded, aborting retries"
-                            );
-                            break exec_result;
-                        }
-                        attempt += 1;
-                        let delay_ms = retry_backoff_ms(attempt - 1);
-                        tracing::warn!(
-                            tool = %tc.name,
-                            attempt,
-                            delay_ms,
-                            error = %e,
-                            "transient tool error, retrying with backoff"
-                        );
-                        let _ = self
-                            .channel
-                            .send_status(&format!("Retrying {}...", tc.name))
-                            .await;
-                        // Interruptible backoff sleep (IMP-3): cancelled if agent shuts down.
-                        tokio::select! {
-                            () = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
-                            () = cancel.cancelled() => {
-                                self.tool_executor.set_skill_env(None);
-                                tracing::info!("retry backoff interrupted by cancellation");
-                                self.update_metrics(|m| m.cancellations += 1);
-                                self.channel.send("[Cancelled]").await?;
-                                return Ok(());
-                            }
-                        }
-                        let _ = self.channel.send_status("").await;
-                        // NOTE: retry re-executions are NOT recorded in repeat-detection (CRIT-3).
-                    }
-                    result => break result,
-                }
+            let sem = std::sync::Arc::clone(&semaphore);
+            let executor = std::sync::Arc::clone(&self.tool_executor);
+            let call = call.clone();
+            let tool_name = tc.name.clone();
+            let tool_id = tc.id.clone();
+            let fut = async move {
+                let _permit = sem.acquire().await.map_err(|_| {
+                    zeph_tools::ToolError::Execution(std::io::Error::other(
+                        "semaphore closed during tool execution",
+                    ))
+                })?;
+                executor
+                    .execute_tool_call_erased(&call)
+                    .instrument(
+                        tracing::info_span!("tool_exec", tool_name = %tool_name, idx = %tool_id),
+                    )
+                    .await
             };
-
-            if let Err(ref e) = result
-                && let Some(ref d) = self.debug_state.debug_dumper
-            {
-                d.dump_tool_error(&tc.name, e);
-            }
-            tool_results.push(result);
+            phase1_futs.push(Box::pin(fut));
         }
 
-        // Pad with empty results if needed (should not happen, but defensive)
+        let mut tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> = tokio::select! {
+            results = futures::future::join_all(phase1_futs) => results,
+            () = cancel.cancelled() => {
+                self.tool_executor.set_skill_env(None);
+                tracing::info!("tool execution cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
+                // persisted above is always paired in the DB (prevents cross-session orphan).
+                self.persist_cancelled_tool_results(tool_calls).await;
+                return Ok(());
+            }
+        };
+
+        // Pad with empty results if needed (defensive; should not happen).
         while tool_results.len() < tool_calls.len() {
             tool_results.push(Ok(None));
         }
 
-        self.tool_executor.set_skill_env(None);
+        // Phase 2: Sequential retry for transient failures on retryable executors.
+        // Only idempotent operations (e.g. HTTP GET via WebScrapeExecutor) are retried.
+        // Shell commands and other non-idempotent tools keep their error result as-is.
+        // Multiple transient failures are retried sequentially; parallel retry adds complexity
+        // for minimal gain in the rare case of multiple simultaneous transient failures.
+        if max_retries > 0 {
+            let max_retry_duration_secs = self.tool_orchestrator.max_retry_duration_secs;
+            for idx in 0..tool_results.len() {
+                if cancel.is_cancelled() {
+                    self.tool_executor.set_skill_env(None);
+                    tracing::info!("tool execution cancelled by user");
+                    self.update_metrics(|m| m.cancellations += 1);
+                    self.channel.send("[Cancelled]").await?;
+                    self.persist_cancelled_tool_results(tool_calls).await;
+                    return Ok(());
+                }
 
-        // NOTE: parallel execution is intentionally replaced with sequential retry-aware
-        // execution above. For the common case (max_retries=0 or no transient errors),
-        // performance is equivalent. Parallel optimization can be restored in a future PR
-        // if profiling shows it matters. The max_parallel config is preserved for future use.
-        let _ = max_parallel;
+                let is_transient = matches!(
+                    tool_results[idx],
+                    Err(ref e) if e.kind() == zeph_tools::ErrorKind::Transient
+                );
+                if !is_transient {
+                    continue;
+                }
+
+                let tc = &tool_calls[idx];
+                if !self.tool_executor.is_tool_retryable_erased(&tc.name) {
+                    continue;
+                }
+
+                let call = &calls[idx];
+                let mut attempt = 0_usize;
+                let retry_start = std::time::Instant::now();
+                let result = loop {
+                    let exec_result = tokio::select! {
+                        r = self.tool_executor.execute_tool_call_erased(call).instrument(
+                            tracing::info_span!("tool_exec_retry", tool_name = %tc.name, idx = %tc.id)
+                        ) => r,
+                        () = cancel.cancelled() => {
+                            self.tool_executor.set_skill_env(None);
+                            tracing::info!("tool retry cancelled by user");
+                            self.update_metrics(|m| m.cancellations += 1);
+                            self.channel.send("[Cancelled]").await?;
+                            self.persist_cancelled_tool_results(tool_calls).await;
+                            return Ok(());
+                        }
+                    };
+
+                    match exec_result {
+                        Err(ref e)
+                            if e.kind() == zeph_tools::ErrorKind::Transient
+                                && attempt < max_retries =>
+                        {
+                            let elapsed_secs = retry_start.elapsed().as_secs();
+                            if max_retry_duration_secs > 0
+                                && elapsed_secs >= max_retry_duration_secs
+                            {
+                                tracing::warn!(
+                                    tool = %tc.name,
+                                    elapsed_secs,
+                                    max_retry_duration_secs,
+                                    "tool retry budget exceeded, aborting retries"
+                                );
+                                break exec_result;
+                            }
+                            attempt += 1;
+                            let delay_ms = retry_backoff_ms(attempt - 1);
+                            tracing::warn!(
+                                tool = %tc.name,
+                                attempt,
+                                delay_ms,
+                                error = %e,
+                                "transient tool error, retrying with backoff"
+                            );
+                            let _ = self
+                                .channel
+                                .send_status(&format!("Retrying {}...", tc.name))
+                                .await;
+                            // Interruptible backoff sleep: cancelled if agent shuts down.
+                            tokio::select! {
+                                () = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+                                () = cancel.cancelled() => {
+                                    self.tool_executor.set_skill_env(None);
+                                    tracing::info!("retry backoff interrupted by cancellation");
+                                    self.update_metrics(|m| m.cancellations += 1);
+                                    self.channel.send("[Cancelled]").await?;
+                                    return Ok(());
+                                }
+                            }
+                            let _ = self.channel.send_status("").await;
+                            // NOTE: retry re-executions are NOT recorded in repeat-detection (CRIT-3).
+                        }
+                        result => break result,
+                    }
+                };
+                tool_results[idx] = result;
+            }
+        }
+
+        self.tool_executor.set_skill_env(None);
 
         // Collect (name, params, output) for LSP hooks. Built during the results loop below.
         #[cfg(feature = "lsp-context")]
         let mut lsp_tool_calls: Vec<(String, serde_json::Value, String)> = Vec::new();
 
-        // Process results sequentially (metrics, channel sends, message parts)
+        // Process results sequentially (metrics, channel sends, message parts).
+        // Iterate by index so that tool_results[remaining_idx] remains accessible for
+        // self_reflection early-return paths (CRIT-1: all tools already executed in parallel,
+        // so we must emit their actual results rather than synthetic "[skipped]" messages).
         let mut result_parts: Vec<MessagePart> = Vec::new();
         // Accumulates injection flags across all tools in the batch (Bug #1490 fix).
         let mut has_any_injection_flags = false;
-        for ((((idx, tc), tool_result), tool_call_id), started_at) in tool_calls
-            .iter()
-            .enumerate()
-            .zip(tool_results)
-            .zip(tool_call_ids.iter())
-            .zip(tool_started_ats.iter())
-        {
+        for idx in 0..tool_calls.len() {
+            let tc = &tool_calls[idx];
+            let tool_call_id = &tool_call_ids[idx];
+            let started_at = &tool_started_ats[idx];
+            let tool_result = std::mem::replace(&mut tool_results[idx], Ok(None));
             let (output, is_error, diff, inline_stats, _, kept_lines, locations) =
                 match tool_result {
                     Ok(Some(out)) => {
@@ -684,7 +734,12 @@ impl<C: Channel> Agent<C> {
                         None,
                         None,
                     ),
-                    Err(e) => (format!("[error] {e}"), true, None, None, false, None, None),
+                    Err(ref e) => {
+                        if let Some(ref d) = self.debug_state.debug_dumper {
+                            d.dump_tool_error(&tc.name, e);
+                        }
+                        (format!("[error] {e}"), true, None, None, false, None, None)
+                    }
                 };
 
             // Record skill learning outcomes for the native tool path (mirrors legacy path in
@@ -708,27 +763,54 @@ impl<C: Channel> Agent<C> {
                         .await
                     {
                         Ok(true) => {
-                            // Push ToolResult for the current (failing) tool and synthetic results
-                            // for any remaining unexecuted tools so every ToolUse in the assistant
-                            // message has a matching ToolResult. Without this the conversation history
-                            // contains orphaned ToolUse blocks that cause Claude API 400 errors on the
-                            // next request (issue #1512).
+                            // Push ToolResult for the current (failing) tool. Under parallel
+                            // execution all remaining tools already ran — emit their actual results
+                            // (not synthetic "[skipped]") so the LLM sees the true conversation
+                            // state (CRIT-1 fix). Also emit ToolOutputEvents for remaining tools
+                            // to preserve the ToolStart/ToolOutput pairing in the TUI.
                             result_parts.push(MessagePart::ToolResult {
                                 tool_use_id: tc.id.clone(),
                                 content: sanitized_out.clone(),
                                 is_error: true,
                             });
-                            for remaining_tc in tool_calls.iter().skip(idx + 1) {
+                            for remaining_idx in (idx + 1)..tool_calls.len() {
+                                let remaining_tc = &tool_calls[remaining_idx];
+                                let remaining_result =
+                                    std::mem::replace(&mut tool_results[remaining_idx], Ok(None));
+                                let (remaining_content, remaining_is_error) = match remaining_result
+                                {
+                                    Ok(Some(ref out)) => {
+                                        let (sanitized, _) = self
+                                            .sanitize_tool_output(&out.summary, &remaining_tc.name)
+                                            .await;
+                                        (sanitized, false)
+                                    }
+                                    Ok(None) => ("(no output)".to_owned(), false),
+                                    Err(ref e) => (format!("[error] {e}"), true),
+                                };
+                                let body_display = self.maybe_redact(&remaining_content);
+                                self.channel
+                                    .send_tool_output(ToolOutputEvent {
+                                        tool_name: &remaining_tc.name,
+                                        body: &body_display,
+                                        diff: None,
+                                        filter_stats: None,
+                                        kept_lines: None,
+                                        locations: None,
+                                        tool_call_id: &tool_call_ids[remaining_idx],
+                                        is_error: remaining_is_error,
+                                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                                        raw_response: None,
+                                        started_at: Some(tool_started_ats[remaining_idx]),
+                                    })
+                                    .await?;
                                 result_parts.push(MessagePart::ToolResult {
                                     tool_use_id: remaining_tc.id.clone(),
-                                    content: "[skipped: prior tool failed]".to_owned(),
-                                    is_error: true,
+                                    content: remaining_content,
+                                    is_error: remaining_is_error,
                                 });
                             }
                             let user_msg = Message::from_parts(Role::User, result_parts);
-                            // has_injection_flags=false is safe here: `sanitized_out` already passed
-                            // through ContentSanitizer above (line ~1763), and "[skipped: prior tool
-                            // failed]" is a hardcoded constant with no external content.
                             self.persist_message(
                                 Role::User,
                                 &user_msg.content,
@@ -745,18 +827,48 @@ impl<C: Channel> Agent<C> {
                         Err(e) => {
                             // Self-reflection failed. Push ToolResults for all tool calls so
                             // the conversation is never left with orphaned ToolUse blocks (#1517).
+                            // Under parallel execution remaining tools already ran — emit actual
+                            // results rather than synthetic errors (CRIT-1 fix).
                             result_parts.push(MessagePart::ToolResult {
                                 tool_use_id: tc.id.clone(),
                                 content: output.clone(),
                                 is_error,
                             });
-                            for remaining_tc in tool_calls.iter().skip(idx + 1) {
+                            for remaining_idx in (idx + 1)..tool_calls.len() {
+                                let remaining_tc = &tool_calls[remaining_idx];
+                                let remaining_result =
+                                    std::mem::replace(&mut tool_results[remaining_idx], Ok(None));
+                                let (remaining_content, remaining_is_error) = match remaining_result
+                                {
+                                    Ok(Some(ref out)) => {
+                                        let (sanitized, _) = self
+                                            .sanitize_tool_output(&out.summary, &remaining_tc.name)
+                                            .await;
+                                        (sanitized, false)
+                                    }
+                                    Ok(None) => ("(no output)".to_owned(), false),
+                                    Err(ref re) => (format!("[error] {re}"), true),
+                                };
+                                let body_display = self.maybe_redact(&remaining_content);
+                                self.channel
+                                    .send_tool_output(ToolOutputEvent {
+                                        tool_name: &remaining_tc.name,
+                                        body: &body_display,
+                                        diff: None,
+                                        filter_stats: None,
+                                        kept_lines: None,
+                                        locations: None,
+                                        tool_call_id: &tool_call_ids[remaining_idx],
+                                        is_error: remaining_is_error,
+                                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                                        raw_response: None,
+                                        started_at: Some(tool_started_ats[remaining_idx]),
+                                    })
+                                    .await?;
                                 result_parts.push(MessagePart::ToolResult {
                                     tool_use_id: remaining_tc.id.clone(),
-                                    content:
-                                        "[error] self-reflection failed before result was processed"
-                                            .to_owned(),
-                                    is_error: true,
+                                    content: remaining_content,
+                                    is_error: remaining_is_error,
                                 });
                             }
                             let user_msg = Message::from_parts(Role::User, result_parts);

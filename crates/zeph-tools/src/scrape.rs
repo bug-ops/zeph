@@ -236,6 +236,10 @@ impl ToolExecutor for WebScrapeExecutor {
             _ => Ok(None),
         }
     }
+
+    fn is_tool_retryable(&self, tool_id: &str) -> bool {
+        matches!(tool_id, "web_scrape" | "fetch")
+    }
 }
 
 fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {

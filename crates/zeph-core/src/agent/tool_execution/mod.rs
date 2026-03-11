@@ -2822,6 +2822,10 @@ mod tests {
                 }
             }
         }
+
+        fn is_tool_retryable(&self, _tool_id: &str) -> bool {
+            true
+        }
     }
 
     /// Always returns a `Transient` io error (to exhaust retries).
@@ -2849,6 +2853,10 @@ mod tests {
                     format!("always fails: {tool_id}"),
                 )))
             }
+        }
+
+        fn is_tool_retryable(&self, _tool_id: &str) -> bool {
+            true
         }
     }
 
@@ -3458,14 +3466,12 @@ mod tests {
             !first_content.contains("[skipped"),
             "failing tool content must not be [skipped], got: {first_content}"
         );
-        for (id, content, is_error) in &result_parts[1..] {
+        // Under parallel execution all tools already ran before self_reflection triggered.
+        // Remaining results must be ACTUAL results (not synthetic "[skipped]" messages).
+        for (id, content, _is_error) in &result_parts[1..] {
             assert!(
-                *is_error,
-                "skipped tool id={id} ToolResult must have is_error=true"
-            );
-            assert!(
-                content.contains("[skipped"),
-                "skipped tool id={id} content must contain [skipped], got: {content}"
+                !content.contains("[skipped"),
+                "remaining tool id={id} must have actual result (not [skipped]) under parallel execution, got: {content}"
             );
         }
     }
@@ -3895,6 +3901,367 @@ mod tests {
         assert!(
             tool_result_ids.contains(&"id-r3"),
             "ToolResult for id-r3 must be present: {tool_result_ids:?}"
+        );
+    }
+
+    // ── Semaphore / max_parallel_tools boundary tests ─────────────────────────
+
+    // RF-P1: max_parallel_tools=1 forces sequential execution via semaphore(1).
+    // All tools must still run and produce results — no deadlock, no missing ToolResults.
+    #[tokio::test]
+    async fn max_parallel_tools_one_runs_all_tools_sequentially() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use zeph_llm::provider::MessagePart;
+
+        let executor = FixedOutputExecutor {
+            summary: "done".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        // Force sequential execution path (Semaphore(1)).
+        agent.runtime.timeouts.max_parallel_tools = 1;
+
+        let tool_calls = vec![
+            make_tool_use_request("seq-1", "bash"),
+            make_tool_use_request("seq-2", "bash"),
+            make_tool_use_request("seq-3", "bash"),
+        ];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let tool_result_ids: Vec<String> = agent
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                    Some(tool_use_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            tool_result_ids.len(),
+            3,
+            "all 3 tools must produce ToolResults under max_parallel_tools=1; got: {tool_result_ids:?}"
+        );
+        for id in ["seq-1", "seq-2", "seq-3"] {
+            assert!(
+                tool_result_ids.iter().any(|r| r == id),
+                "ToolResult for {id} missing from sequential run; got: {tool_result_ids:?}"
+            );
+        }
+    }
+
+    // RF-P2: max_parallel_tools=0 is clamped to 1 (no Semaphore(0) deadlock).
+    // Verify that a batch of 2 tools completes successfully without hanging.
+    #[tokio::test]
+    async fn max_parallel_tools_zero_clamped_to_one_no_deadlock() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use zeph_llm::provider::MessagePart;
+
+        let executor = FixedOutputExecutor {
+            summary: "ok".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        // 0 is invalid; the implementation clamps it to 1 via .max(1).
+        agent.runtime.timeouts.max_parallel_tools = 0;
+
+        let tool_calls = vec![
+            make_tool_use_request("clamp-1", "bash"),
+            make_tool_use_request("clamp-2", "bash"),
+        ];
+        // If the clamp is missing, Semaphore::new(0) would deadlock here.
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let result_count = agent
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter(|p| matches!(p, MessagePart::ToolResult { .. }))
+            .count();
+        assert_eq!(
+            result_count, 2,
+            "both tools must complete despite max_parallel_tools=0"
+        );
+    }
+
+    // RF-P3: empty tool list — handle_native_tool_calls must not panic and must not push any
+    // ToolResult parts (there are no tool calls to produce results for).
+    // The function still pushes an assistant message and an empty user result message,
+    // but neither should contain ToolResult parts.
+    #[tokio::test]
+    async fn empty_tool_calls_produces_no_tool_results() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use zeph_llm::provider::MessagePart;
+
+        let executor = FixedOutputExecutor {
+            summary: "never called".into(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.handle_native_tool_calls(None, &[]).await.unwrap();
+
+        // No ToolResult parts must be present anywhere in message history.
+        let tool_result_count = agent
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter(|p| matches!(p, MessagePart::ToolResult { .. }))
+            .count();
+        assert_eq!(
+            tool_result_count, 0,
+            "empty tool call batch must produce zero ToolResult parts"
+        );
+    }
+
+    // RF-P4: transient error on a non-retryable executor is NOT retried.
+    // Uses TransientThenOkExecutor but overrides is_tool_retryable to false.
+    // The error from Phase 1 must remain in the final ToolResult (no recovery).
+    #[tokio::test]
+    async fn transient_error_on_non_retryable_executor_is_not_retried() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use zeph_llm::provider::MessagePart;
+
+        // Executor: always returns Transient but is NOT retryable.
+        struct NonRetryableTransientExecutor;
+        impl ToolExecutor for NonRetryableTransientExecutor {
+            fn execute(
+                &self,
+                _response: &str,
+            ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+                std::future::ready(Ok(None))
+            }
+
+            fn execute_tool_call(
+                &self,
+                call: &ToolCall,
+            ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+                let tool_id = call.tool_id.clone();
+                async move {
+                    Err(ToolError::Execution(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("transient: {tool_id}"),
+                    )))
+                }
+            }
+
+            // Explicitly NOT retryable (default is also false, but be explicit).
+            fn is_tool_retryable(&self, _tool_id: &str) -> bool {
+                false
+            }
+        }
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = super::super::Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            NonRetryableTransientExecutor,
+        );
+        agent.tool_orchestrator.max_tool_retries = 3; // retry budget available, but should not fire
+
+        let tool_calls = vec![make_tool_use_request("non-retry-1", "shell")];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        // The error must be present in the final ToolResult.
+        let result_parts: Vec<_> = agent
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter_map(|p| {
+                if let MessagePart::ToolResult {
+                    is_error, content, ..
+                } = p
+                {
+                    Some((*is_error, content.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(result_parts.len(), 1, "expected exactly 1 ToolResult");
+        let (is_error, content) = &result_parts[0];
+        assert!(
+            *is_error || content.contains("[error]"),
+            "non-retryable transient error must surface as error result; got: {content}"
+        );
+    }
+
+    // RF-P5: mixed batch — tool[0] succeeds, tool[1] is retryable-transient-then-ok,
+    // tool[2] is non-retryable-transient-always-fail. Verifies all three complete with
+    // the correct outcome and the retry fires only for tool[1].
+    #[tokio::test]
+    async fn mixed_retryable_and_non_retryable_batch() {
+        use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use zeph_llm::provider::MessagePart;
+
+        // Use a single dispatching executor that branches by tool_id, covering:
+        // - "tool-success": always succeeds, not retryable (default)
+        // - "tool-retryable": first call transient, second call ok; is_tool_retryable=true
+        // - "tool-nonretryable": always transient, is_tool_retryable=false
+        struct DispatchingExecutor {
+            call_count: AtomicUsize,
+        }
+        impl ToolExecutor for DispatchingExecutor {
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+                std::future::ready(Ok(None))
+            }
+            fn execute_tool_call(
+                &self,
+                call: &ToolCall,
+            ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+                let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+                let tool_id = call.tool_id.clone();
+                async move {
+                    match tool_id.as_str() {
+                        "tool-success" => Ok(Some(ToolOutput {
+                            tool_name: tool_id,
+                            summary: "ok".into(),
+                            blocks_executed: 1,
+                            diff: None,
+                            filter_stats: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                        })),
+                        // tool-retryable: fail on first call (idx 1), succeed after that
+                        "tool-retryable" if idx == 1 => Err(ToolError::Execution(
+                            std::io::Error::new(std::io::ErrorKind::TimedOut, "transient"),
+                        )),
+                        "tool-retryable" => Ok(Some(ToolOutput {
+                            tool_name: tool_id,
+                            summary: "retried-ok".into(),
+                            blocks_executed: 1,
+                            diff: None,
+                            filter_stats: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                        })),
+                        // tool-nonretryable: always transient error
+                        _ => Err(ToolError::Execution(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "always-transient",
+                        ))),
+                    }
+                }
+            }
+            fn is_tool_retryable(&self, tool_id: &str) -> bool {
+                tool_id == "tool-retryable"
+            }
+        }
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = DispatchingExecutor {
+            call_count: AtomicUsize::new(0),
+        };
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.max_tool_retries = 2;
+
+        let tool_calls = vec![
+            zeph_llm::provider::ToolUseRequest {
+                id: "tool-success".into(),
+                name: "tool-success".into(),
+                input: serde_json::json!({}),
+            },
+            zeph_llm::provider::ToolUseRequest {
+                id: "tool-retryable".into(),
+                name: "tool-retryable".into(),
+                input: serde_json::json!({}),
+            },
+            zeph_llm::provider::ToolUseRequest {
+                id: "tool-nonretryable".into(),
+                name: "tool-nonretryable".into(),
+                input: serde_json::json!({}),
+            },
+        ];
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        let result_parts: Vec<_> = agent
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter_map(|p| {
+                if let MessagePart::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } = p
+                {
+                    Some((tool_use_id.clone(), content.clone(), *is_error))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(result_parts.len(), 3, "expected exactly 3 ToolResults");
+
+        // tool-success: must succeed
+        let success = result_parts
+            .iter()
+            .find(|(id, _, _)| id == "tool-success")
+            .unwrap();
+        assert!(!success.2, "tool-success must not be is_error");
+        assert!(
+            !success.1.contains("[error]"),
+            "tool-success content must not contain [error]"
+        );
+
+        // tool-retryable: must succeed after retry
+        let retried = result_parts
+            .iter()
+            .find(|(id, _, _)| id == "tool-retryable")
+            .unwrap();
+        assert!(!retried.2, "tool-retryable must succeed after retry");
+
+        // tool-nonretryable: must remain as error (not retried)
+        let non_retry = result_parts
+            .iter()
+            .find(|(id, _, _)| id == "tool-nonretryable")
+            .unwrap();
+        assert!(
+            non_retry.2 || non_retry.1.contains("[error]"),
+            "tool-nonretryable must surface as error; got: {}",
+            non_retry.1
         );
     }
 }

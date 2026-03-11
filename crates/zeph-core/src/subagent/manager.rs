@@ -1632,6 +1632,10 @@ mod tests {
         > {
             Box::pin(std::future::ready(Ok(None)))
         }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
     }
 
     fn mock_provider(responses: Vec<&str>) -> AnyProvider {
@@ -1998,6 +2002,10 @@ mod tests {
                     Ok(None)
                 };
                 Box::pin(std::future::ready(result))
+            }
+
+            fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+                false
             }
         }
 
@@ -3239,6 +3247,10 @@ mod tests {
             > {
                 Box::pin(std::future::ready(Ok(None)))
             }
+
+            fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+                false
+            }
         }
 
         // MockProvider with tool_use: records call count for chat_with_tools.
@@ -3322,6 +3334,10 @@ mod tests {
                     raw_response: None,
                 };
                 Box::pin(std::future::ready(Ok(Some(output))))
+            }
+
+            fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+                false
             }
         }
 
