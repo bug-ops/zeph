@@ -281,6 +281,7 @@ pub(crate) async fn run_daemon(
     )
     .with_max_tool_iterations(config.agent.max_tool_iterations)
     .with_max_tool_retries(config.agent.max_tool_retries)
+    .with_max_retry_duration_secs(config.agent.max_retry_duration_secs)
     .with_tool_repeat_threshold(config.agent.tool_repeat_threshold)
     .with_model_name(config.llm.model.clone())
     .with_embedding_model(embed_model)

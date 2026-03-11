@@ -35,6 +35,7 @@ struct SharedAgentDeps {
     tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor>,
     max_tool_iterations: usize,
     max_tool_retries: usize,
+    max_retry_duration_secs: u64,
     tool_repeat_threshold: usize,
     model_name: String,
     embed_model: String,
@@ -255,6 +256,7 @@ async fn build_acp_deps(
         tool_executor,
         max_tool_iterations: config.agent.max_tool_iterations,
         max_tool_retries: config.agent.max_tool_retries,
+        max_retry_duration_secs: config.agent.max_retry_duration_secs,
         tool_repeat_threshold: config.agent.tool_repeat_threshold,
         model_name: config.llm.model.clone(),
         embed_model,
@@ -421,6 +423,7 @@ async fn spawn_acp_agent(
     )
     .with_max_tool_iterations(d.max_tool_iterations)
     .with_max_tool_retries(d.max_tool_retries)
+    .with_max_retry_duration_secs(d.max_retry_duration_secs)
     .with_tool_repeat_threshold(d.tool_repeat_threshold)
     .with_model_name(d.model_name.clone())
     .with_embedding_model(d.embed_model.clone())

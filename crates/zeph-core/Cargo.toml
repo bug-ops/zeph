@@ -16,7 +16,7 @@ readme = "README.md"
 default = []
 candle = ["zeph-llm/candle"]
 cuda = ["zeph-llm/cuda"]
-experiments = ["dep:ordered-float", "dep:rand", "zeph-memory/experiments"]
+experiments = ["dep:ordered-float", "zeph-memory/experiments"]
 index = ["dep:zeph-index"]
 metal = ["zeph-llm/metal"]
 lsp-context = []
@@ -30,7 +30,7 @@ futures.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 ordered-float = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
+rand.workspace = true
 regex.workspace = true
 schemars.workspace = true
 dirs.workspace = true

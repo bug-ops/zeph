@@ -114,6 +114,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the maximum wall-clock budget (seconds) for retries per tool call (0 = unlimited).
+    #[must_use]
+    pub fn with_max_retry_duration_secs(mut self, secs: u64) -> Self {
+        self.tool_orchestrator.max_retry_duration_secs = secs;
+        self
+    }
+
     /// Set the repeat-detection threshold (0 = disabled).
     /// Window size is `2 * threshold`.
     #[must_use]

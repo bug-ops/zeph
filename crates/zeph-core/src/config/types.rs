@@ -249,6 +249,10 @@ fn default_max_tool_retries() -> usize {
     2
 }
 
+fn default_max_retry_duration_secs() -> u64 {
+    30
+}
+
 fn default_tool_repeat_threshold() -> usize {
     2
 }
@@ -275,6 +279,11 @@ pub struct AgentConfig {
     /// abort (0 to disable). Window size is `2 * tool_repeat_threshold`.
     #[serde(default = "default_tool_repeat_threshold")]
     pub tool_repeat_threshold: usize,
+    /// Maximum total wall-clock time (seconds) to spend on retries for a single tool call.
+    /// When the budget is exhausted the retry loop breaks even if attempts remain.
+    /// 0 = no wall-clock budget (only `max_tool_retries` applies).
+    #[serde(default = "default_max_retry_duration_secs")]
+    pub max_retry_duration_secs: u64,
 }
 
 fn default_instruction_auto_detect() -> bool {
@@ -1840,6 +1849,7 @@ impl Default for Config {
                 instruction_auto_detect: default_instruction_auto_detect(),
                 max_tool_retries: default_max_tool_retries(),
                 tool_repeat_threshold: default_tool_repeat_threshold(),
+                max_retry_duration_secs: default_max_retry_duration_secs(),
             },
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,

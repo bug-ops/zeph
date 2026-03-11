@@ -472,14 +472,24 @@ impl<C: Channel> Agent<C> {
     }
 }
 
+/// Process-wide randomized `BuildHasher` for `tool_args_hash`.
+///
+/// Initialized once at first use. Consistent within a session (repeat-detection
+/// works correctly) but unpredictable across sessions (prevents adversarial
+/// hash collision bypasses).
+static TOOL_ARGS_HASHER: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+    std::sync::OnceLock::new();
+
 /// Compute a stable hash for tool arguments for repeat-detection.
 ///
 /// Keys are sorted before hashing to normalize key ordering differences between
-/// LLM tool calls that have the same logical parameters. Uses `DefaultHasher`
-/// (not stable across Rust versions) — used only for within-session comparison.
+/// LLM tool calls that have the same logical parameters. Uses a process-scoped
+/// randomized `RandomState` (seeded once at startup) to prevent adversarial hash
+/// collision bypasses of the repeat-detection window.
 fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let state = TOOL_ARGS_HASHER.get_or_init(std::collections::hash_map::RandomState::new);
+    let mut hasher = state.build_hasher();
     let mut keys: Vec<&String> = params.keys().collect();
     keys.sort_unstable();
     for k in keys {
@@ -492,22 +502,16 @@ fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
 /// Compute exponential backoff delay for retry attempt (0-indexed).
 ///
 /// Formula: `base_ms * 2^attempt`, nominally capped at 5000ms.
-/// Jitter of +-12.5% is applied using system time nanos as entropy, so the
-/// actual output range is `[cap * 0.875, cap * 1.125]` (up to ~5625ms at cap).
+/// Full jitter in `[0, cap]` is applied using `rand` for cryptographically
+/// seeded randomness — avoids predictable timing that an adversary could exploit
+/// to align retry windows.
 fn retry_backoff_ms(attempt: usize) -> u64 {
+    use rand::Rng as _;
     const BASE_MS: u64 = 500;
     const MAX_MS: u64 = 5000;
     let base = BASE_MS.saturating_mul(1_u64 << attempt.min(10));
     let capped = base.min(MAX_MS);
-    // Simple jitter: +-12.5% using current time nanos as entropy
-    let nanos = u64::from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos()),
-    );
-    let jitter_range = capped / 8; // 12.5%
-    let jitter = nanos % (jitter_range * 2 + 1);
-    capped.saturating_sub(jitter_range).saturating_add(jitter)
+    rand::rng().random_range(0..=capped)
 }
 
 pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> ToolDefinition {
@@ -3014,36 +3018,55 @@ mod tests {
 
     #[test]
     fn retry_backoff_ms_attempt0_within_range() {
-        // attempt=0 → base = 500ms, capped = 500ms, jitter ±62ms → [438, 562]
+        // attempt=0 → cap = 500ms, full jitter [0, 500]
         let delay = retry_backoff_ms(0);
-        assert!(delay >= 500 / 8 * 7, "attempt 0 delay too low: {delay}");
-        assert!(delay <= 562, "attempt 0 delay too high: {delay}");
+        assert!(delay <= 500, "attempt 0 delay too high: {delay}");
     }
 
     #[test]
     fn retry_backoff_ms_attempt1_within_range() {
-        // attempt=1 → base = 1000ms, capped = 1000ms, jitter ±125ms → [875, 1125]
+        // attempt=1 → cap = 1000ms, full jitter [0, 1000]
         let delay = retry_backoff_ms(1);
-        assert!(delay >= 875, "attempt 1 delay too low: {delay}");
-        assert!(delay <= 1125, "attempt 1 delay too high: {delay}");
+        assert!(delay <= 1000, "attempt 1 delay too high: {delay}");
     }
 
     #[test]
     fn retry_backoff_ms_cap_at_5000() {
-        // attempt=4 → base = 8000ms → capped to 5000ms; jitter ±625ms → [4375, 5625]
-        // but capped.saturating_sub(jitter_range).saturating_add(jitter) is bounded by ±jitter_range
-        // so max is 5000 - 625 + (625*2) = 5625, but the actual formula clamps via saturating_add.
-        // In practice the cap keeps it in [4375, 5625].
+        // attempt=4 → base = 8000ms → capped to 5000ms; full jitter [0, 5000]
         let delay = retry_backoff_ms(4);
-        assert!(delay >= 4375, "capped attempt 4 delay too low: {delay}");
-        assert!(delay <= 5625, "capped attempt 4 delay too high: {delay}");
+        assert!(delay <= 5000, "capped attempt 4 delay too high: {delay}");
     }
 
     #[test]
     fn retry_backoff_ms_large_attempt_still_capped() {
-        // Very large attempt: bit-shift is capped at 10, so base = 500 * 1024 >> saturate to MAX_MS.
+        // Very large attempt: bit-shift is capped at 10, so base = 500 * 1024 → capped at 5000ms.
         let delay = retry_backoff_ms(100);
-        assert!(delay <= 5625, "large attempt delay exceeds cap: {delay}");
+        assert!(delay <= 5000, "large attempt delay exceeds cap: {delay}");
+    }
+
+    #[test]
+    fn retry_backoff_ms_all_attempts_within_cap() {
+        // SEC-002: full jitter is in [0, cap]. Verify no attempt returns a value above 5000ms.
+        for attempt in 0..5 {
+            let delay = retry_backoff_ms(attempt);
+            assert!(
+                delay <= 5000,
+                "attempt {attempt} delay out of range: {delay}"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_backoff_ms_is_non_deterministic() {
+        // SEC-002: full jitter uses rand — successive calls for the same attempt must not
+        // all return the same value (probability of 100 identical draws from [0, 500] is
+        // effectively zero for a properly seeded PRNG).
+        let samples: Vec<u64> = (0..100).map(|_| retry_backoff_ms(0)).collect();
+        let all_same = samples.windows(2).all(|w| w[0] == w[1]);
+        assert!(
+            !all_same,
+            "retry_backoff_ms returned identical values 100 times — jitter not applied"
+        );
     }
 
     // ── record_skill_outcomes in native tool path (issue #1436) ───────────────

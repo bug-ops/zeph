@@ -525,6 +525,8 @@ impl<C: Channel> Agent<C> {
 
             // Execute with retry for transient errors.
             let mut attempt = 0_usize;
+            let retry_start = std::time::Instant::now();
+            let max_retry_duration_secs = self.tool_orchestrator.max_retry_duration_secs;
             let result = loop {
                 let exec_result = tokio::select! {
                     r = self.tool_executor.execute_tool_call_erased(call).instrument(
@@ -547,6 +549,16 @@ impl<C: Channel> Agent<C> {
                         if e.kind() == zeph_tools::ErrorKind::Transient
                             && attempt < max_retries =>
                     {
+                        let elapsed_secs = retry_start.elapsed().as_secs();
+                        if max_retry_duration_secs > 0 && elapsed_secs >= max_retry_duration_secs {
+                            tracing::warn!(
+                                tool = %tc.name,
+                                elapsed_secs,
+                                max_retry_duration_secs,
+                                "tool retry budget exceeded, aborting retries"
+                            );
+                            break exec_result;
+                        }
                         attempt += 1;
                         let delay_ms = retry_backoff_ms(attempt - 1);
                         tracing::warn!(

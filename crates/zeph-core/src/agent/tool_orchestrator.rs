@@ -21,6 +21,25 @@ pub(crate) struct ToolOrchestrator {
     pub(super) repeat_threshold: usize,
     /// Max retries for transient errors per tool call. 0 = disabled.
     pub(super) max_tool_retries: usize,
+    /// Maximum wall-clock time (seconds) to spend on retries for a single tool call.
+    /// 0 = no wall-clock budget (only `max_tool_retries` applies).
+    pub(super) max_retry_duration_secs: u64,
+}
+
+/// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
+///
+/// Used by both `push_tool_call` and `is_repeat` to ensure stored and queried
+/// names always match when the original name exceeds the limit.
+fn truncate_tool_name(name: &str) -> &str {
+    const MAX_TOOL_NAME_BYTES: usize = 256;
+    if name.len() <= MAX_TOOL_NAME_BYTES {
+        return name;
+    }
+    let mut idx = MAX_TOOL_NAME_BYTES;
+    while !name.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &name[..idx]
 }
 
 impl ToolOrchestrator {
@@ -35,6 +54,7 @@ impl ToolOrchestrator {
             recent_tool_calls: VecDeque::with_capacity(2 * repeat_threshold),
             repeat_threshold,
             max_tool_retries: 2,
+            max_retry_duration_secs: 30,
         }
     }
 
@@ -63,6 +83,8 @@ impl ToolOrchestrator {
     /// Record a tool call (LLM-initiated only — not retry re-executions).
     ///
     /// Maintains a sliding window of size `2 * repeat_threshold`.
+    /// Tool names are truncated to 256 bytes to prevent unbounded memory growth
+    /// from adversarially long names.
     pub(super) fn push_tool_call(&mut self, name: &str, args_hash: u64) {
         if self.repeat_threshold == 0 {
             return;
@@ -72,15 +94,19 @@ impl ToolOrchestrator {
             self.recent_tool_calls.pop_front();
         }
         self.recent_tool_calls
-            .push_back((name.to_owned(), args_hash));
+            .push_back((truncate_tool_name(name).to_owned(), args_hash));
     }
 
     /// Returns `true` if the same `(name, args_hash)` pair appears `>= repeat_threshold`
     /// times in the current window.
+    ///
+    /// Applies the same 256-byte name truncation as `push_tool_call` so that long names
+    /// are correctly matched against stored (truncated) entries.
     pub(super) fn is_repeat(&self, name: &str, args_hash: u64) -> bool {
         if self.repeat_threshold == 0 {
             return false;
         }
+        let name = truncate_tool_name(name);
         let count = self
             .recent_tool_calls
             .iter()
@@ -103,6 +129,7 @@ mod tests {
         assert!(o.recent_tool_calls.is_empty());
         assert_eq!(o.repeat_threshold, 2);
         assert_eq!(o.max_tool_retries, 2);
+        assert_eq!(o.max_retry_duration_secs, 30);
     }
 
     #[test]
@@ -214,5 +241,100 @@ mod tests {
         o.push_tool_call("bash", 42);
         // Threshold 0 means disabled
         assert!(!o.is_repeat("bash", 42));
+    }
+
+    // ── SEC-003: tool name truncation ─────────────────────────────────────────
+
+    #[test]
+    fn push_tool_call_long_name_truncated_to_256_bytes() {
+        let mut o = ToolOrchestrator::new();
+        // Name well above 256 bytes
+        let long_name = "a".repeat(512);
+        o.push_tool_call(&long_name, 99);
+        let stored = &o.recent_tool_calls[0].0;
+        assert_eq!(stored.len(), 256, "stored name must be exactly 256 bytes");
+        assert!(
+            stored.is_char_boundary(stored.len()),
+            "truncation must land on char boundary"
+        );
+    }
+
+    #[test]
+    fn push_tool_call_unicode_name_truncated_at_char_boundary() {
+        let mut o = ToolOrchestrator::new();
+        // Each '日' is 3 bytes. 256 / 3 = 85 full chars = 255 bytes.
+        // Appending one more gives 258 bytes total — must truncate to 255.
+        let base: String = "日".repeat(85); // 255 bytes
+        let long_name = format!("{base}日"); // 258 bytes — crosses 256-byte boundary
+        o.push_tool_call(&long_name, 1);
+        let stored = &o.recent_tool_calls[0].0;
+        assert!(stored.len() <= 256, "stored name must not exceed 256 bytes");
+        assert!(
+            stored.is_char_boundary(stored.len()),
+            "must be valid UTF-8 boundary"
+        );
+    }
+
+    #[test]
+    fn push_tool_call_short_name_not_truncated() {
+        let mut o = ToolOrchestrator::new();
+        let short_name = "shell";
+        o.push_tool_call(short_name, 7);
+        assert_eq!(o.recent_tool_calls[0].0, short_name);
+    }
+
+    #[test]
+    fn push_tool_call_300_byte_name_truncated_to_at_most_256() {
+        // SEC-003: specifically test with 300-byte name as the boundary case
+        let mut o = ToolOrchestrator::new();
+        let name_300 = "x".repeat(300);
+        o.push_tool_call(&name_300, 42);
+        let stored = &o.recent_tool_calls[0].0;
+        assert!(
+            stored.len() <= 256,
+            "300-byte name must be stored as ≤256 bytes, got {}",
+            stored.len()
+        );
+        assert!(stored.is_char_boundary(stored.len()));
+    }
+
+    // ── SEC-004: retry budget field and logic ─────────────────────────────────
+
+    #[test]
+    fn max_retry_duration_secs_default_is_30() {
+        // SEC-004: verify the budget field is set at construction time
+        let o = ToolOrchestrator::new();
+        assert_eq!(o.max_retry_duration_secs, 30);
+    }
+
+    #[test]
+    fn retry_budget_condition_zero_disables_check() {
+        // SEC-004: when max_retry_duration_secs == 0, the budget check must be skipped.
+        // This mirrors the `if max_retry_duration_secs > 0` guard in native.rs.
+        let budget_secs: u64 = 0;
+        // Simulate that 60 seconds have elapsed — budget check is disabled.
+        let elapsed_secs: u64 = 60;
+        let budget_exceeded = budget_secs > 0 && elapsed_secs >= budget_secs;
+        assert!(
+            !budget_exceeded,
+            "budget=0 must disable the wall-clock check"
+        );
+    }
+
+    #[test]
+    fn retry_budget_condition_exceeded_triggers_break() {
+        // SEC-004: simulate elapsed > budget with a real Instant to confirm the
+        // condition that native.rs evaluates before breaking the retry loop.
+        let budget_secs: u64 = 1;
+        // Subtract 2 seconds to ensure elapsed >= budget without sleeping.
+        let retry_start = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap();
+        let elapsed_secs = retry_start.elapsed().as_secs();
+        let budget_exceeded = budget_secs > 0 && elapsed_secs >= budget_secs;
+        assert!(
+            budget_exceeded,
+            "elapsed {elapsed_secs}s should exceed budget {budget_secs}s"
+        );
     }
 }

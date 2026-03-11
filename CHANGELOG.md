@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- SEC-001: Replace `DefaultHasher` with a process-scoped `RandomState`-seeded SipHash-1-3 in `tool_args_hash()` to prevent adversarial hash collision bypasses of the repeat-detection window (#1399)
+- SEC-002: Replace `SystemTime::now().subsec_nanos()` jitter with `rand::rng().random_range()` in `retry_backoff_ms()` to eliminate predictable retry timing that could be exploited by an adversary (#1400)
+- SEC-003: Truncate tool names to 256 bytes at UTF-8 boundaries before storing in the `recent_tool_calls` sliding window to prevent unbounded memory growth from adversarially long names (#1401)
+- SEC-004: Add `max_retry_duration_secs` (default 30) wall-clock retry budget to `AgentConfig`; the retry loop in `handle_native_tool_calls()` breaks when the budget is exhausted even if attempts remain, preventing indefinite retry loops (#1402)
+
 ### Fixed
 
 - `McpLspProvider` was sending `"uri"` as the parameter key to all mcpls tool calls, but mcpls 0.3.4 expects `"file_path"`. All six methods (`hover`, `definition`, `references`, `diagnostics`, `document_symbols`, `code_actions`) are fixed. `code_actions` additionally now sends flat `start_line`/`start_character`/`end_line`/`end_character` fields instead of a nested `range` object, matching the mcpls `get_code_actions` schema. Fixes #1533.
