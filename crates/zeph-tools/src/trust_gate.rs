@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use crate::TrustLevel;
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
-use crate::permissions::{PermissionAction, PermissionPolicy};
+use crate::permissions::{AutonomyLevel, PermissionAction, PermissionPolicy};
 use crate::registry::ToolDef;
 
 /// Tools denied when a Quarantined skill is active.
@@ -86,6 +86,16 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
             TrustLevel::Trusted | TrustLevel::Verified => {}
         }
 
+        // PermissionPolicy was designed for the bash tool. In Supervised mode, tools
+        // without explicit rules default to Ask, which incorrectly blocks MCP/LSP tools.
+        // Skip the policy check for such tools — trust-level enforcement above is sufficient.
+        // ReadOnly mode is excluded: its allowlist is enforced inside policy.check().
+        if self.policy.autonomy_level() == AutonomyLevel::Supervised
+            && self.policy.rules().get(tool_id).is_none()
+        {
+            return Ok(());
+        }
+
         match self.policy.check(tool_id, input) {
             PermissionAction::Allow => Ok(()),
             PermissionAction::Ask => Err(ToolError::ConfirmationRequired {
@@ -137,6 +147,10 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         let input = call
             .params
             .get("command")
+            .or_else(|| call.params.get("file_path"))
+            .or_else(|| call.params.get("query"))
+            .or_else(|| call.params.get("url"))
+            .or_else(|| call.params.get("uri"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
         self.check_trust(&call.tool_id, input)?;
@@ -203,11 +217,8 @@ mod tests {
         gate.set_effective_trust(TrustLevel::Trusted);
 
         let result = gate.execute_tool_call(&make_call("bash")).await;
-        // Default policy returns Ask for unknown tools
-        assert!(matches!(
-            result,
-            Err(ToolError::ConfirmationRequired { .. })
-        ));
+        // Default policy has no rules for bash => skip policy check => Ok
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -235,11 +246,8 @@ mod tests {
         gate.set_effective_trust(TrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("file_read")).await;
-        // file_read is not in quarantine denied list, and policy has no rules for file_read => Ask
-        assert!(matches!(
-            result,
-            Err(ToolError::ConfirmationRequired { .. })
-        ));
+        // file_read is not in quarantine denied list, and policy has no rules for file_read => Ok
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -346,6 +354,78 @@ mod tests {
 
         let captured = gate.inner.captured.lock().unwrap();
         assert_eq!(*captured, Some(env));
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_supervised_no_rules_allows() {
+        // MCP tool with Supervised mode + from_legacy policy (no rules for MCP tool) => Ok
+        let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
+        gate.set_effective_trust(TrustLevel::Trusted);
+
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "file_path".into(),
+            serde_json::Value::String("/tmp/test.txt".into()),
+        );
+        let call = ToolCall {
+            tool_id: "mcp_filesystem__read_file".into(),
+            params,
+        };
+        let result = gate.execute_tool_call(&call).await;
+        assert!(
+            result.is_ok(),
+            "MCP tool should be allowed when no rules exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_with_explicit_deny_rule_blocked() {
+        // Bash with explicit Deny rule => Err(ToolCallBlocked)
+        let policy = crate::permissions::PermissionPolicy::from_legacy(&["sudo".into()], &[]);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
+        gate.set_effective_trust(TrustLevel::Trusted);
+
+        let result = gate
+            .execute_tool_call(&make_call_with_cmd("bash", "sudo apt install vim"))
+            .await;
+        assert!(
+            matches!(result, Err(ToolError::Blocked { .. })),
+            "bash with explicit deny rule should be blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_with_explicit_allow_rule_succeeds() {
+        // Tool with explicit Allow rules => Ok
+        let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
+        gate.set_effective_trust(TrustLevel::Trusted);
+
+        let result = gate
+            .execute_tool_call(&make_call_with_cmd("bash", "echo hello"))
+            .await;
+        assert!(
+            result.is_ok(),
+            "bash with explicit allow rule should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn readonly_denies_mcp_tool_not_in_allowlist() {
+        // ReadOnly mode must deny tools not in READONLY_TOOLS, even MCP ones.
+        let policy =
+            crate::permissions::PermissionPolicy::default().with_autonomy(AutonomyLevel::ReadOnly);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
+        gate.set_effective_trust(TrustLevel::Trusted);
+
+        let result = gate
+            .execute_tool_call(&make_call("mcpls_get_diagnostics"))
+            .await;
+        assert!(
+            matches!(result, Err(ToolError::Blocked { .. })),
+            "ReadOnly mode must deny non-allowlisted tools"
+        );
     }
 
     #[test]
