@@ -239,7 +239,7 @@ impl OpenAiProvider {
             let body = VisionChatRequest {
                 model: &self.model,
                 messages: vision_messages,
-                max_tokens: self.max_tokens,
+                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
                 stream: false,
                 reasoning,
                 temperature,
@@ -259,7 +259,7 @@ impl OpenAiProvider {
             let body = ChatRequest {
                 model: &self.model,
                 messages: &api_messages,
-                max_tokens: self.max_tokens,
+                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
                 stream: false,
                 reasoning,
                 temperature,
@@ -329,7 +329,7 @@ impl OpenAiProvider {
         let body = ChatRequest {
             model: &self.model,
             messages: &api_messages,
-            max_tokens: self.max_tokens,
+            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
             stream: true,
             reasoning,
             temperature,
@@ -490,7 +490,7 @@ impl LlmProvider for OpenAiProvider {
         let body = TypedChatRequest {
             model: &self.model,
             messages: &api_messages,
-            max_tokens: self.max_tokens,
+            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
             response_format: ResponseFormat {
                 r#type: "json_schema",
                 json_schema: JsonSchemaFormat {
@@ -583,7 +583,7 @@ impl LlmProvider for OpenAiProvider {
         let body = ToolChatRequest {
             model: &self.model,
             messages: &api_messages,
-            max_tokens: self.max_tokens,
+            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
             tools: &api_tools,
             reasoning,
             temperature,
@@ -699,7 +699,8 @@ struct VisionApiMessage {
 struct VisionChatRequest<'a> {
     model: &'a str,
     messages: Vec<VisionApiMessage>,
-    max_tokens: u32,
+    #[serde(flatten)]
+    completion_tokens: CompletionTokens,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -800,7 +801,8 @@ fn convert_messages(messages: &[Message]) -> Vec<ApiMessage<'_>> {
 struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [ApiMessage<'a>],
-    max_tokens: u32,
+    #[serde(flatten)]
+    completion_tokens: CompletionTokens,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -876,7 +878,8 @@ struct OpenAiFunction<'a> {
 struct ToolChatRequest<'a> {
     model: &'a str,
     messages: &'a [StructuredApiMessage],
-    max_tokens: u32,
+    #[serde(flatten)]
+    completion_tokens: CompletionTokens,
     tools: &'a [OpenAiTool<'a>],
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Reasoning<'a>>,
@@ -1064,8 +1067,32 @@ struct EmbeddingData {
 struct TypedChatRequest<'a> {
     model: &'a str,
     messages: &'a [ApiMessage<'a>],
-    max_tokens: u32,
+    #[serde(flatten)]
+    completion_tokens: CompletionTokens,
     response_format: ResponseFormat<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum CompletionTokens {
+    MaxTokens {
+        max_tokens: u32,
+    },
+    MaxCompletionTokens {
+        max_completion_tokens: u32,
+    },
+}
+
+impl CompletionTokens {
+    fn for_model(model: &str, max_tokens: u32) -> Self {
+        if model.starts_with("gpt-5") {
+            Self::MaxCompletionTokens {
+                max_completion_tokens: max_tokens,
+            }
+        } else {
+            Self::MaxTokens { max_tokens }
+        }
+    }
 }
 
 #[cfg(feature = "schema")]
@@ -1217,7 +1244,7 @@ mod tests {
         let body = ChatRequest {
             model: "gpt-5.2",
             messages: &msgs,
-            max_tokens: 1024,
+            completion_tokens: CompletionTokens::for_model("gpt-5.2", 1024),
             stream: false,
             reasoning: None,
             temperature: None,
@@ -1227,10 +1254,33 @@ mod tests {
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"model\":\"gpt-5.2\""));
-        assert!(json.contains("\"max_tokens\":1024"));
+        assert!(json.contains("\"max_completion_tokens\":1024"));
+        assert!(!json.contains("\"max_tokens\":1024"));
         assert!(json.contains("\"role\":\"user\""));
         assert!(!json.contains("\"stream\""));
         assert!(!json.contains("\"reasoning\""));
+    }
+
+    #[test]
+    fn chat_request_serialization_non_gpt5_uses_max_tokens() {
+        let msgs = [ApiMessage {
+            role: "user",
+            content: "hello",
+        }];
+        let body = ChatRequest {
+            model: "gpt-4o",
+            messages: &msgs,
+            completion_tokens: CompletionTokens::for_model("gpt-4o", 256),
+            stream: false,
+            reasoning: None,
+            temperature: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"max_tokens\":256"));
+        assert!(!json.contains("\"max_completion_tokens\""));
     }
 
     #[test]
@@ -1239,7 +1289,7 @@ mod tests {
         let body = ChatRequest {
             model: "gpt-5.2",
             messages: &msgs,
-            max_tokens: 100,
+            completion_tokens: CompletionTokens::for_model("gpt-5.2", 100),
             stream: true,
             reasoning: None,
             temperature: None,
@@ -1257,7 +1307,7 @@ mod tests {
         let body = ChatRequest {
             model: "gpt-5.2",
             messages: &msgs,
-            max_tokens: 100,
+            completion_tokens: CompletionTokens::for_model("gpt-5.2", 100),
             stream: false,
             reasoning: Some(Reasoning { effort: "medium" }),
             temperature: None,
@@ -1267,6 +1317,99 @@ mod tests {
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"reasoning\":{\"effort\":\"medium\"}"));
+    }
+
+    #[test]
+    fn vision_chat_request_serialization_uses_gpt5_completion_tokens() {
+        let body = VisionChatRequest {
+            model: "gpt-5-mini",
+            messages: vec![VisionApiMessage {
+                role: "user".to_owned(),
+                content: vec![
+                    OpenAiContentPart::Text {
+                        text: "describe".to_owned(),
+                    },
+                    OpenAiContentPart::ImageUrl {
+                        image_url: ImageUrlDetail {
+                            url: "data:image/png;base64,abc".to_owned(),
+                        },
+                    },
+                ],
+            }],
+            completion_tokens: CompletionTokens::for_model("gpt-5-mini", 55),
+            stream: false,
+            reasoning: None,
+            temperature: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"max_completion_tokens\":55"));
+        assert!(!json.contains("\"max_tokens\":55"));
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn typed_chat_request_serialization_uses_gpt5_completion_tokens() {
+        let msgs = [ApiMessage {
+            role: "user",
+            content: "hello",
+        }];
+        let body = TypedChatRequest {
+            model: "gpt-5-mini",
+            messages: &msgs,
+            completion_tokens: CompletionTokens::for_model("gpt-5-mini", 88),
+            response_format: ResponseFormat {
+                r#type: "json_schema",
+                json_schema: JsonSchemaFormat {
+                    name: "result",
+                    schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}}
+                    }),
+                    strict: true,
+                },
+            },
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"max_completion_tokens\":88"));
+        assert!(!json.contains("\"max_tokens\":88"));
+    }
+
+    #[test]
+    fn tool_chat_request_serialization_uses_gpt5_completion_tokens() {
+        let msgs = [StructuredApiMessage {
+            role: "user".to_owned(),
+            content: "hello".to_owned(),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let tools = [OpenAiTool {
+            r#type: "function",
+            function: OpenAiFunction {
+                name: "echo",
+                description: "Echo input",
+                parameters: &serde_json::json!({
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}}
+                }),
+            },
+        }];
+        let body = ToolChatRequest {
+            model: "gpt-5-mini",
+            messages: &msgs,
+            completion_tokens: CompletionTokens::for_model("gpt-5-mini", 77),
+            tools: &tools,
+            reasoning: None,
+            temperature: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"max_completion_tokens\":77"));
+        assert!(!json.contains("\"max_tokens\":77"));
     }
 
     #[test]
