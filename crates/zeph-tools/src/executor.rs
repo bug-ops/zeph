@@ -264,6 +264,17 @@ pub trait ToolExecutor: Send + Sync {
         std::future::ready(Ok(None))
     }
 
+    /// Execute a structured tool call bypassing confirmation checks.
+    ///
+    /// Called after the user has explicitly approved the tool invocation.
+    /// Default implementation delegates to `execute_tool_call`.
+    fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        self.execute_tool_call(call)
+    }
+
     /// Inject environment variables for the currently active skill. No-op by default.
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
 
@@ -292,6 +303,17 @@ pub trait ErasedToolExecutor: Send + Sync {
         &'a self,
         call: &'a ToolCall,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
+
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        // TrustGateExecutor overrides ToolExecutor::execute_tool_call_confirmed; the blanket
+        // impl for T: ToolExecutor routes this call through it via execute_tool_call_confirmed_erased.
+        // Other implementors fall back to execute_tool_call_erased (normal enforcement path).
+        self.execute_tool_call_erased(call)
+    }
 
     /// Inject environment variables for the currently active skill. No-op by default.
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
@@ -327,6 +349,14 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
         Box::pin(self.execute_tool_call(call))
+    }
+
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(self.execute_tool_call_confirmed(call))
     }
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
@@ -374,6 +404,15 @@ impl ToolExecutor for DynExecutor {
         let inner = std::sync::Arc::clone(&self.0);
         let call = call.clone();
         async move { inner.execute_tool_call_erased(&call).await }
+    }
+
+    fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let inner = std::sync::Arc::clone(&self.0);
+        let call = call.clone();
+        async move { inner.execute_tool_call_confirmed_erased(&call).await }
     }
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {

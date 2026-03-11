@@ -590,6 +590,41 @@ impl<C: Channel> Agent<C> {
                 }
             };
 
+            // Handle ConfirmationRequired: prompt the user and re-execute if approved.
+            // This must happen after the retry loop because ConfirmationRequired is a
+            // permanent error (no retry) and hits `result => break result` above.
+            let result =
+                if let Err(zeph_tools::ToolError::ConfirmationRequired { ref command }) = result {
+                    let prompt = if command.is_empty() {
+                        format!("Allow tool: {}?", tc.name)
+                    } else {
+                        format!("Allow command: {command}?")
+                    };
+                    if self.channel.confirm(&prompt).await? {
+                        // execute_tool_call_confirmed_erased bypasses check_trust; a second
+                        // ConfirmationRequired here indicates a misconfigured executor stack
+                        // and is treated as a regular tool error.
+                        self.tool_executor
+                            .execute_tool_call_confirmed_erased(call)
+                            .await
+                    } else {
+                        // User declined — not an error, just a cancellation.
+                        Ok(Some(zeph_tools::ToolOutput {
+                            tool_name: tc.name.clone(),
+                            summary: "[cancelled by user]".to_owned(),
+                            blocks_executed: 0,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                        }))
+                    }
+                } else {
+                    result
+                };
+
             if let Err(ref e) = result
                 && let Some(ref d) = self.debug_state.debug_dumper
             {

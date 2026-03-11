@@ -14,6 +14,10 @@ use crate::registry::ToolDef;
 /// Tools denied when a Quarantined skill is active.
 const QUARANTINE_DENIED: &[&str] = &["bash", "file_write", "web_scrape"];
 
+/// Tools always subject to `policy.check()` even when no explicit rules are configured.
+/// These are system-level tools where the default Ask behavior is intentional.
+const POLICY_ENFORCED_TOOLS: &[&str] = &["bash"];
+
 fn trust_to_u8(level: TrustLevel) -> u8 {
     match level {
         TrustLevel::Trusted => 0,
@@ -86,6 +90,14 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
             TrustLevel::Trusted | TrustLevel::Verified => {}
         }
 
+        // Skip policy check for non-system tools with no explicit rules configured.
+        // In Supervised mode, PermissionPolicy::check() defaults to Ask for unknown tools,
+        // which would incorrectly require confirmation for all MCP/LSP tools.
+        // POLICY_ENFORCED_TOOLS (e.g. "bash") are always checked even without explicit rules.
+        if !POLICY_ENFORCED_TOOLS.contains(&tool_id) && self.policy.rules().get(tool_id).is_none() {
+            return Ok(());
+        }
+
         match self.policy.check(tool_id, input) {
             PermissionAction::Allow => Ok(()),
             PermissionAction::Ask => Err(ToolError::ConfirmationRequired {
@@ -140,6 +152,30 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         self.check_trust(&call.tool_id, input)?;
+        self.inner.execute_tool_call(call).await
+    }
+
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        // Bypass check_trust: caller already obtained user approval.
+        // Still enforce Blocked/Quarantined trust level constraints.
+        match self.effective_trust() {
+            TrustLevel::Blocked => {
+                return Err(ToolError::Blocked {
+                    command: "all tools blocked (trust=blocked)".to_owned(),
+                });
+            }
+            TrustLevel::Quarantined => {
+                if QUARANTINE_DENIED.contains(&call.tool_id.as_str()) {
+                    return Err(ToolError::Blocked {
+                        command: format!("{} denied (trust=quarantined)", call.tool_id),
+                    });
+                }
+            }
+            TrustLevel::Trusted | TrustLevel::Verified => {}
+        }
         self.inner.execute_tool_call(call).await
     }
 
@@ -202,12 +238,28 @@ mod tests {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Trusted);
 
+        // bash is in POLICY_ENFORCED_TOOLS: even with default policy (no rules),
+        // policy.check() is called and returns Ask => ConfirmationRequired.
         let result = gate.execute_tool_call(&make_call("bash")).await;
-        // Default policy returns Ask for unknown tools
         assert!(matches!(
             result,
             Err(ToolError::ConfirmationRequired { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn bash_with_no_rules_supervised_still_asks() {
+        // bash must always go through policy.check() even with an empty rule set.
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Trusted);
+
+        let result = gate
+            .execute_tool_call(&make_call_with_cmd("bash", "echo hi"))
+            .await;
+        assert!(
+            matches!(result, Err(ToolError::ConfirmationRequired { .. })),
+            "bash with no explicit rules must still return ConfirmationRequired"
+        );
     }
 
     #[tokio::test]
@@ -234,12 +286,9 @@ mod tests {
         let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(TrustLevel::Quarantined);
 
+        // file_read is not in quarantine denied list, and policy has no rules for file_read => Ok
         let result = gate.execute_tool_call(&make_call("file_read")).await;
-        // file_read is not in quarantine denied list, and policy has no rules for file_read => Ask
-        assert!(matches!(
-            result,
-            Err(ToolError::ConfirmationRequired { .. })
-        ));
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -346,6 +395,23 @@ mod tests {
 
         let captured = gate.inner.captured.lock().unwrap();
         assert_eq!(*captured, Some(env));
+    }
+
+    #[tokio::test]
+    async fn supervised_non_bash_tool_not_blocked() {
+        // Bug #1544: in Supervised mode with from_legacy() policy, MCP/LSP tools that have no
+        // explicit rules must NOT return ConfirmationRequired.
+        let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
+        gate.set_effective_trust(TrustLevel::Trusted);
+
+        let result = gate
+            .execute_tool_call(&make_call("mcpls_get_diagnostics"))
+            .await;
+        assert!(
+            result.is_ok(),
+            "MCP tool without rules must not return ConfirmationRequired in Supervised mode"
+        );
     }
 
     #[test]
