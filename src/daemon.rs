@@ -256,7 +256,14 @@ pub(crate) async fn run_daemon(
             zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base_tool)),
         )));
 
-    let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
+    let mcp_registry = create_mcp_registry(
+        config,
+        &provider,
+        &mcp_tools,
+        &embed_model,
+        app.qdrant_ops(),
+    )
+    .await;
 
     let watchers = app.build_watchers();
     let _skill_watcher = watchers.skill_watcher;

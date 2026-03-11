@@ -83,14 +83,12 @@ impl std::fmt::Debug for McpToolRegistry {
 }
 
 impl McpToolRegistry {
-    /// # Errors
-    ///
-    /// Returns an error if the Qdrant client cannot be created.
-    pub fn new(qdrant_url: &str) -> Result<Self, McpError> {
-        let ops = QdrantOps::new(qdrant_url)?;
-        Ok(Self {
+    /// Create a `McpToolRegistry` from a pre-built `QdrantOps` instance.
+    #[must_use]
+    pub fn with_ops(ops: QdrantOps) -> Self {
+        Self {
             registry: EmbeddingRegistry::new(ops, COLLECTION_NAME, MCP_NAMESPACE),
-        })
+        }
     }
 
     /// Sync MCP tool embeddings with Qdrant. Computes delta and upserts only changed tools.
@@ -269,24 +267,22 @@ mod tests {
         assert!(dbg.contains("1"));
     }
 
+    fn make_registry(url: &str) -> McpToolRegistry {
+        let ops = QdrantOps::new(url).unwrap();
+        McpToolRegistry::with_ops(ops)
+    }
+
     #[test]
-    fn registry_new_valid_url() {
-        let result = McpToolRegistry::new("http://localhost:6334");
-        assert!(result.is_ok());
+    fn registry_construction_with_ops() {
+        let _registry = make_registry("http://localhost:6334");
     }
 
     #[test]
     fn registry_debug() {
-        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let registry = make_registry("http://localhost:6334");
         let dbg = format!("{registry:?}");
         assert!(dbg.contains("McpToolRegistry"));
         assert!(dbg.contains("zeph_mcp_tools"));
-    }
-
-    #[test]
-    fn registry_new_with_invalid_url_fails() {
-        let result = McpToolRegistry::new("not a valid url");
-        assert!(result.is_err());
     }
 
     #[test]
@@ -332,7 +328,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_empty_registry_returns_empty() {
-        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let registry = make_registry("http://localhost:6334");
         let embed_fn = |_: &str| -> EmbedFuture {
             Box::pin(async { Err(zeph_llm::LlmError::Other("no qdrant".into())) })
         };
@@ -342,7 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_with_embedding_failure_returns_empty() {
-        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let registry = make_registry("http://localhost:6334");
         let embed_fn = |_: &str| -> EmbedFuture {
             Box::pin(async {
                 Err(zeph_llm::LlmError::Other(
@@ -356,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_with_zero_limit() {
-        let registry = McpToolRegistry::new("http://localhost:6334").unwrap();
+        let registry = make_registry("http://localhost:6334");
         let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![0.1, 0.2, 0.3]) }) };
         let results = registry.search("query", 0, embed_fn).await;
         assert!(results.is_empty());
@@ -364,7 +360,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_with_unreachable_qdrant_fails() {
-        let mut registry = McpToolRegistry::new("http://127.0.0.1:1").unwrap();
+        let mut registry = make_registry("http://127.0.0.1:1");
         let tools = vec![make_tool("server", "tool")];
         let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![0.1, 0.2, 0.3]) }) };
         let result = registry.sync(&tools, "test-model", embed_fn).await;
@@ -373,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_with_empty_tools_and_unreachable_qdrant_fails() {
-        let mut registry = McpToolRegistry::new("http://127.0.0.1:1").unwrap();
+        let mut registry = make_registry("http://127.0.0.1:1");
         let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![0.1, 0.2, 0.3]) }) };
         let result = registry.sync(&[], "test-model", embed_fn).await;
         assert!(result.is_err());

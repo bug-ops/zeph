@@ -818,7 +818,7 @@ async fn create_mcp_registry_when_semantic_disabled() {
     ));
 
     let mcp_tools = vec![];
-    let registry = create_mcp_registry(&config, &provider, &mcp_tools, "test-model").await;
+    let registry = create_mcp_registry(&config, &provider, &mcp_tools, "test-model", None).await;
     assert!(registry.is_none());
 }
 
@@ -843,6 +843,7 @@ fn skill_paths_includes_managed_dir() {
         config,
         config_path: PathBuf::from("/nonexistent/config.toml"),
         vault: Box::new(EnvVaultProvider),
+        qdrant_ops: None,
     };
     let paths = builder.skill_paths();
     let managed = managed_skills_dir();
@@ -861,6 +862,7 @@ fn skill_paths_does_not_duplicate_managed_dir() {
         config,
         config_path: PathBuf::from("/nonexistent/config.toml"),
         vault: Box::new(EnvVaultProvider),
+        qdrant_ops: None,
     };
     let paths = builder.skill_paths();
     let count = paths.iter().filter(|p| p == &&managed).count();
@@ -886,18 +888,44 @@ async fn create_skill_matcher_when_semantic_disabled() {
         "embed".into(),
     ));
 
-    let memory = SemanticMemory::new(
+    let memory = SemanticMemory::with_sqlite_backend_and_pool_size(
         &tmp_path,
-        &config.memory.qdrant_url,
         provider.clone(),
         &config.llm.embedding_model,
+        config.memory.semantic.vector_weight,
+        config.memory.semantic.keyword_weight,
+        1,
     )
     .await
     .unwrap();
 
     let meta: Vec<&SkillMeta> = vec![];
-    let result = create_skill_matcher(&config, &provider, &meta, &memory, "test-model").await;
+    let result = create_skill_matcher(&config, &provider, &meta, &memory, "test-model", None).await;
     assert!(result.is_none());
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn appbuilder_qdrant_ops_invalid_url_returns_err() {
+    // Verify the CRIT-04 hard-error path: VectorBackend::Qdrant with an invalid URL
+    // must produce an error, not silently yield None.
+    // This mirrors the logic inside AppBuilder::new() without the vault/config-file overhead.
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.vector_backend = crate::config::VectorBackend::Qdrant;
+    config.memory.qdrant_url = "not a valid url".into();
+
+    let result = zeph_memory::QdrantOps::new(&config.memory.qdrant_url);
+    assert!(
+        result.is_err(),
+        "QdrantOps::new with invalid URL must fail (CRIT-04)"
+    );
+}
+
+#[test]
+fn appbuilder_qdrant_ops_valid_url_succeeds() {
+    // Complement: a well-formed URL must succeed even without a live server
+    // (connection is lazy — only established on first RPC).
+    let result = zeph_memory::QdrantOps::new("http://localhost:6334");
+    assert!(result.is_ok(), "QdrantOps::new with valid URL must succeed");
 }
