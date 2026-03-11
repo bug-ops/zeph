@@ -2333,14 +2333,16 @@ mod tests {
 
         let result = p.chat_with_tools(&messages, &tools).await.unwrap();
         match result {
-            ChatResponse::ToolUse { text, tool_calls, .. } => {
+            ChatResponse::ToolUse {
+                text, tool_calls, ..
+            } => {
                 assert_eq!(text, None);
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "call_123");
                 assert_eq!(tool_calls[0].name, "bash");
                 assert_eq!(tool_calls[0].input, serde_json::json!({"command": "ls"}));
             }
-            other => panic!("expected ToolUse response, got {other:?}"),
+            other @ ChatResponse::Text(_) => panic!("expected ToolUse response, got {other:?}"),
         }
     }
 
