@@ -422,6 +422,15 @@ impl ToolExecutor for DynExecutor {
         async move { inner.execute_tool_call_erased(&call).await }
     }
 
+    fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let inner = std::sync::Arc::clone(&self.0);
+        let call = call.clone();
+        async move { inner.execute_tool_call_confirmed_erased(&call).await }
+    }
+
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         ErasedToolExecutor::set_skill_env(self.0.as_ref(), env);
     }
