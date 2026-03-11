@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_llm::any::AnyProvider;
+use zeph_memory::QdrantOps;
 
 use crate::config::Config;
 
@@ -43,21 +44,19 @@ pub async fn create_mcp_registry(
     provider: &AnyProvider,
     mcp_tools: &[zeph_mcp::McpTool],
     embedding_model: &str,
+    qdrant_ops: Option<&QdrantOps>,
 ) -> Option<zeph_mcp::McpToolRegistry> {
     if !config.memory.semantic.enabled {
         return None;
     }
-    match zeph_mcp::McpToolRegistry::new(&config.memory.qdrant_url) {
-        Ok(mut reg) => {
-            let embed_fn = provider.embed_fn();
-            if let Err(e) = reg.sync(mcp_tools, embedding_model, &embed_fn).await {
-                tracing::warn!("MCP tool embedding sync failed: {e:#}");
-            }
-            Some(reg)
-        }
-        Err(e) => {
-            tracing::warn!("MCP tool registry unavailable: {e:#}");
-            None
-        }
+    let Some(ops) = qdrant_ops else {
+        tracing::debug!("MCP tool registry skipped: no Qdrant backend configured");
+        return None;
+    };
+    let mut reg = zeph_mcp::McpToolRegistry::with_ops(ops.clone());
+    let embed_fn = provider.embed_fn();
+    if let Err(e) = reg.sync(mcp_tools, embedding_model, &embed_fn).await {
+        tracing::warn!("MCP tool embedding sync failed: {e:#}");
     }
+    Some(reg)
 }

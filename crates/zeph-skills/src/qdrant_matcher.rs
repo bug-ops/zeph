@@ -55,14 +55,12 @@ impl std::fmt::Debug for QdrantSkillMatcher {
 }
 
 impl QdrantSkillMatcher {
-    /// # Errors
-    ///
-    /// Returns an error if the Qdrant client cannot be created.
-    pub fn new(qdrant_url: &str) -> Result<Self, SkillError> {
-        let ops = QdrantOps::new(qdrant_url)?;
-        Ok(Self {
+    /// Create a `QdrantSkillMatcher` from a pre-built `QdrantOps` instance.
+    #[must_use]
+    pub fn with_ops(ops: QdrantOps) -> Self {
+        Self {
             registry: EmbeddingRegistry::new(ops, COLLECTION_NAME, SKILL_NAMESPACE),
-        })
+        }
     }
 
     /// Sync skill embeddings with Qdrant. Computes delta and upserts only changed skills.
@@ -194,15 +192,19 @@ mod tests {
         assert_eq!(payload["key"], "my-skill");
     }
 
+    fn make_matcher() -> QdrantSkillMatcher {
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        QdrantSkillMatcher::with_ops(ops)
+    }
+
     #[test]
-    fn construction_valid_url() {
-        let result = QdrantSkillMatcher::new("http://localhost:6334");
-        assert!(result.is_ok());
+    fn construction_with_ops() {
+        let _matcher = make_matcher();
     }
 
     #[test]
     fn debug_format() {
-        let matcher = QdrantSkillMatcher::new("http://localhost:6334").unwrap();
+        let matcher = make_matcher();
         let dbg = format!("{matcher:?}");
         assert!(dbg.contains("QdrantSkillMatcher"));
         assert!(dbg.contains("zeph_skills"));
@@ -229,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn match_skills_embed_fail_returns_empty() {
-        let matcher = QdrantSkillMatcher::new("http://localhost:6334").unwrap();
+        let matcher = make_matcher();
         let metas = vec![make_meta("s", "desc")];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let embed_fn = |_: &str| -> EmbedFuture {

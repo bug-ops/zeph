@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Share a single `QdrantOps` instance (one gRPC channel) across all subsystems at startup: `AppBuilder::new()` constructs `QdrantOps` once when `vector_backend = "qdrant"` and propagates it via clone (O(1) `Arc` bump) to `SemanticMemory`, `QdrantSkillMatcher`, `McpToolRegistry`, and `CodeStore`. Previously 4+ independent gRPC channels were created. Invalid `qdrant_url` when `vector_backend = "qdrant"` is now a hard startup error instead of a silent `None`. URL-based constructors (`QdrantSkillMatcher::new`, `McpToolRegistry::new`, `CodeStore::new`) are replaced by `::with_ops(ops)` variants. (#1337)
 - Consolidate `is_private_ip` (SSRF IP check) into `zeph-tools::net::is_private_ip` (canonical superset with CGNAT `100.64.0.0/10`); update `zeph-mcp`, `zeph-acp`, `zeph-tools/scrape` to use it; upgrade A2A's own copy with CGNAT range (DEDUP-01)
 - Consolidate `cosine_similarity` into `zeph-memory::math::cosine_similarity` (single-pass loop, length guard); update all callers in `zeph-memory` and `zeph-skills` (DEDUP-02)
 - Add `text::truncate_chars(&str, usize) -> &str` to `zeph-core::text`; replace `context/mod.rs::truncate_chars` with a re-export of the canonical version (DEDUP-03)

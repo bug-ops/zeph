@@ -95,6 +95,8 @@ use zeph_index::{
     store::CodeStore,
     watcher::IndexWatcher,
 };
+#[cfg(feature = "index")]
+use zeph_memory::QdrantOps;
 
 pub(crate) fn spawn_ctrl_c_handler(
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
@@ -188,7 +190,7 @@ pub(crate) fn apply_quarantine_provider<C: Channel>(
 pub(crate) async fn apply_code_index<C: Channel>(
     agent: Agent<C>,
     config: &IndexConfig,
-    qdrant_url: &str,
+    qdrant_ops: Option<QdrantOps>,
     provider: zeph_llm::any::AnyProvider,
     pool: sqlx::SqlitePool,
     provider_has_tools: bool,
@@ -201,7 +203,10 @@ pub(crate) async fn apply_code_index<C: Channel>(
     }
 
     let init = async {
-        let store = CodeStore::new(qdrant_url, pool)?;
+        let ops = qdrant_ops.ok_or_else(|| {
+            anyhow::anyhow!("code index requires Qdrant backend (vector_backend = \"qdrant\")")
+        })?;
+        let store = CodeStore::with_ops(ops, pool);
         let provider_arc = std::sync::Arc::new(provider);
         let retrieval_config = RetrievalConfig {
             max_chunks: config.max_chunks,

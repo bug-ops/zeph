@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use zeph_llm::any::AnyProvider;
+use zeph_memory::QdrantOps;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
@@ -17,19 +18,19 @@ pub async fn create_skill_matcher(
     meta: &[&SkillMeta],
     memory: &SemanticMemory,
     embedding_model: &str,
+    qdrant_ops: Option<&QdrantOps>,
 ) -> Option<SkillMatcherBackend> {
     let embed_fn = provider.embed_fn();
 
-    if config.memory.semantic.enabled && memory.is_vector_store_connected().await {
-        match QdrantSkillMatcher::new(&config.memory.qdrant_url) {
-            Ok(mut qm) => match qm.sync(meta, embedding_model, &embed_fn).await {
-                Ok(_) => return Some(SkillMatcherBackend::Qdrant(qm)),
-                Err(e) => {
-                    tracing::warn!("Qdrant skill sync failed, falling back to in-memory: {e:#}");
-                }
-            },
+    if config.memory.semantic.enabled
+        && memory.is_vector_store_connected().await
+        && let Some(ops) = qdrant_ops
+    {
+        let mut qm = QdrantSkillMatcher::with_ops(ops.clone());
+        match qm.sync(meta, embedding_model, &embed_fn).await {
+            Ok(_) => return Some(SkillMatcherBackend::Qdrant(qm)),
             Err(e) => {
-                tracing::warn!("Qdrant client creation failed, falling back to in-memory: {e:#}");
+                tracing::warn!("Qdrant skill sync failed, falling back to in-memory: {e:#}");
             }
         }
     }

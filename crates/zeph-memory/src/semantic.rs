@@ -167,6 +167,9 @@ impl SemanticMemory {
     ///
     /// Qdrant connection is best-effort: if unavailable, semantic search is disabled.
     ///
+    /// For `AppBuilder` bootstrap, prefer [`SemanticMemory::with_qdrant_ops`] to share
+    /// a single gRPC channel across all subsystems.
+    ///
     /// # Errors
     ///
     /// Returns an error if `SQLite` cannot be initialized.
@@ -180,6 +183,9 @@ impl SemanticMemory {
     }
 
     /// Create a new `SemanticMemory` with custom vector/keyword weights for hybrid search.
+    ///
+    /// For `AppBuilder` bootstrap, prefer [`SemanticMemory::with_qdrant_ops`] to share
+    /// a single gRPC channel across all subsystems.
     ///
     /// # Errors
     ///
@@ -205,6 +211,9 @@ impl SemanticMemory {
     }
 
     /// Create a new `SemanticMemory` with custom weights and configurable pool size.
+    ///
+    /// For `AppBuilder` bootstrap, prefer [`SemanticMemory::with_qdrant_ops`] to share
+    /// a single gRPC channel across all subsystems.
     ///
     /// # Errors
     ///
@@ -232,6 +241,46 @@ impl SemanticMemory {
         Ok(Self {
             sqlite,
             qdrant,
+            provider,
+            embedding_model: embedding_model.into(),
+            vector_weight,
+            keyword_weight,
+            temporal_decay_enabled: false,
+            temporal_decay_half_life_days: 30,
+            mmr_enabled: false,
+            mmr_lambda: 0.7,
+            token_counter: Arc::new(TokenCounter::new()),
+            graph_store: None,
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    /// Create a `SemanticMemory` from a pre-built `QdrantOps` instance.
+    ///
+    /// Use this at bootstrap to share one `QdrantOps` (and thus one gRPC channel)
+    /// across all subsystems. The `ops` is consumed and wrapped inside `EmbeddingStore`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot be initialized.
+    pub async fn with_qdrant_ops(
+        sqlite_path: &str,
+        ops: crate::QdrantOps,
+        provider: AnyProvider,
+        embedding_model: &str,
+        vector_weight: f64,
+        keyword_weight: f64,
+        pool_size: u32,
+    ) -> Result<Self, MemoryError> {
+        let sqlite = SqliteStore::with_pool_size(sqlite_path, pool_size).await?;
+        let pool = sqlite.pool().clone();
+        let store = EmbeddingStore::with_store(Box::new(ops), pool);
+
+        Ok(Self {
+            sqlite,
+            qdrant: Some(Arc::new(store)),
             provider,
             embedding_model: embedding_model.into(),
             vector_weight,
@@ -1632,6 +1681,19 @@ mod tests {
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    #[tokio::test]
+    async fn with_qdrant_ops_constructs_successfully() {
+        let ops = crate::QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let provider = test_provider();
+        let result =
+            SemanticMemory::with_qdrant_ops(":memory:", ops, provider, "test-model", 0.7, 0.3, 1)
+                .await;
+        assert!(
+            result.is_ok(),
+            "with_qdrant_ops must succeed (lazy TCP connect)"
+        );
     }
 
     #[tokio::test]

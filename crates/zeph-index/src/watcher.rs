@@ -74,14 +74,15 @@ mod tests {
 
     use zeph_llm::any::AnyProvider;
     use zeph_llm::ollama::OllamaProvider;
+    use zeph_memory::QdrantOps;
 
     async fn create_test_pool() -> sqlx::SqlitePool {
         sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
     }
 
     async fn create_test_indexer() -> Arc<CodeIndexer> {
-        let store = crate::store::CodeStore::new("http://localhost:6334", create_test_pool().await)
-            .unwrap();
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, create_test_pool().await);
         let provider = AnyProvider::Ollama(OllamaProvider::new(
             "http://127.0.0.1:1",
             "test".into(),

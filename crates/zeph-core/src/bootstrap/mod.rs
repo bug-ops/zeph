@@ -28,6 +28,7 @@ use tokio::sync::{mpsc, watch};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::GraphStore;
+use zeph_memory::QdrantOps;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::matcher::SkillMatcherBackend;
@@ -43,6 +44,7 @@ pub struct AppBuilder {
     config: Config,
     config_path: PathBuf,
     vault: Box<dyn VaultProvider>,
+    qdrant_ops: Option<QdrantOps>,
 }
 
 pub struct VaultArgs {
@@ -94,11 +96,26 @@ impl AppBuilder {
 
         config.resolve_secrets(vault.as_ref()).await?;
 
+        let qdrant_ops = match config.memory.vector_backend {
+            crate::config::VectorBackend::Qdrant => {
+                let ops = QdrantOps::new(&config.memory.qdrant_url).map_err(|e| {
+                    anyhow::anyhow!("invalid qdrant_url '{}': {e}", config.memory.qdrant_url)
+                })?;
+                Some(ops)
+            }
+            crate::config::VectorBackend::Sqlite => None,
+        };
+
         Ok(Self {
             config,
             config_path,
             vault,
+            qdrant_ops,
         })
+    }
+
+    pub fn qdrant_ops(&self) -> Option<&QdrantOps> {
+        self.qdrant_ops.as_ref()
     }
 
     pub fn config(&self) -> &Config {
@@ -164,6 +181,11 @@ impl AppBuilder {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot be initialized or if `vector_backend = Qdrant`
+    /// but `qdrant_ops` is `None` (invariant violation — should not happen if `AppBuilder::new`
+    /// succeeded).
     pub async fn build_memory(&self, provider: &AnyProvider) -> anyhow::Result<SemanticMemory> {
         let embed_model = self.embedding_model();
         let mut memory = match self.config.memory.vector_backend {
@@ -179,9 +201,14 @@ impl AppBuilder {
                 .await?
             }
             crate::config::VectorBackend::Qdrant => {
-                SemanticMemory::with_weights_and_pool_size(
+                let ops = self
+                    .qdrant_ops
+                    .as_ref()
+                    .context("qdrant_ops must be Some when vector_backend = Qdrant")?
+                    .clone();
+                SemanticMemory::with_qdrant_ops(
                     &self.config.memory.sqlite_path,
-                    &self.config.memory.qdrant_url,
+                    ops,
                     provider.clone(),
                     &embed_model,
                     self.config.memory.semantic.vector_weight,
@@ -218,7 +245,15 @@ impl AppBuilder {
         memory: &SemanticMemory,
     ) -> Option<SkillMatcherBackend> {
         let embed_model = self.embedding_model();
-        create_skill_matcher(&self.config, provider, meta, memory, &embed_model).await
+        create_skill_matcher(
+            &self.config,
+            provider,
+            meta,
+            memory,
+            &embed_model,
+            self.qdrant_ops.as_ref(),
+        )
+        .await
     }
 
     pub fn build_registry(&self) -> SkillRegistry {

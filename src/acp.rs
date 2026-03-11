@@ -207,7 +207,14 @@ async fn build_acp_deps(
         zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
     );
 
-    let mcp_registry = create_mcp_registry(config, &provider, &mcp_tools, &embed_model).await;
+    let mcp_registry = create_mcp_registry(
+        config,
+        &provider,
+        &mcp_tools,
+        &embed_model,
+        app.qdrant_ops(),
+    )
+    .await;
     let summary_provider = app.build_summary_provider();
     let skill_paths = app.skill_paths();
     let acp_project_rules = collect_project_rules(&skill_paths);

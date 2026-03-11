@@ -43,17 +43,14 @@ pub struct SearchHit {
 }
 
 impl CodeStore {
-    /// # Errors
-    ///
-    /// Returns an error if the `Qdrant` client fails to connect.
-    pub fn new(qdrant_url: &str, pool: sqlx::SqlitePool) -> Result<Self> {
-        let ops = QdrantOps::new(qdrant_url)
-            .map_err(|e| crate::error::IndexError::Other(e.to_string()))?;
-        Ok(Self {
+    /// Create a `CodeStore` from a pre-built `QdrantOps` instance.
+    #[must_use]
+    pub fn with_ops(ops: QdrantOps, pool: sqlx::SqlitePool) -> Self {
+        Self {
             ops,
             collection: CODE_COLLECTION.into(),
             pool,
-        })
+        }
     }
 
     /// Create collection with INT8 scalar quantization if it doesn't exist.
