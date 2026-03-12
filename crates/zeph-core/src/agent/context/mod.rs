@@ -1345,6 +1345,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_prepare_context_preserves_system_prompt_paths() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(4096, 0.20, 0.80, 4, 0)
+            .with_redact_credentials(true)
+            .with_working_dir("/Users/dev/project");
+
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "debug /Users/dev/project/src/main.rs".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        agent
+            .rebuild_system_prompt("why is ACP not starting?")
+            .await;
+        agent
+            .prepare_context("why is ACP not starting?")
+            .await
+            .unwrap();
+
+        let system_msg = agent.messages.first().expect("system prompt must exist");
+        assert_eq!(system_msg.role, Role::System);
+        assert!(
+            system_msg
+                .content
+                .contains("working_directory: /Users/dev/project"),
+            "system prompt must keep the real working directory"
+        );
+        assert!(
+            !system_msg.content.contains("[PATH]"),
+            "system prompt must not leak placeholder paths into tool instructions"
+        );
+
+        let user_msg = agent
+            .messages
+            .iter()
+            .find(|m| m.role == Role::User)
+            .expect("user message must exist");
+        assert!(
+            user_msg.content.contains("[PATH]"),
+            "user history should still be scrubbed"
+        );
+        assert!(
+            !user_msg.content.contains("/Users/dev/project"),
+            "user history must not keep the absolute path"
+        );
+    }
+
+    #[tokio::test]
     async fn test_prepare_context_no_scrub_when_redact_disabled() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
@@ -1373,6 +1428,27 @@ mod tests {
         assert_eq!(
             user_msg.content, original,
             "content must be unchanged when redact disabled"
+        );
+    }
+
+    #[test]
+    fn correction_prompt_does_not_replay_bad_path_commands() {
+        let note = crate::agent::Agent::<MockChannel>::format_correction_note(
+            "cd /Users/m/dev/zeph && grep -n \"acp\" Cargo.toml | head -40",
+            "Use the current repository and avoid hard-coded absolute paths.",
+        );
+
+        assert!(
+            !note.contains("cd /Users/m/dev/zeph"),
+            "correction prompt must not replay the faulty absolute-path command"
+        );
+        assert!(
+            !note.contains("[PATH]"),
+            "correction prompt must not inject literal path placeholders"
+        );
+        assert!(
+            note.contains("Use the current repository"),
+            "correction prompt must preserve the user correction guidance"
         );
     }
 

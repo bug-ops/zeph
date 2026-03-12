@@ -1456,16 +1456,16 @@ mod tests {
                 tokio::task::yield_now().await;
 
                 // Writing again after release starts a fresh pump — should succeed.
-                let (reply_tx_again, reply_rx_again) = oneshot::channel();
+                let (fresh_reply, write_result) = oneshot::channel();
                 tx.send(TerminalMessage::WriteStdin(StdinWriteRequest {
                     session_id: sid.clone(),
                     terminal_id: tid.clone(),
                     data: b"after release\n".to_vec(),
-                    reply: reply_tx_again,
+                    reply: fresh_reply,
                 }))
                 .unwrap();
                 // Fresh pump: send must succeed (Ok).
-                reply_rx_again.await.unwrap().unwrap();
+                write_result.await.unwrap().unwrap();
             })
             .await;
     }

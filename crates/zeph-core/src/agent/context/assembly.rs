@@ -120,6 +120,16 @@ impl<C: Channel> Agent<C> {
         Ok(Some(Message::from_legacy(Role::System, body)))
     }
 
+    pub(super) fn format_correction_note(_original_output: &str, correction_text: &str) -> String {
+        // Never replay the faulty assistant/tool output itself into future prompts.
+        // If it contained a bad command with an absolute path, path redaction would turn it
+        // into a literal placeholder like `[PATH]` that the model may copy verbatim.
+        format!(
+            "- Past user correction: \"{}\"",
+            super::truncate_chars(&scrub_content(correction_text), 200)
+        )
+    }
+
     async fn fetch_corrections(
         memory_state: &MemoryState,
         query: &str,
@@ -138,13 +148,11 @@ impl<C: Channel> Agent<C> {
         }
         let mut text = String::from(CORRECTIONS_PREFIX);
         for c in &corrections {
-            use std::fmt::Write;
-            let _ = writeln!(
-                text,
-                "- When you said: \"{}…\" → User corrected: \"{}\"",
-                super::truncate_chars(&scrub_content(&c.original_output), 80),
-                super::truncate_chars(&scrub_content(&c.correction_text), 200),
-            );
+            text.push_str(&Self::format_correction_note(
+                &c.original_output,
+                &c.correction_text,
+            ));
+            text.push('\n');
         }
         Ok(Some(Message::from_legacy(Role::System, text)))
     }
@@ -713,6 +721,9 @@ impl<C: Channel> Agent<C> {
 
         if self.runtime.redact_credentials {
             for msg in &mut self.messages {
+                if msg.role == Role::System {
+                    continue;
+                }
                 if let Cow::Owned(s) = scrub_content(&msg.content) {
                     msg.content = s;
                 }

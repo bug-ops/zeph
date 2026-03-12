@@ -19,7 +19,7 @@ fn markdown_conversion(c: &mut Criterion) {
     let mut group = c.benchmark_group("markdown_to_telegram");
 
     // Test various input sizes (typical message sizes)
-    for size in [100, 500, 1000, 5000, 10000].iter() {
+    for size in &[100, 500, 1000, 5000, 10000] {
         let input = generate_markdown(*size);
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::new("typical", size), &input, |b, input| {
@@ -36,7 +36,7 @@ fn escaping_heavy(c: &mut Criterion) {
     // Text with many special characters that need escaping
     let special_chars = "Text with special: . ! - + = | { } [ ] ( ) ~ ` > # * _ \\ ";
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         let input = special_chars.repeat(*size / special_chars.len() + 1)[..*size].to_string();
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(
@@ -57,7 +57,7 @@ fn code_blocks(c: &mut Criterion) {
     // Large code blocks with minimal escaping
     let code_pattern = "```rust\nfn main() {\n    println!(\"Hello, world!\");\n}\n```\n\n";
 
-    for size in [500, 2000, 5000].iter() {
+    for size in &[500, 2000, 5000] {
         let input = code_pattern.repeat(*size / code_pattern.len() + 1)[..*size].to_string();
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::new("code", size), &input, |b, input| {
@@ -99,7 +99,7 @@ fn mixed_formatting(c: &mut Criterion) {
                  - List item 2 with *italic*\n\n\
                  ```\ncode block\nwith multiple lines\n```\n\n";
 
-    for size in [500, 2000, 5000].iter() {
+    for size in &[500, 2000, 5000] {
         let input = mixed.repeat(*size / mixed.len() + 1)[..*size].to_string();
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::new("mixed", size), &input, |b, input| {
@@ -132,7 +132,7 @@ fn plain_text_baseline(c: &mut Criterion) {
     let mut group = c.benchmark_group("baseline_plain_text");
 
     // Plain text without special formatting (minimal processing)
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         let input = "Plain text without any special formatting or characters that need escaping besides spaces and letters"
             .repeat(*size / 100 + 1)[..*size].to_string();
         group.throughput(Throughput::Bytes(*size as u64));

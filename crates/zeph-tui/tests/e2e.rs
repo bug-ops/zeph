@@ -22,7 +22,7 @@ fn spawn_tui() -> OsSession {
 }
 
 #[test]
-#[ignore] // requires full build + config
+#[ignore = "requires full build and TUI runtime config"]
 fn tui_shows_splash_on_startup() {
     let mut session = spawn_tui();
     session
@@ -33,7 +33,7 @@ fn tui_shows_splash_on_startup() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires interactive TUI process"]
 fn tui_quit_with_q() {
     let mut session = spawn_tui();
     session
@@ -53,7 +53,7 @@ fn tui_quit_with_q() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires interactive TUI process"]
 fn tui_ctrl_c_exits() {
     let mut session = spawn_tui();
     session
