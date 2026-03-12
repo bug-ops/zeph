@@ -352,6 +352,7 @@ rate_limit = 60
 [acp]
 max_sessions = 4                   # Max concurrent ACP sessions; LRU eviction when exceeded (default: 4)
 session_idle_timeout_secs = 1800   # Idle session reaper timeout in seconds (default: 1800)
+broadcast_capacity = 256           # Skill/config reload broadcast backlog shared by ACP sessions (default: 256)
 # permission_file = "~/.config/zeph/acp-permissions.toml"  # Path to persisted permission decisions (default: ~/.config/zeph/acp-permissions.toml)
 # auth_bearer_token = ""           # Bearer token for ACP HTTP/WS auth (env: ZEPH_ACP_AUTH_TOKEN, CLI: --acp-auth-token); omit for open mode (local use only)
 discovery_enabled = true           # Expose GET /.well-known/acp.json manifest endpoint (env: ZEPH_ACP_DISCOVERY_ENABLED, default: true)

@@ -1714,6 +1714,10 @@ fn default_acp_session_idle_timeout_secs() -> u64 {
     1800
 }
 
+fn default_acp_broadcast_capacity() -> usize {
+    256
+}
+
 fn default_acp_transport() -> AcpTransport {
     AcpTransport::Stdio
 }
@@ -1747,6 +1751,8 @@ pub struct AcpConfig {
     pub max_sessions: usize,
     #[serde(default = "default_acp_session_idle_timeout_secs")]
     pub session_idle_timeout_secs: u64,
+    #[serde(default = "default_acp_broadcast_capacity")]
+    pub broadcast_capacity: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_file: Option<std::path::PathBuf>,
     /// List of `{provider}:{model}` identifiers advertised to the IDE for model switching.
@@ -1849,6 +1855,7 @@ impl Default for AcpConfig {
             agent_version: default_acp_agent_version(),
             max_sessions: default_acp_max_sessions(),
             session_idle_timeout_secs: default_acp_session_idle_timeout_secs(),
+            broadcast_capacity: default_acp_broadcast_capacity(),
             permission_file: None,
             available_models: Vec::new(),
             transport: default_acp_transport(),
@@ -1868,6 +1875,7 @@ impl std::fmt::Debug for AcpConfig {
             .field("agent_version", &self.agent_version)
             .field("max_sessions", &self.max_sessions)
             .field("session_idle_timeout_secs", &self.session_idle_timeout_secs)
+            .field("broadcast_capacity", &self.broadcast_capacity)
             .field("permission_file", &self.permission_file)
             .field("available_models", &self.available_models)
             .field("transport", &self.transport)
@@ -2573,7 +2581,11 @@ mod tests {
         let toml_str = normalize_runtime_paths_for_snapshot(
             toml::to_string_pretty(&config).expect("serialize"),
         );
-        insta::assert_snapshot!(toml_str);
+        if cfg!(feature = "lsp-context") {
+            insta::assert_snapshot!("config_default_snapshot", toml_str);
+        } else {
+            insta::assert_snapshot!("config_default_snapshot_no_lsp_context", toml_str);
+        }
     }
 
     #[test]
