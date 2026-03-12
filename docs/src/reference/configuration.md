@@ -162,7 +162,8 @@ model = "whisper-1"
 [skills]
 # Defaults to the user config dir when omitted
 # (for example ~/.config/zeph/skills on Linux,
-# ~/Library/Application Support/Zeph/skills on macOS).
+# ~/Library/Application Support/Zeph/skills on macOS,
+# %APPDATA%\zeph\skills on Windows).
 # paths = ["/absolute/path/to/skills"]
 max_active_skills = 5              # Top-K skills per query via embedding similarity
 disambiguation_threshold = 0.05    # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
@@ -187,7 +188,8 @@ judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses jud
 [memory]
 # Defaults to the user data dir when omitted
 # (for example ~/.local/share/zeph/data/zeph.db on Linux,
-# ~/Library/Application Support/Zeph/data/zeph.db on macOS).
+# ~/Library/Application Support/Zeph/data/zeph.db on macOS,
+# %LOCALAPPDATA%\Zeph\data\zeph.db on Windows).
 # sqlite_path = "/absolute/path/to/zeph.db"
 history_limit = 50
 summarization_threshold = 100  # Trigger summarization after N messages
@@ -411,14 +413,14 @@ rate_limit = 120
 max_body_size = 1048576     # 1 MiB
 
 [logging]
-file = "/absolute/path/to/zeph.log"  # Optional override; omit to use the platform default in the user data dir
+file = "/absolute/path/to/zeph.log"  # Optional override; omit to use the platform default in the user data dir (%LOCALAPPDATA%\Zeph\logs\zeph.log on Windows)
 level = "info"                # File log level (default: "info"); does not affect stderr/RUST_LOG
 rotation = "daily"            # Rotation strategy: daily, hourly, or never (default: "daily")
 max_files = 7                 # Rotated log files to retain (default: 7)
 
 [debug]
 enabled = false             # Enable debug dump at startup (default: false)
-output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the platform default in the user data dir
+output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the platform default in the user data dir (%LOCALAPPDATA%\Zeph\debug on Windows)
 
 # Requires `experiments` feature.
 # [experiments]

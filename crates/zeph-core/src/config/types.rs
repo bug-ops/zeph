@@ -28,6 +28,12 @@ const PLATFORM_APP_DIR_NAME: &str = "Zeph";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const PLATFORM_APP_DIR_NAME: &str = "zeph";
 
+/// Platform default writable data root.
+///
+/// Examples:
+/// - Linux: `~/.local/share/zeph`
+/// - macOS: `~/Library/Application Support/Zeph`
+/// - Windows: `%LOCALAPPDATA%\Zeph`
 fn default_runtime_data_root() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::data_dir)
@@ -47,6 +53,8 @@ pub fn default_sqlite_path() -> String {
 
 #[must_use]
 pub fn default_skills_dir() -> String {
+    // Skills remain under the config-style root (`default_vault_dir`) so the default
+    // path stays compatible with existing managed skill installation behavior.
     crate::vault::default_vault_dir()
         .join("skills")
         .to_string_lossy()

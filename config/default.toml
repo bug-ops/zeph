@@ -153,7 +153,8 @@ max_tokens = 4096
 [skills]
 # Directories to scan for SKILL.md files
 # Defaults to the user config dir (for example ~/.config/zeph/skills on Linux,
-# ~/Library/Application Support/Zeph/skills on macOS).
+# ~/Library/Application Support/Zeph/skills on macOS,
+# %APPDATA%\zeph\skills on Windows).
 # paths = ["/absolute/path/to/skills"]
 # Maximum number of skills to inject into context per query (embedding-based selection)
 max_active_skills = 5
@@ -191,7 +192,8 @@ hash_mismatch_level = "quarantined"
 [memory]
 # SQLite database path for conversation history
 # Defaults to the user data dir (for example ~/.local/share/zeph/data/zeph.db on Linux,
-# ~/Library/Application Support/Zeph/data/zeph.db on macOS).
+# ~/Library/Application Support/Zeph/data/zeph.db on macOS,
+# %LOCALAPPDATA%\Zeph\data\zeph.db on Windows).
 # sqlite_path = "/absolute/path/to/zeph.db"
 # Maximum number of recent messages to load into context
 history_limit = 50
@@ -520,7 +522,8 @@ max_parallel_tools = 8
 enabled = false
 # Directory where per-session subdirectories are created
 # Defaults to the user data dir (for example ~/.local/share/zeph/debug on Linux,
-# ~/Library/Application Support/Zeph/debug on macOS).
+# ~/Library/Application Support/Zeph/debug on macOS,
+# %LOCALAPPDATA%\Zeph\debug on Windows).
 # output_dir = "/absolute/path/to/debug"
 # Output format for LLM request files:
 #   "json" — internal zeph-llm representation (default)
@@ -628,7 +631,8 @@ max_wall_time_secs = 1800
 [logging]
 # Log file path (empty string disables file logging)
 # Defaults to the user data dir (for example ~/.local/share/zeph/logs/zeph.log on Linux,
-# ~/Library/Application Support/Zeph/logs/zeph.log on macOS).
+# ~/Library/Application Support/Zeph/logs/zeph.log on macOS,
+# %LOCALAPPDATA%\Zeph\logs\zeph.log on Windows).
 # file = "/absolute/path/to/zeph.log"
 # Log level for the file sink: "trace", "debug", "info", "warn", "error"
 level = "info"
