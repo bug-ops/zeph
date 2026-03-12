@@ -689,7 +689,7 @@ async fn warm_model_caches(
         match provider.list_models_remote().await {
             Ok(models) => tracing::info!(models = models.len(), "model cache fetch completed"),
             Err(e) => {
-                tracing::info!(error = %e, "model cache warm-up failed; keeping fallback list")
+                tracing::info!(error = %e, "model cache warm-up failed; keeping fallback list");
             }
         }
     };
