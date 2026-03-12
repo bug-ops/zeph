@@ -2581,7 +2581,11 @@ mod tests {
         let toml_str = normalize_runtime_paths_for_snapshot(
             toml::to_string_pretty(&config).expect("serialize"),
         );
-        insta::assert_snapshot!(toml_str);
+        if cfg!(feature = "lsp-context") {
+            insta::assert_snapshot!("config_default_snapshot", toml_str);
+        } else {
+            insta::assert_snapshot!("config_default_snapshot_no_lsp_context", toml_str);
+        }
     }
 
     #[test]
