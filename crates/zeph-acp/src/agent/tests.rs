@@ -46,7 +46,6 @@ async fn initialize_returns_agent_info() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                 .await
@@ -74,8 +73,6 @@ async fn new_session_reads_latest_available_models_from_shared_state() {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.push("openai:gpt-5".to_owned());
             }
-
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -118,8 +115,6 @@ async fn new_session_freezes_initial_model_for_existing_session() {
             let factory: ProviderFactory = Arc::new(|_key| None);
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_provider_factory(factory, Arc::clone(&models));
-
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -147,7 +142,6 @@ async fn initialize_returns_load_session_capability_and_auth_hint() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                 .await
@@ -185,7 +179,6 @@ async fn ext_notification_accepts_unknown_method() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let notif = acp::ExtNotification::new(
                 "custom/ping",
                 serde_json::value::RawValue::from_string("{}".to_owned())
@@ -204,7 +197,6 @@ async fn new_session_creates_entry() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -221,7 +213,6 @@ async fn new_session_uses_request_cwd() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let cwd = std::path::PathBuf::from("/tmp/acp-session-cwd");
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(cwd.clone()))
@@ -242,7 +233,6 @@ async fn cancel_keeps_session() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -264,7 +254,6 @@ async fn cancel_triggers_notify_one() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -298,21 +287,21 @@ async fn prompt_image_block_does_not_error() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
-                std::rc::Rc::new(std::cell::RefCell::new(None));
-            let received_clone = std::rc::Rc::clone(&received);
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
-                let received_clone = std::rc::Rc::clone(&received_clone);
+                let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone.borrow_mut() = Some(msg);
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
                     }
                 })
             });
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -326,7 +315,11 @@ async fn prompt_image_block_does_not_error() {
             assert!(result.is_ok());
 
             // Spawner received the message with one image attachment
-            let msg = received.borrow().clone().unwrap();
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap();
             assert_eq!(msg.attachments.len(), 1);
             assert_eq!(
                 msg.attachments[0].kind,
@@ -343,21 +336,21 @@ async fn prompt_resource_block_appends_text() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
-                std::rc::Rc::new(std::cell::RefCell::new(None));
-            let received_clone = std::rc::Rc::clone(&received);
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
-                let received_clone = std::rc::Rc::clone(&received_clone);
+                let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone.borrow_mut() = Some(msg);
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
                     }
                 })
             });
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -373,7 +366,11 @@ async fn prompt_resource_block_appends_text() {
                 acp::PromptRequest::new(resp.session_id.to_string(), vec![text_block, res_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received.borrow().clone().unwrap();
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap();
             assert!(msg.text.contains("hello"));
             assert!(
                 msg.text
@@ -390,7 +387,6 @@ async fn prompt_rejects_oversized() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -931,7 +927,6 @@ async fn new_session_rejects_over_limit() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent_with_max(1);
-            use acp::Agent as _;
             // fill the limit
             agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
@@ -954,7 +949,6 @@ async fn new_session_rejects_when_all_busy() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent_with_max(1);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -983,7 +977,6 @@ async fn new_session_respects_configurable_limit() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent_with_max(2);
-            use acp::Agent as _;
             let r1 = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1010,7 +1003,6 @@ async fn load_session_returns_ok_for_existing() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1032,7 +1024,6 @@ async fn load_session_errors_for_unknown() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let res = agent
                 .load_session(acp::LoadSessionRequest::new(
                     acp::SessionId::new("no-such"),
@@ -1050,7 +1041,6 @@ async fn prompt_errors_for_unknown_session() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let req = acp::PromptRequest::new("no-such", vec![]);
             assert!(agent.prompt(req).await.is_err());
         })
@@ -1063,21 +1053,21 @@ async fn prompt_oversized_image_base64_skipped() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
-                std::rc::Rc::new(std::cell::RefCell::new(None));
-            let received_clone = std::rc::Rc::clone(&received);
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
-                let received_clone = std::rc::Rc::clone(&received_clone);
+                let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone.borrow_mut() = Some(msg);
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
                     }
                 })
             });
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1090,7 +1080,11 @@ async fn prompt_oversized_image_base64_skipped() {
             let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![img_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received.borrow().clone().unwrap();
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap();
             assert!(
                 msg.attachments.is_empty(),
                 "oversized image must be skipped"
@@ -1106,21 +1100,21 @@ async fn prompt_unsupported_mime_image_skipped() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
-                std::rc::Rc::new(std::cell::RefCell::new(None));
-            let received_clone = std::rc::Rc::clone(&received);
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
-                let received_clone = std::rc::Rc::clone(&received_clone);
+                let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone.borrow_mut() = Some(msg);
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
                     }
                 })
             });
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1132,7 +1126,11 @@ async fn prompt_unsupported_mime_image_skipped() {
             let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![img_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received.borrow().clone().unwrap();
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap();
             assert!(
                 msg.attachments.is_empty(),
                 "unsupported MIME type must be skipped"
@@ -1147,21 +1145,21 @@ async fn prompt_resource_text_wrapped_in_markers() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
-                std::rc::Rc::new(std::cell::RefCell::new(None));
-            let received_clone = std::rc::Rc::clone(&received);
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
-                let received_clone = std::rc::Rc::clone(&received_clone);
+                let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone.borrow_mut() = Some(msg);
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
                     }
                 })
             });
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1175,7 +1173,11 @@ async fn prompt_resource_text_wrapped_in_markers() {
             let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![res_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received.borrow().clone().unwrap();
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap();
             assert!(
                 msg.text
                     .contains("<resource name=\"file:///secret.txt\">injected content</resource>"),
@@ -1394,7 +1396,6 @@ async fn initialize_advertises_session_capabilities() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                 .await
@@ -1429,7 +1430,6 @@ async fn set_session_mode_valid_updates_current_mode() {
                     ack.send(()).ok();
                 }
             });
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1451,7 +1451,6 @@ async fn set_session_mode_unknown_mode_errors() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1469,7 +1468,6 @@ async fn ext_notification_always_ok() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let notif = acp::ExtNotification::new(
                 "_agent/some/event",
                 serde_json::value::RawValue::NULL.to_owned().into(),
@@ -1486,7 +1484,6 @@ async fn set_session_config_option_unknown_config_id_errors() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1508,7 +1505,6 @@ async fn set_session_config_option_no_factory_errors() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1529,7 +1525,6 @@ async fn set_session_config_option_with_factory_updates_model() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            use acp::Agent as _;
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let factory: ProviderFactory = Arc::new(|key: &str| {
@@ -1585,7 +1580,6 @@ async fn ext_method_no_manager_errors() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let req = acp::ExtRequest::new(
                 "_agent/mcp/list",
                 serde_json::value::RawValue::NULL.to_owned().into(),
@@ -1602,7 +1596,6 @@ async fn ext_method_unknown_returns_null() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let req = acp::ExtRequest::new(
                 "_agent/unknown/method",
                 serde_json::value::RawValue::NULL.to_owned().into(),
@@ -1618,7 +1611,6 @@ async fn set_session_config_option_rejects_model_not_in_allowlist() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            use acp::Agent as _;
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let factory: ProviderFactory = Arc::new(|_key: &str| {
@@ -1654,7 +1646,6 @@ async fn new_session_includes_modes() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1674,7 +1665,6 @@ async fn set_session_mode_updates_entry() {
     local
         .run_until(async {
             let (agent, mut rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1710,7 +1700,6 @@ async fn set_session_mode_emits_notification() {
     local
         .run_until(async {
             let (agent, mut rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1755,7 +1744,6 @@ async fn set_session_mode_rejects_unknown_mode() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1777,7 +1765,6 @@ async fn set_session_mode_rejects_unknown_session() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let result = agent
                 .set_session_mode(acp::SetSessionModeRequest::new(
                     acp::SessionId::new("nonexistent"),
@@ -1796,7 +1783,6 @@ async fn list_sessions_returns_active_sessions() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1821,7 +1807,6 @@ async fn list_sessions_filters_by_cwd() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp1 = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1865,7 +1850,6 @@ async fn fork_session_errors_for_unknown() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let unknown_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
             let result = agent
                 .fork_session(acp::ForkSessionRequest::new(
@@ -1885,7 +1869,6 @@ async fn fork_session_creates_new_session_from_existing() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
 
             // Create source session.
             let src = agent
@@ -1922,7 +1905,6 @@ async fn resume_session_returns_ok_for_active() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1945,7 +1927,6 @@ async fn resume_session_errors_for_unknown() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let unknown_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
             let result = agent
                 .resume_session(acp::ResumeSessionRequest::new(
@@ -1997,7 +1978,6 @@ async fn prompt_diagnostics_block_formatted() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2037,7 +2017,6 @@ async fn slash_help_returns_end_turn() {
     local
         .run_until(async {
             let (agent, mut rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2072,7 +2051,6 @@ async fn slash_unknown_command_returns_error() {
     local
         .run_until(async {
             let (agent, mut rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2249,7 +2227,6 @@ async fn set_session_model_no_factory_errors() {
     local
         .run_until(async {
             let (agent, mut rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2282,7 +2259,6 @@ async fn set_session_model_rejects_unknown_model() {
                     factory,
                     shared_models(vec!["claude:claude-3-5-sonnet".to_owned()]),
                 );
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2303,7 +2279,6 @@ async fn new_session_meta_contains_project_rules() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            use acp::Agent as _;
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let rules = vec![
@@ -2335,7 +2310,6 @@ async fn new_session_meta_absent_when_no_rules() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            use acp::Agent as _;
             let (agent, _rx) = make_agent();
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
@@ -2499,7 +2473,6 @@ async fn set_session_config_option_thinking_toggle() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let sess = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2529,7 +2502,6 @@ async fn set_session_config_option_auto_approve_levels() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let sess = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2555,7 +2527,6 @@ async fn set_session_config_option_rejects_invalid_auto_approve() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let sess = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2583,7 +2554,6 @@ async fn list_sessions_includes_title_for_in_memory_session() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let sess = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2619,7 +2589,6 @@ async fn list_sessions_title_none_for_new_session() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let sess = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2648,7 +2617,6 @@ async fn set_session_config_option_auto_approve_unknown_session_errors() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let req = acp::SetSessionConfigOptionRequest::new(
                 "nonexistent-session",
                 "auto_approve",
@@ -2667,7 +2635,6 @@ async fn set_session_config_option_auto_approve_reflected_in_response() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let sess = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2783,7 +2750,6 @@ async fn slash_review_returns_end_turn() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2807,7 +2773,6 @@ async fn slash_review_with_path_returns_end_turn() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2832,22 +2797,22 @@ async fn slash_review_prompt_contains_read_only_constraint() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
-                std::rc::Rc::new(std::cell::RefCell::new(None));
-            let received_clone = std::rc::Rc::clone(&received);
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
-                let received_clone = std::rc::Rc::clone(&received_clone);
+                let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     use zeph_core::Channel as _;
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone.borrow_mut() = Some(msg);
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
                     }
                 })
             });
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2864,7 +2829,11 @@ async fn slash_review_prompt_contains_read_only_constraint() {
                 .unwrap();
             // Yield again to allow spawner task to process the received message.
             tokio::task::yield_now().await;
-            let msg = received.borrow().clone().unwrap();
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap();
             assert!(
                 msg.text.contains("Do not execute any commands"),
                 "review prompt must contain read-only constraint, got: {}",
@@ -2884,22 +2853,22 @@ async fn slash_review_with_path_prompt_contains_path() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received: std::rc::Rc<std::cell::RefCell<Option<ChannelMessage>>> =
-                std::rc::Rc::new(std::cell::RefCell::new(None));
-            let received_clone = std::rc::Rc::clone(&received);
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
-                let received_clone = std::rc::Rc::clone(&received_clone);
+                let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     use zeph_core::Channel as _;
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone.borrow_mut() = Some(msg);
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
                     }
                 })
             });
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2916,7 +2885,11 @@ async fn slash_review_with_path_prompt_contains_path() {
                 .await
                 .unwrap();
             tokio::task::yield_now().await;
-            let msg = received.borrow().clone().unwrap();
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap();
             assert!(
                 msg.text.contains("crates/zeph-acp"),
                 "review prompt with path must include the path, got: {}",
@@ -2940,7 +2913,6 @@ async fn slash_review_rejects_invalid_arg() {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -3120,7 +3092,6 @@ async fn initialize_with_mcp_manager_advertises_capabilities() {
             ));
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_mcp_manager(manager);
-            use acp::Agent as _;
             let resp = agent
                 .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                 .await
@@ -3140,7 +3111,6 @@ async fn ext_notification_lsp_publish_diagnostics_caches_diagnostics() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let params = serde_json::json!({
                 "uri": "file:///src/main.rs",
                 "diagnostics": [
@@ -3161,7 +3131,10 @@ async fn ext_notification_lsp_publish_diagnostics_caches_diagnostics() {
                     .into(),
             );
             agent.ext_notification(notif).await.unwrap();
-            let cache = agent.diagnostics_cache.borrow();
+            let cache = agent
+                .diagnostics_cache
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let diags = cache
                 .peek("file:///src/main.rs")
                 .expect("diagnostics should be cached");
@@ -3177,7 +3150,6 @@ async fn ext_notification_lsp_publish_diagnostics_malformed_json_is_ok() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let notif = acp::ExtNotification::new(
                 "lsp/publishDiagnostics",
                 serde_json::value::RawValue::from_string("\"not an object\"".to_owned())
@@ -3188,7 +3160,13 @@ async fn ext_notification_lsp_publish_diagnostics_malformed_json_is_ok() {
             let result = agent.ext_notification(notif).await;
             assert!(result.is_ok());
             // Cache should remain empty.
-            assert!(agent.diagnostics_cache.borrow().is_empty());
+            assert!(
+                agent
+                    .diagnostics_cache
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty()
+            );
         })
         .await;
 }
@@ -3200,12 +3178,12 @@ async fn ext_notification_lsp_publish_diagnostics_truncates_at_max() {
         .run_until(async {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let mut lsp_config = zeph_core::config::AcpLspConfig::default();
-            lsp_config.max_diagnostics_per_file = 2;
+            let lsp_config = zeph_core::config::AcpLspConfig {
+                max_diagnostics_per_file: 2,
+                ..Default::default()
+            };
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_lsp_config(lsp_config);
-
-            use acp::Agent as _;
             let diags_json: Vec<serde_json::Value> = (0..5)
                 .map(|i| {
                     serde_json::json!({
@@ -3226,7 +3204,10 @@ async fn ext_notification_lsp_publish_diagnostics_truncates_at_max() {
                     .into(),
             );
             agent.ext_notification(notif).await.unwrap();
-            let cache = agent.diagnostics_cache.borrow();
+            let cache = agent
+                .diagnostics_cache
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let diags = cache
                 .peek("file:///a.rs")
                 .expect("diagnostics should be cached");
@@ -3248,12 +3229,12 @@ async fn ext_notification_lsp_did_save_disabled_is_noop() {
         .run_until(async {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let mut lsp_config = zeph_core::config::AcpLspConfig::default();
-            lsp_config.auto_diagnostics_on_save = false;
+            let lsp_config = zeph_core::config::AcpLspConfig {
+                auto_diagnostics_on_save: false,
+                ..Default::default()
+            };
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_lsp_config(lsp_config);
-
-            use acp::Agent as _;
             let params = serde_json::json!({ "uri": "file:///src/main.rs" });
             let notif = acp::ExtNotification::new(
                 "lsp/didSave",
@@ -3265,7 +3246,13 @@ async fn ext_notification_lsp_did_save_disabled_is_noop() {
             let result = agent.ext_notification(notif).await;
             assert!(result.is_ok());
             // Cache untouched.
-            assert!(agent.diagnostics_cache.borrow().is_empty());
+            assert!(
+                agent
+                    .diagnostics_cache
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty()
+            );
         })
         .await;
 }
@@ -3277,12 +3264,12 @@ async fn ext_notification_lsp_did_save_malformed_params_is_ok() {
         .run_until(async {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let mut lsp_config = zeph_core::config::AcpLspConfig::default();
-            lsp_config.auto_diagnostics_on_save = true;
+            let lsp_config = zeph_core::config::AcpLspConfig {
+                auto_diagnostics_on_save: true,
+                ..Default::default()
+            };
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_lsp_config(lsp_config);
-
-            use acp::Agent as _;
             let notif = acp::ExtNotification::new(
                 "lsp/didSave",
                 serde_json::value::RawValue::from_string("\"bad params\"".to_owned())
@@ -3302,7 +3289,6 @@ async fn initialize_without_mcp_manager_no_mcp_capabilities() {
     local
         .run_until(async {
             let (agent, _rx) = make_agent();
-            use acp::Agent as _;
             let resp = agent
                 .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                 .await
@@ -3324,12 +3310,12 @@ async fn initialize_advertises_lsp_capability_when_enabled() {
         .run_until(async {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let mut lsp_config = zeph_core::config::AcpLspConfig::default();
-            lsp_config.enabled = true;
+            let lsp_config = zeph_core::config::AcpLspConfig {
+                enabled: true,
+                ..Default::default()
+            };
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_lsp_config(lsp_config);
-
-            use acp::Agent as _;
             let resp = agent
                 .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                 .await
@@ -3375,7 +3361,6 @@ async fn prompt_stop_reason_max_tokens_from_loopback_event() {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -3403,12 +3388,12 @@ async fn initialize_does_not_advertise_lsp_when_disabled() {
         .run_until(async {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let mut lsp_config = zeph_core::config::AcpLspConfig::default();
-            lsp_config.enabled = false;
+            let lsp_config = zeph_core::config::AcpLspConfig {
+                enabled: false,
+                ..Default::default()
+            };
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_lsp_config(lsp_config);
-
-            use acp::Agent as _;
             let resp = agent
                 .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
                 .await
@@ -3444,7 +3429,6 @@ async fn prompt_stop_reason_max_turn_requests_from_loopback_event() {
             let (tx, _rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -3475,7 +3459,6 @@ async fn set_session_config_option_emits_config_option_update_notification() {
             let (tx, mut rx) = mpsc::unbounded_channel();
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None);
-            use acp::Agent as _;
             let sess = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await

@@ -235,15 +235,10 @@ pub struct AcpContext {
     /// `None` for top-level (non-subagent) sessions.
     pub parent_tool_use_id: Option<String>,
     /// LSP provider when the IDE advertised `meta["lsp"]` capability.
-    ///
-    /// **`!Send` constraint**: `AcpLspProvider` holds `Rc<RefCell<...>>` and must
-    /// only be used within a `LocalSet` context.
     pub lsp_provider: Option<crate::lsp::AcpLspProvider>,
     /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
     /// and read by the agent loop context builder to inject diagnostics into the system prompt.
-    ///
-    /// `Rc` is used because `ZephAcpAgent` is `!Send` and runs in a `LocalSet`.
-    pub diagnostics_cache: Rc<RefCell<DiagnosticsCache>>,
+    pub diagnostics_cache: Arc<std::sync::RwLock<DiagnosticsCache>>,
 }
 
 /// Factory: receives a [`LoopbackChannel`], optional [`AcpContext`], and [`SessionContext`],
@@ -257,6 +252,8 @@ pub type AgentSpawner = Arc<
             Option<AcpContext>,
             SessionContext,
         ) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
+        + Send
+        + Sync
         + 'static,
 >;
 
@@ -264,16 +261,7 @@ pub type AgentSpawner = Arc<
 ///
 /// Used with `AcpHttpState` to satisfy `axum::State` requirements (`Send + Sync`).
 #[cfg(feature = "acp-http")]
-pub type SendAgentSpawner = Arc<
-    dyn Fn(
-            LoopbackChannel,
-            Option<AcpContext>,
-            SessionContext,
-        ) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
-        + Send
-        + Sync
-        + 'static,
->;
+pub type SendAgentSpawner = AgentSpawner;
 
 /// Sender half for delivering session notifications to the background writer.
 pub(crate) type NotifySender =
@@ -338,7 +326,7 @@ pub struct ZephAcpAgent {
     /// LSP extension configuration (from `[acp.lsp]`).
     lsp_config: zeph_core::config::AcpLspConfig,
     /// Per-agent diagnostics cache, shared between the agent (writer) and `AcpContext` (reader).
-    diagnostics_cache: Rc<RefCell<DiagnosticsCache>>,
+    diagnostics_cache: Arc<std::sync::RwLock<DiagnosticsCache>>,
 }
 
 impl ZephAcpAgent {
@@ -371,7 +359,9 @@ impl ZephAcpAgent {
             title_max_chars: 60,
             max_history: 100,
             lsp_config,
-            diagnostics_cache: Rc::new(RefCell::new(DiagnosticsCache::new(max_diag_files))),
+            diagnostics_cache: Arc::new(std::sync::RwLock::new(DiagnosticsCache::new(
+                max_diag_files,
+            ))),
         }
     }
 
@@ -380,7 +370,7 @@ impl ZephAcpAgent {
     pub fn with_lsp_config(mut self, config: zeph_core::config::AcpLspConfig) -> Self {
         let max_files = config.max_diagnostic_files;
         self.lsp_config = config;
-        self.diagnostics_cache = Rc::new(RefCell::new(DiagnosticsCache::new(max_files)));
+        self.diagnostics_cache = Arc::new(std::sync::RwLock::new(DiagnosticsCache::new(max_files)));
         self
     }
 
@@ -519,13 +509,15 @@ impl ZephAcpAgent {
         tokio::task::spawn_local(shell_handler);
 
         let lsp_provider = if ide_supports_lsp {
-            Some(crate::lsp::AcpLspProvider::new(
-                Rc::clone(&self.conn_slot),
+            let (provider, handler) = crate::lsp::AcpLspProvider::new(
+                Rc::clone(conn),
                 true,
                 self.lsp_config.request_timeout_secs,
                 self.lsp_config.max_references,
                 self.lsp_config.max_workspace_symbols,
-            ))
+            );
+            tokio::task::spawn_local(handler);
+            Some(provider)
         } else {
             None
         };
@@ -538,7 +530,7 @@ impl ZephAcpAgent {
             provider_override,
             parent_tool_use_id: None,
             lsp_provider,
-            diagnostics_cache: Rc::clone(&self.diagnostics_cache),
+            diagnostics_cache: Arc::clone(&self.diagnostics_cache),
         })
     }
 
@@ -569,7 +561,10 @@ impl ZephAcpAgent {
                     count = diags.len(),
                     "lsp/publishDiagnostics: cached"
                 );
-                self.diagnostics_cache.borrow_mut().update(p.uri, diags);
+                self.diagnostics_cache
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .update(p.uri, diags);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "lsp/publishDiagnostics: failed to parse params");
@@ -625,7 +620,10 @@ impl ZephAcpAgent {
                             count = diags.len(),
                             "lsp/didSave: fetched diagnostics"
                         );
-                        self.diagnostics_cache.borrow_mut().update(uri, diags);
+                        self.diagnostics_cache
+                            .write()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .update(uri, diags);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "lsp/didSave: failed to parse diagnostics response");

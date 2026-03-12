@@ -6,7 +6,8 @@ use std::rc::Rc;
 
 use acp::Client as _;
 use agent_client_protocol as acp;
-use futures::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use futures::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::duplex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -56,6 +57,8 @@ where
         .map_err(|e| AcpError::Transport(e.to_string()))
 }
 
+const BRIDGE_BUFFER_SIZE: usize = 64 * 1024;
+
 /// Run the ACP server over stdin/stdout until the connection closes.
 ///
 /// Uses `LocalSet` because the ACP SDK's `Agent` trait is `!Send`.
@@ -79,7 +82,69 @@ pub async fn serve_stdio(
 /// # Errors
 ///
 /// Returns `AcpError::Transport` if the underlying JSON-RPC I/O fails.
+///
+/// # Panics
+///
+/// Panics if the dedicated current-thread Tokio runtime for the ACP control plane
+/// cannot be created.
 pub async fn serve_connection<W, R>(
+    spawner: AgentSpawner,
+    server_config: AcpServerConfig,
+    mut writer: W,
+    mut reader: R,
+) -> Result<(), AcpError>
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let (client_w, agent_r) = duplex(BRIDGE_BUFFER_SIZE);
+    let (agent_w, client_r) = duplex(BRIDGE_BUFFER_SIZE);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("acp stdio runtime");
+        rt.block_on(async move {
+            if let Err(e) = serve_connection_local(
+                spawner,
+                server_config,
+                agent_w.compat_write(),
+                agent_r.compat(),
+            )
+            .await
+            {
+                tracing::error!("ACP stdio connection error: {e}");
+            }
+        });
+    });
+
+    let mut bridge_writer = client_w.compat_write();
+    let mut bridge_reader = client_r.compat();
+    let inbound = async {
+        futures::io::copy(&mut reader, &mut bridge_writer)
+            .await
+            .map_err(|e| AcpError::Transport(e.to_string()))?;
+        bridge_writer
+            .close()
+            .await
+            .map_err(|e| AcpError::Transport(e.to_string()))
+    };
+    let outbound = async {
+        futures::io::copy(&mut bridge_reader, &mut writer)
+            .await
+            .map_err(|e| AcpError::Transport(e.to_string()))?;
+        writer
+            .close()
+            .await
+            .map_err(|e| AcpError::Transport(e.to_string()))
+    };
+
+    let _ = futures::future::try_join(inbound, outbound).await?;
+    Ok(())
+}
+
+pub(crate) async fn serve_connection_local<W, R>(
     spawner: AgentSpawner,
     server_config: AcpServerConfig,
     mut writer: W,

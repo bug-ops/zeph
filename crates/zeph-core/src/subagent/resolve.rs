@@ -149,7 +149,7 @@ mod tests {
     fn resolve_cli_paths_come_first() {
         let tmp = tempfile::tempdir().unwrap();
         let cli_path = tmp.path().to_path_buf();
-        let paths = resolve_agent_paths(&[cli_path.clone()], None, &[]).unwrap();
+        let paths = resolve_agent_paths(std::slice::from_ref(&cli_path), None, &[]).unwrap();
         assert_eq!(paths[0], cli_path);
     }
 
@@ -183,7 +183,9 @@ mod tests {
     fn resolve_extra_dirs_come_last() {
         let tmp = tempfile::tempdir().unwrap();
         let extra = tmp.path().to_path_buf();
-        let paths = resolve_agent_paths(&[], Some(&PathBuf::from("")), &[extra.clone()]).unwrap();
+        let paths =
+            resolve_agent_paths(&[], Some(&PathBuf::from("")), std::slice::from_ref(&extra))
+                .unwrap();
         assert_eq!(paths.last().unwrap(), &extra);
     }
 
@@ -192,7 +194,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         // Same directory added twice: once as explicit user dir, once as extra
-        let paths = resolve_agent_paths(&[], Some(&dir), &[dir.clone()]).unwrap();
+        let paths = resolve_agent_paths(&[], Some(&dir), std::slice::from_ref(&dir)).unwrap();
         let count = paths.iter().filter(|p| *p == &dir).count();
         assert_eq!(count, 1, "duplicate paths should be removed");
     }
@@ -252,7 +254,12 @@ mod tests {
     fn resolve_priority_order_cli_first_then_project() {
         let tmp = tempfile::tempdir().unwrap();
         let cli_dir = tmp.path().to_path_buf();
-        let paths = resolve_agent_paths(&[cli_dir.clone()], Some(&PathBuf::from("")), &[]).unwrap();
+        let paths = resolve_agent_paths(
+            std::slice::from_ref(&cli_dir),
+            Some(&PathBuf::from("")),
+            &[],
+        )
+        .unwrap();
         // CLI must be index 0, project-level must follow
         assert_eq!(paths[0], cli_dir);
         assert_eq!(paths[1], PathBuf::from(".zeph/agents"));
@@ -264,7 +271,8 @@ mod tests {
         let tmp2 = tempfile::tempdir().unwrap();
         let user_dir = tmp1.path().to_path_buf();
         let extra_dir = tmp2.path().to_path_buf();
-        let paths = resolve_agent_paths(&[], Some(&user_dir), &[extra_dir.clone()]).unwrap();
+        let paths =
+            resolve_agent_paths(&[], Some(&user_dir), std::slice::from_ref(&extra_dir)).unwrap();
         let user_pos = paths.iter().position(|p| p == &user_dir).unwrap();
         let extra_pos = paths.iter().position(|p| p == &extra_dir).unwrap();
         assert!(user_pos < extra_pos, "user dir must come before extra dirs");
