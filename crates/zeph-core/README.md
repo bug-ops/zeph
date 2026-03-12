@@ -154,7 +154,7 @@ Key `DebugConfig` fields (TOML section `[debug]`):
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable debug dump at startup — writes all LLM requests, responses, and raw tool output to files |
-| `output_dir` | `PathBuf` | `".zeph/debug"` | Base directory; each session creates a `{unix_timestamp}/` subdirectory |
+| `output_dir` | `PathBuf` | user data dir (`.../debug`) | Base directory; each session creates a `{unix_timestamp}/` subdirectory |
 
 > [!TIP]
 > Use `--debug-dump` without a path to use `output_dir` from config. Use `--debug-dump /tmp/mydir` to override for one session. The `/debug-dump [path]` slash command enables it mid-session without restarting.
@@ -163,14 +163,15 @@ Key `LoggingConfig` fields (TOML section `[logging]`):
 
 | Field | Type | Default | Env override | Description |
 |-------|------|---------|--------------|-------------|
-| `file` | string | `".zeph/logs/zeph.log"` | `ZEPH_LOG_FILE` | Path to the log file. Empty string disables file logging |
+| `file` | string | user data dir (`.../logs/zeph.log`) | `ZEPH_LOG_FILE` | Path to the log file. Empty string disables file logging |
 | `level` | string | `"info"` | `ZEPH_LOG_LEVEL` | Log level for the file sink (does not affect stderr / `RUST_LOG`) |
 | `rotation` | `"daily"` / `"hourly"` / `"never"` | `"daily"` | — | Log file rotation strategy |
 | `max_files` | usize | `7` | — | Maximum number of rotated log files to retain |
 
 ```toml
 [logging]
-file = ".zeph/logs/zeph.log"
+# Omit to use the default user-data log path.
+# file = "/absolute/path/to/zeph.log"
 level = "info"
 rotation = "daily"
 max_files = 7

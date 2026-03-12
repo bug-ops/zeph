@@ -160,7 +160,10 @@ model = "whisper-1"
 # When omitted, uses the OpenAI API key from [llm.openai] or ZEPH_OPENAI_API_KEY.
 
 [skills]
-paths = [".zeph/skills"]
+# Defaults to the user config dir when omitted
+# (for example ~/.config/zeph/skills on Linux,
+# ~/Library/Application Support/Zeph/skills on macOS).
+# paths = ["/absolute/path/to/skills"]
 max_active_skills = 5              # Top-K skills per query via embedding similarity
 disambiguation_threshold = 0.05    # LLM disambiguation when top-2 score delta < threshold (0.0 = disabled)
 prompt_mode = "auto"               # Skill prompt format: "full", "compact", or "auto" (default: "auto")
@@ -182,7 +185,10 @@ judge_adaptive_low = 0.5           # Regex confidence below this bypasses judge 
 judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses judge (default: 0.8)
 
 [memory]
-sqlite_path = ".zeph/data/zeph.db"
+# Defaults to the user data dir when omitted
+# (for example ~/.local/share/zeph/data/zeph.db on Linux,
+# ~/Library/Application Support/Zeph/data/zeph.db on macOS).
+# sqlite_path = "/absolute/path/to/zeph.db"
 history_limit = 50
 summarization_threshold = 100  # Trigger summarization after N messages
 context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
@@ -405,14 +411,14 @@ rate_limit = 120
 max_body_size = 1048576     # 1 MiB
 
 [logging]
-file = ".zeph/logs/zeph.log"  # Log file path; empty string disables file logging (default: ".zeph/logs/zeph.log")
+file = "/absolute/path/to/zeph.log"  # Optional override; omit to use the platform default in the user data dir
 level = "info"                # File log level (default: "info"); does not affect stderr/RUST_LOG
 rotation = "daily"            # Rotation strategy: daily, hourly, or never (default: "daily")
 max_files = 7                 # Rotated log files to retain (default: 7)
 
 [debug]
 enabled = false             # Enable debug dump at startup (default: false)
-output_dir = ".zeph/debug"  # Base directory for dump files (default: ".zeph/debug")
+output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the platform default in the user data dir
 
 # Requires `experiments` feature.
 # [experiments]

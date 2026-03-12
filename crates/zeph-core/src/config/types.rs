@@ -17,14 +17,86 @@ use crate::subagent::hooks::HookDef;
 
 use crate::vault::Secret;
 
-/// Default path constants for project-level runtime artifacts.
+/// Legacy project-relative runtime paths kept for compatibility checks and migration messaging.
 pub const DEFAULT_SQLITE_PATH: &str = ".zeph/data/zeph.db";
 pub const DEFAULT_SKILLS_DIR: &str = ".zeph/skills";
 pub const DEFAULT_DEBUG_DIR: &str = ".zeph/debug";
 pub const DEFAULT_LOG_FILE: &str = ".zeph/logs/zeph.log";
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const PLATFORM_APP_DIR_NAME: &str = "Zeph";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const PLATFORM_APP_DIR_NAME: &str = "zeph";
+
+fn default_runtime_data_root() -> PathBuf {
+    dirs::data_local_dir()
+        .or_else(dirs::data_dir)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(PLATFORM_APP_DIR_NAME)
+}
+
+#[must_use]
+pub fn default_sqlite_path() -> String {
+    default_runtime_data_root()
+        .join("data")
+        .join("zeph.db")
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[must_use]
+pub fn default_skills_dir() -> String {
+    crate::vault::default_vault_dir()
+        .join("skills")
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[must_use]
+pub fn default_debug_dir() -> PathBuf {
+    default_runtime_data_root().join("debug")
+}
+
+#[must_use]
+pub fn default_log_file_path() -> String {
+    default_runtime_data_root()
+        .join("logs")
+        .join("zeph.log")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn default_skill_paths() -> Vec<String> {
+    vec![default_skills_dir()]
+}
+
 fn default_log_file() -> String {
-    DEFAULT_LOG_FILE.to_owned()
+    default_log_file_path()
+}
+
+fn default_sqlite_path_field() -> String {
+    default_sqlite_path()
+}
+
+fn default_debug_output_dir() -> PathBuf {
+    default_debug_dir()
+}
+
+pub(crate) fn is_legacy_default_sqlite_path(path: &str) -> bool {
+    path == DEFAULT_SQLITE_PATH
+}
+
+pub(crate) fn is_legacy_default_skills_path(path: &str) -> bool {
+    path == DEFAULT_SKILLS_DIR
+}
+
+pub(crate) fn is_legacy_default_debug_dir(path: &std::path::Path) -> bool {
+    path == std::path::Path::new(DEFAULT_DEBUG_DIR)
+}
+
+pub(crate) fn is_legacy_default_log_file(path: &str) -> bool {
+    path == DEFAULT_LOG_FILE
 }
 
 fn default_log_level() -> String {
@@ -618,6 +690,7 @@ pub enum SkillPromptMode {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SkillsConfig {
+    #[serde(default = "default_skill_paths")]
     pub paths: Vec<String>,
     #[serde(default = "default_max_active_skills")]
     pub max_active_skills: usize,
@@ -844,6 +917,7 @@ impl VectorBackend {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MemoryConfig {
+    #[serde(default = "default_sqlite_path_field")]
     pub sqlite_path: String,
     pub history_limit: u32,
     #[serde(default = "default_qdrant_url")]
@@ -1483,6 +1557,7 @@ pub struct DebugConfig {
     /// Enable debug dump on startup (CLI `--debug-dump` takes priority).
     pub enabled: bool,
     /// Directory where per-session debug dump subdirectories are created.
+    #[serde(default = "default_debug_output_dir")]
     pub output_dir: PathBuf,
     /// Output format for LLM request files: `"json"` (default) or `"raw"` (API payload).
     pub format: crate::debug_dump::DumpFormat,
@@ -1492,7 +1567,7 @@ impl Default for DebugConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            output_dir: PathBuf::from(DEFAULT_DEBUG_DIR),
+            output_dir: default_debug_output_dir(),
             format: crate::debug_dump::DumpFormat::default(),
         }
     }
@@ -1875,7 +1950,7 @@ impl Default for Config {
                 summary_provider: None,
             },
             skills: SkillsConfig {
-                paths: vec![DEFAULT_SKILLS_DIR.into()],
+                paths: default_skill_paths(),
                 max_active_skills: default_max_active_skills(),
                 disambiguation_threshold: default_disambiguation_threshold(),
                 cosine_weight: default_cosine_weight(),
@@ -1885,7 +1960,7 @@ impl Default for Config {
                 prompt_mode: SkillPromptMode::Auto,
             },
             memory: MemoryConfig {
-                sqlite_path: DEFAULT_SQLITE_PATH.into(),
+                sqlite_path: default_sqlite_path_field(),
                 history_limit: 50,
                 qdrant_url: default_qdrant_url(),
                 semantic: SemanticConfig::default(),
@@ -2455,6 +2530,21 @@ pub struct CompressionConfig {
 mod tests {
     use super::*;
 
+    fn normalize_runtime_paths_for_snapshot(mut toml: String) -> String {
+        for (actual, placeholder) in [
+            (default_skills_dir(), "<DEFAULT_SKILLS_DIR>".to_owned()),
+            (default_sqlite_path(), "<DEFAULT_SQLITE_PATH>".to_owned()),
+            (
+                default_debug_dir().to_string_lossy().into_owned(),
+                "<DEFAULT_DEBUG_DIR>".to_owned(),
+            ),
+            (default_log_file_path(), "<DEFAULT_LOG_FILE>".to_owned()),
+        ] {
+            toml = toml.replace(&actual, &placeholder);
+        }
+        toml
+    }
+
     #[test]
     fn config_serialize_roundtrip() {
         let config = Config::default();
@@ -2472,7 +2562,9 @@ mod tests {
     #[test]
     fn config_default_snapshot() {
         let config = Config::default();
-        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let toml_str = normalize_runtime_paths_for_snapshot(
+            toml::to_string_pretty(&config).expect("serialize"),
+        );
         insta::assert_snapshot!(toml_str);
     }
 

@@ -54,8 +54,23 @@ async fn any_channel_cli_send_typing() {
 
 #[test]
 fn config_loading_from_default_toml() {
-    let config = Config::load(Path::new("config/default.toml"));
-    assert!(config.is_ok());
+    let config = Config::load(Path::new("config/default.toml")).unwrap();
+    assert_eq!(
+        config.skills.paths,
+        vec![zeph_core::config::default_skills_dir()]
+    );
+    assert_eq!(
+        config.memory.sqlite_path,
+        zeph_core::config::default_sqlite_path()
+    );
+    assert_eq!(
+        config.debug.output_dir,
+        zeph_core::config::default_debug_dir()
+    );
+    assert_eq!(
+        config.logging.file,
+        zeph_core::config::default_log_file_path()
+    );
 }
 
 #[test]

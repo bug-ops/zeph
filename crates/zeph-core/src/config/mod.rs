@@ -44,6 +44,7 @@ impl Config {
         };
 
         config.apply_env_overrides();
+        config.normalize_legacy_runtime_defaults();
         Ok(config)
     }
 
@@ -221,5 +222,25 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    fn normalize_legacy_runtime_defaults(&mut self) {
+        if is_legacy_default_sqlite_path(&self.memory.sqlite_path) {
+            self.memory.sqlite_path = default_sqlite_path();
+        }
+
+        for skill_path in &mut self.skills.paths {
+            if is_legacy_default_skills_path(skill_path) {
+                *skill_path = default_skills_dir();
+            }
+        }
+
+        if is_legacy_default_debug_dir(&self.debug.output_dir) {
+            self.debug.output_dir = default_debug_dir();
+        }
+
+        if is_legacy_default_log_file(&self.logging.file) {
+            self.logging.file = default_log_file_path();
+        }
     }
 }

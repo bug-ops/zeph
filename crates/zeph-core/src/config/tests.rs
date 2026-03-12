@@ -97,6 +97,54 @@ fn defaults_when_file_missing() {
     assert!(config.tools.enabled);
     assert_eq!(config.tools.shell.timeout, 30);
     assert!(config.tools.shell.blocked_commands.is_empty());
+    assert_eq!(config.skills.paths, vec![default_skills_dir()]);
+    assert_eq!(config.memory.sqlite_path, default_sqlite_path());
+    assert_eq!(config.debug.output_dir, default_debug_dir());
+    assert_eq!(config.logging.file, default_log_file_path());
+}
+
+#[test]
+#[serial]
+fn legacy_runtime_defaults_are_rewritten_but_custom_relative_paths_are_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy-defaults.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "TestBot"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+
+[skills]
+paths = [".zeph/skills", "./extra-skills"]
+
+[memory]
+sqlite_path = ".zeph/data/zeph.db"
+history_limit = 50
+
+[debug]
+output_dir = ".zeph/debug"
+
+[logging]
+file = ".zeph/logs/zeph.log"
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    assert_eq!(config.skills.paths[0], default_skills_dir());
+    assert_eq!(config.skills.paths[1], "./extra-skills");
+    assert_eq!(config.memory.sqlite_path, default_sqlite_path());
+    assert_eq!(config.debug.output_dir, default_debug_dir());
+    assert_eq!(config.logging.file, default_log_file_path());
 }
 
 #[test]
@@ -2664,7 +2712,7 @@ fn compression_reactive_strategy_always_passes_validate() {
 #[test]
 fn logging_config_defaults() {
     let config = Config::default();
-    assert_eq!(config.logging.file, ".zeph/logs/zeph.log");
+    assert_eq!(config.logging.file, default_log_file_path());
     assert_eq!(config.logging.level, "info");
     assert_eq!(config.logging.rotation, LogRotation::Daily);
     assert_eq!(config.logging.max_files, 7);

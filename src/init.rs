@@ -131,7 +131,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
         deferred_apply_threshold: 0.70,
-        log_file: zeph_core::config::DEFAULT_LOG_FILE.into(),
+        log_file: zeph_core::config::default_log_file_path(),
         log_level: "info".into(),
         log_rotation: "daily".into(),
         log_max_files: 7,
@@ -416,7 +416,7 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     state.sqlite_path = Some(
         Input::new()
             .with_prompt("SQLite database path")
-            .default(".zeph/data/zeph.db".into())
+            .default(zeph_core::config::default_sqlite_path())
             .interact_text()?,
     );
 
@@ -656,7 +656,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         sqlite_path: state
             .sqlite_path
             .clone()
-            .unwrap_or_else(|| ".zeph/data/zeph.db".into()),
+            .unwrap_or_else(zeph_core::config::default_sqlite_path),
         qdrant_url: state
             .qdrant_url
             .clone()
@@ -1843,7 +1843,7 @@ mod tests {
         // The wizard initialises them to sensible values at runtime; here we test
         // that build_config maps state fields verbatim into config.logging.
         let state = WizardState {
-            log_file: zeph_core::config::DEFAULT_LOG_FILE.into(),
+            log_file: zeph_core::config::default_log_file_path(),
             log_level: "info".into(),
             log_rotation: "daily".into(),
             log_max_files: 7,
@@ -1852,7 +1852,7 @@ mod tests {
         let config = build_config(&state);
         assert_eq!(
             config.logging.file,
-            zeph_core::config::DEFAULT_LOG_FILE,
+            zeph_core::config::default_log_file_path(),
             "default log file path"
         );
         assert_eq!(config.logging.level, "info");

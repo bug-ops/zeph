@@ -152,7 +152,9 @@ max_tokens = 4096
 
 [skills]
 # Directories to scan for SKILL.md files
-paths = [".zeph/skills"]
+# Defaults to the user config dir (for example ~/.config/zeph/skills on Linux,
+# ~/Library/Application Support/Zeph/skills on macOS).
+# paths = ["/absolute/path/to/skills"]
 # Maximum number of skills to inject into context per query (embedding-based selection)
 max_active_skills = 5
 # Prompt mode: "full" (inject full SKILL.md), "compact" (name+description only), "auto" (compact if budget < 8192)
@@ -188,7 +190,9 @@ hash_mismatch_level = "quarantined"
 
 [memory]
 # SQLite database path for conversation history
-sqlite_path = ".zeph/data/zeph.db"
+# Defaults to the user data dir (for example ~/.local/share/zeph/data/zeph.db on Linux,
+# ~/Library/Application Support/Zeph/data/zeph.db on macOS).
+# sqlite_path = "/absolute/path/to/zeph.db"
 # Maximum number of recent messages to load into context
 history_limit = 50
 # Qdrant vector database URL for semantic memory
@@ -515,7 +519,9 @@ max_parallel_tools = 8
 # Use /debug-dump in TUI/CLI to toggle at runtime.
 enabled = false
 # Directory where per-session subdirectories are created
-output_dir = ".zeph/debug"
+# Defaults to the user data dir (for example ~/.local/share/zeph/debug on Linux,
+# ~/Library/Application Support/Zeph/debug on macOS).
+# output_dir = "/absolute/path/to/debug"
 # Output format for LLM request files:
 #   "json" — internal zeph-llm representation (default)
 #   "raw"  — actual API payload (system extracted, content blocks, mirrors what is sent to the provider)
@@ -621,7 +627,9 @@ max_wall_time_secs = 1800
 
 [logging]
 # Log file path (empty string disables file logging)
-file = ".zeph/logs/zeph.log"
+# Defaults to the user data dir (for example ~/.local/share/zeph/logs/zeph.log on Linux,
+# ~/Library/Application Support/Zeph/logs/zeph.log on macOS).
+# file = "/absolute/path/to/zeph.log"
 # Log level for the file sink: "trace", "debug", "info", "warn", "error"
 level = "info"
 # Rotation strategy: "daily", "hourly", or "never"
