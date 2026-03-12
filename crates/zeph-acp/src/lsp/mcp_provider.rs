@@ -93,12 +93,7 @@ impl LspProvider for McpLspProvider {
     }
 
     fn is_available(&self) -> bool {
-        // TODO: check McpManager for server liveness (e.g. manager.is_server_connected).
-        // Currently `McpManager` does not expose a liveness check, so we return `true`
-        // when constructed ("configured") rather than "connected". If the mcpls server
-        // disconnects, call_tool() will surface an error on first use. Priority fallback
-        // logic should account for this limitation when it is implemented.
-        true
+        self.manager.is_server_connected(&self.server_id)
     }
 
     async fn hover(
@@ -192,5 +187,24 @@ impl LspProvider for McpLspProvider {
             serde_json::from_value(value).map_err(|e| AcpError::ClientError(e.to_string()))?;
         // Filter out actions without workspace edits (M5).
         Ok(actions.into_iter().filter(|a| a.edit.is_some()).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn is_available_returns_false_when_server_is_not_connected() {
+        let manager = Arc::new(McpManager::new(
+            vec![],
+            vec![],
+            zeph_mcp::PolicyEnforcer::new(vec![]),
+        ));
+        let provider = McpLspProvider::new(manager, "mcpls", 32, 32);
+
+        assert!(!provider.is_available());
     }
 }

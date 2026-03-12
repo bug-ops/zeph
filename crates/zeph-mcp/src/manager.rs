@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,6 +43,7 @@ pub struct McpManager {
     configs: Vec<ServerEntry>,
     allowed_commands: Vec<String>,
     clients: Arc<RwLock<HashMap<String, McpClient>>>,
+    connected_server_ids: std::sync::RwLock<HashSet<String>>,
     enforcer: Arc<PolicyEnforcer>,
 }
 
@@ -65,6 +66,7 @@ impl McpManager {
             configs,
             allowed_commands,
             clients: Arc::new(RwLock::new(HashMap::new())),
+            connected_server_ids: std::sync::RwLock::new(HashSet::new()),
             enforcer: Arc::new(enforcer),
         }
     }
@@ -97,7 +99,11 @@ impl McpManager {
                     Ok(tools) => {
                         tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
                         all_tools.extend(tools);
-                        clients.insert(server_id, client);
+                        clients.insert(server_id.clone(), client);
+                        self.connected_server_ids
+                            .write()
+                            .expect("connected_server_ids lock poisoned")
+                            .insert(server_id);
                     }
                     Err(e) => {
                         tracing::warn!(server_id, "failed to list tools: {e:#}");
@@ -173,6 +179,10 @@ impl McpManager {
             });
         }
         clients.insert(entry.id.clone(), client);
+        self.connected_server_ids
+            .write()
+            .expect("connected_server_ids lock poisoned")
+            .insert(entry.id.clone());
 
         tracing::info!(
             server_id = entry.id,
@@ -198,6 +208,10 @@ impl McpManager {
         };
 
         tracing::info!(server_id, "shutting down dynamically removed MCP server");
+        self.connected_server_ids
+            .write()
+            .expect("connected_server_ids lock poisoned")
+            .remove(server_id);
         client.shutdown().await;
         Ok(())
     }
@@ -210,6 +224,18 @@ impl McpManager {
         ids
     }
 
+    /// Returns `true` when the given server currently has a live client entry.
+    ///
+    /// This is a non-blocking probe intended for synchronous availability
+    /// checks and mirrors the manager's connected-client lifecycle.
+    #[must_use]
+    pub fn is_server_connected(&self, server_id: &str) -> bool {
+        self.connected_server_ids
+            .read()
+            .expect("connected_server_ids lock poisoned")
+            .contains(server_id)
+    }
+
     /// Graceful shutdown of all connections (takes ownership).
     pub async fn shutdown_all(self) {
         self.shutdown_all_shared().await;
@@ -219,6 +245,10 @@ impl McpManager {
     pub async fn shutdown_all_shared(&self) {
         let mut clients = self.clients.write().await;
         let drained: Vec<(String, McpClient)> = clients.drain().collect();
+        self.connected_server_ids
+            .write()
+            .expect("connected_server_ids lock poisoned")
+            .clear();
         for (id, client) in drained {
             tracing::info!(server_id = id, "shutting down MCP client");
             if tokio::time::timeout(Duration::from_secs(5), client.shutdown())
@@ -274,6 +304,29 @@ mod tests {
     async fn list_servers_empty() {
         let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
         assert!(mgr.list_servers().await.is_empty());
+    }
+
+    #[test]
+    fn is_server_connected_returns_false_for_missing_server() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+        assert!(!mgr.is_server_connected("missing"));
+    }
+
+    #[test]
+    fn is_server_connected_returns_true_for_connected_server() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+        mgr.mark_server_connected_for_test("mcpls");
+        assert!(mgr.is_server_connected("mcpls"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_shared_clears_connected_server_ids() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+        mgr.mark_server_connected_for_test("mcpls");
+
+        mgr.shutdown_all_shared().await;
+
+        assert!(!mgr.is_server_connected("mcpls"));
     }
 
     #[tokio::test]
@@ -498,5 +551,14 @@ mod tests {
         let tools = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());
+    }
+
+    impl McpManager {
+        fn mark_server_connected_for_test(&self, server_id: &str) {
+            self.connected_server_ids
+                .write()
+                .expect("connected_server_ids lock poisoned")
+                .insert(server_id.to_owned());
+        }
     }
 }
