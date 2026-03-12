@@ -9,7 +9,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 #[cfg(feature = "acp-http")]
 use crate::agent::SendAgentSpawner;
 #[cfg(feature = "acp-http")]
-use crate::transport::{AcpServerConfig, stdio::serve_connection};
+use crate::transport::{AcpServerConfig, stdio::serve_connection_local};
 
 #[cfg(feature = "acp-http")]
 const BRIDGE_BUFFER_SIZE: usize = 64 * 1024;
@@ -32,7 +32,6 @@ pub fn spawn_acp_connection(
 ) -> (DuplexStream, DuplexStream) {
     let (client_w, agent_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
     let (agent_w, client_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
-
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -41,7 +40,7 @@ pub fn spawn_acp_connection(
         rt.block_on(async {
             let writer = agent_w.compat_write();
             let reader = agent_r.compat();
-            if let Err(e) = serve_connection(spawner, server_config, writer, reader).await {
+            if let Err(e) = serve_connection_local(spawner, server_config, writer, reader).await {
                 tracing::error!("ACP bridge connection error: {e}");
             }
         });

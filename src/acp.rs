@@ -415,26 +415,74 @@ async fn spawn_acp_agent(
 ) {
     use std::sync::Arc;
 
+    let provider = d.provider.clone();
+    let registry = Arc::clone(&d.registry);
+    let matcher = d.matcher.clone();
+    let max_active_skills = d.max_active_skills;
+    let tool_executor = Arc::clone(&d.tool_executor);
+    let max_tool_iterations = d.max_tool_iterations;
+    let max_tool_retries = d.max_tool_retries;
+    let max_retry_duration_secs = d.max_retry_duration_secs;
+    let tool_repeat_threshold = d.tool_repeat_threshold;
+    let model_name = d.model_name.clone();
+    let embed_model = d.embed_model.clone();
+    let skill_paths = d.skill_paths.clone();
+    let memory = Arc::clone(&d.memory);
+    let history_limit = d.history_limit;
+    let recall_limit = d.recall_limit;
+    let summarization_threshold = d.summarization_threshold;
+    let budget_tokens = d.budget_tokens;
+    let compaction_threshold = d.compaction_threshold;
+    let compaction_preserve_tail = d.compaction_preserve_tail;
+    let prune_protect_tokens = d.prune_protect_tokens;
+    let deferred_apply_threshold = d.deferred_apply_threshold;
+    let shutdown_rx = d.shutdown_rx.clone();
+    let security = d.security.clone();
+    let timeouts = d.timeouts;
+    let redact_credentials = d.redact_credentials;
+    let tool_summarization = d.tool_summarization;
+    let overflow_config = d.overflow_config.clone();
+    let permission_policy = d.permission_policy.clone();
+    let config_path = d.config_path.clone();
+    let mcp_tools = d.mcp_tools.clone();
+    let mcp_registry = d.mcp_registry.clone();
+    let mcp_manager = Arc::clone(&d.mcp_manager);
+    let mcp_shared_tools = Arc::clone(&d.mcp_shared_tools);
+    let mcp_config = d.mcp_config.clone();
+    let learning = d.learning.clone();
+    let tool_call_cutoff = d.tool_call_cutoff;
+    let summary_provider = d.summary_provider.clone();
+    let judge_provider = d.judge_provider.clone();
+    let quarantine_provider = d.quarantine_provider.clone();
+    let debug_config = d.debug_config.clone();
+    let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
+    let available_secrets: Vec<(String, Secret)> = d
+        .secrets
+        .iter()
+        .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned())))
+        .collect();
+    let skill_reload_tx = d.skill_reload_tx.clone();
+    let config_reload_tx = d.config_reload_tx.clone();
+
     // Per-session receivers: each session gets its own mpsc::Receiver forwarded from the
     // shared broadcast senders. The CancellationToken is derived from the AcpContext cancel
     // signal so the forwarding task exits when the session ends (eviction, shutdown, or
     // natural completion). This satisfies critic finding S1.
     let adapter_cancel = zeph_memory::CancellationToken::new();
-    let reload_rx = broadcast_to_mpsc(d.skill_reload_tx.subscribe(), adapter_cancel.clone());
-    let config_reload_rx =
-        broadcast_to_mpsc(d.config_reload_tx.subscribe(), adapter_cancel.clone());
+    let reload_rx = broadcast_to_mpsc(skill_reload_tx.subscribe(), adapter_cancel.clone());
+    let config_reload_rx = broadcast_to_mpsc(config_reload_tx.subscribe(), adapter_cancel.clone());
 
     // Build tool executor: ACP executors take priority via CompositeExecutor (first-match-wins).
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
     // When conversation_id is None (store unavailable), memory_tools use id=0 which maps to no
     // persisted history — the tool calls succeed but return empty results.
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
-        Arc::clone(&d.memory),
+        Arc::clone(&memory),
         session_ctx
             .conversation_id
             .unwrap_or(zeph_memory::ConversationId(0)),
     );
-    let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&d.registry));
+    let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
     let (tool_executor, cancel_signal, provider_override, parent_tool_use_id) =
         if let Some(ctx) = acp_ctx {
             let cancel_signal = Arc::clone(&ctx.cancel_signal);
@@ -448,7 +496,7 @@ async fn spawn_acp_agent(
                 cancel_signal_clone.notified().await;
                 adapter_cancel_clone.cancel();
             });
-            let mut base: Arc<dyn ErasedToolExecutor> = Arc::clone(&d.tool_executor) as Arc<_>;
+            let mut base: Arc<dyn ErasedToolExecutor> = Arc::clone(&tool_executor) as Arc<_>;
             if let Some(fs) = ctx.file_executor {
                 // Suppress FileExecutor's read/write/glob when AcpFileExecutor is active.
                 // edit and grep remain available from FileExecutor (no ACP equivalents yet).
@@ -481,68 +529,64 @@ async fn spawn_acp_agent(
                 skill_loader_executor,
                 zeph_tools::CompositeExecutor::new(
                     memory_executor,
-                    zeph_tools::DynExecutor(Arc::clone(&d.tool_executor) as Arc<_>),
+                    zeph_tools::DynExecutor(Arc::clone(&tool_executor) as Arc<_>),
                 ),
             ));
             (zeph_tools::DynExecutor(base), None, None, None)
         };
 
     let mut agent = Agent::new_with_registry_arc(
-        d.provider.clone(),
+        provider,
         channel,
-        Arc::clone(&d.registry),
-        d.matcher.clone(),
-        d.max_active_skills,
+        Arc::clone(&registry),
+        matcher,
+        max_active_skills,
         tool_executor,
     )
-    .with_max_tool_iterations(d.max_tool_iterations)
-    .with_max_tool_retries(d.max_tool_retries)
-    .with_max_retry_duration_secs(d.max_retry_duration_secs)
-    .with_tool_repeat_threshold(d.tool_repeat_threshold)
-    .with_model_name(d.model_name.clone())
+    .with_max_tool_iterations(max_tool_iterations)
+    .with_max_tool_retries(max_tool_retries)
+    .with_max_retry_duration_secs(max_retry_duration_secs)
+    .with_tool_repeat_threshold(tool_repeat_threshold)
+    .with_model_name(model_name)
     .with_working_dir(session_ctx.working_dir.clone())
-    .with_embedding_model(d.embed_model.clone())
-    .with_skill_reload(d.skill_paths.clone(), reload_rx)
-    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+    .with_embedding_model(embed_model)
+    .with_skill_reload(skill_paths, reload_rx)
+    .with_managed_skills_dir(managed_skills_dir)
     .with_context_budget(
-        d.budget_tokens,
+        budget_tokens,
         0.20,
-        d.compaction_threshold,
-        d.compaction_preserve_tail,
-        d.prune_protect_tokens,
+        compaction_threshold,
+        compaction_preserve_tail,
+        prune_protect_tokens,
     )
-    .with_deferred_apply_threshold(d.deferred_apply_threshold)
-    .with_shutdown(d.shutdown_rx.clone())
-    .with_security(d.security.clone(), d.timeouts)
-    .with_redact_credentials(d.redact_credentials)
-    .with_tool_summarization(d.tool_summarization)
-    .with_overflow_config(d.overflow_config.clone())
-    .with_permission_policy(d.permission_policy.clone())
-    .with_config_reload(d.config_path.clone(), config_reload_rx)
+    .with_deferred_apply_threshold(deferred_apply_threshold)
+    .with_shutdown(shutdown_rx)
+    .with_security(security, timeouts)
+    .with_redact_credentials(redact_credentials)
+    .with_tool_summarization(tool_summarization)
+    .with_overflow_config(overflow_config)
+    .with_permission_policy(permission_policy)
+    .with_config_reload(config_path, config_reload_rx)
     .with_mcp(
-        d.mcp_tools.clone(),
-        d.mcp_registry.clone(),
-        Some(Arc::clone(&d.mcp_manager)),
-        &d.mcp_config,
+        mcp_tools,
+        mcp_registry,
+        Some(Arc::clone(&mcp_manager)),
+        &mcp_config,
     )
-    .with_mcp_shared_tools(Arc::clone(&d.mcp_shared_tools))
-    .with_learning(d.learning.clone())
-    .with_tool_call_cutoff(d.tool_call_cutoff)
-    .with_available_secrets(
-        d.secrets
-            .iter()
-            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
-    );
+    .with_mcp_shared_tools(mcp_shared_tools)
+    .with_learning(learning)
+    .with_tool_call_cutoff(tool_call_cutoff)
+    .with_available_secrets(available_secrets);
 
     // Apply per-session memory only when a ConversationId was successfully allocated.
     // When None (store unavailable at session creation), the agent operates without persistent history.
     if let Some(cid) = session_ctx.conversation_id {
         agent = agent.with_memory(
-            Arc::clone(&d.memory),
+            Arc::clone(&memory),
             cid,
-            d.history_limit,
-            d.recall_limit,
-            d.summarization_threshold,
+            history_limit,
+            recall_limit,
+            summarization_threshold,
         );
     }
 
@@ -558,31 +602,32 @@ async fn spawn_acp_agent(
         agent = agent.with_parent_tool_use_id(parent_id);
     }
 
-    if let Some(sp) = d.summary_provider.clone() {
+    if let Some(sp) = summary_provider {
         agent = agent.with_summary_provider(sp);
     }
 
-    if let Some(jp) = d.judge_provider.clone() {
+    if let Some(jp) = judge_provider {
         agent = agent.with_judge_provider(jp);
     }
 
-    agent = agent_setup::apply_quarantine_provider(agent, d.quarantine_provider.clone());
+    agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);
 
-    if d.debug_config.enabled {
+    if debug_config.enabled {
         // Use session_id as a subdirectory prefix so concurrent sessions never share the same
         // timestamped directory and collide on file names (I2).
-        let session_dump_dir = d
-            .debug_config
+        let session_dump_dir = debug_config
             .output_dir
             .join(session_ctx.session_id.to_string());
         match zeph_core::debug_dump::DebugDumper::new(
             session_dump_dir.as_path(),
-            d.debug_config.format,
+            debug_config.format,
         ) {
             Ok(dumper) => agent = agent.with_debug_dumper(dumper),
             Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
         }
     }
+
+    drop(d);
 
     if let Err(e) = agent.load_history().await {
         tracing::error!("failed to load agent history: {e:#}");
@@ -985,9 +1030,7 @@ pub(crate) async fn run_acp_server(
 
     let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
         let shared = Arc::clone(&shared);
-        Box::pin(async move {
-            Box::pin(spawn_acp_agent(shared, channel, acp_ctx, session_ctx)).await;
-        })
+        Box::pin(spawn_acp_agent(shared, channel, acp_ctx, session_ctx))
     });
 
     zeph_acp::serve_stdio(spawner, server_config).await?;
@@ -1202,7 +1245,7 @@ mod tests {
 
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
-        let result = collect_project_rules(&[skill_file.clone()]);
+        let result = collect_project_rules(std::slice::from_ref(&skill_file));
         std::env::set_current_dir(orig).unwrap();
         assert_eq!(result.len(), 2);
         let names: Vec<_> = result

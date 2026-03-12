@@ -4,10 +4,10 @@
 //! End-to-end orchestration integration tests (Phase 7, #1242).
 //!
 //! These tests exercise the full orchestration pipeline:
-//!   plan → DagScheduler tick loop → LlmAggregator
+//!   plan → `DagScheduler` tick loop → `LlmAggregator`
 //!
 //! Run with:
-//!   cargo nextest run --test orchestration_integration
+//!   cargo nextest run --test `orchestration_integration`
 
 mod orchestration_integration {
     use zeph_core::config::OrchestrationConfig;
@@ -30,7 +30,7 @@ mod orchestration_integration {
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: String::new(),
-            hooks: Default::default(),
+            hooks: zeph_core::subagent::SubagentHooks::default(),
             memory: None,
             source: None,
             file_path: None,
@@ -66,7 +66,7 @@ mod orchestration_integration {
     /// Build a linear 2-task graph: task 0 → task 1.
     ///
     /// `TaskId(u32)` has a `pub(crate)` field, so we construct the dependency
-    /// list via serde_json deserialization rather than direct construction.
+    /// list via `serde_json` deserialization rather than direct construction.
     fn linear_2_task_graph(failure_strategy: Option<FailureStrategy>) -> TaskGraph {
         let mut graph = TaskGraph::new("test goal");
         let mut t0 = TaskNode::new(0, "task-0", "do first thing");
@@ -82,7 +82,7 @@ mod orchestration_integration {
 
     /// Drive the scheduler to completion by simulating agent execution.
     ///
-    /// For each `Spawn` action, `outcome_fn` is called with the task_id to produce
+    /// For each `Spawn` action, `outcome_fn` is called with the `task_id` to produce
     /// the `TaskOutcome`. Returns the terminal `GraphStatus` when `Done` is emitted.
     async fn drive_scheduler<F>(scheduler: &mut DagScheduler, mut outcome_fn: F) -> GraphStatus
     where

@@ -61,6 +61,10 @@ fn make_server_config() -> AcpServerConfig {
     }
 }
 
+fn assert_send<T: Send>(value: T) -> T {
+    value
+}
+
 #[tokio::test]
 async fn initialize_handshake() {
     let (client_stream, server_stream) = duplex(65536);
@@ -111,7 +115,7 @@ async fn initialize_handshake() {
             // Server can exit normally after client disconnects
             let _ = res;
         }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 
@@ -152,6 +156,19 @@ async fn stdio_ready_notification_is_first_frame() {
         }
         _ = client_fut => {}
     }
+}
+
+#[tokio::test]
+async fn serve_connection_future_is_send() {
+    let (_client_stream, server_stream) = duplex(65536);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let fut = serve_connection(
+        make_echo_spawner(),
+        make_server_config(),
+        server_write.compat_write(),
+        server_read.compat(),
+    );
+    let _fut = assert_send(fut);
 }
 
 #[tokio::test]
@@ -211,8 +228,49 @@ async fn new_session_and_cancel() {
         res = server_fut => {
             let _ = res;
         }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
+}
+
+#[tokio::test]
+async fn serve_connection_can_run_on_tokio_spawn() {
+    let (client_stream, server_stream) = duplex(65536);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+
+    let server = tokio::spawn(serve_connection(
+        make_echo_spawner(),
+        make_server_config(),
+        server_write.compat_write(),
+        server_read.compat(),
+    ));
+
+    let client_fut = async {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_conn, io_fut) = acp::ClientSideConnection::new(
+                    NoopClient,
+                    client_write.compat_write(),
+                    client_read.compat(),
+                    |fut| {
+                        tokio::task::spawn_local(fut);
+                    },
+                );
+                tokio::task::spawn_local(async move {
+                    let _ = io_fut.await;
+                });
+
+                client_conn
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .expect("initialize failed");
+            })
+            .await;
+    };
+
+    client_fut.await;
+    let _ = server.await.expect("server task panicked");
 }
 
 // ── E2E: Custom methods via JSON-RPC transport ───────────────────────────────
@@ -266,7 +324,7 @@ where
 
     tokio::select! {
         res = server_fut => { let _ = res; }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 
@@ -477,7 +535,7 @@ async fn e2e_initialize_returns_auth_hint_and_load_session() {
 
     tokio::select! {
         res = server_fut => { let _ = res; }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 

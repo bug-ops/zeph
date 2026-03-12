@@ -6,12 +6,6 @@
 //! Maps `LspProvider` methods to `mcpls` tool calls via `McpManager::call_tool`.
 //! Detected at startup when `McpManager` has a server with a `"get_hover"` tool.
 //!
-//! # !Send constraint
-//!
-//! `McpManager` uses `Arc<RwLock<...>>` internally and is `Send + Sync`, but
-//! `McpLspProvider` is co-located in the `!Send` LSP module for API consistency.
-//! It may be called from a `LocalSet` context.
-
 use std::sync::Arc;
 
 use rmcp::model::RawContent;

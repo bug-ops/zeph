@@ -461,9 +461,12 @@ mod tests {
     }
 
     fn make_call(tool_id: &str, params: serde_json::Value) -> ToolCall {
+        let serde_json::Value::Object(params) = params else {
+            panic!("scheduler test params must be a JSON object");
+        };
         ToolCall {
             tool_id: tool_id.to_owned(),
-            params: params.as_object().unwrap().clone(),
+            params,
         }
     }
 

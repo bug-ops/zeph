@@ -5,12 +5,9 @@
 //!
 //! # Thread safety
 //!
-//! `LspProvider` is intentionally `!Send`. Both implementations (`AcpLspProvider`
-//! and `McpLspProvider`) hold `Rc<RefCell<...>>` state (the ACP connection slot)
-//! and must only be used within a `tokio::task::LocalSet` context.
-//!
-//! For HTTP transport sessions that require `Send`, a separate wrapper would be
-//! needed (deferred to a follow-up).
+//! `LspProvider` implementations are `Send + Sync` so ACP sessions can run the
+//! agent loop on the multithreaded tokio scheduler while proxying IDE requests
+//! back through a dedicated ACP control-plane runtime.
 
 use crate::error::AcpError;
 
@@ -21,9 +18,7 @@ use super::types::{
 
 /// Abstract interface over IDE-proxied (ACP) and standalone (MCP) LSP sources.
 ///
-/// **`!Send` constraint**: implementations use `Rc<RefCell<...>>` and must only
-/// run inside a `LocalSet`. Do not use across thread boundaries.
-pub trait LspProvider {
+pub trait LspProvider: Send + Sync {
     /// Resolve hover information at the given 1-based position.
     fn hover(
         &self,

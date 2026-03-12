@@ -463,6 +463,7 @@ async fn handle_working_dir_update(
 mod tests {
     use std::sync::Arc;
 
+    use acp::Agent as _;
     use agent_client_protocol as acp;
     use serde_json::value::RawValue;
     use tokio::sync::{mpsc, oneshot};
@@ -523,7 +524,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 let resp = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
@@ -545,7 +545,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 let resp = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
@@ -622,7 +621,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 let resp = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
@@ -652,7 +650,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 let resp = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
@@ -739,7 +736,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 let resp = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await
@@ -905,7 +901,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 let req = acp::ExtRequest::new("unknown/custom/method", null_params());
                 let resp = agent.ext_method(req).await.unwrap();
                 // Default response for unknown method is JSON null.
@@ -920,7 +915,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 // Create a session first.
                 let new_resp = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
@@ -944,7 +938,6 @@ mod tests {
         local
             .run_until(async {
                 let (agent, _rx) = make_agent();
-                use acp::Agent as _;
                 let resp = agent
                     .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                     .await

@@ -9,18 +9,14 @@
 //! client→agent. `AcpLspProvider` uses `conn.ext_method()` (the `acp::Client` trait)
 //! to send these outbound requests.
 //!
-//! # !Send constraint
-//!
-//! Holds a `ConnSlot` (`Rc<RefCell<...>>`). Must only be used inside a `LocalSet`.
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use acp::Client as _;
 use agent_client_protocol as acp;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::error::AcpError;
-use crate::transport::ConnSlot;
 
 use super::provider::LspProvider;
 use super::types::{
@@ -28,17 +24,24 @@ use super::types::{
     LspSymbolInformation,
 };
 
+enum LspRequest {
+    ExtMethod {
+        method: &'static str,
+        params: serde_json::Value,
+        reply: oneshot::Sender<Result<serde_json::Value, AcpError>>,
+    },
+}
+
 /// ACP-backed LSP provider that relays requests to the connected IDE.
 ///
 /// Created in `build_acp_context()` when the client advertises `meta["lsp"]`
 /// capability during `initialize()`. Falls back to `None` when the IDE does not
 /// support LSP extension methods.
-///
-/// **`!Send` constraint**: holds a `ConnSlot` (`Rc<RefCell<...>>`).
+#[derive(Clone)]
 pub struct AcpLspProvider {
-    conn_slot: ConnSlot,
     /// Whether the IDE advertised LSP support during `initialize()`.
     ide_supports_lsp: bool,
+    request_tx: mpsc::UnboundedSender<LspRequest>,
     /// Timeout for each LSP `ext_method` call.
     request_timeout: Duration,
     /// Maximum number of reference locations to return.
@@ -51,21 +54,28 @@ impl AcpLspProvider {
     /// Create a new provider.
     ///
     /// `ide_supports_lsp` should be set from `client_caps.meta["lsp"]`.
-    #[must_use]
-    pub fn new(
-        conn_slot: ConnSlot,
+    pub fn new<C>(
+        conn: std::rc::Rc<C>,
         ide_supports_lsp: bool,
         request_timeout_secs: u64,
         max_references: usize,
         max_workspace_symbols: usize,
-    ) -> Self {
-        Self {
-            conn_slot,
-            ide_supports_lsp,
-            request_timeout: Duration::from_secs(request_timeout_secs),
-            max_references,
-            max_workspace_symbols,
-        }
+    ) -> (Self, impl std::future::Future<Output = ()>)
+    where
+        C: acp::Client + 'static,
+    {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handler = async move { run_lsp_handler(conn, rx).await };
+        (
+            Self {
+                ide_supports_lsp,
+                request_tx: tx,
+                request_timeout: Duration::from_secs(request_timeout_secs),
+                max_references,
+                max_workspace_symbols,
+            },
+            handler,
+        )
     }
 
     fn call_ext_method(
@@ -74,24 +84,49 @@ impl AcpLspProvider {
         params: serde_json::Value,
     ) -> impl std::future::Future<Output = Result<serde_json::Value, AcpError>> + '_ {
         let timeout = self.request_timeout;
-        // Borrow conn_slot inside the returned future (non-Send, LocalSet only).
         async move {
-            let conn = {
-                let guard = self.conn_slot.borrow();
-                guard.as_ref().cloned()
-            };
-            let conn = conn.ok_or(AcpError::ChannelClosed)?;
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(LspRequest::ExtMethod {
+                    method,
+                    params,
+                    reply: reply_tx,
+                })
+                .map_err(|_| AcpError::ChannelClosed)?;
 
-            let raw = serde_json::value::to_raw_value(&params)
-                .map_err(|e| AcpError::ClientError(e.to_string()))?;
-            let req = acp::ExtRequest::new(method, Arc::from(raw));
-
-            let result = tokio::time::timeout(timeout, conn.ext_method(req))
+            tokio::time::timeout(timeout, reply_rx)
                 .await
                 .map_err(|_| AcpError::ClientError("LSP request timed out".to_owned()))?
-                .map_err(|e| AcpError::ClientError(e.to_string()))?;
+                .map_err(|_| AcpError::ChannelClosed)?
+        }
+    }
+}
 
-            serde_json::from_str(result.0.get()).map_err(|e| AcpError::ClientError(e.to_string()))
+async fn run_lsp_handler<C>(conn: std::rc::Rc<C>, mut rx: mpsc::UnboundedReceiver<LspRequest>)
+where
+    C: acp::Client + 'static,
+{
+    while let Some(request) = rx.recv().await {
+        match request {
+            LspRequest::ExtMethod {
+                method,
+                params,
+                reply,
+            } => {
+                let result = async {
+                    let raw = serde_json::value::to_raw_value(&params)
+                        .map_err(|e| AcpError::ClientError(e.to_string()))?;
+                    let req = acp::ExtRequest::new(method, Arc::from(raw));
+                    let result = conn
+                        .ext_method(req)
+                        .await
+                        .map_err(|e| AcpError::ClientError(e.to_string()))?;
+                    serde_json::from_str(result.0.get())
+                        .map_err(|e| AcpError::ClientError(e.to_string()))
+                }
+                .await;
+                let _ = reply.send(result);
+            }
         }
     }
 }
@@ -102,7 +137,7 @@ impl LspProvider for AcpLspProvider {
     }
 
     fn is_available(&self) -> bool {
-        self.ide_supports_lsp && self.conn_slot.borrow().is_some()
+        self.ide_supports_lsp && !self.request_tx.is_closed()
     }
 
     async fn hover(

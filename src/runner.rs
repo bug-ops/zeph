@@ -1084,24 +1084,30 @@ mod tests {
 
     #[test]
     fn resolve_logging_config_no_cli_with_config_file_uses_config() {
-        let mut base = zeph_core::config::LoggingConfig::default();
-        base.file = "/var/log/zeph.log".into();
+        let base = zeph_core::config::LoggingConfig {
+            file: "/var/log/zeph.log".into(),
+            ..Default::default()
+        };
         let result = resolve_logging_config(base, None);
         assert_eq!(result.file, "/var/log/zeph.log");
     }
 
     #[test]
     fn resolve_logging_config_cli_empty_str_disables_logging() {
-        let mut base = zeph_core::config::LoggingConfig::default();
-        base.file = "/var/log/zeph.log".into();
+        let base = zeph_core::config::LoggingConfig {
+            file: "/var/log/zeph.log".into(),
+            ..Default::default()
+        };
         let result = resolve_logging_config(base, Some(""));
         assert_eq!(result.file, "");
     }
 
     #[test]
     fn resolve_logging_config_cli_path_overrides_config() {
-        let mut base = zeph_core::config::LoggingConfig::default();
-        base.file = "/var/log/zeph.log".into();
+        let base = zeph_core::config::LoggingConfig {
+            file: "/var/log/zeph.log".into(),
+            ..Default::default()
+        };
         let result = resolve_logging_config(base, Some("/tmp/custom.log"));
         assert_eq!(result.file, "/tmp/custom.log");
     }

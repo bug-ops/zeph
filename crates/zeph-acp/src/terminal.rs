@@ -1039,12 +1039,11 @@ mod tests {
                 // At least a terminal_exit notification must arrive.
                 let mut got_exit = false;
                 while let Ok(notif) = stream_rx.try_recv() {
-                    if let acp::SessionUpdate::ToolCallUpdate(update) = notif.update {
-                        if let Some(meta) = update.meta {
-                            if meta.contains_key("terminal_exit") {
-                                got_exit = true;
-                            }
-                        }
+                    if let acp::SessionUpdate::ToolCallUpdate(update) = notif.update
+                        && let Some(meta) = update.meta
+                        && meta.contains_key("terminal_exit")
+                    {
+                        got_exit = true;
                     }
                 }
                 assert!(got_exit, "expected terminal_exit notification");

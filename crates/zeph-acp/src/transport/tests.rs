@@ -24,7 +24,7 @@ fn shared_models(models: Vec<String>) -> SharedAvailableModels {
 fn noop_spawner() -> SendAgentSpawner {
     Arc::new(
         |_channel: LoopbackChannel, _ctx: Option<AcpContext>, _session_ctx: SessionContext| {
-            Box::pin(async {}) as Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
+            Box::pin(async {}) as Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>
         },
     )
 }
