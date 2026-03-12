@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -1146,7 +1147,10 @@ impl<C: Channel> Agent<C> {
 
         self.append_mcp_prompt(query, &mut system_prompt).await;
 
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = match self.env_context.working_dir.as_str() {
+            "" | "unknown" => std::env::current_dir().unwrap_or_default(),
+            dir => PathBuf::from(dir),
+        };
         let project_configs = crate::project::discover_project_configs(&cwd);
         let project_context = crate::project::load_project_context(&project_configs);
         if !project_context.is_empty() {

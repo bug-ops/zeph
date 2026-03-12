@@ -781,7 +781,7 @@ impl acp::Agent for ZephAcpAgent {
 
     async fn new_session(
         &self,
-        _args: acp::NewSessionRequest,
+        args: acp::NewSessionRequest,
     ) -> acp::Result<acp::NewSessionResponse> {
         // LRU eviction: find and remove the oldest idle (non-busy) session when at limit.
         if self.sessions.borrow().len() >= self.max_sessions {
@@ -816,7 +816,7 @@ impl acp::Agent for ZephAcpAgent {
             Arc::new(std::sync::RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
 
-        let session_cwd = std::env::current_dir().unwrap_or_default();
+        let session_cwd = args.cwd.clone();
         let acp_ctx = self.build_acp_context(
             &session_id,
             cancel_signal,
@@ -830,7 +830,7 @@ impl acp::Agent for ZephAcpAgent {
             cancel_signal: handle.cancel_signal,
             last_active: std::cell::Cell::new(std::time::Instant::now()),
             created_at: chrono::Utc::now(),
-            working_dir: RefCell::new(None),
+            working_dir: RefCell::new(Some(session_cwd.clone())),
             provider_override,
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
@@ -1277,7 +1277,7 @@ impl acp::Agent for ZephAcpAgent {
             })?;
 
         // Look up existing conversation_id for this session, or create one for legacy sessions.
-        let session_cwd = std::env::current_dir().unwrap_or_default();
+        let session_cwd = args.cwd.clone();
         let conversation_id = resolve_conversation_id(store, &args.session_id).await;
 
         // Rebuild agent loop for the restored session.
@@ -1299,7 +1299,7 @@ impl acp::Agent for ZephAcpAgent {
             cancel_signal: handle.cancel_signal,
             last_active: std::cell::Cell::new(std::time::Instant::now()),
             created_at: chrono::Utc::now(),
-            working_dir: RefCell::new(None),
+            working_dir: RefCell::new(Some(session_cwd.clone())),
             provider_override,
             current_model: RefCell::new(String::new()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),

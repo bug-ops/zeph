@@ -120,6 +120,27 @@ async fn new_session_creates_entry() {
 }
 
 #[tokio::test]
+async fn new_session_uses_request_cwd() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (agent, _rx) = make_agent();
+            use acp::Agent as _;
+            let cwd = std::path::PathBuf::from("/tmp/acp-session-cwd");
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(cwd.clone()))
+                .await
+                .unwrap();
+            let entry = agent.sessions.borrow();
+            let entry = entry
+                .get(&resp.session_id)
+                .expect("session entry should exist");
+            assert_eq!(entry.working_dir.borrow().as_ref(), Some(&cwd));
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn cancel_keeps_session() {
     let local = tokio::task::LocalSet::new();
     local

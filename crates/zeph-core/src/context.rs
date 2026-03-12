@@ -171,11 +171,21 @@ pub struct EnvironmentContext {
 impl EnvironmentContext {
     #[must_use]
     pub fn gather(model_name: &str) -> Self {
-        let working_dir =
-            std::env::current_dir().map_or_else(|_| "unknown".into(), |p| p.display().to_string());
+        let working_dir = std::env::current_dir().unwrap_or_default();
+        Self::gather_for_dir(model_name, working_dir)
+    }
+
+    #[must_use]
+    pub fn gather_for_dir(model_name: &str, working_dir: std::path::PathBuf) -> Self {
+        let working_dir = if working_dir.as_os_str().is_empty() {
+            "unknown".into()
+        } else {
+            working_dir.display().to_string()
+        };
 
         let git_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
+            .current_dir(&working_dir)
             .output()
             .ok()
             .and_then(|o| {
@@ -196,17 +206,15 @@ impl EnvironmentContext {
 
     /// Update only the git branch, leaving all other fields unchanged.
     pub fn refresh_git_branch(&mut self) {
-        self.git_branch = std::process::Command::new("git")
-            .args(["branch", "--show-current"])
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                } else {
-                    None
-                }
-            });
+        if matches!(self.working_dir.as_str(), "" | "unknown") {
+            self.git_branch = None;
+            return;
+        }
+        let refreshed = Self::gather_for_dir(
+            &self.model_name,
+            std::path::PathBuf::from(&self.working_dir),
+        );
+        self.git_branch = refreshed.git_branch;
     }
 
     #[must_use]
@@ -489,6 +497,14 @@ mod tests {
             Some(b) => assert!(!b.contains('\n'), "branch name must not contain newlines"),
             None => {} // not in a git repo — acceptable
         }
+    }
+
+    #[test]
+    fn environment_context_gather_for_dir_uses_supplied_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let env = EnvironmentContext::gather_for_dir("test-model", tmp.path().to_path_buf());
+        assert_eq!(env.working_dir, tmp.path().display().to_string());
+        assert_eq!(env.model_name, "test-model");
     }
 
     #[test]

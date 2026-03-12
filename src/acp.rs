@@ -433,6 +433,7 @@ async fn spawn_acp_agent(
     .with_max_retry_duration_secs(d.max_retry_duration_secs)
     .with_tool_repeat_threshold(d.tool_repeat_threshold)
     .with_model_name(d.model_name.clone())
+    .with_working_dir(session_ctx.working_dir.clone())
     .with_embedding_model(d.embed_model.clone())
     .with_skill_reload(d.skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())

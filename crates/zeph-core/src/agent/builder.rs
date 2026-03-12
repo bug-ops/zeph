@@ -443,6 +443,15 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.env_context = crate::context::EnvironmentContext::gather_for_dir(
+            &self.runtime.model_name,
+            path.into(),
+        );
+        self
+    }
+
+    #[must_use]
     pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
         self.warmup_ready = Some(rx);
         self

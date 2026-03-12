@@ -238,6 +238,25 @@ pub mod agent_tests {
     }
 
     #[tokio::test]
+    async fn agent_with_working_dir_updates_environment_context() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_model_name("test-model")
+            .with_working_dir(tmp.path().to_path_buf());
+
+        assert_eq!(
+            agent.env_context.working_dir,
+            tmp.path().display().to_string()
+        );
+        assert_eq!(agent.env_context.model_name, "test-model");
+    }
+
+    #[tokio::test]
     async fn agent_with_embedding_model_sets_model() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
