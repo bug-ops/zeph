@@ -156,8 +156,8 @@ struct SharedAgentDeps {
 /// - The `CancellationToken` is cancelled (session evicted or shutdown).
 /// - The broadcast channel is closed: `brx.recv()` returns `RecvError::Closed`.
 ///
-/// Lagged broadcast events are logged and skipped — skill/config reloads are infrequent
-/// and a missed reload only delays hot-reload, not correctness.
+/// Lagged broadcast events are logged at `warn!` and skipped. ACP session cancellation does not
+/// rely on this adapter; it is wired through a separate per-session `Notify` signal.
 #[cfg(feature = "acp")]
 fn broadcast_to_mpsc<T: Clone + Send + 'static>(
     mut brx: tokio::sync::broadcast::Receiver<T>,
@@ -281,9 +281,9 @@ async fn build_acp_deps(
     // Convert mpsc receivers from watchers to broadcast senders so each ACP session
     // can subscribe independently. Option A (critic S3): keep watchers unchanged,
     // forward mpsc→broadcast only here in build_acp_deps.
-    // Size the buffer proportionally to max_sessions so a burst of reloads does not
-    // cause Lagged drops when many sessions are active (S3).
-    let broadcast_cap = std::cmp::max(64, config.acp.max_sessions * 2);
+    // Keep enough backlog for bursty reload traffic while leaving room for larger deployments
+    // to raise the limit explicitly via config.
+    let broadcast_cap = config.acp.broadcast_capacity.max(1);
     let (skill_reload_tx, _) = tokio::sync::broadcast::channel(broadcast_cap);
     let (config_reload_tx, _) = tokio::sync::broadcast::channel(broadcast_cap);
 
@@ -1187,5 +1187,46 @@ mod tests {
         // Sending on broadcast should succeed (no one listening) but recv returns None.
         drop(btx);
         assert_eq!(rx.recv().await, None);
+    }
+
+    #[tokio::test]
+    async fn broadcast_lag_does_not_block_direct_cancel_signal() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<u32>(1);
+        let adapter_cancel = zeph_memory::CancellationToken::new();
+        let mut rx = broadcast_to_mpsc(brx, adapter_cancel.clone());
+        let cancel_signal = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        {
+            let cancel_signal = std::sync::Arc::clone(&cancel_signal);
+            let adapter_cancel = adapter_cancel.clone();
+            tokio::spawn(async move {
+                cancel_signal.notified().await;
+                adapter_cancel.cancel();
+            });
+        }
+
+        btx.send(1).unwrap();
+        btx.send(2).unwrap();
+        btx.send(3).unwrap();
+        tokio::task::yield_now().await;
+
+        cancel_signal.notify_one();
+        drop(btx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            adapter_cancel.cancelled(),
+        )
+        .await
+        .expect("direct ACP cancel signal should not be blocked by reload lag");
+
+        loop {
+            let next = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("adapter receiver should shut down promptly after cancel");
+            if next.is_none() {
+                break;
+            }
+        }
     }
 }

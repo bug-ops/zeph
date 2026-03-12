@@ -547,6 +547,8 @@ http_bind = "127.0.0.1:9800"
 max_sessions = 4
 # Session idle timeout in seconds before eviction
 session_idle_timeout_secs = 1800
+# Reload/config broadcast backlog per ACP session fan-out
+broadcast_capacity = 256
 # Whether to serve the /.well-known/acp.json agent discovery manifest (HTTP/both only)
 discovery_enabled = true
 # LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-4-5", "ollama:llama3"]

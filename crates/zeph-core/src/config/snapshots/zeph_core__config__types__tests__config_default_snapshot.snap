@@ -272,6 +272,7 @@ agent_name = "zeph"
 agent_version = "0.14.3"
 max_sessions = 4
 session_idle_timeout_secs = 1800
+broadcast_capacity = 256
 available_models = []
 transport = "stdio"
 http_bind = "127.0.0.1:9800"
@@ -336,18 +337,3 @@ file = "<DEFAULT_LOG_FILE>"
 level = "info"
 rotation = "daily"
 max_files = 7
-
-[lsp]
-enabled = false
-mcp_server_id = "mcpls"
-token_budget = 2000
-call_timeout_secs = 5
-
-[lsp.diagnostics]
-enabled = true
-max_per_file = 20
-min_severity = "error"
-
-[lsp.hover]
-enabled = false
-max_symbols = 10
