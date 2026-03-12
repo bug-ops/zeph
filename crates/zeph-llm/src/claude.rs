@@ -681,14 +681,12 @@ impl ClaudeProvider {
         system_blocks: Option<&[SystemContentBlock]>,
         chat_messages: Option<&mut Vec<StructuredApiMessage>>,
     ) {
-        let mut tagged_blocks = tool_blocks;
-
-        if let Some(system) = system_blocks {
-            tagged_blocks += system
-                .iter()
-                .filter(|block| block.cache_control.is_some())
-                .count();
-        }
+        let tagged_blocks = tool_blocks + system_blocks.map_or(0, |system| {
+                system
+                    .iter()
+                    .filter(|block| block.cache_control.is_some())
+                    .count()
+            });
 
         if tagged_blocks >= Self::MAX_CACHE_CONTROL_BLOCKS {
             Self::clear_message_cache_controls(chat_messages);
@@ -740,26 +738,12 @@ impl ClaudeProvider {
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
-        // Apply experiment generation overrides (temperature only; top_p/top_k not in Claude API).
-        // Overrides are skipped when thinking mode is active (thinking requires temperature=1.0).
         if thinking_param.is_none()
             && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
         {
             temperature = Some(t);
         }
-        // lgtm[rust/cleartext-logging]
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let auto_cache = if messages.len() > 1 {
-            tracing::debug!(
-                message_count = messages.len(),
-                "multi-turn session: system cache eligible"
-            );
-            Some(CacheControl {
-                cache_type: CacheType::Ephemeral,
-            })
-        } else {
-            None
-        };
 
         if Self::has_image_parts(messages) {
             let (system, mut chat_messages) =
@@ -776,7 +760,6 @@ impl ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
-                cache_control: auto_cache,
             };
             let mut req = self
                 .client
@@ -792,7 +775,6 @@ impl ClaudeProvider {
         let (system, chat_messages) = split_messages(messages);
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let beta = self.beta_header(false);
-
         let body = RequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
@@ -802,7 +784,6 @@ impl ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
-            cache_control: auto_cache,
         };
 
         let mut req = self
@@ -967,17 +948,6 @@ impl LlmProvider for ClaudeProvider {
         let output_config = effort.map(|e| OutputConfig { effort: e });
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
-        let auto_cache = if messages.len() > 1 {
-            tracing::debug!(
-                message_count = messages.len(),
-                "multi-turn session: system cache eligible"
-            );
-            Some(CacheControl {
-                cache_type: CacheType::Ephemeral,
-            })
-        } else {
-            None
-        };
         let beta = self.beta_header(true);
         let body = TypedToolRequestBody {
             model: &self.model,
@@ -992,7 +962,6 @@ impl LlmProvider for ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
-            cache_control: auto_cache,
         };
 
         let mut req = self
@@ -1066,13 +1035,6 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let auto_cache = if messages.len() > 1 {
-            Some(CacheControl {
-                cache_type: CacheType::Ephemeral,
-            })
-        } else {
-            None
-        };
 
         if !tools.is_empty() {
             let (system, mut chat_messages) =
@@ -1089,7 +1051,6 @@ impl LlmProvider for ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
-                cache_control: auto_cache,
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -1109,7 +1070,6 @@ impl LlmProvider for ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
-                cache_control: auto_cache,
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -1126,7 +1086,6 @@ impl LlmProvider for ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
-            cache_control: auto_cache,
         };
         serde_json::to_value(&body)
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
@@ -1150,17 +1109,6 @@ impl LlmProvider for ClaudeProvider {
         let output_config = effort.map(|e| OutputConfig { effort: e });
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
-        let auto_cache = if messages.len() > 1 {
-            tracing::debug!(
-                message_count = messages.len(),
-                "multi-turn session: system cache eligible"
-            );
-            Some(CacheControl {
-                cache_type: CacheType::Ephemeral,
-            })
-        } else {
-            None
-        };
         let beta = self.beta_header(!tools.is_empty());
         let body = ToolRequestBody {
             model: &self.model,
@@ -1171,7 +1119,6 @@ impl LlmProvider for ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
-            cache_control: auto_cache,
         };
 
         let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
@@ -1417,8 +1364,6 @@ struct TypedToolRequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
 }
 
 #[cfg(feature = "schema")]
@@ -1449,8 +1394,6 @@ struct ToolRequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
 }
 
 #[derive(Serialize, Debug)]
@@ -1894,8 +1837,6 @@ struct RequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
 }
 
 #[derive(Serialize)]
@@ -1913,8 +1854,6 @@ struct VisionRequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
 }
 
 #[derive(Serialize)]
@@ -2127,7 +2066,6 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
-            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("system"));
@@ -2153,7 +2091,6 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
-            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"system\""));
@@ -2172,7 +2109,6 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
-            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"stream\":true"));
@@ -2342,7 +2278,6 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
-            cache_control: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("stream"));
@@ -3959,7 +3894,7 @@ mod tests {
         );
     }
 
-    // ── #1086: top-level cache_control for multi-turn ─────────────────────────
+    // ── #1086/#1570: Claude requests avoid top-level cache_control ────────────
 
     #[test]
     fn build_request_single_message_no_top_level_cache_control() {
@@ -3980,7 +3915,7 @@ mod tests {
     }
 
     #[test]
-    fn build_request_multi_turn_has_top_level_cache_control() {
+    fn build_request_multi_turn_no_top_level_cache_control() {
         let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
         let messages = vec![
             Message {
@@ -4005,9 +3940,9 @@ mod tests {
         let req = provider.build_request(&messages, false).build().unwrap();
         let body: serde_json::Value =
             serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
-        assert_eq!(
-            body["cache_control"]["type"], "ephemeral",
-            "multi-turn request must have top-level cache_control"
+        assert!(
+            body.get("cache_control").is_none(),
+            "multi-turn request must not have top-level cache_control"
         );
     }
 
@@ -4181,9 +4116,61 @@ mod tests {
                 + count_cache_control_occurrences(&body["system"])
                 + count_cache_control_occurrences(&body["messages"]),
             4,
-            "tool requests must never serialize more than four block-level cache_control entries"
+            "tool requests must never serialize more than four nested cache_control entries"
         );
-        assert_eq!(body["cache_control"]["type"], "ephemeral");
+        assert_eq!(
+            count_cache_control_occurrences(&body),
+            4,
+            "tool requests must stay within Anthropic's total cache_control budget"
+        );
+        assert!(
+            body.get("cache_control").is_none(),
+            "top-level cache_control must be dropped when tools and system blocks already consume the budget"
+        );
+    }
+
+    #[test]
+    fn debug_vision_request_caps_total_cache_controls_at_four() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+        let padding = "x".repeat(8200);
+        let system = format!(
+            "base prompt {padding}\n{CACHE_MARKER_STABLE}\nskills here {padding}\n\
+             {CACHE_MARKER_TOOLS}\ntool catalog {padding}\n\
+             {CACHE_MARKER_VOLATILE}\nvolatile stuff"
+        );
+        let messages = vec![
+            Message::from_legacy(Role::System, system),
+            Message::from_legacy(Role::User, "describe this screenshot"),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::Image(Box::new(ImageData {
+                    data: vec![1, 2, 3, 4],
+                    mime_type: "image/png".into(),
+                }))],
+            ),
+        ];
+
+        let body = provider.debug_request_json(&messages, &[], false);
+
+        assert_eq!(
+            count_cache_control_occurrences(&body["system"]),
+            3,
+            "system markers should keep all three cacheable blocks"
+        );
+        assert_eq!(
+            count_cache_control_occurrences(&body["messages"]),
+            1,
+            "vision requests may keep one message breakpoint when system blocks consume only three slots"
+        );
+        assert_eq!(
+            count_cache_control_occurrences(&body),
+            4,
+            "vision requests must stay within Anthropic's total cache_control budget"
+        );
+        assert!(
+            body.get("cache_control").is_none(),
+            "vision requests must not serialize top-level cache_control"
+        );
     }
 
     // --- #1094: tool schema hash in cache key ---
