@@ -44,8 +44,10 @@ fn test_state() -> AcpHttpState {
             title_max_chars: 60,
             max_history: 100,
             sqlite_path: None,
+            ready_notification: None,
         },
     )
+    .with_ready(true)
 }
 
 fn state_with_max_sessions(max: usize) -> AcpHttpState {
@@ -67,8 +69,10 @@ fn state_with_max_sessions(max: usize) -> AcpHttpState {
             title_max_chars: 60,
             max_history: 100,
             sqlite_path: None,
+            ready_notification: None,
         },
     )
+    .with_ready(true)
 }
 
 // ── POST /acp tests ──────────────────────────────────────────────────────────
@@ -334,8 +338,10 @@ fn state_with_auth(token: &str) -> AcpHttpState {
             title_max_chars: 60,
             max_history: 100,
             sqlite_path: None,
+            ready_notification: None,
         },
     )
+    .with_ready(true)
 }
 
 #[tokio::test]
@@ -401,6 +407,117 @@ async fn auth_none_mode_allows_all_requests() {
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
+#[tokio::test]
+async fn health_is_public_even_when_bearer_auth_is_enabled() {
+    let router = acp_router(state_with_auth("secret"));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn health_returns_200_when_ready() {
+    use axum::body::to_bytes;
+
+    let router = acp_router(test_state());
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["version"], "0.0.1");
+    assert!(json["uptime_secs"].is_u64());
+}
+
+#[tokio::test]
+async fn health_returns_503_when_not_ready() {
+    use axum::body::to_bytes;
+
+    let state = AcpHttpState::new(
+        noop_spawner(),
+        AcpServerConfig {
+            agent_name: "test".into(),
+            agent_version: "0.0.1".into(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+            permission_file: None,
+            provider_factory: None,
+            available_models: vec![],
+            mcp_manager: None,
+            auth_bearer_token: Some("secret".into()),
+            discovery_enabled: true,
+            terminal_timeout_secs: 120,
+            project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
+            ready_notification: None,
+        },
+    );
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body = to_bytes(response.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "starting");
+}
+
+#[tokio::test]
+async fn acp_post_returns_503_when_server_not_ready() {
+    let state = AcpHttpState::new(
+        noop_spawner(),
+        AcpServerConfig {
+            agent_name: "test".into(),
+            agent_version: "0.0.1".into(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+            permission_file: None,
+            provider_factory: None,
+            available_models: vec![],
+            mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: true,
+            terminal_timeout_secs: 120,
+            project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
+            ready_notification: None,
+        },
+    );
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acp")
+        .body(Body::from("{}"))
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
 // ── Discovery endpoint tests ──────────────────────────────────────────────────
 
 #[tokio::test]
@@ -429,10 +546,13 @@ async fn discovery_returns_expected_json_fields() {
     );
     assert!(json["transports"]["http_sse"].is_object());
     assert!(json["transports"]["websocket"].is_object());
+    assert!(json["transports"]["health"].is_object());
     assert!(
         json["authentication"].is_null(),
         "authentication must be null when no token"
     );
+    assert_eq!(json["readiness"]["stdio_notification"], "zeph/ready");
+    assert_eq!(json["readiness"]["http_health_endpoint"], "/health");
 }
 
 #[tokio::test]
@@ -476,6 +596,7 @@ async fn discovery_disabled_returns_404() {
             title_max_chars: 60,
             max_history: 100,
             sqlite_path: None,
+            ready_notification: None,
         },
     );
     let router = acp_router(state);
@@ -516,6 +637,7 @@ async fn reaper_removes_expired_connections() {
             title_max_chars: 60,
             max_history: 100,
             sqlite_path: None,
+            ready_notification: None,
         },
     );
 

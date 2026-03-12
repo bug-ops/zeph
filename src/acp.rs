@@ -138,6 +138,8 @@ struct SharedAgentDeps {
     acp_title_max_chars: usize,
     /// Maximum number of sessions returned by list endpoints.
     acp_max_history: usize,
+    /// Effective log file path advertised in the stdio readiness notification.
+    acp_log_file: Option<String>,
     /// `SQLite` database path, passed to ACP transport for session persistence.
     sqlite_path: String,
     /// Pre-built provider factory for ACP model switching.
@@ -195,6 +197,7 @@ async fn build_acp_deps(
     vault_backend: Option<&str>,
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
+    prebuilt_mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
 ) -> anyhow::Result<(SharedAgentDeps, Box<dyn std::any::Any>)> {
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     log_acp_runtime_paths(app.config(), app.config_path());
@@ -245,7 +248,8 @@ async fn build_acp_deps(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
+    let mcp_manager = prebuilt_mcp_manager
+        .unwrap_or_else(|| std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config)));
     let mcp_tools = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
@@ -370,6 +374,16 @@ async fn build_acp_deps(
         acp_discovery_enabled: config.acp.discovery_enabled,
         acp_title_max_chars: config.memory.sessions.title_max_chars,
         acp_max_history: config.memory.sessions.max_history,
+        acp_log_file: if config.logging.file.is_empty() {
+            None
+        } else {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            Some(
+                resolve_runtime_path(std::path::Path::new(&config.logging.file), &cwd)
+                    .display()
+                    .to_string(),
+            )
+        },
         sqlite_path: config.memory.sqlite_path.clone(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
@@ -903,7 +917,7 @@ pub(crate) async fn run_acp_server(
     use std::sync::Arc;
 
     let (mut deps, _keepalive) =
-        build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
+        build_acp_deps(config_path, vault_backend, vault_key, vault_path, None).await?;
 
     // Warm model caches before advertising available_models to the ACP client.
     // A 5-second budget is given; on timeout the fallback list from config is used.
@@ -926,6 +940,11 @@ pub(crate) async fn run_acp_server(
         title_max_chars: deps.acp_title_max_chars,
         max_history: deps.acp_max_history,
         sqlite_path: Some(deps.sqlite_path.clone()),
+        ready_notification: Some(zeph_acp::transport::ReadyNotification {
+            version: deps.acp_agent_version.clone(),
+            pid: std::process::id(),
+            log_file: deps.acp_log_file.clone(),
+        }),
     };
 
     let shared = Arc::new(deps);
@@ -957,58 +976,84 @@ pub(crate) async fn run_acp_http_server(
     auth_token_override: Option<String>,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
-    let (mut deps, _keepalive) =
-        build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
-
-    warm_model_caches(&mut deps).await;
-
+    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
+    log_acp_runtime_paths(app.config(), app.config_path());
     let bind_addr = bind_override.map_or_else(|| "127.0.0.1:9800".to_owned(), str::to_owned);
 
     // CLI flag overrides config/env values for auth token.
-    let auth_bearer_token = auth_token_override.or(deps.acp_auth_bearer_token.clone());
-
-    let deps_sqlite_path = deps.sqlite_path.clone();
-    let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
+    let auth_bearer_token = auth_token_override.or(app.config().acp.auth_token.clone());
+    let mcp_manager_for_acp = Arc::new(zeph_core::bootstrap::create_mcp_manager(app.config()));
     let server_config = zeph_acp::AcpServerConfig {
-        agent_name: deps.acp_agent_name.clone(),
-        agent_version: deps.acp_agent_version.clone(),
-        max_sessions: deps.acp_max_sessions,
-        session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
-        permission_file: deps.acp_permission_file.clone(),
-        provider_factory: deps.acp_provider_factory.take(),
-        available_models: deps.acp_available_models.clone(),
-        mcp_manager: Some(mcp_manager_for_acp),
+        agent_name: app.config().acp.agent_name.clone(),
+        agent_version: app.config().acp.agent_version.clone(),
+        max_sessions: app.config().acp.max_sessions,
+        session_idle_timeout_secs: app.config().acp.session_idle_timeout_secs,
+        permission_file: app.config().acp.permission_file.clone(),
+        provider_factory: Some(build_acp_provider_factory(app.config())),
+        available_models: if app.config().acp.available_models.is_empty() {
+            discover_models_from_config(app.config())
+        } else {
+            app.config().acp.available_models.clone()
+        },
+        mcp_manager: Some(Arc::clone(&mcp_manager_for_acp)),
         auth_bearer_token,
-        discovery_enabled: deps.acp_discovery_enabled,
+        discovery_enabled: app.config().acp.discovery_enabled,
         terminal_timeout_secs: 120,
-        project_rules: deps.acp_project_rules.clone(),
-        title_max_chars: deps.acp_title_max_chars,
-        max_history: deps.acp_max_history,
-        sqlite_path: Some(deps.sqlite_path.clone()),
+        project_rules: collect_project_rules(&app.skill_paths()),
+        title_max_chars: app.config().memory.sessions.title_max_chars,
+        max_history: app.config().memory.sessions.max_history,
+        sqlite_path: Some(app.config().memory.sqlite_path.clone()),
+        ready_notification: None,
     };
-
-    let shared = Arc::new(deps);
-
+    let shared_deps: Arc<RwLock<Option<Arc<SharedAgentDeps>>>> = Arc::new(RwLock::new(None));
+    let shared_deps_for_spawner = Arc::clone(&shared_deps);
     let spawner: zeph_acp::SendAgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
-        let shared = Arc::clone(&shared);
+        let shared_deps = Arc::clone(&shared_deps_for_spawner);
         Box::pin(async move {
+            let maybe_shared = shared_deps.read().await.clone();
+            let Some(shared) = maybe_shared else {
+                tracing::warn!("ACP request received before runtime became ready");
+                return;
+            };
             Box::pin(spawn_acp_agent(shared, channel, acp_ctx, session_ctx)).await;
         })
     });
-
     let mut state = zeph_acp::AcpHttpState::new(spawner, server_config);
-    match zeph_memory::sqlite::SqliteStore::new(&deps_sqlite_path).await {
+    match zeph_memory::sqlite::SqliteStore::new(&app.config().memory.sqlite_path).await {
         Ok(store) => state = state.with_store(store),
         Err(e) => tracing::warn!(error = %e, "failed to open SQLite for HTTP session endpoints"),
     }
-    state.start_reaper();
 
-    let router = zeph_acp::acp_router(state);
+    let router = zeph_acp::acp_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("ACP HTTP server listening on {bind_addr}");
-    ::axum::serve(listener, router).await?;
+    let server_task = tokio::spawn(async move { ::axum::serve(listener, router).await });
+
+    let (mut deps, _keepalive) = match build_acp_deps(
+        config_path,
+        vault_backend,
+        vault_key,
+        vault_path,
+        Some(mcp_manager_for_acp),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            server_task.abort();
+            return Err(err);
+        }
+    };
+
+    warm_model_caches(&mut deps).await;
+    *shared_deps.write().await = Some(Arc::new(deps));
+    state.mark_ready();
+    state.start_reaper();
+    tracing::info!("ACP server ready");
+    server_task.await??;
 
     Ok(())
 }
@@ -1020,8 +1065,22 @@ pub(crate) fn print_acp_manifest() {
         "version": env!("CARGO_PKG_VERSION"),
         "transport": "stdio",
         "command": [env!("CARGO_PKG_NAME"), "--acp"],
-        "capabilities": ["prompt", "cancel", "load_session"],
-        "description": "Zeph AI Agent"
+        "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
+        "description": "Zeph AI Agent",
+        "readiness": {
+            "notification": {
+                "method": "zeph/ready",
+                "params": {
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "pid": "<process-id>",
+                    "log_file": "<configured-log-file>"
+                }
+            },
+            "http": {
+                "health_endpoint": "/health",
+                "statuses": [200, 503]
+            }
+        }
     });
     println!(
         "{}",

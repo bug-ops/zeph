@@ -22,7 +22,11 @@ Expected output:
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
-  "description": "Zeph AI Agent"
+  "description": "Zeph AI Agent",
+  "readiness": {
+    "notification": { "method": "zeph/ready" },
+    "http": { "health_endpoint": "/health", "statuses": [200, 503] }
+  }
 }
 ```
 
@@ -37,6 +41,20 @@ Zeph supports three ACP transports:
 | **WebSocket** | `--acp-http` | Same server, alternative protocol for WS-native clients |
 
 The stdio transport is the simplest — the editor manages the process lifecycle, no ports or network configuration needed.
+
+## Readiness signaling
+
+Zeph exposes an explicit readiness signal for both ACP entrypoints:
+
+- **stdio** emits a JSON-RPC notification as the first frame after startup completes:
+
+```json
+{"jsonrpc":"2.0","method":"zeph/ready","params":{"version":"0.14.3","pid":12345,"log_file":"/path/to/zeph.log"}}
+```
+
+- **HTTP** exposes `GET /health`, which returns `200 OK` with `{"status":"ok",...}` once startup is complete, and `503 Service Unavailable` with `{"status":"starting",...}` before readiness flips.
+
+Unknown notifications are ignored by JSON-RPC clients, so ACP clients that do not yet understand `zeph/ready` continue to work normally.
 
 ## IDE setup
 
@@ -688,9 +706,14 @@ Example response (with bearer auth configured):
   "protocol_version": "0.10",
   "transports": {
     "http_sse": { "url": "/acp" },
-    "websocket": { "url": "/acp/ws" }
+    "websocket": { "url": "/acp/ws" },
+    "health": { "url": "/health" }
   },
-  "authentication": { "type": "bearer" }
+  "authentication": { "type": "bearer" },
+  "readiness": {
+    "stdio_notification": "zeph/ready",
+    "http_health_endpoint": "/health"
+  }
 }
 ```
 
@@ -704,9 +727,14 @@ When `auth_bearer_token` is not set, the `authentication` field is `null`:
   "protocol_version": "0.10",
   "transports": {
     "http_sse": { "url": "/acp" },
-    "websocket": { "url": "/acp/ws" }
+    "websocket": { "url": "/acp/ws" },
+    "health": { "url": "/health" }
   },
-  "authentication": null
+  "authentication": null,
+  "readiness": {
+    "stdio_notification": "zeph/ready",
+    "http_health_endpoint": "/health"
+  }
 }
 ```
 

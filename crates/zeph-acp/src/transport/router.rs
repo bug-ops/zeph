@@ -16,7 +16,8 @@ use crate::transport::auth::BearerAuthLayer;
 use crate::transport::discovery::discovery_handler;
 #[cfg(feature = "acp-http")]
 use crate::transport::http::{
-    AcpHttpState, get_handler, list_sessions_handler, post_handler, session_messages_handler,
+    AcpHttpState, get_handler, health_handler, list_sessions_handler, post_handler,
+    session_messages_handler,
 };
 #[cfg(feature = "acp-http")]
 use crate::transport::ws::ws_upgrade_handler;
@@ -31,6 +32,7 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 /// - `POST /acp` — JSON-RPC request body (≤ 1 MiB), SSE response stream
 /// - `GET /acp` — SSE notification reconnect (requires `Acp-Session-Id`)
 /// - `GET /acp/ws` — WebSocket upgrade
+/// - `GET /health` — public readiness probe
 /// - `GET /.well-known/acp.json` — discovery manifest (always public, no auth)
 ///
 /// Security layers applied:
@@ -57,7 +59,9 @@ pub fn acp_router(state: AcpHttpState) -> Router {
         acp_routes
     };
 
-    let mut router = Router::new().merge(acp_routes);
+    let mut router = Router::new()
+        .route("/health", get(health_handler))
+        .merge(acp_routes);
 
     if state.server_config.discovery_enabled {
         router = router.route("/.well-known/acp.json", get(discovery_handler));

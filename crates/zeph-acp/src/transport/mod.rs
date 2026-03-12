@@ -26,6 +26,13 @@ pub use http::AcpHttpState;
 #[cfg(feature = "acp-http")]
 pub use router::acp_router;
 
+#[derive(Clone, Debug)]
+pub struct ReadyNotification {
+    pub version: String,
+    pub pid: u32,
+    pub log_file: Option<String>,
+}
+
 /// Shared slot populated after `AgentSideConnection::new` so `new_session` can access
 /// the connection to build ACP tool adapters.
 pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
@@ -59,6 +66,8 @@ pub struct AcpServerConfig {
     /// Path to the `SQLite` database for ACP session persistence (optional).
     /// When set, the agent persists and loads sessions from this database.
     pub sqlite_path: Option<String>,
+    /// Optional startup notification emitted as the first stdio JSON-RPC frame.
+    pub ready_notification: Option<ReadyNotification>,
 }
 
 impl Clone for AcpServerConfig {
@@ -79,6 +88,7 @@ impl Clone for AcpServerConfig {
             title_max_chars: self.title_max_chars,
             max_history: self.max_history,
             sqlite_path: self.sqlite_path.clone(),
+            ready_notification: self.ready_notification.clone(),
         }
     }
 }
@@ -101,6 +111,7 @@ impl Default for AcpServerConfig {
             title_max_chars: 60,
             max_history: 100,
             sqlite_path: None,
+            ready_notification: None,
         }
     }
 }

@@ -252,7 +252,7 @@ Configure via `config.toml` or environment variable:
 auth_token = "secret"  # or use vault: ZEPH_GATEWAY_TOKEN
 ```
 
-The `GET /health` endpoint is intentionally public and bypasses auth.
+The ACP HTTP `GET /health` endpoint is intentionally public and bypasses auth so IDEs can poll server readiness before authenticating or opening a session.
 
 If `auth_token` is `None` at startup, the server logs a `WARN`-level message:
 

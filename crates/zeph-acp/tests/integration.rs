@@ -7,6 +7,7 @@ use std::sync::Arc;
 use acp::Agent as _;
 use agent_client_protocol as acp;
 use serde_json::value::RawValue;
+use tokio::io::AsyncBufReadExt;
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use zeph_acp::{AcpServerConfig, AgentSpawner, SessionContext, serve_connection};
@@ -52,6 +53,7 @@ fn make_server_config() -> AcpServerConfig {
         title_max_chars: 60,
         max_history: 100,
         sqlite_path: None,
+        ready_notification: None,
     }
 }
 
@@ -103,6 +105,45 @@ async fn initialize_handshake() {
     tokio::select! {
         res = server_fut => {
             // Server can exit normally after client disconnects
+            let _ = res;
+        }
+        _ = client_fut => {}
+    }
+}
+
+#[tokio::test]
+async fn stdio_ready_notification_is_first_frame() {
+    let (client_stream, server_stream) = duplex(65536);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+
+    let mut server_config = make_server_config();
+    server_config.ready_notification = Some(zeph_acp::transport::ReadyNotification {
+        version: "0.0.1".to_owned(),
+        pid: 4242,
+        log_file: Some("/tmp/zeph.log".to_owned()),
+    });
+
+    let server_fut = serve_connection(
+        make_echo_spawner(),
+        server_config,
+        server_write.compat_write(),
+        server_read.compat(),
+    );
+
+    let client_fut = async move {
+        let mut lines = tokio::io::BufReader::new(client_stream).lines();
+        let first = lines.next_line().await.expect("read ready line");
+        let json: serde_json::Value =
+            serde_json::from_str(first.as_deref().expect("ready notification line")).unwrap();
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert_eq!(json["method"], "zeph/ready");
+        assert_eq!(json["params"]["version"], "0.0.1");
+        assert_eq!(json["params"]["pid"], 4242);
+        assert_eq!(json["params"]["log_file"], "/tmp/zeph.log");
+    };
+
+    tokio::select! {
+        res = server_fut => {
             let _ = res;
         }
         _ = client_fut => {}

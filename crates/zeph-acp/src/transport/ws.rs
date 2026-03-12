@@ -4,6 +4,8 @@
 #[cfg(feature = "acp-http")]
 use std::sync::Arc;
 #[cfg(feature = "acp-http")]
+use std::sync::atomic::Ordering;
+#[cfg(feature = "acp-http")]
 use std::time::Duration;
 
 #[cfg(feature = "acp-http")]
@@ -53,6 +55,9 @@ pub async fn ws_upgrade_handler(
     ws: WebSocketUpgrade,
     State(state): State<AcpHttpState>,
 ) -> Response {
+    if !state.ready.load(Ordering::Acquire) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     if !state.try_reserve_ws_slot() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }

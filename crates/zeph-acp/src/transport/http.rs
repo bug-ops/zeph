@@ -4,9 +4,9 @@
 #[cfg(feature = "acp-http")]
 use std::sync::Arc;
 #[cfg(feature = "acp-http")]
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 #[cfg(feature = "acp-http")]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "acp-http")]
 use axum::extract::State;
@@ -100,6 +100,15 @@ pub struct SessionEventDto {
     pub created_at: String,
 }
 
+/// Serializable liveness payload for the public `/health` endpoint.
+#[cfg(feature = "acp-http")]
+#[derive(Serialize)]
+pub struct HealthStatus {
+    pub status: &'static str,
+    pub version: String,
+    pub uptime_secs: u64,
+}
+
 /// Shared state for the HTTP+SSE transport, held in axum `State`.
 #[cfg(feature = "acp-http")]
 #[derive(Clone)]
@@ -113,6 +122,8 @@ pub struct AcpHttpState {
     pub(crate) active_ws: Arc<AtomicUsize>,
     /// Optional `SQLite` store for session history REST endpoints.
     pub store: Option<Arc<SqliteStore>>,
+    pub(crate) started_at: Instant,
+    pub(crate) ready: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "acp-http")]
@@ -124,6 +135,8 @@ impl AcpHttpState {
             server_config: Arc::new(server_config),
             active_ws: Arc::new(AtomicUsize::new(0)),
             store: None,
+            started_at: Instant::now(),
+            ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -131,6 +144,16 @@ impl AcpHttpState {
     pub fn with_store(mut self, store: SqliteStore) -> Self {
         self.store = Some(Arc::new(store));
         self
+    }
+
+    #[must_use]
+    pub fn with_ready(self, ready: bool) -> Self {
+        self.ready.store(ready, Ordering::Release);
+        self
+    }
+
+    pub fn mark_ready(&self) {
+        self.ready.store(true, Ordering::Release);
     }
 
     /// Try to atomically reserve a WebSocket session slot.
@@ -178,6 +201,25 @@ impl AcpHttpState {
             }
         });
     }
+}
+
+/// `GET /health` — public readiness probe for ACP HTTP transport.
+///
+/// Returns `503 Service Unavailable` until the ACP server marks itself ready.
+#[cfg(feature = "acp-http")]
+pub async fn health_handler(State(state): State<AcpHttpState>) -> impl IntoResponse {
+    let ready = state.ready.load(Ordering::Acquire);
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let body = HealthStatus {
+        status: if ready { "ok" } else { "starting" },
+        version: state.server_config.agent_version.clone(),
+        uptime_secs: state.started_at.elapsed().as_secs(),
+    };
+    (status, Json(body))
 }
 
 /// Create a new HTTP+SSE connection.
@@ -236,6 +278,9 @@ pub async fn post_handler(
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !state.ready.load(Ordering::Acquire) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     let (session_id, handle) =
         if let Some(id) = headers.get("acp-session-id").and_then(|v| v.to_str().ok()) {
             uuid::Uuid::parse_str(id).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -298,6 +343,9 @@ pub async fn get_handler(
     State(state): State<AcpHttpState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !state.ready.load(Ordering::Acquire) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     let id = headers
         .get("acp-session-id")
         .and_then(|v| v.to_str().ok())
@@ -337,6 +385,9 @@ pub async fn get_handler(
 pub async fn list_sessions_handler(
     State(state): State<AcpHttpState>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !state.ready.load(Ordering::Acquire) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     let store = state
         .store
         .as_ref()
@@ -364,6 +415,9 @@ pub async fn session_messages_handler(
     State(state): State<AcpHttpState>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !state.ready.load(Ordering::Acquire) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     uuid::Uuid::parse_str(&session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let store = state

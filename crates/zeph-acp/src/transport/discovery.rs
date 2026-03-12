@@ -26,9 +26,14 @@ pub async fn discovery_handler(State(state): State<AcpHttpState>) -> impl IntoRe
         "protocol_version": "0.9",
         "transports": {
             "http_sse": { "url": "/acp" },
-            "websocket": { "url": "/acp/ws" }
+            "websocket": { "url": "/acp/ws" },
+            "health": { "url": "/health" }
         },
-        "authentication": auth
+        "authentication": auth,
+        "readiness": {
+            "stdio_notification": "zeph/ready",
+            "http_health_endpoint": "/health"
+        }
     });
 
     Json(manifest)

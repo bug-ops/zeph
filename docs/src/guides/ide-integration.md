@@ -21,11 +21,15 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.12.1",
+  "version": "0.14.3",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
-  "description": "Zeph AI Agent"
+  "description": "Zeph AI Agent",
+  "readiness": {
+    "notification": { "method": "zeph/ready" },
+    "http": { "health_endpoint": "/health", "statuses": [200, 503] }
+  }
 }
 ```
 
@@ -57,6 +61,24 @@ Zeph reads JSON-RPC messages from stdin and writes responses to stdout. You can 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"acp/manifest"}' | zeph --acp
 ```
+
+## Readiness checks for extensions
+
+IDE integrations can stop guessing when Zeph has finished warming up:
+
+- **stdio transport:** wait for the first `zeph/ready` notification before sending the first interactive request. Example payload:
+
+```json
+{"jsonrpc":"2.0","method":"zeph/ready","params":{"version":"0.14.3","pid":12345,"log_file":"/path/to/zeph.log"}}
+```
+
+- **HTTP transport:** poll `GET /health` until it returns `200 OK`.
+
+```bash
+curl -fsS http://127.0.0.1:8080/health
+```
+
+If startup is still in progress, Zeph returns `503 Service Unavailable` with `{"status":"starting", ...}`. Once ready, the response becomes `{"status":"ok","version":"...","uptime_secs":...}`.
 
 ## IDE setup
 

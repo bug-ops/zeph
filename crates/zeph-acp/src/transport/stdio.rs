@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use acp::Client as _;
 use agent_client_protocol as acp;
-use futures::{AsyncRead, AsyncWrite};
+use futures::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -14,7 +14,47 @@ use zeph_memory::sqlite::SqliteStore;
 
 use crate::agent::{AgentSpawner, ZephAcpAgent};
 use crate::error::AcpError;
-use crate::transport::{AcpServerConfig, ConnSlot};
+use crate::transport::{AcpServerConfig, ConnSlot, ReadyNotification};
+
+async fn write_ready_notification<W>(
+    writer: &mut W,
+    ready: &ReadyNotification,
+) -> Result<(), AcpError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "version".into(),
+        serde_json::Value::String(ready.version.clone()),
+    );
+    payload.insert("pid".into(), serde_json::Value::from(ready.pid));
+    if let Some(log_file) = &ready.log_file {
+        payload.insert(
+            "log_file".into(),
+            serde_json::Value::String(log_file.clone()),
+        );
+    }
+
+    let frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "zeph/ready",
+        "params": payload,
+    });
+    let line = serde_json::to_string(&frame).map_err(|e| AcpError::Transport(e.to_string()))?;
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| AcpError::Transport(e.to_string()))?;
+    writer
+        .write_all(b"\n")
+        .await
+        .map_err(|e| AcpError::Transport(e.to_string()))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| AcpError::Transport(e.to_string()))
+}
 
 /// Run the ACP server over stdin/stdout until the connection closes.
 ///
@@ -42,13 +82,24 @@ pub async fn serve_stdio(
 pub async fn serve_connection<W, R>(
     spawner: AgentSpawner,
     server_config: AcpServerConfig,
-    writer: W,
+    mut writer: W,
     reader: R,
 ) -> Result<(), AcpError>
 where
     W: AsyncWrite + Unpin + 'static,
     R: AsyncRead + Unpin + 'static,
 {
+    if let Some(ready) = server_config.ready_notification.as_ref() {
+        write_ready_notification(&mut writer, ready).await?;
+        tracing::info!(
+            transport = "stdio",
+            pid = ready.pid,
+            version = %ready.version,
+            log_file = ready.log_file.as_deref().unwrap_or("<disabled>"),
+            "ACP server ready"
+        );
+    }
+
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async move {
