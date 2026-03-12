@@ -252,9 +252,12 @@ mod tests {
     fn resolve_priority_order_cli_first_then_project() {
         let tmp = tempfile::tempdir().unwrap();
         let cli_dir = tmp.path().to_path_buf();
-        let paths =
-            resolve_agent_paths(std::slice::from_ref(&cli_dir), Some(&PathBuf::from("")), &[])
-                .unwrap();
+        let paths = resolve_agent_paths(
+            std::slice::from_ref(&cli_dir),
+            Some(&PathBuf::from("")),
+            &[],
+        )
+        .unwrap();
         // CLI must be index 0, project-level must follow
         assert_eq!(paths[0], cli_dir);
         assert_eq!(paths[1], PathBuf::from(".zeph/agents"));
