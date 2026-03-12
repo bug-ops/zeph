@@ -446,9 +446,7 @@ mod tests {
         assert!(arg.is_empty());
 
         let trimmed_space = "/image   ";
-        let arg_space = trimmed_space
-            .strip_prefix("/image")
-            .map_or("", str::trim);
+        let arg_space = trimmed_space.strip_prefix("/image").map_or("", str::trim);
         assert!(arg_space.is_empty());
     }
 
