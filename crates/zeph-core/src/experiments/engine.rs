@@ -896,17 +896,17 @@ mod tests {
         // 2024-02-29 00:00:00 UTC = 1_709_164_800 seconds since epoch.
         // Verified via: date -d "2024-02-29 00:00:00 UTC" +%s
         let secs: u64 = 1_709_164_800;
-        let s = secs % 60;
-        let m = (secs / 60) % 60;
-        let h = (secs / 3600) % 24;
+        let second = secs % 60;
+        let minute = (secs / 60) % 60;
+        let hour = (secs / 3600) % 24;
         let days = secs / 86400;
-        let (y, mo, d) = days_to_ymd(days);
-        assert_eq!(y, 2024);
-        assert_eq!(mo, 2);
-        assert_eq!(d, 29);
-        assert_eq!(s, 0);
-        assert_eq!(m, 0);
-        assert_eq!(h, 0);
+        let (year, month, day) = days_to_ymd(days);
+        assert_eq!(year, 2024);
+        assert_eq!(month, 2);
+        assert_eq!(day, 29);
+        assert_eq!(second, 0);
+        assert_eq!(minute, 0);
+        assert_eq!(hour, 0);
     }
 
     /// ExperimentEngine must be Send to be used with tokio::spawn.

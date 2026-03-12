@@ -880,29 +880,31 @@ mod tests {
 
     #[test]
     fn subagents_widget_renders_entries() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.sub_agents = vec![
-            SubAgentMetrics {
-                id: "abc123".into(),
-                name: "code-reviewer".into(),
-                state: "working".into(),
-                turns_used: 3,
-                max_turns: 20,
-                background: false,
-                elapsed_secs: 42,
-                permission_mode: String::new(),
-            },
-            SubAgentMetrics {
-                id: "def456".into(),
-                name: "test-writer".into(),
-                state: "completed".into(),
-                turns_used: 10,
-                max_turns: 20,
-                background: true,
-                elapsed_secs: 100,
-                permission_mode: "dont_ask".into(),
-            },
-        ];
+        let metrics = MetricsSnapshot {
+            sub_agents: vec![
+                SubAgentMetrics {
+                    id: "abc123".into(),
+                    name: "code-reviewer".into(),
+                    state: "working".into(),
+                    turns_used: 3,
+                    max_turns: 20,
+                    background: false,
+                    elapsed_secs: 42,
+                    permission_mode: String::new(),
+                },
+                SubAgentMetrics {
+                    id: "def456".into(),
+                    name: "test-writer".into(),
+                    state: "completed".into(),
+                    turns_used: 10,
+                    max_turns: 20,
+                    background: true,
+                    elapsed_secs: 100,
+                    permission_mode: "dont_ask".into(),
+                },
+            ],
+            ..MetricsSnapshot::default()
+        };
         let output = render_to_string(50, 10, |frame, area| {
             super::render(&metrics, frame, area);
         });
@@ -914,29 +916,31 @@ mod tests {
 
     #[test]
     fn subagents_widget_renders_permission_badges() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.sub_agents = vec![
-            SubAgentMetrics {
-                id: "a".into(),
-                name: "planner".into(),
-                state: "working".into(),
-                turns_used: 1,
-                max_turns: 5,
-                background: false,
-                elapsed_secs: 1,
-                permission_mode: "plan".into(),
-            },
-            SubAgentMetrics {
-                id: "b".into(),
-                name: "bypasser".into(),
-                state: "working".into(),
-                turns_used: 1,
-                max_turns: 5,
-                background: false,
-                elapsed_secs: 1,
-                permission_mode: "bypass_permissions".into(),
-            },
-        ];
+        let metrics = MetricsSnapshot {
+            sub_agents: vec![
+                SubAgentMetrics {
+                    id: "a".into(),
+                    name: "planner".into(),
+                    state: "working".into(),
+                    turns_used: 1,
+                    max_turns: 5,
+                    background: false,
+                    elapsed_secs: 1,
+                    permission_mode: "plan".into(),
+                },
+                SubAgentMetrics {
+                    id: "b".into(),
+                    name: "bypasser".into(),
+                    state: "working".into(),
+                    turns_used: 1,
+                    max_turns: 5,
+                    background: false,
+                    elapsed_secs: 1,
+                    permission_mode: "bypass_permissions".into(),
+                },
+            ],
+            ..MetricsSnapshot::default()
+        };
         let output = render_to_string(60, 10, |frame, area| {
             super::render(&metrics, frame, area);
         });
@@ -1203,7 +1207,7 @@ mod tests {
         };
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         // First Enter: sets awaiting_second = true, does NOT delete.
-        state.handle_key(enter.clone());
+        state.handle_key(enter);
         assert!(matches!(
             state,
             AgentManagerState::ConfirmDelete {

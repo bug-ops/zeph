@@ -76,13 +76,15 @@ mod tests {
 
     #[test]
     fn resources_with_provider() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.provider_name = "claude".into();
-        metrics.model_name = "opus-4".into();
-        metrics.context_tokens = 8000;
-        metrics.total_tokens = 12000;
-        metrics.api_calls = 5;
-        metrics.last_llm_latency_ms = 250;
+        let metrics = MetricsSnapshot {
+            provider_name: "claude".into(),
+            model_name: "opus-4".into(),
+            context_tokens: 8000,
+            total_tokens: 12000,
+            api_calls: 5,
+            last_llm_latency_ms: 250,
+            ..MetricsSnapshot::default()
+        };
 
         let output = render_to_string(35, 10, |frame, area| {
             super::render(&metrics, frame, area);

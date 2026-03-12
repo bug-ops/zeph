@@ -171,14 +171,16 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let app = App::new(user_tx, agent_rx);
-        let mut metrics = MetricsSnapshot::default();
-        metrics.total_tokens = 4200;
-        metrics.api_calls = 12;
-        metrics.active_skills = vec!["web".into(), "code".into()];
-        metrics.total_skills = 5;
-        metrics.qdrant_available = true;
-        metrics.vector_backend = "qdrant".into();
-        metrics.uptime_seconds = 135;
+        let metrics = MetricsSnapshot {
+            total_tokens: 4200,
+            api_calls: 12,
+            active_skills: vec!["web".into(), "code".into()],
+            total_skills: 5,
+            qdrant_available: true,
+            vector_backend: "qdrant".into(),
+            uptime_seconds: 135,
+            ..MetricsSnapshot::default()
+        };
 
         let output = render_to_string(100, 1, |frame, area| {
             super::render(&app, &metrics, frame, area);
@@ -197,8 +199,10 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let app = App::new(user_tx, agent_rx);
-        let mut metrics = MetricsSnapshot::default();
-        metrics.sanitizer_injection_flags = 2;
+        let metrics = MetricsSnapshot {
+            sanitizer_injection_flags: 2,
+            ..MetricsSnapshot::default()
+        };
 
         let output = render_to_string(120, 1, |frame, area| {
             super::render(&app, &metrics, frame, area);
@@ -220,8 +224,10 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let app = App::new(user_tx, agent_rx);
-        let mut metrics = MetricsSnapshot::default();
-        metrics.exfiltration_images_blocked = 1;
+        let metrics = MetricsSnapshot {
+            exfiltration_images_blocked: 1,
+            ..MetricsSnapshot::default()
+        };
 
         let output = render_to_string(120, 1, |frame, area| {
             super::render(&app, &metrics, frame, area);

@@ -1889,7 +1889,7 @@ fn format_diagnostics_invalid_json_emits_empty_block() {
 
 #[test]
 fn format_diagnostics_missing_fields_uses_defaults() {
-    let json = r#"[{}]"#;
+    let json = r"[{}]";
     let mut out = String::new();
     format_diagnostics_block(json, &mut out);
     assert!(out.contains("<unknown>:?: [?] \n"));

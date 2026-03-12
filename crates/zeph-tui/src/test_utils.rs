@@ -14,6 +14,7 @@ pub struct MockEventSource {
 }
 
 impl MockEventSource {
+    #[must_use]
     pub fn new(events: Vec<AppEvent>) -> Self {
         Self {
             events: events.into(),
@@ -27,11 +28,22 @@ impl EventSource for MockEventSource {
     }
 }
 
+/// Create a terminal backed by `TestBackend` for widget rendering tests.
+///
+/// # Panics
+///
+/// Panics if `ratatui` fails to initialize the test terminal backend.
+#[must_use]
 pub fn test_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     Terminal::new(backend).unwrap()
 }
 
+/// Render a widget tree into a string buffer for snapshot and text assertions.
+///
+/// # Panics
+///
+/// Panics if drawing to the test terminal fails.
 pub fn render_to_string<F>(width: u16, height: u16, render_fn: F) -> String
 where
     F: FnOnce(&mut ratatui::Frame, Rect),

@@ -403,6 +403,8 @@ impl Clone for ClaudeProvider {
 }
 
 impl ClaudeProvider {
+    const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
+
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
@@ -676,25 +678,24 @@ impl ClaudeProvider {
 
     fn cap_block_cache_controls(
         tool_blocks: usize,
-        system_blocks: Option<&mut Vec<SystemContentBlock>>,
+        system_blocks: Option<&[SystemContentBlock]>,
         chat_messages: Option<&mut Vec<StructuredApiMessage>>,
     ) {
         let mut tagged_blocks = tool_blocks;
 
-        if let Some(system) = system_blocks.as_ref() {
+        if let Some(system) = system_blocks {
             tagged_blocks += system
                 .iter()
                 .filter(|block| block.cache_control.is_some())
                 .count();
         }
 
-        const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
-        if tagged_blocks >= MAX_CACHE_CONTROL_BLOCKS {
+        if tagged_blocks >= Self::MAX_CACHE_CONTROL_BLOCKS {
             Self::clear_message_cache_controls(chat_messages);
             return;
         }
 
-        let remaining = MAX_CACHE_CONTROL_BLOCKS - tagged_blocks;
+        let remaining = Self::MAX_CACHE_CONTROL_BLOCKS - tagged_blocks;
         Self::retain_last_message_cache_controls(chat_messages, remaining);
     }
 
@@ -763,8 +764,8 @@ impl ClaudeProvider {
         if Self::has_image_parts(messages) {
             let (system, mut chat_messages) =
                 split_messages_structured(messages, self.cache_user_messages);
-            let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
-            Self::cap_block_cache_controls(0, system_blocks.as_mut(), Some(&mut chat_messages));
+            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
             let beta = self.beta_header(false);
             let body = VisionRequestBody {
                 model: &self.model,
@@ -964,8 +965,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
-        Self::cap_block_cache_controls(0, system_blocks.as_mut(), Some(&mut chat_messages));
+        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
                 message_count = messages.len(),
@@ -1076,8 +1077,8 @@ impl LlmProvider for ClaudeProvider {
         if !tools.is_empty() {
             let (system, mut chat_messages) =
                 split_messages_structured(messages, self.cache_user_messages);
-            let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
-            Self::cap_block_cache_controls(1, system_blocks.as_mut(), Some(&mut chat_messages));
+            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
             let api_tools = self.get_or_build_api_tools(tools);
             let body = ToolRequestBody {
                 model: &self.model,
@@ -1097,8 +1098,8 @@ impl LlmProvider for ClaudeProvider {
         if Self::has_image_parts(messages) {
             let (system, mut chat_messages) =
                 split_messages_structured(messages, self.cache_user_messages);
-            let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
-            Self::cap_block_cache_controls(0, system_blocks.as_mut(), Some(&mut chat_messages));
+            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
             let body = VisionRequestBody {
                 model: &self.model,
                 max_tokens: self.max_tokens,
@@ -1147,8 +1148,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
-        Self::cap_block_cache_controls(1, system_blocks.as_mut(), Some(&mut chat_messages));
+        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
                 message_count = messages.len(),

@@ -197,7 +197,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(i, (title, stat))| TaskSnapshotRow {
-                    id: i as u32,
+                    id: u32::try_from(i).expect("test task index fits in u32"),
                     title: title.to_owned(),
                     status: stat.to_owned(),
                     agent: None,
@@ -223,8 +223,7 @@ mod tests {
             .content
             .iter()
             .map(|c| c.symbol().to_owned())
-            .collect::<Vec<_>>()
-            .join("")
+            .collect::<String>()
     }
 
     #[test]
@@ -239,15 +238,17 @@ mod tests {
 
     #[test]
     fn render_row_count_three_tasks() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.orchestration_graph = Some(make_snapshot(
-            "created",
-            vec![
-                ("Task Alpha", "pending"),
-                ("Task Beta", "running"),
-                ("Task Gamma", "completed"),
-            ],
-        ));
+        let metrics = MetricsSnapshot {
+            orchestration_graph: Some(make_snapshot(
+                "created",
+                vec![
+                    ("Task Alpha", "pending"),
+                    ("Task Beta", "running"),
+                    ("Task Gamma", "completed"),
+                ],
+            )),
+            ..MetricsSnapshot::default()
+        };
         let rendered = render_to_buffer(&metrics);
         assert!(rendered.contains("Task Alpha"), "missing Task Alpha");
         assert!(rendered.contains("Task Beta"), "missing Task Beta");
@@ -300,16 +301,18 @@ mod tests {
 
     #[test]
     fn mixed_status_tasks_render() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.orchestration_graph = Some(make_snapshot(
-            "running",
-            vec![
-                ("Step 1", "completed"),
-                ("Step 2", "running"),
-                ("Step 3", "failed"),
-                ("Step 4", "pending"),
-            ],
-        ));
+        let metrics = MetricsSnapshot {
+            orchestration_graph: Some(make_snapshot(
+                "running",
+                vec![
+                    ("Step 1", "completed"),
+                    ("Step 2", "running"),
+                    ("Step 3", "failed"),
+                    ("Step 4", "pending"),
+                ],
+            )),
+            ..MetricsSnapshot::default()
+        };
         let rendered = render_to_buffer(&metrics);
         assert!(rendered.contains("Step 1"));
         assert!(rendered.contains("Step 2"));
@@ -320,7 +323,7 @@ mod tests {
     #[test]
     fn spinner_chars_cycle() {
         // Ensure all 10 spinner chars are reachable.
-        let chars: Vec<char> = (0..10u8).map(|i| spinner_char(i)).collect();
+        let chars: Vec<char> = (0..10u8).map(spinner_char).collect();
         assert_eq!(chars.len(), 10);
         assert!(chars.iter().all(|c| SPINNER_CHARS.contains(c)));
     }

@@ -210,7 +210,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 40);
         let popup = centered_rect(70, 10, area);
         let expected = (100 * 70) / 100;
-        let delta = (popup.width as i32 - expected as i32).unsigned_abs();
+        let delta = (i32::from(popup.width) - expected).unsigned_abs();
         assert!(delta <= 2, "width={} expected~={}", popup.width, expected);
     }
 
@@ -220,7 +220,7 @@ mod tests {
         let popup = centered_rect(70, 10, area);
         let left_margin = popup.x;
         let right_margin = area.width - popup.width - popup.x;
-        let diff = (left_margin as i32 - right_margin as i32).unsigned_abs();
+        let diff = (i32::from(left_margin) - i32::from(right_margin)).unsigned_abs();
         assert!(diff <= 2, "left={left_margin} right={right_margin}");
     }
 

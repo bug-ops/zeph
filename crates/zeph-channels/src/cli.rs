@@ -442,14 +442,13 @@ mod tests {
     #[test]
     fn image_command_empty_args_detected() {
         let trimmed = "/image";
-        let arg = trimmed.strip_prefix("/image").map(str::trim).unwrap_or("");
+        let arg = trimmed.strip_prefix("/image").map_or("", str::trim);
         assert!(arg.is_empty());
 
         let trimmed_space = "/image   ";
         let arg_space = trimmed_space
             .strip_prefix("/image")
-            .map(str::trim)
-            .unwrap_or("");
+            .map_or("", str::trim);
         assert!(arg_space.is_empty());
     }
 
@@ -493,8 +492,8 @@ mod tests {
         assert_eq!(history.entries().len(), 0);
     }
 
-    /// Verify that recv() is cancel-safe: dropping the future does not discard
-    /// buffered input. This is the regression test for the tokio::select! race
+    /// Verify that `recv()` is cancel-safe: dropping the future does not discard
+    /// buffered input. This is the regression test for the `tokio::select!` race
     /// that caused stdin input to be silently lost when a reload branch won.
     #[tokio::test]
     async fn recv_is_cancel_safe_via_mpsc_buffer() {

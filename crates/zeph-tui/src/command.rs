@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn filter_by_label_substring() {
         let results = filter_commands("memory");
-        assert!(results.len() >= 1);
+        assert!(!results.is_empty());
         assert!(results.iter().any(|e| e.id == "memory:stats"));
     }
 

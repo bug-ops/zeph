@@ -167,8 +167,10 @@ mod tests {
 
     #[test]
     fn renders_injection_flag_count() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.sanitizer_injection_flags = 3;
+        let metrics = MetricsSnapshot {
+            sanitizer_injection_flags: 3,
+            ..MetricsSnapshot::default()
+        };
         let output = render_to_string(40, 12, |frame, area| {
             render(&metrics, frame, area);
         });
@@ -177,15 +179,17 @@ mod tests {
 
     #[test]
     fn renders_recent_events() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.sanitizer_injection_flags = 1;
         let mut events = VecDeque::new();
         events.push_back(SecurityEvent::new(
             SecurityEventCategory::InjectionFlag,
             "web_scrape",
             "Detected pattern: ignore previous",
         ));
-        metrics.security_events = events;
+        let metrics = MetricsSnapshot {
+            sanitizer_injection_flags: 1,
+            security_events: events,
+            ..MetricsSnapshot::default()
+        };
         let output = render_to_string(50, 15, |frame, area| {
             render(&metrics, frame, area);
         });
@@ -194,15 +198,17 @@ mod tests {
 
     #[test]
     fn renders_exfiltration_block_category() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.exfiltration_images_blocked = 1;
         let mut events = VecDeque::new();
         events.push_back(SecurityEvent::new(
             SecurityEventCategory::ExfiltrationBlock,
             "llm_output",
             "1 markdown image(s) blocked",
         ));
-        metrics.security_events = events;
+        let metrics = MetricsSnapshot {
+            exfiltration_images_blocked: 1,
+            security_events: events,
+            ..MetricsSnapshot::default()
+        };
         let output = render_to_string(50, 15, |frame, area| {
             render(&metrics, frame, area);
         });
@@ -211,15 +217,17 @@ mod tests {
 
     #[test]
     fn renders_quarantine_category() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.quarantine_invocations = 1;
         let mut events = VecDeque::new();
         events.push_back(SecurityEvent::new(
             SecurityEventCategory::Quarantine,
             "web_scrape",
             "Content quarantined, facts extracted",
         ));
-        metrics.security_events = events;
+        let metrics = MetricsSnapshot {
+            quarantine_invocations: 1,
+            security_events: events,
+            ..MetricsSnapshot::default()
+        };
         let output = render_to_string(50, 15, |frame, area| {
             render(&metrics, frame, area);
         });
@@ -228,8 +236,10 @@ mod tests {
 
     #[test]
     fn renders_only_last_5_events_when_more_exist() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.sanitizer_injection_flags = 8;
+        let mut metrics = MetricsSnapshot {
+            sanitizer_injection_flags: 8,
+            ..MetricsSnapshot::default()
+        };
         for i in 0..8u64 {
             metrics.security_events.push_back(SecurityEvent::new(
                 SecurityEventCategory::InjectionFlag,

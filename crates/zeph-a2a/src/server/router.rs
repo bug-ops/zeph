@@ -369,6 +369,15 @@ mod tests {
         assert_eq!(resp.status(), 429, "request 3 should be rate-limited");
     }
 
+    fn ip_from_index(i: usize) -> IpAddr {
+        IpAddr::V4(std::net::Ipv4Addr::new(
+            u8::try_from((i >> 16) & 0xFF).unwrap(),
+            u8::try_from((i >> 8) & 0xFF).unwrap(),
+            u8::try_from(i & 0xFF).unwrap(),
+            1,
+        ))
+    }
+
     #[tokio::test]
     async fn max_entries_cap_rejects_when_all_entries_fresh() {
         // Fill map with fresh entries (within RATE_WINDOW) so retain() keeps them all.
@@ -378,18 +387,13 @@ mod tests {
             let mut map = counters.lock().await;
             let fresh = Instant::now();
             for i in 0..MAX_RATE_LIMIT_ENTRIES {
-                let ip = IpAddr::V4(std::net::Ipv4Addr::new(
-                    ((i >> 16) & 0xFF) as u8,
-                    ((i >> 8) & 0xFF) as u8,
-                    (i & 0xFF) as u8,
-                    1,
-                ));
+                let ip = ip_from_index(i);
                 map.insert(ip, (1, fresh));
             }
             assert_eq!(map.len(), MAX_RATE_LIMIT_ENTRIES);
         }
 
-        let new_ip = IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255));
+        let new_ip = IpAddr::V4(std::net::Ipv4Addr::BROADCAST);
 
         // Simulate middleware logic: cap exceeded, run retain(), still full → 429
         let now = Instant::now();
@@ -413,14 +417,11 @@ mod tests {
         let counters = Arc::new(Mutex::new(HashMap::new()));
         {
             let mut map = counters.lock().await;
-            let stale = Instant::now() - Duration::from_secs(120);
+            let stale = Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
             for i in 0..MAX_RATE_LIMIT_ENTRIES {
-                let ip = IpAddr::V4(std::net::Ipv4Addr::new(
-                    ((i >> 16) & 0xFF) as u8,
-                    ((i >> 8) & 0xFF) as u8,
-                    (i & 0xFF) as u8,
-                    1,
-                ));
+                let ip = ip_from_index(i);
                 map.insert(ip, (1, stale));
             }
         }
@@ -436,7 +437,9 @@ mod tests {
     #[tokio::test]
     async fn eviction_removes_stale_entries() {
         let counters = Arc::new(Mutex::new(HashMap::new()));
-        let stale_time = Instant::now() - Duration::from_secs(120);
+        let stale_time = Instant::now()
+            .checked_sub(Duration::from_secs(120))
+            .unwrap();
         let fresh_time = Instant::now();
 
         let stale_ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));

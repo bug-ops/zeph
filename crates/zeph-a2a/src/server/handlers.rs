@@ -388,7 +388,7 @@ mod tests {
     use super::super::router::build_router_with_config;
     use super::super::testing::test_state;
 
-    fn make_rpc_request(method: &str, params: serde_json::Value) -> axum::http::Request<Body> {
+    fn make_rpc_request(method: &str, params: &serde_json::Value) -> axum::http::Request<Body> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": "1",
@@ -411,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_method_does_not_echo_method_name() {
         let app = build_router_with_config(test_state(), None, 0);
-        let req = make_rpc_request("tasks/evil_probe", serde_json::json!({}));
+        let req = make_rpc_request("tasks/evil_probe", &serde_json::json!({}));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 200);
         let body = get_rpc_body(resp).await;
@@ -431,7 +431,7 @@ mod tests {
     async fn invalid_params_send_message_no_serde_details() {
         let app = build_router_with_config(test_state(), None, 0);
         // Pass wrong type for message to trigger serde deserialization error
-        let req = make_rpc_request("message/send", serde_json::json!({"message": 42}));
+        let req = make_rpc_request("message/send", &serde_json::json!({"message": 42}));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 200);
         let body = get_rpc_body(resp).await;
@@ -446,7 +446,7 @@ mod tests {
     async fn invalid_params_get_task_no_serde_details() {
         let app = build_router_with_config(test_state(), None, 0);
         // Pass wrong type for id field
-        let req = make_rpc_request("tasks/get", serde_json::json!({"id": [1, 2, 3]}));
+        let req = make_rpc_request("tasks/get", &serde_json::json!({"id": [1, 2, 3]}));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 200);
         let body = get_rpc_body(resp).await;
@@ -458,7 +458,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_params_cancel_task_no_serde_details() {
         let app = build_router_with_config(test_state(), None, 0);
-        let req = make_rpc_request("tasks/cancel", serde_json::json!({"id": false}));
+        let req = make_rpc_request("tasks/cancel", &serde_json::json!({"id": false}));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 200);
         let body = get_rpc_body(resp).await;
@@ -535,7 +535,7 @@ mod tests {
         };
         let req = make_rpc_request(
             "message/send",
-            serde_json::json!({ "message": serde_json::to_value(&msg).unwrap() }),
+            &serde_json::json!({ "message": serde_json::to_value(&msg).unwrap() }),
         );
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 200);

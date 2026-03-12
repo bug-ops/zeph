@@ -472,7 +472,7 @@ mod tests {
         let mut channel = TelegramChannel::new(token, allowed_users);
         channel.accumulated = "test".to_string();
         // Set last_edit to 11 seconds ago (threshold is 10 seconds)
-        channel.last_edit = Some(Instant::now() - Duration::from_secs(11));
+        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(11)).unwrap());
         assert!(channel.should_send_update());
     }
 
@@ -533,7 +533,7 @@ mod tests {
         let allowed_users = Vec::new();
         let mut channel = TelegramChannel::new(token, allowed_users);
         // Set last_edit to 1 second ago (well within the 10-second threshold)
-        channel.last_edit = Some(Instant::now() - Duration::from_secs(1));
+        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
         assert!(!channel.should_send_update());
     }
 

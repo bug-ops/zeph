@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn empty_query_returns_up_to_10_files() {
         let files: Vec<String> = (0..15).map(|i| format!("file{i}.rs")).collect();
-        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
         let idx = make_index(&refs);
         let state = FilePickerState::new(&idx);
         assert_eq!(state.matches().len(), 10);
@@ -338,7 +338,7 @@ mod tests {
             delta in -10i32..10,
         ) {
             let files: Vec<String> = (0..n).map(|i| format!("f{i}.rs")).collect();
-            let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+            let refs: Vec<&str> = files.iter().map(String::as_str).collect();
             let idx = make_index(&refs);
             let mut state = FilePickerState::new(&idx);
             state.move_selection(delta);

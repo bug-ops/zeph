@@ -108,9 +108,11 @@ mod tests {
 
     #[test]
     fn skills_with_data() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.active_skills = vec!["web-search".into(), "code-gen".into()];
-        metrics.total_skills = 5;
+        let metrics = MetricsSnapshot {
+            active_skills: vec!["web-search".into(), "code-gen".into()],
+            total_skills: 5,
+            ..MetricsSnapshot::default()
+        };
 
         let output = render_to_string(30, 10, |frame, area| {
             super::render(&metrics, frame, area);
@@ -120,21 +122,23 @@ mod tests {
 
     #[test]
     fn skills_with_confidence() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.active_skills = vec!["git".into(), "docker".into()];
-        metrics.total_skills = 3;
-        metrics.skill_confidence = vec![
-            SkillConfidence {
-                name: "git".into(),
-                posterior: 0.92,
-                total_uses: 42,
-            },
-            SkillConfidence {
-                name: "docker".into(),
-                posterior: 0.35,
-                total_uses: 5,
-            },
-        ];
+        let metrics = MetricsSnapshot {
+            active_skills: vec!["git".into(), "docker".into()],
+            total_skills: 3,
+            skill_confidence: vec![
+                SkillConfidence {
+                    name: "git".into(),
+                    posterior: 0.92,
+                    total_uses: 42,
+                },
+                SkillConfidence {
+                    name: "docker".into(),
+                    posterior: 0.35,
+                    total_uses: 5,
+                },
+            ],
+            ..MetricsSnapshot::default()
+        };
 
         let output = render_to_string(50, 10, |frame, area| {
             super::render(&metrics, frame, area);
@@ -202,9 +206,11 @@ mod tests {
 
     #[test]
     fn skills_no_confidence_uses_dash_prefix() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.active_skills = vec!["unknown-skill".into()];
-        metrics.total_skills = 1;
+        let metrics = MetricsSnapshot {
+            active_skills: vec!["unknown-skill".into()],
+            total_skills: 1,
+            ..MetricsSnapshot::default()
+        };
         // No skill_confidence entries → should render with "  - " prefix
         let output = render_to_string(40, 8, |frame, area| {
             super::render(&metrics, frame, area);

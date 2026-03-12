@@ -70,7 +70,7 @@ fn history_formatting(c: &mut Criterion) {
             b.iter(|| {
                 let text: String = msgs
                     .iter()
-                    .map(|m| m.as_str())
+                    .map(std::string::String::as_str)
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 black_box(text)

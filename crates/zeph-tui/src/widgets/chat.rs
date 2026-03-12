@@ -888,10 +888,10 @@ mod tests {
     #[test]
     fn render_md_plain() {
         let theme = Theme::default();
-        let (lines, links) = render_md("hello world", theme.assistant_message, &theme);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0][0].content, "hello world");
-        assert!(links.is_empty());
+        let (rendered_lines, link_refs) = render_md("hello world", theme.assistant_message, &theme);
+        assert_eq!(rendered_lines.len(), 1);
+        assert_eq!(rendered_lines[0][0].content, "hello world");
+        assert!(link_refs.is_empty());
     }
 
     #[test]
@@ -954,22 +954,23 @@ mod tests {
     #[test]
     fn render_md_link_single() {
         let theme = Theme::default();
-        let (lines, links) = render_md("[click](https://x.com)", theme.assistant_message, &theme);
-        assert!(!lines.is_empty());
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].text, "click");
-        assert_eq!(links[0].url, "https://x.com");
+        let (rendered_lines, link_refs) =
+            render_md("[click](https://x.com)", theme.assistant_message, &theme);
+        assert!(!rendered_lines.is_empty());
+        assert_eq!(link_refs.len(), 1);
+        assert_eq!(link_refs[0].text, "click");
+        assert_eq!(link_refs[0].url, "https://x.com");
     }
 
     #[test]
     fn render_md_link_bold_text() {
         let theme = Theme::default();
-        let (lines, links) =
+        let (rendered_lines, link_refs) =
             render_md("[**bold**](https://x.com)", theme.assistant_message, &theme);
-        assert!(!lines.is_empty());
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].text, "bold");
-        assert_eq!(links[0].url, "https://x.com");
+        assert!(!rendered_lines.is_empty());
+        assert_eq!(link_refs.len(), 1);
+        assert_eq!(link_refs[0].text, "bold");
+        assert_eq!(link_refs[0].url, "https://x.com");
     }
 
     #[test]

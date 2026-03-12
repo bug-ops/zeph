@@ -345,7 +345,11 @@ mod tests {
     #[test]
     fn should_send_update_true_after_throttle() {
         let mut ch = make_channel();
-        ch.last_edit = Some(Instant::now() - Duration::from_millis(1600));
+        ch.last_edit = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(1600))
+                .unwrap(),
+        );
         assert!(ch.should_send_update());
     }
 

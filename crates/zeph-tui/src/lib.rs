@@ -130,13 +130,13 @@ mod tests {
         App::new(user_tx, agent_rx)
     }
 
-    /// Regression test for #1077: the tui_loop must redraw on every tick even with no
+    /// Regression test for #1077: the `tui_loop` must redraw on every tick even with no
     /// user/agent events. Before the fix the tick arm was `_ = tick.tick() => {}` (no-op),
     /// so the loop stalled after the first frame. The fix moves the draw call to the top of
     /// each loop iteration, making it unconditional.
     ///
-    /// This test verifies the observable consequence: App::poll_metrics() can be called
-    /// repeatedly without side-effects, and the MetricsSnapshot is populated from the
+    /// This test verifies the observable consequence: `App::poll_metrics()` can be called
+    /// repeatedly without side-effects, and the `MetricsSnapshot` is populated from the
     /// collector on each call — confirming the contract the fixed loop relies on.
     #[test]
     fn tick_arm_sets_dirty() {

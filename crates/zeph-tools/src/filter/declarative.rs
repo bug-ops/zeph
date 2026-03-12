@@ -1282,7 +1282,7 @@ mod tests {
     fn strip_noise_removes_matching_lines() {
         let f = strip_noise_filter(&[r"^noise:", r"^\s*$"]);
         let raw = "noise: ignore this\nkeep this\nnoise: also ignore\nkeep too";
-        let result = f.filter("cmd", &raw, 0);
+        let result = f.filter("cmd", raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Full);
         assert!(result.output.contains("keep this"));
         assert!(result.output.contains("keep too"));
@@ -1293,7 +1293,7 @@ mod tests {
     fn strip_noise_returns_fallback_when_nothing_removed() {
         let f = strip_noise_filter(&[r"^NOMATCH"]);
         let raw = "line one\nline two";
-        let result = f.filter("cmd", &raw, 0);
+        let result = f.filter("cmd", raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Fallback);
         assert!(result.output.contains("line one"));
     }
@@ -2078,7 +2078,7 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
             },
         };
         let raw = "NOISE a\nNOISE b\nNOISE c\nonly kept line\n";
-        let result = f.filter("cmd", &raw, 0);
+        let result = f.filter("cmd", raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Full);
         assert!(result.output.contains("only kept line"));
     }

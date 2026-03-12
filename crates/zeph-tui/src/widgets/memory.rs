@@ -67,11 +67,13 @@ mod tests {
 
     #[test]
     fn memory_with_stats() {
-        let mut metrics = MetricsSnapshot::default();
-        metrics.sqlite_message_count = 42;
-        metrics.qdrant_available = true;
-        metrics.vector_backend = "qdrant".into();
-        metrics.embeddings_generated = 10;
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 42,
+            qdrant_available: true,
+            vector_backend: "qdrant".into(),
+            embeddings_generated: 10,
+            ..MetricsSnapshot::default()
+        };
 
         let output = render_to_string(30, 8, |frame, area| {
             super::render(&metrics, frame, area);
