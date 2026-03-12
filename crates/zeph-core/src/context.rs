@@ -210,10 +210,8 @@ impl EnvironmentContext {
             self.git_branch = None;
             return;
         }
-        let refreshed = Self::gather_for_dir(
-            &self.model_name,
-            std::path::Path::new(&self.working_dir),
-        );
+        let refreshed =
+            Self::gather_for_dir(&self.model_name, std::path::Path::new(&self.working_dir));
         self.git_branch = refreshed.git_branch;
     }
 
