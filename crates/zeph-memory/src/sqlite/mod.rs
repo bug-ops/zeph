@@ -129,7 +129,7 @@ mod tests {
 
         assert_eq!(
             timeout_ms,
-            SqliteStore::DEFAULT_BUSY_TIMEOUT.as_millis() as i64,
+            i64::try_from(SqliteStore::DEFAULT_BUSY_TIMEOUT.as_millis()).unwrap(),
             "expected busy_timeout pragma to match configured timeout"
         );
     }

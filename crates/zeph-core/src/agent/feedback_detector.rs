@@ -826,7 +826,10 @@ mod tests {
         // GAP-05: after the window expires, the rate limiter should allow new calls.
         // We manually pre-fill call_times with old timestamps to simulate expiry.
         let mut jd = JudgeDetector::new(0.5, 0.8);
-        let expired = Instant::now() - JUDGE_RATE_WINDOW - Duration::from_secs(1);
+        let expired = Instant::now()
+            .checked_sub(JUDGE_RATE_WINDOW)
+            .and_then(|t| t.checked_sub(Duration::from_secs(1)))
+            .unwrap();
         for _ in 0..JUDGE_RATE_LIMIT {
             jd.call_times.push_back(expired);
         }

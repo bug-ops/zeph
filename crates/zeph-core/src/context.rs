@@ -172,11 +172,11 @@ impl EnvironmentContext {
     #[must_use]
     pub fn gather(model_name: &str) -> Self {
         let working_dir = std::env::current_dir().unwrap_or_default();
-        Self::gather_for_dir(model_name, working_dir)
+        Self::gather_for_dir(model_name, &working_dir)
     }
 
     #[must_use]
-    pub fn gather_for_dir(model_name: &str, working_dir: std::path::PathBuf) -> Self {
+    pub fn gather_for_dir(model_name: &str, working_dir: &std::path::Path) -> Self {
         let working_dir = if working_dir.as_os_str().is_empty() {
             "unknown".into()
         } else {
@@ -212,7 +212,7 @@ impl EnvironmentContext {
         }
         let refreshed = Self::gather_for_dir(
             &self.model_name,
-            std::path::PathBuf::from(&self.working_dir),
+            std::path::Path::new(&self.working_dir),
         );
         self.git_branch = refreshed.git_branch;
     }
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn environment_context_gather_for_dir_uses_supplied_path() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let env = EnvironmentContext::gather_for_dir("test-model", tmp.path().to_path_buf());
+        let env = EnvironmentContext::gather_for_dir("test-model", tmp.path());
         assert_eq!(env.working_dir, tmp.path().display().to_string());
         assert_eq!(env.model_name, "test-model");
     }

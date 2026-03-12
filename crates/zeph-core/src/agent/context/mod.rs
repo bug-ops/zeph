@@ -630,7 +630,7 @@ mod tests {
                     content,
                     m1,
                     m2,
-                    zeph_memory::TokenCounter::new().count_tokens(content) as i64,
+                    i64::try_from(zeph_memory::TokenCounter::new().count_tokens(content)).unwrap(),
                 )
                 .await
                 .unwrap();
@@ -1833,7 +1833,7 @@ mod tests {
             Message::from_legacy(Role::Assistant, "assistant response"),
         ];
         let summary = Agent::<MockChannel>::build_metadata_summary(&msgs);
-        assert!(summary.contains("2"));
+        assert!(summary.contains('2'));
         assert!(summary.contains("1 user"));
         assert!(summary.contains("1 assistant"));
     }
@@ -2616,7 +2616,7 @@ mod tests {
         let alloc = budget.allocate("", "", &tc, false);
         assert_eq!(alloc.graph_facts, 0);
         let available = 10000 - 2000; // 20% reserve
-        let expected_recall = (available as f32 * 0.08) as usize;
+        let expected_recall = available * 8 / 100;
         assert_eq!(alloc.semantic_recall, expected_recall);
     }
 

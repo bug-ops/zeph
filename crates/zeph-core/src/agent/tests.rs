@@ -2438,8 +2438,8 @@ mod compaction_e2e {
         g
     }
 
-    /// GAP-1: handle_plan_confirm with subagent_manager = None → fallback message,
-    /// graph restored in pending_graph.
+    /// GAP-1: `handle_plan_confirm` with `subagent_manager` = None → fallback message,
+    /// graph restored in `pending_graph`.
     #[tokio::test]
     async fn plan_confirm_no_manager_restores_graph() {
         let mut agent = agent_with_orchestration();
@@ -2465,7 +2465,7 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-2: handle_plan_confirm with pending_graph = None → "No pending plan" message.
+    /// GAP-2: `handle_plan_confirm` with `pending_graph` = None → "No pending plan" message.
     #[tokio::test]
     async fn plan_confirm_no_pending_graph_sends_message() {
         let mut agent = agent_with_orchestration();
@@ -2484,7 +2484,7 @@ mod compaction_e2e {
     }
 
     /// GAP-3: happy path — pre-built Running graph with one already-Completed task.
-    /// resume_from() accepts it; first tick() emits Done{Completed}; aggregation called.
+    /// `resume_from()` accepts it; first `tick()` emits Done{Completed}; aggregation called.
     #[tokio::test]
     async fn plan_confirm_completed_graph_aggregates() {
         use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
@@ -2550,12 +2550,12 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-4: handle_plan_confirm with no sub-agents defined but provider fails →
+    /// GAP-4: `handle_plan_confirm` with no sub-agents defined but provider fails →
     /// task executes inline but provider returns error → plan fails, failure message sent.
     ///
-    /// Since the fix for #1463, no agents → RunInline (not spawn_for_task). So when
-    /// the provider fails, the scheduler records a Failed TaskOutcome, graph fails,
-    /// and finalize_plan_execution sends a failure message.
+    /// Since the fix for #1463, no agents → `RunInline` (not `spawn_for_task`). So when
+    /// the provider fails, the scheduler records a Failed `TaskOutcome`, graph fails,
+    /// and `finalize_plan_execution` sends a failure message.
     #[tokio::test]
     async fn plan_confirm_inline_provider_failure_sends_message() {
         use crate::subagent::SubAgentManager;
@@ -2592,7 +2592,7 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-5: handle_plan_list with pending_graph → shows summary + status label.
+    /// GAP-5: `handle_plan_list` with `pending_graph` → shows summary + status label.
     #[tokio::test]
     async fn plan_list_with_pending_graph_shows_summary() {
         let mut agent = agent_with_orchestration();
@@ -2608,7 +2608,7 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-6: handle_plan_list with no graph → "No recent plans."
+    /// GAP-6: `handle_plan_list` with no graph → "No recent plans."
     #[tokio::test]
     async fn plan_list_no_graph_shows_no_recent() {
         let mut agent = agent_with_orchestration();
@@ -2622,7 +2622,7 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-7: handle_plan_retry resets Running tasks to Ready and clears assigned_agent.
+    /// GAP-7: `handle_plan_retry` resets Running tasks to Ready and clears `assigned_agent`.
     #[tokio::test]
     async fn plan_retry_resets_running_tasks_to_ready() {
         let mut agent = agent_with_orchestration();
@@ -2794,9 +2794,9 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-8: handle_plan_confirm with no sub-agents defined executes the task inline
-    /// via the main provider. Verifies RunInline path: plan succeeds, provider output
-    /// appears in aggregation, pending_graph is cleared.
+    /// GAP-8: `handle_plan_confirm` with no sub-agents defined executes the task inline
+    /// via the main provider. Verifies `RunInline` path: plan succeeds, provider output
+    /// appears in aggregation, `pending_graph` is cleared.
     #[tokio::test]
     async fn plan_confirm_no_subagents_executes_inline() {
         use crate::subagent::SubAgentManager;
@@ -2836,7 +2836,7 @@ mod compaction_e2e {
         );
     }
 
-    /// GAP-9: handle_plan_status shows the correct message for each graph status.
+    /// GAP-9: `handle_plan_status` shows the correct message for each graph status.
     #[tokio::test]
     async fn plan_status_reflects_graph_status() {
         // No active plan → "No active plan."
@@ -3129,7 +3129,7 @@ mod inline_tool_loop_tests {
 
         // Must return Ok (not panic or hang) and have called the provider exactly max_iter times.
         assert!(result.is_ok());
-        assert_eq!(*counter.lock().unwrap(), max_iter as u32);
+        assert_eq!(*counter.lock().unwrap(), u32::try_from(max_iter).unwrap());
     }
 
     #[tokio::test]

@@ -1282,7 +1282,7 @@ mod tests {
     fn strip_noise_removes_matching_lines() {
         let f = strip_noise_filter(&[r"^noise:", r"^\s*$"]);
         let raw = "noise: ignore this\nkeep this\nnoise: also ignore\nkeep too";
-        let result = f.filter("cmd", &raw, 0);
+        let result = f.filter("cmd", raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Full);
         assert!(result.output.contains("keep this"));
         assert!(result.output.contains("keep too"));
@@ -1293,7 +1293,7 @@ mod tests {
     fn strip_noise_returns_fallback_when_nothing_removed() {
         let f = strip_noise_filter(&[r"^NOMATCH"]);
         let raw = "line one\nline two";
-        let result = f.filter("cmd", &raw, 0);
+        let result = f.filter("cmd", raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Fallback);
         assert!(result.output.contains("line one"));
     }
@@ -1325,7 +1325,7 @@ mod tests {
         let f = truncate_filter(10, 3, 3);
         let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let raw = lines.join("\n");
-        let result = f.filter("cmd", &raw, 0);
+        let result = f.filter("cmd", raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Partial);
         assert!(result.output.contains("line 0"));
         assert!(result.output.contains("line 1"));
@@ -1588,10 +1588,9 @@ index ghi..jkl 100644
     #[test]
     fn git_diff_truncation_note() {
         let f = git_diff_filter(5);
-        // Build a diff with more than 5 lines
         let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n".to_owned();
         for i in 0..10 {
-            let _ = write!(raw, "+line {i}\n");
+            let _ = writeln!(raw, "+line {i}");
         }
         let result = f.filter("git diff", &raw, 0);
         assert!(result.output.contains("truncated from"));
@@ -2045,8 +2044,6 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
 
     #[test]
     fn strip_annotated_no_panic_when_head_tail_exceeds_kept() {
-        // keep_head=10, keep_tail=5, but only 3 non-noise lines remain after filtering
-        // long_output_threshold=2 so truncation path is triggered
         let f = DeclarativeFilter {
             name: "test-adv2",
             matcher: CommandMatcher::Prefix("cmd"),
@@ -2058,13 +2055,11 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
                 keep_tail: 5,
             },
         };
-        // 10 noise lines + 3 kept → kept.len()=3 < long_output_threshold=2? No, 3>2, so truncation
         let mut raw = String::new();
         for i in 0..10 {
-            let _ = write!(raw, "NOISE line {i}\n");
+            let _ = writeln!(raw, "NOISE line {i}");
         }
         raw.push_str("kept 1\nkept 2\nkept 3\n");
-        // Must not panic
         let result = f.filter("cmd", &raw, 0);
         assert_eq!(result.confidence, FilterConfidence::Full);
     }

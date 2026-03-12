@@ -444,10 +444,9 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.env_context = crate::context::EnvironmentContext::gather_for_dir(
-            &self.runtime.model_name,
-            path.into(),
-        );
+        let path = path.into();
+        self.env_context =
+            crate::context::EnvironmentContext::gather_for_dir(&self.runtime.model_name, &path);
         self
     }
 
@@ -684,7 +683,7 @@ mod tests {
         assert!(Arc::ptr_eq(&shared, &agent.cancel_signal()));
     }
 
-    /// Verify that with_managed_skills_dir enables the install/remove commands.
+    /// Verify that `with_managed_skills_dir` enables the install/remove commands.
     /// Without a managed dir, `/skill install` sends a "not configured" message.
     /// With a managed dir configured, it proceeds past that guard (and may fail
     /// for other reasons such as the source not existing).

@@ -1837,6 +1837,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_executor_set_skill_env_injects_vars() {
+        use crate::executor::ToolExecutor;
+
         let config = ShellConfig {
             timeout: 5,
             allowed_commands: vec![],
@@ -1845,7 +1847,6 @@ mod tests {
             confirm_patterns: vec![],
             allow_network: false,
         };
-        use crate::executor::ToolExecutor;
 
         let executor = ShellExecutor::new(&config);
         let mut env = std::collections::HashMap::new();

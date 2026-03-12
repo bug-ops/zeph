@@ -931,14 +931,13 @@ mod tests {
 
     async fn test_memory() -> SemanticMemory {
         let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
-        // Qdrant URL is unreachable so it gracefully degrades (qdrant = None)
         SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model")
             .await
             .unwrap()
     }
 
-    /// Creates a registry with a "test-skill" and returns both the registry and the TempDir.
-    /// The TempDir must be kept alive for the duration of the test because get_skill reads
+    /// Creates a registry with a "test-skill" and returns both the registry and the `TempDir`.
+    /// The `TempDir` must be kept alive for the duration of the test because `get_skill` reads
     /// the skill body lazily from the filesystem.
     fn create_registry_with_tempdir() -> (SkillRegistry, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().unwrap();

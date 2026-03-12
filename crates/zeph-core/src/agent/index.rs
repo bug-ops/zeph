@@ -52,14 +52,11 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        // No retriever wired up (default).
         assert!(agent.index.retriever.is_none(), "retriever must be None");
 
-        // With a positive token budget, repo_map_tokens is non-zero.
         agent.index.repo_map_tokens = 500;
         assert_eq!(agent.index.repo_map_tokens, 500);
 
-        // Pre-populate the cache (simulates a successful generate_repo_map call).
         let fake_map = "<repo_map>\n  src/lib.rs :: pub fn:foo(1)\n</repo_map>".to_string();
         let now = std::time::Instant::now();
         agent.index.cached_repo_map = Some((fake_map.clone(), now));
@@ -75,7 +72,7 @@ mod tests {
         );
     }
 
-    /// GAP-1554-A (async): fetch_code_rag returns None when retriever is absent.
+    /// GAP-1554-A (async): `fetch_code_rag` returns None when retriever is absent.
     #[tokio::test]
     async fn test_fetch_code_rag_no_retriever_returns_none() {
         let provider = mock_provider(vec![]);

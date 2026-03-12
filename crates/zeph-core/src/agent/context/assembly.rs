@@ -165,10 +165,9 @@ impl<C: Channel> Agent<C> {
             None,
         )
         .await?
+            && self.messages.len() > 1
         {
-            if self.messages.len() > 1 {
-                self.messages.insert(1, msg);
-            }
+            self.messages.insert(1, msg);
         }
 
         Ok(())
@@ -346,11 +345,10 @@ impl<C: Channel> Agent<C> {
         if let Some(msg) =
             Self::fetch_cross_session(&self.memory_state, query, token_budget, &self.token_counter)
                 .await?
+            && self.messages.len() > 1
         {
-            if self.messages.len() > 1 {
-                self.messages.insert(1, msg);
-                tracing::debug!("injected cross-session context");
-            }
+            self.messages.insert(1, msg);
+            tracing::debug!("injected cross-session context");
         }
 
         Ok(())
@@ -412,11 +410,10 @@ impl<C: Channel> Agent<C> {
 
         if let Some(msg) =
             Self::fetch_summaries(&self.memory_state, token_budget, &self.token_counter).await?
+            && self.messages.len() > 1
         {
-            if self.messages.len() > 1 {
-                self.messages.insert(1, msg);
-                tracing::debug!("injected summaries into context");
-            }
+            self.messages.insert(1, msg);
+            tracing::debug!("injected summaries into context");
         }
 
         Ok(())
