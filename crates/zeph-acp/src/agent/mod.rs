@@ -27,7 +27,7 @@ use crate::fs::AcpFileExecutor;
 use crate::lsp::DiagnosticsCache;
 use crate::permission::AcpPermissionGate;
 use crate::terminal::AcpShellExecutor;
-use crate::transport::ConnSlot;
+use crate::transport::{ConnSlot, SharedAvailableModels};
 
 /// Factory that creates a provider by `{provider}:{model}` key.
 pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync>;
@@ -326,7 +326,7 @@ pub struct ZephAcpAgent {
     /// Factory for creating a new provider by `{provider}:{model}` key.
     provider_factory: Option<ProviderFactory>,
     /// Available model identifiers advertised in `new_session` `config_options`.
-    available_models: Vec<String>,
+    available_models: SharedAvailableModels,
     /// Shared MCP manager for `ext_method` add/remove/list.
     mcp_manager: Option<Arc<McpManager>>,
     /// Project rule file paths advertised in `new_session` `_meta`.
@@ -365,7 +365,7 @@ impl ZephAcpAgent {
             permission_file,
             client_caps: RefCell::new(acp::ClientCapabilities::default()),
             provider_factory: None,
-            available_models: Vec::new(),
+            available_models: Arc::new(std::sync::RwLock::new(Vec::new())),
             mcp_manager: None,
             project_rules: Vec::new(),
             title_max_chars: 60,
@@ -401,11 +401,25 @@ impl ZephAcpAgent {
     pub fn with_provider_factory(
         mut self,
         factory: ProviderFactory,
-        available_models: Vec<String>,
+        available_models: SharedAvailableModels,
     ) -> Self {
         self.provider_factory = Some(factory);
         self.available_models = available_models;
         self
+    }
+
+    fn available_models_snapshot(&self) -> Vec<String> {
+        self.available_models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn initial_model(&self) -> String {
+        self.available_models_snapshot()
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     #[must_use]
@@ -824,6 +838,7 @@ impl acp::Agent for ZephAcpAgent {
             session_cwd.clone(),
         );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
+        let initial_model = self.initial_model();
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -832,7 +847,7 @@ impl acp::Agent for ZephAcpAgent {
             created_at: chrono::Utc::now(),
             working_dir: RefCell::new(Some(session_cwd.clone())),
             provider_override,
-            current_model: RefCell::new(String::new()),
+            current_model: RefCell::new(initial_model.clone()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
             title: RefCell::new(None),
@@ -879,7 +894,9 @@ impl acp::Agent for ZephAcpAgent {
             (spawner)(channel, acp_ctx, session_ctx).await;
         });
 
-        let config_options = build_config_options(&self.available_models, "", false, "suggest");
+        let available_models = self.available_models_snapshot();
+        let config_options =
+            build_config_options(&available_models, &initial_model, false, "suggest");
         let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
         let mut resp = acp::NewSessionResponse::new(session_id.clone())
             .modes(build_mode_state(&default_mode_id));
@@ -1169,9 +1186,15 @@ impl acp::Agent for ZephAcpAgent {
                 if let Some(entry) = self.sessions.borrow().get(&args.session_id) {
                     entry.first_prompt_done.set(true);
                 }
+                let current_model = self
+                    .sessions
+                    .borrow()
+                    .get(&args.session_id)
+                    .map(|entry| entry.current_model.borrow().clone())
+                    .unwrap_or_default();
                 if let Some(ref factory) = self.provider_factory
-                    && let Some(model_key) = self.available_models.first()
-                    && let Some(provider) = factory(model_key)
+                    && !current_model.is_empty()
+                    && let Some(provider) = factory(&current_model)
                 {
                     let user_text = text.clone();
                     let sid = args.session_id.clone();
@@ -1293,6 +1316,7 @@ impl acp::Agent for ZephAcpAgent {
             session_cwd.clone(),
         );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
+        let initial_model = self.initial_model();
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -1301,7 +1325,7 @@ impl acp::Agent for ZephAcpAgent {
             created_at: chrono::Utc::now(),
             working_dir: RefCell::new(Some(session_cwd.clone())),
             provider_override,
-            current_model: RefCell::new(String::new()),
+            current_model: RefCell::new(initial_model),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
             title: RefCell::new(None),
@@ -1557,6 +1581,7 @@ impl acp::Agent for ZephAcpAgent {
             args.cwd.clone(),
         );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
+        let initial_model = self.initial_model();
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -1565,7 +1590,7 @@ impl acp::Agent for ZephAcpAgent {
             created_at: chrono::Utc::now(),
             working_dir: RefCell::new(Some(args.cwd.clone())),
             provider_override,
-            current_model: RefCell::new(String::new()),
+            current_model: RefCell::new(initial_model.clone()),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
             title: RefCell::new(None),
@@ -1586,7 +1611,9 @@ impl acp::Agent for ZephAcpAgent {
             (spawner)(channel, acp_ctx, session_ctx).await;
         });
 
-        let config_options = build_config_options(&self.available_models, "", false, "suggest");
+        let available_models = self.available_models_snapshot();
+        let config_options =
+            build_config_options(&available_models, &initial_model, false, "suggest");
         let default_mode_id = acp::SessionModeId::new(DEFAULT_MODE_ID);
         let mut resp =
             acp::ForkSessionResponse::new(new_id).modes(build_mode_state(&default_mode_id));
@@ -1662,6 +1689,7 @@ impl acp::Agent for ZephAcpAgent {
             args.cwd.clone(),
         );
         let shell_executor = acp_ctx.as_ref().and_then(|c| c.shell_executor.clone());
+        let initial_model = self.initial_model();
         let entry = SessionEntry {
             input_tx: handle.input_tx,
             output_rx: RefCell::new(Some(handle.output_rx)),
@@ -1670,7 +1698,7 @@ impl acp::Agent for ZephAcpAgent {
             created_at: chrono::Utc::now(),
             working_dir: RefCell::new(Some(args.cwd.clone())),
             provider_override,
-            current_model: RefCell::new(String::new()),
+            current_model: RefCell::new(initial_model),
             current_mode: RefCell::new(acp::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: std::cell::Cell::new(false),
             title: RefCell::new(None),
@@ -1717,7 +1745,8 @@ impl acp::Agent for ZephAcpAgent {
                         );
                     };
 
-                    if !self.available_models.iter().any(|m| m == value) {
+                    let available_models = self.available_models_snapshot();
+                    if !available_models.iter().any(|m| m == value) {
                         return Err(acp::Error::invalid_request().data("model not in allowed list"));
                     }
 
@@ -1781,7 +1810,7 @@ impl acp::Agent for ZephAcpAgent {
         // Build the full option set for the response, but notify only the changed option
         // to avoid redundant updates for unchanged config entries (IMP-3).
         let config_options = build_config_options(
-            &self.available_models,
+            &self.available_models_snapshot(),
             &current_model,
             thinking,
             &auto_approve,
@@ -1851,7 +1880,11 @@ impl acp::Agent for ZephAcpAgent {
             return Err(acp::Error::internal_error().data("model switching not configured"));
         };
 
-        if !self.available_models.iter().any(|m| m == model_id) {
+        if !self
+            .available_models_snapshot()
+            .iter()
+            .any(|m| m == model_id)
+        {
             return Err(acp::Error::invalid_request().data("model not in allowed list"));
         }
 
@@ -2009,8 +2042,9 @@ impl ZephAcpAgent {
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
     }
 
-    fn resolve_model_fuzzy<'a>(&'a self, query: &str) -> acp::Result<String> {
-        if self.available_models.iter().any(|m| m == query) {
+    fn resolve_model_fuzzy(&self, query: &str) -> acp::Result<String> {
+        let available_models = self.available_models_snapshot();
+        if available_models.iter().any(|m| m == query) {
             return Ok(query.to_owned());
         }
         let tokens: Vec<String> = query
@@ -2018,8 +2052,7 @@ impl ZephAcpAgent {
             .split_whitespace()
             .map(String::from)
             .collect();
-        let candidates: Vec<&'a String> = self
-            .available_models
+        let candidates: Vec<&String> = available_models
             .iter()
             .filter(|m| {
                 let lower = m.to_lowercase();
@@ -2028,7 +2061,7 @@ impl ZephAcpAgent {
             .collect();
         match candidates.len() {
             0 => {
-                let models = self.available_models.join(", ");
+                let models = available_models.join(", ");
                 Err(acp::Error::invalid_request()
                     .data(format!("no matching model found. Available: {models}")))
             }
@@ -2042,8 +2075,9 @@ impl ZephAcpAgent {
     }
 
     fn handle_model_command(&self, session_id: &acp::SessionId, arg: &str) -> acp::Result<String> {
+        let available_models = self.available_models_snapshot();
         if arg.is_empty() {
-            let models = self.available_models.join(", ");
+            let models = available_models.join(", ");
             return Ok(format!("Available models: {models}"));
         }
         let Some(ref factory) = self.provider_factory else {
