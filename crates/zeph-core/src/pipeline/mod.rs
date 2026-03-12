@@ -87,7 +87,7 @@ mod tests {
             suffix: "abc".into(),
         })
         .step(ParseLen)
-        .run("".into())
+        .run(String::new())
         .await
         .unwrap();
         assert_eq!(result, 3);
@@ -143,7 +143,7 @@ mod tests {
     async fn extract_step() {
         use super::builtin::ExtractStep;
 
-        let result = Pipeline::start(MapStep::new(|_: ()| r#"{"a":1,"b":"two"}"#.to_owned()))
+        let result = Pipeline::start(MapStep::new(|(): ()| r#"{"a":1,"b":"two"}"#.to_owned()))
             .step(ExtractStep::<serde_json::Value>::new())
             .run(())
             .await
@@ -232,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn extract_step_invalid_json() {
-        let result = Pipeline::start(MapStep::new(|_: ()| "not json".to_owned()))
+        let result = Pipeline::start(MapStep::new(|(): ()| "not json".to_owned()))
             .step(ExtractStep::<serde_json::Value>::new())
             .run(())
             .await;
@@ -247,7 +247,7 @@ mod tests {
             required_field: Vec<u32>,
         }
 
-        let result = Pipeline::start(MapStep::new(|_: ()| r#"{"a":1}"#.to_owned()))
+        let result = Pipeline::start(MapStep::new(|(): ()| r#"{"a":1}"#.to_owned()))
             .step(ExtractStep::<Strict>::new())
             .run(())
             .await;

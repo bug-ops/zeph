@@ -139,7 +139,7 @@ tags = ["rust", "concepts"]
         let case = &set.cases[0];
         assert_eq!(case.context.as_deref(), Some("You are a Rust expert."));
         assert!(case.reference.is_some());
-        assert_eq!(case.tags.as_ref().map(|t| t.len()), Some(2));
+        assert_eq!(case.tags.as_ref().map(std::vec::Vec::len), Some(2));
     }
 
     #[test]

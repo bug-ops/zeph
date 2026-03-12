@@ -166,7 +166,7 @@ mod tests {
         let mut pg = PermissionGrants::default();
         pg.grants.push(Grant {
             kind: GrantKind::Tool("shell".into()),
-            granted_at: Instant::now() - Duration::from_secs(10),
+            granted_at: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
             ttl: Duration::from_secs(1), // already expired
         });
         // is_active internally sweeps
@@ -215,7 +215,7 @@ mod tests {
         // Add one already-expired grant.
         pg.grants.push(Grant {
             kind: GrantKind::Tool("expired-tool".into()),
-            granted_at: Instant::now() - Duration::from_secs(10),
+            granted_at: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
             ttl: Duration::from_secs(1),
         });
 

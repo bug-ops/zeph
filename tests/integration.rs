@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
-use zeph_core::config::{Config, ProviderKind, SecurityConfig, TimeoutConfig};
+use zeph_core::config::{AutonomyLevel, Config, ProviderKind, SecurityConfig, TimeoutConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_memory::semantic::SemanticMemory;
@@ -1095,7 +1095,7 @@ async fn agent_redaction_enabled() {
 
     let security = SecurityConfig {
         redact_secrets: true,
-        autonomy_level: Default::default(),
+        autonomy_level: AutonomyLevel::default(),
         ..Default::default()
     };
 
@@ -1127,7 +1127,7 @@ async fn agent_redaction_disabled() {
 
     let security = SecurityConfig {
         redact_secrets: false,
-        autonomy_level: Default::default(),
+        autonomy_level: AutonomyLevel::default(),
         ..Default::default()
     };
 
@@ -1302,7 +1302,7 @@ async fn agent_with_security_config() {
 
     let security = SecurityConfig {
         redact_secrets: true,
-        autonomy_level: Default::default(),
+        autonomy_level: AutonomyLevel::default(),
         ..Default::default()
     };
     let timeouts = TimeoutConfig {
@@ -1502,7 +1502,7 @@ async fn agent_streaming_redaction() {
 
     let security = SecurityConfig {
         redact_secrets: true,
-        autonomy_level: Default::default(),
+        autonomy_level: AutonomyLevel::default(),
         ..Default::default()
     };
 
@@ -1537,7 +1537,7 @@ async fn agent_redaction_in_tool_output() {
 
     let security = SecurityConfig {
         redact_secrets: true,
-        autonomy_level: Default::default(),
+        autonomy_level: AutonomyLevel::default(),
         ..Default::default()
     };
 

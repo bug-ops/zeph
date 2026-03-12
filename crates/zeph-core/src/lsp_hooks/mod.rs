@@ -108,9 +108,11 @@ impl LspHookRunner {
         sanitizer: &crate::sanitizer::ContentSanitizer,
     ) {
         if !self.config.enabled {
+            tracing::debug!(tool = tool_name, "LSP hook: skipped (disabled)");
             return;
         }
         if !self.is_available().await {
+            tracing::debug!(tool = tool_name, "LSP hook: skipped (server unavailable)");
             return;
         }
 
@@ -126,6 +128,12 @@ impl LspHookRunner {
                     self.stats.hover_injected += 1;
                     self.pending_notes.push(note);
                 }
+            }
+            "write" => {
+                tracing::debug!(tool = tool_name, "LSP hook: skipped (diagnostics disabled)");
+            }
+            "read" => {
+                tracing::debug!(tool = tool_name, "LSP hook: skipped (hover disabled)");
             }
             _ => {}
         }
@@ -151,8 +159,11 @@ impl LspHookRunner {
             .and_then(|v| v.as_str())
             .map(ToOwned::to_owned)
         else {
+            tracing::debug!("LSP hook: skipped diagnostics fetch (missing path)");
             return;
         };
+
+        tracing::debug!(tool = "write", path = %path, "LSP hook: spawning diagnostics fetch");
 
         let manager = Arc::clone(&self.manager);
         let config = self.config.clone();

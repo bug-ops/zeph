@@ -475,7 +475,7 @@ mod tests {
             cmd,
             AgentCommand::Mention {
                 agent: "helper".into(),
-                prompt: "".into(),
+                prompt: String::new(),
             }
         );
     }

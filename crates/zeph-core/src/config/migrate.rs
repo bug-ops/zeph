@@ -612,8 +612,8 @@ name = "Test"
         let f = Value::Float(Formatted::new(1.0_f64));
         assert_eq!(value_to_toml_string(&f), "1.0");
 
-        let f2 = Value::Float(Formatted::new(3.14_f64));
-        assert_eq!(value_to_toml_string(&f2), "3.14");
+        let f2 = Value::Float(Formatted::new(std::f64::consts::PI));
+        assert_eq!(value_to_toml_string(&f2), "3.141592653589793");
 
         let arr: Array = ["a", "b"].iter().map(|s| make_formatted_str(s)).collect();
         let arr_val = Value::Array(arr);

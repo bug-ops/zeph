@@ -282,6 +282,8 @@ fn convert_response(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::needless_pass_by_value)]
+
     use super::*;
     use crate::subagent::def::{SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy};
     use crate::subagent::hooks::SubagentHooks;
@@ -313,8 +315,8 @@ mod tests {
             task_id: task_id.to_string(),
             title: title.to_string(),
             description: format!("do {title}"),
-            agent_hint: agent_hint.map(|s| s.to_string()),
-            depends_on: deps.iter().map(|s| s.to_string()).collect(),
+            agent_hint: agent_hint.map(std::string::ToString::to_string),
+            depends_on: deps.iter().map(std::string::ToString::to_string).collect(),
             failure_strategy: None,
         }
     }

@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(&s[16..17], ":");
     }
 
-    /// Verify that days_to_ymd correctly handles a known date including a leap year.
+    /// Verify that `days_to_ymd` correctly handles a known date including a leap year.
     /// 2024-02-29 (leap day) = 19782 days since 1970-01-01.
     #[test]
     fn chrono_known_timestamp_leap_year() {
@@ -909,7 +909,7 @@ mod tests {
         assert_eq!(hour, 0);
     }
 
-    /// ExperimentEngine must be Send to be used with tokio::spawn.
+    /// `ExperimentEngine` must be Send to be used with `tokio::spawn`.
     #[test]
     fn experiment_engine_is_send() {
         fn assert_send<T: Send>() {}

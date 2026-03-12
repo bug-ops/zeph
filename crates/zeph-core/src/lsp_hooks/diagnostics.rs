@@ -68,6 +68,12 @@ pub(super) async fn fetch_diagnostics(
     let timeout = std::time::Duration::from_secs(config.call_timeout_secs);
     let args = serde_json::json!({ "file_path": file_path });
 
+    tracing::debug!(
+        path = file_path,
+        timeout_secs = config.call_timeout_secs,
+        "LSP diagnostics: calling get_diagnostics"
+    );
+
     let call_result = match tokio::time::timeout(
         timeout,
         manager.call_tool(&config.mcp_server_id, "get_diagnostics", args),
@@ -94,10 +100,21 @@ pub(super) async fn fetch_diagnostics(
 
     // Attempt to parse as a JSON array of diagnostic objects.
     // Expected shape: [{ "severity": 1, "message": "...", "range": { "start": { "line": N } } }]
-    let diagnostics: Vec<serde_json::Value> = serde_json::from_str(json_text).unwrap_or_default();
+    let diagnostics: Vec<serde_json::Value> = match serde_json::from_str(json_text) {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => {
+            tracing::debug!(
+                path = file_path,
+                error = %error,
+                "LSP diagnostics: failed to parse response JSON"
+            );
+            return None;
+        }
+    };
 
     let threshold = severity_threshold(config.diagnostics.min_severity);
     let max_per_file = config.diagnostics.max_per_file;
+    let total_diagnostics = diagnostics.len();
 
     let lines: Vec<String> = diagnostics
         .iter()
@@ -111,8 +128,24 @@ pub(super) async fn fetch_diagnostics(
         .collect();
 
     if lines.is_empty() {
+        tracing::debug!(
+            path = file_path,
+            diagnostics = total_diagnostics,
+            threshold,
+            max_per_file,
+            "LSP diagnostics: result empty after filtering"
+        );
         return None;
     }
+
+    tracing::debug!(
+        path = file_path,
+        diagnostics = total_diagnostics,
+        injected = lines.len(),
+        threshold,
+        max_per_file,
+        "LSP diagnostics: injecting diagnostics note"
+    );
 
     let raw_content = lines.join("\n");
 

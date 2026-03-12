@@ -461,6 +461,8 @@ async fn handle_working_dir_update(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::items_after_statements)]
+
     use std::sync::Arc;
 
     use agent_client_protocol as acp;

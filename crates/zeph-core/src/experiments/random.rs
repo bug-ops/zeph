@@ -102,7 +102,7 @@ mod tests {
         for _ in 0..20 {
             if let Some(v) = generator.next(&baseline, &visited) {
                 let val = v.value.as_f64();
-                assert!(val >= 0.0 && val <= 1.0, "out of range: {val}");
+                assert!((0.0..=1.0).contains(&val), "out of range: {val}");
             }
         }
     }

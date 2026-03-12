@@ -3,6 +3,8 @@
 
 #[cfg(test)]
 pub mod agent_tests {
+    #![allow(clippy::type_complexity)]
+
     use super::super::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
     #[allow(unused_imports)]
     pub(crate) use super::super::{
@@ -372,7 +374,7 @@ pub mod agent_tests {
 
     #[tokio::test]
     async fn agent_process_response_handles_empty_response() {
-        let provider = mock_provider(vec!["".to_string()]);
+        let provider = mock_provider(vec![String::new()]);
         let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -2225,7 +2227,7 @@ mod compaction_e2e {
 
     /// E2E test: spawn sub-agent in background, verify it runs and produces output.
     ///
-    /// Scope: spawn → text response → collect (MockProvider only supports text responses).
+    /// Scope: spawn → text response → collect (`MockProvider` only supports text responses).
     #[tokio::test]
     async fn subagent_spawn_text_collect_e2e() {
         use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
@@ -2305,9 +2307,10 @@ mod compaction_e2e {
                     _ => {}
                 }
             }
-            if std::time::Instant::now() > deadline {
-                panic!("sub-agent did not complete within timeout");
-            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "sub-agent did not complete within timeout"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
 
@@ -2327,10 +2330,10 @@ mod compaction_e2e {
 
     /// Unit test for secret bridge in foreground spawn poll loop.
     ///
-    /// Verifies that when a sub-agent emits [REQUEST_SECRET: api-key], the bridge:
-    /// - calls channel.confirm() with a prompt containing the key name
+    /// Verifies that when a sub-agent emits [`REQUEST_SECRET`: api-key], the bridge:
+    /// - calls `channel.confirm()` with a prompt containing the key name
     /// - on approval, delivers the secret to the sub-agent
-    /// The MockChannel confirm() is pre-loaded with `true` (approve).
+    /// The `MockChannel` `confirm()` is pre-loaded with `true` (approve).
     #[tokio::test]
     async fn foreground_spawn_secret_bridge_approves() {
         use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};

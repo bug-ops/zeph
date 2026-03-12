@@ -533,7 +533,7 @@ mod tests {
 
         let remaining: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
             .collect();
         assert_eq!(remaining.len(), 3);
@@ -595,7 +595,7 @@ mod tests {
         // Companion metas for the two deleted files should also be gone.
         let meta_count = std::fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.path().to_string_lossy().ends_with(".meta.json"))
             .count();
         assert_eq!(

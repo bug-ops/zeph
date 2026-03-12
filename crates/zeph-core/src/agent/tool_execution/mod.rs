@@ -529,6 +529,8 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::too_many_lines)]
+
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -732,10 +734,9 @@ mod tests {
             let tool_id = call.tool_id.clone();
             async move {
                 if fail {
-                    Err(ToolError::Execution(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("tool {tool_id} failed"),
-                    )))
+                    Err(ToolError::Execution(std::io::Error::other(format!(
+                        "tool {tool_id} failed"
+                    ))))
                 } else {
                     Ok(Some(ToolOutput {
                         tool_name: tool_id,
@@ -3111,8 +3112,7 @@ mod tests {
             let tool_id = call.tool_id.clone();
             async move {
                 if is_err {
-                    Err(ToolError::Execution(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    Err(ToolError::Execution(std::io::Error::other(
                         "executor error",
                     )))
                 } else {

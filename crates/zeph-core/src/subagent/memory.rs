@@ -229,6 +229,8 @@ fn check_gitignore_for_local(memory_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::format_collect)]
+
     use super::*;
 
     // ── resolve_memory_dir ────────────────────────────────────────────────────

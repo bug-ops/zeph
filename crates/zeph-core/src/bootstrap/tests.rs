@@ -3,6 +3,7 @@
 
 // std::env::set_var / remove_var are unsafe in Rust 2024 edition; all callers are #[serial].
 #![allow(unsafe_code)]
+#![allow(clippy::default_trait_access)]
 
 use std::path::{Path, PathBuf};
 

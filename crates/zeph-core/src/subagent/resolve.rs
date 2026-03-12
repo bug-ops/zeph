@@ -134,6 +134,8 @@ pub fn scope_label(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cloned_ref_to_slice_refs)]
+
     use super::*;
 
     #[test]
@@ -164,8 +166,7 @@ mod tests {
         // No user-level dir should be added
         let has_config_dir = paths.iter().any(|p| {
             p.to_str()
-                .map(|s| s.contains(".config") || s.contains("AppData"))
-                .unwrap_or(false)
+                .is_some_and(|s| s.contains(".config") || s.contains("AppData"))
         });
         assert!(!has_config_dir);
     }

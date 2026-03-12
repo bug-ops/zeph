@@ -1202,7 +1202,7 @@ mod tests {
 
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
-        let result = collect_project_rules(&[skill_file.clone()]);
+        let result = collect_project_rules(std::slice::from_ref(&skill_file));
         std::env::set_current_dir(orig).unwrap();
         assert_eq!(result.len(), 2);
         let names: Vec<_> = result

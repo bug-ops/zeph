@@ -1498,7 +1498,7 @@ mod tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let metas = vec![
+        let metas = [
             SkillMeta {
                 name: "alpha_skill".into(),
                 description: "does alpha".into(),
@@ -1549,7 +1549,7 @@ mod tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let metas = vec![SkillMeta {
+        let metas = [SkillMeta {
             name: "test".into(),
             description: "test".into(),
             compatibility: None,
@@ -1598,7 +1598,7 @@ mod tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let metas = vec![
+        let metas = [
             SkillMeta {
                 name: "first".into(),
                 description: "first skill".into(),
@@ -1651,7 +1651,7 @@ mod tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let metas = vec![SkillMeta {
+        let metas = [SkillMeta {
             name: "only_skill".into(),
             description: "the only one".into(),
             compatibility: None,
@@ -1703,7 +1703,7 @@ mod tests {
         // available_custom_secrets is empty — skill must be excluded
         agent.skill_state.available_custom_secrets = HashMap::new();
 
-        let all_meta = vec![meta_with_secret];
+        let all_meta = [meta_with_secret];
         let matched_indices: Vec<usize> = vec![0];
 
         let filtered: Vec<usize> = matched_indices
@@ -1756,7 +1756,7 @@ mod tests {
             .available_custom_secrets
             .insert("my_api_key".into(), crate::vault::Secret::new("token-val"));
 
-        let all_meta = vec![meta_with_secret];
+        let all_meta = [meta_with_secret];
         let matched_indices: Vec<usize> = vec![0];
 
         let filtered: Vec<usize> = matched_indices
@@ -1810,7 +1810,7 @@ mod tests {
             .available_custom_secrets
             .insert("secret_a".into(), crate::vault::Secret::new("val-a"));
 
-        let all_meta = vec![meta];
+        let all_meta = [meta];
         let matched_indices: Vec<usize> = vec![0];
 
         let filtered: Vec<usize> = matched_indices

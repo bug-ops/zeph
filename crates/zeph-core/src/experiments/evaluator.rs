@@ -641,7 +641,7 @@ mod tests {
         assert!((report.mean_score - 8.75).abs() < 1e-6);
     }
 
-    /// R8-GAP-1: Budget exhaustion mid-evaluation produces is_partial=true.
+    /// R8-GAP-1: Budget exhaustion mid-evaluation produces `is_partial=true`.
     #[tokio::test]
     async fn partial_results_on_budget_exceeded() {
         use std::sync::Arc;
@@ -693,7 +693,7 @@ mod tests {
         assert!(report.cases_scored + report.error_count <= 3);
     }
 
-    /// R8-GAP-3: LLM errors are excluded from mean; error_count incremented.
+    /// R8-GAP-3: LLM errors are excluded from mean; `error_count` incremented.
     #[tokio::test]
     async fn llm_error_excluded_from_mean() {
         use std::sync::Arc;

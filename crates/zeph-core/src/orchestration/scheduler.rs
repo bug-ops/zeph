@@ -801,6 +801,8 @@ fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::default_trait_access)]
+
     use super::*;
     use crate::orchestration::graph::{
         FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus,
@@ -1204,7 +1206,7 @@ mod tests {
             RunningTask {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
-                started_at: Instant::now() - Duration::from_secs(2), // already timed out
+                started_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(), // already timed out
             },
         );
 
@@ -1365,7 +1367,9 @@ mod tests {
             RunningTask {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
-                started_at: Instant::now() - Duration::from_millis(50),
+                started_at: Instant::now()
+                    .checked_sub(Duration::from_millis(50))
+                    .unwrap(),
             },
         );
 

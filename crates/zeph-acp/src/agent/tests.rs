@@ -1,8 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#![allow(
+    clippy::arc_with_non_send_sync,
+    clippy::field_reassign_with_default,
+    clippy::items_after_statements
+)]
+
 use super::helpers::*;
 use super::*;
+use agent_client_protocol as acp;
 
 fn make_spawner() -> AgentSpawner {
     Arc::new(|_channel, _ctx, _session_ctx| Box::pin(async {}))

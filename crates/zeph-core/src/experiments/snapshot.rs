@@ -180,6 +180,8 @@ impl ConfigSnapshot {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default, clippy::type_complexity)]
+
     use super::*;
     use ordered_float::OrderedFloat;
 
@@ -341,12 +343,12 @@ mod tests {
             (ParameterKind::TopP, |s| s.top_p = 0.5),
             (ParameterKind::TopK, |s| s.top_k = 20.0),
             (ParameterKind::FrequencyPenalty, |s| {
-                s.frequency_penalty = 0.5
+                s.frequency_penalty = 0.5;
             }),
             (ParameterKind::PresencePenalty, |s| s.presence_penalty = 0.5),
             (ParameterKind::RetrievalTopK, |s| s.retrieval_top_k = 10.0),
             (ParameterKind::SimilarityThreshold, |s| {
-                s.similarity_threshold = 0.8
+                s.similarity_threshold = 0.8;
             }),
             (ParameterKind::TemporalDecay, |s| s.temporal_decay = 60.0),
         ];

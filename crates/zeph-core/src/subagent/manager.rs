@@ -1562,6 +1562,12 @@ impl SubAgentManager {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::await_holding_lock,
+        clippy::field_reassign_with_default,
+        clippy::too_many_lines
+    )]
+
     use std::pin::Pin;
 
     use indoc::indoc;
@@ -2470,7 +2476,7 @@ mod tests {
 
     // ── resume() tests ────────────────────────────────────────────────────────
 
-    /// Write a minimal completed meta file and empty JSONL so resume() has something to load.
+    /// Write a minimal completed meta file and empty JSONL so `resume()` has something to load.
     fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
         use crate::subagent::transcript::{TranscriptMeta, TranscriptWriter};
         let meta = TranscriptMeta {

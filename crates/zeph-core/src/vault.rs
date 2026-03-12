@@ -354,7 +354,7 @@ impl VaultProvider for EnvVaultProvider {
 #[derive(Default)]
 pub struct MockVaultProvider {
     secrets: std::collections::BTreeMap<String, String>,
-    /// Keys returned by list_keys() but absent from secrets (simulates get_secret returning None).
+    /// Keys returned by `list_keys()` but absent from secrets (simulates `get_secret` returning None).
     listed_only: Vec<String>,
 }
 
@@ -371,7 +371,7 @@ impl MockVaultProvider {
         self
     }
 
-    /// Add a key to list_keys() without a corresponding get_secret() value.
+    /// Add a key to `list_keys()` without a corresponding `get_secret()` value.
     #[must_use]
     pub fn with_listed_key(mut self, key: &str) -> Self {
         self.listed_only.push(key.to_owned());

@@ -460,6 +460,7 @@ mod tests {
         (SchedulerExecutor::new(tx, store), rx)
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn make_call(tool_id: &str, params: serde_json::Value) -> ToolCall {
         ToolCall {
             tool_id: tool_id.to_owned(),

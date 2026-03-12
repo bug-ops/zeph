@@ -111,7 +111,7 @@ async fn initialize_handshake() {
             // Server can exit normally after client disconnects
             let _ = res;
         }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 
@@ -150,7 +150,7 @@ async fn stdio_ready_notification_is_first_frame() {
         res = server_fut => {
             let _ = res;
         }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 
@@ -211,7 +211,7 @@ async fn new_session_and_cancel() {
         res = server_fut => {
             let _ = res;
         }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 
@@ -266,7 +266,7 @@ where
 
     tokio::select! {
         res = server_fut => { let _ = res; }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 
@@ -477,7 +477,7 @@ async fn e2e_initialize_returns_auth_hint_and_load_session() {
 
     tokio::select! {
         res = server_fut => { let _ = res; }
-        _ = client_fut => {}
+        () = client_fut => {}
     }
 }
 

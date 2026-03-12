@@ -338,6 +338,8 @@ fn glob_match(pattern: &GlobPattern, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::default_trait_access)]
+
     use super::*;
     use crate::subagent::def::ToolPolicy;
 
@@ -892,11 +894,10 @@ mod tests {
                 name in "[a-z-]{0,15}",
             ) {
                 // Skip patterns with ** (those are compile errors by design).
-                if !pattern.contains("**") {
-                    if let Ok(p) = compile_glob(&pattern) {
+                if !pattern.contains("**")
+                    && let Ok(p) = compile_glob(&pattern) {
                         let _ = glob_match(&p, &name);
                     }
-                }
             }
 
             /// A literal pattern (no `*`) must match only exact strings.

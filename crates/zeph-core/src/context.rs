@@ -345,6 +345,12 @@ impl ContextBudget {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::single_match
+    )]
+
     use super::*;
 
     #[test]

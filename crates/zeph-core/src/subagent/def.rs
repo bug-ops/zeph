@@ -899,6 +899,8 @@ impl SubAgentDef {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cloned_ref_to_slice_refs)]
+
     use indoc::indoc;
 
     use super::*;

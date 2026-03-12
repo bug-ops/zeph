@@ -135,7 +135,7 @@ mod tests {
 
         agent.message_queue.push_back(QueuedMessage {
             text: "old".into(),
-            received_at: Instant::now() - Duration::from_secs(2),
+            received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
             image_parts: vec![],
             raw_attachments: vec![],
         });
@@ -156,7 +156,7 @@ mod tests {
         for i in 0..MAX_QUEUE_SIZE {
             agent.message_queue.push_back(QueuedMessage {
                 text: format!("msg{i}"),
-                received_at: Instant::now() - Duration::from_secs(2),
+                received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
                 image_parts: vec![],
                 raw_attachments: vec![],
             });
@@ -176,7 +176,7 @@ mod tests {
         agent.enqueue_or_merge("a".into(), vec![], vec![]);
         // Wait past merge window
         agent.message_queue.back_mut().unwrap().received_at =
-            Instant::now() - Duration::from_secs(1);
+            Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         agent.enqueue_or_merge("b".into(), vec![], vec![]);
         assert_eq!(agent.message_queue.len(), 2);
 
@@ -214,7 +214,7 @@ mod tests {
         for i in 0..MAX_QUEUE_SIZE - 1 {
             agent.message_queue.push_back(QueuedMessage {
                 text: format!("pre{i}"),
-                received_at: Instant::now() - Duration::from_secs(2),
+                received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
                 image_parts: vec![],
                 raw_attachments: vec![],
             });
@@ -235,7 +235,7 @@ mod tests {
         for i in 0..3 {
             agent.message_queue.push_back(QueuedMessage {
                 text: format!("msg{i}"),
-                received_at: Instant::now() - Duration::from_secs(2),
+                received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
                 image_parts: vec![],
                 raw_attachments: vec![],
             });

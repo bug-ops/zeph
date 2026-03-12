@@ -64,9 +64,22 @@ fn strip_cat_n_prefix(content: &str) -> (String, Vec<u64>) {
 /// Falls back to regex (Rust-only) when tree-sitter cannot parse the file.
 fn extract_symbol_positions(content: &str, file_path: &str, max_symbols: usize) -> Vec<(u64, u64)> {
     if let Some(positions) = extract_symbol_positions_tsquery(content, file_path, max_symbols) {
+        tracing::debug!(
+            path = file_path,
+            symbols = positions.len(),
+            extractor = "tree-sitter",
+            "LSP hover: extracted symbol positions"
+        );
         return positions;
     }
-    extract_symbol_positions_regex(content, file_path, max_symbols)
+    let positions = extract_symbol_positions_regex(content, file_path, max_symbols);
+    tracing::debug!(
+        path = file_path,
+        symbols = positions.len(),
+        extractor = "regex",
+        "LSP hover: extracted symbol positions"
+    );
+    positions
 }
 
 /// Regex-based extraction: Rust-only, top-level definitions only.
@@ -182,14 +195,33 @@ pub(super) async fn fetch_hover(
     token_counter: &std::sync::Arc<TokenCounter>,
     sanitizer: &ContentSanitizer,
 ) -> Option<LspNote> {
-    let file_path = tool_params.get("path").and_then(|v| v.as_str())?.to_owned();
+    let Some(file_path) = tool_params
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned)
+    else {
+        tracing::debug!(
+            tool = "read",
+            "LSP hook: skipped hover fetch (missing path)"
+        );
+        return None;
+    };
 
     // Extract symbol positions from the file content returned by the read tool.
     let positions =
         extract_symbol_positions(tool_output, &file_path, runner.config.hover.max_symbols);
     if positions.is_empty() {
+        tracing::debug!(path = %file_path, "LSP hover: no symbols found in file");
         return None;
     }
+
+    tracing::debug!(
+        path = %file_path,
+        symbols = positions.len(),
+        concurrency = MAX_CONCURRENT_HOVER_CALLS,
+        timeout_secs = runner.config.call_timeout_secs,
+        "LSP hook: queuing hover fetch"
+    );
 
     let timeout = std::time::Duration::from_secs(runner.config.call_timeout_secs);
     let manager = &runner.manager;
@@ -223,6 +255,7 @@ pub(super) async fn fetch_hover(
         .await;
 
     if entries.is_empty() {
+        tracing::debug!(path = %file_path, "LSP hover: no hover entries returned");
         return None;
     }
 
@@ -246,6 +279,13 @@ pub(super) async fn fetch_hover(
     }
 
     let estimated_tokens = token_counter.count_tokens(&clean.body);
+
+    tracing::debug!(
+        path = %file_path,
+        entries = entries.len(),
+        estimated_tokens,
+        "LSP hover: injecting hover note"
+    );
 
     Some(LspNote {
         kind: "hover",

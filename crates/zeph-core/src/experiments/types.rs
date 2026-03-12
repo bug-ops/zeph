@@ -134,6 +134,8 @@ impl std::fmt::Display for ExperimentSource {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::approx_constant)]
+
     use super::*;
 
     #[test]

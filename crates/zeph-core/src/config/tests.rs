@@ -3,14 +3,19 @@
 
 // std::env::set_var / remove_var are unsafe in Rust 2024 edition; all callers are #[serial].
 #![allow(unsafe_code)]
+#![allow(
+    clippy::default_trait_access,
+    clippy::field_reassign_with_default,
+    clippy::unnecessary_get_then_check
+)]
 
 use std::collections::HashMap;
 use std::io::Write;
 
 use serial_test::serial;
 
-/// Test helper: verify a Secret in a HashMap matches the expected plaintext.
-/// Separated to avoid CodeQL cleartext-logging false positives on `.get().expose()`.
+/// Test helper: verify a Secret in a `HashMap` matches the expected plaintext.
+/// Separated to avoid `CodeQL` cleartext-logging false positives on `.get().expose()`.
 fn assert_custom_secret(custom: &HashMap<String, crate::vault::Secret>, key: &str, expected: &str) {
     let actual = custom
         .get(key)

@@ -168,6 +168,8 @@ fn expand_tilde(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
 
     #[test]

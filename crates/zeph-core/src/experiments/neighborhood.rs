@@ -103,6 +103,8 @@ impl VariationGenerator for Neighborhood {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use std::collections::HashSet;
 
     use super::super::search_space::ParameterRange;
@@ -116,7 +118,7 @@ mod tests {
                 min,
                 max,
                 step: Some(step),
-                default: (min + max) / 2.0,
+                default: f64::midpoint(min, max),
             }],
         }
     }
@@ -130,7 +132,7 @@ mod tests {
         for _ in 0..20 {
             if let Some(v) = generator.next(&baseline, &visited) {
                 let val = v.value.as_f64();
-                assert!(val >= 0.0 && val <= 2.0, "out of range: {val}");
+                assert!((0.0..=2.0).contains(&val), "out of range: {val}");
             }
         }
     }
@@ -253,10 +255,10 @@ mod tests {
         let visited = HashSet::new();
         let mut temp_values = vec![];
         for _ in 0..50 {
-            if let Some(v) = generator.next(&baseline, &visited) {
-                if v.parameter == ParameterKind::Temperature {
-                    temp_values.push(v.value.as_f64());
-                }
+            if let Some(v) = generator.next(&baseline, &visited)
+                && v.parameter == ParameterKind::Temperature
+            {
+                temp_values.push(v.value.as_f64());
             }
         }
         assert!(
