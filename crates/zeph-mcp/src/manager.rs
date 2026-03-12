@@ -73,6 +73,10 @@ impl McpManager {
 
     /// Connect to all configured servers concurrently, return aggregated tool list.
     /// Servers that fail to connect are logged and skipped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `connected_server_ids` lock is poisoned.
     pub async fn connect_all(&self) -> Vec<McpTool> {
         let mut join_set = JoinSet::new();
 
@@ -149,6 +153,10 @@ impl McpManager {
     ///
     /// Returns `McpError::ServerAlreadyConnected` if the ID is taken,
     /// or connection/tool-listing errors on failure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `connected_server_ids` lock is poisoned.
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         // Early check under read lock (fast path for duplicates)
         {
@@ -197,6 +205,10 @@ impl McpManager {
     /// # Errors
     ///
     /// Returns `McpError::ServerNotFound` if the server is not connected.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `connected_server_ids` lock is poisoned.
     pub async fn remove_server(&self, server_id: &str) -> Result<(), McpError> {
         let client = {
             let mut clients = self.clients.write().await;
@@ -228,6 +240,10 @@ impl McpManager {
     ///
     /// This is a non-blocking probe intended for synchronous availability
     /// checks and mirrors the manager's connected-client lifecycle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `connected_server_ids` lock is poisoned.
     #[must_use]
     pub fn is_server_connected(&self, server_id: &str) -> bool {
         self.connected_server_ids
@@ -242,6 +258,10 @@ impl McpManager {
     }
 
     /// Graceful shutdown of all connections via shared reference.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `connected_server_ids` lock is poisoned.
     pub async fn shutdown_all_shared(&self) {
         let mut clients = self.clients.write().await;
         let drained: Vec<(String, McpClient)> = clients.drain().collect();
