@@ -15,6 +15,56 @@ use zeph_core::vault::Secret;
 #[cfg(feature = "acp")]
 use zeph_tools::ErasedToolExecutor;
 
+#[cfg(feature = "acp")]
+fn resolve_runtime_path(path: &std::path::Path, cwd: &std::path::Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
+#[cfg(feature = "acp")]
+fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::path::Path) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let logging_file = if config.logging.file.is_empty() {
+        None
+    } else {
+        Some(resolve_runtime_path(
+            std::path::Path::new(&config.logging.file),
+            &cwd,
+        ))
+    };
+    let sqlite_path = resolve_runtime_path(std::path::Path::new(&config.memory.sqlite_path), &cwd);
+    let debug_output_dir = resolve_runtime_path(config.debug.output_dir.as_path(), &cwd);
+    let skill_paths: Vec<std::path::PathBuf> = config
+        .skills
+        .paths
+        .iter()
+        .map(|p| resolve_runtime_path(std::path::Path::new(p), &cwd))
+        .collect();
+    let permission_file = config
+        .acp
+        .permission_file
+        .as_ref()
+        .map(|p| resolve_runtime_path(p.as_path(), &cwd));
+
+    tracing::info!(
+        cwd = %cwd.display(),
+        config_path = %config_path.display(),
+        logging_file = logging_file
+            .as_ref()
+            .map_or_else(|| "<disabled>".to_owned(), |p| p.display().to_string()),
+        sqlite_path = %sqlite_path.display(),
+        debug_output_dir = %debug_output_dir.display(),
+        permission_file = permission_file
+            .as_ref()
+            .map_or_else(|| "<none>".to_owned(), |p| p.display().to_string()),
+        skill_paths = ?skill_paths,
+        "ACP startup runtime paths"
+    );
+}
+
 /// Shared dependencies reused across all ACP sessions.
 ///
 /// Fields in this struct are expensive to create and safe to share across sessions.
@@ -147,6 +197,7 @@ async fn build_acp_deps(
     vault_path: Option<&std::path::Path>,
 ) -> anyhow::Result<(SharedAgentDeps, Box<dyn std::any::Any>)> {
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
+    log_acp_runtime_paths(app.config(), app.config_path());
     let (provider, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
