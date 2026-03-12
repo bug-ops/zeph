@@ -674,6 +674,69 @@ impl ClaudeProvider {
             .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))))
     }
 
+    fn cap_block_cache_controls(
+        tool_blocks: usize,
+        system_blocks: Option<&mut Vec<SystemContentBlock>>,
+        chat_messages: Option<&mut Vec<StructuredApiMessage>>,
+    ) {
+        let mut tagged_blocks = tool_blocks;
+
+        if let Some(system) = system_blocks.as_ref() {
+            tagged_blocks += system
+                .iter()
+                .filter(|block| block.cache_control.is_some())
+                .count();
+        }
+
+        const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
+        if tagged_blocks >= MAX_CACHE_CONTROL_BLOCKS {
+            Self::clear_message_cache_controls(chat_messages);
+            return;
+        }
+
+        let remaining = MAX_CACHE_CONTROL_BLOCKS - tagged_blocks;
+        Self::retain_last_message_cache_controls(chat_messages, remaining);
+    }
+
+    fn clear_message_cache_controls(chat_messages: Option<&mut Vec<StructuredApiMessage>>) {
+        Self::retain_last_message_cache_controls(chat_messages, 0);
+    }
+
+    fn retain_last_message_cache_controls(
+        chat_messages: Option<&mut Vec<StructuredApiMessage>>,
+        keep: usize,
+    ) {
+        let mut seen = 0usize;
+        if let Some(chat) = chat_messages {
+            for message in chat.iter_mut().rev() {
+                let StructuredContent::Blocks(blocks) = &mut message.content else {
+                    continue;
+                };
+                for block in blocks.iter_mut().rev() {
+                    let maybe_cache = match block {
+                        AnthropicContentBlock::Text { cache_control, .. }
+                        | AnthropicContentBlock::ToolResult { cache_control, .. } => {
+                            Some(cache_control)
+                        }
+                        AnthropicContentBlock::ToolUse { .. }
+                        | AnthropicContentBlock::Image { .. }
+                        | AnthropicContentBlock::Thinking { .. }
+                        | AnthropicContentBlock::RedactedThinking { .. } => None,
+                    };
+                    if let Some(cache_control) = maybe_cache
+                        && cache_control.is_some()
+                    {
+                        if seen < keep {
+                            seen += 1;
+                        } else {
+                            *cache_control = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
         // Apply experiment generation overrides (temperature only; top_p/top_k not in Claude API).
@@ -698,9 +761,10 @@ impl ClaudeProvider {
         };
 
         if Self::has_image_parts(messages) {
-            let (system, chat_messages) =
+            let (system, mut chat_messages) =
                 split_messages_structured(messages, self.cache_user_messages);
-            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            Self::cap_block_cache_controls(0, system_blocks.as_mut(), Some(&mut chat_messages));
             let beta = self.beta_header(false);
             let body = VisionRequestBody {
                 model: &self.model,
@@ -885,7 +949,8 @@ impl LlmProvider for ClaudeProvider {
             parameters: schema_value,
         };
 
-        let (system, chat_messages) = split_messages_structured(messages, self.cache_user_messages);
+        let (system, mut chat_messages) =
+            split_messages_structured(messages, self.cache_user_messages);
         let api_tool = AnthropicTool {
             name: &tool.name,
             description: &tool.description,
@@ -899,7 +964,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        Self::cap_block_cache_controls(0, system_blocks.as_mut(), Some(&mut chat_messages));
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
                 message_count = messages.len(),
@@ -1008,9 +1074,10 @@ impl LlmProvider for ClaudeProvider {
         };
 
         if !tools.is_empty() {
-            let (system, chat_messages) =
+            let (system, mut chat_messages) =
                 split_messages_structured(messages, self.cache_user_messages);
-            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            Self::cap_block_cache_controls(1, system_blocks.as_mut(), Some(&mut chat_messages));
             let api_tools = self.get_or_build_api_tools(tools);
             let body = ToolRequestBody {
                 model: &self.model,
@@ -1028,9 +1095,10 @@ impl LlmProvider for ClaudeProvider {
         }
 
         if Self::has_image_parts(messages) {
-            let (system, chat_messages) =
+            let (system, mut chat_messages) =
                 split_messages_structured(messages, self.cache_user_messages);
-            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            Self::cap_block_cache_controls(0, system_blocks.as_mut(), Some(&mut chat_messages));
             let body = VisionRequestBody {
                 model: &self.model,
                 max_tokens: self.max_tokens,
@@ -1068,7 +1136,8 @@ impl LlmProvider for ClaudeProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
-        let (system, chat_messages) = split_messages_structured(messages, self.cache_user_messages);
+        let (system, mut chat_messages) =
+            split_messages_structured(messages, self.cache_user_messages);
         let api_tools = self.get_or_build_api_tools(tools);
 
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
@@ -1078,7 +1147,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let mut system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        Self::cap_block_cache_controls(1, system_blocks.as_mut(), Some(&mut chat_messages));
         let auto_cache = if messages.len() > 1 {
             tracing::debug!(
                 message_count = messages.len(),
@@ -4029,6 +4099,90 @@ mod tests {
         );
         // Breakpoint index must be >= max(0, total-20) = 5
         assert!(idx >= 5, "breakpoint must be at or after position total-20");
+    }
+
+    fn count_cache_control_occurrences(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(map) => {
+                usize::from(map.contains_key("cache_control"))
+                    + map
+                        .values()
+                        .map(count_cache_control_occurrences)
+                        .sum::<usize>()
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().map(count_cache_control_occurrences).sum()
+            }
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn debug_tool_request_caps_block_cache_controls_at_four() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+        let padding = "x".repeat(8200);
+        let system = format!(
+            "base prompt {padding}\n{CACHE_MARKER_STABLE}\nskills here {padding}\n\
+             {CACHE_MARKER_TOOLS}\ntool catalog {padding}\n\
+             {CACHE_MARKER_VOLATILE}\nvolatile stuff"
+        );
+        let messages = vec![
+            Message::from_legacy(Role::System, system),
+            Message::from_legacy(Role::User, "diagnose ACP startup"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "false"}),
+                }],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "toolu_1".into(),
+                    content: "command failed".into(),
+                    is_error: true,
+                }],
+            ),
+        ];
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run shell commands".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"}
+                },
+                "required": ["command"]
+            }),
+        }];
+
+        let body = provider.debug_request_json(&messages, &tools, false);
+
+        assert_eq!(
+            count_cache_control_occurrences(&body["tools"]),
+            1,
+            "tool definitions should keep their cache breakpoint"
+        );
+        assert_eq!(
+            count_cache_control_occurrences(&body["system"]),
+            3,
+            "system markers should keep all three cacheable blocks"
+        );
+        assert_eq!(
+            count_cache_control_occurrences(&body["messages"]),
+            0,
+            "message-level cache breakpoint must be dropped when tools+system already consume the Anthropic budget"
+        );
+        assert_eq!(
+            count_cache_control_occurrences(&body["tools"])
+                + count_cache_control_occurrences(&body["system"])
+                + count_cache_control_occurrences(&body["messages"]),
+            4,
+            "tool requests must never serialize more than four block-level cache_control entries"
+        );
+        assert_eq!(body["cache_control"]["type"], "ephemeral");
     }
 
     // --- #1094: tool schema hash in cache key ---
