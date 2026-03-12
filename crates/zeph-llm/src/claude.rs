@@ -681,7 +681,8 @@ impl ClaudeProvider {
         system_blocks: Option<&[SystemContentBlock]>,
         chat_messages: Option<&mut Vec<StructuredApiMessage>>,
     ) {
-        let tagged_blocks = tool_blocks + system_blocks.map_or(0, |system| {
+        let tagged_blocks = tool_blocks
+            + system_blocks.map_or(0, |system| {
                 system
                     .iter()
                     .filter(|block| block.cache_control.is_some())
