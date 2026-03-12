@@ -8,6 +8,10 @@ fn make_spawner() -> AgentSpawner {
     Arc::new(|_channel, _ctx, _session_ctx| Box::pin(async {}))
 }
 
+fn shared_models(models: Vec<String>) -> crate::transport::SharedAvailableModels {
+    Arc::new(std::sync::RwLock::new(models))
+}
+
 fn make_agent() -> (
     ZephAcpAgent,
     mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
@@ -41,6 +45,91 @@ async fn initialize_returns_agent_info() {
                 .await
                 .unwrap();
             assert!(resp.agent_info.is_some());
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn new_session_reads_latest_available_models_from_shared_state() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let models = shared_models(vec!["ollama:llama3".to_owned()]);
+            let factory: ProviderFactory = Arc::new(|_key| None);
+            let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                .with_provider_factory(factory, Arc::clone(&models));
+
+            {
+                let mut guard = models
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.push("openai:gpt-5".to_owned());
+            }
+
+            use acp::Agent as _;
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+            let config_options = resp
+                .config_options
+                .expect("config options should be present");
+            let model_option = config_options
+                .into_iter()
+                .find(|option| option.id.0.as_ref() == "model")
+                .expect("model option should be present");
+            let options = match model_option.kind {
+                acp::SessionConfigKind::Select(select) => match select.options {
+                    acp::SessionConfigSelectOptions::Ungrouped(options) => options,
+                    acp::SessionConfigSelectOptions::Grouped(_) => {
+                        panic!("expected ungrouped model options")
+                    }
+                    _ => panic!("expected known model options"),
+                },
+                _ => panic!("expected select model option"),
+            };
+
+            assert!(
+                options
+                    .iter()
+                    .any(|option| option.value.0.as_ref() == "openai:gpt-5")
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn new_session_freezes_initial_model_for_existing_session() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let models = shared_models(vec!["ollama:llama3".to_owned()]);
+            let factory: ProviderFactory = Arc::new(|_key| None);
+            let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                .with_provider_factory(factory, Arc::clone(&models));
+
+            use acp::Agent as _;
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+
+            {
+                let mut guard = models
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard[0] = "openai:gpt-5".to_owned();
+            }
+
+            let sessions = agent.sessions.borrow();
+            let entry = sessions
+                .get(&resp.session_id)
+                .expect("session should be present");
+            assert_eq!(*entry.current_model.borrow(), "ollama:llama3");
         })
         .await;
 }
@@ -1453,7 +1542,7 @@ async fn set_session_config_option_with_factory_updates_model() {
                 }
             });
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
-                .with_provider_factory(factory, vec!["ollama:llama3".to_owned()]);
+                .with_provider_factory(factory, shared_models(vec!["ollama:llama3".to_owned()]));
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -1535,7 +1624,7 @@ async fn set_session_config_option_rejects_model_not_in_allowlist() {
                 ))
             });
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
-                .with_provider_factory(factory, vec!["ollama:llama3".to_owned()]);
+                .with_provider_factory(factory, shared_models(vec!["ollama:llama3".to_owned()]));
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
                 .await
@@ -2182,7 +2271,10 @@ async fn set_session_model_rejects_unknown_model() {
             let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let factory: ProviderFactory = Arc::new(|_| None);
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
-                .with_provider_factory(factory, vec!["claude:claude-3-5-sonnet".to_owned()]);
+                .with_provider_factory(
+                    factory,
+                    shared_models(vec!["claude:claude-3-5-sonnet".to_owned()]),
+                );
             use acp::Agent as _;
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))

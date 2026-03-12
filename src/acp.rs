@@ -131,7 +131,7 @@ struct SharedAgentDeps {
     acp_max_sessions: usize,
     acp_session_idle_timeout_secs: u64,
     acp_permission_file: Option<std::path::PathBuf>,
-    acp_available_models: Vec<String>,
+    acp_available_models: std::sync::Arc<std::sync::RwLock<Vec<String>>>,
     acp_auth_bearer_token: Option<String>,
     acp_discovery_enabled: bool,
     /// Maximum characters for auto-generated session titles.
@@ -361,11 +361,13 @@ async fn build_acp_deps(
         acp_max_sessions: config.acp.max_sessions,
         acp_session_idle_timeout_secs: config.acp.session_idle_timeout_secs,
         acp_permission_file: config.acp.permission_file.clone(),
-        acp_available_models: if config.acp.available_models.is_empty() {
-            discover_models_from_config(config)
-        } else {
-            config.acp.available_models.clone()
-        },
+        acp_available_models: std::sync::Arc::new(std::sync::RwLock::new(
+            if config.acp.available_models.is_empty() {
+                discover_models_from_config(config)
+            } else {
+                config.acp.available_models.clone()
+            },
+        )),
         acp_auth_bearer_token: config.acp.auth_token.clone(),
         acp_discovery_enabled: config.acp.discovery_enabled,
         acp_title_max_chars: config.memory.sessions.title_max_chars,
@@ -662,14 +664,33 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
 /// After a successful fetch, each unique provider slug present in `acp_available_models`
 /// is expanded from its on-disk cache, replacing the single config-time fallback entry.
 #[cfg(feature = "acp")]
-async fn warm_model_caches(deps: &mut SharedAgentDeps) {
+async fn warm_model_caches(
+    provider: zeph_llm::any::AnyProvider,
+    available_models: std::sync::Arc<std::sync::RwLock<Vec<String>>>,
+) {
     use zeph_llm::model_cache::ModelCache;
 
-    let provider = deps.provider.clone();
+    let provider_count = {
+        let models = available_models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        models
+            .iter()
+            .filter_map(|k| k.split_once(':').map(|(slug, _)| slug))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    };
+    tracing::info!(
+        providers = provider_count,
+        "warming model caches in background"
+    );
+
     let fetch = async move {
         match provider.list_models_remote().await {
-            Ok(models) => tracing::debug!(count = models.len(), "model cache warmed"),
-            Err(e) => tracing::debug!(error = %e, "model cache warm-up failed"),
+            Ok(models) => tracing::info!(models = models.len(), "model cache fetch completed"),
+            Err(e) => {
+                tracing::info!(error = %e, "model cache warm-up failed; keeping fallback list")
+            }
         }
     };
 
@@ -677,22 +698,27 @@ async fn warm_model_caches(deps: &mut SharedAgentDeps) {
         .await
         .is_err()
     {
-        tracing::debug!("model cache warm-up timed out; using config fallback");
+        tracing::info!("model cache warm-up timed out; keeping fallback list");
         return;
     }
 
     // Collect unique provider slugs from the current available_models list.
-    let slugs: Vec<String> = deps
-        .acp_available_models
-        .iter()
-        .filter_map(|k| k.split_once(':').map(|(s, _)| s.to_owned()))
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
+    let slugs: Vec<String> = {
+        let models = available_models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        models
+            .iter()
+            .filter_map(|k| k.split_once(':').map(|(s, _)| s.to_owned()))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    };
 
     for slug in slugs {
         let cache = ModelCache::for_slug(&slug);
         if cache.is_stale() {
+            tracing::info!(provider = %slug, "model cache still stale after warm-up");
             continue;
         }
         if let Ok(Some(entries)) = cache.load()
@@ -702,12 +728,21 @@ async fn warm_model_caches(deps: &mut SharedAgentDeps) {
                 .into_iter()
                 .map(|m| format!("{slug}:{}", m.id))
                 .collect();
-            deps.acp_available_models
-                .retain(|k| !k.starts_with(&format!("{slug}:")));
-            deps.acp_available_models.extend(new_keys);
+            let count = new_keys.len();
+            let mut models = available_models
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            models.retain(|k| !k.starts_with(&format!("{slug}:")));
+            models.extend(new_keys);
+            models.dedup();
+            tracing::info!(provider = %slug, models = count, "model cache ready");
         }
     }
-    deps.acp_available_models.dedup();
+    let total_models = available_models
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
+    tracing::info!(models = total_models, "model cache warming finished");
 }
 
 /// Build a `ProviderFactory` from the known named providers in config.
@@ -904,10 +939,8 @@ pub(crate) async fn run_acp_server(
 
     let (mut deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
-
-    // Warm model caches before advertising available_models to the ACP client.
-    // A 5-second budget is given; on timeout the fallback list from config is used.
-    warm_model_caches(&mut deps).await;
+    let available_models = std::sync::Arc::clone(&deps.acp_available_models);
+    let provider = deps.provider.clone();
 
     let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
     let server_config = zeph_acp::AcpServerConfig {
@@ -917,7 +950,7 @@ pub(crate) async fn run_acp_server(
         session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
         permission_file: deps.acp_permission_file.clone(),
         provider_factory: deps.acp_provider_factory.take(),
-        available_models: deps.acp_available_models.clone(),
+        available_models: std::sync::Arc::clone(&deps.acp_available_models),
         mcp_manager: Some(mcp_manager_for_acp),
         auth_bearer_token: deps.acp_auth_bearer_token.clone(),
         discovery_enabled: deps.acp_discovery_enabled,
@@ -929,6 +962,9 @@ pub(crate) async fn run_acp_server(
     };
 
     let shared = Arc::new(deps);
+    tokio::spawn(async move {
+        warm_model_caches(provider, available_models).await;
+    });
 
     let spawner: zeph_acp::AgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
         let shared = Arc::clone(&shared);
@@ -960,8 +996,8 @@ pub(crate) async fn run_acp_http_server(
 
     let (mut deps, _keepalive) =
         build_acp_deps(config_path, vault_backend, vault_key, vault_path).await?;
-
-    warm_model_caches(&mut deps).await;
+    let available_models = std::sync::Arc::clone(&deps.acp_available_models);
+    let provider = deps.provider.clone();
 
     let bind_addr = bind_override.map_or_else(|| "127.0.0.1:9800".to_owned(), str::to_owned);
 
@@ -977,7 +1013,7 @@ pub(crate) async fn run_acp_http_server(
         session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
         permission_file: deps.acp_permission_file.clone(),
         provider_factory: deps.acp_provider_factory.take(),
-        available_models: deps.acp_available_models.clone(),
+        available_models: std::sync::Arc::clone(&deps.acp_available_models),
         mcp_manager: Some(mcp_manager_for_acp),
         auth_bearer_token,
         discovery_enabled: deps.acp_discovery_enabled,
@@ -989,6 +1025,9 @@ pub(crate) async fn run_acp_http_server(
     };
 
     let shared = Arc::new(deps);
+    tokio::spawn(async move {
+        warm_model_caches(provider, available_models).await;
+    });
 
     let spawner: zeph_acp::SendAgentSpawner = Arc::new(move |channel, acp_ctx, session_ctx| {
         let shared = Arc::clone(&shared);

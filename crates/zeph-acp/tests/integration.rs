@@ -12,6 +12,10 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use zeph_acp::{AcpServerConfig, AgentSpawner, SessionContext, serve_connection};
 use zeph_core::channel::LoopbackChannel;
 
+fn shared_models(models: Vec<String>) -> zeph_acp::transport::SharedAvailableModels {
+    std::sync::Arc::new(std::sync::RwLock::new(models))
+}
+
 /// No-op ACP client for testing.
 struct NoopClient;
 
@@ -43,7 +47,7 @@ fn make_server_config() -> AcpServerConfig {
         session_idle_timeout_secs: 1800,
         permission_file: None,
         provider_factory: None,
-        available_models: Vec::new(),
+        available_models: shared_models(Vec::new()),
         mcp_manager: None,
         auth_bearer_token: None,
         discovery_enabled: true,

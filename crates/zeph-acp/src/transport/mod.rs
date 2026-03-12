@@ -29,6 +29,7 @@ pub use router::acp_router;
 /// Shared slot populated after `AgentSideConnection::new` so `new_session` can access
 /// the connection to build ACP tool adapters.
 pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
+pub type SharedAvailableModels = std::sync::Arc<std::sync::RwLock<Vec<String>>>;
 
 /// Configuration for the ACP server passed through to the agent.
 pub struct AcpServerConfig {
@@ -40,7 +41,7 @@ pub struct AcpServerConfig {
     /// Optional factory for runtime model switching.
     pub provider_factory: Option<crate::agent::ProviderFactory>,
     /// Available model identifiers to advertise in `new_session`.
-    pub available_models: Vec<String>,
+    pub available_models: SharedAvailableModels,
     /// Optional shared MCP manager for `ext_method` add/remove/list.
     pub mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     /// Bearer token for HTTP and WebSocket transport authentication.
@@ -92,7 +93,7 @@ impl Default for AcpServerConfig {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: Vec::new(),
+            available_models: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,

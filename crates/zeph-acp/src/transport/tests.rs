@@ -13,9 +13,13 @@ use tower::ServiceExt as _;
 use zeph_core::channel::LoopbackChannel;
 
 use crate::agent::{AcpContext, SendAgentSpawner, SessionContext};
-use crate::transport::AcpServerConfig;
 use crate::transport::http::{AcpHttpState, ConnectionHandle};
 use crate::transport::router::acp_router;
+use crate::transport::{AcpServerConfig, SharedAvailableModels};
+
+fn shared_models(models: Vec<String>) -> SharedAvailableModels {
+    std::sync::Arc::new(std::sync::RwLock::new(models))
+}
 
 fn noop_spawner() -> SendAgentSpawner {
     Arc::new(
@@ -35,7 +39,7 @@ fn test_state() -> AcpHttpState {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: vec![],
+            available_models: shared_models(vec![]),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,
@@ -58,7 +62,7 @@ fn state_with_max_sessions(max: usize) -> AcpHttpState {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: vec![],
+            available_models: shared_models(vec![]),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,
@@ -325,7 +329,7 @@ fn state_with_auth(token: &str) -> AcpHttpState {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: vec![],
+            available_models: shared_models(vec![]),
             mcp_manager: None,
             auth_bearer_token: Some(token.into()),
             discovery_enabled: true,
@@ -467,7 +471,7 @@ async fn discovery_disabled_returns_404() {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: vec![],
+            available_models: shared_models(vec![]),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: false,
@@ -507,7 +511,7 @@ async fn reaper_removes_expired_connections() {
             session_idle_timeout_secs: 30,
             permission_file: None,
             provider_factory: None,
-            available_models: vec![],
+            available_models: shared_models(vec![]),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,
