@@ -54,6 +54,15 @@ impl BetaDist {
     }
 }
 
+/// Result of a Thompson Sampling selection, carrying diagnostics for debug logging.
+#[derive(Debug, Clone)]
+pub struct ThompsonSelection {
+    pub provider: String,
+    pub alpha: f64,
+    pub beta: f64,
+    pub exploit: bool,
+}
+
 /// Thompson Sampling state for all providers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ThompsonState {
@@ -66,12 +75,12 @@ pub struct ThompsonState {
 }
 
 impl ThompsonState {
-    /// Sample all providers and return the name of the one with the highest sample.
+    /// Sample all providers and return the selection with diagnostics.
     ///
     /// Returns `None` if `providers` is empty.
     /// Providers without prior observations get the uniform Beta(1,1) prior.
     #[must_use]
-    pub fn select(&mut self, providers: &[String]) -> Option<String> {
+    pub fn select(&mut self, providers: &[String]) -> Option<ThompsonSelection> {
         if providers.is_empty() {
             return None;
         }
@@ -86,7 +95,18 @@ impl ThompsonState {
                 (name.clone(), sample)
             })
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
-        Some(best)
+        let best_dist = self.distributions.get(&best).cloned().unwrap_or_default();
+        let best_mean = best_dist.alpha / (best_dist.alpha + best_dist.beta);
+        let exploit = providers.iter().all(|name| {
+            let dist = self.distributions.get(name).cloned().unwrap_or_default();
+            best_mean >= dist.alpha / (dist.alpha + dist.beta)
+        });
+        Some(ThompsonSelection {
+            provider: best,
+            alpha: best_dist.alpha,
+            beta: best_dist.beta,
+            exploit,
+        })
     }
 
     /// Update the Beta distribution for `provider` based on the outcome.
@@ -222,14 +242,14 @@ mod tests {
     fn select_single_provider_returns_it() {
         let mut state = ThompsonState::default();
         let result = state.select(&["ollama".to_owned()]);
-        assert_eq!(result.as_deref(), Some("ollama"));
+        assert_eq!(result.map(|s| s.provider).as_deref(), Some("ollama"));
     }
 
     #[test]
     fn select_returns_one_of_the_providers() {
         let mut state = ThompsonState::default();
         let providers = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
-        let selected = state.select(&providers).unwrap();
+        let selected = state.select(&providers).unwrap().provider;
         assert!(providers.contains(&selected));
     }
 
@@ -342,7 +362,7 @@ mod tests {
         let trials = 1000usize;
         let mut a_wins = 0usize;
         for _ in 0..trials {
-            if state.select(&providers).as_deref() == Some("provider_a") {
+            if state.select(&providers).map(|s| s.provider).as_deref() == Some("provider_a") {
                 a_wins += 1;
             }
         }
@@ -370,6 +390,7 @@ mod tests {
         for _ in 0..10 {
             let result = state.select(&providers);
             assert!(result.is_some());
+            assert!(!result.unwrap().provider.is_empty());
         }
     }
 
