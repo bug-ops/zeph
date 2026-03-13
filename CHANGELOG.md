@@ -21,9 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **COV-03 scheduler-loop integration test** (#1611): adds `scheduler_loop_queues_non_cancel_message` to `agent/tests.rs`, verifying end-to-end that a non-cancel message delivered via `channel.recv()` during `run_scheduler_loop` is passed to `enqueue_or_merge()` and appears in `agent.message_queue` after the loop exits. Complements the `enqueue_or_merge` unit tests in `message_queue.rs`.
+
 - **Claude 1M extended context window** (#1649): adds `enable_extended_context: bool` to `CloudLlmConfig` (default `false`). When enabled, `ClaudeProvider` injects `anthropic-beta: context-1m-2025-08-07` into all API requests, unlocking the 1M token context window for Opus 4.6 and Sonnet 4.6. `context_window()` now returns `1_000_000` instead of `200_000` when the flag is set, so the auto-budget correctly scales to 1M. All four Claude construction sites in `bootstrap/provider.rs` wire the flag (summary provider intentionally skips it — summaries are capped at 4096 tokens). `--init` wizard adds a Confirm prompt after the thinking mode question. An INFO log is emitted at provider construction when extended context is active.
 
 - **Gemini SSE TODO for Phase 4 (streaming tool use)**: added a TODO comment in `parse_gemini_sse_event()` documenting that `GeminiStreamPart` lacks a `function_call` field and that `functionCall` SSE chunks are silently dropped. `chat_with_tools()` uses the non-streaming endpoint today, so this is safe; the TODO tracks Phase 4 work (extend `GeminiStreamPart` and handle `functionCall` parts in the SSE loop). Closes #1639.
+- **Gemini `uppercase_types` test coverage** (#1636): added unit tests for `number`, `boolean`, `array`, and `null` JSON Schema type names in `crates/zeph-llm/src/gemini.rs`. Previously only `string`, `object`, and `integer` were covered; `array` test also verifies recursive `items.type` uppercasing.
 - **Gemini schema conversion edge case tests** (#1637): adds 5 unit tests in `zeph-llm` covering previously untested paths: `oneOf` Option&lt;T&gt; pattern, null-first `anyOf` order, unknown `$ref` fallback (→ `OBJECT`/`"unresolved reference"`), nested multi-level `$ref` chain (A→B→C), and parameterless tools declarations guard. Part of #1592.
 - **Router debug logging**: `RouterProvider` now emits `tracing::debug!` on every provider selection — Thompson selections include `alpha`, `beta`, and `mode` (exploit/explore); EMA selections include `latency_ema_ms`. Closes #1388.
 

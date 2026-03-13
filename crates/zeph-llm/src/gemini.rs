@@ -1529,6 +1529,35 @@ mod tests {
     }
 
     #[test]
+    fn test_uppercase_types_number() {
+        let mut schema = serde_json::json!({"type": "number"});
+        uppercase_types(&mut schema, 32);
+        assert_eq!(schema["type"], "NUMBER");
+    }
+
+    #[test]
+    fn test_uppercase_types_boolean() {
+        let mut schema = serde_json::json!({"type": "boolean"});
+        uppercase_types(&mut schema, 32);
+        assert_eq!(schema["type"], "BOOLEAN");
+    }
+
+    #[test]
+    fn test_uppercase_types_array() {
+        let mut schema = serde_json::json!({"type": "array", "items": {"type": "string"}});
+        uppercase_types(&mut schema, 32);
+        assert_eq!(schema["type"], "ARRAY");
+        assert_eq!(schema["items"]["type"], "STRING");
+    }
+
+    #[test]
+    fn test_uppercase_types_null() {
+        let mut schema = serde_json::json!({"type": "null"});
+        uppercase_types(&mut schema, 32);
+        assert_eq!(schema["type"], "NULL");
+    }
+
+    #[test]
     fn test_inline_refs_simple() {
         let mut schema = serde_json::json!({
             "$defs": {
