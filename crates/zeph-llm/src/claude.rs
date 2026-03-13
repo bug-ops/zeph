@@ -17,6 +17,7 @@ use crate::sse::claude_sse_to_stream;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
+const ANTHROPIC_BETA_EXTENDED_CONTEXT: &str = "context-1m-2025-08-07";
 const MAX_RETRIES: u32 = 3;
 const MIN_MAX_TOKENS_WITH_THINKING: u32 = 16_000;
 
@@ -372,6 +373,7 @@ pub struct ClaudeProvider {
     /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
     tool_cache: std::sync::Mutex<Option<(u64, Vec<serde_json::Value>)>>,
     generation_overrides: Option<GenerationOverrides>,
+    enable_extended_context: bool,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -395,6 +397,7 @@ impl fmt::Debug for ClaudeProvider {
                     .and_then(|g| g.as_ref().map(|(hash, _)| *hash)),
             )
             .field("generation_overrides", &self.generation_overrides)
+            .field("enable_extended_context", &self.enable_extended_context)
             .finish()
     }
 }
@@ -413,6 +416,7 @@ impl Clone for ClaudeProvider {
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
+            enable_extended_context: self.enable_extended_context,
         }
     }
 }
@@ -441,6 +445,7 @@ impl ClaudeProvider {
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: None,
+            enable_extended_context: false,
         }
     }
 
@@ -465,6 +470,15 @@ impl ClaudeProvider {
     #[must_use]
     pub fn with_cache_user_messages(mut self, enabled: bool) -> Self {
         self.cache_user_messages = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_extended_context(mut self, enabled: bool) -> Self {
+        self.enable_extended_context = enabled;
+        if enabled {
+            tracing::info!("Claude extended context (1M) enabled");
+        }
         self
     }
 
@@ -655,15 +669,22 @@ impl ClaudeProvider {
     }
 
     fn beta_header(&self, has_tools: bool) -> Option<String> {
+        let mut betas: Vec<&str> = Vec::new();
+        if self.enable_extended_context {
+            betas.push(ANTHROPIC_BETA_EXTENDED_CONTEXT);
+        }
         let cap = thinking_capability(&self.model);
         if self.thinking.is_some()
             && has_tools
             && cap.needs_interleaved_beta
             && matches!(self.thinking, Some(ThinkingConfig::Extended { .. }))
         {
-            Some(ANTHROPIC_BETA_INTERLEAVED_THINKING.to_owned())
-        } else {
+            betas.push(ANTHROPIC_BETA_INTERLEAVED_THINKING);
+        }
+        if betas.is_empty() {
             None
+        } else {
+            Some(betas.join(","))
         }
     }
 
@@ -930,7 +951,21 @@ impl LlmProvider for ClaudeProvider {
             || self.model.contains("sonnet")
             || self.model.contains("haiku")
         {
-            Some(200_000)
+            // Only Opus 4.6 and Sonnet 4.6 support the 1M context window.
+            // Haiku does not support extended context even when the flag is set.
+            let supports_1m = self.enable_extended_context && !self.model.contains("haiku");
+            if supports_1m {
+                Some(1_000_000)
+            } else {
+                if self.enable_extended_context && self.model.contains("haiku") {
+                    tracing::warn!(
+                        model = %self.model,
+                        "enable_extended_context has no effect for Haiku models; \
+                        extended context (1M) is only supported by Opus 4.6 and Sonnet 4.6"
+                    );
+                }
+                Some(200_000)
+            }
         } else {
             None
         }
@@ -3763,6 +3798,61 @@ mod tests {
             .unwrap();
         let beta = provider.beta_header(true);
         assert!(beta.is_none());
+    }
+
+    #[test]
+    fn extended_context_disabled_no_beta_header() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+        let beta = provider.beta_header(true);
+        assert!(beta.is_none());
+    }
+
+    #[test]
+    fn extended_context_enabled_includes_beta_header() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_extended_context(true);
+        let beta = provider.beta_header(true);
+        assert!(
+            beta.as_deref()
+                .is_some_and(|b| b.contains(ANTHROPIC_BETA_EXTENDED_CONTEXT))
+        );
+    }
+
+    #[test]
+    fn extended_context_with_interleaved_thinking_combines_headers() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+            .with_extended_context(true)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5000,
+            })
+            .unwrap();
+        let beta = provider.beta_header(true);
+        let beta_str = beta.expect("beta header should be present");
+        assert!(beta_str.contains(ANTHROPIC_BETA_EXTENDED_CONTEXT));
+        assert!(beta_str.contains(ANTHROPIC_BETA_INTERLEAVED_THINKING));
+        // Both betas must be comma-separated in a single header value
+        assert!(beta_str.contains(','));
+    }
+
+    #[test]
+    fn extended_context_enabled_returns_1m_context_window() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_extended_context(true);
+        assert_eq!(provider.context_window(), Some(1_000_000));
+    }
+
+    #[test]
+    fn extended_context_disabled_returns_200k_context_window() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+        assert_eq!(provider.context_window(), Some(200_000));
+    }
+
+    #[test]
+    fn extended_context_enabled_haiku_returns_200k_context_window() {
+        // Haiku does not support the 1M context window; flag must be ignored.
+        let provider = ClaudeProvider::new("k".into(), "claude-haiku-4-5-20251001".into(), 1024)
+            .with_extended_context(true);
+        assert_eq!(provider.context_window(), Some(200_000));
     }
 
     #[test]

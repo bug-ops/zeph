@@ -152,6 +152,7 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 .to_owned();
             let provider = ClaudeProvider::new(api_key, cloud.model.clone(), cloud.max_tokens)
                 .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
+                .with_extended_context(cloud.enable_extended_context)
                 .with_thinking_opt(cloud.thinking.clone())
                 .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?;
             Ok(AnyProvider::Claude(provider))
@@ -287,6 +288,8 @@ pub fn create_summary_provider(model_spec: &str, config: &Config) -> anyhow::Res
                 .unwrap_or_else(|| "claude-haiku-4-5-20251001".to_owned());
             // Cap summary max_tokens at 4096 — summaries are short.
             let max_tokens = cloud.map_or(4096, |c| c.max_tokens.min(4096));
+            // Extended context intentionally skipped for summary provider: summaries are short
+            // by design (max_tokens capped at 4096) and the 1M window adds unnecessary cost.
             let provider = ClaudeProvider::new(api_key, model, max_tokens)
                 .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
             Ok(AnyProvider::Claude(provider))
@@ -463,8 +466,10 @@ pub fn create_provider_from_config(
                 .or_else(|| cloud.map(|c| c.model.as_str()))
                 .unwrap_or("claude-haiku-4-5-20251001");
             let max_tokens = cloud.map_or(4096, |c| c.max_tokens);
+            let enable_extended_context = cloud.is_some_and(|c| c.enable_extended_context);
             let provider = ClaudeProvider::new(api_key, model.to_owned(), max_tokens)
-                .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
+                .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
+                .with_extended_context(enable_extended_context);
             Ok(AnyProvider::Claude(provider))
         }
         "openai" => {
@@ -617,6 +622,7 @@ pub fn build_orchestrator(
                 let model = pcfg.model.as_deref().unwrap_or(&cloud.model);
                 let sub = ClaudeProvider::new(api_key, model.to_owned(), cloud.max_tokens)
                     .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
+                    .with_extended_context(cloud.enable_extended_context)
                     .with_thinking_opt(cloud.thinking.clone())
                     .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?;
                 SubProvider::Claude(sub)

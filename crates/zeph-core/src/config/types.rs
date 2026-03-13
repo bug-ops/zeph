@@ -507,6 +507,11 @@ pub struct CloudLlmConfig {
     pub max_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    /// Enable 1M token extended context window for Claude Opus 4.6 and Sonnet 4.6.
+    /// When enabled, injects `anthropic-beta: context-1m-2025-08-07` header.
+    /// NOTE: tokens above 200K use long-context pricing (see Anthropic docs).
+    #[serde(default)]
+    pub enable_extended_context: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

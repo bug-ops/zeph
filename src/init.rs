@@ -60,6 +60,7 @@ pub(crate) struct WizardState {
     pub(crate) acp_agent_name: String,
     pub(crate) acp_agent_version: String,
     pub(crate) thinking: Option<ThinkingConfig>,
+    pub(crate) enable_extended_context: bool,
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
     pub(crate) agents_default_disallowed_tools: Vec<String>,
     pub(crate) agents_allow_bypass_permissions: bool,
@@ -349,6 +350,10 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
                 }
                 _ => None,
             };
+            state.enable_extended_context = Confirm::new()
+                .with_prompt("Enable 1M extended context? (long-context pricing above 200K tokens)")
+                .default(false)
+                .interact()?;
         }
         2 => {
             state.provider = Some(ProviderKind::OpenAi);
@@ -623,6 +628,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                     .unwrap_or_else(|| "claude-sonnet-4-5-20250929".into()),
                 max_tokens: 8096,
                 thinking: state.thinking.clone(),
+                enable_extended_context: state.enable_extended_context,
             })
         } else {
             None
