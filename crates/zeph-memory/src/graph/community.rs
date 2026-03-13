@@ -1239,7 +1239,6 @@ mod tests {
     /// edge IDs, so any missed edges would produce a different or stale fingerprint).
     #[tokio::test]
     async fn test_detect_communities_chunked_edge_map_complete() {
-        use std::sync::{Arc, Mutex};
         let store = setup().await;
         let (provider, call_buf) = recording_provider();
 
