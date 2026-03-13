@@ -96,8 +96,9 @@ impl MemoryRouter for HeuristicRouter {
             return MemoryRoute::Keyword;
         }
 
-        if has_snake_case && !question {
-            return MemoryRoute::Keyword;
+        // Long NL queries → semantic, regardless of snake_case tokens
+        if question || word_count >= 6 {
+            return MemoryRoute::Semantic;
         }
 
         // Short queries without question words → keyword
@@ -105,9 +106,9 @@ impl MemoryRouter for HeuristicRouter {
             return MemoryRoute::Keyword;
         }
 
-        // Natural language questions or long queries → semantic
-        if question || word_count >= 6 {
-            return MemoryRoute::Semantic;
+        // Short code-like patterns → keyword
+        if has_snake_case {
+            return MemoryRoute::Keyword;
         }
 
         // Default
@@ -255,5 +256,27 @@ mod tests {
     #[test]
     fn short_keyword_unchanged() {
         assert_eq!(route("qdrant"), MemoryRoute::Keyword);
+    }
+
+    // Regression tests for #1661: long NL queries with snake_case must go to Semantic
+    #[test]
+    fn long_nl_with_snake_case_routes_semantic() {
+        assert_eq!(
+            route("Use memory_search to find information about Rust ownership"),
+            MemoryRoute::Semantic
+        );
+    }
+
+    #[test]
+    fn short_snake_case_only_routes_keyword() {
+        assert_eq!(route("memory_search"), MemoryRoute::Keyword);
+    }
+
+    #[test]
+    fn question_with_snake_case_short_routes_semantic() {
+        assert_eq!(
+            route("What does memory_search return?"),
+            MemoryRoute::Semantic
+        );
     }
 }

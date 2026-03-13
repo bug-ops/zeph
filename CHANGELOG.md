@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Memory: HeuristicRouter now routes long natural language queries (≥6 words) to semantic search even when they contain snake_case tool names** (fixes #1661)
 - **Graph extraction 400 Bad Request with OpenAI strict mode**: `chat_typed` in `zeph-llm` now normalizes the `schemars`-generated JSON Schema before sending it to OpenAI structured output with `strict: true`. Normalization inlines `$ref`/`$defs` references (depth 8) and adds `additionalProperties: false` plus a complete `required` array on every object schema (depth 16). `Option<T>` fields are preserved via `anyOf` and made required as per OpenAI strict mode rules. Closes #1656.
 - **Gemini `inline_refs_inner` depth counter**: the depth limit was decremented on every structural recursion step (object key visit, array element visit), not only on `$ref` resolution. Schemas with 9+ levels of plain nesting (no `$ref`s) would hit the depth-8 cap prematurely and corrupt deeply nested schemas. Fixed by decrementing depth only when resolving a `$ref`, leaving structural recursion depth-neutral. Closes #1638.
 
