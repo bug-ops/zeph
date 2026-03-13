@@ -6,6 +6,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use base64::{Engine, engine::general_purpose::STANDARD};
+
 use crate::error::LlmError;
 use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
@@ -654,6 +656,7 @@ fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiC
                 role: Some("user".to_owned()),
                 parts: vec![GeminiPart {
                     text: Some(String::new()),
+                    inline_data: None,
                     function_call: None,
                     function_response: None,
                 }],
@@ -669,6 +672,7 @@ fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiC
             role: None,
             parts: vec![GeminiPart {
                 text: Some(combined),
+                inline_data: None,
                 function_call: None,
                 function_response: None,
             }],
@@ -687,6 +691,7 @@ fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) ->
         }
         return vec![GeminiPart {
             text: Some(text),
+            inline_data: None,
             function_call: None,
             function_response: None,
         }];
@@ -699,6 +704,7 @@ fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) ->
                 if !text.is_empty() {
                     result.push(GeminiPart {
                         text: Some(text.clone()),
+                        inline_data: None,
                         function_call: None,
                         function_response: None,
                     });
@@ -707,6 +713,7 @@ fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) ->
             MessagePart::ToolUse { name, input, .. } => {
                 result.push(GeminiPart {
                     text: None,
+                    inline_data: None,
                     function_call: Some(GeminiFunctionCall {
                         name: name.clone(),
                         args: Some(input.clone()),
@@ -733,17 +740,30 @@ fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) ->
                 };
                 result.push(GeminiPart {
                     text: None,
+                    inline_data: None,
                     function_call: None,
                     function_response: Some(GeminiFunctionResponse { name, response }),
                 });
             }
-            // Other parts (Image, ToolOutput, Recall, etc.) fall through to text extraction.
+            MessagePart::Image(img) => {
+                result.push(GeminiPart {
+                    text: None,
+                    inline_data: Some(GeminiInlineData {
+                        mime_type: img.mime_type.clone(),
+                        data: STANDARD.encode(&img.data),
+                    }),
+                    function_call: None,
+                    function_response: None,
+                });
+            }
+            // Other parts (ToolOutput, Recall, etc.) fall through to text extraction.
             other => {
                 // Extract text if available (e.g. Recall, Summary, CodeContext, ToolOutput).
                 let text = extract_part_text(other);
                 if let Some(t) = text {
                     result.push(GeminiPart {
                         text: Some(t),
+                        inline_data: None,
                         function_call: None,
                         function_response: None,
                     });
@@ -821,9 +841,18 @@ struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    inline_data: Option<GeminiInlineData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     function_call: Option<GeminiFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_response: Option<GeminiFunctionResponse>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiInlineData {
+    mime_type: String,
+    data: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -970,7 +999,7 @@ impl LlmProvider for GeminiProvider {
     }
 
     fn supports_vision(&self) -> bool {
-        false
+        true
     }
 
     fn list_models(&self) -> Vec<String> {
@@ -1045,9 +1074,9 @@ mod tests {
     }
 
     #[test]
-    fn gemini_supports_vision_false() {
+    fn gemini_supports_vision_true() {
         let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
-        assert!(!p.supports_vision());
+        assert!(p.supports_vision());
     }
 
     #[test]
@@ -1660,6 +1689,7 @@ mod tests {
                     role: Some("model".to_owned()),
                     parts: vec![GeminiPart {
                         text: None,
+                        inline_data: None,
                         function_call: Some(GeminiFunctionCall {
                             name: "get_weather".to_owned(),
                             args: Some(serde_json::json!({"location": "Tokyo"})),
@@ -1693,6 +1723,7 @@ mod tests {
                     parts: vec![
                         GeminiPart {
                             text: None,
+                            inline_data: None,
                             function_call: Some(GeminiFunctionCall {
                                 name: "tool_a".to_owned(),
                                 args: Some(serde_json::json!({"x": 1})),
@@ -1701,6 +1732,7 @@ mod tests {
                         },
                         GeminiPart {
                             text: None,
+                            inline_data: None,
                             function_call: Some(GeminiFunctionCall {
                                 name: "tool_b".to_owned(),
                                 args: Some(serde_json::json!({"y": 2})),
@@ -1732,11 +1764,13 @@ mod tests {
                     parts: vec![
                         GeminiPart {
                             text: Some("I'll look that up.".to_owned()),
+                            inline_data: None,
                             function_call: None,
                             function_response: None,
                         },
                         GeminiPart {
                             text: None,
+                            inline_data: None,
                             function_call: Some(GeminiFunctionCall {
                                 name: "search".to_owned(),
                                 args: Some(serde_json::json!({"query": "rust"})),
@@ -1769,6 +1803,7 @@ mod tests {
                     role: Some("model".to_owned()),
                     parts: vec![GeminiPart {
                         text: Some("Hello, world!".to_owned()),
+                        inline_data: None,
                         function_call: None,
                         function_response: None,
                     }],
@@ -1789,6 +1824,7 @@ mod tests {
                     role: Some("model".to_owned()),
                     parts: vec![GeminiPart {
                         text: None,
+                        inline_data: None,
                         function_call: Some(GeminiFunctionCall {
                             name: "no_args_tool".to_owned(),
                             args: None,
@@ -1994,6 +2030,121 @@ mod tests {
             assert_eq!(tool_calls[0].name, "get_weather");
             assert_eq!(tool_calls[0].input["location"], "Berlin");
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Vision / inlineData tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_image_part_converted_to_inline_data() {
+        use crate::provider::{ImageData, MessageMetadata};
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::Image(Box::new(ImageData {
+                data: vec![0xFF, 0xD8, 0xFF],
+                mime_type: "image/jpeg".to_owned(),
+            }))],
+            metadata: MessageMetadata::default(),
+        }];
+        let (_, contents) = convert_messages(&messages);
+        assert_eq!(contents.len(), 1);
+        let part = &contents[0].parts[0];
+        assert!(part.text.is_none());
+        assert!(part.function_call.is_none());
+        let inline = part.inline_data.as_ref().expect("inline_data must be set");
+        assert_eq!(inline.mime_type, "image/jpeg");
+        assert_eq!(
+            inline.data,
+            base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF])
+        );
+    }
+
+    #[test]
+    fn test_multiple_images_in_single_message() {
+        use crate::provider::{ImageData, MessageMetadata};
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![
+                MessagePart::Image(Box::new(ImageData {
+                    data: vec![1, 2, 3],
+                    mime_type: "image/png".to_owned(),
+                })),
+                MessagePart::Image(Box::new(ImageData {
+                    data: vec![4, 5, 6],
+                    mime_type: "image/webp".to_owned(),
+                })),
+            ],
+            metadata: MessageMetadata::default(),
+        }];
+        let (_, contents) = convert_messages(&messages);
+        assert_eq!(contents[0].parts.len(), 2);
+        assert_eq!(
+            contents[0].parts[0].inline_data.as_ref().unwrap().mime_type,
+            "image/png"
+        );
+        assert_eq!(
+            contents[0].parts[1].inline_data.as_ref().unwrap().mime_type,
+            "image/webp"
+        );
+    }
+
+    #[test]
+    fn test_mixed_text_and_image_parts() {
+        use crate::provider::{ImageData, MessageMetadata};
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![
+                MessagePart::Text {
+                    text: "Describe this image:".to_owned(),
+                },
+                MessagePart::Image(Box::new(ImageData {
+                    data: vec![10, 20, 30],
+                    mime_type: "image/jpeg".to_owned(),
+                })),
+                MessagePart::Text {
+                    text: "Be detailed.".to_owned(),
+                },
+            ],
+            metadata: MessageMetadata::default(),
+        }];
+        let (_, contents) = convert_messages(&messages);
+        let parts = &contents[0].parts;
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].text.as_deref(), Some("Describe this image:"));
+        assert!(parts[0].inline_data.is_none());
+        assert!(parts[1].inline_data.is_some());
+        assert!(parts[1].text.is_none());
+        assert_eq!(parts[2].text.as_deref(), Some("Be detailed."));
+        assert!(parts[2].inline_data.is_none());
+    }
+
+    #[test]
+    fn test_inline_data_serializes_to_camel_case() {
+        let part = GeminiPart {
+            text: None,
+            inline_data: Some(GeminiInlineData {
+                mime_type: "image/jpeg".to_owned(),
+                data: "abc".to_owned(),
+            }),
+            function_call: None,
+            function_response: None,
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert!(
+            json.get("inlineData").is_some(),
+            "must serialize as inlineData"
+        );
+        assert!(json.get("inline_data").is_none(), "must not use snake_case");
+        let inline = &json["inlineData"];
+        assert_eq!(inline["mimeType"], "image/jpeg");
+        assert_eq!(inline["data"], "abc");
     }
 
     #[tokio::test]
