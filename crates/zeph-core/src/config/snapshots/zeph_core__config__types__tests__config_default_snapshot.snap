@@ -196,6 +196,7 @@ max_dynamic_servers = 0
 
 [index]
 enabled = false
+search_enabled = true
 watch = true
 max_chunks = 12
 score_threshold = 0.25
