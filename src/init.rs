@@ -11,7 +11,7 @@ use zeph_core::config::{
     TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
-use zeph_llm::{ThinkingConfig, ThinkingEffort};
+use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
 
 #[derive(Default)]
 #[cfg_attr(test, derive(Clone))]
@@ -88,6 +88,7 @@ pub(crate) struct WizardState {
     pub(crate) graph_memory_enabled: bool,
     pub(crate) graph_extract_model: Option<String>,
     // Server-side compaction
+    pub(crate) gemini_thinking_level: Option<GeminiThinkingLevel>,
     pub(crate) server_compaction_enabled: bool,
     // LSP code intelligence via mcpls
     pub(crate) mcpls_enabled: bool,
@@ -388,6 +389,25 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
                     .default("gemini-2.0-flash".into())
                     .interact_text()?,
             );
+            let thinking_opts = [
+                "skip (no thinking_level)",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+            ];
+            let thinking_sel = Select::new()
+                .with_prompt("Thinking level (for Gemini 3+ thinking models; skip for 2.x)")
+                .items(thinking_opts)
+                .default(0)
+                .interact()?;
+            state.gemini_thinking_level = match thinking_sel {
+                1 => Some(GeminiThinkingLevel::Minimal),
+                2 => Some(GeminiThinkingLevel::Low),
+                3 => Some(GeminiThinkingLevel::Medium),
+                4 => Some(GeminiThinkingLevel::High),
+                _ => None,
+            };
         }
         4 => {
             state.provider = Some(ProviderKind::Orchestrator);
@@ -654,6 +674,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 max_tokens: 8192,
                 base_url: "https://generativelanguage.googleapis.com".into(),
                 embedding_model: None,
+                thinking_level: state.gemini_thinking_level,
+                thinking_budget: None,
+                include_thoughts: None,
             })
         } else {
             None
