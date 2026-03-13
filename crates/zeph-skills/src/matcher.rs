@@ -351,10 +351,14 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let _ = SkillMatcher::new(&refs, embed_fn_unsupported).await;
 
-        // Summary info log must be present and no per-skill individual errors logged.
-        assert!(logs_contain("skill embeddings skipped"));
-        // Verify the summary is logged at INFO level (not WARN), preventing regression to warn!.
-        assert!(logs_contain("INFO"));
+        // Summary log must be present from the correct module.
+        assert!(logs_contain(
+            "zeph_skills::matcher: skill embeddings skipped"
+        ));
+        // Must be INFO level, not WARN — prevents regression to warn!.
+        assert!(!logs_contain(
+            "WARN zeph_skills::matcher: skill embeddings skipped"
+        ));
         // Per-skill EmbedUnsupported must NOT be logged individually (the fix for #1387).
         assert!(!logs_contain("failed to embed skill"));
     }
