@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **ACP orchestration config silently disabled**: `spawn_acp_agent` in `src/acp.rs` now calls `agent.with_orchestration_config()` with the `[orchestration]` config section. Previously `OrchestrationConfig::default()` (which has `enabled = false`) was used for every ACP session, silently disabling plan/task orchestration regardless of TOML configuration. Closes #1642.
 - **Gemini `parse_tool_response` single-candidate limitation documented**: added code comment and `debug!` log in `parse_tool_response()` noting that only `candidates[0]` is processed. Zeph never requests `candidateCount > 1`, so this path is unreachable in normal operation. Closes #1640.
 - **ACP graph memory extraction silently disabled**: `spawn_acp_agent` in `src/acp.rs` now calls `agent.with_graph_config()` with the `[memory.graph]` config section. Previously the `graph_config` field in `MemoryState` defaulted to `GraphConfig { enabled: false }`, causing `maybe_spawn_graph_extraction()` to return early for every ACP session regardless of user configuration. Closes #1633.
 

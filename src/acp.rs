@@ -151,6 +151,8 @@ struct SharedAgentDeps {
     document_config: zeph_core::config::DocumentConfig,
     /// Graph memory configuration from `[memory.graph]` config section.
     graph_config: zeph_core::config::GraphConfig,
+    /// Task orchestration configuration from `[orchestration]` config section.
+    orchestration_config: zeph_core::config::OrchestrationConfig,
     /// Debug dump configuration from `[debug]` config section.
     debug_config: zeph_core::config::DebugConfig,
     /// Scheduler executor shared across sessions. Initialized once at startup.
@@ -468,6 +470,7 @@ async fn build_acp_deps(
         acp_project_rules,
         document_config: config.memory.documents.clone(),
         graph_config: config.memory.graph.clone(),
+        orchestration_config: config.orchestration.clone(),
         debug_config: config.debug.clone(),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -541,6 +544,7 @@ async fn spawn_acp_agent(
     let quarantine_provider = d.quarantine_provider.clone();
     let document_config = d.document_config.clone();
     let graph_config = d.graph_config.clone();
+    let orchestration_config = d.orchestration_config.clone();
     let debug_config = d.debug_config.clone();
     let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
     let available_secrets: Vec<(String, Secret)> = d
@@ -730,6 +734,8 @@ async fn spawn_acp_agent(
     }
 
     agent = agent.with_document_config(document_config);
+
+    agent = agent.with_orchestration_config(orchestration_config);
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);
 
@@ -1378,11 +1384,12 @@ mod tests {
         assert!(names.contains(&"SKILL.md".to_owned()));
     }
 
-    // Verify that SharedAgentDeps has the document_config and graph_config fields with the
-    // correct types. This is a compile-time regression test for issue #1634: before the fix,
-    // these fields were absent and spawn_acp_agent could not propagate RAG config to the agent.
+    // Verify that SharedAgentDeps has the document_config, graph_config, and orchestration_config
+    // fields with the correct types. This is a compile-time regression test for issue #1634
+    // (document/graph) and #1642 (orchestration): before the fixes, these fields were absent and
+    // spawn_acp_agent could not propagate the configs to the agent.
     #[test]
-    fn shared_agent_deps_has_document_and_graph_config_fields() {
+    fn shared_agent_deps_has_document_graph_and_orchestration_config_fields() {
         let doc_cfg = zeph_core::config::DocumentConfig {
             rag_enabled: true,
             top_k: 7,
@@ -1392,12 +1399,15 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        // Use ZST trick: read through a raw pointer to verify field offsets exist without
-        // constructing the full SharedAgentDeps (which has ~50 required fields).
+        let orch_cfg = zeph_core::config::OrchestrationConfig {
+            enabled: true,
+            ..Default::default()
+        };
         // The assertions below confirm the field types are correct at compile time.
         assert!(doc_cfg.rag_enabled);
         assert_eq!(doc_cfg.top_k, 7);
         assert!(graph_cfg.enabled);
+        assert!(orch_cfg.enabled);
     }
 
     #[tokio::test]
