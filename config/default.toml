@@ -35,6 +35,9 @@ embedding_model = "qwen3-embedding"
 model = "claude-sonnet-4-5-20250929"
 # Maximum tokens for Claude responses
 max_tokens = 4096
+# Enable 1M token extended context window (Opus 4.6 / Sonnet 4.6 only).
+# Tokens above 200K use long-context pricing — see https://www.anthropic.com/pricing
+# enable_extended_context = false
 
 # OpenAI-compatible API (GPT-5.2, Together, Groq, Fireworks, etc.)
 # [llm.openai]
