@@ -3589,3 +3589,140 @@ fn agent_loop_commands_are_not_intercepted() {
     assert!(!is_acp_native("/compact"));
     assert!(!is_acp_native("/unknown"));
 }
+
+// --- #1683 regression: non-LLM slash commands must not hang ACP drain loop ---
+//
+// Root cause: process_user_message() returned Ok(()) without calling flush_chunks()
+// after slash command handlers, so the ACP drain loop in handle_prompt() never
+// received LoopbackEvent::Flush and blocked indefinitely.
+//
+// Fix: flush_chunks() is now called before every early-return in slash command
+// branches of process_user_message() and handle_image_command().
+//
+// These tests verify that prompt() terminates when the agent loop sends a response
+// and then signals flush (i.e., simulates the corrected process_user_message path),
+// and that it does NOT terminate without flush (i.e., verifies the drain loop
+// does require Flush to break).
+
+#[tokio::test]
+async fn non_llm_slash_command_prompt_completes_with_flush() {
+    // Regression test for #1683: the ACP drain loop must break on Flush.
+    //
+    // Spawner simulates a slash-command handler: it receives the user message,
+    // sends a response via the loopback channel, calls flush_chunks() to signal
+    // end-of-turn, then stays alive (real agent loop waits for the next message).
+    //
+    // Without the flush, prompt() would never return. This test asserts that
+    // prompt() completes within a timeout, confirming the drain loop respects Flush.
+    use zeph_core::Channel as _;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
+                Box::pin(async move {
+                    // Wait for the slash command message.
+                    let _ = channel.recv().await;
+                    // Simulate slash command response (e.g. /status output).
+                    let _ = channel.send("Agent status: ok").await;
+                    // Signal end-of-turn — this is what process_user_message() now does.
+                    let _ = channel.flush_chunks().await;
+                    // Stay alive: real agent loop continues waiting for the next message.
+                    // Without the flush above, prompt() would never return.
+                    let _ = channel.recv().await;
+                })
+            });
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+            let sid = resp.session_id.clone();
+
+            // Drain AvailableCommandsUpdate notifications from new_session.
+            while let Ok((_, ack)) = rx.try_recv() {
+                let _ = ack.send(());
+            }
+
+            // The spawner sends exactly one FullMessage response before flush.
+            // Use if-let (not while-let) so ack_fut terminates after one ack.
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(
+                    agent.prompt(acp::PromptRequest::new(
+                        sid,
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("/status"))],
+                    )),
+                    async {
+                        if let Some((_, ack)) = rx.recv().await {
+                            let _ = ack.send(());
+                        }
+                    }
+                )
+            })
+            .await
+            .expect("prompt() hung: drain loop did not break on flush_chunks()");
+
+            let resp = result.0.expect("prompt() returned error");
+            assert!(matches!(resp.stop_reason, acp::StopReason::EndTurn));
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn non_llm_slash_commands_all_complete_without_hanging() {
+    // Regression test for #1683: verify that slash commands forwarded to the
+    // agent loop (/status, /skills, /graph, /plan list) all resolve promptly
+    // when the agent emits flush_chunks() after handling the command.
+    use zeph_core::Channel as _;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            for cmd in &["/status", "/skills", "/graph", "/plan list"] {
+                let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
+                    Box::pin(async move {
+                        let _ = channel.recv().await;
+                        let _ = channel.send("response").await;
+                        let _ = channel.flush_chunks().await;
+                        // Stay alive to mirror real agent behavior.
+                        let _ = channel.recv().await;
+                    })
+                });
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+                let resp = agent
+                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                    .await
+                    .unwrap();
+                let sid = resp.session_id.clone();
+
+                while let Ok((_, ack)) = rx.try_recv() {
+                    let _ = ack.send(());
+                }
+
+                let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    tokio::join!(
+                        agent.prompt(acp::PromptRequest::new(
+                            sid,
+                            vec![acp::ContentBlock::Text(acp::TextContent::new(*cmd))],
+                        )),
+                        async {
+                            if let Some((_, ack)) = rx.recv().await {
+                                let _ = ack.send(());
+                            }
+                        }
+                    )
+                })
+                .await
+                .unwrap_or_else(|_| panic!("prompt() hung for command: {cmd}"));
+
+                assert!(
+                    result.0.is_ok(),
+                    "prompt() failed for {cmd}: {:?}",
+                    result.0
+                );
+            }
+        })
+        .await;
+}

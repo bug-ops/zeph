@@ -300,6 +300,68 @@ impl GeminiProvider {
 
         Ok(response)
     }
+
+    /// Fetch available models from the Gemini API and update the disk cache.
+    ///
+    /// Only models supporting `generateContent` are included (embedding-only
+    /// models like `text-embedding-004` are filtered out).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or returns a non-success status.
+    // TODO: pagination via nextPageToken can be added if the model count grows significantly.
+    pub async fn list_models_remote(
+        &self,
+    ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
+        let url = format!("{}/v1beta/models", self.base_url);
+
+        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
+            let req = self
+                .client
+                .get(&url)
+                .header("x-goog-api-key", &self.api_key);
+            async move { req.send().await }
+        })
+        .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(LlmError::Other(format!(
+                "Gemini API auth error listing models: {status}"
+            )));
+        }
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            tracing::debug!(status = %status, body = %body, "Gemini list_models_remote error");
+            return Err(LlmError::Other(format!(
+                "Gemini list models failed: {status}"
+            )));
+        }
+
+        let list: GeminiModelList = response.json().await?;
+        let models: Vec<crate::model_cache::RemoteModelInfo> = list
+            .models
+            .into_iter()
+            .filter(|m| {
+                m.supported_generation_methods
+                    .iter()
+                    .any(|s| s == "generateContent")
+            })
+            .map(|m| {
+                let id = m.name.strip_prefix("models/").unwrap_or(&m.name).to_owned();
+                crate::model_cache::RemoteModelInfo {
+                    display_name: m.display_name,
+                    id,
+                    context_window: m.input_token_limit.map(|n| n as usize),
+                    created_at: None,
+                }
+            })
+            .collect();
+
+        let cache = crate::model_cache::ModelCache::for_slug("gemini");
+        cache.save(&models)?;
+        Ok(models)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -981,6 +1043,28 @@ struct GeminiErrorDetail {
     code: u16,
     message: String,
     status: String,
+}
+
+// ---------------------------------------------------------------------------
+// Model list API types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct GeminiModelList {
+    #[serde(default)]
+    models: Vec<GeminiModelEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiModelEntry {
+    /// e.g. "models/gemini-2.0-flash"
+    name: String,
+    display_name: String,
+    #[serde(default)]
+    input_token_limit: Option<u32>,
+    #[serde(default)]
+    supported_generation_methods: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2569,6 +2653,208 @@ mod tests {
             result.len(),
             768,
             "text-embedding-004 returns 768 dimensions"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // list_models_remote tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn list_models_response_filters_generate_content() {
+        let json = r#"{
+            "models": [
+                {
+                    "name": "models/gemini-2.0-flash",
+                    "displayName": "Gemini 2.0 Flash",
+                    "inputTokenLimit": 1048576,
+                    "supportedGenerationMethods": ["generateContent", "countTokens"]
+                },
+                {
+                    "name": "models/text-embedding-004",
+                    "displayName": "Text Embedding 004",
+                    "inputTokenLimit": 2048,
+                    "supportedGenerationMethods": ["embedContent"]
+                }
+            ]
+        }"#;
+        let list: GeminiModelList = serde_json::from_str(json).unwrap();
+        let models: Vec<_> = list
+            .models
+            .into_iter()
+            .filter(|m| {
+                m.supported_generation_methods
+                    .iter()
+                    .any(|s| s == "generateContent")
+            })
+            .collect();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].name, "models/gemini-2.0-flash");
+    }
+
+    #[test]
+    fn list_models_response_strips_models_prefix() {
+        let json = r#"{
+            "models": [{
+                "name": "models/gemini-2.0-flash",
+                "displayName": "Gemini 2.0 Flash",
+                "supportedGenerationMethods": ["generateContent"]
+            }]
+        }"#;
+        let list: GeminiModelList = serde_json::from_str(json).unwrap();
+        let entry = &list.models[0];
+        let id = entry
+            .name
+            .strip_prefix("models/")
+            .unwrap_or(&entry.name)
+            .to_owned();
+        assert_eq!(id, "gemini-2.0-flash");
+    }
+
+    #[test]
+    fn list_models_response_empty_models() {
+        let json = r#"{"models": []}"#;
+        let list: GeminiModelList = serde_json::from_str(json).unwrap();
+        assert!(list.models.is_empty());
+    }
+
+    #[test]
+    fn list_models_response_missing_models_field() {
+        let json = r#"{}"#;
+        let list: GeminiModelList = serde_json::from_str(json).unwrap();
+        assert!(
+            list.models.is_empty(),
+            "#[serde(default)] must yield empty vec"
+        );
+    }
+
+    #[test]
+    fn list_models_response_missing_input_token_limit() {
+        let json = r#"{
+            "models": [{
+                "name": "models/gemini-2.0-flash",
+                "displayName": "Gemini 2.0 Flash",
+                "supportedGenerationMethods": ["generateContent"]
+            }]
+        }"#;
+        let list: GeminiModelList = serde_json::from_str(json).unwrap();
+        assert!(
+            list.models[0].input_token_limit.is_none(),
+            "missing inputTokenLimit must deserialize as None"
+        );
+    }
+
+    #[test]
+    fn gemini_model_entry_camel_case_deser() {
+        let json = r#"{
+            "name": "models/gemini-1.5-pro",
+            "displayName": "Gemini 1.5 Pro",
+            "inputTokenLimit": 2097152,
+            "supportedGenerationMethods": ["generateContent"]
+        }"#;
+        let entry: GeminiModelEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.name, "models/gemini-1.5-pro");
+        assert_eq!(entry.display_name, "Gemini 1.5 Pro");
+        assert_eq!(entry.input_token_limit, Some(2_097_152));
+        assert_eq!(entry.supported_generation_methods, ["generateContent"]);
+    }
+
+    #[test]
+    fn list_models_response_extra_unknown_fields_ignored() {
+        let json = r#"{
+            "models": [{
+                "name": "models/gemini-2.0-flash",
+                "displayName": "Gemini 2.0 Flash",
+                "supportedGenerationMethods": ["generateContent"],
+                "outputTokenLimit": 8192,
+                "unknownFutureField": "value"
+            }],
+            "nextPageToken": "abc123"
+        }"#;
+        let list: GeminiModelList = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            list.models.len(),
+            1,
+            "unknown fields must be silently ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_models_remote_success() {
+        let body = r#"{
+            "models": [
+                {
+                    "name": "models/gemini-2.0-flash",
+                    "displayName": "Gemini 2.0 Flash",
+                    "inputTokenLimit": 1048576,
+                    "supportedGenerationMethods": ["generateContent", "countTokens"]
+                },
+                {
+                    "name": "models/text-embedding-004",
+                    "displayName": "Text Embedding 004",
+                    "inputTokenLimit": 2048,
+                    "supportedGenerationMethods": ["embedContent"]
+                }
+            ]
+        }"#;
+        let http_resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+        let models = p.list_models_remote().await.unwrap();
+
+        assert_eq!(
+            models.len(),
+            1,
+            "only generateContent models must be returned"
+        );
+        assert_eq!(models[0].id, "gemini-2.0-flash");
+        assert_eq!(models[0].display_name, "Gemini 2.0 Flash");
+        assert_eq!(models[0].context_window, Some(1_048_576));
+        assert!(models[0].created_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_models_remote_http_error() {
+        let body = "Internal Server Error";
+        let http_resp = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+        let result = p.list_models_remote().await;
+        assert!(result.is_err(), "500 must return error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("500"), "error must mention status code: {err}");
+    }
+
+    #[tokio::test]
+    async fn list_models_remote_auth_error() {
+        let body = r#"{"error":{"code":401,"message":"Request had invalid authentication credentials.","status":"UNAUTHENTICATED"}}"#;
+        let http_resp = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("bad-key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+        let result = p.list_models_remote().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("auth error"),
+            "error must mention auth error: {err}"
         );
     }
 }
