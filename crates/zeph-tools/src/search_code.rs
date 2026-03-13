@@ -223,7 +223,11 @@ impl SearchCodeExecutor {
         }
 
         let merged = dedupe_hits(hits, max_results);
-        let summary = format_hits(&merged);
+        let root = self
+            .allowed_paths
+            .first()
+            .map_or(Path::new("."), PathBuf::as_path);
+        let summary = format_hits(&merged, root);
         let locations = merged
             .iter()
             .map(|hit| hit.file_path.clone())
@@ -368,7 +372,7 @@ fn dedupe_hits(mut hits: Vec<SearchCodeHit>, max_results: usize) -> Vec<SearchCo
     merged
 }
 
-fn format_hits(hits: &[SearchCodeHit]) -> String {
+fn format_hits(hits: &[SearchCodeHit], root: &Path) -> String {
     if hits.is_empty() {
         return "No code matches found.".into();
     }
@@ -376,10 +380,13 @@ fn format_hits(hits: &[SearchCodeHit]) -> String {
     hits.iter()
         .enumerate()
         .map(|(idx, hit)| {
+            let display_path = Path::new(&hit.file_path)
+                .strip_prefix(root)
+                .map_or_else(|_| hit.file_path.clone(), |p| p.display().to_string());
             format!(
                 "[{}] {}:{}-{}\n    {}\n    source: {}\n    score: {:.2}",
                 idx + 1,
-                hit.file_path,
+                display_path,
                 hit.line_start,
                 hit.line_end,
                 hit.snippet.replace('\n', " "),
@@ -624,5 +631,28 @@ mod tests {
         let defs = exec.tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id.as_ref(), "search_code");
+    }
+
+    #[test]
+    fn format_hits_strips_root_prefix() {
+        let root = Path::new("/tmp/myproject");
+        let hits = vec![SearchCodeHit {
+            file_path: "/tmp/myproject/crates/foo/src/lib.rs".to_owned(),
+            line_start: 10,
+            line_end: 15,
+            snippet: "pub fn example() {}".to_owned(),
+            source: SearchCodeSource::GrepFallback,
+            score: 0.45,
+            symbol_name: None,
+        }];
+        let output = format_hits(&hits, root);
+        assert!(
+            output.contains("crates/foo/src/lib.rs"),
+            "expected relative path in output, got: {output}"
+        );
+        assert!(
+            !output.contains("/tmp/myproject"),
+            "absolute path must not appear in output, got: {output}"
+        );
     }
 }
