@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
 
-LLM provider abstraction with Ollama, Claude, OpenAI, and Candle backends.
+LLM provider abstraction with Ollama, Claude, OpenAI, Gemini, and Candle backends.
 
 ## Overview
 
-Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, and OpenAI-compatible endpoints. Includes an orchestrator for multi-model coordination, a router for model selection, an optional Candle backend for local inference, and an SQLite-backed response cache with blake3 key hashing and TTL expiry.
+Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, Google Gemini, and OpenAI-compatible endpoints. Includes an orchestrator for multi-model coordination, a router for model selection, an optional Candle backend for local inference, and an SQLite-backed response cache with blake3 key hashing and TTL expiry.
 
 ## Key modules
 
@@ -19,6 +19,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `ollama` | Ollama HTTP backend |
 | `claude` | Anthropic Claude backend with `with_client()` builder for shared `reqwest::Client` |
 | `openai` | OpenAI backend with `with_client()` builder for shared `reqwest::Client` |
+| `gemini` | Google Gemini backend (`generateContent` + `streamGenerateContent?alt=sse`); system prompt mapped to `systemInstruction`, `assistant` role to `"model"`, consecutive same-role message merging, thinking parts surfaced as `StreamChunk::Thinking`; configured via `[llm.gemini]` and `ZEPH_GEMINI_API_KEY` |
 | `compatible` | Generic OpenAI-compatible endpoint backend |
 | `candle_provider` | Local inference via Candle (optional feature) |
 | `orchestrator` | Multi-model coordination and fallback; `send_with_retry()` helper deduplicates retry logic |
@@ -91,6 +92,23 @@ thinking = { mode = "extended", budget_tokens = 16000 }
 ```
 
 CLI: `--thinking extended:16000` or `--thinking adaptive`. When thinking is enabled and `max_tokens` is below 16000, it is raised automatically. Thinking deltas are parsed from the SSE stream and suppressed from the user-facing output; `MessagePart::ThinkingBlock` variants preserve thinking blocks verbatim across tool-use turns.
+
+## Gemini configuration
+
+```toml
+[llm]
+provider = "gemini"
+
+[llm.gemini]
+model = "gemini-2.0-flash"   # or "gemini-2.5-pro" for extended thinking
+max_tokens = 8192
+# base_url = "https://generativelanguage.googleapis.com/v1beta"
+```
+
+Store the API key in the vault: `zeph vault set ZEPH_GEMINI_API_KEY AIza...`
+
+> [!NOTE]
+> Gemini does not expose an embeddings endpoint. For semantic memory and skill matching, pair Gemini with an Ollama embedding model via `[llm.orchestrator]`.
 
 ## Features
 

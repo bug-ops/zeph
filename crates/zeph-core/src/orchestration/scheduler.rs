@@ -506,10 +506,12 @@ impl DagScheduler {
     ) -> Vec<SchedulerAction> {
         // Transient condition: the SubAgentManager rejected the spawn because all
         // concurrency slots are occupied. Revert to Ready so the next tick retries.
-        if matches!(error, SubAgentError::ConcurrencyLimit { .. }) {
+        if let SubAgentError::ConcurrencyLimit { active, max } = error {
             self.consecutive_spawn_failures = self.consecutive_spawn_failures.saturating_add(1);
-            tracing::debug!(
+            tracing::warn!(
                 task_id = %task_id,
+                active,
+                max,
                 consecutive_failures = self.consecutive_spawn_failures,
                 next_backoff_ms = self.current_deferral_backoff().as_millis(),
                 "concurrency limit reached, deferring task to next tick"
@@ -1789,6 +1791,111 @@ mod tests {
             DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
                 .unwrap();
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
+    }
+
+    // --- #1619 regression tests: consecutive_spawn_failures + exponential backoff ---
+
+    #[test]
+    fn test_consecutive_spawn_failures_increments_on_concurrency_limit() {
+        // Each record_spawn_failure(ConcurrencyLimit) must increment consecutive_spawn_failures.
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+        assert_eq!(scheduler.consecutive_spawn_failures, 0, "starts at zero");
+
+        let error = SubAgentError::ConcurrencyLimit { active: 4, max: 4 };
+        scheduler.record_spawn_failure(TaskId(0), &error);
+        assert_eq!(
+            scheduler.consecutive_spawn_failures, 1,
+            "first deferral: consecutive_spawn_failures must be 1"
+        );
+
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.record_spawn_failure(TaskId(0), &error);
+        assert_eq!(
+            scheduler.consecutive_spawn_failures, 2,
+            "second deferral: consecutive_spawn_failures must be 2"
+        );
+
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.record_spawn_failure(TaskId(0), &error);
+        assert_eq!(
+            scheduler.consecutive_spawn_failures, 3,
+            "third deferral: consecutive_spawn_failures must be 3"
+        );
+    }
+
+    #[test]
+    fn test_consecutive_spawn_failures_resets_on_success() {
+        // record_spawn() after deferrals must reset consecutive_spawn_failures to 0.
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+        let error = SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+        scheduler.record_spawn_failure(TaskId(0), &error);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.record_spawn_failure(TaskId(0), &error);
+        assert_eq!(scheduler.consecutive_spawn_failures, 2);
+
+        // Successful spawn resets the counter.
+        scheduler.record_spawn(TaskId(0), "handle-0".to_string(), "worker".to_string());
+        assert_eq!(
+            scheduler.consecutive_spawn_failures, 0,
+            "record_spawn must reset consecutive_spawn_failures to 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exponential_backoff_duration() {
+        // With consecutive_spawn_failures=0, backoff equals the base interval.
+        // With consecutive_spawn_failures=3, backoff = min(base * 8, 5000ms).
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = crate::config::OrchestrationConfig {
+            deferral_backoff_ms: 50,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        // consecutive_spawn_failures=0 → sleep ≈ 50ms (base).
+        assert_eq!(scheduler.consecutive_spawn_failures, 0);
+        let start = tokio::time::Instant::now();
+        scheduler.wait_event().await;
+        let elapsed0 = start.elapsed();
+        assert!(
+            elapsed0.as_millis() >= 50,
+            "backoff with 0 deferrals must be >= base (50ms), got {}ms",
+            elapsed0.as_millis()
+        );
+
+        // Simulate 3 consecutive deferrals: multiplier = 2^3 = 8 → 400ms, capped at 5000ms.
+        scheduler.consecutive_spawn_failures = 3;
+        let start = tokio::time::Instant::now();
+        scheduler.wait_event().await;
+        let elapsed3 = start.elapsed();
+        assert!(
+            elapsed3.as_millis() >= 400,
+            "backoff with 3 deferrals must be >= 400ms (50 * 8), got {}ms",
+            elapsed3.as_millis()
+        );
+
+        // Simulate 20 consecutive deferrals: exponent capped at 10 → 50 * 1024 = 51200 → capped at 5000ms.
+        scheduler.consecutive_spawn_failures = 20;
+        let start = tokio::time::Instant::now();
+        scheduler.wait_event().await;
+        let elapsed20 = start.elapsed();
+        assert!(
+            elapsed20.as_millis() >= 5000,
+            "backoff must be capped at 5000ms with high deferrals, got {}ms",
+            elapsed20.as_millis()
+        );
     }
 
     // --- deferral_backoff regression test ---

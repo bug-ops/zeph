@@ -482,6 +482,12 @@ pub struct SubAgentManager {
     definitions: Vec<SubAgentDef>,
     agents: HashMap<String, SubAgentHandle>,
     max_concurrent: usize,
+    /// Number of slots soft-reserved by the orchestration scheduler.
+    ///
+    /// Reserved slots count against the concurrency limit so that the scheduler can
+    /// guarantee capacity for tasks it is about to spawn, preventing a planning-phase
+    /// sub-agent from exhausting the pool and causing a deadlock.
+    reserved_slots: usize,
     /// Config-level `SubagentStop` hooks, cached so `cancel()` and `collect()` can fire them.
     stop_hooks: Vec<super::hooks::HookDef>,
     /// Directory for JSONL transcripts and meta sidecars.
@@ -496,6 +502,7 @@ impl std::fmt::Debug for SubAgentManager {
             .field("definitions_count", &self.definitions.len())
             .field("active_agents", &self.agents.len())
             .field("max_concurrent", &self.max_concurrent)
+            .field("reserved_slots", &self.reserved_slots)
             .field("stop_hooks_count", &self.stop_hooks.len())
             .field("transcript_dir", &self.transcript_dir)
             .field("transcript_max_files", &self.transcript_max_files)
@@ -614,10 +621,25 @@ impl SubAgentManager {
             definitions: Vec::new(),
             agents: HashMap::new(),
             max_concurrent,
+            reserved_slots: 0,
             stop_hooks: Vec::new(),
             transcript_dir: None,
             transcript_max_files: 50,
         }
+    }
+
+    /// Reserve `n` concurrency slots for the orchestration scheduler.
+    ///
+    /// Reserved slots count against the concurrency limit in [`spawn`](Self::spawn) so that
+    /// the scheduler can guarantee capacity for tasks it is about to launch. Call
+    /// [`release_reservation`](Self::release_reservation) when the scheduler finishes.
+    pub fn reserve_slots(&mut self, n: usize) {
+        self.reserved_slots = self.reserved_slots.saturating_add(n);
+    }
+
+    /// Release `n` previously reserved concurrency slots.
+    pub fn release_reservation(&mut self, n: usize) {
+        self.reserved_slots = self.reserved_slots.saturating_sub(n);
     }
 
     /// Configure transcript storage settings.
@@ -799,7 +821,7 @@ impl SubAgentManager {
             .filter(|h| matches!(h.state, SubAgentState::Working | SubAgentState::Submitted))
             .count();
 
-        if active >= self.max_concurrent {
+        if active + self.reserved_slots >= self.max_concurrent {
             return Err(SubAgentError::ConcurrencyLimit {
                 active,
                 max: self.max_concurrent,
@@ -1802,6 +1824,71 @@ mod tests {
         let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
         let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
         assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
+    }
+
+    // --- #1619 regression tests: reserved_slots ---
+
+    #[test]
+    fn test_reserve_slots_blocks_spawn() {
+        // max_concurrent=2, reserved=1, active=1 → active+reserved >= max → ConcurrencyLimit.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = SubAgentManager::new(2);
+        mgr.definitions.push(sample_def());
+
+        // Occupy one slot.
+        let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
+        // Reserve the remaining slot.
+        mgr.reserve_slots(1);
+        // Now active(1) + reserved(1) >= max_concurrent(2) → should reject.
+        let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+            "expected ConcurrencyLimit, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_release_reservation_allows_spawn() {
+        // After release_reservation(), the reserved slot is freed and spawn succeeds.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = SubAgentManager::new(2);
+        mgr.definitions.push(sample_def());
+
+        // Reserve one slot (no active agents yet).
+        mgr.reserve_slots(1);
+        // active(0) + reserved(1) < max_concurrent(2), so one more spawn is allowed.
+        let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
+        // Now active(1) + reserved(1) >= max_concurrent(2) → blocked.
+        let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
+        assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
+
+        // Release the reservation — active(1) + reserved(0) < max_concurrent(2).
+        mgr.release_reservation(1);
+        let result = do_spawn(&mut mgr, "bot", "third");
+        assert!(
+            result.is_ok(),
+            "spawn must succeed after release_reservation, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_reservation_with_zero_active_blocks_spawn() {
+        // Reserved slots alone (no active agents) should block spawn when reserved >= max.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = SubAgentManager::new(2);
+        mgr.definitions.push(sample_def());
+
+        // Reserve all slots — no active agents.
+        mgr.reserve_slots(2);
+        // active(0) + reserved(2) >= max_concurrent(2) → blocked.
+        let err = do_spawn(&mut mgr, "bot", "first").unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+            "reservation alone must block spawn when reserved >= max_concurrent"
+        );
     }
 
     #[tokio::test]

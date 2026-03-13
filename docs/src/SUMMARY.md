@@ -20,6 +20,7 @@
 - [load_skill Tool](concepts/load-skill-tool.md)
 - [Scheduler](concepts/scheduler.md)
 - [LSP Context Injection](concepts/lsp-context-injection.md)
+- [Code Intelligence](concepts/code-intelligence.md)
 - [Task Orchestration](concepts/task-orchestration.md)
 - [Logging](concepts/logging.md)
 - [Experiments](concepts/experiments.md)

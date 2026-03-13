@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -9,6 +10,20 @@ use chrono::{DateTime, Utc};
 use cron::Schedule as CronSchedule;
 
 use crate::error::SchedulerError;
+
+/// Normalize a cron expression to the 6-field format required by the `cron` crate.
+///
+/// Standard 5-field expressions (`min hour day month weekday`) are prepended with `"0 "` to
+/// default seconds to zero. 6-field expressions are passed through unchanged. Any other field
+/// count is also passed through and will produce an error from the `cron` crate at parse time.
+#[must_use]
+pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
+    if expr.split_whitespace().count() == 5 {
+        Cow::Owned(format!("0 {expr}"))
+    } else {
+        Cow::Borrowed(expr)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskKind {
@@ -93,7 +108,8 @@ impl ScheduledTask {
         kind: TaskKind,
         config: serde_json::Value,
     ) -> Result<Self, SchedulerError> {
-        let schedule = CronSchedule::from_str(cron_expr)
+        let normalized = normalize_cron_expr(cron_expr);
+        let schedule = CronSchedule::from_str(&normalized)
             .map_err(|e| SchedulerError::InvalidCron(format!("{cron_expr}: {e}")))?;
         Ok(Self {
             name: name.into(),
@@ -200,6 +216,34 @@ mod tests {
     }
 
     #[test]
+    fn normalize_five_field_prepends_zero() {
+        assert_eq!(normalize_cron_expr("*/5 * * * *"), "0 */5 * * * *");
+        assert_eq!(normalize_cron_expr("0 3 * * *"), "0 0 3 * * *");
+    }
+
+    #[test]
+    fn normalize_six_field_passthrough() {
+        assert_eq!(normalize_cron_expr("0 0 3 * * *"), "0 0 3 * * *");
+        assert_eq!(normalize_cron_expr("* * * * * *"), "* * * * * *");
+    }
+
+    #[test]
+    fn normalize_other_field_count_passthrough() {
+        assert_eq!(normalize_cron_expr("not_cron"), "not_cron");
+        assert_eq!(normalize_cron_expr("0 0 0 0"), "0 0 0 0");
+    }
+
+    #[test]
+    fn normalize_empty_string_passthrough() {
+        assert_eq!(normalize_cron_expr(""), "");
+    }
+
+    #[test]
+    fn normalize_whitespace_only_passthrough() {
+        assert_eq!(normalize_cron_expr("   "), "   ");
+    }
+
+    #[test]
     fn valid_cron_creates_task() {
         let task = ScheduledTask::new(
             "test",
@@ -208,6 +252,17 @@ mod tests {
             serde_json::Value::Null,
         );
         assert!(task.is_ok());
+    }
+
+    #[test]
+    fn five_field_cron_creates_task() {
+        let task = ScheduledTask::new(
+            "five-field",
+            "*/5 * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        );
+        assert!(task.is_ok(), "5-field cron must be accepted");
     }
 
     #[test]

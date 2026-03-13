@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
 use crate::provider::{
-    ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role, StatusTx,
-    ToolDefinition,
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
+    StatusTx, ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::gemini_sse_to_stream;
@@ -100,9 +101,8 @@ impl GeminiProvider {
         self
     }
 
-    fn build_request(&self, messages: &[Message]) -> GenerateContentRequest {
-        let (system_instruction, contents) = convert_messages(messages);
-        let gen_config = GenerationConfig {
+    fn make_gen_config(&self) -> GenerationConfig {
+        GenerationConfig {
             max_output_tokens: Some(self.max_output_tokens),
             temperature: self
                 .generation_overrides
@@ -113,11 +113,47 @@ impl GeminiProvider {
                 .generation_overrides
                 .as_ref()
                 .and_then(|o| o.top_k.and_then(|k| u32::try_from(k).ok())),
+        }
+    }
+
+    fn build_request(&self, messages: &[Message]) -> GenerateContentRequest {
+        let (system_instruction, contents) = convert_messages(messages);
+        GenerateContentRequest {
+            system_instruction,
+            contents,
+            generation_config: Some(self.make_gen_config()),
+            tools: None,
+            tool_config: None,
+        }
+    }
+
+    fn build_tool_request(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> GenerateContentRequest {
+        let (system_instruction, contents) = convert_messages(messages);
+        let declarations = convert_tool_definitions(tools);
+        let (tools_field, tool_config) = if declarations.is_empty() {
+            (None, None)
+        } else {
+            (
+                Some(vec![GeminiTools {
+                    function_declarations: declarations,
+                }]),
+                Some(GeminiToolConfig {
+                    function_calling_config: FunctionCallingConfig {
+                        mode: "AUTO".to_owned(),
+                    },
+                }),
+            )
         };
         GenerateContentRequest {
             system_instruction,
             contents,
-            generation_config: Some(gen_config),
+            generation_config: Some(self.make_gen_config()),
+            tools: tools_field,
+            tool_config,
         }
     }
 
@@ -145,24 +181,7 @@ impl GeminiProvider {
         let body = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            if let Ok(err_resp) = serde_json::from_str::<GeminiErrorResponse>(&body) {
-                // RESOURCE_EXHAUSTED maps to rate limited regardless of HTTP status
-                if err_resp.error.status == "RESOURCE_EXHAUSTED" {
-                    return Err(LlmError::RateLimited);
-                }
-                tracing::error!(
-                    code = err_resp.error.code,
-                    status = %err_resp.error.status,
-                    "Gemini API error: {}", err_resp.error.message
-                );
-                return Err(LlmError::Other(format!(
-                    "Gemini API error ({}): {}",
-                    err_resp.error.status, err_resp.error.message
-                )));
-            }
-            return Err(LlmError::Other(format!(
-                "Gemini API request failed (status {status})"
-            )));
+            return Err(parse_gemini_error(&body, status));
         }
 
         let resp: GenerateContentResponse = serde_json::from_str(&body)?;
@@ -181,6 +200,62 @@ impl GeminiProvider {
             .ok_or_else(|| LlmError::EmptyResponse {
                 provider: "gemini".into(),
             })
+    }
+
+    async fn send_tool_request(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        // If tools are empty or all filtered, fall back to plain chat.
+        if tools.is_empty() {
+            return Ok(ChatResponse::Text(self.send_request(messages).await?));
+        }
+
+        let request = self.build_tool_request(messages, tools);
+
+        // If declarations were all filtered out (e.g. unsupported schemas), fall back.
+        let has_tools = request
+            .tools
+            .as_ref()
+            .is_some_and(|t| !t.is_empty() && !t[0].function_declarations.is_empty());
+        if !has_tools {
+            return Ok(ChatResponse::Text(self.send_request(messages).await?));
+        }
+
+        let body_bytes = serde_json::to_vec(&request)?;
+        let url = format!(
+            "{}/v1beta/models/{}:generateContent",
+            self.base_url, self.model
+        );
+
+        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
+            let req = self
+                .client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .header("Content-Type", "application/json")
+                .body(body_bytes.clone());
+            async move { req.send().await }
+        })
+        .await?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(LlmError::Http)?;
+
+        if !status.is_success() {
+            return Err(parse_gemini_error(&body, status));
+        }
+
+        let resp: GenerateContentResponse = serde_json::from_str(&body)?;
+
+        if let Some(ref usage) = resp.usage_metadata
+            && let Ok(mut guard) = self.last_usage.lock()
+        {
+            *guard = Some((usage.prompt_token_count, usage.candidates_token_count));
+        }
+
+        parse_tool_response(resp)
     }
 
     async fn send_stream_request(
@@ -208,23 +283,7 @@ impl GeminiProvider {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.map_err(LlmError::Http)?;
-            if let Ok(err_resp) = serde_json::from_str::<GeminiErrorResponse>(&body) {
-                if err_resp.error.status == "RESOURCE_EXHAUSTED" {
-                    return Err(LlmError::RateLimited);
-                }
-                tracing::error!(
-                    code = err_resp.error.code,
-                    status = %err_resp.error.status,
-                    "Gemini streaming API error: {}", err_resp.error.message
-                );
-                return Err(LlmError::Other(format!(
-                    "Gemini streaming error ({}): {}",
-                    err_resp.error.status, err_resp.error.message
-                )));
-            }
-            return Err(LlmError::Other(format!(
-                "Gemini streaming request failed (status {status})"
-            )));
+            return Err(parse_gemini_error(&body, status));
         }
 
         Ok(response)
@@ -232,14 +291,323 @@ impl GeminiProvider {
 }
 
 // ---------------------------------------------------------------------------
+// Error handling helper
+// ---------------------------------------------------------------------------
+
+fn parse_gemini_error(body: &str, status: reqwest::StatusCode) -> LlmError {
+    if let Ok(err_resp) = serde_json::from_str::<GeminiErrorResponse>(body) {
+        if err_resp.error.status == "RESOURCE_EXHAUSTED" {
+            return LlmError::RateLimited;
+        }
+        tracing::error!(
+            code = err_resp.error.code,
+            status = %err_resp.error.status,
+            "Gemini API error: {}", err_resp.error.message
+        );
+        LlmError::Other(format!(
+            "Gemini API error ({}): {}",
+            err_resp.error.status, err_resp.error.message
+        ))
+    } else {
+        LlmError::Other(format!("Gemini API request failed (status {status})"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool response parsing
+// ---------------------------------------------------------------------------
+
+fn parse_tool_response(resp: GenerateContentResponse) -> Result<ChatResponse, LlmError> {
+    let candidate = resp
+        .candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| LlmError::EmptyResponse {
+            provider: "gemini".into(),
+        })?;
+
+    // Log non-STOP finish reasons.
+    if let Some(ref reason) = candidate.finish_reason
+        && reason != "STOP"
+        && reason != "TOOL_CALLS"
+    {
+        tracing::warn!(finish_reason = %reason, "Gemini returned non-STOP finish reason");
+    }
+
+    let mut tool_calls: Vec<ToolUseRequest> = Vec::new();
+    let mut text_parts: Vec<String> = Vec::new();
+
+    for part in candidate.content.parts {
+        if let Some(fc) = part.function_call {
+            tool_calls.push(ToolUseRequest {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: fc.name,
+                input: fc
+                    .args
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::default())),
+            });
+        } else if let Some(text) = part.text
+            && !text.is_empty()
+        {
+            text_parts.push(text);
+        }
+    }
+
+    if tool_calls.is_empty() {
+        let text = text_parts.join("");
+        if text.is_empty() {
+            return Err(LlmError::EmptyResponse {
+                provider: "gemini".into(),
+            });
+        }
+        return Ok(ChatResponse::Text(text));
+    }
+
+    let text = if text_parts.is_empty() {
+        None
+    } else {
+        Some(text_parts.join(""))
+    };
+
+    Ok(ChatResponse::ToolUse {
+        text,
+        tool_calls,
+        thinking_blocks: vec![],
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Schema conversion pipeline
+// ---------------------------------------------------------------------------
+
+/// Resolve all `$ref` pointers against `$defs`/`definitions` in the schema.
+/// Operates in-place. `depth` guards against circular references.
+fn inline_refs(schema: &mut serde_json::Value, depth: u8) {
+    if depth == 0 {
+        // Depth limit exceeded — replace unresolvable $ref with a generic OBJECT
+        // so Gemini at least accepts the schema.
+        if schema.get("$ref").is_some() {
+            *schema = serde_json::json!({"type": "OBJECT", "description": "recursive reference (depth exceeded)"});
+        }
+        return;
+    }
+
+    // Collect $defs at this level.
+    let defs: HashMap<String, serde_json::Value> = {
+        let mut map = HashMap::new();
+        for key in &["$defs", "definitions"] {
+            if let Some(serde_json::Value::Object(d)) = schema.get(*key) {
+                for (k, v) in d {
+                    map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        map
+    };
+
+    inline_refs_inner(schema, &defs, depth);
+
+    // Remove $defs / definitions after inlining.
+    if let Some(obj) = schema.as_object_mut() {
+        obj.remove("$defs");
+        obj.remove("definitions");
+    }
+}
+
+fn inline_refs_inner(
+    schema: &mut serde_json::Value,
+    defs: &HashMap<String, serde_json::Value>,
+    depth: u8,
+) {
+    if depth == 0 {
+        if schema.get("$ref").is_some() {
+            *schema = serde_json::json!({"type": "OBJECT", "description": "recursive reference (depth exceeded)"});
+        }
+        return;
+    }
+
+    // If this node is a $ref, resolve it.
+    if let Some(ref_val) = schema
+        .get("$ref")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+    {
+        let name = ref_val
+            .trim_start_matches("#/$defs/")
+            .trim_start_matches("#/definitions/");
+        if let Some(resolved) = defs.get(name) {
+            let mut resolved = resolved.clone();
+            inline_refs_inner(&mut resolved, defs, depth - 1);
+            *schema = resolved;
+            return;
+        }
+        // Unknown ref — replace with generic object.
+        *schema = serde_json::json!({"type": "OBJECT", "description": "unresolved reference"});
+        return;
+    }
+
+    // Recurse into object values.
+    if let Some(obj) = schema.as_object_mut() {
+        for v in obj.values_mut() {
+            inline_refs_inner(v, defs, depth - 1);
+        }
+    } else if let Some(arr) = schema.as_array_mut() {
+        for v in arr.iter_mut() {
+            inline_refs_inner(v, defs, depth - 1);
+        }
+    }
+}
+
+/// Normalize a schema using an allowlist approach.
+///
+/// Keeps only: `type`, `description`, `properties`, `required`, `items`, `enum`, `nullable`.
+/// Handles `anyOf`/`oneOf` Option<T> pattern: extracts the non-null variant and adds `nullable: true`.
+fn normalize_schema(schema: &mut serde_json::Value, depth: u8) {
+    if depth == 0 {
+        return;
+    }
+
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+
+    // Handle anyOf/oneOf: detect Option<T> pattern [{type: T}, {type: "null"}] or [{type: "null"}, {type: T}]
+    let any_of_key = if obj.contains_key("anyOf") {
+        Some("anyOf")
+    } else if obj.contains_key("oneOf") {
+        Some("oneOf")
+    } else {
+        None
+    };
+
+    if let Some(key) = any_of_key {
+        if let Some(serde_json::Value::Array(variants)) = obj.get(key) {
+            let variants = variants.clone();
+            let non_null: Vec<&serde_json::Value> = variants
+                .iter()
+                .filter(|v| v.get("type").and_then(|t| t.as_str()) != Some("null"))
+                .collect();
+            if non_null.len() == 1 {
+                // Option<T> pattern: replace node with the non-null variant + nullable: true
+                let mut replacement = non_null[0].clone();
+                if let Some(r) = replacement.as_object_mut() {
+                    r.remove("anyOf");
+                    r.remove("oneOf");
+                    r.insert("nullable".to_owned(), serde_json::Value::Bool(true));
+                }
+                *schema = replacement;
+                normalize_schema(schema, depth - 1);
+                return;
+            }
+        }
+        // Cannot simplify — drop the anyOf/oneOf entirely (Gemini rejects it)
+        obj.remove("anyOf");
+        obj.remove("oneOf");
+    }
+
+    // Allowlist: keep only known-good keys
+    let allowed: &[&str] = &[
+        "type",
+        "description",
+        "properties",
+        "required",
+        "items",
+        "enum",
+        "nullable",
+    ];
+    let keys_to_remove: Vec<String> = obj
+        .keys()
+        .filter(|k| !allowed.contains(&k.as_str()))
+        .cloned()
+        .collect();
+    for k in keys_to_remove {
+        obj.remove(&k);
+    }
+
+    // Recurse into properties
+    if let Some(serde_json::Value::Object(props)) = obj.get_mut("properties") {
+        for v in props.values_mut() {
+            normalize_schema(v, depth - 1);
+        }
+    }
+
+    // Recurse into items (arrays)
+    if let Some(items) = obj.get_mut("items") {
+        normalize_schema(items, depth - 1);
+    }
+}
+
+/// Uppercase all `type` string values in a JSON Schema tree.
+fn uppercase_types(schema: &mut serde_json::Value, depth: u8) {
+    if depth == 0 {
+        return;
+    }
+    match schema {
+        serde_json::Value::Object(obj) => {
+            if let Some(serde_json::Value::String(t)) = obj.get_mut("type") {
+                *t = t.to_uppercase();
+            }
+            for v in obj.values_mut() {
+                uppercase_types(v, depth - 1);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                uppercase_types(v, depth - 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply full schema conversion pipeline: `inline_refs` → normalize → `uppercase_types`.
+fn prepare_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let mut s = schema.clone();
+    inline_refs(&mut s, 8);
+    normalize_schema(&mut s, 16);
+    uppercase_types(&mut s, 32);
+    s
+}
+
+// ---------------------------------------------------------------------------
+// Tool definition conversion
+// ---------------------------------------------------------------------------
+
+fn convert_tool_definitions(tools: &[ToolDefinition]) -> Vec<GeminiFunctionDeclaration> {
+    tools
+        .iter()
+        .map(|t| GeminiFunctionDeclaration {
+            name: t.name.clone(),
+            description: t.description.clone(),
+            parameters: prepare_schema(&t.parameters),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Message conversion
 // ---------------------------------------------------------------------------
+
+/// Build a lookup map from `tool_use_id` to `tool_name` by scanning all messages.
+fn build_tool_name_lookup(messages: &[Message]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for msg in messages {
+        for part in &msg.parts {
+            if let MessagePart::ToolUse { id, name, .. } = part {
+                map.insert(id.clone(), name.clone());
+            }
+        }
+    }
+    map
+}
 
 /// Convert Zeph messages to Gemini `(system_instruction, contents)`.
 ///
 /// System messages are extracted and concatenated into `system_instruction`.
 /// Consecutive same-role messages are merged (Gemini requires strict alternation).
+/// Handles `ToolUse` and `ToolResult` `MessagePart`s.
 fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiContent>) {
+    let tool_names = build_tool_name_lookup(messages);
     let mut system_parts: Vec<String> = Vec::new();
     let mut contents: Vec<GeminiContent> = Vec::new();
 
@@ -257,27 +625,28 @@ fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiC
                     Role::Assistant => "model",
                     Role::System => unreachable!(),
                 };
-                let text = extract_text(msg);
-                let new_part = GeminiPart { text: Some(text) };
+
+                let parts = convert_message_parts(msg, &tool_names);
+                if parts.is_empty() {
+                    continue;
+                }
 
                 // Merge consecutive same-role messages to satisfy Gemini alternation requirement.
                 if let Some(last) = contents.last_mut()
                     && last.role.as_deref() == Some(role_str)
                 {
-                    last.parts.push(new_part);
+                    last.parts.extend(parts);
                     continue;
                 }
                 contents.push(GeminiContent {
                     role: Some(role_str.to_owned()),
-                    parts: vec![new_part],
+                    parts,
                 });
             }
         }
     }
 
     // Gemini requires contents to start with a "user" message.
-    // If the first entry is "model" (e.g. conversation restore starting with an assistant turn),
-    // prepend a synthetic empty user message to avoid a 400 error.
     if contents.first().and_then(|c| c.role.as_deref()) == Some("model") {
         contents.insert(
             0,
@@ -285,6 +654,8 @@ fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiC
                 role: Some("user".to_owned()),
                 parts: vec![GeminiPart {
                     text: Some(String::new()),
+                    function_call: None,
+                    function_response: None,
                 }],
             },
         );
@@ -298,11 +669,108 @@ fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiC
             role: None,
             parts: vec![GeminiPart {
                 text: Some(combined),
+                function_call: None,
+                function_response: None,
             }],
         })
     };
 
     (system_instruction, contents)
+}
+
+fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) -> Vec<GeminiPart> {
+    if msg.parts.is_empty() {
+        // Legacy message: use content field as plain text.
+        let text = msg.content.clone();
+        if text.is_empty() {
+            return vec![];
+        }
+        return vec![GeminiPart {
+            text: Some(text),
+            function_call: None,
+            function_response: None,
+        }];
+    }
+
+    let mut result = Vec::new();
+    for part in &msg.parts {
+        match part {
+            MessagePart::Text { text } => {
+                if !text.is_empty() {
+                    result.push(GeminiPart {
+                        text: Some(text.clone()),
+                        function_call: None,
+                        function_response: None,
+                    });
+                }
+            }
+            MessagePart::ToolUse { name, input, .. } => {
+                result.push(GeminiPart {
+                    text: None,
+                    function_call: Some(GeminiFunctionCall {
+                        name: name.clone(),
+                        args: Some(input.clone()),
+                    }),
+                    function_response: None,
+                });
+            }
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                let name = tool_names.get(tool_use_id).cloned().unwrap_or_else(|| {
+                    tracing::warn!(
+                        tool_use_id = %tool_use_id,
+                        "ToolResult name lookup miss — using raw ID as function name"
+                    );
+                    tool_use_id.clone()
+                });
+                let response = if *is_error {
+                    serde_json::json!({"error": content})
+                } else {
+                    serde_json::json!({"result": content})
+                };
+                result.push(GeminiPart {
+                    text: None,
+                    function_call: None,
+                    function_response: Some(GeminiFunctionResponse { name, response }),
+                });
+            }
+            // Other parts (Image, ToolOutput, Recall, etc.) fall through to text extraction.
+            other => {
+                // Extract text if available (e.g. Recall, Summary, CodeContext, ToolOutput).
+                let text = extract_part_text(other);
+                if let Some(t) = text {
+                    result.push(GeminiPart {
+                        text: Some(t),
+                        function_call: None,
+                        function_response: None,
+                    });
+                }
+            }
+        }
+    }
+    result
+}
+
+fn extract_part_text(part: &MessagePart) -> Option<String> {
+    match part {
+        MessagePart::Recall { text }
+        | MessagePart::Summary { text }
+        | MessagePart::CodeContext { text }
+        | MessagePart::CrossSession { text } => {
+            if text.is_empty() {
+                None
+            } else {
+                Some(text.clone())
+            }
+        }
+        MessagePart::ToolOutput {
+            tool_name, body, ..
+        } => Some(format!("[tool output: {tool_name}]\n{body}")),
+        _ => None,
+    }
 }
 
 /// Extract plain text from a message, preferring parts over the legacy `content` field.
@@ -313,7 +781,7 @@ fn extract_text(msg: &Message) -> String {
             if let MessagePart::Text { text } = part {
                 pieces.push(text.as_str());
             }
-            // Image / tool parts silently skipped in Phase 1.
+            // Image / tool parts silently skipped in system extraction.
         }
         if !pieces.is_empty() {
             return pieces.join("\n");
@@ -334,6 +802,10 @@ struct GenerateContentRequest {
     contents: Vec<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiTools>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_config: Option<GeminiToolConfig>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -344,9 +816,52 @@ struct GeminiContent {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_call: Option<GeminiFunctionCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_response: Option<GeminiFunctionResponse>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiFunctionCall {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiFunctionResponse {
+    name: String,
+    response: serde_json::Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiTools {
+    function_declarations: Vec<GeminiFunctionDeclaration>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiFunctionDeclaration {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiToolConfig {
+    function_calling_config: FunctionCallingConfig,
+}
+
+#[derive(Serialize)]
+struct FunctionCallingConfig {
+    mode: String,
 }
 
 #[derive(Serialize)]
@@ -372,8 +887,11 @@ struct GenerateContentResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiCandidate {
     content: GeminiContent,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -429,6 +947,18 @@ impl LlmProvider for GeminiProvider {
         true
     }
 
+    fn supports_tool_use(&self) -> bool {
+        true
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        self.send_tool_request(messages, tools).await
+    }
+
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Err(LlmError::EmbedUnsupported {
             provider: "gemini".into(),
@@ -459,11 +989,16 @@ impl LlmProvider for GeminiProvider {
     fn debug_request_json(
         &self,
         messages: &[Message],
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
         _stream: bool,
     ) -> serde_json::Value {
-        let request = self.build_request(messages);
-        serde_json::to_value(&request).unwrap_or_else(|_| serde_json::Value::Null)
+        if tools.is_empty() {
+            let request = self.build_request(messages);
+            serde_json::to_value(&request).unwrap_or(serde_json::Value::Null)
+        } else {
+            let request = self.build_tool_request(messages, tools);
+            serde_json::to_value(&request).unwrap_or(serde_json::Value::Null)
+        }
     }
 }
 
@@ -495,6 +1030,12 @@ mod tests {
     fn gemini_supports_streaming_true() {
         let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
         assert!(p.supports_streaming());
+    }
+
+    #[test]
+    fn gemini_supports_tool_use_true() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+        assert!(p.supports_tool_use());
     }
 
     #[test]
@@ -558,7 +1099,6 @@ mod tests {
             msg(Role::Assistant, "Reply"),
         ];
         let (_, contents) = convert_messages(&messages);
-        // Two consecutive user messages must be merged into one
         assert_eq!(
             contents.len(),
             2,
@@ -654,7 +1194,6 @@ mod tests {
     #[test]
     fn gemini_clone_resets_usage() {
         let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
-        // Manually set last_usage
         if let Ok(mut guard) = p.last_usage.lock() {
             *guard = Some((100, 200));
         }
@@ -671,7 +1210,6 @@ mod tests {
 
     #[tokio::test]
     async fn gemini_chat_stream_error_on_failed_request() {
-        // 403 PERMISSION_DENIED → chat_stream returns Err
         let body =
             r#"{"error":{"code":403,"message":"Permission denied.","status":"PERMISSION_DENIED"}}"#;
         let http_resp = format!(
@@ -720,7 +1258,6 @@ mod tests {
 
     #[test]
     fn test_first_message_guard_prepends_user() {
-        // FIX-2: if messages start with an assistant turn, a synthetic user message is prepended.
         let messages = vec![
             msg(Role::Assistant, "I am the assistant"),
             msg(Role::User, "Hello"),
@@ -735,10 +1272,579 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // HTTP integration tests (GAP-1, GAP-2, GAP-3) using a local mock TCP server.
+    // Schema conversion tests
     // ---------------------------------------------------------------------------
 
-    /// Spawn a minimal TCP server returning fixed HTTP responses per connection.
+    #[test]
+    fn test_uppercase_types_simple() {
+        let mut schema = serde_json::json!({"type": "string"});
+        uppercase_types(&mut schema, 32);
+        assert_eq!(schema["type"], "STRING");
+    }
+
+    #[test]
+    fn test_uppercase_types_nested() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "count": {"type": "integer"}
+            }
+        });
+        uppercase_types(&mut schema, 32);
+        assert_eq!(schema["type"], "OBJECT");
+        assert_eq!(schema["properties"]["name"]["type"], "STRING");
+        assert_eq!(schema["properties"]["count"]["type"], "INTEGER");
+    }
+
+    #[test]
+    fn test_inline_refs_simple() {
+        let mut schema = serde_json::json!({
+            "$defs": {
+                "MyType": {"type": "string", "description": "a string"}
+            },
+            "type": "object",
+            "properties": {
+                "field": {"$ref": "#/$defs/MyType"}
+            }
+        });
+        inline_refs(&mut schema, 8);
+        assert!(schema.get("$defs").is_none(), "$defs must be removed");
+        assert_eq!(schema["properties"]["field"]["type"], "string");
+        assert_eq!(schema["properties"]["field"]["description"], "a string");
+    }
+
+    #[test]
+    fn test_inline_refs_no_defs() {
+        let mut schema =
+            serde_json::json!({"type": "object", "properties": {"x": {"type": "number"}}});
+        let before = schema.clone();
+        inline_refs(&mut schema, 8);
+        assert_eq!(schema, before);
+    }
+
+    #[test]
+    fn test_inline_refs_depth_limit() {
+        // Circular: A -> B -> A (can't actually serialize, simulate with self-ref string)
+        // We simulate a depth-exceeded path: a schema with deeply nested $refs
+        let mut schema = serde_json::json!({
+            "$defs": {
+                "A": {"$ref": "#/$defs/A"}
+            },
+            "$ref": "#/$defs/A"
+        });
+        // Should not stack overflow, should produce a fallback object
+        inline_refs(&mut schema, 8);
+        // After inlining, the result should be an OBJECT or something Gemini-acceptable
+        assert!(schema.is_object());
+    }
+
+    #[test]
+    fn test_normalize_schema_allowlist() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "title": "MyObj",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "additionalProperties": false,
+            "format": "uri",
+            "description": "A test object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "title": "Name"
+                }
+            },
+            "required": ["name"]
+        });
+        normalize_schema(&mut schema, 16);
+        assert!(schema.get("title").is_none());
+        assert!(schema.get("$schema").is_none());
+        assert!(schema.get("additionalProperties").is_none());
+        assert!(schema.get("format").is_none());
+        assert_eq!(schema["description"], "A test object");
+        assert_eq!(schema["type"], "object");
+        // Nested cleanup
+        assert!(schema["properties"]["name"].get("minLength").is_none());
+        assert!(schema["properties"]["name"].get("title").is_none());
+        assert_eq!(schema["properties"]["name"]["type"], "string");
+    }
+
+    #[test]
+    fn test_normalize_schema_anyof_option_pattern() {
+        // schemars generates anyOf: [{type: T}, {type: "null"}] for Option<T>
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "optional_field": {
+                    "anyOf": [
+                        {"type": "string", "description": "a string"},
+                        {"type": "null"}
+                    ]
+                }
+            }
+        });
+        normalize_schema(&mut schema, 16);
+        let field = &schema["properties"]["optional_field"];
+        assert!(field.get("anyOf").is_none(), "anyOf must be removed");
+        assert_eq!(field["type"], "string");
+        assert_eq!(field["nullable"], true);
+        assert_eq!(field["description"], "a string");
+    }
+
+    #[test]
+    fn test_normalize_schema_anyof_complex_dropped() {
+        // anyOf with more than one non-null variant — can't simplify, must drop
+        let mut schema = serde_json::json!({
+            "anyOf": [
+                {"type": "string"},
+                {"type": "integer"},
+                {"type": "null"}
+            ]
+        });
+        normalize_schema(&mut schema, 16);
+        assert!(schema.get("anyOf").is_none());
+    }
+
+    #[test]
+    fn test_convert_tool_definitions_single() {
+        let tool = ToolDefinition {
+            name: "get_weather".to_owned(),
+            description: "Get current weather".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"}
+                },
+                "required": ["location"],
+                "additionalProperties": false
+            }),
+        };
+        let decls = convert_tool_definitions(&[tool]);
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].name, "get_weather");
+        assert_eq!(decls[0].description, "Get current weather");
+        assert_eq!(decls[0].parameters["type"], "OBJECT");
+        assert_eq!(
+            decls[0].parameters["properties"]["location"]["type"],
+            "STRING"
+        );
+        assert!(decls[0].parameters.get("additionalProperties").is_none());
+    }
+
+    #[test]
+    fn test_convert_tool_definitions_empty() {
+        let decls = convert_tool_definitions(&[]);
+        assert!(decls.is_empty());
+    }
+
+    #[test]
+    fn test_convert_tool_definitions_multiple() {
+        let tools = vec![
+            ToolDefinition {
+                name: "tool_a".to_owned(),
+                description: "Tool A".to_owned(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            ToolDefinition {
+                name: "tool_b".to_owned(),
+                description: "Tool B".to_owned(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+        ];
+        let decls = convert_tool_definitions(&tools);
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].name, "tool_a");
+        assert_eq!(decls[1].name, "tool_b");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Message conversion tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_tool_use_part_to_function_call() {
+        let messages = vec![
+            msg(Role::User, "What's the weather in Paris?"),
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                parts: vec![MessagePart::ToolUse {
+                    id: "call-1".to_owned(),
+                    name: "get_weather".to_owned(),
+                    input: serde_json::json!({"location": "Paris"}),
+                }],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let (_, contents) = convert_messages(&messages);
+        // contents: user[0] + model[1]
+        assert_eq!(contents.len(), 2);
+        let part = &contents[1].parts[0];
+        assert!(part.function_call.is_some());
+        let fc = part.function_call.as_ref().unwrap();
+        assert_eq!(fc.name, "get_weather");
+        assert_eq!(fc.args.as_ref().unwrap()["location"], "Paris");
+    }
+
+    #[test]
+    fn test_tool_result_part_to_function_response_with_name_lookup() {
+        // The tool use message must come before the result for name lookup to work.
+        let messages = vec![
+            msg(Role::User, "What's the weather?"),
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                parts: vec![MessagePart::ToolUse {
+                    id: "call-1".to_owned(),
+                    name: "get_weather".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: String::new(),
+                parts: vec![MessagePart::ToolResult {
+                    tool_use_id: "call-1".to_owned(),
+                    content: "Sunny, 20°C".to_owned(),
+                    is_error: false,
+                }],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let (_, contents) = convert_messages(&messages);
+        // contents: user[0] + model[1] (tool call) + user[2] (tool result)
+        assert_eq!(contents.len(), 3);
+        let result_part = &contents[2].parts[0];
+        assert!(result_part.function_response.is_some());
+        let fr = result_part.function_response.as_ref().unwrap();
+        assert_eq!(fr.name, "get_weather");
+        assert_eq!(fr.response["result"], "Sunny, 20°C");
+    }
+
+    #[test]
+    fn test_tool_result_is_error_wrapping() {
+        let messages = vec![
+            msg(Role::User, "Run something."),
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                parts: vec![MessagePart::ToolUse {
+                    id: "call-err".to_owned(),
+                    name: "run_shell".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: String::new(),
+                parts: vec![MessagePart::ToolResult {
+                    tool_use_id: "call-err".to_owned(),
+                    content: "Command not found".to_owned(),
+                    is_error: true,
+                }],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let (_, contents) = convert_messages(&messages);
+        // user[0] + model[1] + user[2]
+        let fr = contents[2].parts[0].function_response.as_ref().unwrap();
+        assert_eq!(fr.response["error"], "Command not found");
+        assert!(fr.response.get("result").is_none());
+    }
+
+    #[test]
+    fn test_multiple_tool_results_merged_into_one_user_content() {
+        let messages = vec![
+            msg(Role::User, "Do both things."),
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                parts: vec![
+                    MessagePart::ToolUse {
+                        id: "call-1".to_owned(),
+                        name: "tool_a".to_owned(),
+                        input: serde_json::json!({}),
+                    },
+                    MessagePart::ToolUse {
+                        id: "call-2".to_owned(),
+                        name: "tool_b".to_owned(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: String::new(),
+                parts: vec![
+                    MessagePart::ToolResult {
+                        tool_use_id: "call-1".to_owned(),
+                        content: "result A".to_owned(),
+                        is_error: false,
+                    },
+                    MessagePart::ToolResult {
+                        tool_use_id: "call-2".to_owned(),
+                        content: "result B".to_owned(),
+                        is_error: false,
+                    },
+                ],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let (_, contents) = convert_messages(&messages);
+        // user[0] + model[1] with two tool calls + user[2] with two tool results
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[2].role.as_deref(), Some("user"));
+        assert_eq!(contents[2].parts.len(), 2);
+        assert_eq!(
+            contents[2].parts[0]
+                .function_response
+                .as_ref()
+                .unwrap()
+                .name,
+            "tool_a"
+        );
+        assert_eq!(
+            contents[2].parts[1]
+                .function_response
+                .as_ref()
+                .unwrap()
+                .name,
+            "tool_b"
+        );
+    }
+
+    #[test]
+    fn test_mixed_text_and_tool_use() {
+        // Prepend a user message so the assistant message is not first (avoids synthetic prepend)
+        let messages = vec![
+            msg(Role::User, "Check the weather in London."),
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                parts: vec![
+                    MessagePart::Text {
+                        text: "Let me check the weather.".to_owned(),
+                    },
+                    MessagePart::ToolUse {
+                        id: "call-1".to_owned(),
+                        name: "get_weather".to_owned(),
+                        input: serde_json::json!({"location": "London"}),
+                    },
+                ],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let (_, contents) = convert_messages(&messages);
+        // contents: user + model (2 parts)
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[1].role.as_deref(), Some("model"));
+        assert_eq!(contents[1].parts.len(), 2);
+        assert!(contents[1].parts[0].text.is_some());
+        assert!(contents[1].parts[1].function_call.is_some());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Response parsing tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_single_function_call() {
+        let resp = GenerateContentResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: Some("model".to_owned()),
+                    parts: vec![GeminiPart {
+                        text: None,
+                        function_call: Some(GeminiFunctionCall {
+                            name: "get_weather".to_owned(),
+                            args: Some(serde_json::json!({"location": "Tokyo"})),
+                        }),
+                        function_response: None,
+                    }],
+                },
+                finish_reason: Some("TOOL_CALLS".to_owned()),
+            }],
+            usage_metadata: None,
+        };
+        let result = parse_tool_response(resp).unwrap();
+        assert!(matches!(result, ChatResponse::ToolUse { .. }));
+        if let ChatResponse::ToolUse {
+            tool_calls, text, ..
+        } = result
+        {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0].name, "get_weather");
+            assert_eq!(tool_calls[0].input["location"], "Tokyo");
+            assert!(text.is_none());
+        }
+    }
+
+    #[test]
+    fn test_parse_multiple_function_calls() {
+        let resp = GenerateContentResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: Some("model".to_owned()),
+                    parts: vec![
+                        GeminiPart {
+                            text: None,
+                            function_call: Some(GeminiFunctionCall {
+                                name: "tool_a".to_owned(),
+                                args: Some(serde_json::json!({"x": 1})),
+                            }),
+                            function_response: None,
+                        },
+                        GeminiPart {
+                            text: None,
+                            function_call: Some(GeminiFunctionCall {
+                                name: "tool_b".to_owned(),
+                                args: Some(serde_json::json!({"y": 2})),
+                            }),
+                            function_response: None,
+                        },
+                    ],
+                },
+                finish_reason: Some("TOOL_CALLS".to_owned()),
+            }],
+            usage_metadata: None,
+        };
+        let result = parse_tool_response(resp).unwrap();
+        if let ChatResponse::ToolUse { tool_calls, .. } = result {
+            assert_eq!(tool_calls.len(), 2);
+            assert_eq!(tool_calls[0].name, "tool_a");
+            assert_eq!(tool_calls[1].name, "tool_b");
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn test_parse_mixed_text_and_function_call() {
+        let resp = GenerateContentResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: Some("model".to_owned()),
+                    parts: vec![
+                        GeminiPart {
+                            text: Some("I'll look that up.".to_owned()),
+                            function_call: None,
+                            function_response: None,
+                        },
+                        GeminiPart {
+                            text: None,
+                            function_call: Some(GeminiFunctionCall {
+                                name: "search".to_owned(),
+                                args: Some(serde_json::json!({"query": "rust"})),
+                            }),
+                            function_response: None,
+                        },
+                    ],
+                },
+                finish_reason: Some("TOOL_CALLS".to_owned()),
+            }],
+            usage_metadata: None,
+        };
+        let result = parse_tool_response(resp).unwrap();
+        if let ChatResponse::ToolUse {
+            tool_calls, text, ..
+        } = result
+        {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(text.as_deref(), Some("I'll look that up."));
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn test_parse_text_only_response() {
+        let resp = GenerateContentResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: Some("model".to_owned()),
+                    parts: vec![GeminiPart {
+                        text: Some("Hello, world!".to_owned()),
+                        function_call: None,
+                        function_response: None,
+                    }],
+                },
+                finish_reason: Some("STOP".to_owned()),
+            }],
+            usage_metadata: None,
+        };
+        let result = parse_tool_response(resp).unwrap();
+        assert!(matches!(result, ChatResponse::Text(s) if s == "Hello, world!"));
+    }
+
+    #[test]
+    fn test_parse_null_args_uses_empty_object() {
+        let resp = GenerateContentResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: Some("model".to_owned()),
+                    parts: vec![GeminiPart {
+                        text: None,
+                        function_call: Some(GeminiFunctionCall {
+                            name: "no_args_tool".to_owned(),
+                            args: None,
+                        }),
+                        function_response: None,
+                    }],
+                },
+                finish_reason: Some("TOOL_CALLS".to_owned()),
+            }],
+            usage_metadata: None,
+        };
+        let result = parse_tool_response(resp).unwrap();
+        if let ChatResponse::ToolUse { tool_calls, .. } = result {
+            assert_eq!(
+                tool_calls[0].input,
+                serde_json::Value::Object(Default::default())
+            );
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn test_debug_request_json_with_tools_includes_function_declarations() {
+        let messages = vec![msg(Role::User, "What is the weather?")];
+        let tools = vec![ToolDefinition {
+            name: "get_weather".to_owned(),
+            description: "Get weather".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"location": {"type": "string"}},
+                "required": ["location"]
+            }),
+        }];
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+        let json = p.debug_request_json(&messages, &tools, false);
+        assert!(json.get("tools").is_some());
+        let tools_arr = json["tools"].as_array().unwrap();
+        assert!(!tools_arr.is_empty());
+        let decls = &tools_arr[0]["functionDeclarations"];
+        assert!(decls.is_array());
+        assert_eq!(decls[0]["name"], "get_weather");
+    }
+
+    #[test]
+    fn test_debug_request_json_no_tools_no_tools_field() {
+        let messages = vec![msg(Role::User, "Hi")];
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+        let json = p.debug_request_json(&messages, &[], false);
+        assert!(json.get("tools").is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // HTTP integration tests using a local mock TCP server.
+    // ---------------------------------------------------------------------------
+
     async fn spawn_mock_server(responses: Vec<&'static str>) -> (u16, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::TcpListener;
@@ -770,7 +1876,6 @@ mod tests {
         (port, handle)
     }
 
-    /// GAP-1: HTTP 403 with PERMISSION_DENIED body → LlmError::Other containing status.
     #[tokio::test]
     async fn gap1_http_error_response_maps_to_llm_error_other() {
         let body =
@@ -795,7 +1900,6 @@ mod tests {
         );
     }
 
-    /// GAP-2: HTTP 429 with RESOURCE_EXHAUSTED body → LlmError::RateLimited (full dispatch path).
     #[tokio::test]
     async fn gap2_resource_exhausted_maps_to_rate_limited() {
         let body =
@@ -805,20 +1909,14 @@ mod tests {
             body.len(),
             body
         );
-        // Server returns 200 with RESOURCE_EXHAUSTED body — verifies the body-level check.
         let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
 
         let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
             .with_base_url(format!("http://127.0.0.1:{port}"));
         let messages = vec![msg(Role::User, "hello")];
-        // send_with_retry doesn't retry on 200; the body-level RESOURCE_EXHAUSTED check fires.
         let result = p.chat(&messages).await;
-
-        // 200 with a valid-looking body won't hit RateLimited here — it parses as a response.
-        // Instead test the dedicated 429 path: server returns 429 with MAX_RETRIES exhausted.
         drop(result);
 
-        // Real 429 test: server always returns 429, all retries exhausted → RateLimited.
         let rate_limit =
             "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
         let responses: Vec<&'static str> = vec![rate_limit; MAX_RETRIES as usize + 1];
@@ -833,7 +1931,6 @@ mod tests {
         );
     }
 
-    /// GAP-3: Successful response with usageMetadata → last_usage() is populated.
     #[tokio::test]
     async fn gap3_successful_response_populates_last_usage() {
         let body = r#"{
@@ -860,5 +1957,63 @@ mod tests {
             .expect("last_usage must be populated after successful call");
         assert_eq!(usage.0, 10, "prompt_token_count");
         assert_eq!(usage.1, 5, "candidates_token_count");
+    }
+
+    #[tokio::test]
+    async fn test_chat_with_tools_returns_tool_use() {
+        let body = r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": "get_weather", "args": {"location": "Berlin"}}}]
+                },
+                "finishReason": "TOOL_CALLS"
+            }],
+            "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": 10}
+        }"#;
+        let http_resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+        let messages = vec![msg(Role::User, "What's the weather in Berlin?")];
+        let tools = vec![ToolDefinition {
+            name: "get_weather".to_owned(),
+            description: "Get weather".to_owned(),
+            parameters: serde_json::json!({"type": "object", "properties": {"location": {"type": "string"}}}),
+        }];
+
+        let result = p.chat_with_tools(&messages, &tools).await.unwrap();
+        assert!(matches!(result, ChatResponse::ToolUse { .. }));
+        if let ChatResponse::ToolUse { tool_calls, .. } = result {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0].name, "get_weather");
+            assert_eq!(tool_calls[0].input["location"], "Berlin");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chat_with_tools_empty_tools_falls_back_to_chat() {
+        let body = r#"{
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "Hello!"}]}}]
+        }"#;
+        let http_resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+        let messages = vec![msg(Role::User, "hi")];
+
+        // Empty tools — should fall back to chat()
+        let result = p.chat_with_tools(&messages, &[]).await.unwrap();
+        assert!(matches!(result, ChatResponse::Text(s) if s == "Hello!"));
     }
 }

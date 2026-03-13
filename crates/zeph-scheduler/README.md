@@ -27,7 +27,7 @@ Manages recurring and deferred background tasks. Periodic tasks run on a cron sc
 
 | Variant | Trigger | Persistence |
 |---------|---------|-------------|
-| `TaskMode::Periodic { schedule }` | Cron expression; fires every matching occurrence | `cron_expr` + `next_run` columns |
+| `TaskMode::Periodic { schedule }` | 5 or 6-field cron expression; fires every matching occurrence | `cron_expr` + `next_run` columns |
 | `TaskMode::OneShot { run_at }` | Single ISO 8601 UTC timestamp | `run_at` column; removed from memory after execution |
 
 > [!NOTE]

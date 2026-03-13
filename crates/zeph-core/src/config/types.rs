@@ -214,6 +214,10 @@ pub struct Config {
 #[serde(default)]
 pub struct SubAgentConfig {
     pub enabled: bool,
+    /// Maximum number of sub-agents that can run concurrently.
+    ///
+    /// Must be >= `max_parallel` + 1 when orchestration is enabled, to avoid starving
+    /// orchestration tasks while a planning-phase sub-agent is still active.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
     pub extra_dirs: Vec<PathBuf>,
@@ -306,7 +310,7 @@ pub struct SubAgentLifecycleHooks {
 }
 
 fn default_max_concurrent() -> usize {
-    1
+    5
 }
 
 fn default_transcript_enabled() -> bool {
@@ -2363,7 +2367,7 @@ pub struct OrchestrationConfig {
     /// Maximum tokens budget for aggregation LLM calls. Default: 4096.
     #[serde(default = "default_aggregator_max_tokens")]
     pub aggregator_max_tokens: u32,
-    /// Backoff duration in ms before retrying deferred tasks (default: 250ms).
+    /// Base backoff for `ConcurrencyLimit` retries; grows exponentially (×2 each attempt) up to 5 s.
     #[serde(default = "default_deferral_backoff_ms")]
     pub deferral_backoff_ms: u64,
 }
@@ -2377,7 +2381,7 @@ fn default_aggregator_max_tokens() -> u32 {
 }
 
 fn default_deferral_backoff_ms() -> u64 {
-    250
+    100
 }
 
 impl Default for OrchestrationConfig {
@@ -2952,12 +2956,12 @@ eval_budget_tokens = 50000
     fn subagent_config_defaults_when_section_absent() {
         let cfg = SubAgentConfig::default();
         assert!(!cfg.enabled, "enabled defaults to false");
-        assert_eq!(cfg.max_concurrent, 1, "max_concurrent defaults to 1");
+        assert_eq!(cfg.max_concurrent, 5, "max_concurrent defaults to 5");
         assert!(cfg.extra_dirs.is_empty(), "extra_dirs defaults to empty");
 
         let default_cfg = Config::default();
         assert!(!default_cfg.agents.enabled);
-        assert_eq!(default_cfg.agents.max_concurrent, 1);
+        assert_eq!(default_cfg.agents.max_concurrent, 5);
         assert!(default_cfg.agents.extra_dirs.is_empty());
     }
 

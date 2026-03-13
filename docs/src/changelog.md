@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Gemini provider** — Google Gemini API support (`gemini-2.0-flash` default, `gemini-2.5-pro` available). Phase 1: basic chat via `generateContent`; Phase 2: SSE streaming with thinking-part support. Configure with `[llm.gemini]` and `ZEPH_GEMINI_API_KEY`. See [LLM Providers](concepts/providers.md#gemini).
+- **`search_code` tool** — unified hybrid code search combining tree-sitter structural extraction, Qdrant semantic search, and LSP symbol resolution in a single agent-callable tool. Always available (no feature flag). See [Tools](concepts/tools.md#code-search).
+- **`zeph migrate-config`** — CLI command to add missing config parameters as commented-out blocks and reformat the file. Idempotent; never modifies existing values. See [Migrate Config](guides/migrate-config.md).
+- **ACP readiness probes** — `/health` HTTP endpoint returns `200 OK` when ready; stdio transport emits `zeph/ready` JSON-RPC notification as the first outbound packet.
+- **Request metadata in debug dumps** — model, token limit, temperature, exposed tools, and cache breakpoints included in both `json` and `raw` dump formats.
+
+### Changed
+
+- **`/plan cancel` during execution** — cancel commands are now delivered immediately during active plan execution via concurrent channel polling; previously only reachable from multi-reader channels.
+- **DagScheduler exponential backoff** — concurrency-limit deferral now uses 250ms→500ms→1s→2s→4s (cap 5s) instead of a fixed 250ms sleep, eliminating CPU spin-loops under sustained load.
+- **Single shared `QdrantOps` instance** — all subsystems (semantic memory, skill matcher, MCP tool registry, code store) share one gRPC connection instead of creating independent connections on startup.
+- **`zeph-index` always-on** — the `index` feature flag is removed; tree-sitter and code intelligence are compiled into every build. The `search_code` tool and repo map are available for all provider configurations.
+
+### Security
+
+- **SEC-001–004 tool execution hardening** — randomized hash seeds, jitter-free retry timing, tool name length limits, wall-clock retry budget. See [Security](reference/security.md).
+- **Shell blocklist unconditional** — `blocked_commands` and `DEFAULT_BLOCKED` now apply regardless of `PermissionPolicy` configuration; previously skipped when a policy was attached.
+
 ## [0.14.3] - 2026-03-10
 
 See [CHANGELOG.md](https://github.com/bug-ops/zeph/blob/main/CHANGELOG.md) for full release notes.

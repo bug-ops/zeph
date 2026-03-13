@@ -159,7 +159,7 @@ HTTP gateway for webhook ingestion (optional, feature-gated).
 Cron-based periodic task scheduler with SQLite persistence (optional, feature-gated).
 
 - `Scheduler` -- tick loop checking due tasks every 60 seconds
-- `ScheduledTask` -- task definition with 6-field cron expression (via `cron` crate)
+- `ScheduledTask` -- task definition with 5 or 6-field cron expression (via `cron` crate; 5-field seconds default to 0)
 - `TaskKind` -- built-in kinds (`memory_cleanup`, `skill_refresh`, `health_check`, `update_check`) and `Custom(String)`
 - `TaskHandler` trait -- async execution interface receiving `serde_json::Value` config
 - `JobStore` -- SQLite-backed persistence tracking `last_run` timestamps and status
