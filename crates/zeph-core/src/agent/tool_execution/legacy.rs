@@ -665,6 +665,30 @@ impl<C: Channel> Agent<C> {
                 zeph_llm::StreamChunk::Thinking(thinking) => {
                     self.channel.send_thinking_chunk(&thinking).await?;
                 }
+                zeph_llm::StreamChunk::Compaction(summary) => {
+                    tracing::info!(
+                        summary_len = summary.len(),
+                        messages_before = self.messages.len(),
+                        "server-side compaction received via stream; pruning old messages"
+                    );
+                    let last_user = self
+                        .messages
+                        .iter()
+                        .rposition(|m| m.role == Role::User)
+                        .unwrap_or(0);
+                    let tail: Vec<Message> = self.messages.drain(last_user..).collect();
+                    self.messages.clear();
+                    self.messages.push(Message {
+                        role: Role::Assistant,
+                        content: summary.clone(),
+                        parts: vec![MessagePart::Compaction {
+                            summary: summary.clone(),
+                        }],
+                        metadata: MessageMetadata::default(),
+                    });
+                    self.messages.extend(tail);
+                    self.update_metrics(|m| m.server_compaction_events += 1);
+                }
             }
         }
 

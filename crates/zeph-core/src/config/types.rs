@@ -507,6 +507,11 @@ pub struct CloudLlmConfig {
     pub max_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    /// Enable server-side context compaction (Claude API compact-2026-01-12 beta).
+    /// When true, the Claude API automatically summarizes long conversations.
+    /// Client-side compaction is skipped when this is active.
+    #[serde(default)]
+    pub server_compaction: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -185,6 +185,7 @@ pub struct MetricsSnapshot {
     pub filter_confidence_partial: u64,
     pub filter_confidence_fallback: u64,
     pub cancellations: u64,
+    pub server_compaction_events: u64,
     pub sanitizer_runs: u64,
     pub sanitizer_injection_flags: u64,
     pub sanitizer_truncations: u64,

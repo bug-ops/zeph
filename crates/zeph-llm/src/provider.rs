@@ -51,6 +51,9 @@ pub enum StreamChunk {
     Content(String),
     /// Internal reasoning/thinking token (e.g. Claude extended thinking, `OpenAI` reasoning).
     Thinking(String),
+    /// Server-side compaction summary (Claude compact-2026-01-12 beta).
+    /// Delivered when the Claude API automatically summarizes conversation history.
+    Compaction(String),
 }
 
 /// Boxed stream of typed chunks from an LLM provider.
@@ -193,6 +196,11 @@ pub enum MessagePart {
     /// Claude redacted thinking block — preserved as-is in multi-turn requests.
     RedactedThinkingBlock {
         data: String,
+    },
+    /// Claude server-side compaction block — must be preserved verbatim in multi-turn requests
+    /// so the API can correctly prune prior history on the next turn.
+    Compaction {
+        summary: String,
     },
 }
 
@@ -360,8 +368,10 @@ impl Message {
                 MessagePart::Image(img) => {
                     let _ = write!(out, "[image: {}, {} bytes]", img.mime_type, img.data.len());
                 }
-                // Thinking blocks are internal reasoning — not rendered in text content.
-                MessagePart::ThinkingBlock { .. } | MessagePart::RedactedThinkingBlock { .. } => {}
+                // Thinking and compaction blocks are internal API metadata — not rendered in text.
+                MessagePart::ThinkingBlock { .. }
+                | MessagePart::RedactedThinkingBlock { .. }
+                | MessagePart::Compaction { .. } => {}
             }
         }
         out
@@ -444,6 +454,12 @@ pub trait LlmProvider: Send + Sync {
     /// Return token counts from the last API call, if available.
     /// Returns `(input_tokens, output_tokens)`.
     fn last_usage(&self) -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Return the compaction summary from the most recent API call, if a server-side
+    /// compaction occurred (Claude compact-2026-01-12 beta). Clears the stored value.
+    fn take_compaction_summary(&self) -> Option<String> {
         None
     }
 

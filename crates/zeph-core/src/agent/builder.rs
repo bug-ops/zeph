@@ -308,6 +308,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Enable server-side compaction mode (Claude compact-2026-01-12 beta).
+    ///
+    /// When active, client-side reactive and proactive compaction are skipped.
+    #[must_use]
+    pub fn with_server_compaction(mut self, enabled: bool) -> Self {
+        self.server_compaction_active = enabled;
+        self
+    }
+
     #[must_use]
     pub fn with_mcp(
         mut self,

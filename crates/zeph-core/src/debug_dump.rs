@@ -327,7 +327,17 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
         MessagePart::RedactedThinkingBlock { data } if is_assistant => {
             Some(serde_json::json!({ "type": "redacted_thinking", "data": data }))
         }
+        MessagePart::ThinkingBlock { .. }
+        | MessagePart::RedactedThinkingBlock { .. }
+        | MessagePart::Compaction { .. }
+            if !is_assistant =>
+        {
+            None
+        }
         MessagePart::ThinkingBlock { .. } | MessagePart::RedactedThinkingBlock { .. } => None,
+        MessagePart::Compaction { summary } => {
+            Some(serde_json::json!({ "type": "compaction", "summary": summary }))
+        }
         MessagePart::Image(img) => Some(serde_json::json!({
             "type": "image",
             "source": {

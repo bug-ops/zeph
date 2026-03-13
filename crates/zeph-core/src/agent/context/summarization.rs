@@ -842,6 +842,10 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn maybe_compact(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
+        // S1: server-side compaction handles context management; skip client-side.
+        if self.server_compaction_active {
+            return Ok(());
+        }
         // Skip if proactive compression already ran this turn (CRIT-03).
         if self.context_manager.compacted_this_turn {
             return Ok(());
@@ -889,6 +893,10 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn maybe_proactive_compress(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
+        // S1: server-side compaction handles context management; skip client-side.
+        if self.server_compaction_active {
+            return Ok(());
+        }
         let Some((_threshold, max_summary_tokens)) = self
             .context_manager
             .should_proactively_compress(self.cached_prompt_tokens)

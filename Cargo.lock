@@ -9505,6 +9505,7 @@ dependencies = [
 name = "zeph-llm"
 version = "0.14.3"
 dependencies = [
+ "async-stream",
  "base64 0.22.1",
  "candle-core",
  "candle-nn",
