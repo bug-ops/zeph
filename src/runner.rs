@@ -126,29 +126,30 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
 
     match transport {
         AcpTransport::Stdio => {
-            run_acp_server(
+            Box::pin(run_acp_server(
                 config_path.as_deref(),
                 vault_backend.as_deref(),
                 vault_key.as_deref(),
                 vault_path.as_deref(),
-            )
+            ))
             .await
         }
         #[cfg(feature = "acp-http")]
         AcpTransport::Http => {
-            run_acp_http_server(
+            Box::pin(run_acp_http_server(
                 config_path.as_deref(),
                 vault_backend.as_deref(),
                 vault_key.as_deref(),
                 vault_path.as_deref(),
                 None,
                 None,
-            )
+            ))
             .await
         }
         #[cfg(feature = "acp-http")]
         AcpTransport::Both => {
-            tokio::task::LocalSet::new()
+            Box::pin(
+                tokio::task::LocalSet::new()
                 .run_until(async move {
                     let mut http_task = tokio::task::spawn_local({
                         let config_path = config_path.clone();
@@ -156,14 +157,14 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                         let vault_key = vault_key.clone();
                         let vault_path = vault_path.clone();
                         async move {
-                            run_acp_http_server(
+                            Box::pin(run_acp_http_server(
                                 config_path.as_deref(),
                                 vault_backend.as_deref(),
                                 vault_key.as_deref(),
                                 vault_path.as_deref(),
                                 None,
                                 None,
-                            )
+                            ))
                             .await
                         }
                     });
@@ -184,6 +185,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                         },
                     }
                 })
+            )
                 .await
         }
         #[cfg(not(feature = "acp-http"))]
@@ -192,12 +194,12 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 transport = ?transport,
                 "ACP autostart requested via config, but this build was compiled without the `acp-http` feature; falling back to stdio"
             );
-            run_acp_server(
+            Box::pin(run_acp_server(
                 config_path.as_deref(),
                 vault_backend.as_deref(),
                 vault_key.as_deref(),
                 vault_path.as_deref(),
-            )
+            ))
             .await
         }
     }
