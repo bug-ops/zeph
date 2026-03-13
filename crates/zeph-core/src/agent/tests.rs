@@ -2962,9 +2962,66 @@ mod compaction_e2e {
         );
     }
 
-    /// COV-03 (non-cancel message queuing): tested via enqueue_or_merge unit tests in
-    /// message_queue.rs. A dedicated scheduler-loop integration test is deferred to
-    /// GitHub issue #1605.
+    /// COV-03: a non-cancel message received via the channel during `run_scheduler_loop`
+    /// is queued in `message_queue` for processing after the plan completes.
+    ///
+    /// Verifies the `tokio::select!` path added in #1603: when the channel delivers a
+    /// non-cancel message while the loop is waiting for a scheduler event, the message
+    /// is passed to `enqueue_or_merge()` and appears in `agent.message_queue` after
+    /// `run_scheduler_loop` returns.
+    #[tokio::test]
+    async fn scheduler_loop_queues_non_cancel_message() {
+        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
+        use crate::subagent::SubAgentManager;
+
+        // Channel pre-loaded with one non-cancel message; second recv() returns None,
+        // which terminates the loop with GraphStatus::Failed — acceptable for this test
+        // since we only verify queuing, not plan completion status.
+        let channel = MockChannel::new(vec!["hello".to_owned()]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+        agent.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Graph in Running status with one task in Running state: tick() emits no actions
+        // (no Ready tasks, running_in_graph_now > 0 suppresses Done), so the loop reaches
+        // the select! where channel.recv() delivers "hello" before the loop exits.
+        let mut graph = TaskGraph::new("queue test goal");
+        let mut node = TaskNode::new(0, "task-0", "long running task");
+        node.status = TaskStatus::Running;
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            ..OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let _ = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            agent.message_queue.len(),
+            1,
+            "non-cancel message must be queued in message_queue; got: {:?}",
+            agent
+                .message_queue
+                .iter()
+                .map(|m| &m.text)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            agent.message_queue[0].text, "hello",
+            "queued message text must match the received message"
+        );
+    }
 
     /// GAP-9: `handle_plan_status` shows the correct message for each graph status.
     #[tokio::test]
