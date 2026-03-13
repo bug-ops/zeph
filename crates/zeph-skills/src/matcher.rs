@@ -40,28 +40,55 @@ impl SkillMatcher {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        let embeddings: Vec<(usize, Vec<f32>)> = stream::iter(skills.iter().enumerate())
-            .map(|(i, skill)| {
-                let fut = embed_fn(&skill.description);
-                let name = skill.name.clone();
-                async move {
-                    match tokio::time::timeout(Duration::from_secs(10), fut).await {
-                        Ok(Ok(vec)) => Some((i, vec)),
-                        Ok(Err(e)) => {
-                            tracing::warn!("failed to embed skill '{name}': {e:#}");
-                            None
-                        }
-                        Err(_) => {
-                            tracing::warn!("embedding timed out for skill '{name}'");
-                            None
-                        }
+        type EmbedOutcome = (usize, String, Result<Vec<f32>, Option<zeph_llm::LlmError>>);
+
+        // Collect raw results without logging per-skill; errors will be summarized below.
+        let raw: Vec<EmbedOutcome> = stream::iter(skills.iter().enumerate())
+                .map(|(i, skill)| {
+                    let fut = embed_fn(&skill.description);
+                    let name = skill.name.clone();
+                    async move {
+                        let result = match tokio::time::timeout(Duration::from_secs(10), fut).await
+                        {
+                            Ok(Ok(vec)) => Ok(vec),
+                            Ok(Err(e)) => Err(Some(e)),
+                            Err(_) => Err(None),
+                        };
+                        (i, name, result)
                     }
+                })
+                .buffer_unordered(20)
+                .collect()
+                .await;
+
+        let mut embeddings = Vec::new();
+        let mut unsupported_provider: Option<String> = None;
+        let mut unsupported_count: usize = 0;
+
+        for (i, name, result) in raw {
+            match result {
+                Ok(vec) => embeddings.push((i, vec)),
+                Err(Some(zeph_llm::LlmError::EmbedUnsupported { provider })) => {
+                    unsupported_provider = Some(provider);
+                    unsupported_count += 1;
                 }
-            })
-            .buffer_unordered(20)
-            .filter_map(|x| async { x })
-            .collect()
-            .await;
+                Err(None) => {
+                    tracing::warn!("embedding timed out for skill '{name}'");
+                }
+                Err(Some(e)) => {
+                    tracing::warn!("failed to embed skill '{name}': {e:#}");
+                }
+            }
+        }
+
+        if unsupported_count > 0
+            && let Some(provider) = unsupported_provider
+        {
+            tracing::warn!(
+                "skill embeddings skipped: embedding not supported by {provider} \
+                 ({unsupported_count} skills affected)"
+            );
+        }
 
         if embeddings.is_empty() {
             return None;
@@ -287,6 +314,51 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let matcher = SkillMatcher::new(&refs, embed_fn_fail).await;
         assert!(matcher.is_none());
+    }
+
+    fn embed_fn_unsupported(text: &str) -> EmbedFuture {
+        let _ = text;
+        Box::pin(async {
+            Err(zeph_llm::LlmError::EmbedUnsupported {
+                provider: "claude".into(),
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn test_matcher_new_returns_none_when_all_unsupported() {
+        let metas = [
+            make_meta("a", "alpha"),
+            make_meta("b", "beta"),
+            make_meta("c", "gamma"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        // All embeddings fail with EmbedUnsupported — matcher must return None
+        // and must not produce 3 individual warnings (only 1 summary).
+        let matcher = SkillMatcher::new(&refs, embed_fn_unsupported).await;
+        assert!(matcher.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_matcher_new_partial_unsupported_falls_back_to_supported() {
+        let metas = [make_meta("good", "alpha"), make_meta("bad", "bad skill")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let embed_fn = |text: &str| -> EmbedFuture {
+            if text == "alpha" {
+                Box::pin(async { Ok(vec![1.0, 0.0]) })
+            } else {
+                Box::pin(async {
+                    Err(zeph_llm::LlmError::EmbedUnsupported {
+                        provider: "claude".into(),
+                    })
+                })
+            }
+        };
+
+        let matcher = SkillMatcher::new(&refs, embed_fn).await.unwrap();
+        assert_eq!(matcher.embeddings.len(), 1);
+        assert_eq!(matcher.embeddings[0].0, 0);
     }
 
     #[tokio::test]

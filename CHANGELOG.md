@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Skill embedding log noise** (#1387): `SkillMatcher::new()` no longer emits one `WARN` per skill when the provider does not support embeddings. All `EmbedUnsupported` errors are now collected and summarised into a single warning (e.g. `skill embeddings skipped: embedding not supported by claude (14 skills affected)`). Timeout and other per-skill errors are still logged individually.
 - Orchestration: count tasks completed before cancellation in `tasks_completed` metric (fixes #1612)
 - Cancel running sub-agents on channel close and shutdown signal in `run_scheduler_loop()` ([#1613](https://github.com/bug-ops/zeph/issues/1613))
 - ACP: `session/prompt` no longer hangs indefinitely for slash commands that bypass LLM calls (`/graph`, `/status`, `/plan list`, `/skills`, `/compact`, etc.); `flush_chunks()` is now called after every non-LLM slash command branch in `process_user_message()` and `handle_image_command()`, ensuring the drain loop always receives a termination signal (fixes #1683)
