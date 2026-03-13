@@ -61,6 +61,8 @@ impl SkillMatcher {
             .await;
 
         let mut embeddings = Vec::new();
+        // Captures the provider name from any EmbedUnsupported error; last-wins is fine
+        // because all unsupported errors for a given provider share the same string.
         let mut unsupported_provider: Option<String> = None;
         let mut unsupported_count: usize = 0;
 
@@ -83,7 +85,7 @@ impl SkillMatcher {
         if unsupported_count > 0
             && let Some(provider) = unsupported_provider
         {
-            tracing::warn!(
+            tracing::info!(
                 "skill embeddings skipped: embedding not supported by {provider} \
                  ({unsupported_count} skills affected)"
             );
@@ -336,6 +338,22 @@ mod tests {
         // and must not produce 3 individual warnings (only 1 summary).
         let matcher = SkillMatcher::new(&refs, embed_fn_unsupported).await;
         assert!(matcher.is_none());
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_unsupported_emits_single_info_not_per_skill() {
+        let metas = [
+            make_meta("a", "alpha"),
+            make_meta("b", "beta"),
+            make_meta("c", "gamma"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let _ = SkillMatcher::new(&refs, embed_fn_unsupported).await;
+
+        // Exactly one summary info log must be present, not one per skill.
+        assert!(logs_contain("skill embeddings skipped"));
+        assert!(!logs_contain("3 individual"));
     }
 
     #[tokio::test]

@@ -41,6 +41,7 @@ criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tracing-test.workspace = true
 
 [lints]
 workspace = true
