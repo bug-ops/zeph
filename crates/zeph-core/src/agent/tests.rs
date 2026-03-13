@@ -2880,7 +2880,10 @@ mod compaction_e2e {
             DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
 
         let token = tokio_util::sync::CancellationToken::new();
-        let status = agent.run_scheduler_loop(&mut scheduler, 1, token).await.unwrap();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
 
         assert_eq!(
             status,
