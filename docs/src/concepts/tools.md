@@ -94,7 +94,7 @@ When the `scheduler` feature is enabled, three tools are injected into the LLM t
 
 | Tool | Description |
 |------|-------------|
-| `schedule_periodic` | Register a recurring task with a 6-field cron expression |
+| `schedule_periodic` | Register a recurring task with a 5 or 6-field cron expression |
 | `schedule_deferred` | Register a one-shot task to fire at a specific ISO 8601 UTC time |
 | `cancel_task` | Cancel a scheduled task by name |
 

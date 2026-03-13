@@ -10,7 +10,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use zeph_scheduler::{
-    JobStore, SchedulerMessage, TaskDescriptor, TaskKind, TaskMode, sanitize_task_prompt,
+    JobStore, SchedulerMessage, TaskDescriptor, TaskKind, TaskMode, normalize_cron_expr,
+    sanitize_task_prompt,
 };
 use zeph_tools::executor::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params, truncate_tool_output,
@@ -203,8 +204,9 @@ impl SchedulerExecutor {
             });
         }
 
+        let normalized_cron = normalize_cron_expr(&params.cron);
         let schedule =
-            CronSchedule::from_str(&params.cron).map_err(|e| ToolError::InvalidParams {
+            CronSchedule::from_str(&normalized_cron).map_err(|e| ToolError::InvalidParams {
                 message: format!("invalid cron expression: {e}"),
             })?;
 
@@ -234,7 +236,7 @@ impl SchedulerExecutor {
         };
 
         self.store
-            .upsert_job(&params.name, &params.cron, &params.kind)
+            .upsert_job(&params.name, &normalized_cron, &params.kind)
             .await
             .map_err(|e| ToolError::InvalidParams {
                 message: format!("store error: {e}"),
@@ -498,6 +500,29 @@ mod tests {
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("Created"));
         assert!(result.summary.contains("daily"));
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn schedule_periodic_valid_5field() {
+        let (exec, mut rx) = make_executor().await;
+        let call = make_call(
+            "schedule_periodic",
+            serde_json::json!({"name": "every5m", "cron": "*/5 * * * *", "kind": "health_check"}),
+        );
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("Created"));
+        assert!(result.summary.contains("every5m"));
+        // Verify normalized cron is persisted to DB (must be 6-field, not raw 5-field)
+        let row: (String,) =
+            sqlx::query_as("SELECT cron_expr FROM scheduled_jobs WHERE name = 'every5m'")
+                .fetch_one(exec.store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            row.0, "0 */5 * * * *",
+            "DB must store normalized 6-field cron"
+        );
         assert!(rx.recv().await.is_some());
     }
 

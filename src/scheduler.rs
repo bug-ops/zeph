@@ -23,7 +23,7 @@ use zeph_memory::semantic::SemanticMemory;
 #[cfg(feature = "scheduler")]
 use zeph_scheduler::{
     CustomTaskHandler, JobStore, ScheduledTask, Scheduler, SchedulerMessage, TaskDescriptor,
-    TaskHandler, TaskKind, TaskMode, UpdateCheckHandler,
+    TaskHandler, TaskKind, TaskMode, UpdateCheckHandler, normalize_cron_expr,
 };
 
 #[cfg(feature = "scheduler")]
@@ -209,7 +209,8 @@ fn load_config_tasks(
         };
 
         let mode = if let Some(cron_expr) = &task.cron {
-            match cron::Schedule::from_str(cron_expr) {
+            let normalized = normalize_cron_expr(cron_expr);
+            match cron::Schedule::from_str(&normalized) {
                 Ok(s) => TaskMode::Periodic {
                     schedule: Box::new(s),
                 },

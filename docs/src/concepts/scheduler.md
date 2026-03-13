@@ -18,7 +18,7 @@ Every task has one of two execution modes:
 
 | Mode | Struct variant | Trigger |
 |------|---------------|---------|
-| `Periodic` | `TaskMode::Periodic { schedule }` | Fires repeatedly on a 6-field cron expression |
+| `Periodic` | `TaskMode::Periodic { schedule }` | Fires repeatedly on a 5 or 6-field cron expression |
 | `OneShot` | `TaskMode::OneShot { run_at }` | Fires once at the given UTC timestamp, then is removed |
 
 The scheduler ticks every 60 seconds by default. `run_with_interval(secs)` accepts a custom interval (minimum 1 second).
@@ -40,13 +40,18 @@ Unknown kinds are accepted at runtime and stored as `Custom`. If no handler is r
 
 ## Cron Expression Format
 
-The scheduler uses 6-field cron expressions: `sec min hour day month weekday`.
+The scheduler accepts both standard 5-field cron expressions (`min hour day month weekday`) and
+6-field expressions with an explicit seconds field (`sec min hour day month weekday`). When a
+5-field expression is provided, seconds default to `0`.
 
 ```
-0 0 3 * * *       # daily at 03:00 UTC
-0 0 2 * * SUN     # Sundays at 02:00 UTC
-0 */15 * * * *    # every 15 minutes
-* * * * * *       # every second (testing only)
+0 3 * * *         # daily at 03:00 UTC (5-field, standard)
+0 2 * * SUN       # Sundays at 02:00 UTC (5-field, standard)
+*/15 * * * *      # every 15 minutes (5-field, standard)
+0 0 3 * * *       # daily at 03:00 UTC (6-field, with seconds)
+0 0 2 * * SUN     # Sundays at 02:00 UTC (6-field, with seconds)
+0 */15 * * * *    # every 15 minutes (6-field, with seconds)
+* * * * * *       # every second (6-field, testing only)
 ```
 
 Expressions are parsed by the [`cron`](https://docs.rs/cron) crate. An invalid expression is rejected immediately with `SchedulerError::InvalidCron`.
@@ -71,7 +76,7 @@ Schedule a recurring task using a cron expression.
 | Parameter | Type | Constraints |
 |-----------|------|-------------|
 | `name` | string | Max 128 characters; unique — scheduling with an existing name **updates** the task |
-| `cron` | string | Max 64 characters; must be a valid 6-field expression |
+| `cron` | string | Max 64 characters; must be a valid 5 or 6-field cron expression |
 | `kind` | string | Max 64 characters; see Task Kinds above |
 | `config` | JSON object | Optional. Passed verbatim to the handler as `serde_json::Value` |
 

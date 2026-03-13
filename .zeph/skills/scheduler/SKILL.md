@@ -57,7 +57,8 @@ tasks at a specific future time, and `cancel_task` to remove a scheduled task.
 
 ## Cron format
 
-`sec min hour day month weekday` (6 fields, uses the `cron` crate).
+Both standard 5-field (`min hour day month weekday`) and 6-field (`sec min hour day month weekday`)
+expressions are accepted. When 5 fields are given, seconds default to 0.
 
 Built-in kinds: `memory_cleanup`, `skill_refresh`, `health_check`, `update_check`, `custom`.
 
@@ -98,5 +99,5 @@ If the user says "do X at time", use pattern 2 (`X`).
 ## Validation rules
 
 - `run_at` must resolve to a future time.
-- `cron` must be a valid 6-field cron expression.
+- `cron` must be a valid 5 or 6-field cron expression.
 - Task names must be unique. Scheduling with an existing name updates the task.

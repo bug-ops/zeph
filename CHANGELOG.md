@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **5-field cron expression support in scheduler**: `normalize_cron_expr()` now accepts standard 5-field cron expressions (e.g. `*/5 * * * *`) by auto-prepending `0` for the seconds field. All three parse sites (`ScheduledTask::periodic`, `SchedulerExecutor::schedule_periodic`, `load_config_tasks`) and the DB persistence path now use the normalized 6-field form. Closes #1422.
+
 - **Chunked edge loading in community detection**: `detect_communities` now loads edges in configurable chunks (keyset pagination via `WHERE id > ?1 LIMIT ?2`) instead of loading all edges at once, reducing peak memory proportional to chunk size on large graphs. Configurable via `GraphConfig.lpa_edge_chunk_size` (default 10,000); `chunk_size = 0` falls back to the legacy full-stream path. Closes #1259.
 
 - **Gemini provider** (Phase 2): SSE streaming via `streamGenerateContent?alt=sse`. `chat_stream()` now produces `StreamChunk::Content` chunks; Gemini 2.5 thinking parts (`thought: true`) are emitted as `StreamChunk::Thinking`. `supports_streaming()` returns `true`. `GeminiProvider` gains `status_tx: Option<StatusTx>` field with `with_status_tx()`/`set_status_tx()` builders; `AnyProvider::set_status_tx()` now propagates the sender to the Gemini arm. Both streaming and non-streaming paths use `status_tx` for retry notifications. API key stays in the `x-goog-api-key` header (never in URL query params). Part of epic #1592, closes #1594.

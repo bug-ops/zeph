@@ -16,5 +16,7 @@ pub use handlers::CustomTaskHandler;
 pub use sanitize::sanitize_task_prompt;
 pub use scheduler::{Scheduler, SchedulerMessage};
 pub use store::JobStore;
-pub use task::{ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode};
+pub use task::{
+    ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode, normalize_cron_expr,
+};
 pub use update_check::UpdateCheckHandler;
