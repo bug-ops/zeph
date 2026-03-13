@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **ACP sessions now receive document RAG and graph memory configuration**: `spawn_acp_agent` was not calling `with_document_config()` or `with_graph_config()`, so `DocumentConfig::default()` (`rag_enabled = false`) and `GraphConfig::default()` (`enabled = false`) were silently applied regardless of TOML settings. Both configs are now propagated through `SharedAgentDeps` and applied to every ACP session, matching the behavior in `runner.rs`. Closes #1634 and #1633.
 - `ModelOrchestrator` no longer logs `INFO falling back to default provider` on every request when no router chain is configured (the normal orchestrator path). The message is now `DEBUG` when no chain providers were attempted; `INFO` is kept only when a chain was configured but all providers failed — the genuine fallback case. Closes #1484.
 - `DagScheduler::wait_event()` busy-spun at 250ms when `SubAgentManager` was saturated. Replaced the fixed `deferral_backoff` sleep with exponential backoff (250ms → 500ms → 1s → 2s → 4s, capped at 5s) that resets on the first successful spawn. Eliminates log flood and CPU waste when the concurrency limit is reached during plan execution (#1618).
 - Prevent `DagScheduler` deadlock when `SubAgentManager` concurrency is exhausted during planning phase (#1619): default `max_concurrent` raised from 1 to 5; `SubAgentManager` now supports slot reservation (`reserve_slots` / `release_reservation`); startup warning when `max_concurrent < max_parallel + 1`
