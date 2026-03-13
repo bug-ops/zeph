@@ -3,6 +3,7 @@
 
 mod legacy;
 mod native;
+mod tool_call_dag;
 
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role, ToolDefinition};
 
