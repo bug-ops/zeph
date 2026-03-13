@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fix anomaly detector not recording outcomes for native tool_use providers (Claude, OpenAI, Gemini) (#1677)
+
 - **Gemini omit empty `parameters` for no-parameter tools**: `GeminiFunctionDeclaration.parameters` is now `Option<serde_json::Value>` with `skip_serializing_if`. Tools with no parameters (empty `properties` object or absent `properties` key) emit no `parameters` field in the JSON sent to the Gemini API. Closes #1641.
 - **Semantic ranking options not wired**: `build_memory()` in `zeph-core` now calls `.with_ranking_options()` after constructing `SemanticMemory`, wiring temporal decay and MMR settings from `[memory.semantic]` config into the memory instance. Previously both features were silently disabled at runtime regardless of user configuration. Closes #1668.
 - **ACP slash command pass-through**: `/scheduler`, `/graph`, and `/plan` commands are now forwarded to the core agent loop instead of returning "unknown command". Extracted `slash_command_pass_through()` helper; added unit test covering all three commands and negative cases. Closes #1658.
