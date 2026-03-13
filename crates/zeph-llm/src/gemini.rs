@@ -1797,6 +1797,113 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_normalize_schema_oneof_option_pattern() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "optional_field": {
+                    "oneOf": [
+                        {"type": "string", "description": "a name"},
+                        {"type": "null"}
+                    ]
+                }
+            }
+        });
+        normalize_schema(&mut schema, 16);
+        let field = &schema["properties"]["optional_field"];
+        assert!(field.get("oneOf").is_none(), "oneOf must be removed");
+        assert_eq!(field["type"], "string");
+        assert_eq!(field["nullable"], true);
+        assert_eq!(field["description"], "a name");
+    }
+
+    #[test]
+    fn test_normalize_schema_anyof_null_first_order() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "field": {
+                    "anyOf": [
+                        {"type": "null"},
+                        {"type": "integer", "description": "count"}
+                    ]
+                }
+            }
+        });
+        normalize_schema(&mut schema, 16);
+        let field = &schema["properties"]["field"];
+        assert!(field.get("anyOf").is_none(), "anyOf must be removed");
+        assert_eq!(field["type"], "integer");
+        assert_eq!(field["nullable"], true);
+        assert_eq!(field["description"], "count");
+    }
+
+    #[test]
+    fn test_inline_refs_unknown_ref_fallback() {
+        let mut schema = serde_json::json!({
+            "$defs": {
+                "Known": {"type": "string"}
+            },
+            "type": "object",
+            "properties": {
+                "good": {"$ref": "#/$defs/Known"},
+                "bad": {"$ref": "#/$defs/DoesNotExist"}
+            }
+        });
+        inline_refs(&mut schema, 8);
+        assert_eq!(schema["properties"]["good"]["type"], "string");
+        assert_eq!(schema["properties"]["bad"]["type"], "OBJECT");
+        assert_eq!(
+            schema["properties"]["bad"]["description"],
+            "unresolved reference"
+        );
+    }
+
+    #[test]
+    fn test_inline_refs_nested_multi_level() {
+        let mut schema = serde_json::json!({
+            "$defs": {
+                "C": {"type": "number", "description": "leaf"},
+                "B": {"$ref": "#/$defs/C"},
+                "A": {"$ref": "#/$defs/B"}
+            },
+            "type": "object",
+            "properties": {
+                "value": {"$ref": "#/$defs/A"}
+            }
+        });
+        inline_refs(&mut schema, 8);
+        assert_eq!(schema["properties"]["value"]["type"], "number");
+        assert_eq!(schema["properties"]["value"]["description"], "leaf");
+    }
+
+    #[test]
+    fn test_build_tool_request_parameterless_tools_still_includes_tools_field() {
+        let tools = vec![
+            ToolDefinition {
+                name: "ping".to_owned(),
+                description: "Ping".to_owned(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "pong".to_owned(),
+                description: "Pong".to_owned(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+        ];
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+        let messages = vec![msg(Role::User, "test")];
+        let req = p.build_tool_request(&messages, &tools);
+        let tools_field = req
+            .tools
+            .expect("tools field must be Some for non-empty tool list");
+        assert!(!tools_field.is_empty());
+        assert_eq!(tools_field[0].function_declarations.len(), 2);
+        assert!(tools_field[0].function_declarations[0].parameters.is_none());
+        assert!(tools_field[0].function_declarations[1].parameters.is_none());
+    }
+
     // ---------------------------------------------------------------------------
     // Message conversion tests
     // ---------------------------------------------------------------------------
