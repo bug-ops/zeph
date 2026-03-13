@@ -3484,3 +3484,24 @@ async fn set_session_config_option_emits_config_option_update_notification() {
         })
         .await;
 }
+
+#[test]
+fn slash_command_pass_through_forwards_agent_loop_commands() {
+    use super::slash_command_pass_through;
+
+    // Commands that must be forwarded to the core agent loop.
+    assert!(slash_command_pass_through("/scheduler list"));
+    assert!(slash_command_pass_through("/scheduler"));
+    assert!(slash_command_pass_through("/graph stats"));
+    assert!(slash_command_pass_through("/graph"));
+    assert!(slash_command_pass_through(r#"/plan goal "do something""#));
+    assert!(slash_command_pass_through("/plan"));
+    assert!(slash_command_pass_through("/compact"));
+    assert!(slash_command_pass_through("/model refresh"));
+
+    // Commands that must NOT be forwarded.
+    assert!(!slash_command_pass_through("/unknown"));
+    assert!(!slash_command_pass_through("/help"));
+    assert!(!slash_command_pass_through("/status"));
+    assert!(!slash_command_pass_through("/model"));
+}
