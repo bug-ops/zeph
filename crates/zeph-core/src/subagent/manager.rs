@@ -743,7 +743,7 @@ impl SubAgentManager {
     /// # Errors
     ///
     /// Returns [`SubAgentError::NotFound`] if no definition with the given name exists,
-    /// [`SubAgentError::Spawn`] if the concurrency limit is exceeded, or
+    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
     /// does not allow it (`allow_bypass_permissions: false`).
     #[allow(clippy::too_many_lines)]
@@ -1177,7 +1177,7 @@ impl SubAgentManager {
     /// [`SubAgentError::NotFound`] if no transcript with the given prefix exists,
     /// [`SubAgentError::AmbiguousId`] if the prefix matches multiple agents,
     /// [`SubAgentError::Transcript`] on I/O or parse failure,
-    /// [`SubAgentError::Spawn`] if the concurrency limit is exceeded.
+    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub fn resume(
         &mut self,

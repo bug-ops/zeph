@@ -254,7 +254,7 @@ pub struct Agent<C: Channel> {
     ///
     /// Token plumbing is ready; the delivery path requires the agent message loop to be
     /// restructured so `/plan cancel` can be received while `run_scheduler_loop` holds
-    /// `&mut self`. See follow-up issue (SEC-M34-002).
+    /// `&mut self`. See follow-up issue #1603 (SEC-M34-002).
     plan_cancel_token: Option<CancellationToken>,
 
     /// LSP context injection hooks. Fires after native tool execution, injects
@@ -718,7 +718,7 @@ impl<C: Channel> Agent<C> {
     /// `wait_event()` and `RunInline` boundaries. However, `/plan cancel` cannot deliver
     /// the token signal while `run_scheduler_loop` holds `&mut self` — the agent command
     /// dispatch is paused. The token plumbing is in place for a follow-up that restructures
-    /// the delivery path (SEC-M34-002).
+    /// the delivery path (see #1603, SEC-M34-002).
     #[allow(clippy::too_many_lines)]
     async fn run_scheduler_loop(
         &mut self,
@@ -859,6 +859,7 @@ impl<C: Channel> Agent<C> {
                                 }
                             }
                             () = cancel_token.cancelled() => {
+                                // TODO: use TaskOutcome::Canceled when the variant is added (#1603)
                                 crate::orchestration::TaskOutcome::Failed {
                                     error: "canceled".to_string(),
                                 }
@@ -894,6 +895,8 @@ impl<C: Channel> Agent<C> {
             });
 
             tokio::select! {
+                // biased: cancel takes priority over task completion events.
+                biased;
                 () = cancel_token.cancelled() => {
                     let cancel_actions = scheduler.cancel_all();
                     for action in cancel_actions {
@@ -1243,7 +1246,7 @@ impl<C: Channel> Agent<C> {
             // NOTE: Due to &mut self being held by run_scheduler_loop, this branch is only
             // reachable if the channel has a concurrent reader (e.g. Telegram, TUI events).
             // CLI and synchronous channels cannot deliver this while the loop is active
-            // (SEC-M34-002).
+            // (see #1603, SEC-M34-002).
             token.cancel();
             self.channel.send("Canceling plan execution...").await?;
         } else if self.pending_graph.take().is_some() {
