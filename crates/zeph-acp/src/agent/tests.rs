@@ -9,7 +9,7 @@
 
 use super::helpers::*;
 use super::*;
-use agent_client_protocol as acp;
+use agent_client_protocol::{self as acp, Agent as _};
 
 fn make_spawner() -> AgentSpawner {
     Arc::new(|_channel, _ctx, _session_ctx| Box::pin(async {}))
