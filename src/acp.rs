@@ -149,6 +149,15 @@ struct SharedAgentDeps {
     acp_project_rules: Vec<PathBuf>,
     /// Debug dump configuration from `[debug]` config section.
     debug_config: zeph_core::config::DebugConfig,
+    /// Scheduler executor shared across sessions. Initialized once at startup.
+    #[cfg(feature = "scheduler")]
+    scheduler_executor: Option<std::sync::Arc<crate::scheduler_executor::SchedulerExecutor>>,
+    /// Broadcast sender for scheduler update notifications (`auto_update_check`).
+    #[cfg(feature = "scheduler")]
+    scheduler_update_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    /// Broadcast sender for custom task notifications.
+    #[cfg(feature = "scheduler")]
+    scheduler_custom_tx: Option<tokio::sync::broadcast::Sender<String>>,
 }
 
 /// Forward events from a `broadcast::Receiver` to an `mpsc::Receiver`.
@@ -326,6 +335,54 @@ async fn build_acp_deps(
         });
     }
 
+    #[cfg(feature = "scheduler")]
+    let (scheduler_executor, scheduler_update_tx, scheduler_custom_tx) = {
+        #[cfg(feature = "experiments")]
+        let exp_deps = {
+            use std::sync::Arc;
+            if config.experiments.enabled && config.experiments.schedule.enabled {
+                let p = provider.clone();
+                Some((Arc::new(p), Some(Arc::clone(&memory))))
+            } else {
+                None
+            }
+        };
+        #[cfg(not(feature = "experiments"))]
+        let exp_deps: Option<(
+            std::sync::Arc<zeph_llm::any::AnyProvider>,
+            Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+        )> = None;
+
+        match crate::scheduler::init_scheduler(config, shutdown_rx.clone(), exp_deps).await {
+            Some(result) => {
+                let exec = std::sync::Arc::new(result.executor);
+                let mut custom_rx = result.custom_rx;
+                let (ctx, _) = tokio::sync::broadcast::channel::<String>(broadcast_cap);
+                let ctx_clone = ctx.clone();
+                tokio::spawn(async move {
+                    while let Some(ev) = custom_rx.recv().await {
+                        let _ = ctx_clone.send(ev);
+                    }
+                });
+                let update_tx = if let Some(mut update_rx) = result.update_rx {
+                    let (utx, _) = tokio::sync::broadcast::channel::<String>(broadcast_cap);
+                    let utx_clone = utx.clone();
+                    tokio::spawn(async move {
+                        while let Some(ev) = update_rx.recv().await {
+                            let _ = utx_clone.send(ev);
+                        }
+                    });
+                    Some(utx)
+                } else {
+                    None
+                };
+                let (update_tx, custom_tx) = (update_tx, Some(ctx));
+                (Some(exec), update_tx, custom_tx)
+            }
+            None => (None, None, None),
+        }
+    };
+
     let deps = SharedAgentDeps {
         provider,
         registry,
@@ -406,6 +463,12 @@ async fn build_acp_deps(
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
         debug_config: config.debug.clone(),
+        #[cfg(feature = "scheduler")]
+        scheduler_executor,
+        #[cfg(feature = "scheduler")]
+        scheduler_update_tx,
+        #[cfg(feature = "scheduler")]
+        scheduler_custom_tx,
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -479,6 +542,12 @@ async fn spawn_acp_agent(
         .collect();
     let skill_reload_tx = d.skill_reload_tx.clone();
     let config_reload_tx = d.config_reload_tx.clone();
+    #[cfg(feature = "scheduler")]
+    let scheduler_executor = d.scheduler_executor.as_ref().map(std::sync::Arc::clone);
+    #[cfg(feature = "scheduler")]
+    let scheduler_update_tx = d.scheduler_update_tx.clone();
+    #[cfg(feature = "scheduler")]
+    let scheduler_custom_tx = d.scheduler_custom_tx.clone();
 
     // Per-session receivers: each session gets its own mpsc::Receiver forwarded from the
     // shared broadcast senders. The CancellationToken is derived from the AcpContext cancel
@@ -487,6 +556,14 @@ async fn spawn_acp_agent(
     let adapter_cancel = zeph_memory::CancellationToken::new();
     let reload_rx = broadcast_to_mpsc(skill_reload_tx.subscribe(), adapter_cancel.clone());
     let config_reload_rx = broadcast_to_mpsc(config_reload_tx.subscribe(), adapter_cancel.clone());
+    #[cfg(feature = "scheduler")]
+    let scheduler_update_rx = scheduler_update_tx
+        .as_ref()
+        .map(|tx| broadcast_to_mpsc(tx.subscribe(), adapter_cancel.clone()));
+    #[cfg(feature = "scheduler")]
+    let scheduler_custom_rx = scheduler_custom_tx
+        .as_ref()
+        .map(|tx| broadcast_to_mpsc(tx.subscribe(), adapter_cancel.clone()));
 
     // Build tool executor: ACP executors take priority via CompositeExecutor (first-match-wins).
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
@@ -539,8 +616,9 @@ async fn spawn_acp_agent(
                 parent_tool_use_id,
             )
         } else {
-            // No AcpContext: the adapter forwarding tasks run until adapter_cancel.cancel() is
-            // called explicitly at function end (line below), or until the mpsc sender is dropped.
+            // No AcpContext: the adapter forwarding tasks (skill reload, config reload, and
+            // scheduler receivers) run until adapter_cancel.cancel() is called explicitly at
+            // function end (line below), or until the mpsc sender is dropped.
             let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
                 skill_loader_executor,
                 zeph_tools::CompositeExecutor::new(
@@ -593,6 +671,21 @@ async fn spawn_acp_agent(
     .with_learning(learning)
     .with_tool_call_cutoff(tool_call_cutoff)
     .with_available_secrets(available_secrets);
+
+    // Wire scheduler per session: apply update/custom receivers and add executor.
+    #[cfg(feature = "scheduler")]
+    {
+        if let Some(rx) = scheduler_update_rx {
+            agent = agent.with_update_notifications(rx);
+        }
+        if let Some(rx) = scheduler_custom_rx {
+            agent = agent.with_custom_task_rx(rx);
+        }
+        if let Some(sched_exec) = scheduler_executor {
+            agent = agent
+                .add_tool_executor(crate::scheduler_executor::DynSchedulerExecutor(sched_exec));
+        }
+    }
 
     // Apply per-session memory only when a ConversationId was successfully allocated.
     // When None (store unavailable at session creation), the agent operates without persistent history.

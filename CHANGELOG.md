@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Scheduler not initialized in ACP mode — tick loop and scheduler tool now available in ACP sessions (#1599)
 - `TrustGateExecutor::check_trust()` was calling `policy.check()` for all tool IDs in Supervised mode, causing `ConfirmationRequired` for any MCP/LSP tool without explicit permission rules (since `PermissionPolicy::from_legacy()` only populates rules for `"bash"`). Non-system tools without explicit rules now return `Allow` by default; system tools (`bash`) always go through `policy.check()` via the new `POLICY_ENFORCED_TOOLS` constant. Fixes #1544.
 - `process_response_native_tools()` did not handle `ToolError::ConfirmationRequired` — the error was collapsed into `[error] command requires confirmation: …` and returned to the LLM. The native tool execution loop now calls `channel.confirm()` on `ConfirmationRequired`, re-executes via `execute_tool_call_confirmed_erased()` on approval, and returns `[cancelled by user]` (not an error) on denial. Added `execute_tool_call_confirmed` to `ToolExecutor` and `ErasedToolExecutor` traits; `TrustGateExecutor` overrides it to bypass the permission check while still enforcing `Blocked`/`Quarantined` trust levels. Fixes #1545.
 
