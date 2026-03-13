@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - ACP: agent-loop slash commands (`/plan`, `/graph`, `/status`, `/skills`, `/scheduler`, `/compact`, etc.) now correctly forwarded to the agent loop instead of returning "unknown command" errors (fixes #1672)
 - Fix anomaly detector not recording outcomes for native tool_use providers (Claude, OpenAI, Gemini) (#1677)
+- OpenAI: tools with no parameters (empty struct schemas) no longer cause `400 Bad Request` in strict mode; `parameters` field is omitted for no-param tools, matching the Gemini provider behavior (fixes #1673)
 
 ### Changed
 
@@ -35,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Opus 4.6 effort parameter GA**: `ThinkingCapability` gains `prefers_effort: bool` (true for `claude-opus-4-6`). `build_thinking_param()` now auto-converts `ThinkingConfig::Extended { budget_tokens }` to adaptive thinking with an `effort` level for Opus 4.6 models, emitting a `tracing::warn!` deprecation notice. `budget_to_effort()` maps budget values to `ThinkingEffort` levels (`< 5000` → Low, `< 15000` → Medium, `>= 15000` → High). `build_request()` strips trailing assistant messages for Opus 4.6 with thinking enabled (no-prefill constraint). Closes #1627.
 
 ### Fixed
+
+- Fix anomaly detector not recording outcomes for native tool_use providers (Claude, OpenAI, Gemini) (#1677)
 
 - **Gemini omit empty `parameters` for no-parameter tools**: `GeminiFunctionDeclaration.parameters` is now `Option<serde_json::Value>` with `skip_serializing_if`. Tools with no parameters (empty `properties` object or absent `properties` key) emit no `parameters` field in the JSON sent to the Gemini API. Closes #1641.
 - **Semantic ranking options not wired**: `build_memory()` in `zeph-core` now calls `.with_ranking_options()` after constructing `SemanticMemory`, wiring temporal decay and MMR settings from `[memory.semantic]` config into the memory instance. Previously both features were silently disabled at runtime regardless of user configuration. Closes #1668.

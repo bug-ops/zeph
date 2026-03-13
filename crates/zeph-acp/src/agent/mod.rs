@@ -1044,10 +1044,20 @@ impl acp::Agent for ZephAcpAgent {
         }
 
         let trimmed_text = text.trim_start();
-        if trimmed_text.starts_with('/') && !slash_command_pass_through(trimmed_text) {
-            return self
-                .handle_slash_command(&args.session_id, trimmed_text)
-                .await;
+        if trimmed_text.starts_with('/') {
+            let is_acp_native = trimmed_text == "/help"
+                || trimmed_text.starts_with("/help ")
+                || trimmed_text == "/mode"
+                || trimmed_text.starts_with("/mode ")
+                || trimmed_text == "/clear"
+                || trimmed_text.starts_with("/review")
+                || trimmed_text == "/model"
+                || trimmed_text.starts_with("/model ");
+            if is_acp_native {
+                return self
+                    .handle_slash_command(&args.session_id, trimmed_text)
+                    .await;
+            }
         }
 
         let (input_tx, output_rx) = {
@@ -2163,17 +2173,6 @@ use helpers::{
     build_mode_state, format_diagnostics_block, loopback_event_to_updates, mime_to_ext,
     session_update_to_event, xml_escape,
 };
-
-/// Returns true for slash commands that must be forwarded to the core agent loop
-/// rather than handled locally by the ACP agent.
-pub(super) fn slash_command_pass_through(input: &str) -> bool {
-    let cmd_verb = input.split_whitespace().next().unwrap_or("");
-    input == "/compact"
-        || input == "/model refresh"
-        || cmd_verb == "/scheduler"
-        || cmd_verb == "/graph"
-        || cmd_verb == "/plan"
-}
 
 #[cfg(test)]
 mod tests;

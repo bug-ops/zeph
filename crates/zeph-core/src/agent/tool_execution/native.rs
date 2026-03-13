@@ -6,7 +6,7 @@ use zeph_llm::provider::{
 };
 
 use super::super::Agent;
-use super::{retry_backoff_ms, tool_args_hash, tool_def_to_definition};
+use super::{AnomalyOutcome, retry_backoff_ms, tool_args_hash, tool_def_to_definition};
 use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 use tracing::Instrument;
@@ -745,56 +745,66 @@ impl<C: Channel> Agent<C> {
             let tool_call_id = &tool_call_ids[idx];
             let started_at = &tool_started_ats[idx];
             let tool_result = std::mem::replace(&mut tool_results[idx], Ok(None));
-            let (output, is_error, diff, inline_stats, _, kept_lines, locations) =
-                match tool_result {
-                    Ok(Some(out)) => {
-                        if let Some(ref fs) = out.filter_stats {
-                            let saved = fs.estimated_tokens_saved() as u64;
-                            let raw = (fs.raw_chars / 4) as u64;
-                            let confidence = fs.confidence;
-                            let was_filtered = fs.filtered_chars < fs.raw_chars;
-                            self.update_metrics(|m| {
-                                m.filter_raw_tokens += raw;
-                                m.filter_saved_tokens += saved;
-                                m.filter_applications += 1;
-                                m.filter_total_commands += 1;
-                                if was_filtered {
-                                    m.filter_filtered_commands += 1;
-                                }
-                                if let Some(c) = confidence {
-                                    match c {
-                                        zeph_tools::FilterConfidence::Full => {
-                                            m.filter_confidence_full += 1;
-                                        }
-                                        zeph_tools::FilterConfidence::Partial => {
-                                            m.filter_confidence_partial += 1;
-                                        }
-                                        zeph_tools::FilterConfidence::Fallback => {
-                                            m.filter_confidence_fallback += 1;
-                                        }
+            let anomaly_outcome;
+            let (output, is_error, diff, inline_stats, _, kept_lines, locations) = match tool_result
+            {
+                Ok(Some(out)) => {
+                    anomaly_outcome =
+                        if out.summary.contains("[error]") || out.summary.contains("[stderr]") {
+                            AnomalyOutcome::Error
+                        } else {
+                            AnomalyOutcome::Success
+                        };
+                    if let Some(ref fs) = out.filter_stats {
+                        let saved = fs.estimated_tokens_saved() as u64;
+                        let raw = (fs.raw_chars / 4) as u64;
+                        let confidence = fs.confidence;
+                        let was_filtered = fs.filtered_chars < fs.raw_chars;
+                        self.update_metrics(|m| {
+                            m.filter_raw_tokens += raw;
+                            m.filter_saved_tokens += saved;
+                            m.filter_applications += 1;
+                            m.filter_total_commands += 1;
+                            if was_filtered {
+                                m.filter_filtered_commands += 1;
+                            }
+                            if let Some(c) = confidence {
+                                match c {
+                                    zeph_tools::FilterConfidence::Full => {
+                                        m.filter_confidence_full += 1;
+                                    }
+                                    zeph_tools::FilterConfidence::Partial => {
+                                        m.filter_confidence_partial += 1;
+                                    }
+                                    zeph_tools::FilterConfidence::Fallback => {
+                                        m.filter_confidence_fallback += 1;
                                     }
                                 }
-                            });
-                        }
-                        let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
-                            (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
+                            }
                         });
-                        let kept = out.filter_stats.as_ref().and_then(|fs| {
-                            (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone())
-                        });
-                        let streamed = out.streamed;
-                        let locations = out.locations;
-                        (
-                            out.summary,
-                            false,
-                            out.diff,
-                            inline_stats,
-                            streamed,
-                            kept,
-                            locations,
-                        )
                     }
-                    Ok(None) => (
+                    let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
+                        (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
+                    });
+                    let kept = out
+                        .filter_stats
+                        .as_ref()
+                        .and_then(|fs| (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone()));
+                    let streamed = out.streamed;
+                    let locations = out.locations;
+                    (
+                        out.summary,
+                        false,
+                        out.diff,
+                        inline_stats,
+                        streamed,
+                        kept,
+                        locations,
+                    )
+                }
+                Ok(None) => {
+                    anomaly_outcome = AnomalyOutcome::Success;
+                    (
                         "(no output)".to_owned(),
                         false,
                         None,
@@ -802,14 +812,20 @@ impl<C: Channel> Agent<C> {
                         false,
                         None,
                         None,
-                    ),
-                    Err(ref e) => {
-                        if let Some(ref d) = self.debug_state.debug_dumper {
-                            d.dump_tool_error(&tc.name, e);
-                        }
-                        (format!("[error] {e}"), true, None, None, false, None, None)
+                    )
+                }
+                Err(ref e) => {
+                    anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
+                        AnomalyOutcome::Blocked
+                    } else {
+                        AnomalyOutcome::Error
+                    };
+                    if let Some(ref d) = self.debug_state.debug_dumper {
+                        d.dump_tool_error(&tc.name, e);
                     }
-                };
+                    (format!("[error] {e}"), true, None, None, false, None, None)
+                }
+            };
 
             // Record skill learning outcomes for the native tool path (mirrors legacy path in
             // handle_tool_result). Must happen before processing so self_reflection can inject
@@ -956,6 +972,7 @@ impl<C: Channel> Agent<C> {
             } else {
                 self.record_skill_outcomes("success", None, None).await;
             }
+            self.record_anomaly_outcome(anomaly_outcome).await?;
 
             let processed = self.maybe_summarize_tool_output(&output).await;
             let body = if let Some(ref stats) = inline_stats {
