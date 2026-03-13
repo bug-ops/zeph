@@ -6,6 +6,7 @@ use crate::error::LlmError;
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
+use crate::gemini::GeminiProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
@@ -16,6 +17,7 @@ pub enum SubProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),
     OpenAi(OpenAiProvider),
+    Gemini(GeminiProvider),
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
 }
@@ -39,7 +41,7 @@ impl SubProvider {
             Self::OpenAi(p) => {
                 p.status_tx = Some(tx);
             }
-            Self::Ollama(_) => {}
+            Self::Ollama(_) | Self::Gemini(_) => {}
             #[cfg(feature = "candle")]
             Self::Candle(_) => {}
         }
@@ -57,6 +59,16 @@ impl SubProvider {
             Self::Ollama(p) => p.list_models_remote().await,
             Self::Claude(p) => p.list_models_remote().await,
             Self::OpenAi(p) => p.list_models_remote().await,
+            Self::Gemini(p) => Ok(p
+                .list_models()
+                .into_iter()
+                .map(|id| crate::model_cache::RemoteModelInfo {
+                    display_name: id.clone(),
+                    id,
+                    context_window: None,
+                    created_at: None,
+                })
+                .collect()),
             #[cfg(feature = "candle")]
             Self::Candle(_) => Ok(vec![]),
         }
@@ -69,6 +81,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.chat(messages).await,
             Self::Claude(p) => p.chat(messages).await,
             Self::OpenAi(p) => p.chat(messages).await,
+            Self::Gemini(p) => p.chat(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat(messages).await,
         }
@@ -79,6 +92,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.chat_stream(messages).await,
             Self::Claude(p) => p.chat_stream(messages).await,
             Self::OpenAi(p) => p.chat_stream(messages).await,
+            Self::Gemini(p) => p.chat_stream(messages).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat_stream(messages).await,
         }
@@ -89,6 +103,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.supports_streaming(),
             Self::Claude(p) => p.supports_streaming(),
             Self::OpenAi(p) => p.supports_streaming(),
+            Self::Gemini(p) => p.supports_streaming(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_streaming(),
         }
@@ -99,6 +114,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.embed(text).await,
             Self::Claude(p) => p.embed(text).await,
             Self::OpenAi(p) => p.embed(text).await,
+            Self::Gemini(p) => p.embed(text).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.embed(text).await,
         }
@@ -109,6 +125,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.supports_embeddings(),
             Self::Claude(p) => p.supports_embeddings(),
             Self::OpenAi(p) => p.supports_embeddings(),
+            Self::Gemini(p) => p.supports_embeddings(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_embeddings(),
         }
@@ -119,6 +136,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.supports_tool_use(),
             Self::Claude(p) => p.supports_tool_use(),
             Self::OpenAi(p) => p.supports_tool_use(),
+            Self::Gemini(p) => p.supports_tool_use(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_tool_use(),
         }
@@ -133,6 +151,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.chat_with_tools(messages, tools).await,
             Self::Claude(p) => p.chat_with_tools(messages, tools).await,
             Self::OpenAi(p) => p.chat_with_tools(messages, tools).await,
+            Self::Gemini(p) => p.chat_with_tools(messages, tools).await,
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.chat_with_tools(messages, tools).await,
         }
@@ -143,6 +162,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.last_cache_usage(),
             Self::Claude(p) => p.last_cache_usage(),
             Self::OpenAi(p) => p.last_cache_usage(),
+            Self::Gemini(p) => p.last_cache_usage(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.last_cache_usage(),
         }
@@ -154,6 +174,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.name(),
             Self::Claude(p) => p.name(),
             Self::OpenAi(p) => p.name(),
+            Self::Gemini(p) => p.name(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.name(),
         }
@@ -164,6 +185,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.context_window(),
             Self::Claude(p) => p.context_window(),
             Self::OpenAi(p) => p.context_window(),
+            Self::Gemini(p) => p.context_window(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.context_window(),
         }
@@ -174,6 +196,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.supports_vision(),
             Self::Claude(p) => p.supports_vision(),
             Self::OpenAi(p) => p.supports_vision(),
+            Self::Gemini(p) => p.supports_vision(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_vision(),
         }
@@ -184,6 +207,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.last_usage(),
             Self::Claude(p) => p.last_usage(),
             Self::OpenAi(p) => p.last_usage(),
+            Self::Gemini(p) => p.last_usage(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.last_usage(),
         }
@@ -199,6 +223,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.debug_request_json(messages, tools, stream),
             Self::Claude(p) => p.debug_request_json(messages, tools, stream),
             Self::OpenAi(p) => p.debug_request_json(messages, tools, stream),
+            Self::Gemini(p) => p.debug_request_json(messages, tools, stream),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.debug_request_json(messages, tools, stream),
         }
@@ -209,6 +234,7 @@ impl LlmProvider for SubProvider {
             Self::Ollama(p) => p.supports_structured_output(),
             Self::Claude(p) => p.supports_structured_output(),
             Self::OpenAi(p) => p.supports_structured_output(),
+            Self::Gemini(p) => p.supports_structured_output(),
             #[cfg(feature = "candle")]
             Self::Candle(p) => p.supports_structured_output(),
         }

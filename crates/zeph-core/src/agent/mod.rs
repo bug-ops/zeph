@@ -247,6 +247,15 @@ pub struct Agent<C: Channel> {
     pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
     /// Graph waiting for `/plan confirm` before execution starts.
     pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
+    /// Cancellation token for the currently executing plan. `None` when no plan is running.
+    /// Created fresh in `handle_plan_confirm()`, cancelled in `handle_plan_cancel()`.
+    ///
+    /// # Known limitation
+    ///
+    /// Token plumbing is ready; the delivery path requires the agent message loop to be
+    /// restructured so `/plan cancel` can be received while `run_scheduler_loop` holds
+    /// `&mut self`. See follow-up issue #1603 (SEC-M34-002).
+    plan_cancel_token: Option<CancellationToken>,
 
     /// LSP context injection hooks. Fires after native tool execution, injects
     /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
@@ -452,6 +461,7 @@ impl<C: Channel> Agent<C> {
             },
             pending_image_parts: Vec::new(),
             pending_graph: None,
+            plan_cancel_token: None,
 
             #[cfg(feature = "lsp-context")]
             lsp_hooks: None,
@@ -664,7 +674,18 @@ impl<C: Channel> Agent<C> {
             ))
             .await?;
 
-        let final_status = self.run_scheduler_loop(&mut scheduler, task_count).await?;
+        let plan_token = CancellationToken::new();
+        self.plan_cancel_token = Some(plan_token.clone());
+
+        // Use match instead of ? so plan_cancel_token is always cleared (CRIT-07).
+        let scheduler_result = self
+            .run_scheduler_loop(&mut scheduler, task_count, plan_token)
+            .await;
+        self.plan_cancel_token = None;
+        let final_status = match scheduler_result {
+            Ok(s) => s,
+            Err(e) => return Err(e),
+        };
 
         let completed_graph = scheduler.into_graph();
 
@@ -693,14 +714,17 @@ impl<C: Channel> Agent<C> {
     /// # Known limitations
     ///
     /// The agent is single-threaded; this loop blocks all message processing while
-    /// running. `/plan cancel` cannot interrupt an active execution. A future phase
-    /// will add a `CancellationToken` field to `Agent` and wire it into this loop.
-    /// (SEC-M34-001, tracked in GitHub issue.)
+    /// running. The `cancel_token` parameter wires cancellation into the tick loop at
+    /// `wait_event()` and `RunInline` boundaries. However, `/plan cancel` cannot deliver
+    /// the token signal while `run_scheduler_loop` holds `&mut self` — the agent command
+    /// dispatch is paused. The token plumbing is in place for a follow-up that restructures
+    /// the delivery path (see #1603, SEC-M34-002).
     #[allow(clippy::too_many_lines)]
     async fn run_scheduler_loop(
         &mut self,
         scheduler: &mut crate::orchestration::DagScheduler,
         task_count: usize,
+        cancel_token: CancellationToken,
     ) -> Result<crate::orchestration::GraphStatus, error::AgentError> {
         use crate::orchestration::SchedulerAction;
 
@@ -762,7 +786,7 @@ impl<C: Channel> Agent<C> {
                             }
                             Err(e) => {
                                 tracing::error!(error = %e, %task_id, "spawn_for_task failed");
-                                let extra = scheduler.record_spawn_failure(task_id, &e.to_string());
+                                let extra = scheduler.record_spawn_failure(task_id, &e);
                                 for a in extra {
                                     match a {
                                         SchedulerAction::Cancel { agent_handle_id } => {
@@ -822,14 +846,24 @@ impl<C: Channel> Agent<C> {
 
                         let event_tx = scheduler.event_sender();
                         let max_iter = self.tool_orchestrator.max_iterations;
-                        let outcome = match self.run_inline_tool_loop(&prompt, max_iter).await {
-                            Ok(output) => crate::orchestration::TaskOutcome::Completed {
-                                output,
-                                artifacts: vec![],
-                            },
-                            Err(e) => crate::orchestration::TaskOutcome::Failed {
-                                error: e.to_string(),
-                            },
+                        let outcome = tokio::select! {
+                            result = self.run_inline_tool_loop(&prompt, max_iter) => {
+                                match result {
+                                    Ok(output) => crate::orchestration::TaskOutcome::Completed {
+                                        output,
+                                        artifacts: vec![],
+                                    },
+                                    Err(e) => crate::orchestration::TaskOutcome::Failed {
+                                        error: e.to_string(),
+                                    },
+                                }
+                            }
+                            () = cancel_token.cancelled() => {
+                                // TODO: use TaskOutcome::Canceled when the variant is added (#1603)
+                                crate::orchestration::TaskOutcome::Failed {
+                                    error: "canceled".to_string(),
+                                }
+                            }
                         };
                         let event = crate::orchestration::TaskEvent {
                             task_id,
@@ -860,7 +894,35 @@ impl<C: Channel> Agent<C> {
                 m.orchestration_graph = Some(snapshot);
             });
 
-            scheduler.wait_event().await;
+            tokio::select! {
+                // biased: cancel takes priority over task completion events.
+                biased;
+                () = cancel_token.cancelled() => {
+                    let cancel_actions = scheduler.cancel_all();
+                    for action in cancel_actions {
+                        match action {
+                            SchedulerAction::Cancel { agent_handle_id } => {
+                                if let Some(mgr) = self.subagent_manager.as_mut() {
+                                    let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                        tracing::trace!(
+                                            error = %e,
+                                            "cancel during plan cancellation: agent already gone"
+                                        );
+                                    });
+                                }
+                            }
+                            SchedulerAction::Done { status } => {
+                                break 'tick status;
+                            }
+                            SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                        }
+                    }
+                    // Defensive fallback: cancel_all always emits Done, but guard against
+                    // future changes.
+                    break 'tick crate::orchestration::GraphStatus::Canceled;
+                }
+                () = scheduler.wait_event() => {}
+            }
         };
 
         // Final drain: if the loop exited via Done on the first tick, secret
@@ -1178,7 +1240,16 @@ impl<C: Channel> Agent<C> {
         &mut self,
         _graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
-        if self.pending_graph.take().is_some() {
+        if let Some(token) = self.plan_cancel_token.take() {
+            // In-flight plan: signal cancellation. The scheduler loop will pick this up
+            // in the next tokio::select! iteration at wait_event().
+            // NOTE: Due to &mut self being held by run_scheduler_loop, this branch is only
+            // reachable if the channel has a concurrent reader (e.g. Telegram, TUI events).
+            // CLI and synchronous channels cannot deliver this while the loop is active
+            // (see #1603, SEC-M34-002).
+            token.cancel();
+            self.channel.send("Canceling plan execution...").await?;
+        } else if self.pending_graph.take().is_some() {
             let now = std::time::Instant::now();
             self.update_metrics(|m| {
                 if let Some(ref mut s) = m.orchestration_graph {

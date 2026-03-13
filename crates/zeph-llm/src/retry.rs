@@ -44,13 +44,15 @@ where
         let response = f().await.map_err(LlmError::Http)?;
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        {
             if attempt == max_retries {
                 return Err(LlmError::RateLimited);
             }
             let delay = retry_delay(&response, attempt);
             let msg = format!(
-                "{provider_name} rate limited, retrying in {}s ({}/{})",
+                "{provider_name} rate limited or unavailable, retrying in {}s ({}/{})",
                 delay.as_secs(),
                 attempt + 1,
                 max_retries

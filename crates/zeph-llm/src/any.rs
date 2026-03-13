@@ -5,6 +5,7 @@
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 use crate::compatible::CompatibleProvider;
+use crate::gemini::GeminiProvider;
 use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
@@ -27,6 +28,7 @@ macro_rules! delegate_provider {
             AnyProvider::Ollama($p) => $expr,
             AnyProvider::Claude($p) => $expr,
             AnyProvider::OpenAi($p) => $expr,
+            AnyProvider::Gemini($p) => $expr,
             #[cfg(feature = "candle")]
             AnyProvider::Candle($p) => $expr,
             AnyProvider::Compatible($p) => $expr,
@@ -42,6 +44,7 @@ pub enum AnyProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),
     OpenAi(OpenAiProvider),
+    Gemini(GeminiProvider),
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
     Compatible(CompatibleProvider),
@@ -88,6 +91,16 @@ impl AnyProvider {
             AnyProvider::Claude(p) => p.list_models_remote().await,
             AnyProvider::OpenAi(p) => p.list_models_remote().await,
             AnyProvider::Compatible(p) => p.list_models_remote().await,
+            AnyProvider::Gemini(p) => Ok(p
+                .list_models()
+                .into_iter()
+                .map(|id| crate::model_cache::RemoteModelInfo {
+                    display_name: id.clone(),
+                    id,
+                    context_window: None,
+                    created_at: None,
+                })
+                .collect()),
             // Router and Orchestrator use synchronous list_models() to avoid recursive async cycles.
             // Results reflect config-time model lists (potentially stale vs. live remote data).
             AnyProvider::Router(p) => {
@@ -142,6 +155,7 @@ impl AnyProvider {
             Self::Ollama(p) => Self::Ollama(p.with_generation_overrides(overrides)),
             Self::Claude(p) => Self::Claude(p.with_generation_overrides(overrides)),
             Self::OpenAi(p) => Self::OpenAi(p.with_generation_overrides(overrides)),
+            Self::Gemini(p) => Self::Gemini(p.with_generation_overrides(overrides)),
             Self::Compatible(p) => Self::Compatible(p.with_generation_overrides(overrides)),
             Self::Mock(p) => Self::Mock(p.with_generation_overrides(overrides)),
             #[cfg(feature = "candle")]
@@ -220,7 +234,7 @@ impl AnyProvider {
             Self::Router(p) => {
                 p.set_status_tx(tx);
             }
-            Self::Ollama(_) => {}
+            Self::Ollama(_) | Self::Gemini(_) => {}
             #[cfg(feature = "candle")]
             Self::Candle(_) => {}
             Self::Mock(_) => {}

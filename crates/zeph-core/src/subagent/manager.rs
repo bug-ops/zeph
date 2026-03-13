@@ -743,7 +743,7 @@ impl SubAgentManager {
     /// # Errors
     ///
     /// Returns [`SubAgentError::NotFound`] if no definition with the given name exists,
-    /// [`SubAgentError::Spawn`] if the concurrency limit is exceeded, or
+    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
     /// does not allow it (`allow_bypass_permissions: false`).
     #[allow(clippy::too_many_lines)]
@@ -800,10 +800,10 @@ impl SubAgentManager {
             .count();
 
         if active >= self.max_concurrent {
-            return Err(SubAgentError::Spawn(format!(
-                "concurrency limit {max} reached",
-                max = self.max_concurrent
-            )));
+            return Err(SubAgentError::ConcurrencyLimit {
+                active,
+                max: self.max_concurrent,
+            });
         }
 
         let task_id = Uuid::new_v4().to_string();
@@ -1177,7 +1177,7 @@ impl SubAgentManager {
     /// [`SubAgentError::NotFound`] if no transcript with the given prefix exists,
     /// [`SubAgentError::AmbiguousId`] if the prefix matches multiple agents,
     /// [`SubAgentError::Transcript`] on I/O or parse failure,
-    /// [`SubAgentError::Spawn`] if the concurrency limit is exceeded.
+    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub fn resume(
         &mut self,
@@ -1253,10 +1253,10 @@ impl SubAgentManager {
             .filter(|h| matches!(h.state, SubAgentState::Working | SubAgentState::Submitted))
             .count();
         if active >= self.max_concurrent {
-            return Err(SubAgentError::Spawn(format!(
-                "concurrency limit {} reached",
-                self.max_concurrent
-            )));
+            return Err(SubAgentError::ConcurrencyLimit {
+                active,
+                max: self.max_concurrent,
+            });
         }
 
         let new_task_id = Uuid::new_v4().to_string();
@@ -1801,7 +1801,7 @@ mod tests {
 
         let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
         let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
-        assert!(matches!(err, SubAgentError::Spawn(_)));
+        assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
     }
 
     #[tokio::test]
@@ -2086,7 +2086,7 @@ mod tests {
         // Concurrency limit reached — second spawn should fail.
         let err = do_spawn(&mut mgr, "bot", "task 2").unwrap_err();
         assert!(
-            matches!(err, SubAgentError::Spawn(ref msg) if msg.contains("concurrency limit")),
+            matches!(err, SubAgentError::ConcurrencyLimit { .. }),
             "expected concurrency limit error, got: {err}"
         );
 
@@ -2668,7 +2668,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(
-            matches!(err, SubAgentError::Spawn(ref msg) if msg.contains("concurrency limit")),
+            matches!(err, SubAgentError::ConcurrencyLimit { .. }),
             "expected concurrency limit error, got: {err}"
         );
     }

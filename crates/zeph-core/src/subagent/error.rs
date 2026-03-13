@@ -15,6 +15,9 @@ pub enum SubAgentError {
     #[error("spawn failed: {0}")]
     Spawn(String),
 
+    #[error("concurrency limit reached (active: {active}, max: {max})")]
+    ConcurrencyLimit { active: usize, max: usize },
+
     #[error("cancelled")]
     Cancelled,
 

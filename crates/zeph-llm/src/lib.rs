@@ -14,6 +14,7 @@ pub mod ema;
 pub mod error;
 #[cfg(feature = "schema")]
 pub mod extractor;
+pub mod gemini;
 pub mod http;
 pub mod mock;
 pub mod model_cache;

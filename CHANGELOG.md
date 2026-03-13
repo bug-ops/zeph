@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Gemini provider** (Phase 1): new `GeminiProvider` in `crates/zeph-llm/src/gemini.rs` supporting basic `generateContent` chat via the Google Gemini API. Authentication via `x-goog-api-key` header (not URL query param). System prompt extracted to `systemInstruction` top-level field; assistant role mapped to `"model"`. Consecutive same-role messages merged to satisfy Gemini's strict `user`/`model` alternation requirement. First-message guard: if the first content is a `"model"` turn, a synthetic empty user message is prepended. Configurable `base_url` (default `https://generativelanguage.googleapis.com/v1beta`), `model` (default `gemini-2.0-flash`), and `max_tokens`. JSON serialized once before retry loop. HTTP 429 and 503 retried via shared `send_with_retry()`. `ProviderKind::Gemini`, `GeminiConfig`, and `[llm.gemini]` TOML section added; `ZEPH_GEMINI_API_KEY` vault key supported; `--init` wizard updated. Part of epic #1592, closes #1593.
+
+### Fixed
+
+- HTTP 503 (`SERVICE_UNAVAILABLE`) responses are now retried by `send_with_retry()` alongside 429, benefiting all LLM providers (#1593)
+
 ### Security
 
 - SEC-001: Replace `DefaultHasher` with a process-scoped `RandomState`-seeded SipHash-1-3 in `tool_args_hash()` to prevent adversarial hash collision bypasses of the repeat-detection window (#1399)
@@ -15,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `search_code` tool now displays relative file paths in CLI output, preventing path sanitizer from replacing them with `[PATH]` when `redact_secrets = true`
 - Scheduler not initialized in ACP mode — tick loop and scheduler tool now available in ACP sessions (#1599)
 - `TrustGateExecutor::check_trust()` was calling `policy.check()` for all tool IDs in Supervised mode, causing `ConfirmationRequired` for any MCP/LSP tool without explicit permission rules (since `PermissionPolicy::from_legacy()` only populates rules for `"bash"`). Non-system tools without explicit rules now return `Allow` by default; system tools (`bash`) always go through `policy.check()` via the new `POLICY_ENFORCED_TOOLS` constant. Fixes #1544.
 - `process_response_native_tools()` did not handle `ToolError::ConfirmationRequired` — the error was collapsed into `[error] command requires confirmation: …` and returned to the LLM. The native tool execution loop now calls `channel.confirm()` on `ConfirmationRequired`, re-executes via `execute_tool_call_confirmed_erased()` on approval, and returns `[cancelled by user]` (not an error) on denial. Added `execute_tool_call_confirmed` to `ToolExecutor` and `ErasedToolExecutor` traits; `TrustGateExecutor` overrides it to bypass the permission check while still enforcing `Blocked`/`Quarantined` trust levels. Fixes #1545.
@@ -37,6 +46,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `apply_code_index()` now starts `CodeIndexer` and `IndexWatcher` for native-tool-use providers so the tree-sitter index is available to the `search_code` tool regardless of provider type (#1556, #1591)
 
 ### Added
+
+- **#1515**: Add `SubAgentError::ConcurrencyLimit { active: usize, max: usize }` variant to replace the fragile `Spawn(String)` concurrency message. `record_spawn_failure()` now accepts `&SubAgentError` and uses a typed `matches!` check instead of string matching. Both `spawn()` and `resume()` in `SubAgentManager` emit the new variant. Callers pass `&e` instead of `&e.to_string()`.
+- **#1516**: Add three edge-case tests for `DagScheduler` concurrency-deferral: running task is unaffected when a concurrent task defers (`test_concurrency_deferral_does_not_affect_running_task`), `max_parallel=0` stalls the scheduler without triggering deadlock detection (`test_max_concurrent_zero_no_infinite_loop`), and all tasks deferring with `ConcurrencyLimit` keep the graph in `Running` and retry on the next tick (`test_all_tasks_deferred_graph_stays_running`).
+- **#1457**: Add `plan_cancel_token: Option<CancellationToken>` to `Agent`. A fresh token is created in `handle_plan_confirm()` and passed into `run_scheduler_loop()`. The tick loop adds a `tokio::select!` branch on `cancel_token.cancelled()` at `wait_event()` (calls `cancel_all()` and breaks) and wraps `RunInline` execution so it can be interrupted. `handle_plan_cancel()` fires the token if a plan is in flight. `plan_cancel_token` is always cleared in both `Ok` and `Err` paths to prevent stale-token bugs. **Known limitation**: the delivery path for `/plan cancel` during active execution requires restructuring the agent message loop (#1603, SEC-M34-002; currently only reachable from concurrent-reader channels such as Telegram).
 
 - **#1551**: Remove the `index` feature flag — `zeph-index` and `tree-sitter` are now always-on base dependencies. All `#[cfg(feature = "index")]` guards are removed from `zeph-core`, `zeph` binary, and `lsp_hooks/hover.rs`. The `index` entry is removed from root `Cargo.toml` `[features]` and `full` feature list, and from `zeph-core/Cargo.toml`. Tree-sitter and code index functionality is always compiled; no feature gating required.
 - **#1554**: Decouple repo map injection from Qdrant retriever. `IndexState` now populates `repo_map_tokens`/`repo_map_ttl` independently via `AgentBuilder::with_repo_map()`. The repo map is injected into the system prompt whenever `repo_map_tokens > 0`, regardless of whether a Qdrant-backed `CodeRetriever` is available. Semantic code RAG via Qdrant is unaffected and still requires the retriever. The `apply_code_index()` bootstrap function now configures repo map for all providers (including Claude/OpenAI with native `tool_use`), then skips only the Qdrant retriever setup for tool-use providers. `apply_config()` hot-reload now correctly refreshes both `repo_map_tokens` and `repo_map_ttl`. Fixes silent repo map omission for the most common provider configurations.
