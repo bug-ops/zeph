@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(orchestration): prevent `DagScheduler` deadlock when `SubAgentManager` concurrency is exhausted during planning phase (#1619)
+  - Default `max_concurrent` raised from 1 to 5 (must be >= max_parallel + 1 when orchestration is active)
+  - `SubAgentManager` now supports slot reservation (`reserve_slots` / `release_reservation`) to protect orchestration task execution
+  - `DagScheduler` uses exponential backoff (100 ms base, x2 per retry, cap 5 s) instead of fixed 250 ms spin on `ConcurrencyLimit`
+  - Startup warning emitted when `max_concurrent < max_parallel + 1`
 - HTTP 503 (`SERVICE_UNAVAILABLE`) responses are now retried by `send_with_retry()` alongside 429, benefiting all LLM providers (#1593)
 
 ### Security

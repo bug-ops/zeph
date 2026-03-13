@@ -601,6 +601,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
         use crate::orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
 
@@ -648,6 +649,28 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.definitions().to_vec())
             .unwrap_or_default();
 
+        // Warn when max_concurrent is too low to support the configured parallelism.
+        // This is the main cause of DagScheduler deadlocks (#1619): a planning-phase
+        // sub-agent occupies the only slot while orchestration tasks are waiting.
+        let max_concurrent = self.subagent_config.max_concurrent;
+        let max_parallel = self.orchestration_config.max_parallel as usize;
+        if max_concurrent < max_parallel + 1 {
+            tracing::warn!(
+                max_concurrent,
+                max_parallel,
+                "max_concurrent < max_parallel + 1: orchestration tasks may be starved by \
+                 planning-phase sub-agents; recommend setting max_concurrent >= {}",
+                max_parallel + 1
+            );
+        }
+
+        // Reserve slots equal to max_parallel so the scheduler is guaranteed capacity
+        // even if a planning-phase sub-agent is occupying a slot (#1619).
+        let reserved = max_parallel.min(max_concurrent.saturating_sub(1));
+        if let Some(mgr) = self.subagent_manager.as_mut() {
+            mgr.reserve_slots(reserved);
+        }
+
         // Use resume_from() for graphs that are no longer in Created status
         // (e.g., after /plan retry which calls reset_for_retry and sets status=Running).
         let mut scheduler = if graph.status == GraphStatus::Created {
@@ -665,7 +688,13 @@ impl<C: Channel> Agent<C> {
                 available_agents,
             )
         }
-        .map_err(|e| error::AgentError::Other(e.to_string()))?;
+        .map_err(|e| {
+            // Release reservation before propagating error.
+            if let Some(mgr) = self.subagent_manager.as_mut() {
+                mgr.release_reservation(reserved);
+            }
+            error::AgentError::Other(e.to_string())
+        })?;
 
         let task_count = scheduler.graph().tasks.len();
         self.channel
@@ -682,6 +711,12 @@ impl<C: Channel> Agent<C> {
             .run_scheduler_loop(&mut scheduler, task_count, plan_token)
             .await;
         self.plan_cancel_token = None;
+
+        // Always release the reservation, regardless of scheduler outcome.
+        if let Some(mgr) = self.subagent_manager.as_mut() {
+            mgr.release_reservation(reserved);
+        }
+
         let final_status = match scheduler_result {
             Ok(s) => s,
             Err(e) => return Err(e),
