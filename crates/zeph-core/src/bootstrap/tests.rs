@@ -135,7 +135,7 @@ fn create_provider_claude_without_api_key_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.llm.provider = ProviderKind::Claude;
     config.llm.cloud = Some(crate::config::CloudLlmConfig {
-        model: "claude-3-opus".into(),
+        model: "claude-sonnet-4-6".into(),
         max_tokens: 4096,
         thinking: None,
     });
@@ -398,7 +398,7 @@ fn build_orchestrator_claude_sub_without_api_key_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.llm.provider = ProviderKind::Orchestrator;
     config.llm.cloud = Some(crate::config::CloudLlmConfig {
-        model: "claude-3".into(),
+        model: "claude-sonnet-4-6".into(),
         max_tokens: 4096,
         thinking: None,
     });
