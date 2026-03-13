@@ -84,6 +84,13 @@ fn apply_mmr(
         return Vec::new();
     }
 
+    tracing::debug!(
+        candidates = ranked.len(),
+        limit,
+        lambda = %lambda,
+        "mmr: starting re-ranking"
+    );
+
     let lambda = f64::from(lambda);
     let mut selected: Vec<(MessageId, f64)> = Vec::with_capacity(limit);
     let mut remaining: Vec<(MessageId, f64)> = ranked.to_vec();
@@ -122,6 +129,8 @@ fn apply_mmr(
 
         selected.push(remaining.remove(best_idx));
     }
+
+    tracing::debug!(selected = selected.len(), "mmr: re-ranking complete");
 
     selected
 }
@@ -574,6 +583,15 @@ impl SemanticMemory {
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         let conversation_id = filter.as_ref().and_then(|f| f.conversation_id);
 
+        tracing::debug!(
+            query_len = query.len(),
+            limit,
+            has_filter = filter.is_some(),
+            conversation_id = conversation_id.map(|c| c.0),
+            has_qdrant = self.qdrant.is_some(),
+            "recall: starting hybrid search"
+        );
+
         // FTS5 keyword search (always available)
         let keyword_results = match self
             .sqlite
@@ -651,13 +669,20 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` `messages_by_ids` query fails.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     async fn recall_merge_and_rank(
         &self,
         keyword_results: Vec<(MessageId, f64)>,
         vector_results: Vec<crate::embedding_store::SearchResult>,
         limit: usize,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
+        tracing::debug!(
+            vector_count = vector_results.len(),
+            keyword_count = keyword_results.len(),
+            limit,
+            "recall: merging search results"
+        );
+
         let mut scores: std::collections::HashMap<MessageId, f64> =
             std::collections::HashMap::new();
 
@@ -686,11 +711,21 @@ impl SemanticMemory {
         }
 
         if scores.is_empty() {
+            tracing::debug!("recall: empty merge, no overlapping scores");
             return Ok(Vec::new());
         }
 
         let mut ranked: Vec<(MessageId, f64)> = scores.into_iter().collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        tracing::debug!(
+            merged = ranked.len(),
+            top_score = ranked.first().map(|r| r.1),
+            bottom_score = ranked.last().map(|r| r.1),
+            vector_weight = %self.vector_weight,
+            keyword_weight = %self.keyword_weight,
+            "recall: weighted merge complete"
+        );
 
         if self.temporal_decay_enabled && self.temporal_decay_half_life_days > 0 {
             let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
@@ -703,6 +738,11 @@ impl SemanticMemory {
                     );
                     ranked
                         .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    tracing::debug!(
+                        half_life_days = self.temporal_decay_half_life_days,
+                        top_score_after = ranked.first().map(|r| r.1),
+                        "recall: temporal decay applied"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("temporal decay: failed to fetch timestamps: {e:#}");
@@ -715,7 +755,14 @@ impl SemanticMemory {
                 let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
                 match qdrant.get_vectors(&ids).await {
                     Ok(vec_map) if !vec_map.is_empty() => {
+                        let ranked_len_before = ranked.len();
                         ranked = apply_mmr(&ranked, &vec_map, self.mmr_lambda, limit);
+                        tracing::debug!(
+                            before = ranked_len_before,
+                            after = ranked.len(),
+                            lambda = %self.mmr_lambda,
+                            "recall: mmr re-ranked"
+                        );
                     }
                     Ok(_) => {
                         ranked.truncate(limit);
@@ -736,7 +783,7 @@ impl SemanticMemory {
         let messages = self.sqlite.messages_by_ids(&ids).await?;
         let msg_map: std::collections::HashMap<MessageId, _> = messages.into_iter().collect();
 
-        let recalled = ranked
+        let recalled: Vec<RecalledMessage> = ranked
             .iter()
             .filter_map(|(msg_id, score)| {
                 msg_map.get(msg_id).map(|msg| RecalledMessage {
@@ -746,6 +793,8 @@ impl SemanticMemory {
                 })
             })
             .collect();
+
+        tracing::debug!(final_count = recalled.len(), "recall: final results");
 
         Ok(recalled)
     }
@@ -813,6 +862,12 @@ impl SemanticMemory {
             }
         };
 
+        tracing::debug!(
+            keyword_count = keyword_results.len(),
+            vector_count = vector_results.len(),
+            "recall: routed search results"
+        );
+
         self.recall_merge_and_rank(keyword_results, vector_results, limit)
             .await
     }
@@ -833,7 +888,15 @@ impl SemanticMemory {
         let Some(store) = &self.graph_store else {
             return Ok(Vec::new());
         };
-        crate::graph::retrieval::graph_recall(
+
+        tracing::debug!(
+            query_len = query.len(),
+            limit,
+            max_hops,
+            "graph: starting recall"
+        );
+
+        let results = crate::graph::retrieval::graph_recall(
             store,
             self.qdrant.as_deref(),
             &self.provider,
@@ -841,7 +904,11 @@ impl SemanticMemory {
             limit,
             max_hops,
         )
-        .await
+        .await?;
+
+        tracing::debug!(result_count = results.len(), "graph: recall complete");
+
+        Ok(results)
     }
 
     /// Check whether an embedding exists for a given message ID.
@@ -963,9 +1030,11 @@ impl SemanticMemory {
         exclude_conversation_id: Option<ConversationId>,
     ) -> Result<Vec<SessionSummaryResult>, MemoryError> {
         let Some(qdrant) = &self.qdrant else {
+            tracing::debug!("session-summaries: skipped, no vector store");
             return Ok(Vec::new());
         };
         if !self.provider.supports_embeddings() {
+            tracing::debug!("session-summaries: skipped, no embedding support");
             return Ok(Vec::new());
         }
 
@@ -986,6 +1055,13 @@ impl SemanticMemory {
         let points = qdrant
             .search_collection(SESSION_SUMMARIES_COLLECTION, &vector, limit, filter)
             .await?;
+
+        tracing::debug!(
+            results = points.len(),
+            limit,
+            exclude_conversation_id = exclude_conversation_id.map(|c| c.0),
+            "session-summaries: search complete"
+        );
 
         let results = points
             .into_iter()
@@ -1287,9 +1363,11 @@ impl SemanticMemory {
         limit: usize,
     ) -> Result<Vec<String>, MemoryError> {
         let Some(qdrant) = &self.qdrant else {
+            tracing::debug!("key-facts: skipped, no vector store");
             return Ok(Vec::new());
         };
         if !self.provider.supports_embeddings() {
+            tracing::debug!("key-facts: skipped, no embedding support");
             return Ok(Vec::new());
         }
 
@@ -1302,6 +1380,8 @@ impl SemanticMemory {
         let points = qdrant
             .search_collection(KEY_FACTS_COLLECTION, &vector, limit, None)
             .await?;
+
+        tracing::debug!(results = points.len(), limit, "key-facts: search complete");
 
         let facts = points
             .into_iter()
@@ -1336,9 +1416,18 @@ impl SemanticMemory {
             return Ok(Vec::new());
         }
         let vector = self.provider.embed(query).await?;
-        qdrant
+        let results = qdrant
             .search_collection(collection, &vector, limit, None)
-            .await
+            .await?;
+
+        tracing::debug!(
+            results = results.len(),
+            limit,
+            collection,
+            "document-collection: search complete"
+        );
+
+        Ok(results)
     }
 
     /// Store an embedding for a user correction in the vector store.
@@ -1390,9 +1479,11 @@ impl SemanticMemory {
         min_score: f32,
     ) -> Result<Vec<crate::sqlite::corrections::UserCorrectionRow>, MemoryError> {
         let Some(ref store) = self.qdrant else {
+            tracing::debug!("corrections: skipped, no vector store");
             return Ok(vec![]);
         };
         if !self.provider.supports_embeddings() {
+            tracing::debug!("corrections: skipped, no embedding support");
             return Ok(vec![]);
         }
         let embedding = self
@@ -1409,6 +1500,13 @@ impl SemanticMemory {
             .await
             .unwrap_or_default();
 
+        tracing::debug!(
+            candidates = scored.len(),
+            min_score = %min_score,
+            limit,
+            "corrections: search complete"
+        );
+
         let mut results = Vec::new();
         for point in scored {
             if point.score < min_score {
@@ -1421,6 +1519,12 @@ impl SemanticMemory {
                 results.extend(rows);
             }
         }
+
+        tracing::debug!(
+            retained = results.len(),
+            "corrections: after min_score filter"
+        );
+
         Ok(results)
     }
 
