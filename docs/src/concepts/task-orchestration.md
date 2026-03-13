@@ -138,7 +138,9 @@ The scheduler never holds a mutable reference to `SubAgentManager` — it produc
 
 #### Concurrency Backoff
 
-When all ready tasks are deferred because `max_parallel` concurrency slots are full, `wait_event()` applies a 250ms backoff instead of spinning. This prevents CPU spin-loops under sustained high concurrency. When a concurrency-limit spawn failure is detected (the sub-agent manager rejects a spawn), the affected task is reverted to `Ready` instead of being marked `Failed`, preventing spurious failure cascades.
+When all ready tasks are deferred because `max_parallel` concurrency slots are full, `wait_event()` applies exponential backoff instead of spinning: 250ms → 500ms → 1s → 2s → 4s, capped at 5s. The backoff resets to 250ms as soon as the first task successfully spawns. This eliminates CPU spin-loops and log floods under sustained high concurrency.
+
+When the sub-agent manager rejects a spawn with a `ConcurrencyLimit` error, the affected task is reverted to `Ready` instead of being marked `Failed`, preventing spurious failure cascades.
 
 #### Event Channel
 
@@ -241,6 +243,10 @@ When `confirm_before_execute` is enabled (the default), `/plan <goal>` does not 
 3. Stores the graph in a pending state.
 
 The user then runs `/plan confirm` to start execution, or `/plan cancel` to discard the pending plan. If a new `/plan <goal>` is submitted while a plan is already pending, the agent rejects it with a warning — cancel or confirm the existing plan first.
+
+### Canceling a Running Plan
+
+`/plan cancel` is delivered even during active plan execution. The agent loop polls the input channel concurrently with the scheduler's event wait (`tokio::select!`). When `/plan cancel` arrives mid-execution, it calls `cancel_all()` on the scheduler, aborts all running sub-agent tasks, and exits the scheduler loop with a `Canceled` graph status. Messages received during execution that are not cancel commands are queued and processed after the plan finishes.
 
 ### Resume a Paused Graph
 

@@ -31,6 +31,27 @@ Two tools fetch data from the web:
 
 Both tools share the same configurable timeout (default: 15s), body size limit (default: 1 MiB), and SSRF protection: private hostnames and IP ranges are blocked before any connection is made, DNS results are validated to prevent rebinding attacks, and HTTP redirects are followed manually (up to 3 hops) with each target re-validated. See [SSRF Protection for Web Scraping](../reference/security.md#ssrf-protection-for-web-scraping).
 
+## Code Search
+
+The `search_code` tool provides unified code intelligence: it combines semantic vector search (Qdrant), structural AST extraction (tree-sitter), and LSP symbol/reference resolution into a single agent-callable operation. Results are ranked and deduplicated across all three layers.
+
+`search_code` is always available — `zeph-index` and tree-sitter are compiled into every build. Semantic vector search additionally requires Qdrant (`vector_backend = "qdrant"`) and an active code index (`[index] enabled = true`). Without Qdrant, the tool falls back to structural and LSP layers.
+
+| Layer | Requires | Returns |
+|-------|----------|---------|
+| Structural (tree-sitter) | nothing | Symbol definitions with file/line |
+| Semantic (Qdrant) | Qdrant + index | Ranked code chunks by meaning |
+| LSP | mcpls MCP server | References, definitions, hover |
+
+```
+> find the authentication middleware
+→ [structural] src/middleware/auth.rs:12 pub fn auth_layer
+→ [semantic] src/middleware/auth.rs:45-87 (score: 0.91)
+→ [lsp] 3 references found
+```
+
+See [Code Indexing](../advanced/code-indexing.md) for setup and configuration.
+
 ## Diagnostics
 
 The `diagnostics` tool runs `cargo check` or `cargo clippy --message-format=json` and returns a structured list of compiler diagnostics (file, line, column, severity, message). Output is capped at a configurable limit (default: 50 entries) and degrades gracefully if `cargo` is absent.
