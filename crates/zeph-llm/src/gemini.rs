@@ -1047,10 +1047,7 @@ impl LlmProvider for GeminiProvider {
                 provider: "gemini".into(),
             })?;
 
-        let url = format!(
-            "{}/v1beta/models/{}:embedContent?key={}",
-            self.base_url, model, self.api_key
-        );
+        let url = format!("{}/v1beta/models/{}:embedContent", self.base_url, model);
 
         let body = EmbedContentRequest {
             model: format!("models/{model}"),
@@ -1062,14 +1059,18 @@ impl LlmProvider for GeminiProvider {
             task_type: "RETRIEVAL_QUERY",
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(LlmError::Http)?;
+        let body_bytes = serde_json::to_vec(&body)?;
+
+        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
+            let req = self
+                .client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .header("Content-Type", "application/json")
+                .body(body_bytes.clone());
+            async move { req.send().await }
+        })
+        .await?;
 
         let status = response.status();
         let body_text = response.text().await.map_err(LlmError::Http)?;
@@ -2380,14 +2381,12 @@ mod tests {
 
     #[tokio::test]
     async fn gemini_embed_api_error_429() {
-        let body =
-            r#"{"error":{"code":429,"message":"Quota exceeded.","status":"RESOURCE_EXHAUSTED"}}"#;
-        let http_resp = format!(
-            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+        // send_with_retry retries up to MAX_RETRIES times on 429 — need MAX_RETRIES+1 responses.
+        // Use Retry-After: 0 to avoid sleep delays in tests.
+        let rate_limit =
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let responses: Vec<&'static str> = vec![rate_limit; MAX_RETRIES as usize + 1];
+        let (port, _handle) = spawn_mock_server(responses).await;
 
         let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
             .with_embedding_model("text-embedding-004")
@@ -2459,7 +2458,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "integration")]
     #[tokio::test]
     #[ignore]
     async fn integration_gemini_embed() {
