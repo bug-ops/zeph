@@ -1286,6 +1286,7 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
                     .count();
+                self.update_metrics(|m| m.orchestration.tasks_completed += done_count as u64);
                 let total = completed_graph.tasks.len();
                 self.channel
                     .send(&format!(

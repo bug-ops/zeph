@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Orchestration: count tasks completed before cancellation in `tasks_completed` metric (fixes #1612)
 - ACP: agent-loop slash commands (`/plan`, `/graph`, `/status`, `/skills`, `/scheduler`, `/compact`, etc.) now correctly forwarded to the agent loop instead of returning "unknown command" errors (fixes #1672)
 - Fix anomaly detector not recording outcomes for native tool_use providers (Claude, OpenAI, Gemini) (#1677)
 - OpenAI: tools with no parameters (empty struct schemas) no longer cause `400 Bad Request` in strict mode; `parameters` field is omitted for no-param tools, matching the Gemini provider behavior (fixes #1673)
