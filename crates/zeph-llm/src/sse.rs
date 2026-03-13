@@ -18,6 +18,16 @@ pub(crate) fn claude_sse_to_stream(response: reqwest::Response) -> ChatStream {
     Box::pin(mapped)
 }
 
+/// Convert a Gemini streaming response into a `ChatStream`.
+pub(crate) fn gemini_sse_to_stream(response: reqwest::Response) -> ChatStream {
+    let event_stream = response.bytes_stream().eventsource();
+    let mapped = event_stream.filter_map(|event| match event {
+        Ok(event) => parse_gemini_sse_event(&event.data),
+        Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
+    });
+    Box::pin(mapped)
+}
+
 /// Convert an `OpenAI` streaming response into a `ChatStream`.
 pub(crate) fn openai_sse_to_stream(response: reqwest::Response) -> ChatStream {
     let event_stream = response.bytes_stream().eventsource();
@@ -145,6 +155,68 @@ struct OpenAiStreamDelta {
     reasoning_content: Option<String>,
 }
 
+fn parse_gemini_sse_event(data: &str) -> Option<Result<StreamChunk, LlmError>> {
+    let resp: GeminiStreamResponse = match serde_json::from_str(data) {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(Err(LlmError::SseParse(format!(
+                "failed to parse Gemini SSE data: {e}"
+            ))));
+        }
+    };
+
+    let parts = resp.candidates.first()?.content.as_ref()?.parts.as_slice();
+
+    // Collect thinking and content text separately (HIGH-1 fix: handle multi-part events).
+    let mut thinking = String::new();
+    let mut content = String::new();
+    for part in parts {
+        if let Some(text) = part.text.as_deref()
+            && !text.is_empty()
+        {
+            if part.thought == Some(true) {
+                thinking.push_str(text);
+            } else {
+                content.push_str(text);
+            }
+        }
+    }
+
+    // Prioritize thinking over content (mirrors OpenAI reasoning_content handling).
+    if !thinking.is_empty() {
+        Some(Ok(StreamChunk::Thinking(thinking)))
+    } else if !content.is_empty() {
+        Some(Ok(StreamChunk::Content(content)))
+    } else {
+        None
+    }
+}
+
+#[derive(Deserialize)]
+struct GeminiStreamResponse {
+    #[serde(default)]
+    candidates: Vec<GeminiStreamCandidate>,
+}
+
+#[derive(Deserialize)]
+struct GeminiStreamCandidate {
+    content: Option<GeminiStreamContent>,
+}
+
+#[derive(Deserialize)]
+struct GeminiStreamContent {
+    #[serde(default)]
+    parts: Vec<GeminiStreamPart>,
+}
+
+#[derive(Deserialize)]
+struct GeminiStreamPart {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    thought: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +308,60 @@ mod tests {
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123"}}"#;
         let result = parse_claude_sse_event(data, "content_block_delta");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn gemini_parse_text_chunk() {
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello"));
+    }
+
+    #[test]
+    fn gemini_parse_thinking_chunk() {
+        let data =
+            r#"{"candidates":[{"content":{"parts":[{"text":"Let me think","thought":true}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "Let me think"));
+    }
+
+    #[test]
+    fn gemini_parse_empty_text_skipped() {
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":""}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn gemini_parse_no_candidates_skipped() {
+        let data = r#"{"candidates":[]}"#;
+        let result = parse_gemini_sse_event(data);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn gemini_parse_invalid_json_error() {
+        let result = parse_gemini_sse_event("not json");
+        let err = result.unwrap().unwrap_err();
+        assert!(err.to_string().contains("failed to parse Gemini SSE data"));
+    }
+
+    #[test]
+    fn gemini_parse_thought_false_emitted_as_content() {
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"Regular","thought":false}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Regular"));
+    }
+
+    #[test]
+    fn gemini_parse_multi_part_thinking_priority() {
+        // Multi-part event with both thinking and content parts — thinking takes priority.
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"reasoning","thought":true},{"text":"answer"}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "reasoning"));
     }
 }

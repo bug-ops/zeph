@@ -234,7 +234,10 @@ impl AnyProvider {
             Self::Router(p) => {
                 p.set_status_tx(tx);
             }
-            Self::Ollama(_) | Self::Gemini(_) => {}
+            Self::Gemini(p) => {
+                p.set_status_tx(tx);
+            }
+            Self::Ollama(_) => {}
             #[cfg(feature = "candle")]
             Self::Candle(_) => {}
             Self::Mock(_) => {}
