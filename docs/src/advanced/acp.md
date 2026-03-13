@@ -146,7 +146,7 @@ terminal_timeout_secs = 120
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Enable ACP server |
+| `enabled` | `false` | Auto-start ACP using the configured transport when running plain `zeph` (explicit CLI flags still override) |
 | `agent_name` | `"zeph"` | Agent name advertised to the IDE |
 | `agent_version` | package version | Agent version advertised to the IDE |
 | `max_sessions` | `4` | Maximum concurrent sessions |

@@ -350,6 +350,7 @@ port = 8080
 rate_limit = 60
 
 [acp]
+enabled = false                    # Auto-start ACP server on plain `zeph` startup using the configured transport (default: false)
 max_sessions = 4                   # Max concurrent ACP sessions; LRU eviction when exceeded (default: 4)
 session_idle_timeout_secs = 1800   # Idle session reaper timeout in seconds (default: 1800)
 broadcast_capacity = 256           # Skill/config reload broadcast backlog shared by ACP sessions (default: 256)

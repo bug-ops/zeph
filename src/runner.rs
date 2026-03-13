@@ -21,6 +21,8 @@ use zeph_core::bootstrap::resolve_config_path;
 #[cfg(not(feature = "tui"))]
 use zeph_core::bootstrap::warmup_provider;
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
+#[cfg(feature = "acp")]
+use zeph_core::config::AcpTransport;
 use zeph_core::vault::Secret;
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
 
@@ -86,6 +88,128 @@ fn resolve_logging_config(
         p.clone_into(&mut logging.file);
     }
     logging
+}
+
+#[allow(dead_code)]
+fn cli_requested_any_acp_mode(cli: &Cli) -> bool {
+    #[cfg(not(any(feature = "acp", feature = "acp-http")))]
+    let _ = cli;
+
+    #[cfg(feature = "acp")]
+    if cli.acp {
+        return true;
+    }
+
+    #[cfg(feature = "acp-http")]
+    if cli.acp_http {
+        return true;
+    }
+
+    false
+}
+
+#[cfg(feature = "acp")]
+fn configured_acp_autostart_transport(config: &Config, cli: &Cli) -> Option<AcpTransport> {
+    if config.acp.enabled && !cli_requested_any_acp_mode(cli) {
+        Some(config.acp.transport.clone())
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "acp")]
+async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> anyhow::Result<()> {
+    let config_path = cli.config.clone();
+    let vault_backend = cli.vault.clone();
+    let vault_key = cli.vault_key.clone();
+    let vault_path = cli.vault_path.clone();
+
+    match transport {
+        AcpTransport::Stdio => {
+            run_acp_server(
+                config_path.as_deref(),
+                vault_backend.as_deref(),
+                vault_key.as_deref(),
+                vault_path.as_deref(),
+            )
+            .await
+        }
+        #[cfg(feature = "acp-http")]
+        AcpTransport::Http => {
+            run_acp_http_server(
+                config_path.as_deref(),
+                vault_backend.as_deref(),
+                vault_key.as_deref(),
+                vault_path.as_deref(),
+                None,
+                None,
+            )
+            .await
+        }
+        #[cfg(feature = "acp-http")]
+        AcpTransport::Both => {
+            tokio::task::LocalSet::new()
+                .run_until(async move {
+                    let mut http_task = tokio::task::spawn_local({
+                        let config_path = config_path.clone();
+                        let vault_backend = vault_backend.clone();
+                        let vault_key = vault_key.clone();
+                        let vault_path = vault_path.clone();
+                        async move {
+                            run_acp_http_server(
+                                config_path.as_deref(),
+                                vault_backend.as_deref(),
+                                vault_key.as_deref(),
+                                vault_path.as_deref(),
+                                None,
+                                None,
+                            )
+                            .await
+                        }
+                    });
+
+                    tokio::select! {
+                        result = run_acp_server(
+                            config_path.as_deref(),
+                            vault_backend.as_deref(),
+                            vault_key.as_deref(),
+                            vault_path.as_deref(),
+                        ) => {
+                            http_task.abort();
+                            result
+                        }
+                        join = &mut http_task => match join {
+                            Ok(result) => result,
+                            Err(err) => Err(err.into()),
+                        },
+                    }
+                })
+                .await
+        }
+        #[cfg(not(feature = "acp-http"))]
+        AcpTransport::Http | AcpTransport::Both => {
+            tracing::warn!(
+                transport = ?transport,
+                "ACP autostart requested via config, but this build was compiled without the `acp-http` feature; falling back to stdio"
+            );
+            run_acp_server(
+                config_path.as_deref(),
+                vault_backend.as_deref(),
+                vault_key.as_deref(),
+                vault_path.as_deref(),
+            )
+            .await
+        }
+    }
+}
+
+#[cfg(not(feature = "acp"))]
+fn warn_if_acp_enabled_but_unavailable(config: &Config) {
+    if config.acp.enabled {
+        tracing::warn!(
+            "ACP autostart requested via [acp] enabled = true, but this build was compiled without the `acp` feature; ignoring the setting"
+        );
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -216,6 +340,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .await?;
 
     check_legacy_artifact_paths(app.config());
+
+    #[cfg(feature = "acp")]
+    if let Some(transport) = configured_acp_autostart_transport(app.config(), &cli) {
+        return Box::pin(run_configured_acp_autostart(&cli, transport)).await;
+    }
+
+    #[cfg(not(feature = "acp"))]
+    warn_if_acp_enabled_but_unavailable(app.config());
 
     #[cfg(feature = "scheduler")]
     {
@@ -1072,6 +1204,7 @@ fn parse_thinking_arg(s: &str) -> anyhow::Result<ThinkingConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     // --- resolve_logging_config ---
 
@@ -1175,5 +1308,89 @@ mod tests {
                 effort: Some(ThinkingEffort::Medium)
             }
         );
+    }
+
+    #[test]
+    fn cli_requested_any_acp_mode_is_false_without_flags() {
+        let cli = Cli::parse_from(["zeph"]);
+        assert!(!cli_requested_any_acp_mode(&cli));
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn cli_requested_any_acp_mode_is_true_for_acp_flag() {
+        let cli = Cli::parse_from(["zeph", "--acp"]);
+        assert!(cli_requested_any_acp_mode(&cli));
+    }
+
+    #[cfg(feature = "acp-http")]
+    #[test]
+    fn cli_requested_any_acp_mode_is_true_for_acp_http_flag() {
+        let cli = Cli::parse_from(["zeph", "--acp-http"]);
+        assert!(cli_requested_any_acp_mode(&cli));
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn configured_acp_autostart_transport_when_enabled_and_no_cli_override() {
+        let cli = Cli::parse_from(["zeph"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        assert!(matches!(
+            configured_acp_autostart_transport(&config, &cli),
+            Some(AcpTransport::Stdio)
+        ));
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn configured_acp_autostart_transport_is_disabled_when_config_is_false() {
+        let cli = Cli::parse_from(["zeph"]);
+        let config = Config::default();
+        assert!(configured_acp_autostart_transport(&config, &cli).is_none());
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn configured_acp_autostart_transport_is_disabled_by_acp_flag() {
+        let cli = Cli::parse_from(["zeph", "--acp"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        assert!(configured_acp_autostart_transport(&config, &cli).is_none());
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn configured_acp_autostart_transport_preserves_http_transport() {
+        let cli = Cli::parse_from(["zeph"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        config.acp.transport = AcpTransport::Http;
+        assert!(matches!(
+            configured_acp_autostart_transport(&config, &cli),
+            Some(AcpTransport::Http)
+        ));
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn configured_acp_autostart_transport_preserves_both_transport() {
+        let cli = Cli::parse_from(["zeph"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        config.acp.transport = AcpTransport::Both;
+        assert!(matches!(
+            configured_acp_autostart_transport(&config, &cli),
+            Some(AcpTransport::Both)
+        ));
+    }
+
+    #[cfg(all(feature = "acp", feature = "acp-http"))]
+    #[test]
+    fn configured_acp_autostart_transport_is_disabled_by_acp_http_flag() {
+        let cli = Cli::parse_from(["zeph", "--acp-http"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        assert!(configured_acp_autostart_transport(&config, &cli).is_none());
     }
 }

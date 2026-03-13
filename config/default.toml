@@ -535,7 +535,7 @@ format = "json"
 show_source_labels = false
 
 [acp]
-# Enable ACP server (Agent Client Protocol — IDE embedding via Zed, Helix, VS Code)
+# Auto-start ACP server on plain `zeph` startup using the configured transport (CLI flags override)
 enabled = false
 # Agent name advertised to IDE clients
 agent_name = "zeph"

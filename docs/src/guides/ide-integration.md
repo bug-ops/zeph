@@ -46,7 +46,7 @@ enabled = true
 # allowed_skills = ["code-review", "refactor"]
 ```
 
-The `enabled` flag activates the ACP command-line flags (`--acp`, `--acp-http`, `--acp-manifest`). No network configuration is needed for the stdio transport used by IDE extensions.
+The `enabled` flag makes plain `zeph` auto-start ACP using the configured `transport` value. The explicit CLI flags (`--acp`, `--acp-http`, `--acp-manifest`) still work independently of this setting. No network configuration is needed for the default stdio transport used by IDE extensions.
 
 ## Launching Zeph as an ACP stdio server
 
