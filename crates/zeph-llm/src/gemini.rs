@@ -595,13 +595,31 @@ fn prepare_schema(schema: &serde_json::Value) -> serde_json::Value {
 // Tool definition conversion
 // ---------------------------------------------------------------------------
 
+/// Returns `true` when the schema represents an empty object (no parameters).
+///
+/// Matches `{"type": "OBJECT"}` with either an absent or empty `properties` map.
+fn is_empty_object_schema(schema: &serde_json::Value) -> bool {
+    schema["type"] == "OBJECT"
+        && schema
+            .get("properties")
+            .is_none_or(|p| p.as_object().is_some_and(serde_json::Map::is_empty))
+}
+
 fn convert_tool_definitions(tools: &[ToolDefinition]) -> Vec<GeminiFunctionDeclaration> {
     tools
         .iter()
-        .map(|t| GeminiFunctionDeclaration {
-            name: t.name.clone(),
-            description: t.description.clone(),
-            parameters: prepare_schema(&t.parameters),
+        .map(|t| {
+            let prepared = prepare_schema(&t.parameters);
+            let parameters = if is_empty_object_schema(&prepared) {
+                None
+            } else {
+                Some(prepared)
+            };
+            GeminiFunctionDeclaration {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters,
+            }
         })
         .collect()
 }
@@ -899,7 +917,8 @@ struct GeminiTools {
 struct GeminiFunctionDeclaration {
     name: String,
     description: String,
-    parameters: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -1594,12 +1613,10 @@ mod tests {
         assert_eq!(decls.len(), 1);
         assert_eq!(decls[0].name, "get_weather");
         assert_eq!(decls[0].description, "Get current weather");
-        assert_eq!(decls[0].parameters["type"], "OBJECT");
-        assert_eq!(
-            decls[0].parameters["properties"]["location"]["type"],
-            "STRING"
-        );
-        assert!(decls[0].parameters.get("additionalProperties").is_none());
+        let params = decls[0].parameters.as_ref().unwrap();
+        assert_eq!(params["type"], "OBJECT");
+        assert_eq!(params["properties"]["location"]["type"], "STRING");
+        assert!(params.get("additionalProperties").is_none());
     }
 
     #[test]
@@ -1625,7 +1642,46 @@ mod tests {
         let decls = convert_tool_definitions(&tools);
         assert_eq!(decls.len(), 2);
         assert_eq!(decls[0].name, "tool_a");
+        assert!(decls[0].parameters.is_none());
         assert_eq!(decls[1].name, "tool_b");
+        assert!(decls[1].parameters.is_none());
+    }
+
+    #[test]
+    fn test_convert_tool_no_parameters() {
+        let tool = ToolDefinition {
+            name: "no_params".to_owned(),
+            description: "A tool with no parameters".to_owned(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        };
+        let decls = convert_tool_definitions(&[tool]);
+        assert_eq!(decls.len(), 1);
+        assert!(decls[0].parameters.is_none());
+
+        // Serialization must omit the parameters key entirely
+        let json = serde_json::to_value(&decls[0]).unwrap();
+        assert!(json.get("parameters").is_none());
+    }
+
+    #[test]
+    fn test_is_empty_object_schema() {
+        // Empty properties map -> true
+        assert!(is_empty_object_schema(
+            &serde_json::json!({"type": "OBJECT", "properties": {}})
+        ));
+        // Missing properties key -> true
+        assert!(is_empty_object_schema(
+            &serde_json::json!({"type": "OBJECT"})
+        ));
+        // Non-empty properties -> false
+        assert!(!is_empty_object_schema(&serde_json::json!({
+            "type": "OBJECT",
+            "properties": {"name": {"type": "STRING"}}
+        })));
+        // Non-object type -> false
+        assert!(!is_empty_object_schema(
+            &serde_json::json!({"type": "STRING"})
+        ));
     }
 
     // ---------------------------------------------------------------------------
