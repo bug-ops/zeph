@@ -70,6 +70,8 @@ pub enum TuiCommand {
     ViewLog,
     // Config migration
     MigrateConfig,
+    // Server-side compaction
+    ServerCompactionStatus,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -432,6 +434,13 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::MigrateConfig,
         },
+        CommandEntry {
+            id: "compaction:status",
+            label: "Show server-side compaction status",
+            category: "context",
+            shortcut: None,
+            command: TuiCommand::ServerCompactionStatus,
+        },
     ];
     EXTRA
 }
@@ -508,12 +517,13 @@ mod tests {
 
     #[test]
     fn extra_registry_has_correct_command_count() {
-        // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate = 31
+        // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
+        // + 1 compaction:status = 32
         // + 1 lsp:status command (when lsp-context feature enabled)
         #[cfg(feature = "lsp-context")]
-        assert_eq!(extra_command_registry().len(), 32);
+        assert_eq!(extra_command_registry().len(), 33);
         #[cfg(not(feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 31);
+        assert_eq!(extra_command_registry().len(), 32);
     }
 
     #[test]

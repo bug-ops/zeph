@@ -51,6 +51,9 @@ pub enum StreamChunk {
     Content(String),
     /// Internal reasoning/thinking token (e.g. Claude extended thinking, `OpenAI` reasoning).
     Thinking(String),
+    /// Server-side compaction summary (Claude compact-2026-01-12 beta).
+    /// Delivered when the Claude API automatically summarizes conversation history.
+    Compaction(String),
 }
 
 /// Boxed stream of typed chunks from an LLM provider.
@@ -193,6 +196,11 @@ pub enum MessagePart {
     /// Claude redacted thinking block — preserved as-is in multi-turn requests.
     RedactedThinkingBlock {
         data: String,
+    },
+    /// Claude server-side compaction block — must be preserved verbatim in multi-turn requests
+    /// so the API can correctly prune prior history on the next turn.
+    Compaction {
+        summary: String,
     },
 }
 
@@ -360,8 +368,10 @@ impl Message {
                 MessagePart::Image(img) => {
                     let _ = write!(out, "[image: {}, {} bytes]", img.mime_type, img.data.len());
                 }
-                // Thinking blocks are internal reasoning — not rendered in text content.
-                MessagePart::ThinkingBlock { .. } | MessagePart::RedactedThinkingBlock { .. } => {}
+                // Thinking and compaction blocks are internal API metadata — not rendered in text.
+                MessagePart::ThinkingBlock { .. }
+                | MessagePart::RedactedThinkingBlock { .. }
+                | MessagePart::Compaction { .. } => {}
             }
         }
         out
@@ -444,6 +454,12 @@ pub trait LlmProvider: Send + Sync {
     /// Return token counts from the last API call, if available.
     /// Returns `(input_tokens, output_tokens)`.
     fn last_usage(&self) -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Return the compaction summary from the most recent API call, if a server-side
+    /// compaction occurred (Claude compact-2026-01-12 beta). Clears the stored value.
+    fn take_compaction_summary(&self) -> Option<String> {
         None
     }
 
@@ -1296,5 +1312,40 @@ mod tests {
         let decoded: Message = serde_json::from_str(&json).unwrap();
         assert!(decoded.metadata.agent_visible);
         assert!(!decoded.metadata.user_visible);
+    }
+
+    #[test]
+    fn message_part_compaction_round_trip() {
+        let part = MessagePart::Compaction {
+            summary: "Context was summarized.".to_owned(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let decoded: MessagePart = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(decoded, MessagePart::Compaction { summary } if summary == "Context was summarized.")
+        );
+    }
+
+    #[test]
+    fn flatten_parts_compaction_contributes_no_text() {
+        // MessagePart::Compaction must not appear in the flattened content string
+        // (it's metadata-only; the summary is stored on the Message separately).
+        let parts = vec![
+            MessagePart::Text {
+                text: "Hello".to_owned(),
+            },
+            MessagePart::Compaction {
+                summary: "Summary".to_owned(),
+            },
+        ];
+        let msg = Message::from_parts(Role::Assistant, parts);
+        // Only the Text part should appear in content.
+        assert_eq!(msg.content.trim(), "Hello");
+    }
+
+    #[test]
+    fn stream_chunk_compaction_variant() {
+        let chunk = StreamChunk::Compaction("A summary".to_owned());
+        assert!(matches!(chunk, StreamChunk::Compaction(s) if s == "A summary"));
     }
 }

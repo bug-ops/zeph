@@ -154,7 +154,8 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
                 .with_extended_context(cloud.enable_extended_context)
                 .with_thinking_opt(cloud.thinking.clone())
-                .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?
+                .with_server_compaction(cloud.server_compaction);
             Ok(AnyProvider::Claude(provider))
         }
         "openai" => {
@@ -624,7 +625,8 @@ pub fn build_orchestrator(
                     .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
                     .with_extended_context(cloud.enable_extended_context)
                     .with_thinking_opt(cloud.thinking.clone())
-                    .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("invalid thinking config: {e}"))?
+                    .with_server_compaction(cloud.server_compaction);
                 SubProvider::Claude(sub)
             }
             "openai" => {

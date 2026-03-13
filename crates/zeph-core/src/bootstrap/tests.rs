@@ -138,6 +138,7 @@ fn create_provider_claude_without_api_key_errors() {
         model: "claude-sonnet-4-6".into(),
         max_tokens: 4096,
         thinking: None,
+        server_compaction: false,
         enable_extended_context: false,
     });
     config.secrets.claude_api_key = None;
@@ -402,6 +403,7 @@ fn build_orchestrator_claude_sub_without_api_key_errors() {
         model: "claude-sonnet-4-6".into(),
         max_tokens: 4096,
         thinking: None,
+        server_compaction: false,
         enable_extended_context: false,
     });
     config.secrets.claude_api_key = None;

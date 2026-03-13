@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::LlmError;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -17,9 +19,24 @@ use crate::sse::claude_sse_to_stream;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
+const ANTHROPIC_BETA_COMPACT: &str = "compact-2026-01-12";
 const ANTHROPIC_BETA_EXTENDED_CONTEXT: &str = "context-1m-2025-08-07";
 const MAX_RETRIES: u32 = 3;
 const MIN_MAX_TOKENS_WITH_THINKING: u32 = 16_000;
+
+/// Request field for Claude server-side context management (compact-2026-01-12 beta).
+#[derive(Serialize, Clone, Debug)]
+struct ContextManagement {
+    #[serde(rename = "type")]
+    management_type: ContextManagementType,
+    trigger_tokens: u32,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+enum ContextManagementType {
+    Enabled,
+}
 
 /// Extended or adaptive thinking mode for Claude.
 ///
@@ -373,6 +390,13 @@ pub struct ClaudeProvider {
     /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
     tool_cache: std::sync::Mutex<Option<(u64, Vec<serde_json::Value>)>>,
     generation_overrides: Option<GenerationOverrides>,
+    /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
+    server_compaction: bool,
+    /// Set to `true` at runtime when the API rejects the `compact-2026-01-12` beta header
+    /// (e.g. header deprecated/removed). Shared via `Arc` so clones observe the same state.
+    server_compaction_rejected: Arc<AtomicBool>,
+    /// Most recent compaction summary received from the API, if any.
+    last_compaction: std::sync::Mutex<Option<String>>,
     enable_extended_context: bool,
 }
 
@@ -397,6 +421,19 @@ impl fmt::Debug for ClaudeProvider {
                     .and_then(|g| g.as_ref().map(|(hash, _)| *hash)),
             )
             .field("generation_overrides", &self.generation_overrides)
+            .field("server_compaction", &self.server_compaction)
+            .field(
+                "server_compaction_rejected",
+                &self.server_compaction_rejected.load(Ordering::Relaxed),
+            )
+            .field(
+                "last_compaction",
+                &self
+                    .last_compaction
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(String::len)),
+            )
             .field("enable_extended_context", &self.enable_extended_context)
             .finish()
     }
@@ -416,6 +453,9 @@ impl Clone for ClaudeProvider {
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
+            server_compaction: self.server_compaction,
+            server_compaction_rejected: Arc::clone(&self.server_compaction_rejected),
+            last_compaction: std::sync::Mutex::new(None),
             enable_extended_context: self.enable_extended_context,
         }
     }
@@ -445,6 +485,9 @@ impl ClaudeProvider {
             last_usage: std::sync::Mutex::new(None),
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: None,
+            server_compaction: false,
+            server_compaction_rejected: Arc::new(AtomicBool::new(false)),
+            last_compaction: std::sync::Mutex::new(None),
             enable_extended_context: false,
         }
     }
@@ -471,6 +514,48 @@ impl ClaudeProvider {
     pub fn with_cache_user_messages(mut self, enabled: bool) -> Self {
         self.cache_user_messages = enabled;
         self
+    }
+
+    /// Enable server-side context compaction (Claude compact-2026-01-12 beta).
+    ///
+    /// When enabled, the API automatically summarizes long conversations and returns
+    /// a `compaction` content block. Client-side compaction should be skipped when
+    /// this is active.
+    #[must_use]
+    pub fn with_server_compaction(mut self, enabled: bool) -> Self {
+        self.server_compaction = enabled;
+        self
+    }
+
+    /// Return `true` when server-side compaction is enabled.
+    #[must_use]
+    pub fn server_compaction_enabled(&self) -> bool {
+        self.server_compaction
+    }
+
+    /// Return the compaction summary from the most recent API call, if a compaction occurred.
+    /// Clears the stored value after reading.
+    pub fn take_compaction_summary(&self) -> Option<String> {
+        self.last_compaction
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// Return `true` if the `compact-2026-01-12` beta header was rejected by the API
+    /// during a previous request this session.
+    #[must_use]
+    pub fn is_server_compaction_rejected(&self) -> bool {
+        self.server_compaction_rejected.load(Ordering::Relaxed)
+    }
+
+    /// Detect whether a 400 response body indicates the `compact-2026-01-12` beta header
+    /// was rejected by the API.
+    fn is_compact_beta_rejection(status: reqwest::StatusCode, body: &str) -> bool {
+        status == reqwest::StatusCode::BAD_REQUEST
+            && (body.contains(ANTHROPIC_BETA_COMPACT)
+                || body.contains("unknown beta")
+                || body.contains("invalid beta"))
     }
 
     #[must_use]
@@ -669,23 +754,47 @@ impl ClaudeProvider {
     }
 
     fn beta_header(&self, has_tools: bool) -> Option<String> {
-        let mut betas: Vec<&str> = Vec::new();
+        let mut headers: Vec<&str> = Vec::new();
+
         if self.enable_extended_context {
-            betas.push(ANTHROPIC_BETA_EXTENDED_CONTEXT);
+            headers.push(ANTHROPIC_BETA_EXTENDED_CONTEXT);
         }
+
         let cap = thinking_capability(&self.model);
         if self.thinking.is_some()
             && has_tools
             && cap.needs_interleaved_beta
             && matches!(self.thinking, Some(ThinkingConfig::Extended { .. }))
         {
-            betas.push(ANTHROPIC_BETA_INTERLEAVED_THINKING);
+            headers.push(ANTHROPIC_BETA_INTERLEAVED_THINKING);
         }
-        if betas.is_empty() {
+
+        if self.server_compaction && !self.server_compaction_rejected.load(Ordering::Relaxed) {
+            headers.push(ANTHROPIC_BETA_COMPACT);
+        }
+
+        if headers.is_empty() {
             None
         } else {
-            Some(betas.join(","))
+            Some(headers.join(","))
         }
+    }
+
+    /// Build the `context_management` field for server-side compaction.
+    /// Returns `None` when `server_compaction` is disabled or the beta header was rejected.
+    fn context_management(&self) -> Option<ContextManagement> {
+        if !self.server_compaction || self.server_compaction_rejected.load(Ordering::Relaxed) {
+            return None;
+        }
+        let context_window =
+            u32::try_from(self.context_window().unwrap_or(200_000)).unwrap_or(200_000_u32);
+        // Default compaction_threshold of 0.80 — matches client-side default.
+        // Multiply before dividing to preserve precision (avoid losing up to 99 tokens).
+        let trigger_tokens = context_window * 80 / 100;
+        Some(ContextManagement {
+            management_type: ContextManagementType::Enabled,
+            trigger_tokens,
+        })
     }
 
     fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
@@ -782,7 +891,8 @@ impl ClaudeProvider {
                         AnthropicContentBlock::ToolUse { .. }
                         | AnthropicContentBlock::Image { .. }
                         | AnthropicContentBlock::Thinking { .. }
-                        | AnthropicContentBlock::RedactedThinking { .. } => None,
+                        | AnthropicContentBlock::RedactedThinking { .. }
+                        | AnthropicContentBlock::Compaction { .. } => None,
                     };
                     if let Some(cache_control) = maybe_cache
                         && cache_control.is_some()
@@ -832,6 +942,7 @@ impl ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
+                context_management: self.context_management(),
             };
             let mut req = self
                 .client
@@ -861,6 +972,7 @@ impl ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
+            context_management: self.context_management(),
         };
 
         let mut req = self
@@ -884,6 +996,18 @@ impl ClaudeProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API; \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             tracing::error!("Claude API error {status}: {text}");
             return Err(LlmError::Other(format!(
                 "Claude API request failed (status {status})"
@@ -935,6 +1059,18 @@ impl ClaudeProvider {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API (streaming); \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             tracing::error!("Claude API streaming request error {status}: {text}");
             return Err(LlmError::Other(format!(
                 "Claude API streaming request failed (status {status})"
@@ -1053,6 +1189,7 @@ impl LlmProvider for ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
+            context_management: self.context_management(),
         };
 
         let mut req = self
@@ -1073,6 +1210,18 @@ impl LlmProvider for ClaudeProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API (typed); \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             return Err(LlmError::Other(format!(
                 "Claude API request failed (status {status})"
             )));
@@ -1113,6 +1262,10 @@ impl LlmProvider for ClaudeProvider {
         self.last_usage.lock().ok().and_then(|g| *g)
     }
 
+    fn take_compaction_summary(&self) -> Option<String> {
+        ClaudeProvider::take_compaction_summary(self)
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],
@@ -1142,6 +1295,7 @@ impl LlmProvider for ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
+                context_management: self.context_management(),
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -1161,6 +1315,7 @@ impl LlmProvider for ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
+                context_management: self.context_management(),
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -1177,6 +1332,7 @@ impl LlmProvider for ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
+            context_management: self.context_management(),
         };
         serde_json::to_value(&body)
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
@@ -1210,6 +1366,7 @@ impl LlmProvider for ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
+            context_management: self.context_management(),
         };
 
         let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
@@ -1231,6 +1388,18 @@ impl LlmProvider for ClaudeProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API (tool use); \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             tracing::error!("Claude API error {status}: {text}");
             return Err(LlmError::Other(format!(
                 "Claude API request failed (status {status})"
@@ -1247,7 +1416,16 @@ impl LlmProvider for ClaudeProvider {
             log_cache_usage(usage);
             self.store_cache_usage(usage);
         }
-        let parsed = parse_tool_response(resp);
+        let (parsed, compaction_summary) = parse_tool_response(resp);
+        if let Some(ref summary) = compaction_summary {
+            tracing::info!(
+                summary_len = summary.len(),
+                "storing server compaction summary"
+            );
+            if let Ok(mut guard) = self.last_compaction.lock() {
+                *guard = compaction_summary;
+            }
+        }
         tracing::debug!(?parsed, "parsed ChatResponse");
         Ok(parsed)
     }
@@ -1455,6 +1633,8 @@ struct TypedToolRequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_management: Option<ContextManagement>,
 }
 
 #[cfg(feature = "schema")]
@@ -1485,6 +1665,8 @@ struct ToolRequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_management: Option<ContextManagement>,
 }
 
 #[derive(Serialize, Debug)]
@@ -1531,6 +1713,11 @@ enum AnthropicContentBlock {
     RedactedThinking {
         data: String,
     },
+    /// Server-side compaction block returned by the Claude API (compact-2026-01-12 beta).
+    /// Must be preserved verbatim and sent back in subsequent turns.
+    Compaction {
+        summary: String,
+    },
 }
 
 /// Serialization-only parameter for Claude's `thinking` request field.
@@ -1566,11 +1753,12 @@ struct ToolApiResponse {
     usage: Option<ApiUsage>,
 }
 
-fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
+fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Option<String>) {
     let truncated = resp.stop_reason.as_deref() == Some("max_tokens");
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
     let mut thinking_blocks = Vec::new();
+    let mut compaction_summary: Option<String> = None;
 
     for block in resp.content {
         match block {
@@ -1592,6 +1780,13 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
                 tracing::debug!("Claude redacted_thinking block received");
                 thinking_blocks.push(ThinkingBlock::Redacted { data });
             }
+            AnthropicContentBlock::Compaction { summary } => {
+                tracing::info!(
+                    summary_len = summary.len(),
+                    "Claude server-side compaction block received"
+                );
+                compaction_summary = Some(summary);
+            }
             AnthropicContentBlock::ToolResult { .. } | AnthropicContentBlock::Image { .. } => {}
         }
     }
@@ -1605,15 +1800,18 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
             "response truncated by max_tokens with pending tool calls; discarding incomplete tool use"
         );
         let combined = text_parts.join("");
-        return ChatResponse::Text(if combined.is_empty() {
-            "[Response truncated: max_tokens limit reached. Please reduce the request scope.]"
-                .to_owned()
-        } else {
-            combined
-        });
+        return (
+            ChatResponse::Text(if combined.is_empty() {
+                "[Response truncated: max_tokens limit reached. Please reduce the request scope.]"
+                    .to_owned()
+            } else {
+                combined
+            }),
+            compaction_summary,
+        );
     }
 
-    if tool_calls.is_empty() {
+    let response = if tool_calls.is_empty() {
         let combined = text_parts.join("");
         // Inject the truncation marker so the agent loop can emit StopReason::MaxTokens.
         let text = if truncated {
@@ -1638,7 +1836,8 @@ fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
             tool_calls,
             thinking_blocks,
         }
-    }
+    };
+    (response, compaction_summary)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1688,6 +1887,7 @@ fn split_messages_structured(
                             | MessagePart::Image(_)
                             | MessagePart::ThinkingBlock { .. }
                             | MessagePart::RedactedThinkingBlock { .. }
+                            | MessagePart::Compaction { .. }
                     )
                 });
 
@@ -1845,8 +2045,16 @@ fn split_messages_structured(
                                     data: data.clone(),
                                 });
                             }
-                            // Thinking blocks in user messages are silently dropped.
-                            MessagePart::ThinkingBlock { .. }
+                            // Compaction blocks must be sent back verbatim in subsequent turns
+                            // so the Claude API can prune prior history correctly.
+                            MessagePart::Compaction { summary } if is_assistant => {
+                                blocks.push(AnthropicContentBlock::Compaction {
+                                    summary: summary.clone(),
+                                });
+                            }
+                            // Compaction blocks in user messages and thinking blocks are silently dropped.
+                            MessagePart::Compaction { .. }
+                            | MessagePart::ThinkingBlock { .. }
                             | MessagePart::RedactedThinkingBlock { .. } => {}
                         }
                     }
@@ -1928,6 +2136,8 @@ struct RequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_management: Option<ContextManagement>,
 }
 
 #[derive(Serialize)]
@@ -1945,6 +2155,8 @@ struct VisionRequestBody<'a> {
     output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_management: Option<ContextManagement>,
 }
 
 #[derive(Serialize)]
@@ -2157,6 +2369,7 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
+            context_management: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("system"));
@@ -2182,6 +2395,7 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
+            context_management: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"system\""));
@@ -2200,6 +2414,7 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
+            context_management: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"stream\":true"));
@@ -2369,6 +2584,7 @@ mod tests {
             thinking: None,
             output_config: None,
             temperature: None,
+            context_management: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("stream"));
@@ -2611,8 +2827,9 @@ mod tests {
             stop_reason: None,
             usage: None,
         };
-        let result = parse_tool_response(resp);
+        let (result, compaction) = parse_tool_response(resp);
         assert!(matches!(result, ChatResponse::Text(s) if s == "Hello"));
+        assert!(compaction.is_none());
     }
 
     #[test]
@@ -2632,7 +2849,7 @@ mod tests {
             stop_reason: None,
             usage: None,
         };
-        let result = parse_tool_response(resp);
+        let (result, compaction) = parse_tool_response(resp);
         if let ChatResponse::ToolUse {
             text, tool_calls, ..
         } = result
@@ -2644,6 +2861,7 @@ mod tests {
         } else {
             panic!("expected ToolUse");
         }
+        assert!(compaction.is_none());
     }
 
     #[test]
@@ -2657,7 +2875,7 @@ mod tests {
             stop_reason: None,
             usage: None,
         };
-        let result = parse_tool_response(resp);
+        let (result, compaction) = parse_tool_response(resp);
         if let ChatResponse::ToolUse {
             text, tool_calls, ..
         } = result
@@ -2667,13 +2885,14 @@ mod tests {
         } else {
             panic!("expected ToolUse");
         }
+        assert!(compaction.is_none());
     }
 
     #[test]
     fn parse_tool_response_json_deserialization() {
         let json = r#"{"content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"toolu_abc","name":"bash","input":{"command":"ls"}}]}"#;
         let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
-        let result = parse_tool_response(resp);
+        let (result, _) = parse_tool_response(resp);
         assert!(matches!(result, ChatResponse::ToolUse { .. }));
     }
 
@@ -3872,7 +4091,7 @@ mod tests {
             stop_reason: None,
             usage: None,
         };
-        let result = parse_tool_response(resp);
+        let (result, _) = parse_tool_response(resp);
         if let ChatResponse::ToolUse {
             thinking_blocks,
             tool_calls,
@@ -3911,7 +4130,7 @@ mod tests {
             stop_reason: None,
             usage: None,
         };
-        let result = parse_tool_response(resp);
+        let (result, _) = parse_tool_response(resp);
         // No tool calls, so returns Text; thinking is dropped for text-only responses
         assert!(matches!(result, ChatResponse::Text(_)));
     }
@@ -4608,6 +4827,175 @@ mod tests {
             msgs.last().and_then(|m| m["role"].as_str()),
             Some("assistant"),
             "Sonnet 4.6 must not strip trailing assistant messages"
+        );
+    }
+
+    #[test]
+    fn server_compaction_disabled_by_default() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        assert!(!provider.server_compaction_enabled());
+    }
+
+    #[test]
+    fn with_server_compaction_enables_flag() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        assert!(provider.server_compaction_enabled());
+    }
+
+    #[test]
+    fn take_compaction_summary_empty_when_none() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        assert!(provider.take_compaction_summary().is_none());
+    }
+
+    #[test]
+    fn take_compaction_summary_returns_and_clears() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        *provider.last_compaction.lock().unwrap() = Some("Summary text".to_owned());
+        let result = provider.take_compaction_summary();
+        assert_eq!(result.as_deref(), Some("Summary text"));
+        // Second call must return None (consumed).
+        assert!(provider.take_compaction_summary().is_none());
+    }
+
+    #[test]
+    fn context_management_absent_when_disabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        assert!(provider.context_management().is_none());
+    }
+
+    #[test]
+    fn context_management_present_when_enabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        let cm = provider.context_management().unwrap();
+        // trigger_tokens = context_window * 80 / 100 = 200_000 * 80 / 100 = 160_000
+        assert_eq!(cm.trigger_tokens, 160_000);
+    }
+
+    #[test]
+    fn context_management_serializes_correctly() {
+        let cm = ContextManagement {
+            management_type: ContextManagementType::Enabled,
+            trigger_tokens: 160_000,
+        };
+        let json = serde_json::to_value(&cm).unwrap();
+        assert_eq!(json["type"], "enabled");
+        assert_eq!(json["trigger_tokens"], 160_000);
+    }
+
+    #[test]
+    fn beta_header_includes_compact_when_server_compaction_enabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        let header = provider.beta_header(false).unwrap_or_default();
+        assert!(
+            header.contains("compact-2026-01-12"),
+            "beta header must include compact beta when server_compaction is on"
+        );
+    }
+
+    #[test]
+    fn beta_header_excludes_compact_when_disabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        let header = provider.beta_header(false).unwrap_or_default();
+        assert!(
+            !header.contains("compact-2026-01-12"),
+            "beta header must not include compact beta when server_compaction is off"
+        );
+    }
+
+    #[test]
+    fn compaction_content_block_deserialized() {
+        let json = r#"{"type":"compaction","summary":"Context summary here"}"#;
+        let block: AnthropicContentBlock = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(block, AnthropicContentBlock::Compaction { summary } if summary == "Context summary here")
+        );
+    }
+
+    // --- graceful degradation tests (SEC-COMPACT-03) ---
+
+    #[test]
+    fn server_compaction_not_rejected_by_default() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        assert!(!provider.is_server_compaction_rejected());
+    }
+
+    #[test]
+    fn beta_header_excluded_after_rejection() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        // Simulate API rejection.
+        provider
+            .server_compaction_rejected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let header = provider.beta_header(false).unwrap_or_default();
+        assert!(
+            !header.contains("compact-2026-01-12"),
+            "compact beta must be excluded once rejected"
+        );
+    }
+
+    #[test]
+    fn context_management_absent_after_rejection() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        provider
+            .server_compaction_rejected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            provider.context_management().is_none(),
+            "context_management must be None after beta header rejection"
+        );
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_detects_unknown_beta() {
+        assert!(ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"unknown beta: compact-2026-01-12"}}"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_detects_invalid_beta_keyword() {
+        assert!(ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"invalid beta header supplied"}}"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_ignores_non_400() {
+        assert!(!ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"unknown beta: compact-2026-01-12"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_ignores_unrelated_400() {
+        assert!(!ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"invalid parameter: model"}}"#
+        ));
+    }
+
+    #[test]
+    fn clone_shares_rejection_flag() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        let clone = provider.clone();
+        // Set flag on original; clone must see it.
+        provider
+            .server_compaction_rejected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            clone.is_server_compaction_rejected(),
+            "clone must share the rejection Arc"
         );
     }
 }

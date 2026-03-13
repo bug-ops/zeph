@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_llm::provider::{
-    ChatResponse, LlmProvider, Message, MessagePart, Role, ThinkingBlock, ToolDefinition,
+    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
+    ToolDefinition,
 };
 
 use super::super::Agent;
@@ -38,6 +39,24 @@ impl<C: Channel> Agent<C> {
                         .send_status("context too long, compacting...")
                         .await;
                     self.compact_context().await?;
+                    let _ = self.channel.send_status("").await;
+                }
+                Err(e) if e.is_beta_header_rejected() && attempt + 1 < max_attempts => {
+                    // SEC-COMPACT-03: the compact-2026-01-12 beta header was rejected by the API.
+                    // The provider already set its internal flag; disable client-side gate and
+                    // retry so this turn is not lost.
+                    tracing::warn!(
+                        attempt,
+                        "server compaction beta header rejected; \
+                        falling back to client-side compaction and retrying"
+                    );
+                    self.server_compaction_active = false;
+                    let _ = self
+                        .channel
+                        .send_status(
+                            "server compaction unavailable, falling back to client-side...",
+                        )
+                        .await;
                     let _ = self.channel.send_status("").await;
                 }
                 Err(e) => return Err(e),
@@ -299,6 +318,47 @@ impl<C: Channel> Agent<C> {
                 .channel
                 .send_usage(input_tokens, output_tokens, context_window)
                 .await;
+        }
+
+        // C2: if the server returned a compaction block, prune old messages from context
+        // and insert a synthetic assistant message containing the compaction summary.
+        // This keeps self.messages consistent with what the API has already summarized.
+        if let Some(raw_summary) = self.provider.take_compaction_summary() {
+            let _ = self
+                .channel
+                .send_status("Compacting context (server-side)...")
+                .await;
+            tracing::info!(
+                summary_len = raw_summary.len(),
+                messages_before = self.messages.len(),
+                "server-side compaction received; pruning old messages"
+            );
+            // SEC-COMPACT-01: sanitize compaction summary — it originates from the API but
+            // may encode injected content from tool results the model summarized.
+            // Use McpResponse (ExternalUntrusted) as the conservative trust level.
+            let source = ContentSource::new(ContentSourceKind::McpResponse);
+            let sanitized = self.security.sanitizer.sanitize(&raw_summary, source);
+            let summary = sanitized.body;
+            // Keep only the final user turn so the next API call has a valid alternating history.
+            let last_user = self
+                .messages
+                .iter()
+                .rposition(|m| m.role == Role::User)
+                .unwrap_or(0);
+            let tail: Vec<Message> = self.messages.drain(last_user..).collect();
+            self.messages.clear();
+            // Re-insert the compaction summary as a synthetic assistant message.
+            self.messages.push(Message {
+                role: Role::Assistant,
+                content: summary.clone(),
+                parts: vec![MessagePart::Compaction {
+                    summary: summary.clone(),
+                }],
+                metadata: MessageMetadata::default(),
+            });
+            self.messages.extend(tail);
+            self.update_metrics(|m| m.server_compaction_events += 1);
+            let _ = self.channel.send_status("").await;
         }
 
         if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {

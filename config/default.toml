@@ -35,6 +35,9 @@ embedding_model = "qwen3-embedding"
 model = "claude-sonnet-4-5-20250929"
 # Maximum tokens for Claude responses
 max_tokens = 4096
+# Enable Claude server-side context compaction (compact-2026-01-12 beta).
+# When enabled, the API automatically summarizes long conversations; client-side compaction is skipped.
+# server_compaction = false
 # Enable 1M token extended context window (Opus 4.6 / Sonnet 4.6 only).
 # Tokens above 200K use long-context pricing — see https://www.anthropic.com/pricing
 # enable_extended_context = false

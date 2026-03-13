@@ -7,7 +7,7 @@ use zeph_tools::executor::{ToolError, ToolOutput};
 use super::super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
 use super::{AnomalyOutcome, doom_loop_hash, first_tool_name};
 use crate::channel::{Channel, ToolOutputEvent, ToolStartEvent};
-use crate::sanitizer::{ContentSource, ContentSourceKind};
+use crate::sanitizer::{ContentSource, ContentSourceKind}; // already imported for tool output sanitization
 use tokio_stream::StreamExt;
 use tracing::Instrument;
 use zeph_skills::evolution::FailureKind;
@@ -664,6 +664,40 @@ impl<C: Channel> Agent<C> {
                 }
                 zeph_llm::StreamChunk::Thinking(thinking) => {
                     self.channel.send_thinking_chunk(&thinking).await?;
+                }
+                zeph_llm::StreamChunk::Compaction(raw_summary) => {
+                    let _ = self
+                        .channel
+                        .send_status("Compacting context (server-side)...")
+                        .await;
+                    // SEC-COMPACT-01: sanitize compaction summary before inserting into context.
+                    // Use McpResponse (ExternalUntrusted) as the conservative trust level.
+                    let source = ContentSource::new(ContentSourceKind::McpResponse);
+                    let sanitized = self.security.sanitizer.sanitize(&raw_summary, source);
+                    let summary = sanitized.body;
+                    tracing::info!(
+                        summary_len = summary.len(),
+                        messages_before = self.messages.len(),
+                        "server-side compaction received via stream; pruning old messages"
+                    );
+                    let last_user = self
+                        .messages
+                        .iter()
+                        .rposition(|m| m.role == Role::User)
+                        .unwrap_or(0);
+                    let tail: Vec<Message> = self.messages.drain(last_user..).collect();
+                    self.messages.clear();
+                    self.messages.push(Message {
+                        role: Role::Assistant,
+                        content: summary.clone(),
+                        parts: vec![MessagePart::Compaction {
+                            summary: summary.clone(),
+                        }],
+                        metadata: MessageMetadata::default(),
+                    });
+                    self.messages.extend(tail);
+                    self.update_metrics(|m| m.server_compaction_events += 1);
+                    let _ = self.channel.send_status("").await;
                 }
             }
         }

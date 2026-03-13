@@ -507,6 +507,11 @@ pub struct CloudLlmConfig {
     pub max_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    /// Enable server-side context compaction (Claude API compact-2026-01-12 beta).
+    /// When true, the Claude API automatically summarizes long conversations.
+    /// Client-side compaction is skipped when this is active.
+    #[serde(default)]
+    pub server_compaction: bool,
     /// Enable 1M token extended context window for Claude Opus 4.6 and Sonnet 4.6.
     /// When enabled, injects `anthropic-beta: context-1m-2025-08-07` header.
     /// NOTE: tokens above 200K use long-context pricing (see Anthropic docs).

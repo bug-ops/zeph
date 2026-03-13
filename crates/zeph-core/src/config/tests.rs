@@ -2978,3 +2978,60 @@ fn compaction_threshold_infinity_rejected_by_validate() {
         "unexpected error: {err}"
     );
 }
+
+fn minimal_cloud_toml(extra_cloud: &str) -> String {
+    format!(
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "claude"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+
+[llm.cloud]
+model = "claude-sonnet-4-6"
+max_tokens = 8192
+{extra_cloud}
+[skills]
+paths = [".zeph/skills"]
+
+[memory]
+sqlite_path = ".zeph/data/zeph.db"
+history_limit = 50
+"#
+    )
+}
+
+#[test]
+#[serial]
+fn server_compaction_defaults_to_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("no_sc.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(f, "{}", minimal_cloud_toml("")).unwrap();
+    clear_env();
+    let config = Config::load(&path).unwrap();
+    let cloud = config.llm.cloud.unwrap();
+    assert!(
+        !cloud.server_compaction,
+        "server_compaction must default to false"
+    );
+}
+
+#[test]
+#[serial]
+fn server_compaction_parsed_from_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sc.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(f, "{}", minimal_cloud_toml("server_compaction = true\n")).unwrap();
+    clear_env();
+    let config = Config::load(&path).unwrap();
+    let cloud = config.llm.cloud.unwrap();
+    assert!(
+        cloud.server_compaction,
+        "server_compaction must be true when set in TOML"
+    );
+}

@@ -1076,6 +1076,9 @@ impl App {
                         .to_owned(),
                 );
             }
+            TuiCommand::ServerCompactionStatus => {
+                let _ = self.user_input_tx.try_send("/server-compaction".to_owned());
+            }
         }
     }
 
