@@ -986,42 +986,92 @@ impl<C: Channel> Agent<C> {
                 }
                 () = scheduler.wait_event() => {}
                 result = self.channel.recv() => {
-                    match result {
-                        Ok(Some(msg)) => {
-                            if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
-                                let _ = self.channel.send_status("Canceling plan...").await;
-                                let cancel_actions = scheduler.cancel_all();
-                                for ca in cancel_actions {
-                                    match ca {
-                                        SchedulerAction::Cancel { agent_handle_id } => {
-                                            if let Some(mgr) = self.subagent_manager.as_mut() {
-                                                // benign race: agent may have already finished
-                                                let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
-                                                    tracing::trace!(error = %e, "cancel on user request: agent already gone");
-                                                });
-                                            }
+                    if let Ok(Some(msg)) = result {
+                        if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
+                            let _ = self.channel.send_status("Canceling plan...").await;
+                            let cancel_actions = scheduler.cancel_all();
+                            for ca in cancel_actions {
+                                match ca {
+                                    SchedulerAction::Cancel { agent_handle_id } => {
+                                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                                            // benign race: agent may have already finished
+                                            let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                                tracing::trace!(error = %e, "cancel on user request: agent already gone");
+                                            });
                                         }
-                                        SchedulerAction::Done { status } => {
-                                            break 'tick status;
-                                        }
-                                        SchedulerAction::Spawn { .. }
-                                        | SchedulerAction::RunInline { .. } => {}
+                                    }
+                                    SchedulerAction::Done { status } => {
+                                        break 'tick status;
+                                    }
+                                    SchedulerAction::Spawn { .. }
+                                    | SchedulerAction::RunInline { .. } => {}
+                                }
+                            }
+                            // Defensive fallback: cancel_all always emits Done, but guard
+                            // against future changes.
+                            break 'tick crate::orchestration::GraphStatus::Canceled;
+                        }
+                        self.enqueue_or_merge(msg.text, vec![], msg.attachments);
+                    } else {
+                        // Channel closed — cancel running sub-agents and exit cleanly.
+                        let cancel_actions = scheduler.cancel_all();
+                        let n = cancel_actions
+                            .iter()
+                            .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
+                            .count();
+                        tracing::warn!(sub_agents = n, "scheduler channel closed, canceling running sub-agents");
+                        for action in cancel_actions {
+                            match action {
+                                SchedulerAction::Cancel { agent_handle_id } => {
+                                    if let Some(mgr) = self.subagent_manager.as_mut() {
+                                        let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                            tracing::trace!(
+                                                error = %e,
+                                                "cancel on channel close: agent already gone"
+                                            );
+                                        });
                                     }
                                 }
-                            } else {
-                                self.enqueue_or_merge(msg.text, vec![], msg.attachments);
+                                SchedulerAction::Done { status } => {
+                                    break 'tick status;
+                                }
+                                SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
                             }
                         }
-                        // Channel closed — exit promptly. GraphStatus::Failed signals an
-                        // abnormal termination without storing the graph for /plan retry.
-                        Ok(None) | Err(_) => {
-                            break 'tick crate::orchestration::GraphStatus::Failed;
-                        }
+                        // Defensive fallback: cancel_all always emits Done, but guard
+                        // against future changes.
+                        break 'tick crate::orchestration::GraphStatus::Canceled;
                     }
                 }
-                // Shutdown signal received — same treatment as channel close.
+                // Shutdown signal received — cancel running sub-agents and exit cleanly.
                 () = shutdown_signal(&mut self.shutdown) => {
-                    break 'tick crate::orchestration::GraphStatus::Failed;
+                    let cancel_actions = scheduler.cancel_all();
+                    let n = cancel_actions
+                        .iter()
+                        .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
+                        .count();
+                    tracing::warn!(sub_agents = n, "shutdown signal received, canceling running sub-agents");
+                    for action in cancel_actions {
+                        match action {
+                            SchedulerAction::Cancel { agent_handle_id } => {
+                                if let Some(mgr) = self.subagent_manager.as_mut() {
+                                    let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                        tracing::trace!(
+                                            error = %e,
+                                            "cancel on shutdown: agent already gone"
+                                        );
+                                    });
+                                }
+                            }
+                            SchedulerAction::Done { status } => {
+                                break 'tick status;
+                            }
+                            SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                        }
+                    }
+                    // Defensive fallback: cancel_all always emits Done, but guard against
+                    // future changes.
+                    break 'tick crate::orchestration::GraphStatus::Canceled;
                 }
             }
         };
