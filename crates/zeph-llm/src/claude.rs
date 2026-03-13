@@ -28,14 +28,16 @@ const MIN_MAX_TOKENS_WITH_THINKING: u32 = 16_000;
 #[derive(Serialize, Clone, Debug)]
 struct ContextManagement {
     #[serde(rename = "type")]
-    management_type: ContextManagementType,
-    trigger_tokens: u32,
+    kind: &'static str,
+    trigger: ContextManagementTrigger,
+    pause_after_compaction: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
-enum ContextManagementType {
-    Enabled,
+struct ContextManagementTrigger {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    value: u32,
 }
 
 /// Extended or adaptive thinking mode for Claude.
@@ -792,8 +794,12 @@ impl ClaudeProvider {
         // Multiply before dividing to preserve precision (avoid losing up to 99 tokens).
         let trigger_tokens = context_window * 80 / 100;
         Some(ContextManagement {
-            management_type: ContextManagementType::Enabled,
-            trigger_tokens,
+            kind: "auto_truncate",
+            trigger: ContextManagementTrigger {
+                kind: "input_tokens",
+                value: trigger_tokens,
+            },
+            pause_after_compaction: false,
         })
     }
 
@@ -4870,19 +4876,25 @@ mod tests {
         let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
             .with_server_compaction(true);
         let cm = provider.context_management().unwrap();
-        // trigger_tokens = context_window * 80 / 100 = 200_000 * 80 / 100 = 160_000
-        assert_eq!(cm.trigger_tokens, 160_000);
+        // trigger value = context_window * 80 / 100 = 200_000 * 80 / 100 = 160_000
+        assert_eq!(cm.trigger.value, 160_000);
     }
 
     #[test]
     fn context_management_serializes_correctly() {
         let cm = ContextManagement {
-            management_type: ContextManagementType::Enabled,
-            trigger_tokens: 160_000,
+            kind: "auto_truncate",
+            trigger: ContextManagementTrigger {
+                kind: "input_tokens",
+                value: 160_000,
+            },
+            pause_after_compaction: false,
         };
         let json = serde_json::to_value(&cm).unwrap();
-        assert_eq!(json["type"], "enabled");
-        assert_eq!(json["trigger_tokens"], 160_000);
+        assert_eq!(json["type"], "auto_truncate");
+        assert_eq!(json["trigger"]["type"], "input_tokens");
+        assert_eq!(json["trigger"]["value"], 160_000);
+        assert_eq!(json["pause_after_compaction"], false);
     }
 
     #[test]
