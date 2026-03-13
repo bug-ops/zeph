@@ -478,21 +478,10 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(|_| uuid::Uuid::new_v4().to_string())
             .collect();
-        let tool_started_ats: Vec<std::time::Instant> = tool_calls
-            .iter()
-            .map(|_| std::time::Instant::now())
-            .collect();
-        for (tc, tool_call_id) in tool_calls.iter().zip(tool_call_ids.iter()) {
-            let raw_params = tc.input.clone();
-            self.channel
-                .send_tool_start(ToolStartEvent {
-                    tool_name: &tc.name,
-                    tool_call_id,
-                    params: Some(raw_params),
-                    parent_tool_use_id: self.parent_tool_use_id.clone(),
-                })
-                .await?;
-        }
+        // tool_started_ats is populated per-tier just before each tier's join_all so that
+        // audit timestamps reflect actual execution start rather than pre-build time.
+        let mut tool_started_ats: Vec<std::time::Instant> =
+            vec![std::time::Instant::now(); tool_calls.len()];
 
         // Validate tool call arguments against URLs seen in flagged untrusted content (flag-only).
         for tc in tool_calls {
@@ -557,73 +546,198 @@ impl<C: Channel> Agent<C> {
         let max_parallel = self.runtime.timeouts.max_parallel_tools.max(1);
         let cancel = self.cancel_token.clone();
 
-        // Phase 1: Parallel execution bounded by a semaphore.
-        // All N futures are built upfront; for typical batches (2-5 tools) this is negligible.
-        // The semaphore limits concurrent execution, not future allocation.
+        // Phase 1: Tiered parallel execution bounded by a shared semaphore.
+        //
+        // Build a dependency DAG over tool_use_id references in call arguments. When the
+        // DAG is trivial (no dependencies — the common case), we execute all calls in a
+        // single tier with zero overhead. When dependencies exist, we partition calls into
+        // topological tiers and execute each tier in parallel, awaiting the previous tier
+        // before starting the next.
+        //
+        // ToolStartEvent is sent at the beginning of each tier so the UI reflects actual
+        // execution start time rather than pre-build time.
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel));
+        let dag = super::tool_call_dag::ToolCallDag::build(tool_calls);
+        let trivial = dag.is_trivial();
+        let tiers = dag.tiers();
+        let tier_count = tiers.len();
+        tracing::debug!(
+            trivial,
+            tier_count,
+            tool_count = tool_calls.len(),
+            "tool dispatch: partitioned into tiers"
+        );
 
-        let mut phase1_futs: Vec<ToolExecFut> = Vec::with_capacity(calls.len());
+        // Pre-allocate result vector; slots are filled as tiers complete.
+        let mut tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> =
+            (0..tool_calls.len()).map(|_| Ok(None)).collect();
 
-        for ((call, tc), &blocked) in calls
-            .iter()
-            .zip(tool_calls.iter())
-            .zip(repeat_blocked.iter())
-        {
-            if blocked {
-                let msg = format!(
-                    "[error] Repeated identical call to {} detected. \
-                     Use different arguments or a different approach.",
-                    tc.name
-                );
-                let out = zeph_tools::ToolOutput {
-                    tool_name: tc.name.clone(),
-                    summary: msg,
-                    blocks_executed: 0,
-                    filter_stats: None,
-                    diff: None,
-                    streamed: false,
-                    terminal_id: None,
-                    locations: None,
-                    raw_response: None,
-                };
-                phase1_futs.push(Box::pin(std::future::ready(Ok(Some(out)))));
-                continue;
-            }
+        // Track which indices have a failed/ConfirmationRequired prerequisite so that
+        // dependent calls in later tiers receive a synthetic error instead of executing.
+        // IMP-02: ConfirmationRequired is treated as a failure for dependency propagation —
+        // a dependent tool must not proceed when its prerequisite is awaiting user approval.
+        let mut failed_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-            let sem = std::sync::Arc::clone(&semaphore);
-            let executor = std::sync::Arc::clone(&self.tool_executor);
-            let call = call.clone();
-            let tool_name = tc.name.clone();
-            let tool_id = tc.id.clone();
-            let fut = async move {
-                let _permit = sem.acquire().await.map_err(|_| {
-                    zeph_tools::ToolError::Execution(std::io::Error::other(
-                        "semaphore closed during tool execution",
-                    ))
-                })?;
-                executor
-                    .execute_tool_call_erased(&call)
-                    .instrument(
-                        tracing::info_span!("tool_exec", tool_name = %tool_name, idx = %tool_id),
-                    )
-                    .await
-            };
-            phase1_futs.push(Box::pin(fut));
-        }
-
-        let mut tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> = tokio::select! {
-            results = futures::future::join_all(phase1_futs) => results,
-            () = cancel.cancelled() => {
+        for (tier_idx, tier) in tiers.into_iter().enumerate() {
+            if cancel.is_cancelled() {
                 self.tool_executor.set_skill_env(None);
                 tracing::info!("tool execution cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
-                // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
-                // persisted above is always paired in the DB (prevents cross-session orphan).
                 self.persist_cancelled_tool_results(tool_calls).await;
                 return Ok(());
             }
-        };
+
+            if tier_count > 1 {
+                let _ = self
+                    .channel
+                    .send_status(&format!(
+                        "Executing tools (tier {}/{})\u{2026}",
+                        tier_idx + 1,
+                        tier_count
+                    ))
+                    .await;
+            }
+
+            // Mark execution start time for this tier before sending ToolStartEvent.
+            let tier_start = std::time::Instant::now();
+            for &idx in &tier.indices {
+                tool_started_ats[idx] = tier_start;
+            }
+
+            // Send ToolStartEvent per-tier (section 3.7): accurate timing for TUI.
+            for &idx in &tier.indices {
+                let tc = &tool_calls[idx];
+                let tool_call_id = &tool_call_ids[idx];
+                self.channel
+                    .send_tool_start(ToolStartEvent {
+                        tool_name: &tc.name,
+                        tool_call_id,
+                        params: Some(tc.input.clone()),
+                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                    })
+                    .await?;
+            }
+
+            // Build futures for this tier. Calls whose prerequisite failed get a synthetic
+            // error result immediately (IMP-02: includes ConfirmationRequired dependencies).
+            let mut tier_futs: Vec<(usize, ToolExecFut)> = Vec::with_capacity(tier.indices.len());
+
+            for &idx in &tier.indices {
+                let tc = &tool_calls[idx];
+                let call = &calls[idx];
+
+                // Check if this call has a failed/blocked prerequisite.
+                // We look up which tool_use_ids this call references.
+                let has_failed_dep = {
+                    let string_vals = super::tool_call_dag::extract_string_values(&tc.input);
+                    string_vals.iter().any(|v| failed_ids.contains(v))
+                };
+
+                if has_failed_dep {
+                    // IMP-02: inject synthetic error so the LLM learns the dependency chain broke.
+                    let msg =
+                        "[error] Skipped: a prerequisite tool failed or requires confirmation"
+                            .to_string();
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                if repeat_blocked[idx] {
+                    let msg = format!(
+                        "[error] Repeated identical call to {} detected. \
+                         Use different arguments or a different approach.",
+                        tc.name
+                    );
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                let sem = std::sync::Arc::clone(&semaphore);
+                let executor = std::sync::Arc::clone(&self.tool_executor);
+                let call = call.clone();
+                let tool_name = tc.name.clone();
+                let tool_id = tc.id.clone();
+                let fut = async move {
+                    let _permit = sem.acquire().await.map_err(|_| {
+                        zeph_tools::ToolError::Execution(std::io::Error::other(
+                            "semaphore closed during tool execution",
+                        ))
+                    })?;
+                    executor
+                        .execute_tool_call_erased(&call)
+                        .instrument(tracing::info_span!(
+                            "tool_exec",
+                            tool_name = %tool_name,
+                            idx = %tool_id
+                        ))
+                        .await
+                };
+                tier_futs.push((idx, Box::pin(fut)));
+            }
+
+            // Execute all futures in this tier concurrently via join_all.
+            // Note: join_all provides cooperative (tokio task) concurrency, not OS-thread
+            // parallelism. Futures yield at .await points and are scheduled by the tokio
+            // runtime. For CPU-bound tool work, the semaphore limits oversubscription.
+            let (indices, futs): (Vec<usize>, Vec<ToolExecFut>) = tier_futs.into_iter().unzip();
+
+            let tier_results = tokio::select! {
+                results = futures::future::join_all(futs) => results,
+                () = cancel.cancelled() => {
+                    self.tool_executor.set_skill_env(None);
+                    tracing::info!("tool execution cancelled by user");
+                    self.update_metrics(|m| m.cancellations += 1);
+                    self.channel.send("[Cancelled]").await?;
+                    // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
+                    // persisted above is always paired in the DB (prevents cross-session orphan).
+                    self.persist_cancelled_tool_results(tool_calls).await;
+                    return Ok(());
+                }
+            };
+
+            // Store results and collect failed tool_use_ids for dependency propagation.
+            for (idx, result) in indices.into_iter().zip(tier_results) {
+                // IMP-02: Err(_) covers all error variants including ConfirmationRequired —
+                // no need to match individual variants. Ok(Some(out)) with "[error]" prefix
+                // covers synthetic/blocked results that arrived as Ok but signal failure.
+                let is_failed = match &result {
+                    Err(_) => true,
+                    Ok(Some(out)) => out.summary.starts_with("[error]"),
+                    Ok(None) => false,
+                };
+                if is_failed {
+                    failed_ids.insert(tool_calls[idx].id.clone());
+                }
+                tool_results[idx] = result;
+            }
+
+            if tier_count > 1 {
+                let _ = self.channel.send_status("").await;
+            }
+        }
 
         // Pad with empty results if needed (defensive; should not happen).
         while tool_results.len() < tool_calls.len() {

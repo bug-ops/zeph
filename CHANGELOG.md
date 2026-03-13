@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-core`: parallel tool dispatch now respects intra-turn `tool_use_id` dependencies — independent calls execute concurrently, dependent calls execute in topological tiers (closes #1646). A lightweight `ToolCallDag` (Kahn's algorithm) partitions tool calls into parallel tiers; when no dependencies exist the existing `join_all` fast path is used with zero overhead. Dependent calls whose prerequisite failed or requires confirmation receive a synthetic error. Cycle detection falls back to sequential execution of all calls.
 - **Claude 3 model ID retirement** (#1625): replaced retired Claude 3 model IDs (`claude-3-opus`, `claude-3`, `claude:claude-3-5-sonnet`) with `claude-sonnet-4-6` in test files. `ClaudeProvider::new()` now emits a `tracing::warn!` when the configured model starts with `claude-3`, alerting users with stale configs before the first API call fails.
 
 ### Added
