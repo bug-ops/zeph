@@ -252,34 +252,35 @@ fn load_config_tasks(
     }
 }
 
+/// Scheduler init result: executor plus optional channel receivers for agent wiring.
+#[cfg(feature = "scheduler")]
+pub(crate) struct SchedulerInitResult {
+    pub(crate) executor: SchedulerExecutor,
+    /// Present when `auto_update_check` is enabled.
+    pub(crate) update_rx: Option<mpsc::Receiver<String>>,
+    pub(crate) custom_rx: mpsc::Receiver<String>,
+}
+
+/// Initialize the scheduler: open stores, build executor, spawn tick loop.
+///
+/// Does NOT touch any `Agent` — returns raw channel receivers so callers can apply them to
+/// whichever `Agent<C>` they control. Returns `None` when the scheduler is disabled.
 #[cfg(feature = "scheduler")]
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn bootstrap_scheduler<C>(
-    agent: zeph_core::agent::Agent<C>,
+pub(crate) async fn init_scheduler(
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
     experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
-) -> (zeph_core::agent::Agent<C>, Option<SchedulerExecutor>)
-where
-    C: zeph_core::channel::Channel,
-{
+) -> Option<SchedulerInitResult> {
     if !config.scheduler.enabled {
-        if config.agent.auto_update_check {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
-            let handler = UpdateCheckHandler::new(env!("CARGO_PKG_VERSION"), tx);
-            tokio::spawn(async move {
-                let _ = handler.execute(&serde_json::Value::Null).await;
-            });
-            return (agent.with_update_notifications(rx), None);
-        }
-        return (agent, None);
+        return None;
     }
 
     let store = match JobStore::open(&config.memory.sqlite_path).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("scheduler: failed to open store: {e}");
-            return (agent, None);
+            return None;
         }
     };
 
@@ -288,7 +289,7 @@ where
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("scheduler: failed to open second store handle: {e}");
-            return (agent, None);
+            return None;
         }
     };
 
@@ -337,7 +338,7 @@ where
     #[cfg(not(feature = "experiments"))]
     let _ = experiment_deps;
 
-    if config.agent.auto_update_check {
+    let update_rx = if config.agent.auto_update_check {
         let (update_tx, update_rx) = tokio::sync::mpsc::channel(4);
         let update_task = match ScheduledTask::new(
             "update_check",
@@ -348,7 +349,7 @@ where
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!("scheduler: invalid update_check cron: {e}");
-                return (agent, None);
+                return None;
             }
         };
         scheduler.add_task(update_task);
@@ -356,31 +357,13 @@ where
             &TaskKind::UpdateCheck,
             Box::new(UpdateCheckHandler::new(
                 env!("CARGO_PKG_VERSION"),
-                update_tx.clone(),
+                update_tx,
             )),
         );
-        scheduler.register_handler(
-            &TaskKind::Custom("custom".to_owned()),
-            Box::new(CustomTaskHandler::new(custom_tx)),
-        );
-
-        if let Err(e) = scheduler.init().await {
-            tracing::warn!("scheduler init failed: {e}");
-            return (agent, None);
-        }
-
-        let tick_secs = config.scheduler.tick_interval_secs;
-        tokio::spawn(async move { scheduler.run_with_interval(tick_secs).await });
-        tracing::info!("scheduler started");
-
-        let executor = SchedulerExecutor::new(task_tx, store_arc);
-        return (
-            agent
-                .with_update_notifications(update_rx)
-                .with_custom_task_rx(custom_rx),
-            Some(executor),
-        );
-    }
+        Some(update_rx)
+    } else {
+        None
+    };
 
     scheduler.register_handler(
         &TaskKind::Custom("custom".to_owned()),
@@ -389,7 +372,7 @@ where
 
     if let Err(e) = scheduler.init().await {
         tracing::warn!("scheduler init failed: {e}");
-        return (agent, None);
+        return None;
     }
 
     let tick_secs = config.scheduler.tick_interval_secs;
@@ -397,7 +380,49 @@ where
     tracing::info!("scheduler started");
 
     let executor = SchedulerExecutor::new(task_tx, store_arc);
-    (agent.with_custom_task_rx(custom_rx), Some(executor))
+    Some(SchedulerInitResult {
+        executor,
+        update_rx,
+        custom_rx,
+    })
+}
+
+#[cfg(feature = "scheduler")]
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn bootstrap_scheduler<C>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &Config,
+    shutdown_rx: watch::Receiver<bool>,
+    experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
+) -> (zeph_core::agent::Agent<C>, Option<SchedulerExecutor>)
+where
+    C: zeph_core::channel::Channel,
+{
+    if !config.scheduler.enabled {
+        if config.agent.auto_update_check {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let handler = UpdateCheckHandler::new(env!("CARGO_PKG_VERSION"), tx);
+            tokio::spawn(async move {
+                let _ = handler.execute(&serde_json::Value::Null).await;
+            });
+            return (agent.with_update_notifications(rx), None);
+        }
+        return (agent, None);
+    }
+
+    let Some(result) = init_scheduler(config, shutdown_rx, experiment_deps).await else {
+        return (agent, None);
+    };
+
+    let agent = if let Some(rx) = result.update_rx {
+        agent
+            .with_update_notifications(rx)
+            .with_custom_task_rx(result.custom_rx)
+    } else {
+        agent.with_custom_task_rx(result.custom_rx)
+    };
+
+    (agent, Some(result.executor))
 }
 
 #[cfg(all(test, feature = "scheduler"))]
