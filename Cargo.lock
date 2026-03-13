@@ -9530,6 +9530,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "uuid",
  "wiremock",
 ]
 
