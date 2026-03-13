@@ -203,6 +203,15 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
             if let Some(ref em) = gemini_cfg.embedding_model {
                 provider = provider.with_embedding_model(em.clone());
             }
+            if let Some(level) = gemini_cfg.thinking_level {
+                provider = provider.with_thinking_level(level);
+            }
+            if let Some(budget) = gemini_cfg.thinking_budget {
+                provider = provider.with_thinking_budget(budget)?;
+            }
+            if let Some(include) = gemini_cfg.include_thoughts {
+                provider = provider.with_include_thoughts(include);
+            }
             Ok(AnyProvider::Gemini(provider))
         }
         other => {
@@ -336,6 +345,8 @@ pub fn create_summary_provider(model_spec: &str, config: &Config) -> anyhow::Res
                 || "https://generativelanguage.googleapis.com".to_owned(),
                 |c| c.base_url.clone(),
             );
+            // thinking_level intentionally not wired here: summary provider uses a
+            // capped max_tokens budget and is not expected to run thinking models.
             Ok(AnyProvider::Gemini(
                 GeminiProvider::new(api_key, model, max_tokens)
                     .with_base_url(base_url)
@@ -527,6 +538,15 @@ pub fn create_provider_from_config(
             if let Some(em) = gemini_cfg.and_then(|c| c.embedding_model.as_deref()) {
                 provider = provider.with_embedding_model(em);
             }
+            if let Some(level) = gemini_cfg.and_then(|c| c.thinking_level) {
+                provider = provider.with_thinking_level(level);
+            }
+            if let Some(budget) = gemini_cfg.and_then(|c| c.thinking_budget) {
+                provider = provider.with_thinking_budget(budget)?;
+            }
+            if let Some(include) = gemini_cfg.and_then(|c| c.include_thoughts) {
+                provider = provider.with_include_thoughts(include);
+            }
             Ok(AnyProvider::Gemini(provider))
         }
         "compatible" => {
@@ -682,11 +702,21 @@ pub fn build_orchestrator(
                     || "https://generativelanguage.googleapis.com".to_owned(),
                     |c| c.base_url.clone(),
                 );
-                SubProvider::Gemini(
-                    GeminiProvider::new(api_key, model.to_owned(), max_tokens)
-                        .with_base_url(base_url)
-                        .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
-                )
+                let mut provider = GeminiProvider::new(api_key, model.to_owned(), max_tokens)
+                    .with_base_url(base_url)
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
+                if let Some(level) = gemini_cfg.and_then(|c| c.thinking_level) {
+                    provider = provider.with_thinking_level(level);
+                }
+                if let Some(budget) = gemini_cfg.and_then(|c| c.thinking_budget) {
+                    provider = provider
+                        .with_thinking_budget(budget)
+                        .map_err(|e| anyhow::anyhow!("invalid thinking_budget: {e}"))?;
+                }
+                if let Some(include) = gemini_cfg.and_then(|c| c.include_thoughts) {
+                    provider = provider.with_include_thoughts(include);
+                }
+                SubProvider::Gemini(provider)
             }
             #[cfg(feature = "candle")]
             "candle" => {

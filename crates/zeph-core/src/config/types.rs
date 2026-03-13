@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use zeph_llm::ThinkingConfig;
+use zeph_llm::{GeminiThinkingLevel, ThinkingConfig};
 use zeph_skills::TrustLevel;
 use zeph_tools::{AutonomyLevel, ToolsConfig};
 
@@ -552,6 +552,16 @@ pub struct GeminiConfig {
     /// When set, `supports_embeddings()` returns true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    /// Thinking level for Gemini 3+ models: minimal, low, medium, high.
+    /// For Gemini 2.5 models use `thinking_budget` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<GeminiThinkingLevel>,
+    /// Thinking token budget for Gemini 2.5 models (0 = disable, -1 = dynamic, 0–32768).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<i32>,
+    /// Include thinking summaries in the response (default: false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_thoughts: Option<bool>,
 }
 
 fn default_gemini_max_tokens() -> u32 {

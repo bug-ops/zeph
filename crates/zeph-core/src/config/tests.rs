@@ -3035,3 +3035,127 @@ fn server_compaction_parsed_from_toml() {
         "server_compaction must be true when set in TOML"
     );
 }
+
+#[test]
+#[serial]
+fn parse_toml_gemini_with_thinking_level() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gemini_thinking.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "gemini"
+base_url = "http://localhost:11434"
+model = "gemini-3.0-flash"
+
+[llm.gemini]
+model = "gemini-3.0-flash"
+thinking_level = "medium"
+
+[skills]
+paths = [".zeph/skills"]
+
+[memory]
+sqlite_path = ".zeph/data/zeph.db"
+history_limit = 50
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    let gemini = config.llm.gemini.unwrap();
+    assert_eq!(
+        gemini.thinking_level,
+        Some(zeph_llm::GeminiThinkingLevel::Medium),
+        "thinking_level must parse from TOML lowercase value"
+    );
+    assert!(gemini.thinking_budget.is_none());
+    assert!(gemini.include_thoughts.is_none());
+}
+
+#[test]
+#[serial]
+fn parse_toml_gemini_with_thinking_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gemini_budget.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "gemini"
+base_url = "http://localhost:11434"
+model = "gemini-2.5-flash"
+
+[llm.gemini]
+model = "gemini-2.5-flash"
+thinking_budget = 2048
+include_thoughts = true
+
+[skills]
+paths = [".zeph/skills"]
+
+[memory]
+sqlite_path = ".zeph/data/zeph.db"
+history_limit = 50
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    let gemini = config.llm.gemini.unwrap();
+    assert_eq!(gemini.thinking_budget, Some(2048));
+    assert_eq!(gemini.include_thoughts, Some(true));
+    assert!(gemini.thinking_level.is_none());
+}
+
+#[test]
+#[serial]
+fn parse_toml_gemini_without_thinking_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gemini_no_thinking.toml");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(
+        f,
+        r#"
+[agent]
+name = "Zeph"
+
+[llm]
+provider = "gemini"
+base_url = "http://localhost:11434"
+model = "gemini-2.0-flash"
+
+[llm.gemini]
+model = "gemini-2.0-flash"
+
+[skills]
+paths = [".zeph/skills"]
+
+[memory]
+sqlite_path = ".zeph/data/zeph.db"
+history_limit = 50
+"#
+    )
+    .unwrap();
+
+    clear_env();
+
+    let config = Config::load(&path).unwrap();
+    let gemini = config.llm.gemini.unwrap();
+    assert!(gemini.thinking_level.is_none());
+    assert!(gemini.thinking_budget.is_none());
+    assert!(gemini.include_thoughts.is_none());
+}

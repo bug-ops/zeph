@@ -19,6 +19,19 @@ use crate::sse::gemini_sse_to_stream;
 const MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
+/// Thinking level for Gemini models that support extended reasoning.
+///
+/// Maps to `generationConfig.thinkingConfig.thinkingLevel` in the Gemini API.
+/// Valid for Gemini 3+ models. For Gemini 2.5, use `thinking_budget` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
+}
+
 pub struct GeminiProvider {
     client: reqwest::Client,
     api_key: String,
@@ -29,6 +42,9 @@ pub struct GeminiProvider {
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
     generation_overrides: Option<GenerationOverrides>,
     status_tx: Option<StatusTx>,
+    thinking_level: Option<ThinkingLevel>,
+    thinking_budget: Option<i32>,
+    include_thoughts: Option<bool>,
 }
 
 impl fmt::Debug for GeminiProvider {
@@ -43,6 +59,9 @@ impl fmt::Debug for GeminiProvider {
             .field("last_usage", &self.last_usage.lock().ok().and_then(|g| *g))
             .field("generation_overrides", &self.generation_overrides)
             .field("status_tx", &self.status_tx.is_some())
+            .field("thinking_level", &self.thinking_level)
+            .field("thinking_budget", &self.thinking_budget)
+            .field("include_thoughts", &self.include_thoughts)
             .finish()
     }
 }
@@ -59,6 +78,9 @@ impl Clone for GeminiProvider {
             last_usage: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
             status_tx: self.status_tx.clone(),
+            thinking_level: self.thinking_level,
+            thinking_budget: self.thinking_budget,
+            include_thoughts: self.include_thoughts,
         }
     }
 }
@@ -76,7 +98,39 @@ impl GeminiProvider {
             last_usage: std::sync::Mutex::new(None),
             generation_overrides: None,
             status_tx: None,
+            thinking_level: None,
+            thinking_budget: None,
+            include_thoughts: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_thinking_level(mut self, level: ThinkingLevel) -> Self {
+        self.thinking_level = Some(level);
+        self
+    }
+
+    /// Set the thinking budget (tokens) for Gemini 2.5 models.
+    ///
+    /// Valid values: `-1` (dynamic), `0` (disable), or `1–32768`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::Other`] if `budget` is outside the valid range.
+    pub fn with_thinking_budget(mut self, budget: i32) -> Result<Self, LlmError> {
+        if budget != -1 && !(0..=32768).contains(&budget) {
+            return Err(LlmError::Other(format!(
+                "thinking_budget {budget} is out of range; valid: -1 (dynamic), 0 (disable), 1-32768"
+            )));
+        }
+        self.thinking_budget = Some(budget);
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn with_include_thoughts(mut self, include: bool) -> Self {
+        self.include_thoughts = Some(include);
+        self
     }
 
     #[must_use]
@@ -114,6 +168,25 @@ impl GeminiProvider {
     }
 
     fn make_gen_config(&self) -> GenerationConfig {
+        let thinking_config = if self.thinking_level.is_some()
+            || self.thinking_budget.is_some()
+            || self.include_thoughts.is_some()
+        {
+            if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                tracing::debug!(
+                    model = %self.model,
+                    "thinking_config is set; ensure your model supports it \
+                     (thinkingLevel for Gemini 3+, thinkingBudget for Gemini 2.5)"
+                );
+            }
+            Some(GeminiThinkingConfig {
+                thinking_level: self.thinking_level,
+                thinking_budget: self.thinking_budget,
+                include_thoughts: self.include_thoughts,
+            })
+        } else {
+            None
+        };
         GenerationConfig {
             max_output_tokens: Some(self.max_output_tokens),
             temperature: self
@@ -125,6 +198,7 @@ impl GeminiProvider {
                 .generation_overrides
                 .as_ref()
                 .and_then(|o| o.top_k.and_then(|k| u32::try_from(k).ok())),
+            thinking_config,
         }
     }
 
@@ -996,6 +1070,18 @@ struct FunctionCallingConfig {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct GeminiThinkingConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<ThinkingLevel>,
+    /// Token budget for thinking (Gemini 2.5): 0 = disable, -1 = dynamic, 0–32768.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_budget: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include_thoughts: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
@@ -1005,6 +1091,8 @@ struct GenerationConfig {
     top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<GeminiThinkingConfig>,
 }
 
 #[derive(Deserialize)]
@@ -2991,6 +3079,200 @@ mod tests {
         assert!(
             err.contains("auth error"),
             "error must mention auth error: {err}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // ThinkingLevel / ThinkingConfig tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn thinking_level_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ThinkingLevel::Minimal).unwrap(),
+            "\"minimal\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ThinkingLevel::Low).unwrap(),
+            "\"low\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ThinkingLevel::Medium).unwrap(),
+            "\"medium\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ThinkingLevel::High).unwrap(),
+            "\"high\""
+        );
+    }
+
+    #[test]
+    fn thinking_level_deserializes_from_lowercase() {
+        let level: ThinkingLevel = serde_json::from_str("\"medium\"").unwrap();
+        assert_eq!(level, ThinkingLevel::Medium);
+    }
+
+    #[test]
+    fn thinking_config_serializes_camelcase() {
+        let cfg = GeminiThinkingConfig {
+            thinking_level: Some(ThinkingLevel::Medium),
+            thinking_budget: None,
+            include_thoughts: None,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["thinkingLevel"], "medium");
+        assert!(json.get("thinkingBudget").is_none());
+        assert!(json.get("includeThoughts").is_none());
+    }
+
+    #[test]
+    fn thinking_config_with_budget_serializes() {
+        let cfg = GeminiThinkingConfig {
+            thinking_level: None,
+            thinking_budget: Some(1024),
+            include_thoughts: Some(true),
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert!(json.get("thinkingLevel").is_none());
+        assert_eq!(json["thinkingBudget"], 1024);
+        assert_eq!(json["includeThoughts"], true);
+    }
+
+    #[test]
+    fn generation_config_without_thinking_omits_field() {
+        let cfg = GenerationConfig {
+            max_output_tokens: Some(8192),
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            thinking_config: None,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert!(json.get("thinkingConfig").is_none());
+        assert_eq!(json["maxOutputTokens"], 8192);
+    }
+
+    #[test]
+    fn generation_config_with_thinking_includes_nested_field() {
+        let cfg = GenerationConfig {
+            max_output_tokens: Some(8192),
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            thinking_config: Some(GeminiThinkingConfig {
+                thinking_level: Some(ThinkingLevel::High),
+                thinking_budget: None,
+                include_thoughts: None,
+            }),
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingLevel"], "high");
+    }
+
+    #[test]
+    fn provider_with_thinking_level_included_in_gen_config() {
+        let p = GeminiProvider::new("key".into(), "gemini-3.0-flash".into(), 2048)
+            .with_thinking_level(ThinkingLevel::Medium);
+        let gcfg = p.make_gen_config();
+        let json = serde_json::to_value(&gcfg).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingLevel"], "medium");
+    }
+
+    #[test]
+    fn provider_without_thinking_no_thinking_config() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 2048);
+        let gcfg = p.make_gen_config();
+        let json = serde_json::to_value(&gcfg).unwrap();
+        assert!(json.get("thinkingConfig").is_none());
+    }
+
+    #[test]
+    fn provider_with_thinking_budget_included_in_gen_config() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
+            .with_thinking_budget(1024)
+            .unwrap();
+        let gcfg = p.make_gen_config();
+        let json = serde_json::to_value(&gcfg).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingBudget"], 1024);
+    }
+
+    #[test]
+    fn provider_clone_preserves_thinking_level() {
+        let p = GeminiProvider::new("key".into(), "gemini-3.0-flash".into(), 2048)
+            .with_thinking_level(ThinkingLevel::High);
+        let cloned = p.clone();
+        assert_eq!(cloned.thinking_level, Some(ThinkingLevel::High));
+    }
+
+    #[test]
+    fn provider_debug_includes_thinking_level() {
+        let p = GeminiProvider::new("key".into(), "gemini-3.0-flash".into(), 2048)
+            .with_thinking_level(ThinkingLevel::Low);
+        let debug = format!("{p:?}");
+        assert!(debug.contains("thinking_level"));
+    }
+
+    // MT-1: deser round-trip for all four variants
+    #[test]
+    fn thinking_level_roundtrip_all_variants() {
+        for (s, expected) in [
+            ("\"minimal\"", ThinkingLevel::Minimal),
+            ("\"low\"", ThinkingLevel::Low),
+            ("\"medium\"", ThinkingLevel::Medium),
+            ("\"high\"", ThinkingLevel::High),
+        ] {
+            let level: ThinkingLevel = serde_json::from_str(s).unwrap();
+            assert_eq!(level, expected);
+            assert_eq!(serde_json::to_string(&level).unwrap(), s);
+        }
+    }
+
+    // MT-2: with_include_thoughts end-to-end
+    #[test]
+    fn provider_with_include_thoughts_in_gen_config() {
+        let p = GeminiProvider::new("key".into(), "gemini-3.0-flash".into(), 2048)
+            .with_include_thoughts(true);
+        let gcfg = p.make_gen_config();
+        let json = serde_json::to_value(&gcfg).unwrap();
+        assert_eq!(json["thinkingConfig"]["includeThoughts"], true);
+    }
+
+    // MT-3: budget edge values
+    #[test]
+    fn thinking_budget_edge_values() {
+        // 0 = disable
+        let p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
+            .with_thinking_budget(0)
+            .unwrap();
+        let json = serde_json::to_value(&p.make_gen_config()).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingBudget"], 0);
+
+        // -1 = dynamic
+        let p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
+            .with_thinking_budget(-1)
+            .unwrap();
+        let json = serde_json::to_value(&p.make_gen_config()).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingBudget"], -1);
+
+        // max = 32768
+        let p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
+            .with_thinking_budget(32768)
+            .unwrap();
+        let json = serde_json::to_value(&p.make_gen_config()).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingBudget"], 32768);
+    }
+
+    #[test]
+    fn thinking_budget_invalid_values_rejected() {
+        assert!(
+            GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
+                .with_thinking_budget(-2)
+                .is_err()
+        );
+        assert!(
+            GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
+                .with_thinking_budget(32769)
+                .is_err()
         );
     }
 }

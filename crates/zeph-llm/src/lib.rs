@@ -35,5 +35,6 @@ pub use claude::{ThinkingConfig, ThinkingEffort};
 pub use error::LlmError;
 #[cfg(feature = "schema")]
 pub use extractor::Extractor;
+pub use gemini::ThinkingLevel as GeminiThinkingLevel;
 pub use provider::{ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
 pub use stt::{SpeechToText, Transcription};
