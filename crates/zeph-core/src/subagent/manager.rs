@@ -800,10 +800,10 @@ impl SubAgentManager {
             .count();
 
         if active >= self.max_concurrent {
-            return Err(SubAgentError::Spawn(format!(
-                "concurrency limit {max} reached",
-                max = self.max_concurrent
-            )));
+            return Err(SubAgentError::ConcurrencyLimit {
+                active,
+                max: self.max_concurrent,
+            });
         }
 
         let task_id = Uuid::new_v4().to_string();
@@ -1253,10 +1253,10 @@ impl SubAgentManager {
             .filter(|h| matches!(h.state, SubAgentState::Working | SubAgentState::Submitted))
             .count();
         if active >= self.max_concurrent {
-            return Err(SubAgentError::Spawn(format!(
-                "concurrency limit {} reached",
-                self.max_concurrent
-            )));
+            return Err(SubAgentError::ConcurrencyLimit {
+                active,
+                max: self.max_concurrent,
+            });
         }
 
         let new_task_id = Uuid::new_v4().to_string();
@@ -1801,7 +1801,7 @@ mod tests {
 
         let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
         let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
-        assert!(matches!(err, SubAgentError::Spawn(_)));
+        assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
     }
 
     #[tokio::test]
@@ -2086,7 +2086,7 @@ mod tests {
         // Concurrency limit reached — second spawn should fail.
         let err = do_spawn(&mut mgr, "bot", "task 2").unwrap_err();
         assert!(
-            matches!(err, SubAgentError::Spawn(ref msg) if msg.contains("concurrency limit")),
+            matches!(err, SubAgentError::ConcurrencyLimit { .. }),
             "expected concurrency limit error, got: {err}"
         );
 
@@ -2668,7 +2668,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(
-            matches!(err, SubAgentError::Spawn(ref msg) if msg.contains("concurrency limit")),
+            matches!(err, SubAgentError::ConcurrencyLimit { .. }),
             "expected concurrency limit error, got: {err}"
         );
     }
