@@ -637,6 +637,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                     .unwrap_or_else(|| "gemini-2.0-flash".into()),
                 max_tokens: 8192,
                 base_url: "https://generativelanguage.googleapis.com".into(),
+                embedding_model: None,
             })
         } else {
             None

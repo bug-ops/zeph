@@ -194,11 +194,14 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 .context("ZEPH_GEMINI_API_KEY not found in vault")?
                 .expose()
                 .to_owned();
-            Ok(AnyProvider::Gemini(
+            let mut provider =
                 GeminiProvider::new(api_key, gemini_cfg.model.clone(), gemini_cfg.max_tokens)
                     .with_base_url(gemini_cfg.base_url.clone())
-                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
-            ))
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
+            if let Some(ref em) = gemini_cfg.embedding_model {
+                provider = provider.with_embedding_model(em.clone());
+            }
+            Ok(AnyProvider::Gemini(provider))
         }
         other => {
             if let Some(entries) = &config.llm.compatible {
@@ -512,11 +515,13 @@ pub fn create_provider_from_config(
                 || "https://generativelanguage.googleapis.com".to_owned(),
                 |c| c.base_url.clone(),
             );
-            Ok(AnyProvider::Gemini(
-                GeminiProvider::new(api_key, model.to_owned(), max_tokens)
-                    .with_base_url(base_url)
-                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
-            ))
+            let mut provider = GeminiProvider::new(api_key, model.to_owned(), max_tokens)
+                .with_base_url(base_url)
+                .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
+            if let Some(em) = gemini_cfg.and_then(|c| c.embedding_model.as_deref()) {
+                provider = provider.with_embedding_model(em);
+            }
+            Ok(AnyProvider::Gemini(provider))
         }
         "compatible" => {
             let name = pcfg
