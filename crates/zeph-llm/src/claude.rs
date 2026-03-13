@@ -49,13 +49,28 @@ pub enum ThinkingEffort {
 struct ThinkingCapability {
     /// Requires `interleaved-thinking-2025-05-14` beta header when `tool_use` is present.
     needs_interleaved_beta: bool,
+    /// Opus 4.6 uses `effort` instead of `budget_tokens`; `Extended` config is auto-converted.
+    prefers_effort: bool,
 }
 
 fn thinking_capability(model: &str) -> ThinkingCapability {
     // Sonnet 4.6 with tools needs `interleaved-thinking-2025-05-14` beta header.
     let needs_interleaved_beta = model.contains("claude-sonnet-4-6");
+    let prefers_effort = model.contains("claude-opus-4-6");
     ThinkingCapability {
         needs_interleaved_beta,
+        prefers_effort,
+    }
+}
+
+/// Maps a `budget_tokens` value to a `ThinkingEffort` level for models that prefer effort-based thinking.
+fn budget_to_effort(budget_tokens: u32) -> ThinkingEffort {
+    if budget_tokens < 5_000 {
+        ThinkingEffort::Low
+    } else if budget_tokens < 15_000 {
+        ThinkingEffort::Medium
+    } else {
+        ThinkingEffort::High
     }
 }
 
@@ -593,8 +608,26 @@ impl ClaudeProvider {
     }
 
     fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<f64>, Option<ThinkingEffort>) {
+        let cap = thinking_capability(&self.model);
         match &self.thinking {
             None => (None, None, None),
+            Some(ThinkingConfig::Extended { budget_tokens }) if cap.prefers_effort => {
+                let effort = budget_to_effort(*budget_tokens);
+                tracing::warn!(
+                    model = %self.model,
+                    budget_tokens,
+                    ?effort,
+                    "budget_tokens is deprecated for Opus 4.6; auto-converting to effort"
+                );
+                (
+                    Some(ThinkingParam {
+                        thinking_type: "adaptive",
+                        budget_tokens: None,
+                    }),
+                    None,
+                    Some(effort),
+                )
+            }
             Some(ThinkingConfig::Extended { budget_tokens }) => (
                 Some(ThinkingParam {
                     thinking_type: "enabled",
@@ -746,11 +779,21 @@ impl ClaudeProvider {
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
 
+        let cap = thinking_capability(&self.model);
+        // Opus 4.6 with thinking enabled does not support prefill: strip trailing assistant
+        // messages so the conversation always ends with a user turn.
+        let no_prefill = cap.prefers_effort && thinking_param.is_some();
+
         if Self::has_image_parts(messages) {
             let (system, mut chat_messages) =
                 split_messages_structured(messages, self.cache_user_messages);
             let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
             Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
+            if no_prefill {
+                while chat_messages.last().is_some_and(|m| m.role == "assistant") {
+                    chat_messages.pop();
+                }
+            }
             let beta = self.beta_header(false);
             let body = VisionRequestBody {
                 model: &self.model,
@@ -773,7 +816,12 @@ impl ClaudeProvider {
             return req.header("content-type", "application/json").json(&body);
         }
 
-        let (system, chat_messages) = split_messages(messages);
+        let (system, mut chat_messages) = split_messages(messages);
+        if no_prefill {
+            while chat_messages.last().is_some_and(|m| m.role == "assistant") {
+                chat_messages.pop();
+            }
+        }
         let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
         let beta = self.beta_header(false);
         let body = RequestBody {
@@ -3469,6 +3517,70 @@ mod tests {
     }
 
     #[test]
+    fn thinking_capability_opus_4_6_prefers_effort() {
+        let cap = thinking_capability("claude-opus-4-6");
+        assert!(cap.prefers_effort);
+    }
+
+    #[test]
+    fn thinking_capability_sonnet_4_6_no_prefers_effort() {
+        let cap = thinking_capability("claude-sonnet-4-6-20250514");
+        assert!(!cap.prefers_effort);
+    }
+
+    #[test]
+    fn budget_to_effort_boundaries() {
+        assert_eq!(budget_to_effort(4_999), ThinkingEffort::Low);
+        assert_eq!(budget_to_effort(5_000), ThinkingEffort::Medium);
+        assert_eq!(budget_to_effort(14_999), ThinkingEffort::Medium);
+        assert_eq!(budget_to_effort(15_000), ThinkingEffort::High);
+        assert_eq!(budget_to_effort(1_024), ThinkingEffort::Low);
+        assert_eq!(budget_to_effort(20_000), ThinkingEffort::High);
+    }
+
+    #[test]
+    fn build_thinking_param_opus_extended_converts_to_adaptive() {
+        let p = ClaudeProvider::new("k".into(), "claude-opus-4-6".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5_000,
+            })
+            .unwrap();
+        let (param, _temp, effort) = p.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "adaptive");
+        assert!(param.budget_tokens.is_none());
+        assert_eq!(effort, Some(ThinkingEffort::Medium));
+    }
+
+    #[test]
+    fn build_thinking_param_opus_adaptive_unchanged() {
+        let p = ClaudeProvider::new("k".into(), "claude-opus-4-6".into(), 32_000)
+            .with_thinking(ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::High),
+            })
+            .unwrap();
+        let (param, _temp, effort) = p.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "adaptive");
+        assert!(param.budget_tokens.is_none());
+        assert_eq!(effort, Some(ThinkingEffort::High));
+    }
+
+    #[test]
+    fn build_thinking_param_sonnet_extended_unchanged() {
+        let p = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5_000,
+            })
+            .unwrap();
+        let (param, _temp, effort) = p.build_thinking_param();
+        let param = param.unwrap();
+        assert_eq!(param.thinking_type, "enabled");
+        assert_eq!(param.budget_tokens, Some(5_000));
+        assert!(effort.is_none());
+    }
+
+    #[test]
     fn with_thinking_rejects_budget_below_minimum() {
         let err = ClaudeProvider::new("k".into(), "m".into(), 32_000)
             .with_thinking(ThinkingConfig::Extended { budget_tokens: 0 })
@@ -4307,5 +4419,98 @@ mod tests {
         provider.store_cache_usage(&usage);
 
         assert_eq!(provider.last_usage(), Some((42, 17)));
+    }
+
+    // ── Opus 4.6 no-prefill: trailing assistant messages must be stripped ──────
+
+    #[test]
+    fn build_request_opus_thinking_strips_trailing_assistant() {
+        let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000)
+            .with_thinking(ThinkingConfig::Adaptive { effort: None })
+            .unwrap();
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "hello".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "world".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let req = provider.build_request(&messages, false).build().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(
+            msgs.last()
+                .and_then(|m| m["role"].as_str())
+                .is_none_or(|r| r != "assistant"),
+            "trailing assistant message must be stripped for Opus 4.6 with thinking"
+        );
+    }
+
+    #[test]
+    fn build_request_opus_no_thinking_keeps_trailing_assistant() {
+        let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000);
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "hello".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "world".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let req = provider.build_request(&messages, false).build().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(
+            msgs.last().and_then(|m| m["role"].as_str()),
+            Some("assistant"),
+            "trailing assistant message must be preserved when thinking is disabled"
+        );
+    }
+
+    #[test]
+    fn build_request_sonnet_thinking_keeps_trailing_assistant() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 32_000)
+            .with_thinking(ThinkingConfig::Extended {
+                budget_tokens: 5_000,
+            })
+            .unwrap();
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "hello".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "world".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let req = provider.build_request(&messages, false).build().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(
+            msgs.last().and_then(|m| m["role"].as_str()),
+            Some("assistant"),
+            "Sonnet 4.6 must not strip trailing assistant messages"
+        );
     }
 }
