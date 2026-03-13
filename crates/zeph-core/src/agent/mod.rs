@@ -18,6 +18,8 @@ mod lsp_commands;
 mod mcp;
 mod message_queue;
 mod persistence;
+#[cfg(feature = "scheduler")]
+mod scheduler_commands;
 mod skill_management;
 pub mod slash_commands;
 pub(crate) mod tool_execution;
@@ -2100,6 +2102,12 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
             self.handle_graph_command(trimmed).await?;
+            return Ok(());
+        }
+
+        #[cfg(feature = "scheduler")]
+        if trimmed == "/scheduler" || trimmed.starts_with("/scheduler ") {
+            self.handle_scheduler_command(trimmed).await?;
             return Ok(());
         }
 
