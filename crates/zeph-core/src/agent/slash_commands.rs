@@ -178,6 +178,14 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         feature_gate: None,
     },
     // --- Advanced (feature-gated) ---
+    #[cfg(feature = "scheduler")]
+    SlashCommandInfo {
+        name: "/scheduler",
+        args: "[list]",
+        description: "List scheduled tasks",
+        category: SlashCategory::Tools,
+        feature_gate: Some("scheduler"),
+    },
     #[cfg(feature = "experiments")]
     SlashCommandInfo {
         name: "/experiment",

@@ -19,6 +19,7 @@ cuda = ["zeph-llm/cuda"]
 experiments = ["dep:ordered-float", "zeph-memory/experiments"]
 metal = ["zeph-llm/metal"]
 lsp-context = []
+scheduler = []
 
 [dependencies]
 age.workspace = true
