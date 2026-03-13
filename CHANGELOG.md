@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Gemini `inline_refs_inner` depth counter**: the depth limit was decremented on every structural recursion step (object key visit, array element visit), not only on `$ref` resolution. Schemas with 9+ levels of plain nesting (no `$ref`s) would hit the depth-8 cap prematurely and corrupt deeply nested schemas. Fixed by decrementing depth only when resolving a `$ref`, leaving structural recursion depth-neutral. Closes #1638.
+
 - **ACP graph memory extraction silently disabled**: `spawn_acp_agent` in `src/acp.rs` now calls `agent.with_graph_config()` with the `[memory.graph]` config section. Previously the `graph_config` field in `MemoryState` defaulted to `GraphConfig { enabled: false }`, causing `maybe_spawn_graph_extraction()` to return early for every ACP session regardless of user configuration. Closes #1633.
 
 ### Tests
