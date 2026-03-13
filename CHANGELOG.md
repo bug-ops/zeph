@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- llm: extend `is_compact_beta_rejection()` to catch `invalid_request_error` 400s mentioning `context_management` (fixes #1706)
 - **`ContextManagement` serialization for Claude server compaction API** (closes #1705): `ContextManagement` struct now serializes to `{ "type": "auto_truncate", "trigger": { "type": "input_tokens", "value": N }, "pause_after_compaction": false }` matching the Claude API spec. Previously serialized as `{ "type": "enabled", "trigger_tokens": N }` which caused a `400 invalid_request_error: context_management.type: Extra inputs are not permitted`, making `--server-compaction` completely non-functional.
 
 - **Skill embedding log noise** (#1387): `SkillMatcher::new()` no longer emits one `WARN` per skill when the provider does not support embeddings. All `EmbedUnsupported` errors are now collected and summarised into a single info-level log message (e.g. `skill embeddings skipped: embedding not supported by claude (14 skills affected)`). Timeout and other per-skill errors are still logged individually.

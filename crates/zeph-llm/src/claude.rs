@@ -557,7 +557,8 @@ impl ClaudeProvider {
         status == reqwest::StatusCode::BAD_REQUEST
             && (body.contains(ANTHROPIC_BETA_COMPACT)
                 || body.contains("unknown beta")
-                || body.contains("invalid beta"))
+                || body.contains("invalid beta")
+                || body.contains("context_management"))
     }
 
     #[must_use]
@@ -4993,6 +4994,30 @@ mod tests {
         assert!(!ClaudeProvider::is_compact_beta_rejection(
             reqwest::StatusCode::BAD_REQUEST,
             r#"{"error":{"message":"invalid parameter: model"}}"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_detects_context_management_extra_inputs() {
+        assert!(ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"context_management.type: Extra inputs are not permitted"}}"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_detects_context_management_generic() {
+        assert!(ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"context_management: field not allowed"}}"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_ignores_unrelated_no_context_management() {
+        assert!(!ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: field required"}}"#
         ));
     }
 
