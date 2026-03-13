@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Graceful degradation when `compact-2026-01-12` beta header is rejected** (closes #1698, SEC-COMPACT-03): `ClaudeProvider` now detects 400 responses caused by a rejected beta header (`unknown beta`, `invalid beta`, or explicit `compact-2026-01-12` mention). On detection: the `server_compaction_rejected` flag (shared `Arc<AtomicBool>`) is set, future requests omit the header and `context_management` field, a `WARN`-level log is emitted, and `LlmError::BetaHeaderRejected` is returned. The native tool-use retry loop (`call_chat_with_tools_retry`) catches this error, disables `server_compaction_active` on the agent, and retries the turn with client-side compaction — meaning the user loses at most one turn rather than entering a hard error loop. The `Arc` ensures all `ClaudeProvider` clones (e.g. router replicas) observe the rejection immediately.
 - ACP: agent-loop slash commands (`/plan`, `/graph`, `/status`, `/skills`, `/scheduler`, `/compact`, etc.) now correctly forwarded to the agent loop instead of returning "unknown command" errors (fixes #1672)
 
 ### Changed

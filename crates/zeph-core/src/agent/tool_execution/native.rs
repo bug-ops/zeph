@@ -41,6 +41,24 @@ impl<C: Channel> Agent<C> {
                     self.compact_context().await?;
                     let _ = self.channel.send_status("").await;
                 }
+                Err(e) if e.is_beta_header_rejected() && attempt + 1 < max_attempts => {
+                    // SEC-COMPACT-03: the compact-2026-01-12 beta header was rejected by the API.
+                    // The provider already set its internal flag; disable client-side gate and
+                    // retry so this turn is not lost.
+                    tracing::warn!(
+                        attempt,
+                        "server compaction beta header rejected; \
+                        falling back to client-side compaction and retrying"
+                    );
+                    self.server_compaction_active = false;
+                    let _ = self
+                        .channel
+                        .send_status(
+                            "server compaction unavailable, falling back to client-side...",
+                        )
+                        .await;
+                    let _ = self.channel.send_status("").await;
+                }
                 Err(e) => return Err(e),
             }
         }

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::LlmError;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -389,6 +391,9 @@ pub struct ClaudeProvider {
     generation_overrides: Option<GenerationOverrides>,
     /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
     server_compaction: bool,
+    /// Set to `true` at runtime when the API rejects the `compact-2026-01-12` beta header
+    /// (e.g. header deprecated/removed). Shared via `Arc` so clones observe the same state.
+    server_compaction_rejected: Arc<AtomicBool>,
     /// Most recent compaction summary received from the API, if any.
     last_compaction: std::sync::Mutex<Option<String>>,
 }
@@ -416,6 +421,10 @@ impl fmt::Debug for ClaudeProvider {
             .field("generation_overrides", &self.generation_overrides)
             .field("server_compaction", &self.server_compaction)
             .field(
+                "server_compaction_rejected",
+                &self.server_compaction_rejected.load(Ordering::Relaxed),
+            )
+            .field(
                 "last_compaction",
                 &self
                     .last_compaction
@@ -442,6 +451,7 @@ impl Clone for ClaudeProvider {
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
             server_compaction: self.server_compaction,
+            server_compaction_rejected: Arc::clone(&self.server_compaction_rejected),
             last_compaction: std::sync::Mutex::new(None),
         }
     }
@@ -472,6 +482,7 @@ impl ClaudeProvider {
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: None,
             server_compaction: false,
+            server_compaction_rejected: Arc::new(AtomicBool::new(false)),
             last_compaction: std::sync::Mutex::new(None),
         }
     }
@@ -524,6 +535,22 @@ impl ClaudeProvider {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+    }
+
+    /// Return `true` if the `compact-2026-01-12` beta header was rejected by the API
+    /// during a previous request this session.
+    #[must_use]
+    pub fn is_server_compaction_rejected(&self) -> bool {
+        self.server_compaction_rejected.load(Ordering::Relaxed)
+    }
+
+    /// Detect whether a 400 response body indicates the `compact-2026-01-12` beta header
+    /// was rejected by the API.
+    fn is_compact_beta_rejection(status: reqwest::StatusCode, body: &str) -> bool {
+        status == reqwest::StatusCode::BAD_REQUEST
+            && (body.contains(ANTHROPIC_BETA_COMPACT)
+                || body.contains("unknown beta")
+                || body.contains("invalid beta"))
     }
 
     /// Configure thinking mode for Claude extended/adaptive thinking.
@@ -724,7 +751,7 @@ impl ClaudeProvider {
             headers.push(ANTHROPIC_BETA_INTERLEAVED_THINKING);
         }
 
-        if self.server_compaction {
+        if self.server_compaction && !self.server_compaction_rejected.load(Ordering::Relaxed) {
             headers.push(ANTHROPIC_BETA_COMPACT);
         }
 
@@ -736,9 +763,9 @@ impl ClaudeProvider {
     }
 
     /// Build the `context_management` field for server-side compaction.
-    /// Returns `None` when `server_compaction` is disabled.
+    /// Returns `None` when `server_compaction` is disabled or the beta header was rejected.
     fn context_management(&self) -> Option<ContextManagement> {
-        if !self.server_compaction {
+        if !self.server_compaction || self.server_compaction_rejected.load(Ordering::Relaxed) {
             return None;
         }
         let context_window =
@@ -951,6 +978,18 @@ impl ClaudeProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API; \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             tracing::error!("Claude API error {status}: {text}");
             return Err(LlmError::Other(format!(
                 "Claude API request failed (status {status})"
@@ -1002,6 +1041,18 @@ impl ClaudeProvider {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API (streaming); \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             tracing::error!("Claude API streaming request error {status}: {text}");
             return Err(LlmError::Other(format!(
                 "Claude API streaming request failed (status {status})"
@@ -1127,6 +1178,18 @@ impl LlmProvider for ClaudeProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API (typed); \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             return Err(LlmError::Other(format!(
                 "Claude API request failed (status {status})"
             )));
@@ -1293,6 +1356,18 @@ impl LlmProvider for ClaudeProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API (tool use); \
+                    disabling server-side compaction for this session. \
+                    Update your config to set `server_compaction = false`."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
             tracing::error!("Claude API error {status}: {text}");
             return Err(LlmError::Other(format!(
                 "Claude API request failed (status {status})"
@@ -4750,6 +4825,90 @@ mod tests {
         let block: AnthropicContentBlock = serde_json::from_str(json).unwrap();
         assert!(
             matches!(block, AnthropicContentBlock::Compaction { summary } if summary == "Context summary here")
+        );
+    }
+
+    // --- graceful degradation tests (SEC-COMPACT-03) ---
+
+    #[test]
+    fn server_compaction_not_rejected_by_default() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        assert!(!provider.is_server_compaction_rejected());
+    }
+
+    #[test]
+    fn beta_header_excluded_after_rejection() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        // Simulate API rejection.
+        provider
+            .server_compaction_rejected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let header = provider.beta_header(false).unwrap_or_default();
+        assert!(
+            !header.contains("compact-2026-01-12"),
+            "compact beta must be excluded once rejected"
+        );
+    }
+
+    #[test]
+    fn context_management_absent_after_rejection() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        provider
+            .server_compaction_rejected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            provider.context_management().is_none(),
+            "context_management must be None after beta header rejection"
+        );
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_detects_unknown_beta() {
+        assert!(ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"unknown beta: compact-2026-01-12"}}"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_detects_invalid_beta_keyword() {
+        assert!(ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"invalid beta header supplied"}}"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_ignores_non_400() {
+        assert!(!ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"unknown beta: compact-2026-01-12"#
+        ));
+    }
+
+    #[test]
+    fn is_compact_beta_rejection_ignores_unrelated_400() {
+        assert!(!ClaudeProvider::is_compact_beta_rejection(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"invalid parameter: model"}}"#
+        ));
+    }
+
+    #[test]
+    fn clone_shares_rejection_flag() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        let clone = provider.clone();
+        // Set flag on original; clone must see it.
+        provider
+            .server_compaction_rejected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            clone.is_server_compaction_rejected(),
+            "clone must share the rejection Arc"
         );
     }
 }
