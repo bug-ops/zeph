@@ -254,7 +254,10 @@ fn detection_paths(kind: ProviderKind, base: &Path) -> Vec<PathBuf> {
         ProviderKind::OpenAi => {
             vec![base.join("AGENTS.override.md"), base.join("AGENTS.md")]
         }
-        ProviderKind::Compatible | ProviderKind::Ollama | ProviderKind::Candle => {
+        ProviderKind::Compatible
+        | ProviderKind::Ollama
+        | ProviderKind::Candle
+        | ProviderKind::Gemini => {
             vec![base.join("AGENTS.md")]
         }
         // Router and Orchestrator delegate to their sub-providers; detection

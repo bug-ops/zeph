@@ -982,7 +982,7 @@ impl<C: Channel> Agent<C> {
 
             // Sanitize tool output before inserting into LLM message history (Bug #1490 fix).
             // sanitize_tool_output is the sole sanitization point for tool output data flows.
-            // channel send above uses raw `body`; LLM sees only the sanitized version.
+            // channel send above uses body_display (redacted for privacy); LLM sees sanitize_tool_output output.
             let (llm_content, tool_had_injection_flags) =
                 self.sanitize_tool_output(&processed, &tc.name).await;
             has_any_injection_flags |= tool_had_injection_flags;
