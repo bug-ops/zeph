@@ -422,6 +422,13 @@ impl ClaudeProvider {
 
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
+        if model.starts_with("claude-3") {
+            tracing::warn!(
+                model = %model,
+                "configured model is a retired Claude 3 identifier and may cause API errors; \
+                consider upgrading to claude-sonnet-4-6 or claude-haiku-4-5-20251001",
+            );
+        }
         Self {
             client: crate::http::llm_client(600),
             api_key,
