@@ -279,6 +279,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
         "Ollama (local)",
         "Claude (API)",
         "OpenAI (API)",
+        "Gemini (API)",
         "Orchestrator (multi-model)",
         "Compatible (custom)",
     ];
@@ -369,6 +370,19 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
             );
         }
         3 => {
+            state.provider = Some(ProviderKind::Gemini);
+            if !use_age {
+                let raw = Password::new().with_prompt("Gemini API key").interact()?;
+                state.api_key = if raw.is_empty() { None } else { Some(raw) };
+            }
+            state.model = Some(
+                Input::new()
+                    .with_prompt("Model name")
+                    .default("gemini-2.0-flash".into())
+                    .interact_text()?,
+            );
+        }
+        4 => {
             state.provider = Some(ProviderKind::Orchestrator);
             println!("\nConfigure primary provider:");
             let (pk, pb, pm, pa, pn) = prompt_provider_config("Primary")?;
@@ -390,7 +404,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
             state.model = state.orchestrator_primary_model.clone();
             state.base_url = state.orchestrator_primary_base_url.clone();
         }
-        4 => {
+        5 => {
             state.provider = Some(ProviderKind::Compatible);
             state.compatible_name =
                 Some(Input::new().with_prompt("Provider name").interact_text()?);
@@ -615,6 +629,18 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         },
         ollama: None,
         openai: None,
+        gemini: if provider == ProviderKind::Gemini {
+            Some(zeph_core::config::GeminiConfig {
+                model: state
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "gemini-2.0-flash".into()),
+                max_tokens: 8192,
+                base_url: "https://generativelanguage.googleapis.com".into(),
+            })
+        } else {
+            None
+        },
         candle: None,
         orchestrator,
         compatible: if provider == ProviderKind::Compatible {
@@ -1439,6 +1465,7 @@ fn api_key_env_var(kind: ProviderKind, name: Option<&str>) -> Option<String> {
     match kind {
         ProviderKind::Claude => Some("ZEPH_CLAUDE_API_KEY".to_owned()),
         ProviderKind::OpenAi => Some("ZEPH_OPENAI_API_KEY".to_owned()),
+        ProviderKind::Gemini => Some("ZEPH_GEMINI_API_KEY".to_owned()),
         ProviderKind::Compatible => {
             let n = name.unwrap_or("custom").to_uppercase();
             Some(format!("ZEPH_COMPATIBLE_{n}_API_KEY"))

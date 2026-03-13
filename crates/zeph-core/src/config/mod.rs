@@ -155,6 +155,9 @@ impl Config {
         if let Some(val) = vault.get_secret("ZEPH_OPENAI_API_KEY").await? {
             self.secrets.openai_api_key = Some(Secret::new(val));
         }
+        if let Some(val) = vault.get_secret("ZEPH_GEMINI_API_KEY").await? {
+            self.secrets.gemini_api_key = Some(Secret::new(val));
+        }
         if let Some(val) = vault.get_secret("ZEPH_TELEGRAM_TOKEN").await? {
             let tg = self.telegram.get_or_insert(TelegramConfig {
                 token: None,

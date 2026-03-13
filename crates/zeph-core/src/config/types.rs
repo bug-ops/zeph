@@ -377,6 +377,7 @@ pub enum ProviderKind {
     Ollama,
     Claude,
     OpenAi,
+    Gemini,
     Candle,
     Orchestrator,
     Compatible,
@@ -390,6 +391,7 @@ impl ProviderKind {
             Self::Ollama => "ollama",
             Self::Claude => "claude",
             Self::OpenAi => "openai",
+            Self::Gemini => "gemini",
             Self::Candle => "candle",
             Self::Orchestrator => "orchestrator",
             Self::Compatible => "compatible",
@@ -415,6 +417,8 @@ pub struct LlmConfig {
     pub cloud: Option<CloudLlmConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai: Option<OpenAiConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini: Option<GeminiConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candle: Option<CandleConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -517,6 +521,27 @@ pub struct OpenAiConfig {
     pub embedding_model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GeminiConfig {
+    /// Gemini model name, e.g. `gemini-2.0-flash`.
+    pub model: String,
+    /// Maximum output tokens.
+    #[serde(default = "default_gemini_max_tokens")]
+    pub max_tokens: u32,
+    /// API base URL. Default: `https://generativelanguage.googleapis.com`.
+    /// Can be overridden for proxies or Vertex AI.
+    #[serde(default = "default_gemini_base_url")]
+    pub base_url: String,
+}
+
+fn default_gemini_max_tokens() -> u32 {
+    8192
+}
+
+fn default_gemini_base_url() -> String {
+    "https://generativelanguage.googleapis.com".to_owned()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1927,6 +1952,7 @@ pub struct ScheduledTaskConfig {
 pub struct ResolvedSecrets {
     pub claude_api_key: Option<Secret>,
     pub openai_api_key: Option<Secret>,
+    pub gemini_api_key: Option<Secret>,
     pub compatible_api_keys: HashMap<String, Secret>,
     pub discord_token: Option<Secret>,
     pub slack_bot_token: Option<Secret>,
@@ -1957,6 +1983,7 @@ impl Default for Config {
                 cloud: None,
                 ollama: None,
                 openai: None,
+                gemini: None,
                 candle: None,
                 orchestrator: None,
                 compatible: None,

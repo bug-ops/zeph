@@ -5,6 +5,7 @@ use anyhow::{Context, bail};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::compatible::CompatibleProvider;
+use zeph_llm::gemini::GeminiProvider;
 use zeph_llm::http::llm_client;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::openai::OpenAiProvider;
@@ -19,6 +20,7 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
             create_named_provider(config.llm.provider.as_str(), config)
         }
         ProviderKind::OpenAi => create_named_provider("openai", config),
+        ProviderKind::Gemini => create_named_provider("gemini", config),
         ProviderKind::Compatible => create_named_provider("compatible", config),
         #[cfg(feature = "candle")]
         ProviderKind::Candle => {
@@ -179,6 +181,25 @@ pub fn create_named_provider(name: &str, config: &Config) -> anyhow::Result<AnyP
                 .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
             ))
         }
+        "gemini" => {
+            let gemini_cfg = config
+                .llm
+                .gemini
+                .as_ref()
+                .context("llm.gemini config section required for Gemini provider")?;
+            let api_key = config
+                .secrets
+                .gemini_api_key
+                .as_ref()
+                .context("ZEPH_GEMINI_API_KEY not found in vault")?
+                .expose()
+                .to_owned();
+            Ok(AnyProvider::Gemini(
+                GeminiProvider::new(api_key, gemini_cfg.model.clone(), gemini_cfg.max_tokens)
+                    .with_base_url(gemini_cfg.base_url.clone())
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+            ))
+        }
         other => {
             if let Some(entries) = &config.llm.compatible {
                 let entry = if other == "compatible" {
@@ -287,6 +308,30 @@ pub fn create_summary_provider(model_spec: &str, config: &Config) -> anyhow::Res
             let max_tokens = openai_cfg.map_or(4096, |c| c.max_tokens);
             Ok(AnyProvider::OpenAi(
                 OpenAiProvider::new(api_key, base_url, model, max_tokens, None, None)
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+            ))
+        }
+        "gemini" => {
+            let api_key = config
+                .secrets
+                .gemini_api_key
+                .as_ref()
+                .context("ZEPH_GEMINI_API_KEY required for gemini summary provider")?
+                .expose()
+                .to_owned();
+            let gemini_cfg = config.llm.gemini.as_ref();
+            let model = model_override
+                .map(str::to_owned)
+                .or_else(|| gemini_cfg.map(|c| c.model.clone()))
+                .unwrap_or_else(|| "gemini-2.0-flash".to_owned());
+            let max_tokens = gemini_cfg.map_or(4096, |c| c.max_tokens.min(4096));
+            let base_url = gemini_cfg.map_or_else(
+                || "https://generativelanguage.googleapis.com".to_owned(),
+                |c| c.base_url.clone(),
+            );
+            Ok(AnyProvider::Gemini(
+                GeminiProvider::new(api_key, model, max_tokens)
+                    .with_base_url(base_url)
                     .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
             ))
         }
@@ -448,6 +493,31 @@ pub fn create_provider_from_config(
                     .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
             ))
         }
+        "gemini" => {
+            let api_key = config
+                .secrets
+                .gemini_api_key
+                .as_ref()
+                .context("ZEPH_GEMINI_API_KEY required for gemini provider")?
+                .expose()
+                .to_owned();
+            let gemini_cfg = config.llm.gemini.as_ref();
+            let model = pcfg
+                .model
+                .as_deref()
+                .or_else(|| gemini_cfg.map(|c| c.model.as_str()))
+                .unwrap_or("gemini-2.0-flash");
+            let max_tokens = gemini_cfg.map_or(4096, |c| c.max_tokens);
+            let base_url = gemini_cfg.map_or_else(
+                || "https://generativelanguage.googleapis.com".to_owned(),
+                |c| c.base_url.clone(),
+            );
+            Ok(AnyProvider::Gemini(
+                GeminiProvider::new(api_key, model.to_owned(), max_tokens)
+                    .with_base_url(base_url)
+                    .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+            ))
+        }
         "compatible" => {
             let name = pcfg
                 .model
@@ -578,6 +648,31 @@ pub fn build_orchestrator(
                         openai_cfg.reasoning_effort.clone(),
                     )
                     .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+                )
+            }
+            "gemini" => {
+                let api_key = config
+                    .secrets
+                    .gemini_api_key
+                    .as_ref()
+                    .context("ZEPH_GEMINI_API_KEY required for gemini sub-provider")?
+                    .expose()
+                    .to_owned();
+                let gemini_cfg = config.llm.gemini.as_ref();
+                let model = pcfg
+                    .model
+                    .as_deref()
+                    .or_else(|| gemini_cfg.map(|c| c.model.as_str()))
+                    .unwrap_or("gemini-2.0-flash");
+                let max_tokens = gemini_cfg.map_or(8192, |c| c.max_tokens);
+                let base_url = gemini_cfg.map_or_else(
+                    || "https://generativelanguage.googleapis.com".to_owned(),
+                    |c| c.base_url.clone(),
+                );
+                SubProvider::Gemini(
+                    GeminiProvider::new(api_key, model.to_owned(), max_tokens)
+                        .with_base_url(base_url)
+                        .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
                 )
             }
             #[cfg(feature = "candle")]
