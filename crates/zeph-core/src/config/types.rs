@@ -2102,6 +2102,10 @@ fn default_graph_community_summary_concurrency() -> usize {
     4
 }
 
+fn default_lpa_edge_chunk_size() -> usize {
+    10_000
+}
+
 fn default_graph_entity_similarity_threshold() -> f32 {
     0.85
 }
@@ -2169,6 +2173,10 @@ pub struct GraphConfig {
     /// Maximum concurrent LLM calls during community summarization. Default: 4.
     #[serde(default = "default_graph_community_summary_concurrency")]
     pub community_summary_concurrency: usize,
+    /// Number of edges fetched per chunk during community detection. Default: 10000.
+    /// Set to 0 to disable chunking and load all edges at once (legacy behavior).
+    #[serde(default = "default_lpa_edge_chunk_size")]
+    pub lpa_edge_chunk_size: usize,
 }
 
 impl Default for GraphConfig {
@@ -2189,6 +2197,7 @@ impl Default for GraphConfig {
             max_entities: 0,
             community_summary_max_prompt_bytes: default_graph_community_summary_max_prompt_bytes(),
             community_summary_concurrency: default_graph_community_summary_concurrency(),
+            lpa_edge_chunk_size: default_lpa_edge_chunk_size(),
         }
     }
 }
@@ -3178,6 +3187,7 @@ eval_budget_tokens = 50000
         assert_eq!(cfg.max_entities, 0);
         assert_eq!(cfg.community_summary_max_prompt_bytes, 8192);
         assert_eq!(cfg.community_summary_concurrency, 4);
+        assert_eq!(cfg.lpa_edge_chunk_size, 10_000);
     }
 
     #[test]

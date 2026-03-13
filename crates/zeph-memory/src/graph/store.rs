@@ -690,6 +690,42 @@ impl GraphStore {
         .map(|r| r.map_err(MemoryError::from).map(edge_from_row))
     }
 
+    /// Fetch a chunk of active edges using keyset pagination.
+    ///
+    /// Returns edges with `id > after_id` in ascending order, up to `limit` rows.
+    /// Starting with `after_id = 0` returns the first chunk. Pass the last `id` from
+    /// the returned chunk as `after_id` for the next page. An empty result means all
+    /// edges have been consumed.
+    ///
+    /// Keyset pagination is O(1) per page (index seek on `id`) vs OFFSET which is O(N).
+    /// It is also stable under concurrent inserts: new edges get monotonically higher IDs
+    /// and will appear in subsequent chunks or after the last chunk, never causing
+    /// duplicates. Concurrent invalidations (setting `valid_to`) may cause a single edge
+    /// to be skipped, which is acceptable — LPA operates on an eventual-consistency snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn edges_after_id(
+        &self,
+        after_id: i64,
+        limit: i64,
+    ) -> Result<Vec<Edge>, MemoryError> {
+        let rows: Vec<EdgeRow> = sqlx::query_as(
+            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE valid_to IS NULL AND id > ?1
+             ORDER BY id ASC
+             LIMIT ?2",
+        )
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(edge_from_row).collect())
+    }
+
     /// Find a community by its primary key.
     ///
     /// # Errors
@@ -2564,5 +2600,72 @@ mod tests {
 
         let count = gs.unprocessed_message_count().await.unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn edges_after_id_first_page_returns_all_within_limit() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("PA", "PA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("PB", "PB", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let c = gs
+            .upsert_entity("PC", "PC", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let e1 = gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
+        let e2 = gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
+        let e3 = gs.insert_edge(a, c, "r", "f3", 1.0, None).await.unwrap();
+
+        // after_id=0 returns first page.
+        let page1 = gs.edges_after_id(0, 2).await.unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].id, e1);
+        assert_eq!(page1[1].id, e2);
+
+        // Continue from last id of page1.
+        let page2 = gs
+            .edges_after_id(page1.last().unwrap().id, 2)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2[0].id, e3);
+
+        // Page after the last element returns empty.
+        let page3 = gs
+            .edges_after_id(page2.last().unwrap().id, 2)
+            .await
+            .unwrap();
+        assert!(page3.is_empty(), "no more edges after last id");
+    }
+
+    #[tokio::test]
+    async fn edges_after_id_skips_invalidated_edges() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("IA", "IA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("IB", "IB", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let c = gs
+            .upsert_entity("IC", "IC", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let e1 = gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
+        let e2 = gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
+
+        // Invalidate e1 — it must not appear in edges_after_id results.
+        gs.invalidate_edge(e1).await.unwrap();
+
+        let page = gs.edges_after_id(0, 10).await.unwrap();
+        assert_eq!(page.len(), 1, "invalidated edge must be excluded");
+        assert_eq!(page[0].id, e2);
     }
 }

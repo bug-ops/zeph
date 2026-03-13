@@ -208,6 +208,7 @@ entity_ambiguous_threshold = 0.70
 use_embedding_resolution = false  # Enable embedding-based entity dedup
 community_refresh_interval = 100  # Messages between community recalculation
 community_summary_concurrency = 4 # Parallel LLM calls for community summaries (1 = sequential)
+lpa_edge_chunk_size = 10000       # Edges per chunk during community detection (0 = legacy stream-all)
 expired_edge_retention_days = 90  # Days to retain expired (superseded) edges
 max_entities = 0                  # Entity cap (0 = unlimited)
 ```
