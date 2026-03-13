@@ -147,6 +147,8 @@ struct SharedAgentDeps {
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
     /// Project rule file paths to advertise in session `_meta`.
     acp_project_rules: Vec<PathBuf>,
+    /// Graph memory configuration from `[memory.graph]` config section.
+    graph_config: zeph_core::config::GraphConfig,
     /// Debug dump configuration from `[debug]` config section.
     debug_config: zeph_core::config::DebugConfig,
     /// Scheduler executor shared across sessions. Initialized once at startup.
@@ -462,6 +464,7 @@ async fn build_acp_deps(
         sqlite_path: config.memory.sqlite_path.clone(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
+        graph_config: config.memory.graph.clone(),
         debug_config: config.debug.clone(),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -533,6 +536,7 @@ async fn spawn_acp_agent(
     let summary_provider = d.summary_provider.clone();
     let judge_provider = d.judge_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
+    let graph_config = d.graph_config.clone();
     let debug_config = d.debug_config.clone();
     let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
     let available_secrets: Vec<(String, Secret)> = d
@@ -698,6 +702,8 @@ async fn spawn_acp_agent(
             summarization_threshold,
         );
     }
+
+    agent = agent.with_graph_config(graph_config);
 
     if let Some(signal) = cancel_signal {
         agent = agent.with_cancel_signal(signal);
