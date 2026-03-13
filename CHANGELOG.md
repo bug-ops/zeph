@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **MMR re-ranking silently disabled for all backends** (#1666): `build_memory()` in `AppBuilder` never called `with_ranking_options()`, so `mmr_enabled` was always `false` at runtime regardless of `[memory.semantic] mmr_enabled = true` in config. Fixed by wiring `mmr_enabled`, `mmr_lambda`, `temporal_decay_enabled`, and `temporal_decay_half_life_days` from config into the `SemanticMemory` builder after construction. Also adds a `tracing::warn!` when `get_vectors()` returns an empty map while MMR is enabled, making the silent fallback to score-based truncation observable in logs.
+
 - **Graph extraction 400 Bad Request with OpenAI strict mode**: `chat_typed` in `zeph-llm` now normalizes the `schemars`-generated JSON Schema before sending it to OpenAI structured output with `strict: true`. Normalization inlines `$ref`/`$defs` references (depth 8) and adds `additionalProperties: false` plus a complete `required` array on every object schema (depth 16). `Option<T>` fields are preserved via `anyOf` and made required as per OpenAI strict mode rules. Closes #1656.
 - **Gemini `inline_refs_inner` depth counter**: the depth limit was decremented on every structural recursion step (object key visit, array element visit), not only on `$ref` resolution. Schemas with 9+ levels of plain nesting (no `$ref`s) would hit the depth-8 cap prematurely and corrupt deeply nested schemas. Fixed by decrementing depth only when resolving a `$ref`, leaving structural recursion depth-neutral. Closes #1638.
 

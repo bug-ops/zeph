@@ -765,6 +765,10 @@ impl SemanticMemory {
                         );
                     }
                     Ok(_) => {
+                        tracing::warn!(
+                            "mmr: no vectors available for recalled messages, \
+                             falling back to score-based truncation"
+                        );
                         ranked.truncate(limit);
                     }
                     Err(e) => {
@@ -3319,6 +3323,79 @@ mod tests {
             // No assertion on count: with 0s timeout the task may or may not complete.
             // The test verifies there is no panic.
         }
+    }
+
+    // MMR end-to-end regression: verifies that with_ranking_options() actually enables MMR
+    // and that the SQLite vector backend provides vectors for re-ranking.
+    #[tokio::test]
+    async fn mmr_enabled_with_sqlite_backend_produces_diverse_recall() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        // MockProvider returns vec![1.0, 0.0] for every embed() call.
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0_f32, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let mut memory = SemanticMemory::with_sqlite_backend_and_pool_size(
+            ":memory:", provider, "m", 0.7, 0.3, 1,
+        )
+        .await
+        .unwrap();
+
+        // Enable MMR via with_ranking_options (lambda=0.5 → equal diversity/relevance weight).
+        memory = memory.with_ranking_options(false, 30, true, 0.5);
+
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Save three messages to SQLite.
+        let id1 = memory.remember(cid, "user", "alpha topic").await.unwrap();
+        let id2 = memory.remember(cid, "user", "beta topic").await.unwrap();
+        let id3 = memory
+            .remember(cid, "user", "alpha topic again")
+            .await
+            .unwrap();
+
+        // Manually store controlled vectors so MMR has real data to work with.
+        // id1 and id3: [1.0, 0.0] — same direction as query, redundant pair.
+        // id2: [0.0, 1.0] — orthogonal, diverse.
+        let qdrant = memory.qdrant.as_ref().unwrap();
+        qdrant.ensure_collection(2).await.unwrap();
+        qdrant
+            .store(id1, cid, "user", vec![1.0, 0.0], MessageKind::Regular, "m")
+            .await
+            .unwrap();
+        qdrant
+            .store(id2, cid, "user", vec![0.0, 1.0], MessageKind::Regular, "m")
+            .await
+            .unwrap();
+        qdrant
+            .store(id3, cid, "user", vec![1.0, 0.0], MessageKind::Regular, "m")
+            .await
+            .unwrap();
+
+        // recall() with limit=2 — without MMR both slots would go to the most similar pair
+        // (id1+id3), with MMR the diverse id2 should appear instead of id3.
+        let recalled = memory.recall("alpha", 2, None).await.unwrap();
+
+        assert!(
+            !recalled.is_empty(),
+            "recall must return results with SQLite vector backend"
+        );
+
+        let contents: Vec<&str> = recalled
+            .iter()
+            .map(|r| r.message.content.as_str())
+            .collect();
+
+        // "beta topic" (id2, vector [0,1]) must be present: MMR penalizes the redundant
+        // [1,0] pair (id1+id3) and promotes the orthogonal id2 for diversity.
+        assert!(
+            contents.contains(&"beta topic"),
+            "MMR must select diverse 'beta topic' over redundant 'alpha topic again'; \
+             got: {contents:?}"
+        );
     }
 
     // Priority 3: proptest

@@ -219,6 +219,13 @@ impl AppBuilder {
             }
         };
 
+        memory = memory.with_ranking_options(
+            self.config.memory.semantic.temporal_decay_enabled,
+            self.config.memory.semantic.temporal_decay_half_life_days,
+            self.config.memory.semantic.mmr_enabled,
+            self.config.memory.semantic.mmr_lambda,
+        );
+
         if self.config.memory.semantic.enabled && memory.is_vector_store_connected().await {
             tracing::info!("semantic memory enabled, vector store connected");
             match memory.embed_missing().await {
