@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- ACP: `session/prompt` no longer hangs indefinitely for slash commands that bypass LLM calls (`/graph`, `/status`, `/plan list`, `/skills`, `/compact`, etc.); `flush_chunks()` is now called after every non-LLM slash command branch in `process_user_message()` and `handle_image_command()`, ensuring the drain loop always receives a termination signal (fixes #1683)
 - ACP: agent-loop slash commands (`/plan`, `/graph`, `/status`, `/skills`, `/scheduler`, `/compact`, etc.) now correctly forwarded to the agent loop instead of returning "unknown command" errors (fixes #1672)
 - OpenAI: tools with no parameters (empty struct schemas) no longer cause `400 Bad Request` in strict mode; `parameters` field is omitted for no-param tools, matching the Gemini provider behavior (fixes #1673)
 
