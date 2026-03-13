@@ -1949,9 +1949,8 @@ mod tests {
         );
     }
 
-    /// RC2 reverse pass: history with a mix of complete pairs and orphaned `ToolResult`
-    /// messages. Orphaned `ToolResult` parts must be stripped; complete pairs must pass through
-    /// intact.
+    /// RC2 reverse pass: history with a mix of complete pairs and orphaned `ToolResult` messages.
+    /// Orphaned `ToolResult` parts must be stripped; complete pairs must pass through intact.
     #[tokio::test]
     async fn strip_orphans_mixed_history() {
         use zeph_llm::provider::MessagePart;
@@ -2056,7 +2055,7 @@ mod tests {
         );
     }
 
-    /// Regression: a properly matched `tool_use/tool_result` pair must NOT be touched by the
+    /// Regression: a properly matched `tool_use`/`tool_result` pair must NOT be touched by the
     /// mid-history scan — ensures the fix doesn't break valid tool exchanges.
     #[tokio::test]
     async fn sanitize_tool_pairs_preserves_matched_tool_pair() {
@@ -2130,8 +2129,8 @@ mod tests {
     }
 
     /// RC5: `persist_cancelled_tool_results` must persist a tombstone user message containing
-    /// `is_error=true` `ToolResult` parts for all `tool_calls` IDs so the preceding assistant `ToolUse`
-    /// is never orphaned in the DB after a cancellation.
+    /// `is_error=true` `ToolResult` parts for all `tool_calls` IDs so the preceding assistant
+    /// `ToolUse` is never orphaned in the DB after a cancellation.
     #[tokio::test]
     async fn persist_cancelled_tool_results_pairs_tool_use() {
         use zeph_llm::provider::MessagePart;

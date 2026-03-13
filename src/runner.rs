@@ -642,15 +642,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
 
-    let (agent, _index_watcher) = agent_setup::apply_code_index(
-        agent,
+    let (code_retriever, _index_watcher) = agent_setup::apply_code_indexer(
         &config.index,
         index_qdrant_ops,
         index_provider,
         index_pool,
-        provider_has_tools,
     )
     .await;
+    let agent =
+        agent_setup::apply_code_retrieval(agent, &config.index, code_retriever, provider_has_tools);
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);

@@ -1282,8 +1282,13 @@ mod tests {
         f.write_all(invalid.as_bytes()).unwrap();
 
         // CLI source: bad file causes hard error.
-        let err = SubAgentDef::load_all_with_sources(&[bad_path.clone()], &[bad_path], None, &[])
-            .unwrap_err();
+        let err = SubAgentDef::load_all_with_sources(
+            std::slice::from_ref(&bad_path),
+            std::slice::from_ref(&bad_path),
+            None,
+            &[],
+        )
+        .unwrap_err();
         assert!(matches!(err, SubAgentError::Parse { .. }));
     }
 

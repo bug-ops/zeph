@@ -401,6 +401,8 @@ fn compute_percentiles(scores: &[CaseScore]) -> (u64, u64) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::doc_markdown)]
+
     use super::*;
 
     fn make_score(case_index: usize, score: f64, latency_ms: u64) -> CaseScore {

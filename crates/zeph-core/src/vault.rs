@@ -354,7 +354,8 @@ impl VaultProvider for EnvVaultProvider {
 #[derive(Default)]
 pub struct MockVaultProvider {
     secrets: std::collections::BTreeMap<String, String>,
-    /// Keys returned by `list_keys()` but absent from secrets (simulates `get_secret` returning None).
+    /// Keys returned by `list_keys()` but absent from secrets (simulates `get_secret` returning
+    /// `None`).
     listed_only: Vec<String>,
 }
 
@@ -404,6 +405,8 @@ impl VaultProvider for MockVaultProvider {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::doc_markdown)]
+
     use super::*;
 
     #[test]

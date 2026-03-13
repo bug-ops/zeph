@@ -180,7 +180,11 @@ impl ConfigSnapshot {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::field_reassign_with_default, clippy::type_complexity)]
+    #![allow(
+        clippy::field_reassign_with_default,
+        clippy::semicolon_if_nothing_returned,
+        clippy::type_complexity
+    )]
 
     use super::*;
     use ordered_float::OrderedFloat;

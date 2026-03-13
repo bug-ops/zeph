@@ -27,6 +27,8 @@ pub enum PipelineError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::ignored_unit_patterns, clippy::manual_string_new)]
+
     use std::sync::Arc;
 
     use super::builtin::{ExtractStep, LlmStep, MapStep, RetrievalStep};

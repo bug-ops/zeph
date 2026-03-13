@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#![allow(
+    clippy::doc_markdown,
+    clippy::manual_assert,
+    clippy::manual_string_new,
+    clippy::type_complexity
+)]
+
 #[cfg(test)]
 pub mod agent_tests {
-    #![allow(clippy::type_complexity)]
-
     use super::super::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
     #[allow(unused_imports)]
     pub(crate) use super::super::{

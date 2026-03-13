@@ -105,6 +105,8 @@ impl BenchmarkSet {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::redundant_closure_for_method_calls)]
+
     use super::*;
 
     fn parse(toml: &str) -> BenchmarkSet {

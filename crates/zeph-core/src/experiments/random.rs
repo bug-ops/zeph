@@ -79,6 +79,8 @@ impl VariationGenerator for Random {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::manual_range_contains)]
+
     use std::collections::HashSet;
 
     use super::super::search_space::ParameterRange;

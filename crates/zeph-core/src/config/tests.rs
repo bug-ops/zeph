@@ -5,10 +5,10 @@
 #![allow(unsafe_code)]
 #![allow(
     clippy::default_trait_access,
+    clippy::doc_markdown,
     clippy::field_reassign_with_default,
     clippy::unnecessary_get_then_check
 )]
-
 use std::collections::HashMap;
 use std::io::Write;
 

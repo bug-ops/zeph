@@ -238,8 +238,10 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_shutdown() {
-        let mut config = DaemonConfig::default();
-        config.health_interval_secs = 1;
+        let config = DaemonConfig {
+            health_interval_secs: 1,
+            ..DaemonConfig::default()
+        };
         let (tx, rx) = watch::channel(false);
         let mut supervisor = DaemonSupervisor::new(&config, rx);
 

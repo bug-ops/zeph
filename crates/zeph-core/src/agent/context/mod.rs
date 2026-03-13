@@ -1579,7 +1579,7 @@ mod tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let metas: Vec<SkillMeta> = vec![];
+        let metas: [SkillMeta; 0] = [];
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let scored: Vec<ScoredMatch> = vec![];
 

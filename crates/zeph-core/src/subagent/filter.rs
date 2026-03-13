@@ -496,7 +496,7 @@ mod tests {
         );
         let call = ToolCall {
             tool_id: "shell".into(),
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -510,7 +510,7 @@ mod tests {
         );
         let call = ToolCall {
             tool_id: "web".into(),
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -524,7 +524,7 @@ mod tests {
         );
         let call = ToolCall {
             tool_id: "shell".into(),
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -535,7 +535,7 @@ mod tests {
         let exec = FilteredToolExecutor::new(stub_box(&["shell"]), ToolPolicy::InheritAll);
         let call = ToolCall {
             tool_id: "shell".into(),
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -608,7 +608,7 @@ mod tests {
         );
         let call = ToolCall {
             tool_id: "web".into(), // not in deny list → allowed
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -738,7 +738,7 @@ mod tests {
         );
         let call = ToolCall {
             tool_id: "shell".into(),
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(
@@ -756,7 +756,7 @@ mod tests {
         );
         let call = ToolCall {
             tool_id: "web".into(),
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_ok(), "non-disallowed tool must be allowed");
@@ -829,7 +829,7 @@ mod tests {
         let exec = PlanModeExecutor::new(stub_box(&["shell"]));
         let call = ToolCall {
             tool_id: "shell".into(),
-            params: Default::default(),
+            params: serde_json::Map::default(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err(), "plan mode must block all tool execution");
@@ -895,9 +895,10 @@ mod tests {
             ) {
                 // Skip patterns with ** (those are compile errors by design).
                 if !pattern.contains("**")
-                    && let Ok(p) = compile_glob(&pattern) {
-                        let _ = glob_match(&p, &name);
-                    }
+                    && let Ok(p) = compile_glob(&pattern)
+                {
+                    let _ = glob_match(&p, &name);
+                }
             }
 
             /// A literal pattern (no `*`) must match only exact strings.

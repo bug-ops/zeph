@@ -497,9 +497,8 @@ mod tests {
         // Importantly the call must not panic and must no longer hold "old-branch"
         // when running outside a git repo with that branch name.
         // We just verify the field is in a valid state (Some string or None).
-        match &env.git_branch {
-            Some(b) => assert!(!b.contains('\n'), "branch name must not contain newlines"),
-            None => {} // not in a git repo — acceptable
+        if let Some(b) = &env.git_branch {
+            assert!(!b.contains('\n'), "branch name must not contain newlines");
         }
     }
 

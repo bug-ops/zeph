@@ -835,7 +835,7 @@ mod tests {
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: String::new(),
-            hooks: Default::default(),
+            hooks: crate::subagent::SubagentHooks::default(),
             memory: None,
             source: None,
             file_path: None,

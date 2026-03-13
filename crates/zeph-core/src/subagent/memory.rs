@@ -360,7 +360,11 @@ mod tests {
     #[test]
     fn load_truncates_at_200_lines() {
         let tmp = tempfile::tempdir().unwrap();
-        let lines: String = (0..300).map(|i| format!("line {i}\n")).collect();
+        let mut lines = String::new();
+        for i in 0..300 {
+            use std::fmt::Write as _;
+            writeln!(&mut lines, "line {i}").unwrap();
+        }
         std::fs::write(tmp.path().join("MEMORY.md"), &lines).unwrap();
         let content = load_memory_content(tmp.path()).unwrap();
         let line_count = content.lines().count();

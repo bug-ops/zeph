@@ -308,7 +308,7 @@ mod tests {
     fn make_planned(
         task_id: &str,
         title: &str,
-        deps: Vec<&str>,
+        deps: &[&str],
         agent_hint: Option<&str>,
     ) -> PlannedTask {
         PlannedTask {
@@ -334,9 +334,9 @@ mod tests {
     fn test_convert_valid_linear_chain() {
         let response = PlannerResponse {
             tasks: vec![
-                make_planned("task-a", "Task A", vec![], None),
-                make_planned("task-b", "Task B", vec!["task-a"], None),
-                make_planned("task-c", "Task C", vec!["task-b"], None),
+                make_planned("task-a", "Task A", &[], None),
+                make_planned("task-b", "Task B", &["task-a"], None),
+                make_planned("task-c", "Task C", &["task-b"], None),
             ],
         };
         let graph = convert_response(response, "linear goal", &agents(), 20).unwrap();
@@ -351,10 +351,10 @@ mod tests {
         // A -> B, A -> C, B+C -> D
         let response = PlannerResponse {
             tasks: vec![
-                make_planned("a", "A", vec![], None),
-                make_planned("b", "B", vec!["a"], None),
-                make_planned("c", "C", vec!["a"], None),
-                make_planned("d", "D", vec!["b", "c"], None),
+                make_planned("a", "A", &[], None),
+                make_planned("b", "B", &["a"], None),
+                make_planned("c", "C", &["a"], None),
+                make_planned("d", "D", &["b", "c"], None),
             ],
         };
         let graph = convert_response(response, "diamond", &agents(), 20).unwrap();
@@ -365,9 +365,9 @@ mod tests {
     fn test_convert_parallel_tasks() {
         let response = PlannerResponse {
             tasks: vec![
-                make_planned("t1", "T1", vec![], None),
-                make_planned("t2", "T2", vec![], None),
-                make_planned("t3", "T3", vec![], None),
+                make_planned("t1", "T1", &[], None),
+                make_planned("t2", "T2", &[], None),
+                make_planned("t3", "T3", &[], None),
             ],
         };
         let graph = convert_response(response, "parallel", &agents(), 20).unwrap();
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn test_convert_exceeds_max_tasks() {
         let tasks = (0..5)
-            .map(|i| make_planned(&format!("task-{i}"), &format!("T{i}"), vec![], None))
+            .map(|i| make_planned(&format!("task-{i}"), &format!("T{i}"), &[], None))
             .collect();
         let response = PlannerResponse { tasks };
         let err = convert_response(response, "goal", &agents(), 3).unwrap_err();
@@ -399,8 +399,8 @@ mod tests {
         // Note: HashMap deduplicates by key, so id_map.len() < planned.len()
         let response = PlannerResponse {
             tasks: vec![
-                make_planned("dup", "First", vec![], None),
-                make_planned("dup", "Second", vec![], None),
+                make_planned("dup", "First", &[], None),
+                make_planned("dup", "Second", &[], None),
             ],
         };
         let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn test_convert_unknown_dependency() {
         let response = PlannerResponse {
-            tasks: vec![make_planned("task-a", "A", vec!["nonexistent"], None)],
+            tasks: vec![make_planned("task-a", "A", &["nonexistent"], None)],
         };
         let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
         assert!(matches!(err, OrchestrationError::PlanningFailed(_)));
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn test_convert_unknown_agent_hint_warns() {
         let response = PlannerResponse {
-            tasks: vec![make_planned("task-a", "A", vec![], Some("unknown-agent"))],
+            tasks: vec![make_planned("task-a", "A", &[], Some("unknown-agent"))],
         };
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();
         assert!(graph.tasks[0].agent_hint.is_none());
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn test_convert_known_agent_hint_stored() {
         let response = PlannerResponse {
-            tasks: vec![make_planned("task-a", "A", vec![], Some("agent-a"))],
+            tasks: vec![make_planned("task-a", "A", &[], Some("agent-a"))],
         };
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();
         assert_eq!(graph.tasks[0].agent_hint.as_deref(), Some("agent-a"));
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn test_convert_goal_is_set() {
         let response = PlannerResponse {
-            tasks: vec![make_planned("t1", "T1", vec![], None)],
+            tasks: vec![make_planned("t1", "T1", &[], None)],
         };
         let graph = convert_response(response, "my goal", &agents(), 20).unwrap();
         assert_eq!(graph.goal, "my goal");

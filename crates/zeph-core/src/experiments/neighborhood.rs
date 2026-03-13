@@ -103,7 +103,12 @@ impl VariationGenerator for Neighborhood {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::field_reassign_with_default)]
+    #![allow(
+        clippy::collapsible_if,
+        clippy::field_reassign_with_default,
+        clippy::manual_midpoint,
+        clippy::manual_range_contains
+    )]
 
     use std::collections::HashSet;
 

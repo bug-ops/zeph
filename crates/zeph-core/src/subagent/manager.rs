@@ -2316,8 +2316,10 @@ mod tests {
         let mut mgr = make_manager();
         mgr.definitions.push(def);
 
-        let mut cfg = SubAgentConfig::default();
-        cfg.default_permission_mode = Some(PermissionMode::Plan);
+        let cfg = SubAgentConfig {
+            default_permission_mode: Some(PermissionMode::Plan),
+            ..SubAgentConfig::default()
+        };
 
         let task_id = mgr
             .spawn(
@@ -2355,8 +2357,10 @@ mod tests {
         let mut mgr = make_manager();
         mgr.definitions.push(def);
 
-        let mut cfg = SubAgentConfig::default();
-        cfg.default_permission_mode = Some(PermissionMode::Plan);
+        let cfg = SubAgentConfig {
+            default_permission_mode: Some(PermissionMode::Plan),
+            ..SubAgentConfig::default()
+        };
 
         let task_id = mgr
             .spawn(
@@ -2383,8 +2387,10 @@ mod tests {
         let mut mgr = make_manager();
         mgr.definitions.push(def);
 
-        let mut cfg = SubAgentConfig::default();
-        cfg.default_disallowed_tools = vec!["dangerous".into()];
+        let cfg = SubAgentConfig {
+            default_disallowed_tools: vec!["dangerous".into()],
+            ..SubAgentConfig::default()
+        };
 
         let task_id = mgr
             .spawn(
@@ -2457,8 +2463,10 @@ mod tests {
         let mut mgr = make_manager();
         mgr.definitions.push(def);
 
-        let mut cfg = SubAgentConfig::default();
-        cfg.allow_bypass_permissions = true;
+        let cfg = SubAgentConfig {
+            allow_bypass_permissions: true,
+            ..SubAgentConfig::default()
+        };
 
         let task_id = mgr
             .spawn(
@@ -2495,9 +2503,10 @@ mod tests {
     }
 
     fn make_cfg_with_dir(dir: &std::path::Path) -> SubAgentConfig {
-        let mut cfg = SubAgentConfig::default();
-        cfg.transcript_dir = Some(dir.to_path_buf());
-        cfg
+        SubAgentConfig {
+            transcript_dir: Some(dir.to_path_buf()),
+            ..SubAgentConfig::default()
+        }
     }
 
     #[test]
@@ -2835,8 +2844,10 @@ mod tests {
         let mut mgr = make_manager();
         mgr.definitions.push(def);
 
-        let mut cfg = SubAgentConfig::default();
-        cfg.default_memory_scope = Some(MemoryScope::Project);
+        let cfg = SubAgentConfig {
+            default_memory_scope: Some(MemoryScope::Project),
+            ..SubAgentConfig::default()
+        };
 
         let task_id = mgr
             .spawn(
@@ -3069,8 +3080,10 @@ mod tests {
         let mut mgr = make_manager();
         mgr.definitions.push(def);
 
-        let mut cfg = SubAgentConfig::default();
-        cfg.default_memory_scope = Some(MemoryScope::Project);
+        let cfg = SubAgentConfig {
+            default_memory_scope: Some(MemoryScope::Project),
+            ..SubAgentConfig::default()
+        };
 
         let task_id = mgr
             .spawn(

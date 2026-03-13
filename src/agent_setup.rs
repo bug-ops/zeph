@@ -95,6 +95,8 @@ use zeph_index::{
 };
 use zeph_memory::QdrantOps;
 
+pub(crate) type CodeIndexerSetup = (Option<Arc<CodeRetriever>>, Option<IndexWatcher>);
+
 pub(crate) fn spawn_ctrl_c_handler(
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -183,29 +185,14 @@ pub(crate) fn apply_quarantine_provider<C: Channel>(
     }
 }
 
-pub(crate) async fn apply_code_index<C: Channel>(
-    agent: Agent<C>,
+pub(crate) async fn apply_code_indexer(
     config: &IndexConfig,
     qdrant_ops: Option<QdrantOps>,
     provider: zeph_llm::any::AnyProvider,
     pool: sqlx::SqlitePool,
-    provider_has_tools: bool,
-) -> (Agent<C>, Option<IndexWatcher>) {
+) -> CodeIndexerSetup {
     if !config.enabled {
-        return (agent, None);
-    }
-
-    // Repo map is purely structural (tree-sitter only) — inject regardless of provider type.
-    let agent = if config.repo_map_tokens > 0 {
-        agent.with_repo_map(config.repo_map_tokens, config.repo_map_ttl_secs)
-    } else {
-        agent
-    };
-
-    // Qdrant semantic retrieval requires vector store and is skipped for native tool_use providers.
-    if provider_has_tools {
-        tracing::info!("code index (Qdrant retrieval) skipped: provider supports native tool_use");
-        return (agent, None);
+        return (None, None);
     }
 
     let init = async {
@@ -243,6 +230,7 @@ pub(crate) async fn apply_code_index<C: Channel>(
                     Err(e) => tracing::warn!("background indexing failed: {e:#}"),
                 }
             });
+            tracing::info!("code indexer started");
             let watcher = if config.watch {
                 let root = std::env::current_dir().unwrap_or_default();
                 match IndexWatcher::start(&root, indexer) {
@@ -258,13 +246,40 @@ pub(crate) async fn apply_code_index<C: Channel>(
             } else {
                 None
             };
-            let agent = agent.with_code_retriever(std::sync::Arc::new(retriever));
-            (agent, watcher)
+            (Some(std::sync::Arc::new(retriever)), watcher)
         }
         Err(e) => {
-            tracing::warn!("code index initialization failed: {e:#}");
-            (agent, None)
+            tracing::warn!("code indexer initialization failed: {e:#}");
+            (None, None)
         }
+    }
+}
+
+pub(crate) fn apply_code_retrieval<C: Channel>(
+    agent: Agent<C>,
+    config: &IndexConfig,
+    retriever: Option<Arc<CodeRetriever>>,
+    provider_has_tools: bool,
+) -> Agent<C> {
+    let agent = if config.enabled && config.repo_map_tokens > 0 {
+        agent.with_repo_map(config.repo_map_tokens, config.repo_map_ttl_secs)
+    } else {
+        agent
+    };
+
+    if !config.enabled {
+        return agent;
+    }
+
+    if provider_has_tools {
+        tracing::info!("code retrieval skipped: provider supports native tool_use");
+        return agent;
+    }
+
+    if let Some(retriever) = retriever {
+        agent.with_code_retriever(retriever)
+    } else {
+        agent
     }
 }
 
@@ -408,6 +423,51 @@ mod tests {
         let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
         let result = apply_response_cache(agent, true, pool, 300);
+        drop(result);
+    }
+
+    #[tokio::test]
+    async fn apply_code_indexer_disabled_returns_no_runtime() {
+        let config = IndexConfig {
+            enabled: false,
+            ..IndexConfig::default()
+        };
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp.path().display());
+        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+
+        let (retriever, watcher) =
+            apply_code_indexer(&config, None, offline_provider(), pool).await;
+        assert!(retriever.is_none());
+        assert!(watcher.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_code_indexer_enabled_returns_runtime_without_watcher_when_disabled() {
+        let config = IndexConfig {
+            enabled: true,
+            watch: false,
+            ..IndexConfig::default()
+        };
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp.path().display());
+        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
+
+        let (retriever, watcher) =
+            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool).await;
+        assert!(retriever.is_some());
+        assert!(watcher.is_none());
+    }
+
+    #[test]
+    fn apply_code_retrieval_with_disabled_index_returns_agent() {
+        let agent = make_agent();
+        let config = IndexConfig {
+            enabled: false,
+            ..IndexConfig::default()
+        };
+        let result = apply_code_retrieval(agent, &config, None, true);
         drop(result);
     }
 }

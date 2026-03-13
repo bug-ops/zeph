@@ -440,6 +440,8 @@ fn is_leap(y: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::doc_markdown)]
+
     use super::*;
     use crate::config::ExperimentConfig;
     use crate::experiments::benchmark::{BenchmarkCase, BenchmarkSet};
