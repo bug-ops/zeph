@@ -320,6 +320,15 @@ fn parse_gemini_error(body: &str, status: reqwest::StatusCode) -> LlmError {
 // ---------------------------------------------------------------------------
 
 fn parse_tool_response(resp: GenerateContentResponse) -> Result<ChatResponse, LlmError> {
+    // Known limitation: only the first candidate is processed (issue #1640).
+    // Gemini supports `candidateCount > 1`, but Zeph never requests multiple
+    // candidates, so the remaining entries are unreachable in normal operation.
+    if resp.candidates.len() > 1 {
+        tracing::debug!(
+            count = resp.candidates.len(),
+            "Gemini returned multiple candidates; only the first will be used"
+        );
+    }
     let candidate = resp
         .candidates
         .into_iter()
