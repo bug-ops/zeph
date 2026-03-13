@@ -246,7 +246,17 @@ impl ModelOrchestrator {
                 "Falling back to default provider {}",
                 self.default_provider
             ));
-            tracing::info!("falling back to default provider {}", self.default_provider);
+            if tried.is_empty() {
+                tracing::debug!(
+                    "no chain configured, routing to default provider {}",
+                    self.default_provider
+                );
+            } else {
+                tracing::info!(
+                    "all chain providers failed, falling back to default provider {}",
+                    self.default_provider
+                );
+            }
             match provider.chat(messages).await {
                 Ok(response) => {
                     *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
@@ -388,10 +398,17 @@ impl ModelOrchestrator {
                 "Falling back to default provider {}",
                 self.default_provider
             ));
-            tracing::info!(
-                "falling back to default provider {} for stream",
-                self.default_provider
-            );
+            if tried.is_empty() {
+                tracing::debug!(
+                    "no chain configured, routing to default provider {} for stream",
+                    self.default_provider
+                );
+            } else {
+                tracing::info!(
+                    "all chain providers failed, falling back to default provider {} for stream",
+                    self.default_provider
+                );
+            }
             match provider.chat_stream(messages).await {
                 Ok(stream) => {
                     *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());

@@ -1277,6 +1277,14 @@ mod tests {
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
 
+    #[tokio::test]
+    async fn execute_confirmed_blocked_command_rejected() {
+        let executor = ShellExecutor::new(&default_config());
+        let response = "Run:\n```bash\nsudo id\n```";
+        let result = executor.execute_confirmed(response).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
     // --- network exfiltration patterns ---
 
     #[test]

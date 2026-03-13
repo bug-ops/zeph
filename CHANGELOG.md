@@ -8,15 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Chunked edge loading in community detection**: `detect_communities` now loads edges in configurable chunks (keyset pagination via `WHERE id > ?1 LIMIT ?2`) instead of loading all edges at once, reducing peak memory proportional to chunk size on large graphs. Configurable via `GraphConfig.lpa_edge_chunk_size` (default 10,000); `chunk_size = 0` falls back to the legacy full-stream path. Closes #1259.
+
+- **Gemini provider** (Phase 2): SSE streaming via `streamGenerateContent?alt=sse`. `chat_stream()` now produces `StreamChunk::Content` chunks; Gemini 2.5 thinking parts (`thought: true`) are emitted as `StreamChunk::Thinking`. `supports_streaming()` returns `true`. `GeminiProvider` gains `status_tx: Option<StatusTx>` field with `with_status_tx()`/`set_status_tx()` builders; `AnyProvider::set_status_tx()` now propagates the sender to the Gemini arm. Both streaming and non-streaming paths use `status_tx` for retry notifications. API key stays in the `x-goog-api-key` header (never in URL query params). Part of epic #1592, closes #1594.
 - **Gemini provider** (Phase 1): new `GeminiProvider` in `crates/zeph-llm/src/gemini.rs` supporting basic `generateContent` chat via the Google Gemini API. Authentication via `x-goog-api-key` header (not URL query param). System prompt extracted to `systemInstruction` top-level field; assistant role mapped to `"model"`. Consecutive same-role messages merged to satisfy Gemini's strict `user`/`model` alternation requirement. First-message guard: if the first content is a `"model"` turn, a synthetic empty user message is prepended. Configurable `base_url` (default `https://generativelanguage.googleapis.com/v1beta`), `model` (default `gemini-2.0-flash`), and `max_tokens`. JSON serialized once before retry loop. HTTP 429 and 503 retried via shared `send_with_retry()`. `ProviderKind::Gemini`, `GeminiConfig`, and `[llm.gemini]` TOML section added; `ZEPH_GEMINI_API_KEY` vault key supported; `--init` wizard updated. Part of epic #1592, closes #1593.
+
+### Tests
+
+- Added regression test `execute_confirmed_blocked_command_rejected` in `zeph-tools`: asserts that `execute_confirmed()` with a blocklisted command returns `ToolError::Blocked`, covering the code path fixed in #1529 (closes #1530).
 
 ### Fixed
 
-- fix(orchestration): prevent `DagScheduler` deadlock when `SubAgentManager` concurrency is exhausted during planning phase (#1619)
-  - Default `max_concurrent` raised from 1 to 5 (must be >= max_parallel + 1 when orchestration is active)
-  - `SubAgentManager` now supports slot reservation (`reserve_slots` / `release_reservation`) to protect orchestration task execution
-  - `DagScheduler` uses exponential backoff (100 ms base, x2 per retry, cap 5 s) instead of fixed 250 ms spin on `ConcurrencyLimit`
-  - Startup warning emitted when `max_concurrent < max_parallel + 1`
+- `ModelOrchestrator` no longer logs `INFO falling back to default provider` on every request when no router chain is configured (the normal orchestrator path). The message is now `DEBUG` when no chain providers were attempted; `INFO` is kept only when a chain was configured but all providers failed — the genuine fallback case. Closes #1484.
+- `DagScheduler::wait_event()` busy-spun at 250ms when `SubAgentManager` was saturated. Replaced the fixed `deferral_backoff` sleep with exponential backoff (250ms → 500ms → 1s → 2s → 4s, capped at 5s) that resets on the first successful spawn. Eliminates log flood and CPU waste when the concurrency limit is reached during plan execution (#1618).
+- Prevent `DagScheduler` deadlock when `SubAgentManager` concurrency is exhausted during planning phase (#1619): default `max_concurrent` raised from 1 to 5; `SubAgentManager` now supports slot reservation (`reserve_slots` / `release_reservation`); startup warning when `max_concurrent < max_parallel + 1`
 - HTTP 503 (`SERVICE_UNAVAILABLE`) responses are now retried by `send_with_retry()` alongside 429, benefiting all LLM providers (#1593)
 
 ### Security
@@ -27,6 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - SEC-004: Add `max_retry_duration_secs` (default 30) wall-clock retry budget to `AgentConfig`; the retry loop in `handle_native_tool_calls()` breaks when the budget is exhausted even if attempts remain, preventing indefinite retry loops (#1402)
 
 ### Fixed
+
+- `/plan cancel` is now delivered during active plan execution: `run_scheduler_loop()` polls `channel.recv()` concurrently with `scheduler.wait_event()` via `tokio::select!`. Receiving `/plan cancel` calls `cancel_all()`, processes the returned `Cancel` actions to abort sub-agent tasks, and exits the loop with `GraphStatus::Canceled`. Non-cancel messages received during execution are queued for processing after plan completion. Fixes #1603.
 
 - `search_code` tool now displays relative file paths in CLI output, preventing path sanitizer from replacing them with `[PATH]` when `redact_secrets = true`
 - Scheduler not initialized in ACP mode — tick loop and scheduler tool now available in ACP sessions (#1599)

@@ -271,6 +271,7 @@ impl<C: Channel> Agent<C> {
                     community_summary_max_prompt_bytes: graph_cfg
                         .community_summary_max_prompt_bytes,
                     community_summary_concurrency: graph_cfg.community_summary_concurrency,
+                    lpa_edge_chunk_size: graph_cfg.lpa_edge_chunk_size,
                 };
                 let pool = store.pool().clone();
                 match extract_and_store(

@@ -117,6 +117,7 @@ pub async fn detect_communities(
     provider: &AnyProvider,
     community_summary_max_prompt_bytes: usize,
     concurrency: usize,
+    edge_chunk_size: usize,
 ) -> Result<usize, MemoryError> {
     let entities = store.all_entities().await?;
     if entities.len() < 2 {
@@ -135,13 +136,55 @@ pub async fn detect_communities(
         node_map.insert(entity.id, idx);
     }
 
-    let edges: Vec<_> = store.all_active_edges_stream().try_collect().await?;
-    for edge in &edges {
-        if let (Some(&src_idx), Some(&tgt_idx)) = (
-            node_map.get(&edge.source_entity_id),
-            node_map.get(&edge.target_entity_id),
-        ) {
-            graph.add_edge(src_idx, tgt_idx, ());
+    // Build edge fact/id lookup maps alongside the petgraph, consuming edges in chunks.
+    // Each chunk is fetched and discarded, eliminating the need to hold a full Vec<Edge>.
+    // The true peak memory saving is in the Edge struct overhead (~130-180 bytes per edge
+    // beyond chunk_size): fact strings are still fully materialized in edge_facts_map.
+    let mut edge_facts_map: HashMap<(i64, i64), Vec<String>> = HashMap::new();
+    let mut edge_id_map: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
+
+    if edge_chunk_size == 0 {
+        // chunk_size=0: fall back to streaming all edges at once (legacy path).
+        let edges: Vec<_> = store.all_active_edges_stream().try_collect().await?;
+        for edge in &edges {
+            if let (Some(&src_idx), Some(&tgt_idx)) = (
+                node_map.get(&edge.source_entity_id),
+                node_map.get(&edge.target_entity_id),
+            ) {
+                graph.add_edge(src_idx, tgt_idx, ());
+            }
+            let key = (edge.source_entity_id, edge.target_entity_id);
+            edge_facts_map
+                .entry(key)
+                .or_default()
+                .push(edge.fact.clone());
+            edge_id_map.entry(key).or_default().push(edge.id);
+        }
+    } else {
+        let limit = i64::try_from(edge_chunk_size).unwrap_or(i64::MAX);
+        let mut last_id: i64 = 0;
+        loop {
+            let chunk = store.edges_after_id(last_id, limit).await?;
+            if chunk.is_empty() {
+                break;
+            }
+            // Safe: chunk is non-empty (checked above).
+            last_id = chunk.last().expect("non-empty chunk has a last element").id;
+            for edge in &chunk {
+                if let (Some(&src_idx), Some(&tgt_idx)) = (
+                    node_map.get(&edge.source_entity_id),
+                    node_map.get(&edge.target_entity_id),
+                ) {
+                    graph.add_edge(src_idx, tgt_idx, ());
+                }
+                let key = (edge.source_entity_id, edge.target_entity_id);
+                edge_facts_map
+                    .entry(key)
+                    .or_default()
+                    .push(edge.fact.clone());
+                edge_id_map.entry(key).or_default().push(edge.id);
+            }
+            // chunk is dropped here; only edge_facts_map and edge_id_map retain edge data.
         }
     }
 
@@ -197,18 +240,6 @@ pub async fn detect_communities(
     // Build entity name lookup for summary generation.
     let entity_name_map: HashMap<i64, &str> =
         entities.iter().map(|e| (e.id, e.name.as_str())).collect();
-
-    // Build edge fact lookup and edge ID lookup indexed by entity pair.
-    let mut edge_facts_map: HashMap<(i64, i64), Vec<String>> = HashMap::new();
-    let mut edge_id_map: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
-    for edge in &edges {
-        let key = (edge.source_entity_id, edge.target_entity_id);
-        edge_facts_map
-            .entry(key)
-            .or_default()
-            .push(edge.fact.clone());
-        edge_id_map.entry(key).or_default().push(edge.id);
-    }
 
     // Load stored fingerprints: fingerprint -> community_id (for unchanged partition detection).
     let stored_fingerprints = store.community_fingerprints().await?;
@@ -532,7 +563,7 @@ mod tests {
     async fn test_detect_communities_empty_graph() {
         let store = setup().await;
         let provider = mock_provider();
-        let count = detect_communities(&store, &provider, usize::MAX, 4)
+        let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         assert_eq!(count, 0);
@@ -546,7 +577,7 @@ mod tests {
             .upsert_entity("Solo", "Solo", EntityType::Concept, None)
             .await
             .unwrap();
-        let count = detect_communities(&store, &provider, usize::MAX, 4)
+        let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         assert_eq!(count, 0, "single isolated entity must not form a community");
@@ -584,7 +615,7 @@ mod tests {
             .await
             .unwrap();
 
-        let count = detect_communities(&store, &provider, usize::MAX, 4)
+        let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         // Isolated entity has no edges — must NOT be persisted as a community.
@@ -627,7 +658,7 @@ mod tests {
             cluster_ids.push(ids);
         }
 
-        let count = detect_communities(&store, &provider, usize::MAX, 4)
+        let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         assert_eq!(count, 4, "expected 4 communities, one per cluster");
@@ -666,7 +697,7 @@ mod tests {
                 .unwrap();
         }
 
-        let count = detect_communities(&store, &provider, usize::MAX, 4)
+        let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         assert_eq!(count, 0, "zero-edge graph must produce no communities");
@@ -929,14 +960,14 @@ mod tests {
             .unwrap();
 
         // First run: LLM called once to summarize the community.
-        detect_communities(&store, &provider, usize::MAX, 4)
+        detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         let first_calls = call_buf.lock().unwrap().len();
         assert_eq!(first_calls, 1, "first run must produce exactly 1 LLM call");
 
         // Second run: graph unchanged — 0 LLM calls.
-        detect_communities(&store, &provider, usize::MAX, 4)
+        detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         let second_calls = call_buf.lock().unwrap().len();
@@ -965,7 +996,7 @@ mod tests {
             .await
             .unwrap();
 
-        detect_communities(&store, &provider, usize::MAX, 4)
+        detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         let after_first = call_buf.lock().unwrap().len();
@@ -977,7 +1008,7 @@ mod tests {
             .await
             .unwrap();
 
-        detect_communities(&store, &provider, usize::MAX, 4)
+        detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         let after_second = call_buf.lock().unwrap().len();
@@ -1006,7 +1037,7 @@ mod tests {
             .await
             .unwrap();
 
-        detect_communities(&store, &provider, usize::MAX, 4)
+        detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         assert_eq!(store.community_count().await.unwrap(), 1);
@@ -1014,7 +1045,7 @@ mod tests {
         // Invalidate the edge — community dissolves.
         store.invalidate_edge(edge_id).await.unwrap();
 
-        detect_communities(&store, &provider, usize::MAX, 4)
+        detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
         assert_eq!(
@@ -1040,7 +1071,7 @@ mod tests {
             .unwrap();
         store.insert_edge(a, b, "r", "f", 1.0, None).await.unwrap();
 
-        let count = detect_communities(&store, &provider, usize::MAX, 1)
+        let count = detect_communities(&store, &provider, usize::MAX, 1, 0)
             .await
             .unwrap();
         assert_eq!(count, 1, "concurrency=1 must still detect the community");
@@ -1077,6 +1108,173 @@ mod tests {
         assert_ne!(
             fp_a, fp_b,
             "entity/edge sequences with same raw bytes must produce different fingerprints"
+        );
+    }
+
+    /// Chunked loading with chunk_size=1 must produce correct community assignments.
+    ///
+    /// Verifies: (a) community count is correct, (b) edge_facts_map and edge_id_map are fully
+    /// populated (checked via community membership — all edges contribute to fingerprints),
+    /// (c) the loop executes multiple iterations by using a tiny chunk size on a 3-edge graph.
+    #[tokio::test]
+    async fn test_detect_communities_chunked_correct_membership() {
+        let store = setup().await;
+        let provider = mock_provider();
+
+        // Build two isolated clusters: A-B-C and D-E.
+        let a = store
+            .upsert_entity("CA", "CA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity("CB", "CB", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let c = store
+            .upsert_entity("CC", "CC", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let d = store
+            .upsert_entity("CD", "CD", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let e = store
+            .upsert_entity("CE", "CE", EntityType::Concept, None)
+            .await
+            .unwrap();
+
+        store
+            .insert_edge(a, b, "r", "A-B fact", 1.0, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(b, c, "r", "B-C fact", 1.0, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(d, e, "r", "D-E fact", 1.0, None)
+            .await
+            .unwrap();
+
+        // chunk_size=1: each edge is fetched individually — loop must execute 3 times.
+        let count_chunked = detect_communities(&store, &provider, usize::MAX, 4, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            count_chunked, 2,
+            "chunked loading must detect both communities"
+        );
+
+        // Verify communities contain the correct members.
+        let communities = store.all_communities().await.unwrap();
+        assert_eq!(communities.len(), 2);
+
+        let abc_ids = [a, b, c];
+        let de_ids = [d, e];
+        let has_abc = communities
+            .iter()
+            .any(|c| abc_ids.iter().all(|id| c.entity_ids.contains(id)));
+        let has_de = communities
+            .iter()
+            .any(|c| de_ids.iter().all(|id| c.entity_ids.contains(id)));
+        assert!(has_abc, "cluster A-B-C must form a community");
+        assert!(has_de, "cluster D-E must form a community");
+    }
+
+    /// chunk_size=usize::MAX must load all edges in a single query and produce correct results.
+    #[tokio::test]
+    async fn test_detect_communities_chunk_size_max() {
+        let store = setup().await;
+        let provider = mock_provider();
+
+        let x = store
+            .upsert_entity("MX", "MX", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let y = store
+            .upsert_entity("MY", "MY", EntityType::Concept, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(x, y, "r", "X-Y fact", 1.0, None)
+            .await
+            .unwrap();
+
+        let count = detect_communities(&store, &provider, usize::MAX, 4, usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "chunk_size=usize::MAX must detect the community");
+    }
+
+    /// chunk_size=0 falls back to the stream path without panicking.
+    #[tokio::test]
+    async fn test_detect_communities_chunk_size_zero_fallback() {
+        let store = setup().await;
+        let provider = mock_provider();
+
+        let p = store
+            .upsert_entity("ZP", "ZP", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let q = store
+            .upsert_entity("ZQ", "ZQ", EntityType::Concept, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(p, q, "r", "P-Q fact", 1.0, None)
+            .await
+            .unwrap();
+
+        let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "chunk_size=0 must detect the community via stream fallback"
+        );
+    }
+
+    /// Verifies that edge_facts_map is fully populated during chunked loading by checking
+    /// that the community fingerprint changes when a new edge is added (fingerprint includes
+    /// edge IDs, so any missed edges would produce a different or stale fingerprint).
+    #[tokio::test]
+    async fn test_detect_communities_chunked_edge_map_complete() {
+        let store = setup().await;
+        let (provider, call_buf) = recording_provider();
+
+        let a = store
+            .upsert_entity("FA", "FA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity("FB", "FB", EntityType::Concept, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(a, b, "r", "edge1 fact", 1.0, None)
+            .await
+            .unwrap();
+
+        // First detection with chunk_size=1.
+        detect_communities(&store, &provider, usize::MAX, 4, 1)
+            .await
+            .unwrap();
+        let calls_after_first = call_buf.lock().unwrap().len();
+        assert_eq!(calls_after_first, 1, "first run must trigger 1 LLM call");
+
+        // Add another edge — fingerprint must change, triggering a second LLM call.
+        store
+            .insert_edge(b, a, "r2", "edge2 fact", 1.0, None)
+            .await
+            .unwrap();
+
+        detect_communities(&store, &provider, usize::MAX, 4, 1)
+            .await
+            .unwrap();
+        let calls_after_second = call_buf.lock().unwrap().len();
+        assert_eq!(
+            calls_after_second, 2,
+            "adding an edge must change fingerprint and trigger re-summarization"
         );
     }
 }

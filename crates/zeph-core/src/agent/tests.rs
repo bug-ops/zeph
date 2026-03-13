@@ -2844,6 +2844,120 @@ mod compaction_e2e {
         );
     }
 
+    /// COV-01: `/plan cancel` received during `run_scheduler_loop` cancels the plan.
+    ///
+    /// Verifies that when the channel delivers "/plan cancel" while the scheduler loop
+    /// is waiting for a task event, `cancel_all()` is called and the loop exits with
+    /// `GraphStatus::Canceled`. The "Canceling plan..." status must be sent immediately.
+    #[tokio::test]
+    async fn plan_cancel_during_scheduler_loop_cancels_plan() {
+        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
+        use crate::subagent::SubAgentManager;
+
+        // Channel pre-loaded with "/plan cancel" — returned immediately on first recv().
+        let channel = MockChannel::new(vec!["/plan cancel".to_owned()]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+        agent.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Graph in Running status with one task in Running state: tick() will not emit
+        // any actions (no Ready tasks, no timed-out running tasks), so the loop reaches
+        // wait_event() / select! immediately.
+        let mut graph = TaskGraph::new("cancel test goal");
+        let mut node = TaskNode::new(0, "task-0", "will be canceled");
+        node.status = TaskStatus::Running;
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            ..OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Canceled,
+            "run_scheduler_loop must return Canceled when /plan cancel is received"
+        );
+        assert!(
+            agent
+                .channel
+                .statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("Canceling plan")),
+            "must send 'Canceling plan...' status before processing cancel"
+        );
+    }
+
+    /// COV-02: `finalize_plan_execution` with `GraphStatus::Canceled` sends the correct
+    /// message and does NOT store the graph into `pending_graph`.
+    #[tokio::test]
+    async fn finalize_plan_execution_canceled_does_not_store_graph() {
+        use crate::subagent::SubAgentManager;
+
+        let channel = MockChannel::new(vec![]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration_config.enabled = true;
+        agent.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Graph with one completed task and one canceled task — typical mid-cancel state.
+        let mut graph = TaskGraph::new("cancel finalize test");
+        let mut completed = TaskNode::new(0, "task-done", "finished");
+        completed.status = TaskStatus::Completed;
+        completed.result = Some(TaskResult {
+            output: "done".into(),
+            artifacts: vec![],
+            duration_ms: 10,
+            agent_id: None,
+            agent_def: None,
+        });
+        let mut canceled = TaskNode::new(1, "task-canceled", "was running");
+        canceled.status = TaskStatus::Canceled;
+        graph.tasks.push(completed);
+        graph.tasks.push(canceled);
+        graph.status = GraphStatus::Canceled;
+
+        agent
+            .finalize_plan_execution(graph, GraphStatus::Canceled)
+            .await
+            .unwrap();
+
+        let msgs = agent.channel.sent_messages();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("canceled") || m.contains("Canceled")),
+            "must send a cancellation message; got: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("1/2")),
+            "must report completed task count (1/2); got: {msgs:?}"
+        );
+        assert!(
+            agent.pending_graph.is_none(),
+            "canceled plan must NOT be stored in pending_graph"
+        );
+    }
+
+    /// COV-03 (non-cancel message queuing): tested via enqueue_or_merge unit tests in
+    /// message_queue.rs. A dedicated scheduler-loop integration test is deferred to
+    /// GitHub issue #1605.
+
     /// GAP-9: `handle_plan_status` shows the correct message for each graph status.
     #[tokio::test]
     async fn plan_status_reflects_graph_status() {

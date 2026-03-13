@@ -1491,12 +1491,14 @@ impl SemanticMemory {
                     let max_cap = config.max_entities_cap;
                     let max_prompt_bytes = config.community_summary_max_prompt_bytes;
                     let concurrency = config.community_summary_concurrency;
+                    let edge_chunk_size = config.lpa_edge_chunk_size;
                     tokio::spawn(async move {
                         match crate::graph::community::detect_communities(
                             &store2,
                             &provider2,
                             max_prompt_bytes,
                             concurrency,
+                            edge_chunk_size,
                         )
                         .await
                         {
@@ -1548,6 +1550,7 @@ pub struct GraphExtractionConfig {
     pub max_entities_cap: usize,
     pub community_summary_max_prompt_bytes: usize,
     pub community_summary_concurrency: usize,
+    pub lpa_edge_chunk_size: usize,
 }
 
 /// Stats returned from a completed extraction.

@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 2563
 expression: toml_str
 ---
 [agent]
@@ -128,6 +127,7 @@ expired_edge_retention_days = 90
 max_entities = 0
 community_summary_max_prompt_bytes = 8192
 community_summary_concurrency = 4
+lpa_edge_chunk_size = 10000
 
 [tools]
 enabled = true
