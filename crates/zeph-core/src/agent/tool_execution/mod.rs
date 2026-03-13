@@ -244,7 +244,7 @@ impl<C: Channel> Agent<C> {
         // MCP tools use "server:tool" format (contains ':') or legacy "mcp" name.
         // Web scrape tools use "web-scrape" (hyphenated) or "fetch".
         // Everything else is local shell/file output.
-        let kind = if tool_name.contains(':') || tool_name == "mcp" {
+        let kind = if tool_name.contains(':') || tool_name == "mcp" || tool_name == "search_code" {
             ContentSourceKind::McpResponse
         } else if tool_name == "web-scrape" || tool_name == "web_scrape" || tool_name == "fetch" {
             ContentSourceKind::WebScrape

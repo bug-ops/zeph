@@ -9277,16 +9277,19 @@ name = "zeph"
 version = "0.14.3"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.8.8",
  "chrono",
  "clap",
  "cron",
  "dialoguer",
  "futures",
+ "glob",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "reqwest 0.13.2",
+ "rmcp",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -9301,6 +9304,7 @@ dependencies = [
  "tracing-appender",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "zeph-a2a",
  "zeph-acp",
  "zeph-channels",
@@ -9623,6 +9627,7 @@ dependencies = [
 name = "zeph-tools"
 version = "0.14.3"
 dependencies = [
+ "async-trait",
  "dirs",
  "filetime",
  "glob",
@@ -9640,9 +9645,11 @@ dependencies = [
  "tokio-util",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "tree-sitter",
  "url",
  "uuid",
  "wiremock",
+ "zeph-index",
 ]
 
 [[package]]

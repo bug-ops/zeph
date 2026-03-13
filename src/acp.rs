@@ -258,9 +258,25 @@ async fn build_acp_deps(
         file_executor,
         zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
     );
-    let tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
-        zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
-    );
+    let tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
+        let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
+            zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
+        );
+        if let Some(search_executor) = crate::agent_setup::build_search_code_executor(
+            config,
+            app.qdrant_ops().cloned(),
+            provider.clone(),
+            memory.sqlite().pool().clone(),
+            Some(std::sync::Arc::clone(&mcp_manager)),
+        ) {
+            std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
+                zeph_tools::DynExecutor(base),
+                search_executor,
+            ))
+        } else {
+            base
+        }
+    };
 
     let mcp_registry = create_mcp_registry(
         config,

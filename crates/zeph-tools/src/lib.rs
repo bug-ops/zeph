@@ -16,6 +16,7 @@ pub mod overflow;
 pub mod permissions;
 pub mod registry;
 pub mod scrape;
+pub mod search_code;
 pub mod shell;
 pub mod tool_filter;
 pub mod trust_gate;
@@ -45,6 +46,9 @@ pub use permissions::{
 };
 pub use registry::ToolRegistry;
 pub use scrape::WebScrapeExecutor;
+pub use search_code::{
+    LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
+};
 pub use shell::{
     DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, check_blocklist,
     effective_shell_command,

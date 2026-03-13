@@ -605,7 +605,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         };
 
     let agent = Agent::new_with_registry_arc(
-        provider,
+        provider.clone(),
         channel,
         registry,
         matcher,
@@ -782,6 +782,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .await;
     let agent =
         agent_setup::apply_code_retrieval(agent, &config.index, code_retriever, provider_has_tools);
+    let agent = if let Some(search_executor) = agent_setup::build_search_code_executor(
+        config,
+        app.qdrant_ops().cloned(),
+        provider.clone(),
+        memory.sqlite().pool().clone(),
+        Some(std::sync::Arc::clone(&mcp_manager)),
+    ) {
+        agent.add_tool_executor(search_executor)
+    } else {
+        agent
+    };
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);

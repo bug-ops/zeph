@@ -67,7 +67,7 @@ pub(super) fn tool_kind_from_name(name: &str) -> acp::ToolKind {
         "bash" | "shell" => acp::ToolKind::Execute,
         "read_file" => acp::ToolKind::Read,
         "write_file" => acp::ToolKind::Edit,
-        "list_directory" | "find_path" | "search" | "grep" | "find" | "glob" => {
+        "list_directory" | "find_path" | "search" | "search_code" | "grep" | "find" | "glob" => {
             acp::ToolKind::Search
         }
         "web_scrape" | "fetch" => acp::ToolKind::Fetch,

@@ -1081,6 +1081,8 @@ fn default_qdrant_url() -> String {
 pub struct IndexConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_index_search_enabled")]
+    pub search_enabled: bool,
     #[serde(default = "default_index_watch")]
     pub watch: bool,
     #[serde(default = "default_index_max_chunks")]
@@ -1096,6 +1098,10 @@ pub struct IndexConfig {
 }
 
 fn default_index_watch() -> bool {
+    true
+}
+
+fn default_index_search_enabled() -> bool {
     true
 }
 
@@ -1123,6 +1129,7 @@ impl Default for IndexConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            search_enabled: default_index_search_enabled(),
             watch: default_index_watch(),
             max_chunks: default_index_max_chunks(),
             score_threshold: default_index_score_threshold(),

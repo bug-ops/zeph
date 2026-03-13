@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 use zeph_core::channel::Channel;
 use zeph_core::config::Config;
+use zeph_tools::{
+    LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
+};
 
 type ToolExecutor = zeph_tools::CompositeExecutor<
     zeph_tools::CompositeExecutor<
@@ -21,6 +24,240 @@ pub(crate) struct ToolSetup {
     pub(crate) mcp_manager: Arc<zeph_mcp::McpManager>,
     pub(crate) mcp_shared_tools: Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
     pub(crate) tool_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
+}
+
+#[derive(Clone)]
+struct SemanticCodeSearch {
+    store: CodeStore,
+    provider: std::sync::Arc<zeph_llm::any::AnyProvider>,
+    score_threshold: f32,
+}
+
+#[async_trait::async_trait]
+impl SemanticSearchBackend for SemanticCodeSearch {
+    async fn search(
+        &self,
+        query: &str,
+        file_pattern: Option<&str>,
+        max_results: usize,
+    ) -> Result<Vec<SearchCodeHit>, zeph_tools::ToolError> {
+        use zeph_llm::provider::LlmProvider;
+
+        let matcher = file_pattern
+            .map(glob::Pattern::new)
+            .transpose()
+            .map_err(|e| zeph_tools::ToolError::InvalidParams {
+                message: format!("invalid file_pattern: {e}"),
+            })?;
+        let vector =
+            self.provider.embed(query).await.map_err(|e| {
+                zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string()))
+            })?;
+        let mut hits = self
+            .store
+            .search(vector, max_results.saturating_mul(2), None)
+            .await
+            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
+        hits.retain(|hit| hit.score >= self.score_threshold);
+
+        let mut out = hits
+            .into_iter()
+            .filter(|hit| {
+                matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
+                    pattern.matches_path(std::path::Path::new(&hit.file_path))
+                })
+            })
+            .map(|hit| SearchCodeHit {
+                file_path: std::fs::canonicalize(&hit.file_path)
+                    .unwrap_or_else(|_| PathBuf::from(&hit.file_path))
+                    .display()
+                    .to_string(),
+                line_start: hit.line_range.0,
+                line_end: hit.line_range.1,
+                snippet: hit
+                    .code
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+                source: SearchCodeSource::Semantic,
+                score: hit.score,
+                symbol_name: hit.entity_name,
+            })
+            .collect::<Vec<_>>();
+        out.truncate(max_results);
+        Ok(out)
+    }
+}
+
+#[derive(Clone)]
+struct McpCodeSearch {
+    manager: Arc<zeph_mcp::McpManager>,
+    server_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct LspPosition {
+    line: u32,
+    character: u32,
+}
+
+#[derive(serde::Deserialize)]
+struct LspRange {
+    start: LspPosition,
+    end: LspPosition,
+}
+
+#[derive(serde::Deserialize)]
+struct LspLocation {
+    uri: String,
+    range: LspRange,
+}
+
+#[derive(serde::Deserialize)]
+struct LspSymbolInformation {
+    name: String,
+    location: LspLocation,
+}
+
+#[async_trait::async_trait]
+impl LspSearchBackend for McpCodeSearch {
+    async fn workspace_symbol(
+        &self,
+        symbol: &str,
+        file_pattern: Option<&str>,
+        max_results: usize,
+    ) -> Result<Vec<SearchCodeHit>, zeph_tools::ToolError> {
+        let matcher = file_pattern
+            .map(glob::Pattern::new)
+            .transpose()
+            .map_err(|e| zeph_tools::ToolError::InvalidParams {
+                message: format!("invalid file_pattern: {e}"),
+            })?;
+        let args = serde_json::json!({ "query": symbol });
+        let value = mcp_text_json(
+            &self.manager,
+            &self.server_id,
+            "workspace_symbol_search",
+            args,
+        )
+        .await?;
+        let mut symbols: Vec<LspSymbolInformation> = serde_json::from_value(value)
+            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
+        symbols.truncate(max_results);
+        Ok(symbols
+            .into_iter()
+            .filter(|item| {
+                matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
+                    pattern.matches_path(std::path::Path::new(&uri_to_path(&item.location.uri)))
+                })
+            })
+            .map(|item| SearchCodeHit {
+                file_path: uri_to_path(&item.location.uri),
+                line_start: item.location.range.start.line as usize,
+                line_end: item.location.range.end.line as usize,
+                snippet: format!(
+                    "{} at {}:{}",
+                    item.name, item.location.range.start.line, item.location.range.start.character
+                ),
+                source: SearchCodeSource::LspSymbol,
+                score: SearchCodeSource::LspSymbol.default_score(),
+                symbol_name: Some(item.name),
+            })
+            .collect())
+    }
+
+    async fn references(
+        &self,
+        symbol: &str,
+        file_pattern: Option<&str>,
+        max_results: usize,
+    ) -> Result<Vec<SearchCodeHit>, zeph_tools::ToolError> {
+        let value = mcp_text_json(
+            &self.manager,
+            &self.server_id,
+            "workspace_symbol_search",
+            serde_json::json!({ "query": symbol }),
+        )
+        .await?;
+        let defs: Vec<LspSymbolInformation> = serde_json::from_value(value)
+            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
+        let Some(def) = defs.first() else {
+            return Ok(vec![]);
+        };
+        let matcher = file_pattern
+            .map(glob::Pattern::new)
+            .transpose()
+            .map_err(|e| zeph_tools::ToolError::InvalidParams {
+                message: format!("invalid file_pattern: {e}"),
+            })?;
+        let args = serde_json::json!({
+            "file_path": uri_to_path(&def.location.uri),
+            "line": def.location.range.start.line,
+            "character": def.location.range.start.character,
+            "include_declaration": false,
+        });
+        let value = mcp_text_json(&self.manager, &self.server_id, "get_references", args).await?;
+        let mut refs: Vec<LspLocation> = serde_json::from_value(value)
+            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
+        refs.truncate(max_results);
+        Ok(refs
+            .into_iter()
+            .filter(|location| {
+                matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
+                    pattern.matches_path(std::path::Path::new(&uri_to_path(&location.uri)))
+                })
+            })
+            .map(|location| SearchCodeHit {
+                file_path: uri_to_path(&location.uri),
+                line_start: location.range.start.line as usize,
+                line_end: location.range.end.line as usize,
+                snippet: format!(
+                    "reference at {}:{}",
+                    location.range.start.line, location.range.start.character
+                ),
+                source: SearchCodeSource::LspReferences,
+                score: SearchCodeSource::LspReferences.default_score(),
+                symbol_name: Some(symbol.to_owned()),
+            })
+            .collect())
+    }
+}
+
+async fn mcp_text_json(
+    manager: &Arc<zeph_mcp::McpManager>,
+    server_id: &str,
+    tool_name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, zeph_tools::ToolError> {
+    let result = manager
+        .call_tool(server_id, tool_name, args)
+        .await
+        .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
+    let text = result
+        .content
+        .iter()
+        .find_map(|content| match &content.raw {
+            rmcp::model::RawContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            zeph_tools::ToolError::Execution(std::io::Error::other(
+                "mcpls returned no text content",
+            ))
+        })?;
+    serde_json::from_str(text)
+        .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))
+}
+
+fn uri_to_path(uri: &str) -> String {
+    url::Url::parse(uri)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .unwrap_or_else(|| PathBuf::from(uri))
+        .display()
+        .to_string()
 }
 
 pub(crate) async fn build_tool_setup(
@@ -281,6 +518,63 @@ pub(crate) fn apply_code_retrieval<C: Channel>(
     } else {
         agent
     }
+}
+
+pub(crate) fn build_search_code_executor(
+    config: &Config,
+    qdrant_ops: Option<QdrantOps>,
+    provider: zeph_llm::any::AnyProvider,
+    pool: sqlx::SqlitePool,
+    mcp_manager: Option<Arc<zeph_mcp::McpManager>>,
+) -> Option<SearchCodeExecutor> {
+    if !config.index.search_enabled {
+        return None;
+    }
+
+    let allowed_paths = config
+        .tools
+        .shell
+        .allowed_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let mut executor = SearchCodeExecutor::new(allowed_paths);
+
+    if let Some(ops) = qdrant_ops {
+        let backend = SemanticCodeSearch {
+            store: CodeStore::with_ops(ops, pool),
+            provider: Arc::new(provider),
+            score_threshold: config.index.score_threshold,
+        };
+        executor = executor.with_semantic_backend(Arc::new(backend));
+    }
+
+    if let Some(manager) = mcp_manager
+        && let Some(server_id) = resolve_search_lsp_server_id(config)
+        && manager.is_server_connected(&server_id)
+    {
+        let backend = McpCodeSearch { manager, server_id };
+        executor = executor.with_lsp_backend(Arc::new(backend));
+    }
+
+    Some(executor)
+}
+
+fn resolve_search_lsp_server_id(config: &Config) -> Option<String> {
+    config
+        .mcp
+        .servers
+        .iter()
+        .find(|server| server.id == "mcpls")
+        .or_else(|| {
+            config.mcp.servers.iter().find(|server| {
+                server
+                    .command
+                    .as_deref()
+                    .is_some_and(|command| command.ends_with("mcpls"))
+            })
+        })
+        .map(|server| server.id.clone())
 }
 
 #[cfg(feature = "candle")]
