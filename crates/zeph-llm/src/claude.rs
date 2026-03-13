@@ -744,7 +744,8 @@ impl ClaudeProvider {
         let context_window =
             u32::try_from(self.context_window().unwrap_or(200_000)).unwrap_or(200_000_u32);
         // Default compaction_threshold of 0.80 — matches client-side default.
-        let trigger_tokens = context_window / 100 * 80;
+        // Multiply before dividing to preserve precision (avoid losing up to 99 tokens).
+        let trigger_tokens = context_window * 80 / 100;
         Some(ContextManagement {
             management_type: ContextManagementType::Enabled,
             trigger_tokens,
@@ -4664,6 +4665,91 @@ mod tests {
             msgs.last().and_then(|m| m["role"].as_str()),
             Some("assistant"),
             "Sonnet 4.6 must not strip trailing assistant messages"
+        );
+    }
+
+    #[test]
+    fn server_compaction_disabled_by_default() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        assert!(!provider.server_compaction_enabled());
+    }
+
+    #[test]
+    fn with_server_compaction_enables_flag() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        assert!(provider.server_compaction_enabled());
+    }
+
+    #[test]
+    fn take_compaction_summary_empty_when_none() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        assert!(provider.take_compaction_summary().is_none());
+    }
+
+    #[test]
+    fn take_compaction_summary_returns_and_clears() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        *provider.last_compaction.lock().unwrap() = Some("Summary text".to_owned());
+        let result = provider.take_compaction_summary();
+        assert_eq!(result.as_deref(), Some("Summary text"));
+        // Second call must return None (consumed).
+        assert!(provider.take_compaction_summary().is_none());
+    }
+
+    #[test]
+    fn context_management_absent_when_disabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        assert!(provider.context_management().is_none());
+    }
+
+    #[test]
+    fn context_management_present_when_enabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        let cm = provider.context_management().unwrap();
+        // trigger_tokens = context_window * 80 / 100 = 200_000 * 80 / 100 = 160_000
+        assert_eq!(cm.trigger_tokens, 160_000);
+    }
+
+    #[test]
+    fn context_management_serializes_correctly() {
+        let cm = ContextManagement {
+            management_type: ContextManagementType::Enabled,
+            trigger_tokens: 160_000,
+        };
+        let json = serde_json::to_value(&cm).unwrap();
+        assert_eq!(json["type"], "enabled");
+        assert_eq!(json["trigger_tokens"], 160_000);
+    }
+
+    #[test]
+    fn beta_header_includes_compact_when_server_compaction_enabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+            .with_server_compaction(true);
+        let header = provider.beta_header(false).unwrap_or_default();
+        assert!(
+            header.contains("compact-2026-01-12"),
+            "beta header must include compact beta when server_compaction is on"
+        );
+    }
+
+    #[test]
+    fn beta_header_excludes_compact_when_disabled() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+        let header = provider.beta_header(false).unwrap_or_default();
+        assert!(
+            !header.contains("compact-2026-01-12"),
+            "beta header must not include compact beta when server_compaction is off"
+        );
+    }
+
+    #[test]
+    fn compaction_content_block_deserialized() {
+        let json = r#"{"type":"compaction","summary":"Context summary here"}"#;
+        let block: AnthropicContentBlock = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(block, AnthropicContentBlock::Compaction { summary } if summary == "Context summary here")
         );
     }
 }

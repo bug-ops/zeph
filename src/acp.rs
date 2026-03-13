@@ -75,6 +75,7 @@ fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::
 /// Per-session state (`conversation_id`, reload receivers, cancel signals) is created fresh
 /// in `spawn_acp_agent` for each session.
 #[cfg(feature = "acp")]
+#[allow(clippy::struct_excessive_bools)]
 struct SharedAgentDeps {
     provider: zeph_llm::any::AnyProvider,
     registry: std::sync::Arc<std::sync::RwLock<zeph_skills::registry::SkillRegistry>>,
@@ -157,6 +158,8 @@ struct SharedAgentDeps {
     orchestration_config: zeph_core::config::OrchestrationConfig,
     /// Debug dump configuration from `[debug]` config section.
     debug_config: zeph_core::config::DebugConfig,
+    /// Whether Claude server-side context compaction is enabled.
+    server_compaction: bool,
     /// Scheduler executor shared across sessions. Initialized once at startup.
     #[cfg(feature = "scheduler")]
     scheduler_executor: Option<std::sync::Arc<crate::scheduler_executor::SchedulerExecutor>>,
@@ -475,6 +478,11 @@ async fn build_acp_deps(
         anomaly_config: config.tools.anomaly.clone(),
         orchestration_config: config.orchestration.clone(),
         debug_config: config.debug.clone(),
+        server_compaction: config
+            .llm
+            .cloud
+            .as_ref()
+            .is_some_and(|c| c.server_compaction),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
         #[cfg(feature = "scheduler")]
@@ -550,6 +558,7 @@ async fn spawn_acp_agent(
     let anomaly_config = d.anomaly_config.clone();
     let orchestration_config = d.orchestration_config.clone();
     let debug_config = d.debug_config.clone();
+    let server_compaction = d.server_compaction;
     let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
     let available_secrets: Vec<(String, Secret)> = d
         .secrets
@@ -686,7 +695,8 @@ async fn spawn_acp_agent(
     .with_mcp_shared_tools(mcp_shared_tools)
     .with_learning(learning)
     .with_tool_call_cutoff(tool_call_cutoff)
-    .with_available_secrets(available_secrets);
+    .with_available_secrets(available_secrets)
+    .with_server_compaction(server_compaction);
 
     // Wire scheduler per session: apply update/custom receivers and add executor.
     #[cfg(feature = "scheduler")]

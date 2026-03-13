@@ -305,12 +305,22 @@ impl<C: Channel> Agent<C> {
         // C2: if the server returned a compaction block, prune old messages from context
         // and insert a synthetic assistant message containing the compaction summary.
         // This keeps self.messages consistent with what the API has already summarized.
-        if let Some(summary) = self.provider.take_compaction_summary() {
+        if let Some(raw_summary) = self.provider.take_compaction_summary() {
+            let _ = self
+                .channel
+                .send_status("Compacting context (server-side)...")
+                .await;
             tracing::info!(
-                summary_len = summary.len(),
+                summary_len = raw_summary.len(),
                 messages_before = self.messages.len(),
                 "server-side compaction received; pruning old messages"
             );
+            // SEC-COMPACT-01: sanitize compaction summary — it originates from the API but
+            // may encode injected content from tool results the model summarized.
+            // Use McpResponse (ExternalUntrusted) as the conservative trust level.
+            let source = ContentSource::new(ContentSourceKind::McpResponse);
+            let sanitized = self.security.sanitizer.sanitize(&raw_summary, source);
+            let summary = sanitized.body;
             // Keep only the final user turn so the next API call has a valid alternating history.
             let last_user = self
                 .messages
@@ -330,6 +340,7 @@ impl<C: Channel> Agent<C> {
             });
             self.messages.extend(tail);
             self.update_metrics(|m| m.server_compaction_events += 1);
+            let _ = self.channel.send_status("").await;
         }
 
         if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {

@@ -98,6 +98,14 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         }
     }
 
+    if metrics.server_compaction_events > 0 {
+        spans.push(Span::styled(" | ", theme.status_bar));
+        spans.push(Span::styled(
+            format!("[SC: {}]", metrics.server_compaction_events),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+
     let suffix = format!(
         " | API: {api} | {uptime}{cancel_hint}",
         api = metrics.api_calls,

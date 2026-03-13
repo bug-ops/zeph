@@ -1313,4 +1313,39 @@ mod tests {
         assert!(decoded.metadata.agent_visible);
         assert!(!decoded.metadata.user_visible);
     }
+
+    #[test]
+    fn message_part_compaction_round_trip() {
+        let part = MessagePart::Compaction {
+            summary: "Context was summarized.".to_owned(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let decoded: MessagePart = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(decoded, MessagePart::Compaction { summary } if summary == "Context was summarized.")
+        );
+    }
+
+    #[test]
+    fn flatten_parts_compaction_contributes_no_text() {
+        // MessagePart::Compaction must not appear in the flattened content string
+        // (it's metadata-only; the summary is stored on the Message separately).
+        let parts = vec![
+            MessagePart::Text {
+                text: "Hello".to_owned(),
+            },
+            MessagePart::Compaction {
+                summary: "Summary".to_owned(),
+            },
+        ];
+        let msg = Message::from_parts(Role::Assistant, parts);
+        // Only the Text part should appear in content.
+        assert_eq!(msg.content.trim(), "Hello");
+    }
+
+    #[test]
+    fn stream_chunk_compaction_variant() {
+        let chunk = StreamChunk::Compaction("A summary".to_owned());
+        assert!(matches!(chunk, StreamChunk::Compaction(s) if s == "A summary"));
+    }
 }
