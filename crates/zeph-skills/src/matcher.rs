@@ -44,22 +44,21 @@ impl SkillMatcher {
 
         // Collect raw results without logging per-skill; errors will be summarized below.
         let raw: Vec<EmbedOutcome> = stream::iter(skills.iter().enumerate())
-                .map(|(i, skill)| {
-                    let fut = embed_fn(&skill.description);
-                    let name = skill.name.clone();
-                    async move {
-                        let result = match tokio::time::timeout(Duration::from_secs(10), fut).await
-                        {
-                            Ok(Ok(vec)) => Ok(vec),
-                            Ok(Err(e)) => Err(Some(e)),
-                            Err(_) => Err(None),
-                        };
-                        (i, name, result)
-                    }
-                })
-                .buffer_unordered(20)
-                .collect()
-                .await;
+            .map(|(i, skill)| {
+                let fut = embed_fn(&skill.description);
+                let name = skill.name.clone();
+                async move {
+                    let result = match tokio::time::timeout(Duration::from_secs(10), fut).await {
+                        Ok(Ok(vec)) => Ok(vec),
+                        Ok(Err(e)) => Err(Some(e)),
+                        Err(_) => Err(None),
+                    };
+                    (i, name, result)
+                }
+            })
+            .buffer_unordered(20)
+            .collect()
+            .await;
 
         let mut embeddings = Vec::new();
         let mut unsupported_provider: Option<String> = None;
