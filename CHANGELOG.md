@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Orchestration: count tasks completed before cancellation in `tasks_completed` metric (fixes #1612)
+- Cancel running sub-agents on channel close and shutdown signal in `run_scheduler_loop()` ([#1613](https://github.com/bug-ops/zeph/issues/1613))
 - ACP: `session/prompt` no longer hangs indefinitely for slash commands that bypass LLM calls (`/graph`, `/status`, `/plan list`, `/skills`, `/compact`, etc.); `flush_chunks()` is now called after every non-LLM slash command branch in `process_user_message()` and `handle_image_command()`, ensuring the drain loop always receives a termination signal (fixes #1683)
 - ACP: agent-loop slash commands (`/plan`, `/graph`, `/status`, `/skills`, `/scheduler`, `/compact`, etc.) now correctly forwarded to the agent loop instead of returning "unknown command" errors (fixes #1672)
 - Fix anomaly detector not recording outcomes for native tool_use providers (Claude, OpenAI, Gemini) (#1677)
