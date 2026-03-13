@@ -2903,7 +2903,8 @@ mod compaction_e2e {
     }
 
     /// COV-02: `finalize_plan_execution` with `GraphStatus::Canceled` sends the correct
-    /// message and does NOT store the graph into `pending_graph`.
+    /// message, does NOT store the graph into `pending_graph`, and updates
+    /// `orchestration.tasks_completed` with the count of tasks that finished before cancel.
     #[tokio::test]
     async fn finalize_plan_execution_canceled_does_not_store_graph() {
         use crate::subagent::SubAgentManager;
@@ -2912,7 +2913,9 @@ mod compaction_e2e {
         let provider = mock_provider(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let (metrics_tx, metrics_rx) = watch::channel(MetricsSnapshot::default());
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_metrics(metrics_tx);
         agent.orchestration_config.enabled = true;
         agent.subagent_manager = Some(SubAgentManager::new(4));
 
@@ -2951,6 +2954,11 @@ mod compaction_e2e {
         assert!(
             agent.pending_graph.is_none(),
             "canceled plan must NOT be stored in pending_graph"
+        );
+        let snapshot = metrics_rx.borrow().clone();
+        assert_eq!(
+            snapshot.orchestration.tasks_completed, 1,
+            "tasks completed before cancellation must be counted in metrics"
         );
     }
 

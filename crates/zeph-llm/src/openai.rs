@@ -502,7 +502,7 @@ impl LlmProvider for OpenAiProvider {
                     function: OpenAiFunction {
                         name: &t.name,
                         description: &t.description,
-                        parameters: &t.parameters,
+                        parameters: prepare_tool_params(&t.parameters),
                     },
                 })
                 .collect();
@@ -650,7 +650,7 @@ impl LlmProvider for OpenAiProvider {
                 function: OpenAiFunction {
                     name: &t.name,
                     description: &t.description,
-                    parameters: &t.parameters,
+                    parameters: prepare_tool_params(&t.parameters),
                 },
             })
             .collect();
@@ -958,7 +958,8 @@ struct OpenAiTool<'a> {
 struct OpenAiFunction<'a> {
     name: &'a str,
     description: &'a str,
-    parameters: &'a serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -1248,6 +1249,32 @@ fn inline_refs_openai_inner(schema: &mut serde_json::Value, defs: &serde_json::V
             inline_refs_openai_inner(v, defs, depth - 1);
         }
     }
+}
+
+/// Returns `true` when the schema represents an object with no parameters.
+///
+/// Matches `{"type": "object"}` with absent or empty `properties`.
+fn is_empty_params_schema(schema: &serde_json::Value) -> bool {
+    schema.get("type").and_then(|t| t.as_str()) == Some("object")
+        && schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .is_none_or(serde_json::Map::is_empty)
+}
+
+/// Prepare tool parameters schema for the `OpenAI` API.
+///
+/// Returns `None` for empty-parameter tools so the `parameters` field is
+/// omitted entirely, avoiding strict-mode 400 errors.  For non-empty schemas,
+/// inlines `$ref` definitions and normalizes for strict mode.
+fn prepare_tool_params(params: &serde_json::Value) -> Option<serde_json::Value> {
+    if is_empty_params_schema(params) {
+        return None;
+    }
+    let mut schema = params.clone();
+    inline_refs_openai(&mut schema, 8);
+    normalize_for_openai_strict(&mut schema, 16);
+    Some(schema)
 }
 
 /// Normalize a JSON Schema for `OpenAI` structured output strict mode.
@@ -1595,10 +1622,10 @@ mod tests {
             function: OpenAiFunction {
                 name: "echo",
                 description: "Echo input",
-                parameters: &serde_json::json!({
+                parameters: Some(serde_json::json!({
                     "type": "object",
                     "properties": {"text": {"type": "string"}}
-                }),
+                })),
             },
         }];
         let body = ToolChatRequest {
@@ -1897,17 +1924,54 @@ mod tests {
             function: OpenAiFunction {
                 name: "bash",
                 description: "Execute a shell command",
-                parameters: &serde_json::json!({
+                parameters: Some(serde_json::json!({
                     "type": "object",
                     "properties": {"command": {"type": "string"}},
                     "required": ["command"]
-                }),
+                })),
             },
         };
         let json = serde_json::to_string(&tool).unwrap();
         assert!(json.contains("\"type\":\"function\""));
         assert!(json.contains("\"name\":\"bash\""));
         assert!(json.contains("\"parameters\""));
+    }
+
+    #[test]
+    fn prepare_tool_params_empty_object_returns_none() {
+        let empty = serde_json::json!({"type": "object", "properties": {}});
+        assert!(prepare_tool_params(&empty).is_none());
+    }
+
+    #[test]
+    fn prepare_tool_params_no_properties_key_returns_none() {
+        let empty = serde_json::json!({"type": "object"});
+        assert!(prepare_tool_params(&empty).is_none());
+    }
+
+    #[test]
+    fn prepare_tool_params_non_empty_normalizes_strict() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}}
+        });
+        let result = prepare_tool_params(&schema).expect("non-empty should return Some");
+        assert_eq!(result["additionalProperties"], false);
+        assert!(result["required"].as_array().is_some());
+    }
+
+    #[test]
+    fn openai_tool_empty_params_omitted_in_serialization() {
+        let tool = OpenAiTool {
+            r#type: "function",
+            function: OpenAiFunction {
+                name: "list_tasks",
+                description: "List all tasks",
+                parameters: None,
+            },
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(!json.contains("parameters"));
     }
 
     #[test]

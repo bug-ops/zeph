@@ -990,42 +990,92 @@ impl<C: Channel> Agent<C> {
                 }
                 () = scheduler.wait_event() => {}
                 result = self.channel.recv() => {
-                    match result {
-                        Ok(Some(msg)) => {
-                            if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
-                                let _ = self.channel.send_status("Canceling plan...").await;
-                                let cancel_actions = scheduler.cancel_all();
-                                for ca in cancel_actions {
-                                    match ca {
-                                        SchedulerAction::Cancel { agent_handle_id } => {
-                                            if let Some(mgr) = self.subagent_manager.as_mut() {
-                                                // benign race: agent may have already finished
-                                                let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
-                                                    tracing::trace!(error = %e, "cancel on user request: agent already gone");
-                                                });
-                                            }
+                    if let Ok(Some(msg)) = result {
+                        if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
+                            let _ = self.channel.send_status("Canceling plan...").await;
+                            let cancel_actions = scheduler.cancel_all();
+                            for ca in cancel_actions {
+                                match ca {
+                                    SchedulerAction::Cancel { agent_handle_id } => {
+                                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                                            // benign race: agent may have already finished
+                                            let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                                tracing::trace!(error = %e, "cancel on user request: agent already gone");
+                                            });
                                         }
-                                        SchedulerAction::Done { status } => {
-                                            break 'tick status;
-                                        }
-                                        SchedulerAction::Spawn { .. }
-                                        | SchedulerAction::RunInline { .. } => {}
+                                    }
+                                    SchedulerAction::Done { status } => {
+                                        break 'tick status;
+                                    }
+                                    SchedulerAction::Spawn { .. }
+                                    | SchedulerAction::RunInline { .. } => {}
+                                }
+                            }
+                            // Defensive fallback: cancel_all always emits Done, but guard
+                            // against future changes.
+                            break 'tick crate::orchestration::GraphStatus::Canceled;
+                        }
+                        self.enqueue_or_merge(msg.text, vec![], msg.attachments);
+                    } else {
+                        // Channel closed — cancel running sub-agents and exit cleanly.
+                        let cancel_actions = scheduler.cancel_all();
+                        let n = cancel_actions
+                            .iter()
+                            .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
+                            .count();
+                        tracing::warn!(sub_agents = n, "scheduler channel closed, canceling running sub-agents");
+                        for action in cancel_actions {
+                            match action {
+                                SchedulerAction::Cancel { agent_handle_id } => {
+                                    if let Some(mgr) = self.subagent_manager.as_mut() {
+                                        let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                            tracing::trace!(
+                                                error = %e,
+                                                "cancel on channel close: agent already gone"
+                                            );
+                                        });
                                     }
                                 }
-                            } else {
-                                self.enqueue_or_merge(msg.text, vec![], msg.attachments);
+                                SchedulerAction::Done { status } => {
+                                    break 'tick status;
+                                }
+                                SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
                             }
                         }
-                        // Channel closed — exit promptly. GraphStatus::Failed signals an
-                        // abnormal termination without storing the graph for /plan retry.
-                        Ok(None) | Err(_) => {
-                            break 'tick crate::orchestration::GraphStatus::Failed;
-                        }
+                        // Defensive fallback: cancel_all always emits Done, but guard
+                        // against future changes.
+                        break 'tick crate::orchestration::GraphStatus::Canceled;
                     }
                 }
-                // Shutdown signal received — same treatment as channel close.
+                // Shutdown signal received — cancel running sub-agents and exit cleanly.
                 () = shutdown_signal(&mut self.shutdown) => {
-                    break 'tick crate::orchestration::GraphStatus::Failed;
+                    let cancel_actions = scheduler.cancel_all();
+                    let n = cancel_actions
+                        .iter()
+                        .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
+                        .count();
+                    tracing::warn!(sub_agents = n, "shutdown signal received, canceling running sub-agents");
+                    for action in cancel_actions {
+                        match action {
+                            SchedulerAction::Cancel { agent_handle_id } => {
+                                if let Some(mgr) = self.subagent_manager.as_mut() {
+                                    let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                        tracing::trace!(
+                                            error = %e,
+                                            "cancel on shutdown: agent already gone"
+                                        );
+                                    });
+                                }
+                            }
+                            SchedulerAction::Done { status } => {
+                                break 'tick status;
+                            }
+                            SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                        }
+                    }
+                    // Defensive fallback: cancel_all always emits Done, but guard against
+                    // future changes.
+                    break 'tick crate::orchestration::GraphStatus::Canceled;
                 }
             }
         };
@@ -1290,6 +1340,7 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
                     .count();
+                self.update_metrics(|m| m.orchestration.tasks_completed += done_count as u64);
                 let total = completed_graph.tasks.len();
                 self.channel
                     .send(&format!(
@@ -2051,34 +2102,40 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/help" {
             self.handle_help_command().await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         if trimmed == "/status" {
             self.handle_status_command().await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         if trimmed == "/skills" {
             self.handle_skills_command().await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         if trimmed == "/skill" || trimmed.starts_with("/skill ") {
             let rest = trimmed.strip_prefix("/skill").unwrap_or("").trim();
             self.handle_skill_command(rest).await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         if trimmed == "/feedback" || trimmed.starts_with("/feedback ") {
             let rest = trimmed.strip_prefix("/feedback").unwrap_or("").trim();
             self.handle_feedback(rest).await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
             let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
             self.handle_mcp_command(args).await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
@@ -2086,19 +2143,24 @@ impl<C: Channel> Agent<C> {
             let path = trimmed.strip_prefix("/image").unwrap_or("").trim();
             if path.is_empty() {
                 self.channel.send("Usage: /image <path>").await?;
+                let _ = self.channel.flush_chunks().await;
                 return Ok(());
             }
-            return self.handle_image_command(path).await;
+            self.handle_image_command(path).await?;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(());
         }
 
         if trimmed == "/plan" || trimmed.starts_with("/plan ") {
             match crate::orchestration::PlanCommand::parse(trimmed) {
                 Ok(cmd) => {
                     self.handle_plan_command(cmd).await?;
+                    let _ = self.channel.flush_chunks().await;
                     return Ok(());
                 }
                 Err(e) => {
                     self.channel.send(&e.to_string()).await?;
+                    let _ = self.channel.flush_chunks().await;
                     return Ok(());
                 }
             }
@@ -2106,29 +2168,34 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
             self.handle_graph_command(trimmed).await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         #[cfg(feature = "scheduler")]
         if trimmed == "/scheduler" || trimmed.starts_with("/scheduler ") {
             self.handle_scheduler_command(trimmed).await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         #[cfg(feature = "experiments")]
         if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
             self.handle_experiment_command(trimmed).await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         #[cfg(feature = "lsp-context")]
         if trimmed == "/lsp" {
             self.handle_lsp_status_command().await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
         if trimmed == "/log" {
             self.handle_log_command().await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
@@ -2143,6 +2210,7 @@ impl<C: Channel> Agent<C> {
                     if let Some(msg) = self.handle_agent_command(cmd).await {
                         self.channel.send(&msg).await?;
                     }
+                    let _ = self.channel.flush_chunks().await;
                     return Ok(());
                 }
                 Err(e) if trimmed.starts_with('@') => {
@@ -2151,6 +2219,7 @@ impl<C: Channel> Agent<C> {
                 }
                 Err(e) => {
                     self.channel.send(&e.to_string()).await?;
+                    let _ = self.channel.flush_chunks().await;
                     return Ok(());
                 }
             }
@@ -2423,6 +2492,7 @@ impl<C: Channel> Agent<C> {
             self.channel
                 .send("Invalid image path: path traversal not allowed")
                 .await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
 
@@ -2432,6 +2502,7 @@ impl<C: Channel> Agent<C> {
                 self.channel
                     .send(&format!("Cannot read image {path}: {e}"))
                     .await?;
+                let _ = self.channel.flush_chunks().await;
                 return Ok(());
             }
         };
@@ -2442,6 +2513,7 @@ impl<C: Channel> Agent<C> {
                     MAX_IMAGE_BYTES / 1024 / 1024
                 ))
                 .await?;
+            let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
         let mime_type = detect_image_mime(Some(path)).to_string();
@@ -2450,6 +2522,7 @@ impl<C: Channel> Agent<C> {
         self.channel
             .send(&format!("Image loaded: {path}. Send your message."))
             .await?;
+        let _ = self.channel.flush_chunks().await;
         Ok(())
     }
 
