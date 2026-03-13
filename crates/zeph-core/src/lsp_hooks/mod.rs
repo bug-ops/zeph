@@ -18,6 +18,8 @@
 
 mod diagnostics;
 mod hover;
+#[cfg(test)]
+mod test_helpers;
 
 use std::sync::Arc;
 
@@ -180,7 +182,8 @@ impl LspHookRunner {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
             let note =
-                diagnostics::fetch_diagnostics(&manager, &config, &path, &tc, &sanitizer).await;
+                diagnostics::fetch_diagnostics(manager.as_ref(), &config, &path, &tc, &sanitizer)
+                    .await;
             // Ignore send errors: the receiver may have been dropped if the
             // agent loop exited before the task finished.
             let _ = tx.send(note).await;

@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Chunked edge loading in community detection**: `detect_communities` now loads edges in configurable chunks (keyset pagination via `WHERE id > ?1 LIMIT ?2`) instead of loading all edges at once, reducing peak memory proportional to chunk size on large graphs. Configurable via `GraphConfig.lpa_edge_chunk_size` (default 10,000); `chunk_size = 0` falls back to the legacy full-stream path. Closes #1259.
 
+- **Gemini provider** (Phase 2): SSE streaming via `streamGenerateContent?alt=sse`. `chat_stream()` now produces `StreamChunk::Content` chunks; Gemini 2.5 thinking parts (`thought: true`) are emitted as `StreamChunk::Thinking`. `supports_streaming()` returns `true`. `GeminiProvider` gains `status_tx: Option<StatusTx>` field with `with_status_tx()`/`set_status_tx()` builders; `AnyProvider::set_status_tx()` now propagates the sender to the Gemini arm. Both streaming and non-streaming paths use `status_tx` for retry notifications. API key stays in the `x-goog-api-key` header (never in URL query params). Part of epic #1592, closes #1594.
 - **Gemini provider** (Phase 1): new `GeminiProvider` in `crates/zeph-llm/src/gemini.rs` supporting basic `generateContent` chat via the Google Gemini API. Authentication via `x-goog-api-key` header (not URL query param). System prompt extracted to `systemInstruction` top-level field; assistant role mapped to `"model"`. Consecutive same-role messages merged to satisfy Gemini's strict `user`/`model` alternation requirement. First-message guard: if the first content is a `"model"` turn, a synthetic empty user message is prepended. Configurable `base_url` (default `https://generativelanguage.googleapis.com/v1beta`), `model` (default `gemini-2.0-flash`), and `max_tokens`. JSON serialized once before retry loop. HTTP 429 and 503 retried via shared `send_with_retry()`. `ProviderKind::Gemini`, `GeminiConfig`, and `[llm.gemini]` TOML section added; `ZEPH_GEMINI_API_KEY` vault key supported; `--init` wizard updated. Part of epic #1592, closes #1593.
 
 ### Fixed
@@ -24,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - SEC-004: Add `max_retry_duration_secs` (default 30) wall-clock retry budget to `AgentConfig`; the retry loop in `handle_native_tool_calls()` breaks when the budget is exhausted even if attempts remain, preventing indefinite retry loops (#1402)
 
 ### Fixed
+
+- `/plan cancel` is now delivered during active plan execution: `run_scheduler_loop()` polls `channel.recv()` concurrently with `scheduler.wait_event()` via `tokio::select!`. Receiving `/plan cancel` calls `cancel_all()`, processes the returned `Cancel` actions to abort sub-agent tasks, and exits the loop with `GraphStatus::Canceled`. Non-cancel messages received during execution are queued for processing after plan completion. Fixes #1603.
 
 - `search_code` tool now displays relative file paths in CLI output, preventing path sanitizer from replacing them with `[PATH]` when `redact_secrets = true`
 - Scheduler not initialized in ACP mode — tick loop and scheduler tool now available in ACP sessions (#1599)
@@ -66,6 +69,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Broadcast channel capacity is now configurable to prevent silent event drops under load; fixes `broadcast_to_mpsc` lagged-receiver silent-drop regression (#1579, #1584)
 - ACP startup diagnostic logging: process `cwd` and resolved artifact paths (data, debug, skills, logs) are logged before memory and bootstrap initialization to aid diagnosing read-only filesystem errors in IDE-launched sessions (#1580)
 - LSP hook debug tracing: `LspHookRunner::after_tool()`, `fetch_hover()`, and `fetch_diagnostics()` now emit `tracing` events for hook activation, skip reasons, symbol extraction, and MCP call attempts, making hook failures diagnosable from logs without source inspection (#1536, #1588)
+- **#1538**: Add `McpCaller` trait to `zeph-mcp` to abstract `McpManager` for unit testing; `MockMcpCaller` stub (feature `mock`) provides configurable FIFO responses and call recording. `fetch_diagnostics` and `fetch_hover_inner` now accept `&impl McpCaller`; 4 regression tests verify `file_path` (not `path`) is passed to `call_tool` for `get_diagnostics` and `get_hover`.
 
 ### Changed
 

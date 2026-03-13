@@ -10,8 +10,10 @@ use std::sync::LazyLock;
 
 use futures::StreamExt as _;
 use regex::Regex;
+use zeph_mcp::McpCaller;
 use zeph_memory::TokenCounter;
 
+use crate::config::LspConfig;
 use crate::sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
 use super::{LspHookRunner, LspNote};
@@ -195,6 +197,25 @@ pub(super) async fn fetch_hover(
     token_counter: &std::sync::Arc<TokenCounter>,
     sanitizer: &ContentSanitizer,
 ) -> Option<LspNote> {
+    fetch_hover_inner(
+        runner.manager.as_ref(),
+        &runner.config,
+        tool_params,
+        tool_output,
+        token_counter,
+        sanitizer,
+    )
+    .await
+}
+
+pub(crate) async fn fetch_hover_inner(
+    manager: &impl McpCaller,
+    config: &LspConfig,
+    tool_params: &serde_json::Value,
+    tool_output: &str,
+    token_counter: &std::sync::Arc<TokenCounter>,
+    sanitizer: &ContentSanitizer,
+) -> Option<LspNote> {
     let Some(file_path) = tool_params
         .get("path")
         .and_then(|v| v.as_str())
@@ -208,8 +229,7 @@ pub(super) async fn fetch_hover(
     };
 
     // Extract symbol positions from the file content returned by the read tool.
-    let positions =
-        extract_symbol_positions(tool_output, &file_path, runner.config.hover.max_symbols);
+    let positions = extract_symbol_positions(tool_output, &file_path, config.hover.max_symbols);
     if positions.is_empty() {
         tracing::debug!(path = %file_path, "LSP hover: no symbols found in file");
         return None;
@@ -219,13 +239,12 @@ pub(super) async fn fetch_hover(
         path = %file_path,
         symbols = positions.len(),
         concurrency = MAX_CONCURRENT_HOVER_CALLS,
-        timeout_secs = runner.config.call_timeout_secs,
+        timeout_secs = config.call_timeout_secs,
         "LSP hook: queuing hover fetch"
     );
 
-    let timeout = std::time::Duration::from_secs(runner.config.call_timeout_secs);
-    let manager = &runner.manager;
-    let server_id = &runner.config.mcp_server_id;
+    let timeout = std::time::Duration::from_secs(config.call_timeout_secs);
+    let server_id = &config.mcp_server_id;
 
     // Use buffer_unordered to cap concurrent MCP connections.
     let mut entries: Vec<String> =
@@ -459,5 +478,90 @@ mod tests {
         let src = "pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn d() {}";
         let positions = extract_symbol_positions_tsquery(src, "a.rs", 2).unwrap();
         assert!(positions.len() <= 2);
+    }
+
+    // Tests that verify fetch_hover_inner passes the correct argument keys to McpManager.call_tool.
+    // Regression tests for issue #1538: wrong "path" key was used instead of "file_path".
+
+    use std::sync::Arc;
+
+    use crate::lsp_hooks::test_helpers::RecordingCaller;
+
+    /// Rust source with one top-level symbol so extract_symbol_positions finds it.
+    const RUST_SOURCE_ONE_FN: &str = "pub fn my_function() {}";
+
+    #[tokio::test]
+    async fn fetch_hover_passes_file_path_key() {
+        use zeph_memory::TokenCounter;
+
+        use crate::config::{HoverConfig, LspConfig};
+        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+        let mock = RecordingCaller::new().with_text("hover info for my_function");
+        let config = LspConfig {
+            hover: HoverConfig {
+                enabled: true,
+                max_symbols: 1,
+            },
+            ..LspConfig::default()
+        };
+        let tc = Arc::new(TokenCounter::default());
+        let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+        let params = serde_json::json!({ "path": "src/lib.rs" });
+
+        fetch_hover_inner(&mock, &config, &params, RUST_SOURCE_ONE_FN, &tc, &sanitizer).await;
+
+        let calls = mock.calls.lock().unwrap();
+        assert!(
+            !calls.is_empty(),
+            "expected at least one call_tool invocation"
+        );
+        let args = &calls[0].2;
+        assert!(
+            args.get("file_path").is_some(),
+            "call_tool args must contain 'file_path' key, got: {args}"
+        );
+        assert!(
+            args.get("path").is_none(),
+            "call_tool args must NOT contain old 'path' key, got: {args}"
+        );
+        assert_eq!(calls[0].1, "get_hover");
+    }
+
+    #[tokio::test]
+    async fn fetch_hover_passes_line_and_character_keys() {
+        use zeph_memory::TokenCounter;
+
+        use crate::config::{HoverConfig, LspConfig};
+        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+        let mock = RecordingCaller::new().with_text("hover info");
+        let config = LspConfig {
+            hover: HoverConfig {
+                enabled: true,
+                max_symbols: 1,
+            },
+            ..LspConfig::default()
+        };
+        let tc = Arc::new(TokenCounter::default());
+        let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+        let params = serde_json::json!({ "path": "src/lib.rs" });
+
+        fetch_hover_inner(&mock, &config, &params, RUST_SOURCE_ONE_FN, &tc, &sanitizer).await;
+
+        let calls = mock.calls.lock().unwrap();
+        assert!(
+            !calls.is_empty(),
+            "expected at least one call_tool invocation"
+        );
+        let args = &calls[0].2;
+        assert!(
+            args.get("line").is_some(),
+            "call_tool args must contain 'line' key, got: {args}"
+        );
+        assert!(
+            args.get("character").is_some(),
+            "call_tool args must contain 'character' key, got: {args}"
+        );
     }
 }

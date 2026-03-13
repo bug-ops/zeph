@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use zeph_mcp::McpManager;
+use zeph_mcp::McpCaller;
 use zeph_memory::TokenCounter;
 
 use crate::config::{DiagnosticSeverity, LspConfig};
@@ -59,7 +59,7 @@ pub(super) fn format_diagnostic(file_path: &str, d: &serde_json::Value) -> Strin
 ///
 /// Returns `None` on error or when there are no diagnostics meeting the filter.
 pub(super) async fn fetch_diagnostics(
-    manager: &Arc<McpManager>,
+    manager: &impl McpCaller,
     config: &LspConfig,
     file_path: &str,
     token_counter: &Arc<TokenCounter>,
@@ -236,5 +236,79 @@ mod tests {
         let line = format_diagnostic("f.rs", &d);
         // line defaults to 0 when range is absent
         assert_eq!(line, "f.rs:0 error: oops");
+    }
+
+    // Tests that verify fetch_diagnostics passes the correct argument key ("file_path")
+    // to McpManager.call_tool. These are regression tests for issue #1538 where the
+    // wrong key ("path") was used, causing silent MCP call failures.
+
+    use std::sync::Arc;
+
+    use crate::lsp_hooks::test_helpers::RecordingCaller;
+
+    #[tokio::test]
+    async fn fetch_diagnostics_passes_file_path_key() {
+        use zeph_memory::TokenCounter;
+
+        use crate::config::LspConfig;
+        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+        let diagnostics_json = serde_json::json!([
+            { "severity": 1, "message": "type error", "range": { "start": { "line": 0 } } }
+        ])
+        .to_string();
+
+        let mock = RecordingCaller::new().with_text(&diagnostics_json);
+        let config = LspConfig::default();
+        let tc = Arc::new(TokenCounter::default());
+        let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+
+        fetch_diagnostics(&mock, &config, "src/lib.rs", &tc, &sanitizer).await;
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "expected exactly one call_tool invocation");
+        let args = &calls[0].2;
+        assert!(
+            args.get("file_path").is_some(),
+            "call_tool args must contain 'file_path' key, got: {args}"
+        );
+        assert!(
+            args.get("path").is_none(),
+            "call_tool args must NOT contain old 'path' key, got: {args}"
+        );
+        assert_eq!(calls[0].1, "get_diagnostics");
+    }
+
+    #[tokio::test]
+    async fn fetch_diagnostics_file_path_value_matches_input() {
+        use zeph_memory::TokenCounter;
+
+        use crate::config::LspConfig;
+        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+        let mock = RecordingCaller::new().with_text("[]");
+        let config = LspConfig::default();
+        let tc = Arc::new(TokenCounter::default());
+        let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+
+        fetch_diagnostics(
+            &mock,
+            &config,
+            "crates/zeph-core/src/agent.rs",
+            &tc,
+            &sanitizer,
+        )
+        .await;
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]
+                .2
+                .get("file_path")
+                .and_then(serde_json::Value::as_str),
+            Some("crates/zeph-core/src/agent.rs"),
+            "file_path value must match the input path"
+        );
     }
 }

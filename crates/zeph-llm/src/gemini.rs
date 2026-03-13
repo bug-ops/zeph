@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
 use crate::provider::{
-    GenerationOverrides, LlmProvider, Message, MessagePart, Role, ToolDefinition,
+    ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role, StatusTx,
+    ToolDefinition,
 };
 use crate::retry::send_with_retry;
+use crate::sse::gemini_sse_to_stream;
 
 const MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -22,6 +24,7 @@ pub struct GeminiProvider {
     max_output_tokens: u32,
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
     generation_overrides: Option<GenerationOverrides>,
+    status_tx: Option<StatusTx>,
 }
 
 impl fmt::Debug for GeminiProvider {
@@ -34,6 +37,7 @@ impl fmt::Debug for GeminiProvider {
             .field("max_output_tokens", &self.max_output_tokens)
             .field("last_usage", &self.last_usage.lock().ok().and_then(|g| *g))
             .field("generation_overrides", &self.generation_overrides)
+            .field("status_tx", &self.status_tx.is_some())
             .finish()
     }
 }
@@ -48,6 +52,7 @@ impl Clone for GeminiProvider {
             max_output_tokens: self.max_output_tokens,
             last_usage: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
+            status_tx: self.status_tx.clone(),
         }
     }
 }
@@ -63,7 +68,18 @@ impl GeminiProvider {
             max_output_tokens,
             last_usage: std::sync::Mutex::new(None),
             generation_overrides: None,
+            status_tx: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+        self.status_tx = Some(tx);
+        self
+    }
+
+    pub fn set_status_tx(&mut self, tx: StatusTx) {
+        self.status_tx = Some(tx);
     }
 
     #[must_use]
@@ -114,7 +130,7 @@ impl GeminiProvider {
             self.base_url, self.model
         );
 
-        let response = send_with_retry("gemini", MAX_RETRIES, None, || {
+        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
             let req = self
                 .client
                 .post(&url)
@@ -165,6 +181,53 @@ impl GeminiProvider {
             .ok_or_else(|| LlmError::EmptyResponse {
                 provider: "gemini".into(),
             })
+    }
+
+    async fn send_stream_request(
+        &self,
+        messages: &[Message],
+    ) -> Result<reqwest::Response, LlmError> {
+        let request = self.build_request(messages);
+        let body_bytes = serde_json::to_vec(&request)?;
+        let url = format!(
+            "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
+            self.base_url, self.model
+        );
+
+        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
+            let req = self
+                .client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .header("Content-Type", "application/json")
+                .body(body_bytes.clone());
+            async move { req.send().await }
+        })
+        .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.map_err(LlmError::Http)?;
+            if let Ok(err_resp) = serde_json::from_str::<GeminiErrorResponse>(&body) {
+                if err_resp.error.status == "RESOURCE_EXHAUSTED" {
+                    return Err(LlmError::RateLimited);
+                }
+                tracing::error!(
+                    code = err_resp.error.code,
+                    status = %err_resp.error.status,
+                    "Gemini streaming API error: {}", err_resp.error.message
+                );
+                return Err(LlmError::Other(format!(
+                    "Gemini streaming error ({}): {}",
+                    err_resp.error.status, err_resp.error.message
+                )));
+            }
+            return Err(LlmError::Other(format!(
+                "Gemini streaming request failed (status {status})"
+            )));
+        }
+
+        Ok(response)
     }
 }
 
@@ -357,17 +420,13 @@ impl LlmProvider for GeminiProvider {
         self.send_request(messages).await
     }
 
-    async fn chat_stream(
-        &self,
-        _messages: &[Message],
-    ) -> Result<crate::provider::ChatStream, LlmError> {
-        Err(LlmError::Other(
-            "Gemini streaming not yet implemented (Phase 2)".into(),
-        ))
+    async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+        let response = self.send_stream_request(messages).await?;
+        Ok(gemini_sse_to_stream(response))
     }
 
     fn supports_streaming(&self) -> bool {
-        false
+        true
     }
 
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
@@ -433,9 +492,9 @@ mod tests {
     }
 
     #[test]
-    fn gemini_supports_streaming_false() {
+    fn gemini_supports_streaming_true() {
         let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
-        assert!(!p.supports_streaming());
+        assert!(p.supports_streaming());
     }
 
     #[test]
@@ -611,11 +670,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gemini_chat_stream_returns_error() {
-        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+    async fn gemini_chat_stream_error_on_failed_request() {
+        // 403 PERMISSION_DENIED → chat_stream returns Err
+        let body =
+            r#"{"error":{"code":403,"message":"Permission denied.","status":"PERMISSION_DENIED"}}"#;
+        let http_resp = format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_base_url(format!("http://127.0.0.1:{port}"));
         let messages = vec![msg(Role::User, "hello")];
         let result = p.chat_stream(&messages).await;
         assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("PERMISSION_DENIED"),
+            "error must include API status: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_chat_stream_yields_chunks_from_sse() {
+        use tokio_stream::StreamExt as _;
+
+        let event1 = r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}"#;
+        let event2 =
+            r#"{"candidates":[{"content":{"parts":[{"text":" world","thought":false}]}}]}"#;
+        let event3 =
+            r#"{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true}]}}]}"#;
+        let sse_body =
+            format!("data: {event1}\r\n\r\ndata: {event2}\r\n\r\ndata: {event3}\r\n\r\n");
+        let http_resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            sse_body.len(),
+            sse_body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+        let messages = vec![msg(Role::User, "hi")];
+        let stream = p.chat_stream(&messages).await.expect("stream must open");
+        let chunks: Vec<_> = stream.collect().await;
+        assert!(!chunks.is_empty(), "stream must yield at least one chunk");
     }
 
     #[test]
