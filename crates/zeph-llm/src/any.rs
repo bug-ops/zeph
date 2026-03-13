@@ -91,16 +91,7 @@ impl AnyProvider {
             AnyProvider::Claude(p) => p.list_models_remote().await,
             AnyProvider::OpenAi(p) => p.list_models_remote().await,
             AnyProvider::Compatible(p) => p.list_models_remote().await,
-            AnyProvider::Gemini(p) => Ok(p
-                .list_models()
-                .into_iter()
-                .map(|id| crate::model_cache::RemoteModelInfo {
-                    display_name: id.clone(),
-                    id,
-                    context_window: None,
-                    created_at: None,
-                })
-                .collect()),
+            AnyProvider::Gemini(p) => p.list_models_remote().await,
             // Router and Orchestrator use synchronous list_models() to avoid recursive async cycles.
             // Results reflect config-time model lists (potentially stale vs. live remote data).
             AnyProvider::Router(p) => {
