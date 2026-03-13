@@ -785,6 +785,10 @@ impl<C: Channel> Agent<C> {
         let final_status = 'tick: loop {
             let actions = scheduler.tick();
 
+            // Track batch-level spawn outcomes for record_batch_backoff() below.
+            let mut any_spawn_success = false;
+            let mut any_concurrency_failure = false;
+
             for action in actions {
                 match action {
                     SchedulerAction::Spawn {
@@ -792,18 +796,11 @@ impl<C: Channel> Agent<C> {
                         agent_def_name,
                         prompt,
                     } => {
-                        spawn_counter += 1;
                         let task_title = scheduler
                             .graph()
                             .tasks
                             .get(task_id.index())
                             .map_or("unknown", |t| t.title.as_str());
-                        let _ = self
-                            .channel
-                            .send_status(&format!(
-                                "Executing task {spawn_counter}/{task_count}: {task_title}..."
-                            ))
-                            .await;
 
                         let provider = self.provider.clone();
                         let tool_executor = Arc::clone(&self.tool_executor);
@@ -826,10 +823,24 @@ impl<C: Channel> Agent<C> {
                             event_tx,
                         ) {
                             Ok(handle_id) => {
+                                spawn_counter += 1;
+                                let _ = self
+                                    .channel
+                                    .send_status(&format!(
+                                        "Executing task {spawn_counter}/{task_count}: {task_title}..."
+                                    ))
+                                    .await;
                                 scheduler.record_spawn(task_id, handle_id, agent_def_name);
+                                any_spawn_success = true;
                             }
                             Err(e) => {
                                 tracing::error!(error = %e, %task_id, "spawn_for_task failed");
+                                if matches!(
+                                    e,
+                                    crate::subagent::SubAgentError::ConcurrencyLimit { .. }
+                                ) {
+                                    any_concurrency_failure = true;
+                                }
                                 let extra = scheduler.record_spawn_failure(task_id, &e);
                                 for a in extra {
                                     match a {
@@ -865,9 +876,11 @@ impl<C: Channel> Agent<C> {
                     }
                     // Inline execution: the LLM call blocks this tick loop for its
                     // duration. This is intentionally sequential and only expected in
-                    // single-agent setups where no sub-agents are configured. If mixed
-                    // setups (some tasks routed to sub-agents, some inline) are needed
-                    // later, this arm should be refactored to spawn a tokio task instead.
+                    // single-agent setups where no sub-agents are configured.
+                    // Known limitation: if a RunInline action appears before Spawn actions
+                    // in the same batch (mixed routing), those Spawn actions are delayed
+                    // until the inline call completes. Refactor to tokio::spawn if mixed
+                    // batches become common.
                     // TODO(post-MVP): wire CancellationToken into run_inline_tool_loop so
                     // that /plan cancel can interrupt a long-running inline LLM call instead
                     // of waiting for the current iteration to complete.
@@ -930,6 +943,9 @@ impl<C: Channel> Agent<C> {
                     }
                 }
             }
+
+            // Update batch-level backoff counter after processing all Spawn actions.
+            scheduler.record_batch_backoff(any_spawn_success, any_concurrency_failure);
 
             // Drain all pending secret requests this tick (MED-2 fix).
             self.process_pending_secret_requests(&mut denied_secrets)
