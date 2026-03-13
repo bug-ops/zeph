@@ -5,6 +5,17 @@ use sqlx::SqlitePool;
 
 use crate::error::SchedulerError;
 
+/// Full details for a scheduled task, used for display purposes.
+pub struct ScheduledTaskInfo {
+    pub name: String,
+    pub kind: String,
+    pub task_mode: String,
+    /// Cron expression for periodic tasks, empty for oneshot tasks.
+    pub cron_expr: String,
+    /// Next scheduled run time as an ISO 8601 string, or empty if unknown.
+    pub next_run: String,
+}
+
 pub struct JobStore {
     pool: SqlitePool,
 }
@@ -213,6 +224,32 @@ impl JobStore {
             .collect())
     }
 
+    /// List all active (non-done) jobs with full details for display.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query fails.
+    pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
+        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at) \
+             FROM scheduled_jobs WHERE status != 'done' ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(name, kind, task_mode, cron_expr, next_run)| ScheduledTaskInfo {
+                    name,
+                    kind,
+                    task_mode,
+                    cron_expr,
+                    next_run: next_run.unwrap_or_default(),
+                },
+            )
+            .collect())
+    }
+
     #[must_use]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
@@ -381,6 +418,61 @@ mod tests {
             next_run, "2026-06-01T10:00:00Z",
             "run_at must be shown as next_run for oneshot jobs"
         );
+    }
+
+    #[tokio::test]
+    async fn list_jobs_full_returns_correct_fields() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job("periodic_job", "0 0 3 * * *", "memory_cleanup")
+            .await
+            .unwrap();
+        store
+            .upsert_job_with_mode(
+                "oneshot_job",
+                "",
+                "custom",
+                "oneshot",
+                Some("2030-01-01T10:00:00Z"),
+            )
+            .await
+            .unwrap();
+
+        let jobs = store.list_jobs_full().await.unwrap();
+        assert_eq!(jobs.len(), 2);
+
+        let periodic = jobs.iter().find(|j| j.name == "periodic_job").unwrap();
+        assert_eq!(periodic.kind, "memory_cleanup");
+        assert_eq!(periodic.task_mode, "periodic");
+        assert_eq!(periodic.cron_expr, "0 0 3 * * *");
+
+        let oneshot = jobs.iter().find(|j| j.name == "oneshot_job").unwrap();
+        assert_eq!(oneshot.kind, "custom");
+        assert_eq!(oneshot.task_mode, "oneshot");
+        assert!(oneshot.cron_expr.is_empty());
+        assert_eq!(oneshot.next_run, "2030-01-01T10:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn list_jobs_full_excludes_done_jobs() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job_with_mode(
+                "done_job",
+                "",
+                "custom",
+                "oneshot",
+                Some("2026-01-01T01:00:00Z"),
+            )
+            .await
+            .unwrap();
+        store.mark_done("done_job").await.unwrap();
+        let jobs = store.list_jobs_full().await.unwrap();
+        assert!(jobs.iter().all(|j| j.name != "done_job"));
     }
 
     #[tokio::test]

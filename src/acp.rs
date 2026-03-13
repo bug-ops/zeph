@@ -707,6 +707,8 @@ async fn spawn_acp_agent(
         );
     }
 
+    agent = agent.with_graph_config(graph_config);
+
     if let Some(signal) = cancel_signal {
         agent = agent.with_cancel_signal(signal);
     }
@@ -728,7 +730,6 @@ async fn spawn_acp_agent(
     }
 
     agent = agent.with_document_config(document_config);
-    agent = agent.with_graph_config(graph_config);
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);
 

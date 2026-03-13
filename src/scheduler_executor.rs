@@ -44,6 +44,9 @@ pub struct CancelParams {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListTasksParams {}
+
 /// Parses a relative shorthand like `+2m`, `1h30m`, `+3d`, `5s` into a [`chrono::Duration`].
 ///
 /// Units: `s` = seconds, `m` = minutes, `h` = hours, `d` = days. Leading `+` is optional.
@@ -338,6 +341,54 @@ impl SchedulerExecutor {
         Ok(Some(make_output("schedule_deferred", &summary)))
     }
 
+    async fn list_tasks(&self) -> Result<Option<ToolOutput>, ToolError> {
+        let jobs = self
+            .store
+            .list_jobs_full()
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("store error: {e}"),
+            })?;
+
+        if jobs.is_empty() {
+            return Ok(Some(make_output(
+                "list_tasks",
+                "No active scheduled tasks.",
+            )));
+        }
+
+        let lines: Vec<String> = jobs
+            .iter()
+            .map(|t| {
+                let cron = if t.cron_expr.is_empty() {
+                    "-"
+                } else {
+                    &t.cron_expr
+                };
+                let next = if t.next_run.is_empty() {
+                    "-"
+                } else {
+                    &t.next_run
+                };
+                format!(
+                    "  {:<30}  {:<10}  {:<9}  {:<22}  {}",
+                    t.name, t.task_mode, t.kind, cron, next
+                )
+            })
+            .collect();
+        let summary = format!(
+            "Scheduled tasks ({}):\n  {:<30}  {:<10}  {:<9}  {:<22}  {}\n{}",
+            jobs.len(),
+            "NAME",
+            "MODE",
+            "KIND",
+            "CRON",
+            "NEXT RUN",
+            lines.join("\n")
+        );
+        Ok(Some(make_output("list_tasks", &summary)))
+    }
+
     async fn cancel_task(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let params: CancelParams = deserialize_params(&call.params)?;
 
@@ -391,6 +442,7 @@ impl ToolExecutor for SchedulerExecutor {
             ("schedule_periodic", "schedule_periodic"),
             ("schedule_deferred", "schedule_deferred"),
             ("cancel_task", "cancel_task"),
+            ("list_tasks", "list_tasks"),
         ] {
             let blocks = zeph_tools::executor::extract_fenced_blocks(response, tag);
             if let Some(body) = blocks.into_iter().next() {
@@ -429,6 +481,12 @@ impl ToolExecutor for SchedulerExecutor {
                 schema: schemars::schema_for!(CancelParams),
                 invocation: InvocationHint::FencedBlock("cancel_task"),
             },
+            ToolDef {
+                id: "list_tasks".into(),
+                description: "List all active scheduled tasks with their name, mode, kind, cron expression, and next run time.".into(),
+                schema: schemars::schema_for!(ListTasksParams),
+                invocation: InvocationHint::FencedBlock("list_tasks"),
+            },
         ]
     }
 
@@ -437,6 +495,7 @@ impl ToolExecutor for SchedulerExecutor {
             "schedule_periodic" => self.schedule_periodic(call).await,
             "schedule_deferred" => self.schedule_deferred(call).await,
             "cancel_task" => self.cancel_task(call).await,
+            "list_tasks" => self.list_tasks().await,
             _ => Ok(None),
         }
     }
@@ -636,7 +695,59 @@ mod tests {
     #[tokio::test]
     async fn tool_definitions_count() {
         let (exec, _rx) = make_executor().await;
-        assert_eq!(exec.tool_definitions().len(), 3);
+        assert_eq!(exec.tool_definitions().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_empty() {
+        let (exec, _rx) = make_executor().await;
+        let call = make_call("list_tasks", serde_json::json!({}));
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("No active scheduled tasks"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_with_jobs() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .upsert_job("daily", "0 0 3 * * *", "memory_cleanup")
+            .await
+            .unwrap();
+        store
+            .upsert_job_with_mode(
+                "reminder",
+                "",
+                "custom",
+                "oneshot",
+                Some("2030-01-01T10:00:00Z"),
+            )
+            .await
+            .unwrap();
+        let store = Arc::new(store);
+        let (tx, _rx) = mpsc::channel(16);
+        let exec = SchedulerExecutor::new(tx, store);
+
+        let call = make_call("list_tasks", serde_json::json!({}));
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("Scheduled tasks (2)"));
+        assert!(result.summary.contains("daily"));
+        assert!(result.summary.contains("reminder"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_via_fenced_block() {
+        let (exec, _rx) = make_executor().await;
+        let response = "```list_tasks\n{}\n```";
+        let result = exec.execute(response).await.unwrap();
+        assert!(result.is_some(), "list_tasks fenced block must dispatch");
+        assert!(
+            result
+                .unwrap()
+                .summary
+                .contains("No active scheduled tasks")
+        );
     }
 
     #[tokio::test]
