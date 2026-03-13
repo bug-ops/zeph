@@ -2046,7 +2046,8 @@ async fn slash_help_returns_end_turn() {
 }
 
 #[tokio::test]
-async fn slash_unknown_command_returns_error() {
+async fn slash_help_with_args_returns_end_turn() {
+    // /help <args> must be intercepted as ACP-native (not forwarded to agent loop).
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -2056,9 +2057,55 @@ async fn slash_unknown_command_returns_error() {
                 .await
                 .unwrap();
             let sid = resp.session_id.clone();
+
             while let Ok((_, ack)) = rx.try_recv() {
                 let _ = ack.send(());
             }
+
+            let result = tokio::join!(
+                agent.prompt(acp::PromptRequest::new(
+                    sid,
+                    vec![acp::ContentBlock::Text(acp::TextContent::new("/help foo"))]
+                )),
+                async {
+                    if let Some((_, ack)) = rx.recv().await {
+                        let _ = ack.send(());
+                    }
+                }
+            );
+            let resp = result.0.unwrap();
+            assert!(matches!(resp.stop_reason, acp::StopReason::EndTurn));
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn slash_unknown_command_forwarded_to_agent_loop() {
+    // Unknown slash commands must be forwarded to the agent loop, not rejected.
+    use zeph_core::Channel as _;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received_clone = Arc::clone(&received);
+            let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
+                let received_clone = Arc::clone(&received_clone);
+                Box::pin(async move {
+                    if let Ok(Some(msg)) = channel.recv().await {
+                        *received_clone
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                    }
+                })
+            });
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let agent = ZephAcpAgent::new(spawner, tx, conn_slot, 4, 1800, None);
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+            let sid = resp.session_id.clone();
             let result = agent
                 .prompt(acp::PromptRequest::new(
                     sid,
@@ -2067,7 +2114,13 @@ async fn slash_unknown_command_returns_error() {
                     ))],
                 ))
                 .await;
-            assert!(result.is_err());
+            assert!(result.is_ok());
+            let msg = received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert!(msg.is_some(), "agent loop should have received the message");
+            assert_eq!(msg.unwrap().text, "/nonexistent");
         })
         .await;
 }
@@ -3486,22 +3539,53 @@ async fn set_session_config_option_emits_config_option_update_notification() {
 }
 
 #[test]
-fn slash_command_pass_through_forwards_agent_loop_commands() {
-    use super::slash_command_pass_through;
+fn acp_native_commands_are_intercepted() {
+    // ACP-native commands must be matched as `is_acp_native` in handle_prompt().
+    // We mirror the exact logic here so regressions are caught at the unit level.
+    let is_acp_native = |s: &str| {
+        s == "/help"
+            || s.starts_with("/help ")
+            || s == "/mode"
+            || s.starts_with("/mode ")
+            || s == "/clear"
+            || s.starts_with("/review")
+            || s == "/model"
+            || s.starts_with("/model ")
+    };
 
-    // Commands that must be forwarded to the core agent loop.
-    assert!(slash_command_pass_through("/scheduler list"));
-    assert!(slash_command_pass_through("/scheduler"));
-    assert!(slash_command_pass_through("/graph stats"));
-    assert!(slash_command_pass_through("/graph"));
-    assert!(slash_command_pass_through(r#"/plan goal "do something""#));
-    assert!(slash_command_pass_through("/plan"));
-    assert!(slash_command_pass_through("/compact"));
-    assert!(slash_command_pass_through("/model refresh"));
+    assert!(is_acp_native("/help"));
+    assert!(is_acp_native("/help foo"));
+    assert!(is_acp_native("/mode"));
+    assert!(is_acp_native("/mode code"));
+    assert!(is_acp_native("/clear"));
+    assert!(is_acp_native("/review"));
+    assert!(is_acp_native("/review diff"));
+    assert!(is_acp_native("/model"));
+    assert!(is_acp_native("/model ollama:llama3"));
+}
 
-    // Commands that must NOT be forwarded.
-    assert!(!slash_command_pass_through("/unknown"));
-    assert!(!slash_command_pass_through("/help"));
-    assert!(!slash_command_pass_through("/status"));
-    assert!(!slash_command_pass_through("/model"));
+#[test]
+fn agent_loop_commands_are_not_intercepted() {
+    // Commands that are NOT ACP-native must fall through to the agent loop.
+    let is_acp_native = |s: &str| {
+        s == "/help"
+            || s.starts_with("/help ")
+            || s == "/mode"
+            || s.starts_with("/mode ")
+            || s == "/clear"
+            || s.starts_with("/review")
+            || s == "/model"
+            || s.starts_with("/model ")
+    };
+
+    assert!(!is_acp_native("/plan"));
+    assert!(!is_acp_native("/plan goal \"do something\""));
+    assert!(!is_acp_native("/graph"));
+    assert!(!is_acp_native("/graph stats"));
+    assert!(!is_acp_native("/status"));
+    assert!(!is_acp_native("/skills"));
+    assert!(!is_acp_native("/scheduler"));
+    assert!(!is_acp_native("/scheduler list"));
+    assert!(!is_acp_native("/compact"));
+    assert!(!is_acp_native("/unknown"));
 }

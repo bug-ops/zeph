@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- ACP: agent-loop slash commands (`/plan`, `/graph`, `/status`, `/skills`, `/scheduler`, `/compact`, etc.) now correctly forwarded to the agent loop instead of returning "unknown command" errors (fixes #1672)
+
 ### Changed
 
 - **Claude 3 model ID retirement** (#1625): replaced retired Claude 3 model IDs (`claude-3-opus`, `claude-3`, `claude:claude-3-5-sonnet`) with `claude-sonnet-4-6` in test files. `ClaudeProvider::new()` now emits a `tracing::warn!` when the configured model starts with `claude-3`, alerting users with stale configs before the first API call fails.
