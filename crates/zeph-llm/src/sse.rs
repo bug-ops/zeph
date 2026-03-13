@@ -8,14 +8,31 @@ use tokio_stream::StreamExt;
 use crate::error::LlmError;
 use crate::provider::{ChatStream, StreamChunk};
 
+/// State machine for accumulating multi-event Claude SSE blocks (e.g. compaction).
+#[derive(Default)]
+struct ClaudeSseState {
+    /// When `Some`, we are accumulating a compaction block. Holds the summary text so far.
+    compaction_buf: Option<String>,
+}
+
 /// Convert a Claude streaming response into a `ChatStream`.
 pub(crate) fn claude_sse_to_stream(response: reqwest::Response) -> ChatStream {
     let event_stream = response.bytes_stream().eventsource();
-    let mapped = event_stream.filter_map(|event| match event {
-        Ok(event) => parse_claude_sse_event(&event.data, &event.event),
-        Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
-    });
-    Box::pin(mapped)
+    let s = async_stream::stream! {
+        let mut state = ClaudeSseState::default();
+        let mut pinned = std::pin::pin!(event_stream);
+        while let Some(event) = pinned.next().await {
+            match event {
+                Ok(ev) => {
+                    if let Some(chunk) = parse_claude_sse_event(&mut state, &ev.data, &ev.event) {
+                        yield chunk;
+                    }
+                }
+                Err(e) => yield Err(LlmError::SseParse(e.to_string())),
+            }
+        }
+    };
+    Box::pin(s)
 }
 
 /// Convert a Gemini streaming response into a `ChatStream`.
@@ -38,13 +55,53 @@ pub(crate) fn openai_sse_to_stream(response: reqwest::Response) -> ChatStream {
     Box::pin(mapped)
 }
 
-fn parse_claude_sse_event(data: &str, event_type: &str) -> Option<Result<StreamChunk, LlmError>> {
+fn parse_claude_sse_event(
+    state: &mut ClaudeSseState,
+    data: &str,
+    event_type: &str,
+) -> Option<Result<StreamChunk, LlmError>> {
     match event_type {
+        "content_block_start" => {
+            // Detect a compaction block starting.
+            match serde_json::from_str::<ClaudeContentBlockStart>(data) {
+                Ok(ev) if ev.content_block.block_type == "compaction" => {
+                    tracing::debug!("Claude compaction block started");
+                    state.compaction_buf = Some(String::new());
+                }
+                _ => {}
+            }
+            None
+        }
+        "content_block_stop" => {
+            // If we were accumulating a compaction block, emit it now.
+            if let Some(summary) = state.compaction_buf.take() {
+                tracing::info!(
+                    summary_len = summary.len(),
+                    "Claude server-side compaction block completed in stream"
+                );
+                return Some(Ok(StreamChunk::Compaction(summary)));
+            }
+            None
+        }
         "content_block_delta" => match serde_json::from_str::<ClaudeStreamEvent>(data) {
             Ok(event) => {
                 if let Some(delta) = event.delta {
                     match delta.delta_type.as_str() {
                         "text_delta" if !delta.text.is_empty() => {
+                            // If inside a compaction block, accumulate into buffer (32 KiB cap).
+                            if let Some(ref mut buf) = state.compaction_buf {
+                                const MAX_COMPACTION_BUF: usize = 32 * 1024;
+                                let remaining = MAX_COMPACTION_BUF.saturating_sub(buf.len());
+                                if remaining == 0 {
+                                    tracing::warn!(
+                                        "compaction buffer exceeded 32 KiB cap; discarding excess"
+                                    );
+                                } else {
+                                    let to_append = &delta.text[..delta.text.len().min(remaining)];
+                                    buf.push_str(to_append);
+                                }
+                                return None;
+                            }
                             return Some(Ok(StreamChunk::Content(delta.text)));
                         }
                         "thinking_delta" if !delta.thinking.is_empty() => {
@@ -118,6 +175,18 @@ struct ClaudeStreamEvent {
     delta: Option<ClaudeDelta>,
     #[serde(default)]
     error: Option<ClaudeStreamError>,
+}
+
+/// Used for `content_block_start` events to detect compaction blocks.
+#[derive(Deserialize)]
+struct ClaudeContentBlockStart {
+    content_block: ClaudeContentBlockMeta,
+}
+
+#[derive(Deserialize)]
+struct ClaudeContentBlockMeta {
+    #[serde(rename = "type")]
+    block_type: String,
 }
 
 #[derive(Deserialize)]
@@ -228,31 +297,35 @@ mod tests {
 
     #[test]
     fn claude_parse_text_delta() {
+        let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
-        let result = parse_claude_sse_event(data, "content_block_delta");
+        let result = parse_claude_sse_event(&mut state, data, "content_block_delta");
         let chunk = result.unwrap().unwrap();
         assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello"));
     }
 
     #[test]
     fn claude_parse_empty_text_delta() {
+        let mut state = ClaudeSseState::default();
         let data =
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}"#;
-        let result = parse_claude_sse_event(data, "content_block_delta");
+        let result = parse_claude_sse_event(&mut state, data, "content_block_delta");
         assert!(result.is_none());
     }
 
     #[test]
     fn claude_parse_error_event() {
+        let mut state = ClaudeSseState::default();
         let data = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
-        let result = parse_claude_sse_event(data, "error");
+        let result = parse_claude_sse_event(&mut state, data, "error");
         let err = result.unwrap().unwrap_err();
         assert!(err.to_string().contains("overloaded_error"));
     }
 
     #[test]
     fn claude_parse_unknown_event_skipped() {
-        let result = parse_claude_sse_event("{}", "ping");
+        let mut state = ClaudeSseState::default();
+        let result = parse_claude_sse_event(&mut state, "{}", "ping");
         assert!(result.is_none());
     }
 
@@ -286,16 +359,18 @@ mod tests {
 
     #[test]
     fn claude_thinking_delta_emitted_as_thinking_chunk() {
+        let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I need to think about this"}}"#;
-        let result = parse_claude_sse_event(data, "content_block_delta");
+        let result = parse_claude_sse_event(&mut state, data, "content_block_delta");
         let chunk = result.unwrap().unwrap();
         assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "I need to think about this"));
     }
 
     #[test]
     fn claude_thinking_delta_empty_not_emitted() {
+        let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}"#;
-        let result = parse_claude_sse_event(data, "content_block_delta");
+        let result = parse_claude_sse_event(&mut state, data, "content_block_delta");
         assert!(result.is_none());
     }
 
@@ -310,9 +385,102 @@ mod tests {
 
     #[test]
     fn claude_signature_delta_not_emitted_to_stream() {
+        let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123"}}"#;
-        let result = parse_claude_sse_event(data, "content_block_delta");
+        let result = parse_claude_sse_event(&mut state, data, "content_block_delta");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn claude_compaction_block_start_sets_buf() {
+        let mut state = ClaudeSseState::default();
+        assert!(state.compaction_buf.is_none());
+        let data = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","text":""}}"#;
+        let result = parse_claude_sse_event(&mut state, data, "content_block_start");
+        assert!(result.is_none());
+        assert!(state.compaction_buf.is_some());
+    }
+
+    #[test]
+    fn claude_non_compaction_block_start_leaves_buf_empty() {
+        let mut state = ClaudeSseState::default();
+        let data =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
+        let result = parse_claude_sse_event(&mut state, data, "content_block_start");
+        assert!(result.is_none());
+        assert!(state.compaction_buf.is_none());
+    }
+
+    #[test]
+    fn claude_compaction_delta_accumulated_into_buf() {
+        let mut state = ClaudeSseState {
+            compaction_buf: Some(String::new()),
+        };
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Summary text"}}"#;
+        let result = parse_claude_sse_event(&mut state, data, "content_block_delta");
+        assert!(result.is_none());
+        assert_eq!(state.compaction_buf.as_deref(), Some("Summary text"));
+    }
+
+    #[test]
+    fn claude_compaction_delta_does_not_emit_content_chunk() {
+        let mut state = ClaudeSseState {
+            compaction_buf: Some("so far".to_owned()),
+        };
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" more"}}"#;
+        let result = parse_claude_sse_event(&mut state, data, "content_block_delta");
+        // Must not emit a Content chunk while accumulating compaction.
+        assert!(result.is_none());
+        assert_eq!(state.compaction_buf.as_deref(), Some("so far more"));
+    }
+
+    #[test]
+    fn claude_compaction_stop_emits_compaction_chunk() {
+        let mut state = ClaudeSseState {
+            compaction_buf: Some("Final summary".to_owned()),
+        };
+        let result = parse_claude_sse_event(&mut state, "{}", "content_block_stop");
+        let chunk = result.unwrap().unwrap();
+        assert!(
+            matches!(chunk, StreamChunk::Compaction(s) if s == "Final summary"),
+            "expected Compaction chunk with full summary"
+        );
+        assert!(state.compaction_buf.is_none());
+    }
+
+    #[test]
+    fn claude_stop_without_compaction_buf_returns_none() {
+        let mut state = ClaudeSseState::default();
+        let result = parse_claude_sse_event(&mut state, "{}", "content_block_stop");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn claude_compaction_buf_capped_at_32kib() {
+        let mut state = ClaudeSseState {
+            compaction_buf: Some("x".repeat(32 * 1024 - 1)),
+        };
+        // Two-byte push that would exceed cap.
+        let data =
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ab"}}"#;
+        parse_claude_sse_event(&mut state, data, "content_block_delta");
+        let buf = state.compaction_buf.as_ref().unwrap();
+        assert!(buf.len() <= 32 * 1024, "buffer must not exceed 32 KiB");
+    }
+
+    #[test]
+    fn claude_full_compaction_sequence() {
+        let mut state = ClaudeSseState::default();
+        // 1. block_start with compaction type
+        let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","text":""}}"#;
+        assert!(parse_claude_sse_event(&mut state, start, "content_block_start").is_none());
+        // 2. delta
+        let delta = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Summarized context"}}"#;
+        assert!(parse_claude_sse_event(&mut state, delta, "content_block_delta").is_none());
+        // 3. stop
+        let result = parse_claude_sse_event(&mut state, "{}", "content_block_stop");
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Compaction(s) if s == "Summarized context"));
     }
 
     #[test]

@@ -83,6 +83,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) graph_memory: bool,
 
+    /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
+    /// Requires a Claude provider. Overrides `llm.cloud.server_compaction` from config.
+    #[arg(long)]
+    pub(crate) server_compaction: bool,
+
     /// Enable automatic LSP context injection (diagnostics after writes, hover on reads).
     /// Requires mcpls MCP server configured under [mcp.servers].
     #[cfg(feature = "lsp-context")]

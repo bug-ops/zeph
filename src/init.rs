@@ -87,6 +87,8 @@ pub(crate) struct WizardState {
     // Graph memory settings
     pub(crate) graph_memory_enabled: bool,
     pub(crate) graph_extract_model: Option<String>,
+    // Server-side compaction
+    pub(crate) server_compaction_enabled: bool,
     // LSP code intelligence via mcpls
     pub(crate) mcpls_enabled: bool,
     pub(crate) mcpls_workspace_roots: Vec<String>,
@@ -506,6 +508,13 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         }
     }
 
+    state.server_compaction_enabled = Confirm::new()
+        .with_prompt(
+            "Enable Claude server-side context compaction? (compact-2026-01-12 beta, Claude only)",
+        )
+        .default(false)
+        .interact()?;
+
     println!();
     Ok(())
 }
@@ -628,6 +637,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                     .unwrap_or_else(|| "claude-sonnet-4-5-20250929".into()),
                 max_tokens: 8096,
                 thinking: state.thinking.clone(),
+                server_compaction: state.server_compaction_enabled,
                 enable_extended_context: state.enable_extended_context,
             })
         } else {
@@ -709,6 +719,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.memory.graph.extract_model.clone_from(m);
     }
     config.memory.deferred_apply_threshold = state.deferred_apply_threshold;
+    if state.server_compaction_enabled
+        && let Some(cloud) = config.llm.cloud.as_mut()
+    {
+        cloud.server_compaction = true;
+    }
 
     match state.channel {
         ChannelChoice::Cli => {}

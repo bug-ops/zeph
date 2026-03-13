@@ -842,6 +842,33 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn maybe_compact(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
+        // S1: skip client-side compaction when server compaction is active — unless context
+        // has grown past 95% of the budget without a server compaction event (safety fallback).
+        if self.server_compaction_active {
+            let budget = self
+                .context_manager
+                .budget
+                .as_ref()
+                .map_or(0, ContextBudget::max_tokens);
+            if budget > 0 {
+                let total_tokens: usize = self
+                    .messages
+                    .iter()
+                    .map(|m| self.token_counter.count_message_tokens(m))
+                    .sum();
+                let fallback_threshold = budget * 95 / 100;
+                if total_tokens < fallback_threshold {
+                    return Ok(());
+                }
+                tracing::warn!(
+                    total_tokens,
+                    fallback_threshold,
+                    "server compaction active but context at 95%+ — falling back to client-side"
+                );
+            } else {
+                return Ok(());
+            }
+        }
         // Skip if proactive compression already ran this turn (CRIT-03).
         if self.context_manager.compacted_this_turn {
             return Ok(());
@@ -889,6 +916,28 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn maybe_proactive_compress(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
+        // S1: skip proactive compression when server compaction is active — unless context
+        // has grown past 95% of the budget without a server compaction event (safety fallback).
+        if self.server_compaction_active {
+            let budget = self
+                .context_manager
+                .budget
+                .as_ref()
+                .map_or(0, ContextBudget::max_tokens);
+            if budget > 0 {
+                let fallback_threshold = (budget * 95 / 100) as u64;
+                if self.cached_prompt_tokens <= fallback_threshold {
+                    return Ok(());
+                }
+                tracing::warn!(
+                    cached_prompt_tokens = self.cached_prompt_tokens,
+                    fallback_threshold,
+                    "server compaction active but context at 95%+ — falling back to client-side proactive"
+                );
+            } else {
+                return Ok(());
+            }
+        }
         let Some((_threshold, max_summary_tokens)) = self
             .context_manager
             .should_proactively_compress(self.cached_prompt_tokens)

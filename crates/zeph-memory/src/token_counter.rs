@@ -158,6 +158,9 @@ impl TokenCounter {
 
             // RedactedThinkingBlock is an opaque base64 blob — BPE is not meaningful here.
             MessagePart::RedactedThinkingBlock { data } => THINKING_OVERHEAD + data.len() / 4,
+
+            // Compaction summary is sent back verbatim to the API.
+            MessagePart::Compaction { summary } => self.count_tokens(summary),
         }
     }
 

@@ -52,6 +52,12 @@ pub enum LlmError {
     #[error("LLM request timed out")]
     Timeout,
 
+    /// A beta header sent in the request was rejected by the API (e.g. `compact-2026-01-12`
+    /// deprecated or not yet available). The provider has already disabled the feature
+    /// internally; the caller should retry without it.
+    #[error("beta header rejected by API: {header}")]
+    BetaHeaderRejected { header: String },
+
     #[error("{0}")]
     Other(String),
 }
@@ -65,6 +71,12 @@ impl LlmError {
             Self::Other(msg) => is_context_length_message(msg),
             _ => false,
         }
+    }
+
+    /// Returns true if this error indicates that a beta header was rejected by the API.
+    #[must_use]
+    pub fn is_beta_header_rejected(&self) -> bool {
+        matches!(self, Self::BetaHeaderRejected { .. })
     }
 }
 
@@ -122,5 +134,28 @@ mod tests {
             LlmError::ContextLengthExceeded.to_string(),
             "context length exceeded"
         );
+    }
+
+    #[test]
+    fn beta_header_rejected_is_detected() {
+        let e = LlmError::BetaHeaderRejected {
+            header: "compact-2026-01-12".into(),
+        };
+        assert!(e.is_beta_header_rejected());
+    }
+
+    #[test]
+    fn other_error_is_not_beta_header_rejected() {
+        assert!(!LlmError::Unavailable.is_beta_header_rejected());
+        assert!(!LlmError::ContextLengthExceeded.is_beta_header_rejected());
+        assert!(!LlmError::Other("400 bad request".into()).is_beta_header_rejected());
+    }
+
+    #[test]
+    fn beta_header_rejected_display() {
+        let e = LlmError::BetaHeaderRejected {
+            header: "compact-2026-01-12".into(),
+        };
+        assert!(e.to_string().contains("compact-2026-01-12"));
     }
 }

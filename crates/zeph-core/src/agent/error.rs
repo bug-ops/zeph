@@ -50,6 +50,15 @@ impl AgentError {
         }
         false
     }
+
+    /// Returns true if this error indicates that a beta header was rejected by the API.
+    #[must_use]
+    pub fn is_beta_header_rejected(&self) -> bool {
+        if let Self::Llm(e) = self {
+            return e.is_beta_header_rejected();
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -98,5 +107,19 @@ mod tests {
     fn schema_validation_variant_display() {
         let e = AgentError::SchemaValidation("missing field".into());
         assert!(e.to_string().contains("missing field"));
+    }
+
+    #[test]
+    fn agent_error_detects_beta_header_rejected() {
+        let e = AgentError::Llm(zeph_llm::LlmError::BetaHeaderRejected {
+            header: "compact-2026-01-12".into(),
+        });
+        assert!(e.is_beta_header_rejected());
+    }
+
+    #[test]
+    fn agent_error_non_llm_variant_not_beta_rejected() {
+        let e = AgentError::Other("something went wrong".into());
+        assert!(!e.is_beta_header_rejected());
     }
 }

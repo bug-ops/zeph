@@ -279,6 +279,9 @@ pub struct Agent<C: Channel> {
     /// Feature-gated because it is only used in `experiment_cmd.rs`.
     #[cfg(feature = "experiments")]
     pub(super) experiment_notify_tx: tokio::sync::mpsc::Sender<String>,
+    /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
+    /// When true, client-side compaction is skipped.
+    pub(super) server_compaction_active: bool,
 }
 
 impl<C: Channel> Agent<C> {
@@ -469,6 +472,7 @@ impl<C: Channel> Agent<C> {
             lsp_hooks: None,
             #[cfg(feature = "experiments")]
             experiment_cancel: None,
+            server_compaction_active: false,
         }
     }
 

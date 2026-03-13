@@ -362,6 +362,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.graph.enabled = true;
     }
 
+    if cli.server_compaction
+        && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
+    {
+        cloud.server_compaction = true;
+    }
+
     #[cfg(feature = "lsp-context")]
     if cli.lsp_context {
         app.config_mut().lsp.enabled = true;
@@ -659,7 +665,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.autosave_min_length,
     )
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
-    .with_hybrid_search(config.skills.hybrid_search);
+    .with_hybrid_search(config.skills.hybrid_search)
+    .with_server_compaction(
+        config
+            .llm
+            .cloud
+            .as_ref()
+            .is_some_and(|c| c.server_compaction),
+    );
 
     // Load provider-specific and explicit instruction files.
     // base_dir is the process CWD at startup — the most natural project root for local tools.
