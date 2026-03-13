@@ -61,6 +61,7 @@ harness = false
 
 [dev-dependencies]
 criterion.workspace = true
+rmcp.workspace = true
 indoc.workspace = true
 insta.workspace = true
 proptest.workspace = true
