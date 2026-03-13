@@ -351,9 +351,12 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let _ = SkillMatcher::new(&refs, embed_fn_unsupported).await;
 
-        // Exactly one summary info log must be present, not one per skill.
+        // Summary info log must be present and no per-skill individual errors logged.
         assert!(logs_contain("skill embeddings skipped"));
-        assert!(!logs_contain("3 individual"));
+        // Verify the summary is logged at INFO level (not WARN), preventing regression to warn!.
+        assert!(logs_contain("INFO"));
+        // Per-skill EmbedUnsupported must NOT be logged individually (the fix for #1387).
+        assert!(!logs_contain("failed to embed skill"));
     }
 
     #[tokio::test]
