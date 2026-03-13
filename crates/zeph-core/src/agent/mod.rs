@@ -711,14 +711,17 @@ impl<C: Channel> Agent<C> {
 
     /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
     ///
+    /// Each iteration yields at `wait_event()`, during which `channel.recv()` is polled
+    /// concurrently via `tokio::select!`. If the user sends `/plan cancel`, all running
+    /// sub-agent tasks are aborted and the loop exits with [`GraphStatus::Canceled`].
+    /// Other messages received during execution are queued in `message_queue` and
+    /// processed after the plan completes.
+    ///
     /// # Known limitations
     ///
-    /// The agent is single-threaded; this loop blocks all message processing while
-    /// running. The `cancel_token` parameter wires cancellation into the tick loop at
-    /// `wait_event()` and `RunInline` boundaries. However, `/plan cancel` cannot deliver
-    /// the token signal while `run_scheduler_loop` holds `&mut self` — the agent command
-    /// dispatch is paused. The token plumbing is in place for a follow-up that restructures
-    /// the delivery path (see #1603, SEC-M34-002).
+    /// `RunInline` tasks block the tick loop for their entire duration — `/plan cancel`
+    /// cannot interrupt an in-progress inline LLM call and will only be delivered on the
+    /// next iteration after the call completes.
     #[allow(clippy::too_many_lines)]
     async fn run_scheduler_loop(
         &mut self,
@@ -824,6 +827,9 @@ impl<C: Channel> Agent<C> {
                     // single-agent setups where no sub-agents are configured. If mixed
                     // setups (some tasks routed to sub-agents, some inline) are needed
                     // later, this arm should be refactored to spawn a tokio task instead.
+                    // TODO(post-MVP): wire CancellationToken into run_inline_tool_loop so
+                    // that /plan cancel can interrupt a long-running inline LLM call instead
+                    // of waiting for the current iteration to complete.
                     SchedulerAction::RunInline { task_id, prompt } => {
                         spawn_counter += 1;
                         let task_title = scheduler
@@ -894,8 +900,28 @@ impl<C: Channel> Agent<C> {
                 m.orchestration_graph = Some(snapshot);
             });
 
+            // Poll channel.recv() and cancel_token concurrently with the scheduler's event wait
+            // so that /plan cancel can be delivered during plan execution. Without this select!,
+            // run_scheduler_loop holds &mut self for the entire plan, blocking the main
+            // run() loop's channel.recv() call.
+            //
+            // Cancellation paths:
+            //   cancel_token.cancelled() — fired by handle_plan_cancel() from concurrent channels
+            //                              (TUI, Telegram, ACP) that have their own event loops.
+            //   channel.recv("/plan cancel") — for CLI where the main dispatch loop is blocked.
+            //
+            // NOTE(Telegram): Telegram's recv() is not fully cancel-safe — a message
+            // consumed from the internal mpsc but not yet returned can be lost if the
+            // select! cancels the future during the /start send().await path. For
+            // non-command messages the race window is negligible. Acceptable for MVP.
+            //
+            // NOTE(RunInline): tasks in the RunInline arm above block this tick loop
+            // synchronously (no await between loop iteration start and wait_event).
+            // /plan cancel cannot interrupt an inline LLM call mid-execution; it is
+            // delivered on the next tick after the inline call completes.
+            // TODO(post-MVP): wire CancellationToken into run_inline_tool_loop.
             tokio::select! {
-                // biased: cancel takes priority over task completion events.
+                // biased: token cancellation takes priority over new events and input.
                 biased;
                 () = cancel_token.cancelled() => {
                     let cancel_actions = scheduler.cancel_all();
@@ -922,6 +948,44 @@ impl<C: Channel> Agent<C> {
                     break 'tick crate::orchestration::GraphStatus::Canceled;
                 }
                 () = scheduler.wait_event() => {}
+                result = self.channel.recv() => {
+                    match result {
+                        Ok(Some(msg)) => {
+                            if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
+                                let _ = self.channel.send_status("Canceling plan...").await;
+                                let cancel_actions = scheduler.cancel_all();
+                                for ca in cancel_actions {
+                                    match ca {
+                                        SchedulerAction::Cancel { agent_handle_id } => {
+                                            if let Some(mgr) = self.subagent_manager.as_mut() {
+                                                // benign race: agent may have already finished
+                                                let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                                    tracing::trace!(error = %e, "cancel on user request: agent already gone");
+                                                });
+                                            }
+                                        }
+                                        SchedulerAction::Done { status } => {
+                                            break 'tick status;
+                                        }
+                                        SchedulerAction::Spawn { .. }
+                                        | SchedulerAction::RunInline { .. } => {}
+                                    }
+                                }
+                            } else {
+                                self.enqueue_or_merge(msg.text, vec![], msg.attachments);
+                            }
+                        }
+                        // Channel closed — exit promptly. GraphStatus::Failed signals an
+                        // abnormal termination without storing the graph for /plan retry.
+                        Ok(None) | Err(_) => {
+                            break 'tick crate::orchestration::GraphStatus::Failed;
+                        }
+                    }
+                }
+                // Shutdown signal received — same treatment as channel close.
+                () = shutdown_signal(&mut self.shutdown) => {
+                    break 'tick crate::orchestration::GraphStatus::Failed;
+                }
             }
         };
 
@@ -1179,12 +1243,28 @@ impl<C: Channel> Agent<C> {
                 self.pending_graph = Some(completed_graph);
                 "paused"
             }
+            GraphStatus::Canceled => {
+                let done_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count();
+                let total = completed_graph.tasks.len();
+                self.channel
+                    .send(&format!(
+                        "Plan canceled. {done_count}/{total} tasks completed before cancellation."
+                    ))
+                    .await?;
+                // Do NOT store graph back into pending_graph — canceled plans are not
+                // retryable via /plan retry.
+                "canceled"
+            }
             other => {
                 tracing::warn!(%other, "unexpected graph status after Done");
                 self.channel
                     .send(&format!("Plan ended with status: {other}"))
                     .await?;
-                "canceled"
+                "unknown"
             }
         };
         Ok(result_label)
