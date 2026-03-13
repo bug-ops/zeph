@@ -168,6 +168,11 @@ fn parse_gemini_sse_event(data: &str) -> Option<Result<StreamChunk, LlmError>> {
     let parts = resp.candidates.first()?.content.as_ref()?.parts.as_slice();
 
     // Collect thinking and content text separately (HIGH-1 fix: handle multi-part events).
+    // TODO(gemini-phase4, #1659): `GeminiStreamPart` does not have a `function_call` field.
+    // When Gemini streams a tool call via SSE, `functionCall` chunks in `parts` are silently
+    // dropped here. `chat_with_tools()` currently uses the non-streaming endpoint, so this is
+    // safe. If SSE streaming tool use is added (Phase 4 of epic #1592), extend
+    // `GeminiStreamPart` with `function_call: Option<GeminiFunctionCall>` and handle it here.
     let mut thinking = String::new();
     let mut content = String::new();
     for part in parts {
