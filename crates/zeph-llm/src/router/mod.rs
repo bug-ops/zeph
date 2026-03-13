@@ -116,10 +116,27 @@ impl RouterProvider {
             .provider_order
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        order
+        let ordered: Vec<AnyProvider> = order
             .iter()
             .filter_map(|&i| self.providers.get(i).cloned())
-            .collect()
+            .collect();
+        if let Some(first) = ordered.first() {
+            let latency_ema_ms = self
+                .ema
+                .as_ref()
+                .and_then(|ema| {
+                    let snap = ema.snapshot();
+                    snap.get(first.name()).map(|s| s.latency_ema_ms)
+                })
+                .unwrap_or(500.0);
+            tracing::debug!(
+                provider = %first.name(),
+                strategy = "ema",
+                latency_ema_ms = latency_ema_ms,
+                "selected provider"
+            );
+        }
+        ordered
     }
 
     fn thompson_ordered_providers(&self) -> Vec<AnyProvider> {
@@ -131,10 +148,20 @@ impl RouterProvider {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
         let selected = state.select(&names);
+        if let Some(ref sel) = selected {
+            tracing::debug!(
+                provider = %sel.provider,
+                strategy = "thompson",
+                mode = if sel.exploit { "exploit" } else { "explore" },
+                alpha = sel.alpha,
+                beta = sel.beta,
+                "selected provider"
+            );
+        }
         // Put selected provider first, keep rest in original order.
         let mut ordered = self.providers.clone();
-        if let Some(selected_name) = selected
-            && let Some(pos) = ordered.iter().position(|p| p.name() == selected_name)
+        if let Some(ref sel) = selected
+            && let Some(pos) = ordered.iter().position(|p| p.name() == sel.provider)
         {
             ordered.swap(0, pos);
         }
