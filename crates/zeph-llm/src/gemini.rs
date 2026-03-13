@@ -467,14 +467,15 @@ fn inline_refs_inner(
         return;
     }
 
-    // Recurse into object values.
+    // Recurse into object values. Depth is only decremented on $ref resolution,
+    // not on structural nesting, so schemas with deep plain nesting are handled correctly.
     if let Some(obj) = schema.as_object_mut() {
         for v in obj.values_mut() {
-            inline_refs_inner(v, defs, depth - 1);
+            inline_refs_inner(v, defs, depth);
         }
     } else if let Some(arr) = schema.as_array_mut() {
         for v in arr.iter_mut() {
-            inline_refs_inner(v, defs, depth - 1);
+            inline_refs_inner(v, defs, depth);
         }
     }
 }
@@ -1464,6 +1465,47 @@ mod tests {
         inline_refs(&mut schema, 8);
         // After inlining, the result should be an OBJECT or something Gemini-acceptable
         assert!(schema.is_object());
+    }
+
+    #[test]
+    fn test_inline_refs_deep_plain_nesting() {
+        // Regression for: depth counter was decremented on every structural recursion step,
+        // causing schemas with 9+ levels of plain nesting to hit the depth-8 limit prematurely
+        // even when no $ref is present.
+        let mut schema = serde_json::json!({
+            "$defs": {
+                "Leaf": {"type": "string"}
+            },
+            "type": "object",
+            "properties": {
+                "l1": {"type": "object", "properties": {
+                    "l2": {"type": "object", "properties": {
+                        "l3": {"type": "object", "properties": {
+                            "l4": {"type": "object", "properties": {
+                                "l5": {"type": "object", "properties": {
+                                    "l6": {"type": "object", "properties": {
+                                        "l7": {"type": "object", "properties": {
+                                            "l8": {"type": "object", "properties": {
+                                                "l9": {"$ref": "#/$defs/Leaf"}
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }
+        });
+        inline_refs(&mut schema, 8);
+        // The $ref at level 9 must be resolved to the Leaf type, not replaced with a fallback.
+        assert_eq!(
+            schema["properties"]["l1"]["properties"]["l2"]["properties"]["l3"]["properties"]["l4"]
+                ["properties"]["l5"]["properties"]["l6"]["properties"]["l7"]["properties"]["l8"]["properties"]
+                ["l9"]["type"],
+            "string",
+            "$ref at deep nesting level must be resolved, not replaced with fallback"
+        );
     }
 
     #[test]

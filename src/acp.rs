@@ -151,6 +151,10 @@ struct SharedAgentDeps {
     document_config: zeph_core::config::DocumentConfig,
     /// Graph memory configuration from `[memory.graph]` config section.
     graph_config: zeph_core::config::GraphConfig,
+    /// Anomaly detector configuration from `[tools.anomaly]` config section.
+    anomaly_config: zeph_tools::AnomalyConfig,
+    /// Orchestration configuration from `[orchestration]` config section.
+    orchestration_config: zeph_core::config::OrchestrationConfig,
     /// Debug dump configuration from `[debug]` config section.
     debug_config: zeph_core::config::DebugConfig,
     /// Scheduler executor shared across sessions. Initialized once at startup.
@@ -468,6 +472,8 @@ async fn build_acp_deps(
         acp_project_rules,
         document_config: config.memory.documents.clone(),
         graph_config: config.memory.graph.clone(),
+        anomaly_config: config.tools.anomaly.clone(),
+        orchestration_config: config.orchestration.clone(),
         debug_config: config.debug.clone(),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -541,6 +547,8 @@ async fn spawn_acp_agent(
     let quarantine_provider = d.quarantine_provider.clone();
     let document_config = d.document_config.clone();
     let graph_config = d.graph_config.clone();
+    let anomaly_config = d.anomaly_config.clone();
+    let orchestration_config = d.orchestration_config.clone();
     let debug_config = d.debug_config.clone();
     let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
     let available_secrets: Vec<(String, Secret)> = d
@@ -730,6 +738,16 @@ async fn spawn_acp_agent(
     }
 
     agent = agent.with_document_config(document_config);
+
+    if anomaly_config.enabled {
+        agent = agent.with_anomaly_detector(zeph_tools::AnomalyDetector::new(
+            anomaly_config.window_size,
+            anomaly_config.error_threshold,
+            anomaly_config.critical_threshold,
+        ));
+    }
+
+    agent = agent.with_orchestration_config(orchestration_config);
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);
 
@@ -1398,6 +1416,22 @@ mod tests {
         assert!(doc_cfg.rag_enabled);
         assert_eq!(doc_cfg.top_k, 7);
         assert!(graph_cfg.enabled);
+    }
+
+    // Compile-time regression test for issue #1643: anomaly_config and orchestration_config
+    // were absent from SharedAgentDeps, silently disabling both features for ACP sessions.
+    #[test]
+    fn shared_agent_deps_has_anomaly_and_orchestration_config_fields() {
+        let anomaly_cfg = zeph_tools::AnomalyConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let orch_cfg = zeph_core::config::OrchestrationConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(anomaly_cfg.enabled);
+        assert!(orch_cfg.enabled);
     }
 
     #[tokio::test]
