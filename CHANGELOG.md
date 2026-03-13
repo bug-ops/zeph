@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Graph extraction 400 Bad Request with OpenAI strict mode**: `chat_typed` in `zeph-llm` now normalizes the `schemars`-generated JSON Schema before sending it to OpenAI structured output with `strict: true`. Normalization inlines `$ref`/`$defs` references (depth 8) and adds `additionalProperties: false` plus a complete `required` array on every object schema (depth 16). `Option<T>` fields are preserved via `anyOf` and made required as per OpenAI strict mode rules. Closes #1656.
+
 - **Gemini `parse_tool_response` single-candidate limitation documented**: added code comment and `debug!` log in `parse_tool_response()` noting that only `candidates[0]` is processed. Zeph never requests `candidateCount > 1`, so this path is unreachable in normal operation. Closes #1640.
 - **ACP graph memory extraction silently disabled**: `spawn_acp_agent` in `src/acp.rs` now calls `agent.with_graph_config()` with the `[memory.graph]` config section. Previously the `graph_config` field in `MemoryState` defaulted to `GraphConfig { enabled: false }`, causing `maybe_spawn_graph_extraction()` to return early for every ACP session regardless of user configuration. Closes #1633.
 

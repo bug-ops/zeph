@@ -564,7 +564,10 @@ impl LlmProvider for OpenAiProvider {
         T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
         Self: Sized,
     {
-        let (schema_value, _) = crate::provider::cached_schema::<T>()?;
+        let (raw_schema, _) = crate::provider::cached_schema::<T>()?;
+        let mut schema_value = raw_schema;
+        inline_refs_openai(&mut schema_value, 8);
+        normalize_for_openai_strict(&mut schema_value, 16);
         let type_name = std::any::type_name::<T>()
             .rsplit("::")
             .next()
@@ -1195,6 +1198,121 @@ struct JsonSchemaFormat<'a> {
     name: &'a str,
     schema: serde_json::Value,
     strict: bool,
+}
+
+/// Inline all `$ref` references from `$defs` into the schema tree.
+fn inline_refs_openai(schema: &mut serde_json::Value, depth: u8) {
+    if depth == 0 {
+        return;
+    }
+    let defs = if let Some(obj) = schema.as_object() {
+        obj.get("$defs")
+            .or_else(|| obj.get("definitions"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::default()))
+    } else {
+        serde_json::Value::Object(serde_json::Map::default())
+    };
+    inline_refs_openai_inner(schema, &defs, depth);
+    if let Some(obj) = schema.as_object_mut() {
+        obj.remove("$defs");
+        obj.remove("definitions");
+    }
+}
+
+fn inline_refs_openai_inner(schema: &mut serde_json::Value, defs: &serde_json::Value, depth: u8) {
+    if depth == 0 {
+        return;
+    }
+    if let Some(obj) = schema.as_object()
+        && let Some(ref_val) = obj.get("$ref").and_then(|v| v.as_str())
+    {
+        let name = ref_val
+            .trim_start_matches("#/$defs/")
+            .trim_start_matches("#/definitions/");
+        if let Some(resolved) = defs.get(name) {
+            let mut resolved = resolved.clone();
+            inline_refs_openai_inner(&mut resolved, defs, depth - 1);
+            *schema = resolved;
+            return;
+        }
+        *schema = serde_json::json!({"type": "object"});
+        return;
+    }
+    if let Some(obj) = schema.as_object_mut() {
+        for v in obj.values_mut() {
+            inline_refs_openai_inner(v, defs, depth - 1);
+        }
+    } else if let Some(arr) = schema.as_array_mut() {
+        for v in arr.iter_mut() {
+            inline_refs_openai_inner(v, defs, depth - 1);
+        }
+    }
+}
+
+/// Normalize a JSON Schema for `OpenAI` structured output strict mode.
+///
+/// Requirements:
+/// - `additionalProperties: false` on every object
+/// - All properties listed in `required`
+/// - No `$schema`, `title`, or other non-strict keys at top level
+fn normalize_for_openai_strict(schema: &mut serde_json::Value, depth: u8) {
+    if depth == 0 {
+        return;
+    }
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+
+    let remove_keys: &[&str] = &["$schema", "title", "format", "default", "examples", "$id"];
+    for key in remove_keys {
+        obj.remove(*key);
+    }
+
+    let is_object = obj.get("type").and_then(|t| t.as_str()) == Some("object");
+
+    if is_object {
+        obj.insert(
+            "additionalProperties".to_owned(),
+            serde_json::Value::Bool(false),
+        );
+
+        let prop_keys: Vec<String> = obj
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .map(|p| p.keys().cloned().collect())
+            .unwrap_or_default();
+
+        if !prop_keys.is_empty() {
+            obj.insert(
+                "required".to_owned(),
+                serde_json::Value::Array(
+                    prop_keys
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+
+        if let Some(serde_json::Value::Object(props)) = obj.get_mut("properties") {
+            for v in props.values_mut() {
+                normalize_for_openai_strict(v, depth - 1);
+            }
+        }
+    }
+
+    if let Some(items) = obj.get_mut("items") {
+        normalize_for_openai_strict(items, depth - 1);
+    }
+
+    for key in &["anyOf", "oneOf"] {
+        if let Some(serde_json::Value::Array(variants)) = obj.get_mut(*key) {
+            for v in variants.iter_mut() {
+                normalize_for_openai_strict(v, depth - 1);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2469,5 +2587,74 @@ mod tests {
         assert_eq!(ov.top_p, Some(0.95));
         assert_eq!(ov.frequency_penalty, Some(0.1));
         assert_eq!(ov.presence_penalty, Some(0.2));
+    }
+
+    #[test]
+    fn normalize_for_openai_strict_adds_additional_properties() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "integer"}
+            }
+        });
+        normalize_for_openai_strict(&mut schema, 8);
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema["required"].as_array().is_some());
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "name"));
+        assert!(required.iter().any(|v| v == "age"));
+    }
+
+    #[test]
+    fn normalize_for_openai_strict_preserves_anyof_for_option() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": {"type": "string"},
+                "opt": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}]
+                }
+            }
+        });
+        normalize_for_openai_strict(&mut schema, 8);
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "opt"));
+        assert!(schema["properties"]["opt"].get("anyOf").is_some());
+    }
+
+    #[test]
+    fn inline_refs_openai_resolves_defs() {
+        let mut schema = serde_json::json!({
+            "$defs": {
+                "Foo": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}
+            },
+            "type": "object",
+            "properties": {
+                "foo": {"$ref": "#/$defs/Foo"}
+            }
+        });
+        inline_refs_openai(&mut schema, 8);
+        assert!(schema.get("$defs").is_none());
+        assert!(schema["properties"]["foo"].get("$ref").is_none());
+        assert_eq!(schema["properties"]["foo"]["type"], "object");
+    }
+
+    #[test]
+    fn normalize_nested_objects_get_additional_properties() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "inner": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "string"}
+                    }
+                }
+            }
+        });
+        normalize_for_openai_strict(&mut schema, 16);
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"]["inner"]["additionalProperties"], false);
     }
 }
