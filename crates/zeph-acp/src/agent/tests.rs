@@ -2257,7 +2257,7 @@ async fn set_session_model_rejects_unknown_model() {
             let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
                 .with_provider_factory(
                     factory,
-                    shared_models(vec!["claude:claude-3-5-sonnet".to_owned()]),
+                    shared_models(vec!["claude:claude-sonnet-4-6".to_owned()]),
                 );
             let resp = agent
                 .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
