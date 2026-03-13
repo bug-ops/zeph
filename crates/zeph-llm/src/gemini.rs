@@ -25,6 +25,7 @@ pub struct GeminiProvider {
     base_url: String,
     model: String,
     max_output_tokens: u32,
+    embedding_model: Option<String>,
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
     generation_overrides: Option<GenerationOverrides>,
     status_tx: Option<StatusTx>,
@@ -38,6 +39,7 @@ impl fmt::Debug for GeminiProvider {
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("max_output_tokens", &self.max_output_tokens)
+            .field("embedding_model", &self.embedding_model)
             .field("last_usage", &self.last_usage.lock().ok().and_then(|g| *g))
             .field("generation_overrides", &self.generation_overrides)
             .field("status_tx", &self.status_tx.is_some())
@@ -53,6 +55,7 @@ impl Clone for GeminiProvider {
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             max_output_tokens: self.max_output_tokens,
+            embedding_model: self.embedding_model.clone(),
             last_usage: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
             status_tx: self.status_tx.clone(),
@@ -69,10 +72,17 @@ impl GeminiProvider {
             base_url: DEFAULT_BASE_URL.to_owned(),
             model,
             max_output_tokens,
+            embedding_model: None,
             last_usage: std::sync::Mutex::new(None),
             generation_overrides: None,
             status_tx: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_embedding_model(mut self, model: impl Into<String>) -> Self {
+        self.embedding_model = Some(model.into()).filter(|s| !s.is_empty());
+        self
     }
 
     #[must_use]
@@ -320,6 +330,15 @@ fn parse_gemini_error(body: &str, status: reqwest::StatusCode) -> LlmError {
 // ---------------------------------------------------------------------------
 
 fn parse_tool_response(resp: GenerateContentResponse) -> Result<ChatResponse, LlmError> {
+    // Known limitation: only the first candidate is processed (issue #1640).
+    // Gemini supports `candidateCount > 1`, but Zeph never requests multiple
+    // candidates, so the remaining entries are unreachable in normal operation.
+    if resp.candidates.len() > 1 {
+        tracing::debug!(
+            count = resp.candidates.len(),
+            "Gemini returned multiple candidates; only the first will be used"
+        );
+    }
     let candidate = resp
         .candidates
         .into_iter()
@@ -946,6 +965,38 @@ struct GeminiErrorDetail {
 }
 
 // ---------------------------------------------------------------------------
+// Embedding API types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EmbedContentRequest<'a> {
+    model: String,
+    content: EmbedContent<'a>,
+    task_type: &'static str,
+}
+
+#[derive(Serialize)]
+struct EmbedContent<'a> {
+    parts: Vec<EmbedPart<'a>>,
+}
+
+#[derive(Serialize)]
+struct EmbedPart<'a> {
+    text: &'a str,
+}
+
+#[derive(Deserialize)]
+struct EmbedContentResponse {
+    embedding: EmbedValues,
+}
+
+#[derive(Deserialize)]
+struct EmbedValues {
+    values: Vec<f32>,
+}
+
+// ---------------------------------------------------------------------------
 // LlmProvider impl
 // ---------------------------------------------------------------------------
 
@@ -989,14 +1040,57 @@ impl LlmProvider for GeminiProvider {
         self.send_tool_request(messages, tools).await
     }
 
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Err(LlmError::EmbedUnsupported {
-            provider: "gemini".into(),
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        let model = self
+            .embedding_model
+            .as_deref()
+            .ok_or_else(|| LlmError::EmbedUnsupported {
+                provider: "gemini".into(),
+            })?;
+
+        let url = format!("{}/v1beta/models/{}:embedContent", self.base_url, model);
+
+        let body = EmbedContentRequest {
+            model: format!("models/{model}"),
+            content: EmbedContent {
+                parts: vec![EmbedPart { text }],
+            },
+            // TODO(#1597): use RETRIEVAL_DOCUMENT for storage paths once
+            // LlmProvider::embed() supports taskType parameter.
+            task_type: "RETRIEVAL_QUERY",
+        };
+
+        let body_bytes = serde_json::to_vec(&body)?;
+
+        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
+            let req = self
+                .client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .header("Content-Type", "application/json")
+                .body(body_bytes.clone());
+            async move { req.send().await }
         })
+        .await?;
+
+        let status = response.status();
+        let body_text = response.text().await.map_err(LlmError::Http)?;
+
+        if !status.is_success() {
+            return Err(parse_gemini_error(&body_text, status));
+        }
+
+        let resp: EmbedContentResponse = serde_json::from_str(&body_text)?;
+        if resp.embedding.values.is_empty() {
+            return Err(LlmError::EmptyResponse {
+                provider: "gemini".into(),
+            });
+        }
+        Ok(resp.embedding.values)
     }
 
     fn supports_embeddings(&self) -> bool {
-        false
+        self.embedding_model.is_some()
     }
 
     fn supports_vision(&self) -> bool {
@@ -1004,12 +1098,16 @@ impl LlmProvider for GeminiProvider {
     }
 
     fn list_models(&self) -> Vec<String> {
-        vec![
+        let mut models = vec![
             "gemini-2.5-pro".to_owned(),
             "gemini-2.0-flash".to_owned(),
             "gemini-1.5-pro".to_owned(),
             "gemini-1.5-flash".to_owned(),
-        ]
+        ];
+        if let Some(ref em) = self.embedding_model {
+            models.push(em.clone());
+        }
+        models
     }
 
     fn last_usage(&self) -> Option<(u64, u64)> {
@@ -2208,5 +2306,213 @@ mod tests {
         // Empty tools — should fall back to chat()
         let result = p.chat_with_tools(&messages, &[]).await.unwrap();
         assert!(matches!(result, ChatResponse::Text(s) if s == "Hello!"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Embedding tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn gemini_supports_embeddings_without_model() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+        assert!(!p.supports_embeddings());
+    }
+
+    #[test]
+    fn gemini_supports_embeddings_with_model() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004");
+        assert!(p.supports_embeddings());
+    }
+
+    #[test]
+    fn gemini_with_embedding_model_empty_string_is_none() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("");
+        assert!(
+            !p.supports_embeddings(),
+            "empty string must not enable embeddings"
+        );
+    }
+
+    #[test]
+    fn embed_content_request_serialization() {
+        let req = EmbedContentRequest {
+            model: "models/text-embedding-004".to_owned(),
+            content: EmbedContent {
+                parts: vec![EmbedPart {
+                    text: "hello world",
+                }],
+            },
+            task_type: "RETRIEVAL_QUERY",
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["model"], "models/text-embedding-004");
+        assert_eq!(json["taskType"], "RETRIEVAL_QUERY");
+        assert_eq!(json["content"]["parts"][0]["text"], "hello world");
+        assert!(
+            json.get("task_type").is_none(),
+            "must use camelCase taskType"
+        );
+    }
+
+    #[test]
+    fn embed_content_response_deserialization() {
+        let json = r#"{"embedding":{"values":[0.1,0.2,0.3]}}"#;
+        let resp: EmbedContentResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.embedding.values, vec![0.1_f32, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn embed_content_response_empty_values() {
+        let json = r#"{"embedding":{"values":[]}}"#;
+        let resp: EmbedContentResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.embedding.values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gemini_embed_no_model_returns_unsupported() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+        let result = p.embed("test text").await;
+        assert!(
+            matches!(result, Err(LlmError::EmbedUnsupported { .. })),
+            "embed without embedding_model must return EmbedUnsupported"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_embed_success() {
+        let body = r#"{"embedding":{"values":[0.1,0.2,0.3,0.4]}}"#;
+        let http_resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004")
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+
+        let result = p.embed("hello world").await.unwrap();
+        assert_eq!(result.len(), 4);
+        assert!((result[0] - 0.1_f32).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn gemini_embed_api_error_403() {
+        let body =
+            r#"{"error":{"code":403,"message":"API key not valid.","status":"PERMISSION_DENIED"}}"#;
+        let http_resp = format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004")
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+
+        let err = p.embed("test").await.unwrap_err().to_string();
+        assert!(
+            err.contains("PERMISSION_DENIED"),
+            "error must contain status: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_embed_api_error_429() {
+        // send_with_retry retries up to MAX_RETRIES times on 429 — need MAX_RETRIES+1 responses.
+        // Use Retry-After: 0 to avoid sleep delays in tests.
+        let rate_limit =
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let responses: Vec<&'static str> = vec![rate_limit; MAX_RETRIES as usize + 1];
+        let (port, _handle) = spawn_mock_server(responses).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004")
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+
+        let result = p.embed("test").await;
+        assert!(
+            matches!(result, Err(LlmError::RateLimited)),
+            "429 RESOURCE_EXHAUSTED must return RateLimited, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_embed_api_error_500() {
+        let body = "Internal Server Error";
+        let http_resp = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004")
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+
+        let result = p.embed("test").await;
+        assert!(result.is_err(), "500 must return error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("500"), "error must mention status code: {err}");
+    }
+
+    #[tokio::test]
+    async fn gemini_embed_malformed_response() {
+        let body = r#"{"not_embedding": true}"#;
+        let http_resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, _handle) = spawn_mock_server(vec![Box::leak(http_resp.into_boxed_str())]).await;
+
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004")
+            .with_base_url(format!("http://127.0.0.1:{port}"));
+
+        let result = p.embed("test").await;
+        assert!(result.is_err(), "malformed response must return error");
+    }
+
+    #[test]
+    fn gemini_list_models_includes_embedding_model_when_configured() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004");
+        let models = p.list_models();
+        assert!(
+            models.contains(&"text-embedding-004".to_owned()),
+            "configured embedding model must appear in list_models"
+        );
+    }
+
+    #[test]
+    fn gemini_list_models_excludes_embedding_model_when_not_configured() {
+        let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+        let models = p.list_models();
+        assert!(
+            !models.contains(&"text-embedding-004".to_owned()),
+            "embedding model must not appear when not configured"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn integration_gemini_embed() {
+        let api_key = std::env::var("ZEPH_GEMINI_API_KEY").expect("ZEPH_GEMINI_API_KEY required");
+        let p = GeminiProvider::new(api_key, "gemini-2.0-flash".into(), 1024)
+            .with_embedding_model("text-embedding-004");
+        let result = p.embed("Hello, world!").await.expect("embed must succeed");
+        assert!(!result.is_empty(), "embedding must be non-empty");
+        // text-embedding-004 returns 768 dimensions
+        assert_eq!(
+            result.len(),
+            768,
+            "text-embedding-004 returns 768 dimensions"
+        );
     }
 }

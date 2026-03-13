@@ -538,6 +538,10 @@ pub struct GeminiConfig {
     /// Can be overridden for proxies or Vertex AI.
     #[serde(default = "default_gemini_base_url")]
     pub base_url: String,
+    /// Embedding model name, e.g. `text-embedding-004`.
+    /// When set, `supports_embeddings()` returns true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
 }
 
 fn default_gemini_max_tokens() -> u32 {
