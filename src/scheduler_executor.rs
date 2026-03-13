@@ -440,6 +440,23 @@ impl ToolExecutor for SchedulerExecutor {
     }
 }
 
+/// `Arc`-wrapper so `SchedulerExecutor` can be shared across ACP sessions without `Clone`.
+pub(crate) struct DynSchedulerExecutor(pub(crate) std::sync::Arc<SchedulerExecutor>);
+
+impl ToolExecutor for DynSchedulerExecutor {
+    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        self.0.execute(response).await
+    }
+
+    fn tool_definitions(&self) -> Vec<ToolDef> {
+        self.0.tool_definitions()
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        self.0.execute_tool_call(call).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
