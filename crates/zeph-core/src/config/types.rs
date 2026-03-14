@@ -1081,6 +1081,8 @@ pub struct MemoryConfig {
     pub hard_compaction_threshold: f32,
     #[serde(default = "default_compaction_preserve_tail")]
     pub compaction_preserve_tail: usize,
+    #[serde(default = "default_compaction_cooldown_turns")]
+    pub compaction_cooldown_turns: u8,
     #[serde(default = "default_auto_budget")]
     pub auto_budget: bool,
     #[serde(default = "default_prune_protect_tokens")]
@@ -1293,6 +1295,10 @@ fn default_hard_compaction_threshold() -> f32 {
 
 fn default_compaction_preserve_tail() -> usize {
     6
+}
+
+fn default_compaction_cooldown_turns() -> u8 {
+    2
 }
 
 fn default_auto_budget() -> bool {
@@ -2133,6 +2139,7 @@ impl Default for Config {
                 soft_compaction_threshold: default_soft_compaction_threshold(),
                 hard_compaction_threshold: default_hard_compaction_threshold(),
                 compaction_preserve_tail: default_compaction_preserve_tail(),
+                compaction_cooldown_turns: default_compaction_cooldown_turns(),
                 auto_budget: default_auto_budget(),
                 prune_protect_tokens: default_prune_protect_tokens(),
                 cross_session_score_threshold: default_cross_session_score_threshold(),

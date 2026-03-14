@@ -643,6 +643,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.prune_protect_tokens,
     )
     .with_soft_compaction_threshold(config.memory.soft_compaction_threshold)
+    .with_compaction_cooldown(config.memory.compaction_cooldown_turns)
     .with_compression(config.memory.compression.clone())
     .with_routing(config.memory.routing.clone())
     .with_shutdown(shutdown_rx.clone())

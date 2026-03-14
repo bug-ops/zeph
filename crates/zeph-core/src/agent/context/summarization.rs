@@ -841,11 +841,29 @@ impl<C: Channel> Agent<C> {
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        clippy::too_many_lines
     )]
     pub(in crate::agent) async fn maybe_compact(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
+        // Guard 3 — Exhaustion: stop compaction permanently when it cannot reduce context.
+        if self.context_manager.compaction_exhausted {
+            if !self.context_manager.exhaustion_warned {
+                self.context_manager.exhaustion_warned = true;
+                tracing::warn!("compaction exhausted: context budget too tight for this session");
+                let _ = self
+                    .channel
+                    .send(
+                        "Warning: context budget is too tight — compaction cannot free enough \
+                         space. Consider increasing [memory] context_budget_tokens or starting \
+                         a new session.",
+                    )
+                    .await;
+            }
+            return Ok(());
+        }
+
         // S1: skip client-side compaction when server compaction is active — unless context
         // has grown past 95% of the budget without a server compaction event (safety fallback).
         if self.server_compaction_active {
@@ -876,6 +894,12 @@ impl<C: Channel> Agent<C> {
         // Skip if hard compaction already ran this turn (CRIT-03).
         if self.context_manager.compacted_this_turn {
             return Ok(());
+        }
+        // Guard 1 — Cooldown: skip Hard-tier LLM compaction for N turns after the last successful
+        // compaction. Soft compaction (pruning only) is still allowed during cooldown.
+        let in_cooldown = self.context_manager.compaction_turns_since > 0;
+        if in_cooldown {
+            self.context_manager.compaction_turns_since -= 1;
         }
 
         match self.compaction_tier() {
@@ -911,6 +935,15 @@ impl<C: Channel> Agent<C> {
                 Ok(())
             }
             CompactionTier::Hard => {
+                // Cooldown guard: skip LLM summarization while cooling down.
+                if in_cooldown {
+                    tracing::debug!(
+                        turns_remaining = self.context_manager.compaction_turns_since,
+                        "hard compaction skipped: cooldown active"
+                    );
+                    return Ok(());
+                }
+
                 let budget = self
                     .context_manager
                     .budget
@@ -931,19 +964,62 @@ impl<C: Channel> Agent<C> {
                 if freed >= min_to_free {
                     tracing::info!(freed, "hard compaction: pruning sufficient");
                     self.context_manager.compacted_this_turn = true;
+                    self.context_manager.compaction_turns_since =
+                        self.context_manager.compaction_cooldown_turns;
                     let _ = self.channel.send_status("").await;
                     return Ok(());
                 }
 
-                // Step 3: fall back to full LLM summarization.
+                // Step 3: Guard 2 — Counterproductive: check if there are enough messages
+                // to make LLM summarization worthwhile.
+                let preserve_tail = self.context_manager.compaction_preserve_tail;
+                let compactable = self.messages.len().saturating_sub(preserve_tail + 1);
+                if compactable <= 1 {
+                    tracing::warn!(
+                        compactable,
+                        "hard compaction: too few messages to compact, marking exhausted"
+                    );
+                    self.context_manager.compaction_exhausted = true;
+                    let _ = self.channel.send_status("").await;
+                    return Ok(());
+                }
+
+                // Step 4: fall back to full LLM summarization.
                 tracing::info!(
                     freed,
                     min_to_free,
                     "hard compaction: pruning insufficient, falling back to LLM summarization"
                 );
+                let tokens_before = self.cached_prompt_tokens;
                 let result = self.compact_context().await;
                 if result.is_ok() {
+                    // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all
+                    // freed space — no net reduction).
+                    let freed_tokens = tokens_before.saturating_sub(self.cached_prompt_tokens);
+                    if freed_tokens == 0 {
+                        tracing::warn!(
+                            "hard compaction: summary consumed all freed tokens — no net \
+                             reduction, marking exhausted"
+                        );
+                        self.context_manager.compaction_exhausted = true;
+                        let _ = self.channel.send_status("").await;
+                        return result;
+                    }
+                    // Guard 3 — Still above threshold: compaction freed some tokens but context
+                    // remains above the hard threshold; further LLM attempts are unlikely to help.
+                    if matches!(self.compaction_tier(), CompactionTier::Hard) {
+                        tracing::warn!(
+                            freed_tokens,
+                            "hard compaction: context still above hard threshold after \
+                             compaction, marking exhausted"
+                        );
+                        self.context_manager.compaction_exhausted = true;
+                        let _ = self.channel.send_status("").await;
+                        return result;
+                    }
                     self.context_manager.compacted_this_turn = true;
+                    self.context_manager.compaction_turns_since =
+                        self.context_manager.compaction_cooldown_turns;
                 }
                 let _ = self.channel.send_status("").await;
                 result

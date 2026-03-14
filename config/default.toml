@@ -217,6 +217,9 @@ soft_compaction_threshold = 0.70
 hard_compaction_threshold = 0.90
 # Number of recent messages to preserve during compaction
 compaction_preserve_tail = 6
+# Turns to skip after a successful compaction (cooldown guard).
+# Prevents immediate re-compaction when the summary itself consumes many tokens.
+compaction_cooldown_turns = 2
 # Token budget protected from tool output pruning (recent context zone)
 prune_protect_tokens = 40000
 # Minimum relevance score for cross-session memory results (0.0-1.0)

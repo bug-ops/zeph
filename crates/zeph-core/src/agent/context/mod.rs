@@ -3435,4 +3435,247 @@ mod tests {
                 .any(|m| m.content.starts_with("[recall]"))
         );
     }
+
+    // --- Compaction guard tests (issue #1708) ---
+
+    // Cooldown guard: compaction_turns_since counts down and blocks compaction.
+    #[tokio::test]
+    async fn cooldown_guard_decrements_and_skips_compaction() {
+        let provider = mock_provider(vec!["summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2, 0)
+            .with_compaction_cooldown(2)
+            .with_metrics(tx);
+
+        // Manually set cooldown counter as if compaction just fired.
+        agent.context_manager.compaction_turns_since = 2;
+
+        // Push enough tokens to trigger compaction threshold.
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} padding to exceed budget threshold"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        // First call: turns_since = 2 → skips, decrements to 1. No compaction fired.
+        agent.maybe_compact().await.unwrap();
+        assert_eq!(agent.context_manager.compaction_turns_since, 1);
+        assert_eq!(rx.borrow().context_compactions, 0);
+
+        // Second call: turns_since = 1 → skips, decrements to 0. No compaction fired.
+        agent.maybe_compact().await.unwrap();
+        assert_eq!(agent.context_manager.compaction_turns_since, 0);
+        assert_eq!(rx.borrow().context_compactions, 0);
+    }
+
+    // Cooldown guard: after cooldown expires, compaction fires and resets the counter.
+    #[tokio::test]
+    async fn cooldown_guard_fires_after_expiry_and_resets_counter() {
+        let provider = mock_provider(vec!["summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2, 0)
+            .with_compaction_cooldown(2)
+            .with_metrics(tx);
+
+        // turns_since = 0 means cooldown has already expired.
+        agent.context_manager.compaction_turns_since = 0;
+
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} padding to exceed budget threshold"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        // Seed cached_prompt_tokens above threshold so maybe_compact proceeds past Guard 1.
+        // Messages were pushed directly (bypassing push_message), so we set this explicitly.
+        // Use a large value so freed_tokens > 0 after compact_context() recomputes.
+        agent.cached_prompt_tokens = 10_000;
+
+        agent.maybe_compact().await.unwrap();
+
+        // Compaction fired: metrics incremented.
+        assert_eq!(rx.borrow().context_compactions, 1);
+        // After compaction the system prompt alone exceeds the tiny 100-token budget, so
+        // Guard 3 marks exhaustion (still above threshold). Cooldown is not reset — correct.
+        assert!(agent.context_manager.compaction_exhausted);
+    }
+
+    // Exhaustion guard: when compaction_exhausted is set, maybe_compact returns early.
+    #[tokio::test]
+    async fn exhaustion_guard_skips_compaction_when_exhausted() {
+        let provider = mock_provider(vec!["summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2, 0)
+            .with_metrics(tx);
+
+        agent.context_manager.compaction_exhausted = true;
+
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} padding to exceed budget threshold"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.maybe_compact().await.unwrap();
+
+        // Compaction did NOT fire.
+        assert_eq!(rx.borrow().context_compactions, 0);
+    }
+
+    // Exhaustion guard: exhaustion_warned set after first call, stays true on second call.
+    #[tokio::test]
+    async fn exhaustion_guard_warned_flag_set_once() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2, 0);
+
+        agent.context_manager.compaction_exhausted = true;
+
+        for i in 0..5 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i}"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        // First call: warning not yet sent → flag set.
+        assert!(!agent.context_manager.exhaustion_warned);
+        agent.maybe_compact().await.unwrap();
+        assert!(agent.context_manager.exhaustion_warned);
+
+        // Second call: flag already set, no state change.
+        agent.maybe_compact().await.unwrap();
+        assert!(agent.context_manager.exhaustion_warned);
+    }
+
+    // Exhaustion guard fires before cooldown guard.
+    #[tokio::test]
+    async fn exhaustion_guard_takes_precedence_over_cooldown() {
+        use std::sync::Arc;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let statuses = Arc::clone(&channel.statuses);
+        let registry = create_test_registry();
+
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 2, 0)
+            .with_compaction_cooldown(2);
+
+        // Both exhaustion and cooldown set.
+        agent.context_manager.compaction_exhausted = true;
+        agent.context_manager.compaction_turns_since = 2;
+
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} padding to exceed budget threshold"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.maybe_compact().await.unwrap();
+
+        // Cooldown counter must NOT have been decremented — exhaustion guard returned first.
+        assert_eq!(agent.context_manager.compaction_turns_since, 2);
+        // No "compacting context..." status emitted.
+        assert!(
+            !statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s == "compacting context..."),
+            "compaction must not have started"
+        );
+    }
+
+    // Counterproductive guard: too few compactable messages sets exhausted.
+    #[tokio::test]
+    async fn counterproductive_guard_sets_exhausted_when_too_few_messages() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        // preserve_tail = 5, budget = 100 so threshold is low → should_compact() fires.
+        // With only a system prompt + 2 messages, compactable = len - preserve_tail - 1.
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100, 0.20, 0.75, 5, 0);
+
+        // Add just 2 messages: compactable = 3 - 5 - 1 = saturates to 0, which is ≤ 1.
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "x".repeat(200),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "x".repeat(200),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Tier-1 pruning won't free enough (no ToolOutput parts), so tier-2 attempts.
+        agent.maybe_compact().await.unwrap();
+
+        // Counterproductive guard: compactable ≤ 1 → exhausted set.
+        assert!(agent.context_manager.compaction_exhausted);
+    }
+
+    // Default value for compaction_cooldown_turns is 2.
+    #[test]
+    fn context_manager_defaults_have_compaction_guard_fields() {
+        let cm = crate::agent::context_manager::ContextManager::new();
+        assert_eq!(cm.compaction_cooldown_turns, 2);
+        assert_eq!(cm.compaction_turns_since, 0);
+        assert!(!cm.compaction_exhausted);
+        assert!(!cm.exhaustion_warned);
+    }
+
+    // with_compaction_cooldown builder sets the cooldown turns field.
+    #[test]
+    fn builder_with_compaction_cooldown_sets_field() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_compaction_cooldown(5);
+
+        assert_eq!(agent.context_manager.compaction_cooldown_turns, 5);
+    }
 }

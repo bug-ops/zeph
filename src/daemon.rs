@@ -310,6 +310,7 @@ pub(crate) async fn run_daemon(
         config.memory.prune_protect_tokens,
     )
     .with_soft_compaction_threshold(config.memory.soft_compaction_threshold)
+    .with_compaction_cooldown(config.memory.compaction_cooldown_turns)
     .with_shutdown(shutdown_rx.clone())
     .with_security(config.security.clone(), config.timeouts)
     .with_redact_credentials(config.memory.redact_credentials)

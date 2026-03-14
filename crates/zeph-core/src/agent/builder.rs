@@ -433,6 +433,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Sets the number of turns to skip compaction after a successful compaction.
+    ///
+    /// Prevents the compaction loop from re-triggering immediately when the
+    /// summary itself is large. A value of `0` disables the cooldown.
+    #[must_use]
+    pub fn with_compaction_cooldown(mut self, cooldown_turns: u8) -> Self {
+        self.context_manager.compaction_cooldown_turns = cooldown_turns;
+        self
+    }
+
     #[must_use]
     pub fn with_compression(mut self, compression: CompressionConfig) -> Self {
         self.context_manager.compression = compression;

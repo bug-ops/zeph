@@ -99,6 +99,7 @@ struct SharedAgentDeps {
     soft_compaction_threshold: f32,
     hard_compaction_threshold: f32,
     compaction_preserve_tail: usize,
+    compaction_cooldown_turns: u8,
     prune_protect_tokens: usize,
     /// Broadcast sender for skill reload events. Each session subscribes independently.
     skill_reload_tx: tokio::sync::broadcast::Sender<zeph_skills::watcher::SkillEvent>,
@@ -417,6 +418,7 @@ async fn build_acp_deps(
         soft_compaction_threshold: config.memory.soft_compaction_threshold,
         hard_compaction_threshold: config.memory.hard_compaction_threshold,
         compaction_preserve_tail: config.memory.compaction_preserve_tail,
+        compaction_cooldown_turns: config.memory.compaction_cooldown_turns,
         prune_protect_tokens: config.memory.prune_protect_tokens,
         shutdown_rx,
         security: config.security.clone(),
@@ -534,6 +536,7 @@ async fn spawn_acp_agent(
     let soft_compaction_threshold = d.soft_compaction_threshold;
     let hard_compaction_threshold = d.hard_compaction_threshold;
     let compaction_preserve_tail = d.compaction_preserve_tail;
+    let compaction_cooldown_turns = d.compaction_cooldown_turns;
     let prune_protect_tokens = d.prune_protect_tokens;
     let shutdown_rx = d.shutdown_rx.clone();
     let security = d.security.clone();
@@ -679,6 +682,7 @@ async fn spawn_acp_agent(
         prune_protect_tokens,
     )
     .with_soft_compaction_threshold(soft_compaction_threshold)
+    .with_compaction_cooldown(compaction_cooldown_turns)
     .with_shutdown(shutdown_rx)
     .with_security(security, timeouts)
     .with_redact_credentials(redact_credentials)
