@@ -545,22 +545,24 @@ impl App {
                 self.queued_count = count;
                 self.pending_count = count;
             }
-            AgentEvent::DiffReady(diff) => {
-                if let Some(msg) = self
-                    .messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.role == MessageRole::Tool)
-                {
-                    msg.diff_data = Some(diff);
-                }
-            }
+            AgentEvent::DiffReady(diff) => self.handle_diff_ready(diff),
             AgentEvent::CommandResult { output, .. } => {
                 self.command_palette = None;
                 self.messages
                     .push(ChatMessage::new(MessageRole::System, output));
                 self.auto_scroll();
             }
+        }
+    }
+
+    fn handle_diff_ready(&mut self, diff: zeph_core::DiffData) {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+        {
+            msg.diff_data = Some(diff);
         }
     }
 
@@ -763,7 +765,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(entry) = palette.selected_entry() {
-                    let cmd = entry.command.clone();
+                    let cmd = entry.command;
                     self.execute_command(cmd);
                 }
                 self.command_palette = None;
@@ -858,8 +860,14 @@ impl App {
             TuiCommand::SchedulerList => self.push_system_message(self.format_scheduler_list()),
             TuiCommand::RouterStats => self.push_system_message(self.format_router_stats()),
             TuiCommand::SecurityEvents => {
-                self.push_system_message(format_security_report(&self.metrics))
+                self.push_system_message(format_security_report(&self.metrics));
             }
+            cmd => self.execute_plan_graph_command(cmd),
+        }
+    }
+
+    fn execute_plan_graph_command(&mut self, cmd: TuiCommand) {
+        match cmd {
             TuiCommand::PlanStatus => {
                 let _ = self.user_input_tx.try_send("/plan status".to_owned());
             }
@@ -920,6 +928,7 @@ impl App {
             TuiCommand::ServerCompactionStatus => {
                 let _ = self.user_input_tx.try_send("/server-compaction".to_owned());
             }
+            _ => {}
         }
     }
 

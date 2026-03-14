@@ -259,57 +259,14 @@ struct CompiledPattern {
     regex: Regex,
 }
 
-/// Static injection detection patterns compiled once at startup.
+/// Compiled injection-detection patterns, sourced from the canonical
+/// [`zeph_mcp::sanitize::RAW_INJECTION_PATTERNS`] constant.
 ///
-/// These cover common English-language prompt injection techniques (OWASP cheat
-/// sheet). Unicode homoglyph variants and multilingual patterns are Phase 2.
+/// Using the shared constant ensures that `zeph-core`'s content isolation pipeline
+/// and `zeph-mcp`'s tool-definition sanitizer always apply the same pattern set.
 static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
-    let raw: &[(&str, &str)] = &[
-        (
-            "ignore_instructions",
-            r"(?i)ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions",
-        ),
-        ("role_override", r"(?i)you\s+are\s+now"),
-        (
-            "new_directive",
-            r"(?i)new\s+(instructions?|directives?|roles?|personas?)",
-        ),
-        ("developer_mode", r"(?i)developer\s+mode"),
-        ("system_prompt_leak", r"(?i)system\s+prompt"),
-        (
-            "reveal_instructions",
-            r"(?i)(reveal|show|display|print)\s+your\s+(instructions?|prompts?|rules?)",
-        ),
-        ("jailbreak", r"(?i)\b(DAN|jailbreak)\b"),
-        ("base64_payload", r"(?i)(decode|eval|execute).*base64"),
-        (
-            "xml_tag_injection",
-            r"</?\s*(system|assistant|user|tool_result|function_call)\s*>",
-        ),
-        // Fixed: match any alt-text, not just empty (IMP-03)
-        ("markdown_image_exfil", r"!\[.*?\]\(https?://[^)]+\)"),
-        // IMP-03 additions
-        ("forget_everything", r"(?i)forget\s+(everything|all)"),
-        (
-            "disregard_instructions",
-            r"(?i)disregard\s+(your|all|previous)",
-        ),
-        (
-            "override_directives",
-            r"(?i)override\s+(your|all)\s+(directives?|instructions?|rules?)",
-        ),
-        ("act_as_if", r"(?i)act\s+as\s+if"),
-        // HTML image exfil (IMP-03)
-        ("html_image_exfil", r"(?i)<img\s+[^>]*src\s*="),
-        // Delimiter escape attempt (CRIT-03: detect our own wrapper tags in content)
-        ("delimiter_escape_tool_output", r"(?i)</?tool-output[\s>]"),
-        (
-            "delimiter_escape_external_data",
-            r"(?i)</?external-data[\s>]",
-        ),
-    ];
-
-    raw.iter()
+    zeph_mcp::sanitize::RAW_INJECTION_PATTERNS
+        .iter()
         .filter_map(|(name, pattern)| {
             Regex::new(pattern)
                 .map(|regex| CompiledPattern { name, regex })

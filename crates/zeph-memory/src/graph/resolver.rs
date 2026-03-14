@@ -242,9 +242,114 @@ impl<'a> EntityResolver<'a> {
         Ok((entity_id, ResolutionOutcome::Created))
     }
 
+    /// Compute embedding for an entity, incrementing `fallback_count` on failure/timeout.
+    /// Returns `None` when embedding is unavailable (caller should skip vector operations).
+    async fn embed_entity_text(
+        &self,
+        provider: &AnyProvider,
+        normalized: &str,
+        summary: Option<&str>,
+    ) -> Option<Vec<f32>> {
+        let safe_summary = truncate_to_bytes(summary.unwrap_or(""), MAX_FACT_BYTES);
+        let embed_text = format!("{normalized}: {safe_summary}");
+        let embed_result = tokio::time::timeout(
+            std::time::Duration::from_secs(EMBED_TIMEOUT_SECS),
+            provider.embed(&embed_text),
+        )
+        .await;
+        match embed_result {
+            Ok(Ok(v)) => Some(v),
+            Ok(Err(err)) => {
+                self.fallback_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(entity_name = %normalized, error = %err,
+                    "embed() failed; falling back to exact-match-only entity creation");
+                None
+            }
+            Err(_timeout) => {
+                self.fallback_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(entity_name = %normalized,
+                    "embed() timed out after {}s; falling back to create new entity",
+                    EMBED_TIMEOUT_SECS);
+                None
+            }
+        }
+    }
+
+    /// Handle a candidate in the ambiguous score range by running LLM disambiguation.
+    /// Returns `Ok(Some(...))` if the LLM confirms a match, `Ok(None)` to fall through to create.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_ambiguous_candidate(
+        &self,
+        emb_store: &EmbeddingStore,
+        provider: &AnyProvider,
+        payload: &std::collections::HashMap<String, serde_json::Value>,
+        score: f32,
+        surface_name: &str,
+        normalized: &str,
+        et: EntityType,
+        summary: Option<&str>,
+    ) -> Result<Option<(i64, ResolutionOutcome)>, MemoryError> {
+        let entity_id = payload
+            .get("entity_id")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| MemoryError::GraphStore("missing entity_id in payload".into()))?;
+        let existing_name = payload
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let existing_summary = payload
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        // Use the existing entity's actual type from the payload (IC-S3)
+        let existing_type = payload
+            .get("entity_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or(et.as_str())
+            .to_owned();
+        match self
+            .llm_disambiguate(
+                provider,
+                normalized,
+                et.as_str(),
+                summary.unwrap_or(""),
+                &existing_name,
+                &existing_type,
+                &existing_summary,
+                score,
+            )
+            .await
+        {
+            Some(true) => {
+                self.merge_entity(
+                    emb_store,
+                    provider,
+                    entity_id,
+                    surface_name,
+                    normalized,
+                    et,
+                    summary,
+                )
+                .await?;
+                Ok(Some((entity_id, ResolutionOutcome::LlmDisambiguated)))
+            }
+            Some(false) => Ok(None),
+            None => {
+                self.fallback_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(entity_name = %normalized,
+                    "LLM disambiguation failed; falling back to create new entity");
+                Ok(None)
+            }
+        }
+    }
+
     /// Attempt embedding-based resolution. Returns `Ok(Some(...))` if resolved (early return),
     /// `Ok(None)` if no match found (caller should fall through to create), or `Err` on DB error.
-    #[allow(clippy::too_many_arguments)]
     async fn resolve_via_embedding(
         &self,
         normalized: &str,
@@ -257,32 +362,8 @@ impl<'a> EntityResolver<'a> {
             return Ok(None);
         };
 
-        let safe_summary = truncate_to_bytes(summary.unwrap_or(""), MAX_FACT_BYTES);
-        let embed_text = format!("{normalized}: {safe_summary}");
-
-        let embed_result = tokio::time::timeout(
-            std::time::Duration::from_secs(EMBED_TIMEOUT_SECS),
-            provider.embed(&embed_text),
-        )
-        .await;
-
-        let query_vec = match embed_result {
-            Ok(Ok(v)) => v,
-            Ok(Err(err)) => {
-                self.fallback_count
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                tracing::warn!(entity_name = %normalized, error = %err,
-                    "embed() failed; falling back to exact-match-only entity creation");
-                return Ok(None);
-            }
-            Err(_timeout) => {
-                self.fallback_count
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                tracing::warn!(entity_name = %normalized,
-                    "embed() timed out after {}s; falling back to create new entity",
-                    EMBED_TIMEOUT_SECS);
-                return Ok(None);
-            }
+        let Some(query_vec) = self.embed_entity_text(provider, normalized, summary).await else {
+            return Ok(None);
         };
 
         let type_filter = VectorFilter {
@@ -341,67 +422,21 @@ impl<'a> EntityResolver<'a> {
                     entity_id,
                     ResolutionOutcome::EmbeddingMatch { score },
                 )));
-            } else if score >= self.ambiguous_threshold {
-                let entity_id = best
-                    .payload
-                    .get("entity_id")
-                    .and_then(serde_json::Value::as_i64)
-                    .ok_or_else(|| {
-                        MemoryError::GraphStore("missing entity_id in payload".into())
-                    })?;
-                let existing_name = best
-                    .payload
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_owned();
-                let existing_summary = best
-                    .payload
-                    .get("summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_owned();
-                // Use the existing entity's actual type from the payload (IC-S3)
-                let existing_type = best
-                    .payload
-                    .get("entity_type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(et.as_str())
-                    .to_owned();
-                match self
-                    .llm_disambiguate(
+            } else if score >= self.ambiguous_threshold
+                && let Some(result) = self
+                    .handle_ambiguous_candidate(
+                        emb_store,
                         provider,
-                        normalized,
-                        et.as_str(),
-                        summary.unwrap_or(""),
-                        &existing_name,
-                        &existing_type,
-                        &existing_summary,
+                        &best.payload,
                         score,
+                        surface_name,
+                        normalized,
+                        et,
+                        summary,
                     )
-                    .await
-                {
-                    Some(true) => {
-                        self.merge_entity(
-                            emb_store,
-                            provider,
-                            entity_id,
-                            surface_name,
-                            normalized,
-                            et,
-                            summary,
-                        )
-                        .await?;
-                        return Ok(Some((entity_id, ResolutionOutcome::LlmDisambiguated)));
-                    }
-                    Some(false) => { /* LLM says different entity — fall through to create */ }
-                    None => {
-                        self.fallback_count
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::warn!(entity_name = %normalized,
-                            "LLM disambiguation failed; falling back to create new entity");
-                    }
-                }
+                    .await?
+            {
+                return Ok(Some(result));
             }
             // score < ambiguous_threshold or LLM said different: fall through to create with embedding
         }

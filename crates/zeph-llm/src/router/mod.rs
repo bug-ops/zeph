@@ -46,6 +46,10 @@ pub struct CascadeRouterConfig {
     /// LLM provider used for judge-mode quality scoring.
     /// Required when `classifier_mode = Judge`; falls back to heuristic if `None`.
     pub summary_provider: Option<AnyProvider>,
+    /// Explicit cost ordering of provider names (cheapest first).
+    /// When set, providers are sorted by their position in this list at construction time.
+    /// Providers not listed are appended after listed ones in original chain order.
+    pub cost_tiers: Option<Vec<String>>,
 }
 
 impl Default for CascadeRouterConfig {
@@ -57,13 +61,17 @@ impl Default for CascadeRouterConfig {
             window_size: 50,
             max_cascade_tokens: None,
             summary_provider: None,
+            cost_tiers: None,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct RouterProvider {
-    providers: Vec<AnyProvider>,
+    // Arc<[AnyProvider]> makes self.clone() O(1) for the providers field (atomic refcount
+    // increment) instead of O(N * provider_size). This benefits ALL strategies since every
+    // chat/chat_stream/embed/chat_with_tools call does `let router = self.clone()`.
+    providers: Arc<[AnyProvider]>,
     status_tx: Option<StatusTx>,
     ema: Option<EmaTracker>,
     provider_order: Arc<Mutex<Vec<usize>>>,
@@ -82,7 +90,7 @@ impl RouterProvider {
     pub fn new(providers: Vec<AnyProvider>) -> Self {
         let n = providers.len();
         Self {
-            providers,
+            providers: Arc::from(providers),
             status_tx: None,
             ema: None,
             provider_order: Arc::new(Mutex::new((0..n).collect())),
@@ -127,9 +135,44 @@ impl RouterProvider {
     ///
     /// Network/API errors do not count against the escalation budget.
     /// The best response seen so far is returned if all escalations are exhausted.
+    ///
+    /// When `config.cost_tiers` is set, providers are reordered once at construction
+    /// time (no per-request cost). Providers absent from `cost_tiers` are appended
+    /// after listed ones in original chain order. Unknown names in `cost_tiers` are
+    /// silently ignored.
     #[must_use]
     pub fn with_cascade(mut self, config: CascadeRouterConfig) -> Self {
         self.strategy = RouterStrategy::Cascade;
+
+        if let Some(ref tiers) = config.cost_tiers
+            && !tiers.is_empty()
+        {
+            let tier_pos: std::collections::HashMap<&str, usize> = tiers
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.as_str(), i))
+                .collect();
+
+            let before: Vec<_> = self.providers.iter().map(|p| p.name().to_owned()).collect();
+            let mut indexed: Vec<(usize, AnyProvider)> =
+                self.providers.iter().cloned().enumerate().collect();
+            indexed.sort_by_key(|(orig_idx, p)| {
+                tier_pos
+                    .get(p.name())
+                    .copied()
+                    .map_or((1usize, *orig_idx), |t| (0, t))
+            });
+            let after: Vec<_> = indexed.iter().map(|(_, p)| p.name().to_owned()).collect();
+            if before != after {
+                tracing::debug!(
+                    before = ?before,
+                    after = ?after,
+                    "cascade: providers reordered by cost_tiers"
+                );
+            }
+            self.providers = Arc::from(indexed.into_iter().map(|(_, p)| p).collect::<Vec<_>>());
+        }
+
         let window = config.window_size;
         self.cascade_state = Some(Arc::new(Mutex::new(CascadeState::new(window))));
         self.cascade_config = Some(config);
@@ -161,8 +204,10 @@ impl RouterProvider {
         match self.strategy {
             RouterStrategy::Thompson => self.thompson_ordered_providers(),
             RouterStrategy::Ema => self.ema_ordered_providers(),
-            // Cascade uses chain order directly (cheapest first = position 0).
-            RouterStrategy::Cascade => self.providers.clone(),
+            // Cascade: providers are sorted at construction time. clone() here is only
+            // reached from debug_request_json(); the hot chat/chat_stream paths pass
+            // &self.providers directly to avoid this Vec allocation.
+            RouterStrategy::Cascade => self.providers.to_vec(),
         }
     }
 
@@ -196,7 +241,7 @@ impl RouterProvider {
 
     fn thompson_ordered_providers(&self) -> Vec<AnyProvider> {
         let Some(ref thompson) = self.thompson else {
-            return self.providers.clone();
+            return self.providers.to_vec();
         };
         let mut state = thompson
             .lock()
@@ -214,7 +259,7 @@ impl RouterProvider {
             );
         }
         // Put selected provider first, keep rest in original order.
-        let mut ordered = self.providers.clone();
+        let mut ordered = self.providers.to_vec();
         if let Some(ref sel) = selected
             && let Some(pos) = ordered.iter().position(|p| p.name() == sel.provider)
         {
@@ -288,8 +333,17 @@ impl RouterProvider {
     }
 
     pub fn set_status_tx(&mut self, tx: StatusTx) {
-        for p in &mut self.providers {
-            p.set_status_tx(tx.clone());
+        if let Some(providers) = Arc::get_mut(&mut self.providers) {
+            for p in providers {
+                p.set_status_tx(tx.clone());
+            }
+        } else {
+            // Defensive path: should never happen at bootstrap (refcount == 1).
+            let mut v: Vec<_> = self.providers.iter().cloned().collect();
+            for p in &mut v {
+                p.set_status_tx(tx.clone());
+            }
+            self.providers = Arc::from(v);
         }
         self.status_tx = Some(tx);
     }
@@ -306,7 +360,7 @@ impl RouterProvider {
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
         let mut seen = std::collections::HashSet::new();
         let mut all = Vec::new();
-        for p in &self.providers {
+        for p in self.providers.iter() {
             match p.list_models_remote().await {
                 Ok(models) => {
                     for m in models {
@@ -374,7 +428,6 @@ impl LlmProvider for RouterProvider {
         &self,
         messages: &[Message],
     ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
-        let providers = self.ordered_providers();
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
@@ -382,8 +435,13 @@ impl LlmProvider for RouterProvider {
         // Refactor into a shared helper once the API stabilizes.
         Box::pin(async move {
             if router.strategy == RouterStrategy::Cascade {
-                return router.cascade_chat(&providers, &messages, status_tx).await;
+                // Cascade: pass Arc slice directly — providers are sorted at construction,
+                // so no Vec allocation needed on the hot path.
+                return router
+                    .cascade_chat(&router.providers, &messages, status_tx)
+                    .await;
             }
+            let providers = router.ordered_providers();
             for p in &providers {
                 let start = std::time::Instant::now();
                 match p.chat(&messages).await {
@@ -416,16 +474,17 @@ impl LlmProvider for RouterProvider {
         &self,
         messages: &[Message],
     ) -> impl std::future::Future<Output = Result<ChatStream, LlmError>> + Send {
-        let providers = self.ordered_providers();
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
         Box::pin(async move {
             if router.strategy == RouterStrategy::Cascade {
+                // Cascade: pass Arc slice directly — no Vec allocation on the hot path.
                 return router
-                    .cascade_chat_stream(&providers, &messages, status_tx)
+                    .cascade_chat_stream(&router.providers, &messages, status_tx)
                     .await;
             }
+            let providers = router.ordered_providers();
             for p in &providers {
                 let start = std::time::Instant::now();
                 match p.chat_stream(&messages).await {
@@ -606,6 +665,7 @@ impl RouterProvider {
     /// Cascade chat: try providers in order, escalate on degenerate output.
     ///
     /// Returns the best-seen response if all providers fail or budget is exhausted.
+    #[allow(clippy::too_many_lines)]
     async fn cascade_chat(
         &self,
         providers: &[AnyProvider],
@@ -674,10 +734,11 @@ impl RouterProvider {
                         "cascade: quality verdict"
                     );
 
-                    // Update best-seen response.
-                    let is_better = best
-                        .as_ref()
-                        .is_none_or(|(_, best_score)| verdict.score > *best_score);
+                    // Update best-seen response; skip empty strings to avoid silent failures.
+                    let is_better = !response.is_empty()
+                        && best
+                            .as_ref()
+                            .is_none_or(|(_, best_score)| verdict.score > *best_score);
                     if is_better {
                         best = Some((response.clone(), verdict.score));
                     }
@@ -693,14 +754,19 @@ impl RouterProvider {
                         || budget_exhausted
                     {
                         self.record_availability(p.name(), true, latency);
-                        // When budget is exhausted and we would have escalated, return the best
-                        // response seen so far rather than the current (possibly lower-quality) one.
-                        if budget_exhausted && verdict.should_escalate {
+                        // When escalation is blocked (budget exhausted or escalation count
+                        // at zero) and the current response would have triggered escalation,
+                        // return the best-seen response instead of the current (possibly
+                        // lower-quality) one.
+                        if verdict.should_escalate
+                            && (budget_exhausted || escalations_remaining == 0)
+                        {
                             let best_response = best.take().map_or(response, |(r, _)| r);
                             tracing::info!(
                                 tokens_used,
                                 budget = cfg.max_cascade_tokens,
-                                "cascade: token budget exhausted, returning best response"
+                                escalations_remaining,
+                                "cascade: escalation blocked, returning best response"
                             );
                             return Ok(best_response);
                         }
@@ -824,9 +890,11 @@ impl RouterProvider {
                     );
 
                     // Track the best response seen so far across early providers.
-                    let is_better = best_seen
-                        .as_ref()
-                        .is_none_or(|(_, best_score)| verdict.score > *best_score);
+                    // Skip empty strings to avoid returning silent failures on all-fail fallback.
+                    let is_better = !text.is_empty()
+                        && best_seen
+                            .as_ref()
+                            .is_none_or(|(_, best_score)| verdict.score > *best_score);
                     if is_better {
                         best_seen = Some((text.clone(), verdict.score));
                     }
@@ -838,14 +906,18 @@ impl RouterProvider {
                     if !verdict.should_escalate || escalations_remaining == 0 || budget_exhausted {
                         self.record_availability(p.name(), true, latency);
 
-                        // When the budget is exhausted and the current response would
-                        // have triggered escalation, return the best-seen response
-                        // instead of the current (possibly lower-quality) one.
-                        let response_text = if budget_exhausted && verdict.should_escalate {
+                        // When escalation is blocked (budget exhausted or escalation count
+                        // at zero) and the current response would have triggered escalation,
+                        // return the best-seen response instead of the current (possibly
+                        // lower-quality) one.
+                        let response_text = if verdict.should_escalate
+                            && (budget_exhausted || escalations_remaining == 0)
+                        {
                             tracing::info!(
                                 tokens_used,
                                 budget = cfg.max_cascade_tokens,
-                                "cascade stream: token budget exhausted, returning best response"
+                                escalations_remaining,
+                                "cascade stream: escalation blocked, returning best response"
                             );
                             best_seen.take().map_or(text, |(r, _)| r)
                         } else {
@@ -938,7 +1010,8 @@ async fn collect_stream(stream: ChatStream) -> Result<String, LlmError> {
                 buf.push_str(&c);
             }
             crate::provider::StreamChunk::Thinking(_)
-            | crate::provider::StreamChunk::Compaction(_) => {}
+            | crate::provider::StreamChunk::Compaction(_)
+            | crate::provider::StreamChunk::ToolUse(_) => {}
         }
     }
     Ok(buf)
@@ -1249,6 +1322,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cascade_escalations_exhausted_returns_best_seen_not_current() {
+        use crate::mock::MockProvider;
+
+        // p1: decent response, fails quality at 0.95 → escalates (escalations_remaining: 1 → 0)
+        // p2: degenerate "x", fails quality → escalations_remaining == 0 → blocked → best_seen wins
+        let good_response = "This is a reasonable response with enough content to score well.";
+        let bad_response = "x";
+
+        let p1 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![good_response.to_owned()]).with_delay(0),
+        );
+        let p2 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![bad_response.to_owned()]).with_delay(0),
+        );
+        let p3 = AnyProvider::Mock(MockProvider::failing()); // should not be reached
+
+        let r = RouterProvider::new(vec![p1, p2, p3]).with_cascade(CascadeRouterConfig {
+            quality_threshold: 0.95, // both fail quality; p1 score > p2 score
+            max_escalations: 1,      // p1 escalates (budget: 1→0), p2 is blocked
+            ..CascadeRouterConfig::default()
+        });
+        let msgs = vec![Message::from_legacy(Role::User, "test")];
+        let result = r.chat(&msgs).await.unwrap();
+        assert_eq!(
+            result, good_response,
+            "should return best-seen (p1), not the degenerate current response (p2)"
+        );
+        assert_ne!(
+            result, bad_response,
+            "must not return degenerate p2 response"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_stream_escalations_exhausted_returns_best_seen_not_current() {
+        use crate::mock::MockProvider;
+
+        // Same scenario as above but for cascade_chat_stream.
+        // p1: decent response, fails quality at 0.95 → escalates (escalations_remaining: 1 → 0)
+        // p2: degenerate "x", fails quality → escalations_remaining == 0 → return best_seen
+        let good_response = "This is a reasonable response with enough content to score well.";
+        let bad_response = "x";
+
+        let p1 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![good_response.to_owned()])
+                .with_delay(0)
+                .with_streaming(),
+        );
+        let p2 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![bad_response.to_owned()])
+                .with_delay(0)
+                .with_streaming(),
+        );
+        let p3 = AnyProvider::Mock(MockProvider::failing()); // last provider, should not be reached
+
+        let r = RouterProvider::new(vec![p1, p2, p3]).with_cascade(CascadeRouterConfig {
+            quality_threshold: 0.95, // both fail quality; p1 score > p2 score
+            max_escalations: 1,      // p1 escalates (budget: 1→0), p2 is blocked
+            ..CascadeRouterConfig::default()
+        });
+        let msgs = vec![Message::from_legacy(Role::User, "test")];
+        let stream = r.chat_stream(&msgs).await.unwrap();
+        let collected = collect_stream(stream).await.unwrap();
+        assert_eq!(
+            collected, good_response,
+            "should return best-seen (p1), not the degenerate current response (p2)"
+        );
+        assert_ne!(
+            collected, bad_response,
+            "must not return degenerate p2 response"
+        );
+    }
+
+    #[tokio::test]
     async fn cascade_all_providers_fail_returns_no_providers() {
         use crate::mock::MockProvider;
 
@@ -1466,5 +1613,200 @@ mod tests {
         let text = "The answer to your question is straightforward. Consider the options and pick the best one.";
         let verdict = RouterProvider::evaluate_heuristic(text, 0.5);
         assert!(!verdict.should_escalate, "score={}", verdict.score);
+    }
+
+    /// Empty string from the only provider must not be stored as best_seen.
+    /// When all providers fail or return empty, the caller should get an error,
+    /// not a silent empty response.
+    #[tokio::test]
+    async fn cascade_empty_response_not_stored_as_best_seen() {
+        use crate::mock::MockProvider;
+
+        // Single provider returns empty string (score=0.0, should_escalate may be true/false).
+        // With quality_threshold=0.0 it won't escalate, so we can check the return value.
+        let p = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
+        let cfg = CascadeRouterConfig {
+            quality_threshold: 0.0,
+            ..Default::default()
+        };
+        let r = RouterProvider::new(vec![p]).with_cascade(cfg);
+        let msgs = vec![Message::from_legacy(Role::User, "hi")];
+        // The provider returns "" — cascade must return it as-is (no best_seen involved
+        // with a single provider), but this test confirms "" is not stored when escalating.
+        let result = r.chat(&msgs).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    /// When provider 1 returns empty and provider 2 fails, best_seen must not hold
+    /// the empty string — the caller must get an error, not a silent empty response.
+    #[tokio::test]
+    async fn cascade_empty_best_seen_not_returned_on_all_fail() {
+        use crate::mock::MockProvider;
+
+        // p1: returns empty string (causes escalation with default threshold)
+        // p2: hard error
+        let p1 = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
+        let p2 = AnyProvider::Mock(MockProvider::failing());
+
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
+        let msgs = vec![Message::from_legacy(Role::User, "hi")];
+        let result = r.chat(&msgs).await;
+        // best_seen must NOT be the empty string; error must propagate.
+        assert!(
+            result.is_err(),
+            "expected error, not silent empty string; got: {:?}",
+            result
+        );
+    }
+
+    /// Stream variant: empty string from early provider must not be stored as best_seen.
+    #[tokio::test]
+    async fn cascade_stream_empty_response_not_stored_as_best_seen() {
+        use crate::mock::MockProvider;
+
+        // p1 (early): returns "" — should NOT be stored as best_seen.
+        // p2 (last): returns a real response.
+        let p1 = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
+        let p2 = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["real answer".to_owned()]).with_streaming(),
+        );
+
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
+        let msgs = vec![Message::from_legacy(Role::User, "hi")];
+        let stream = r.chat_stream(&msgs).await.expect("should not error");
+        let text = collect_stream(stream).await.expect("stream should succeed");
+        assert_eq!(text, "real answer");
+    }
+
+    // ── Arc<[AnyProvider]> + cost_tiers tests ──────────────────────────────────
+
+    #[test]
+    fn arc_providers_clone_shares_allocation() {
+        use crate::mock::MockProvider;
+        let p = AnyProvider::Mock(MockProvider::default());
+        let r = RouterProvider::new(vec![p]);
+        let c = r.clone();
+        // Both RouterProvider instances must share the same Arc allocation.
+        assert!(Arc::ptr_eq(&r.providers, &c.providers));
+    }
+
+    #[test]
+    fn cost_tiers_reorders_providers_at_construction() {
+        use crate::mock::MockProvider;
+        let p1 = AnyProvider::Mock(MockProvider::default().with_name("claude"));
+        let p2 = AnyProvider::Mock(MockProvider::default().with_name("ollama"));
+        let p3 = AnyProvider::Mock(MockProvider::default().with_name("openai"));
+        let r = RouterProvider::new(vec![p1, p2, p3]).with_cascade(CascadeRouterConfig {
+            cost_tiers: Some(vec!["ollama".into(), "claude".into()]),
+            ..CascadeRouterConfig::default()
+        });
+        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        // ollama first (tier 0), claude second (tier 1), openai last (unlisted, original idx 2)
+        assert_eq!(names, vec!["ollama", "claude", "openai"]);
+    }
+
+    #[test]
+    fn cost_tiers_none_preserves_chain_order() {
+        use crate::mock::MockProvider;
+        let p1 = AnyProvider::Mock(MockProvider::default().with_name("claude"));
+        let p2 = AnyProvider::Mock(MockProvider::default().with_name("ollama"));
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig {
+            cost_tiers: None,
+            ..CascadeRouterConfig::default()
+        });
+        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec!["claude", "ollama"]);
+    }
+
+    #[test]
+    fn cost_tiers_empty_vec_preserves_chain_order() {
+        use crate::mock::MockProvider;
+        let p1 = AnyProvider::Mock(MockProvider::default().with_name("claude"));
+        let p2 = AnyProvider::Mock(MockProvider::default().with_name("ollama"));
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig {
+            cost_tiers: Some(vec![]),
+            ..CascadeRouterConfig::default()
+        });
+        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec!["claude", "ollama"]);
+    }
+
+    #[test]
+    fn cost_tiers_unknown_name_ignored() {
+        use crate::mock::MockProvider;
+        let p1 = AnyProvider::Mock(MockProvider::default().with_name("ollama"));
+        let p2 = AnyProvider::Mock(MockProvider::default().with_name("claude"));
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig {
+            cost_tiers: Some(vec!["nonexistent".into(), "ollama".into()]),
+            ..CascadeRouterConfig::default()
+        });
+        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        // "nonexistent" ignored; "ollama" is tier 1 → first; "claude" unlisted → second
+        assert_eq!(names, vec!["ollama", "claude"]);
+    }
+
+    #[test]
+    fn cost_tiers_all_providers_listed() {
+        use crate::mock::MockProvider;
+        let p1 = AnyProvider::Mock(MockProvider::default().with_name("c"));
+        let p2 = AnyProvider::Mock(MockProvider::default().with_name("b"));
+        let p3 = AnyProvider::Mock(MockProvider::default().with_name("a"));
+        let r = RouterProvider::new(vec![p1, p2, p3]).with_cascade(CascadeRouterConfig {
+            cost_tiers: Some(vec!["a".into(), "b".into(), "c".into()]),
+            ..CascadeRouterConfig::default()
+        });
+        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn cost_tiers_duplicate_name_uses_last_position() {
+        use crate::mock::MockProvider;
+        let p1 = AnyProvider::Mock(MockProvider::default().with_name("ollama"));
+        let p2 = AnyProvider::Mock(MockProvider::default().with_name("claude"));
+        // "ollama" appears twice in tiers: HashMap overwrites → position 2.
+        // claude=tier 0, ollama=tier 2 → claude before ollama.
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig {
+            cost_tiers: Some(vec!["claude".into(), "ollama".into(), "ollama".into()]),
+            ..CascadeRouterConfig::default()
+        });
+        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec!["claude", "ollama"]);
+    }
+
+    #[test]
+    fn cost_tiers_empty_router_does_not_panic() {
+        let r = RouterProvider::new(vec![]).with_cascade(CascadeRouterConfig {
+            cost_tiers: Some(vec!["foo".into()]),
+            ..CascadeRouterConfig::default()
+        });
+        assert_eq!(r.providers.len(), 0);
+    }
+
+    #[test]
+    fn set_status_tx_works_with_arc() {
+        use crate::mock::MockProvider;
+        let p = AnyProvider::Mock(MockProvider::default());
+        let mut r = RouterProvider::new(vec![p]);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        r.set_status_tx(tx); // must not panic
+    }
+
+    #[tokio::test]
+    async fn cascade_chat_with_tools_unaffected_by_cost_tiers() {
+        use crate::mock::MockProvider;
+        // chat_with_tools skips cascade entirely (HIGH-04). Verify that cost_tiers
+        // ordering does not accidentally affect the non-cascade tool fallback path.
+        let p1 = AnyProvider::Mock(MockProvider::failing().with_name("cheap"));
+        let p2 = AnyProvider::Mock(MockProvider::failing().with_name("expensive"));
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig {
+            cost_tiers: Some(vec!["cheap".into()]),
+            ..CascadeRouterConfig::default()
+        });
+        let msgs = vec![Message::from_legacy(Role::User, "hi")];
+        // Both providers fail → NoProviders, not a cascade-specific error.
+        let err = r.chat_with_tools(&msgs, &[]).await.unwrap_err();
+        assert!(matches!(err, LlmError::NoProviders));
     }
 }

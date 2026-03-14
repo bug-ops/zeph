@@ -529,7 +529,6 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::too_many_lines)]
 
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1861,12 +1860,12 @@ mod tests {
         }
 
         let tool_start_pos = events.iter().position(|e| {
-            matches!(e, LoopbackEvent::ToolStart { tool_name, tool_call_id, .. }
-                if tool_name == "grep" && !tool_call_id.is_empty())
+            matches!(e, LoopbackEvent::ToolStart(data)
+                if data.tool_name == "grep" && !data.tool_call_id.is_empty())
         });
         let tool_output_pos = events.iter().position(|e| {
-            matches!(e, LoopbackEvent::ToolOutput { tool_name, tool_call_id, .. }
-                if tool_name == "grep" && !tool_call_id.is_empty())
+            matches!(e, LoopbackEvent::ToolOutput(data)
+                if data.tool_name == "grep" && !data.tool_call_id.is_empty())
         });
 
         assert!(
@@ -1884,15 +1883,15 @@ mod tests {
 
         // Verify both events share the same tool_call_id.
         let start_id = events.iter().find_map(|e| {
-            if let LoopbackEvent::ToolStart { tool_call_id, .. } = e {
-                Some(tool_call_id.clone())
+            if let LoopbackEvent::ToolStart(data) = e {
+                Some(data.tool_call_id.clone())
             } else {
                 None
             }
         });
         let output_id = events.iter().find_map(|e| {
-            if let LoopbackEvent::ToolOutput { tool_call_id, .. } = e {
-                Some(tool_call_id.clone())
+            if let LoopbackEvent::ToolOutput(data) = e {
+                Some(data.tool_call_id.clone())
             } else {
                 None
             }
@@ -1938,8 +1937,8 @@ mod tests {
         }
 
         let locations = events.iter().find_map(|e| {
-            if let LoopbackEvent::ToolOutput { locations, .. } = e {
-                locations.clone()
+            if let LoopbackEvent::ToolOutput(data) = e {
+                data.locations.clone()
             } else {
                 None
             }
@@ -1990,8 +1989,8 @@ mod tests {
         }
 
         let display = events.iter().find_map(|e| {
-            if let LoopbackEvent::ToolOutput { display, .. } = e {
-                Some(display.clone())
+            if let LoopbackEvent::ToolOutput(data) = e {
+                Some(data.display.clone())
             } else {
                 None
             }

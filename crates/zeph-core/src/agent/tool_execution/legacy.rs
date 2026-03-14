@@ -108,43 +108,8 @@ impl<C: Channel> Agent<C> {
         let tool_name = first_tool_name(&response);
 
         // Repeat-detection (IMP-6): check BEFORE execution.
-        {
-            use std::hash::{DefaultHasher, Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            response.hash(&mut h);
-            let args_hash = h.finish();
-            if self.tool_orchestrator.is_repeat(tool_name, args_hash) {
-                tracing::warn!(
-                    tool = tool_name,
-                    "[repeat-detect] identical tool call detected in legacy path"
-                );
-                self.tool_executor.set_skill_env(None);
-                let msg = format!(
-                    "[error] Repeated identical call to {tool_name} detected. \
-                     Use different arguments or a different approach."
-                );
-                if !self
-                    .handle_tool_result(
-                        &response,
-                        Ok(Some(zeph_tools::ToolOutput {
-                            tool_name: tool_name.to_owned(),
-                            summary: msg,
-                            blocks_executed: 0,
-                            filter_stats: None,
-                            diff: None,
-                            streamed: false,
-                            terminal_id: None,
-                            locations: None,
-                            raw_response: None,
-                        })),
-                    )
-                    .await?
-                {
-                    return Ok(Some(()));
-                }
-                return Ok(None);
-            }
-            self.tool_orchestrator.push_tool_call(tool_name, args_hash);
+        if let Some(result) = self.check_repeat_detection(&response, tool_name).await? {
+            return Ok(result);
         }
 
         let status_msg = format!("running {tool_name}...");
@@ -191,6 +156,53 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        Ok(None)
+    }
+
+    /// Check for a repeated identical tool call (IMP-6).
+    /// Returns `Ok(Some(Some(())))` to exit the loop, `Ok(Some(None))` to continue after injecting
+    /// an error message, or `Ok(None)` when no repeat is detected.
+    async fn check_repeat_detection(
+        &mut self,
+        response: &str,
+        tool_name: &str,
+    ) -> Result<Option<Option<()>>, super::super::error::AgentError> {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        response.hash(&mut h);
+        let args_hash = h.finish();
+        if self.tool_orchestrator.is_repeat(tool_name, args_hash) {
+            tracing::warn!(
+                tool = tool_name,
+                "[repeat-detect] identical tool call detected in legacy path"
+            );
+            self.tool_executor.set_skill_env(None);
+            let msg = format!(
+                "[error] Repeated identical call to {tool_name} detected. \
+                 Use different arguments or a different approach."
+            );
+            if !self
+                .handle_tool_result(
+                    response,
+                    Ok(Some(zeph_tools::ToolOutput {
+                        tool_name: tool_name.to_owned(),
+                        summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    })),
+                )
+                .await?
+            {
+                return Ok(Some(Some(())));
+            }
+            return Ok(Some(None));
+        }
+        self.tool_orchestrator.push_tool_call(tool_name, args_hash);
         Ok(None)
     }
 
@@ -694,6 +706,13 @@ impl<C: Channel> Agent<C> {
                 }
                 zeph_llm::StreamChunk::Thinking(thinking) => {
                     self.channel.send_thinking_chunk(&thinking).await?;
+                }
+                zeph_llm::StreamChunk::ToolUse(calls) => {
+                    tracing::warn!(
+                        count = calls.len(),
+                        names = ?calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                        "tool calls received in streaming path (not handled; use chat_with_tools for tool execution)"
+                    );
                 }
                 zeph_llm::StreamChunk::Compaction(raw_summary) => {
                     let _ = self

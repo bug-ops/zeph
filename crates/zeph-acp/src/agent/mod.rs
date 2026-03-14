@@ -960,6 +960,7 @@ impl acp::Agent for ZephAcpAgent {
             .get(&args.session_id)
             .map(|e| std::sync::Arc::clone(&e.cancel_signal));
 
+        // Block until the agent finishes this turn (signals via Flush or channel close).
         let (cancelled, stop_hint, rx) = self
             .drain_agent_events(&args.session_id, output_rx, cancel_signal)
             .await;
@@ -1843,12 +1844,8 @@ impl ZephAcpAgent {
             }
             let is_flush = matches!(event, LoopbackEvent::Flush);
             // Extract terminal_id before consuming the event so we can release after notify.
-            let pending_terminal_release = if let LoopbackEvent::ToolOutput {
-                ref terminal_id,
-                ..
-            } = event
-            {
-                terminal_id.clone()
+            let pending_terminal_release = if let LoopbackEvent::ToolOutput(ref data) = event {
+                data.terminal_id.clone()
             } else {
                 None
             };
@@ -1912,7 +1909,7 @@ impl ZephAcpAgent {
 
         match s.create_conversation().await {
             Ok(forked_cid) => {
-                let source_cid = s
+                let forked_from_cid = s
                     .get_acp_session_conversation_id(&source_id.to_string())
                     .await
                     .unwrap_or(None);
@@ -1925,7 +1922,7 @@ impl ZephAcpAgent {
                 if let Err(e) = s.import_acp_events(&new_id_str, &pairs).await {
                     tracing::warn!(error = %e, "failed to import events for forked session");
                 }
-                if let Some(src_cid) = source_cid
+                if let Some(src_cid) = forked_from_cid
                     && let Err(e) = s.copy_conversation(src_cid, forked_cid).await
                 {
                     tracing::warn!(error = %e, "failed to copy conversation for forked session");

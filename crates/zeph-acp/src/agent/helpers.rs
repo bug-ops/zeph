@@ -237,124 +237,12 @@ pub(super) fn build_config_options(
     opts
 }
 
-pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
-    match event {
-        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text)
-            if text.is_empty() || is_tool_use_marker(&text) =>
-        {
-            vec![]
-        }
-        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => {
-            if text.is_empty() {
-                vec![]
-            } else {
-                vec![acp::SessionUpdate::AgentMessageChunk(
-                    acp::ContentChunk::new(text.into()),
-                )]
-            }
-        }
-        LoopbackEvent::Status(text) if text.is_empty() => vec![],
-        LoopbackEvent::Status(text) => vec![
-            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new("\n".into())),
-            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(text.into())),
-        ],
-        LoopbackEvent::ToolStart {
-            tool_name,
-            tool_call_id,
-            params,
-            parent_tool_use_id,
-            started_at,
-        } => tool_start_to_updates(
-            tool_name,
-            tool_call_id,
-            params,
-            parent_tool_use_id,
-            started_at,
-        ),
-        LoopbackEvent::ToolOutput {
-            tool_name,
-            display,
-            diff,
-            locations,
-            tool_call_id,
-            is_error,
-            terminal_id,
-            parent_tool_use_id,
-            raw_response,
-            started_at,
-            ..
-        } => tool_output_to_updates(
-            tool_name,
-            display,
-            diff,
-            locations,
-            tool_call_id,
-            is_error,
-            terminal_id,
-            parent_tool_use_id,
-            raw_response,
-            started_at,
-        ),
-        LoopbackEvent::Flush => vec![],
-        #[cfg(feature = "unstable-session-usage")]
-        LoopbackEvent::Usage {
-            input_tokens,
-            output_tokens,
-            context_window,
-        } => {
-            let used = input_tokens.saturating_add(output_tokens);
-            vec![acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(
-                used,
-                context_window,
-            ))]
-        }
-        #[cfg(not(feature = "unstable-session-usage"))]
-        LoopbackEvent::Usage { .. } => vec![],
-        #[cfg(feature = "unstable-session-info-update")]
-        LoopbackEvent::SessionTitle(title) => {
-            vec![acp::SessionUpdate::SessionInfoUpdate(
-                acp::SessionInfoUpdate::new().title(title),
-            )]
-        }
-        #[cfg(not(feature = "unstable-session-info-update"))]
-        LoopbackEvent::SessionTitle(_) => vec![],
-        LoopbackEvent::Plan(entries) => {
-            let acp_entries = entries
-                .into_iter()
-                .map(|(content, status)| {
-                    let acp_status = match status {
-                        zeph_core::channel::PlanItemStatus::Pending => {
-                            acp::PlanEntryStatus::Pending
-                        }
-                        zeph_core::channel::PlanItemStatus::InProgress => {
-                            acp::PlanEntryStatus::InProgress
-                        }
-                        zeph_core::channel::PlanItemStatus::Completed => {
-                            acp::PlanEntryStatus::Completed
-                        }
-                    };
-                    acp::PlanEntry::new(content, acp::PlanEntryPriority::Medium, acp_status)
-                })
-                .collect();
-            vec![acp::SessionUpdate::Plan(acp::Plan::new(acp_entries))]
-        }
-        LoopbackEvent::ThinkingChunk(text) if text.is_empty() => vec![],
-        LoopbackEvent::ThinkingChunk(text) => vec![acp::SessionUpdate::AgentThoughtChunk(
-            acp::ContentChunk::new(text.into()),
-        )],
-        // Stop hints are consumed directly in the prompt() loop and must not reach here.
-        LoopbackEvent::Stop(_) => vec![],
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn tool_start_to_updates(
-    tool_name: String,
-    tool_call_id: String,
-    params: Option<serde_json::Value>,
-    parent_tool_use_id: Option<String>,
-    started_at: std::time::Instant,
-) -> Vec<acp::SessionUpdate> {
+fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<acp::SessionUpdate> {
+    let tool_name = data.tool_name;
+    let tool_call_id = data.tool_call_id;
+    let params = data.params;
+    let parent_tool_use_id = data.parent_tool_use_id;
+    let started_at = data.started_at;
     // Derive a human-readable title from params when available.
     // For bash: use the command string (truncated). For others: fall back to tool_name.
     let title = params
@@ -438,19 +326,112 @@ fn tool_start_to_updates(
     vec![acp::SessionUpdate::ToolCall(tool_call)]
 }
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-fn tool_output_to_updates(
+#[allow(clippy::too_many_arguments)]
+fn terminal_tool_updates(
+    tool_call_id: String,
+    display: String,
     tool_name: String,
+    elapsed_ms: Option<u64>,
+    parent_tool_use_id: Option<String>,
+    is_error: bool,
+    status: acp::ToolCallStatus,
+    acp_locations: Vec<acp::ToolCallLocation>,
+) -> Vec<acp::SessionUpdate> {
+    let mut output_meta = serde_json::Map::new();
+    output_meta.insert(
+        "terminal_output".to_owned(),
+        serde_json::json!({ "terminal_id": tool_call_id, "data": display }),
+    );
+    let terminal_intermediate = acp::SessionUpdate::ToolCallUpdate(
+        acp::ToolCallUpdate::new(tool_call_id.clone(), acp::ToolCallUpdateFields::new())
+            .meta(output_meta),
+    );
+    let exit_code = u32::from(is_error);
+    let mut exit_meta = serde_json::Map::new();
+    exit_meta.insert(
+        "terminal_exit".to_owned(),
+        serde_json::json!({ "terminal_id": tool_call_id, "exit_code": exit_code, "signal": null }),
+    );
+    let mut cc = serde_json::Map::new();
+    cc.insert("toolName".to_owned(), serde_json::Value::String(tool_name));
+    if let Some(ms) = elapsed_ms {
+        cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
+    }
+    if let Some(parent_id) = parent_tool_use_id {
+        cc.insert(
+            "parentToolUseId".to_owned(),
+            serde_json::Value::String(parent_id),
+        );
+    }
+    exit_meta.insert("claudeCode".to_owned(), serde_json::Value::Object(cc));
+    let mut final_fields = acp::ToolCallUpdateFields::new()
+        .status(status)
+        .content(vec![acp::ToolCallContent::Terminal(acp::Terminal::new(
+            tool_call_id.clone(),
+        ))])
+        .raw_output(serde_json::Value::String(display));
+    if !acp_locations.is_empty() {
+        final_fields = final_fields.locations(acp_locations);
+    }
+    let final_update = acp::SessionUpdate::ToolCallUpdate(
+        acp::ToolCallUpdate::new(tool_call_id, final_fields).meta(exit_meta),
+    );
+    vec![terminal_intermediate, final_update]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn non_terminal_tool_updates(
+    tool_call_id: String,
     display: String,
     diff: Option<zeph_core::DiffData>,
-    locations: Option<Vec<String>>,
-    tool_call_id: String,
-    is_error: bool,
-    terminal_id: Option<String>,
+    tool_name: String,
+    elapsed_ms: Option<u64>,
     parent_tool_use_id: Option<String>,
-    raw_response: Option<serde_json::Value>,
-    started_at: Option<std::time::Instant>,
+    status: acp::ToolCallStatus,
+    acp_locations: Vec<acp::ToolCallLocation>,
 ) -> Vec<acp::SessionUpdate> {
+    let mut content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+        acp::TextContent::new(display),
+    ))];
+    if let Some(d) = diff {
+        let acp_diff = acp::Diff::new(std::path::PathBuf::from(&d.file_path), d.new_content)
+            .old_text(d.old_content);
+        content.push(acp::ToolCallContent::Diff(acp_diff));
+    }
+    let mut fields = acp::ToolCallUpdateFields::new()
+        .status(status)
+        .content(content);
+    if !acp_locations.is_empty() {
+        fields = fields.locations(acp_locations);
+    }
+    let mut meta = serde_json::Map::new();
+    let mut cc = serde_json::Map::new();
+    cc.insert("toolName".to_owned(), serde_json::Value::String(tool_name));
+    if let Some(ms) = elapsed_ms {
+        cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
+    }
+    if let Some(parent_id) = parent_tool_use_id {
+        cc.insert(
+            "parentToolUseId".to_owned(),
+            serde_json::Value::String(parent_id),
+        );
+    }
+    meta.insert("claudeCode".to_owned(), serde_json::Value::Object(cc));
+    let update = acp::ToolCallUpdate::new(tool_call_id, fields).meta(meta);
+    vec![acp::SessionUpdate::ToolCallUpdate(update)]
+}
+
+fn tool_output_to_updates(data: zeph_core::ToolOutputData) -> Vec<acp::SessionUpdate> {
+    let tool_name = data.tool_name;
+    let display = data.display;
+    let diff = data.diff;
+    let locations = data.locations;
+    let tool_call_id = data.tool_call_id;
+    let is_error = data.is_error;
+    let terminal_id = data.terminal_id;
+    let parent_tool_use_id = data.parent_tool_use_id;
+    let raw_response = data.raw_response;
+    let started_at = data.started_at;
     let elapsed_ms: Option<u64> =
         started_at.map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
     let acp_locations: Vec<acp::ToolCallLocation> = locations
@@ -490,21 +471,21 @@ fn tool_output_to_updates(
 
     let final_updates = if terminal_id.is_some() {
         terminal_tool_updates(
-            &tool_name,
-            &display,
-            &tool_call_id,
-            is_error,
+            tool_call_id,
+            display,
+            tool_name,
             elapsed_ms,
             parent_tool_use_id,
+            is_error,
             status,
             acp_locations,
         )
     } else {
         non_terminal_tool_updates(
-            &tool_name,
+            tool_call_id,
             display,
             diff,
-            tool_call_id,
+            tool_name,
             elapsed_ms,
             parent_tool_use_id,
             status,
@@ -520,113 +501,79 @@ fn tool_output_to_updates(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-fn terminal_tool_updates(
-    tool_name: &str,
-    display: &str,
-    tool_call_id: &str,
-    is_error: bool,
-    elapsed_ms: Option<u64>,
-    parent_tool_use_id: Option<String>,
-    status: acp::ToolCallStatus,
-    acp_locations: Vec<acp::ToolCallLocation>,
-) -> Vec<acp::SessionUpdate> {
-    // Terminal tool: emit two updates matching the Zed _meta extension pattern.
-    // First: stream output to the display terminal registered in ToolStart.
-    // Second: finalize with terminal_exit and ToolCallContent::Terminal.
-    // The terminal_id is the tool_call_id (not the ACP terminal UUID), so Zed can
-    // look it up immediately without waiting for the _output_task race condition.
-    let mut output_meta = serde_json::Map::new();
-    output_meta.insert(
-        "terminal_output".to_owned(),
-        serde_json::json!({ "terminal_id": tool_call_id, "data": display }),
-    );
-    let terminal_intermediate = acp::SessionUpdate::ToolCallUpdate(
-        acp::ToolCallUpdate::new(tool_call_id.to_owned(), acp::ToolCallUpdateFields::new())
-            .meta(output_meta),
-    );
-
-    let exit_code = u32::from(is_error);
-    let mut exit_meta = serde_json::Map::new();
-    exit_meta.insert(
-        "terminal_exit".to_owned(),
-        serde_json::json!({
-            "terminal_id": tool_call_id,
-            "exit_code": exit_code,
-            "signal": null
-        }),
-    );
-    let mut cc = serde_json::Map::new();
-    cc.insert(
-        "toolName".to_owned(),
-        serde_json::Value::String(tool_name.to_owned()),
-    );
-    if let Some(ms) = elapsed_ms {
-        cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
+pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::SessionUpdate> {
+    match event {
+        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text)
+            if text.is_empty() || is_tool_use_marker(&text) =>
+        {
+            vec![]
+        }
+        LoopbackEvent::Chunk(text) | LoopbackEvent::FullMessage(text) => {
+            if text.is_empty() {
+                vec![]
+            } else {
+                vec![acp::SessionUpdate::AgentMessageChunk(
+                    acp::ContentChunk::new(text.into()),
+                )]
+            }
+        }
+        LoopbackEvent::Status(text) if text.is_empty() => vec![],
+        LoopbackEvent::Status(text) => vec![
+            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new("\n".into())),
+            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(text.into())),
+        ],
+        LoopbackEvent::ToolStart(data) => tool_start_to_updates(*data),
+        LoopbackEvent::ToolOutput(data) => tool_output_to_updates(*data),
+        LoopbackEvent::Flush => vec![],
+        #[cfg(feature = "unstable-session-usage")]
+        LoopbackEvent::Usage {
+            input_tokens,
+            output_tokens,
+            context_window,
+        } => {
+            let used = input_tokens.saturating_add(output_tokens);
+            vec![acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(
+                used,
+                context_window,
+            ))]
+        }
+        #[cfg(not(feature = "unstable-session-usage"))]
+        LoopbackEvent::Usage { .. } => vec![],
+        #[cfg(feature = "unstable-session-info-update")]
+        LoopbackEvent::SessionTitle(title) => {
+            vec![acp::SessionUpdate::SessionInfoUpdate(
+                acp::SessionInfoUpdate::new().title(title),
+            )]
+        }
+        #[cfg(not(feature = "unstable-session-info-update"))]
+        LoopbackEvent::SessionTitle(_) => vec![],
+        LoopbackEvent::Plan(entries) => {
+            let acp_entries = entries
+                .into_iter()
+                .map(|(content, status)| {
+                    let acp_status = match status {
+                        zeph_core::channel::PlanItemStatus::Pending => {
+                            acp::PlanEntryStatus::Pending
+                        }
+                        zeph_core::channel::PlanItemStatus::InProgress => {
+                            acp::PlanEntryStatus::InProgress
+                        }
+                        zeph_core::channel::PlanItemStatus::Completed => {
+                            acp::PlanEntryStatus::Completed
+                        }
+                    };
+                    acp::PlanEntry::new(content, acp::PlanEntryPriority::Medium, acp_status)
+                })
+                .collect();
+            vec![acp::SessionUpdate::Plan(acp::Plan::new(acp_entries))]
+        }
+        LoopbackEvent::ThinkingChunk(text) if text.is_empty() => vec![],
+        LoopbackEvent::ThinkingChunk(text) => {
+            vec![acp::SessionUpdate::AgentThoughtChunk(
+                acp::ContentChunk::new(text.into()),
+            )]
+        }
+        // Stop hints are consumed directly in the prompt() loop and must not reach here.
+        LoopbackEvent::Stop(_) => vec![],
     }
-    if let Some(parent_id) = parent_tool_use_id {
-        cc.insert(
-            "parentToolUseId".to_owned(),
-            serde_json::Value::String(parent_id),
-        );
-    }
-    exit_meta.insert("claudeCode".to_owned(), serde_json::Value::Object(cc));
-    let mut final_fields = acp::ToolCallUpdateFields::new()
-        .status(status)
-        .content(vec![acp::ToolCallContent::Terminal(acp::Terminal::new(
-            tool_call_id.to_owned(),
-        ))])
-        .raw_output(serde_json::Value::String(display.to_owned()));
-    if !acp_locations.is_empty() {
-        final_fields = final_fields.locations(acp_locations);
-    }
-    let final_update = acp::SessionUpdate::ToolCallUpdate(
-        acp::ToolCallUpdate::new(tool_call_id.to_owned(), final_fields).meta(exit_meta),
-    );
-    vec![terminal_intermediate, final_update]
-}
-
-#[allow(clippy::too_many_arguments)]
-fn non_terminal_tool_updates(
-    tool_name: &str,
-    display: String,
-    diff: Option<zeph_core::DiffData>,
-    tool_call_id: String,
-    elapsed_ms: Option<u64>,
-    parent_tool_use_id: Option<String>,
-    status: acp::ToolCallStatus,
-    acp_locations: Vec<acp::ToolCallLocation>,
-) -> Vec<acp::SessionUpdate> {
-    let mut content = vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
-        acp::TextContent::new(display),
-    ))];
-    if let Some(d) = diff {
-        let acp_diff = acp::Diff::new(std::path::PathBuf::from(&d.file_path), d.new_content)
-            .old_text(d.old_content);
-        content.push(acp::ToolCallContent::Diff(acp_diff));
-    }
-    let mut fields = acp::ToolCallUpdateFields::new()
-        .status(status)
-        .content(content);
-    if !acp_locations.is_empty() {
-        fields = fields.locations(acp_locations);
-    }
-    let mut meta = serde_json::Map::new();
-    let mut cc = serde_json::Map::new();
-    cc.insert(
-        "toolName".to_owned(),
-        serde_json::Value::String(tool_name.to_owned()),
-    );
-    if let Some(ms) = elapsed_ms {
-        cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
-    }
-    if let Some(parent_id) = parent_tool_use_id {
-        cc.insert(
-            "parentToolUseId".to_owned(),
-            serde_json::Value::String(parent_id),
-        );
-    }
-    meta.insert("claudeCode".to_owned(), serde_json::Value::Object(cc));
-    let update = acp::ToolCallUpdate::new(tool_call_id, fields).meta(meta);
-    vec![acp::SessionUpdate::ToolCallUpdate(update)]
 }

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{Config, SttConfig};
+use super::{Config, SttConfig, default_stt_language, default_stt_model, default_stt_provider};
 
 impl Config {
     pub(crate) fn apply_env_overrides(&mut self) {
@@ -10,27 +10,13 @@ impl Config {
     }
 
     fn apply_env_overrides_core(&mut self) {
-        self.apply_env_overrides_llm();
-        self.apply_env_overrides_memory();
-        self.apply_env_overrides_skills();
-        self.apply_env_overrides_tools();
-        self.apply_env_overrides_index();
-        self.apply_env_overrides_acp();
-        self.apply_env_overrides_a2a();
-        if let Ok(v) = std::env::var("ZEPH_AUTO_UPDATE_CHECK")
-            && let Ok(enabled) = v.parse::<bool>()
-        {
-            self.agent.auto_update_check = enabled;
-        }
-        if let Ok(v) = std::env::var("ZEPH_LOG_FILE") {
-            self.logging.file = v;
-        }
-        if let Ok(v) = std::env::var("ZEPH_LOG_LEVEL") {
-            self.logging.level = v;
-        }
+        self.apply_env_overrides_core_1();
+        self.apply_env_overrides_core_1b();
+        self.apply_env_overrides_core_2();
+        self.apply_env_overrides_core_2b();
     }
 
-    fn apply_env_overrides_llm(&mut self) {
+    fn apply_env_overrides_core_1(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
             if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
                 self.llm.provider = kind;
@@ -47,43 +33,6 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_LLM_EMBEDDING_MODEL") {
             self.llm.embedding_model = v;
         }
-        if let Ok(v) = std::env::var("ZEPH_LLM_RESPONSE_CACHE_ENABLED")
-            && let Ok(enabled) = v.parse::<bool>()
-        {
-            self.llm.response_cache_enabled = enabled;
-        }
-        if let Ok(v) = std::env::var("ZEPH_LLM_RESPONSE_CACHE_TTL_SECS")
-            && let Ok(secs) = v.parse::<u64>()
-        {
-            self.llm.response_cache_ttl_secs = secs;
-        }
-        if let Ok(v) = std::env::var("ZEPH_STT_PROVIDER") {
-            self.llm
-                .stt
-                .get_or_insert_with(SttConfig::default_instance)
-                .provider = v;
-        }
-        if let Ok(v) = std::env::var("ZEPH_STT_MODEL") {
-            self.llm
-                .stt
-                .get_or_insert_with(SttConfig::default_instance)
-                .model = v;
-        }
-        if let Ok(v) = std::env::var("ZEPH_STT_LANGUAGE") {
-            self.llm
-                .stt
-                .get_or_insert_with(SttConfig::default_instance)
-                .language = v;
-        }
-        if let Ok(v) = std::env::var("ZEPH_STT_BASE_URL") {
-            self.llm
-                .stt
-                .get_or_insert_with(SttConfig::default_instance)
-                .base_url = Some(v);
-        }
-    }
-
-    fn apply_env_overrides_memory(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_SQLITE_PATH") {
             self.memory.sqlite_path = v;
         }
@@ -137,8 +86,38 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ZEPH_MEMORY_VECTOR_BACKEND") {
             match v.to_lowercase().as_str() {
-                "sqlite" => self.memory.vector_backend = super::VectorBackend::Sqlite,
-                "qdrant" => self.memory.vector_backend = super::VectorBackend::Qdrant,
+                "sqlite" => {
+                    self.memory.vector_backend = super::VectorBackend::Sqlite;
+                }
+                "qdrant" => {
+                    self.memory.vector_backend = super::VectorBackend::Qdrant;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn apply_env_overrides_core_1b(&mut self) {
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.skills.max_active_skills = n;
+        }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.skills.learning.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE")
+            && let Ok(auto_activate) = v.parse::<bool>()
+        {
+            self.skills.learning.auto_activate = auto_activate;
+        }
+        if let Ok(v) = std::env::var("ZEPH_SKILLS_PROMPT_MODE") {
+            match v.to_lowercase().as_str() {
+                "full" => self.skills.prompt_mode = super::SkillPromptMode::Full,
+                "compact" => self.skills.prompt_mode = super::SkillPromptMode::Compact,
+                "auto" => self.skills.prompt_mode = super::SkillPromptMode::Auto,
                 _ => {}
             }
         }
@@ -167,45 +146,6 @@ impl Config {
         {
             self.memory.token_safety_margin = margin.clamp(0.1, 10.0);
         }
-        if let Ok(v) = std::env::var("ZEPH_MEMORY_AUTOSAVE_ASSISTANT")
-            && let Ok(enabled) = v.parse::<bool>()
-        {
-            self.memory.autosave_assistant = enabled;
-        }
-        if let Ok(v) = std::env::var("ZEPH_MEMORY_AUTOSAVE_MIN_LENGTH")
-            && let Ok(len) = v.parse::<usize>()
-        {
-            self.memory.autosave_min_length = len;
-        }
-    }
-
-    fn apply_env_overrides_skills(&mut self) {
-        if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
-            && let Ok(n) = v.parse::<usize>()
-        {
-            self.skills.max_active_skills = n;
-        }
-        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_ENABLED")
-            && let Ok(enabled) = v.parse::<bool>()
-        {
-            self.skills.learning.enabled = enabled;
-        }
-        if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_AUTO_ACTIVATE")
-            && let Ok(auto_activate) = v.parse::<bool>()
-        {
-            self.skills.learning.auto_activate = auto_activate;
-        }
-        if let Ok(v) = std::env::var("ZEPH_SKILLS_PROMPT_MODE") {
-            match v.to_lowercase().as_str() {
-                "full" => self.skills.prompt_mode = super::SkillPromptMode::Full,
-                "compact" => self.skills.prompt_mode = super::SkillPromptMode::Compact,
-                "auto" => self.skills.prompt_mode = super::SkillPromptMode::Auto,
-                _ => {}
-            }
-        }
-    }
-
-    fn apply_env_overrides_tools(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_TOOLS_SUMMARIZE_OUTPUT")
             && let Ok(enabled) = v.parse::<bool>()
         {
@@ -235,7 +175,7 @@ impl Config {
         }
     }
 
-    fn apply_env_overrides_index(&mut self) {
+    fn apply_env_overrides_core_2(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_INDEX_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {
@@ -261,9 +201,91 @@ impl Config {
         {
             self.index.repo_map_tokens = n;
         }
+        if let Ok(v) = std::env::var("ZEPH_STT_PROVIDER") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
+            });
+            stt.provider = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_STT_MODEL") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
+            });
+            stt.model = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_STT_LANGUAGE") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
+            });
+            stt.language = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_STT_BASE_URL") {
+            let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
+                provider: default_stt_provider(),
+                model: default_stt_model(),
+                language: default_stt_language(),
+                base_url: None,
+            });
+            stt.base_url = Some(v);
+        }
     }
 
-    fn apply_env_overrides_acp(&mut self) {
+    fn apply_env_overrides_core_2b(&mut self) {
+        if let Ok(v) = std::env::var("ZEPH_AUTO_UPDATE_CHECK")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.agent.auto_update_check = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.a2a.enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_HOST") {
+            self.a2a.host = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_PORT")
+            && let Ok(port) = v.parse::<u16>()
+        {
+            self.a2a.port = port;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_PUBLIC_URL") {
+            self.a2a.public_url = v;
+        }
+        if let Ok(v) = std::env::var("ZEPH_A2A_RATE_LIMIT")
+            && let Ok(rate) = v.parse::<u32>()
+        {
+            self.a2a.rate_limit = rate;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_AUTOSAVE_ASSISTANT")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.memory.autosave_assistant = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_AUTOSAVE_MIN_LENGTH")
+            && let Ok(len) = v.parse::<usize>()
+        {
+            self.memory.autosave_min_length = len;
+        }
+        if let Ok(v) = std::env::var("ZEPH_LLM_RESPONSE_CACHE_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.llm.response_cache_enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_LLM_RESPONSE_CACHE_TTL_SECS")
+            && let Ok(secs) = v.parse::<u64>()
+        {
+            self.llm.response_cache_ttl_secs = secs;
+        }
         if let Ok(v) = std::env::var("ZEPH_ACP_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {
@@ -296,29 +318,11 @@ impl Config {
         {
             self.acp.discovery_enabled = enabled;
         }
-    }
-
-    fn apply_env_overrides_a2a(&mut self) {
-        if let Ok(v) = std::env::var("ZEPH_A2A_ENABLED")
-            && let Ok(enabled) = v.parse::<bool>()
-        {
-            self.a2a.enabled = enabled;
+        if let Ok(v) = std::env::var("ZEPH_LOG_FILE") {
+            self.logging.file = v;
         }
-        if let Ok(v) = std::env::var("ZEPH_A2A_HOST") {
-            self.a2a.host = v;
-        }
-        if let Ok(v) = std::env::var("ZEPH_A2A_PORT")
-            && let Ok(port) = v.parse::<u16>()
-        {
-            self.a2a.port = port;
-        }
-        if let Ok(v) = std::env::var("ZEPH_A2A_PUBLIC_URL") {
-            self.a2a.public_url = v;
-        }
-        if let Ok(v) = std::env::var("ZEPH_A2A_RATE_LIMIT")
-            && let Ok(rate) = v.parse::<u32>()
-        {
-            self.a2a.rate_limit = rate;
+        if let Ok(v) = std::env::var("ZEPH_LOG_LEVEL") {
+            self.logging.level = v;
         }
     }
 

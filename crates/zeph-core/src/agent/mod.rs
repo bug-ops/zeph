@@ -158,6 +158,8 @@ pub(super) struct McpState {
     pub(super) max_dynamic: usize,
     /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
     pub(super) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
+    /// Receives full flattened tool list after any `tools/list_changed` notification.
+    pub(super) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
 }
 
 pub(super) struct IndexState {
@@ -433,6 +435,7 @@ impl<C: Channel> Agent<C> {
                 allowed_commands: Vec::new(),
                 max_dynamic: 10,
                 shared_tools: None,
+                tool_rx: None,
             },
             index: IndexState {
                 retriever: None,
@@ -1774,7 +1777,13 @@ impl<C: Channel> Agent<C> {
                 self.provider = new_provider;
             }
 
+            // Poll for MCP tool list updates from tools/list_changed notifications.
+            self.check_tool_refresh().await;
+
+            // Refresh sub-agent status in metrics before polling.
             self.refresh_subagent_metrics();
+
+            // Non-blocking poll: notify user when background sub-agents complete.
             self.notify_completed_subagents().await?;
 
             self.drain_channel();
@@ -2193,7 +2202,6 @@ impl<C: Channel> Agent<C> {
 
     /// Dispatch slash commands. Returns `Some(Ok(()))` when handled,
     /// `Some(Err(_))` on I/O error, `None` to fall through to LLM processing.
-    #[allow(clippy::too_many_lines)]
     async fn dispatch_slash_command(
         &mut self,
         trimmed: &str,
@@ -2261,20 +2269,7 @@ impl<C: Channel> Agent<C> {
         }
 
         if trimmed == "/plan" || trimmed.starts_with("/plan ") {
-            match crate::orchestration::PlanCommand::parse(trimmed) {
-                Ok(cmd) => {
-                    if let Err(e) = self.handle_plan_command(cmd).await {
-                        return Some(Err(e));
-                    }
-                }
-                Err(e) => {
-                    if let Err(send_err) = self.channel.send(&e.to_string()).await {
-                        return Some(Err(send_err.into()));
-                    }
-                }
-            }
-            let _ = self.channel.flush_chunks().await;
-            return Some(Ok(()));
+            return Some(self.dispatch_plan_command(trimmed).await);
         }
 
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
@@ -2301,37 +2296,61 @@ impl<C: Channel> Agent<C> {
         }
 
         if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
-            let known: Vec<String> = self
-                .orchestration
-                .subagent_manager
-                .as_ref()
-                .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
-                .unwrap_or_default();
-            match crate::subagent::AgentCommand::parse(trimmed, &known) {
-                Ok(cmd) => {
-                    if let Some(msg) = self.handle_agent_command(cmd).await
-                        && let Err(e) = self.channel.send(&msg).await
-                    {
-                        return Some(Err(e.into()));
-                    }
-                    let _ = self.channel.flush_chunks().await;
-                    return Some(Ok(()));
-                }
-                Err(e) if trimmed.starts_with('@') => {
-                    // Unknown @token — fall through to normal LLM processing
-                    tracing::debug!("@mention not matched as agent: {e}");
-                }
-                Err(e) => {
-                    if let Err(send_err) = self.channel.send(&e.to_string()).await {
-                        return Some(Err(send_err.into()));
-                    }
-                    let _ = self.channel.flush_chunks().await;
-                    return Some(Ok(()));
-                }
-            }
+            return self.dispatch_agent_command(trimmed).await;
         }
 
         None
+    }
+
+    async fn dispatch_plan_command(&mut self, trimmed: &str) -> Result<(), error::AgentError> {
+        match crate::orchestration::PlanCommand::parse(trimmed) {
+            Ok(cmd) => {
+                self.handle_plan_command(cmd).await?;
+            }
+            Err(e) => {
+                self.channel
+                    .send(&e.to_string())
+                    .await
+                    .map_err(error::AgentError::from)?;
+            }
+        }
+        let _ = self.channel.flush_chunks().await;
+        Ok(())
+    }
+
+    async fn dispatch_agent_command(
+        &mut self,
+        trimmed: &str,
+    ) -> Option<Result<(), error::AgentError>> {
+        let known: Vec<String> = self
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default();
+        match crate::subagent::AgentCommand::parse(trimmed, &known) {
+            Ok(cmd) => {
+                if let Some(msg) = self.handle_agent_command(cmd).await
+                    && let Err(e) = self.channel.send(&msg).await
+                {
+                    return Some(Err(e.into()));
+                }
+                let _ = self.channel.flush_chunks().await;
+                Some(Ok(()))
+            }
+            Err(e) if trimmed.starts_with('@') => {
+                // Unknown @token — fall through to normal LLM processing
+                tracing::debug!("@mention not matched as agent: {e}");
+                None
+            }
+            Err(e) => {
+                if let Err(send_err) = self.channel.send(&e.to_string()).await {
+                    return Some(Err(send_err.into()));
+                }
+                let _ = self.channel.flush_chunks().await;
+                Some(Ok(()))
+            }
+        }
     }
 
     /// Spawn a background task to evaluate the user message with the LLM judge and store the

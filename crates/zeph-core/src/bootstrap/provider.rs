@@ -33,73 +33,6 @@ use zeph_llm::router::{CascadeRouterConfig, RouterProvider};
 
 use crate::config::{Config, ProviderKind};
 
-fn build_cascade_router_config(
-    router_cfg: &crate::config::RouterConfig,
-    config: &Config,
-) -> CascadeRouterConfig {
-    let cascade_cfg = router_cfg.cascade.clone().unwrap_or_default();
-    let classifier_mode = match cascade_cfg.classifier_mode {
-        crate::config::CascadeClassifierMode::Heuristic => ClassifierMode::Heuristic,
-        crate::config::CascadeClassifierMode::Judge => ClassifierMode::Judge,
-    };
-    // SEC-CASCADE-01: clamp quality_threshold to [0.0, 1.0]; reject NaN/Inf.
-    let raw_threshold = cascade_cfg.quality_threshold;
-    let quality_threshold = if raw_threshold.is_finite() {
-        raw_threshold.clamp(0.0, 1.0)
-    } else {
-        tracing::warn!(
-            raw_threshold,
-            "cascade quality_threshold is non-finite, defaulting to 0.5"
-        );
-        0.5
-    };
-    if (quality_threshold - raw_threshold).abs() > f64::EPSILON {
-        tracing::warn!(
-            raw_threshold,
-            clamped = quality_threshold,
-            "cascade quality_threshold out of range [0.0, 1.0], clamped"
-        );
-    }
-    // SEC-CASCADE-02: clamp window_size to minimum 1 to prevent silent no-op tracking.
-    let window_size = cascade_cfg.window_size.max(1);
-    if window_size != cascade_cfg.window_size {
-        tracing::warn!(
-            raw = cascade_cfg.window_size,
-            "cascade window_size=0 is invalid, clamped to 1"
-        );
-    }
-    let summary_provider = if classifier_mode == ClassifierMode::Judge {
-        if let Some(model_spec) = config.llm.summary_model.as_deref() {
-            match create_summary_provider(model_spec, config) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "cascade: failed to build judge provider, falling back to heuristic"
-                    );
-                    None
-                }
-            }
-        } else {
-            tracing::warn!(
-                "cascade: classifier_mode=judge requires [llm] summary_model to \
-                 be configured; falling back to heuristic"
-            );
-            None
-        }
-    } else {
-        None
-    };
-    CascadeRouterConfig {
-        quality_threshold,
-        max_escalations: cascade_cfg.max_escalations,
-        classifier_mode,
-        window_size,
-        max_cascade_tokens: cascade_cfg.max_cascade_tokens,
-        summary_provider,
-    }
-}
-
 pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
     match config.llm.provider {
         ProviderKind::Ollama | ProviderKind::Claude => {
@@ -163,7 +96,8 @@ pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
                     .map(std::path::Path::new);
                 RouterProvider::new(providers).with_thompson(state_path)
             } else if router_cfg.strategy == crate::config::RouterStrategyConfig::Cascade {
-                let router_cascade_cfg = build_cascade_router_config(router_cfg, config);
+                let cascade_cfg = router_cfg.cascade.clone().unwrap_or_default();
+                let router_cascade_cfg = build_cascade_router_config(&cascade_cfg, config);
                 RouterProvider::new(providers).with_cascade(router_cascade_cfg)
             } else if config.llm.router_ema_enabled {
                 let raw_alpha = config.llm.router_ema_alpha;
@@ -185,6 +119,74 @@ pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
         ProviderKind::Candle => Err(BootstrapError::Provider(
             "candle feature is not enabled".into(),
         )),
+    }
+}
+
+fn build_cascade_router_config(
+    cascade_cfg: &crate::config::CascadeConfig,
+    config: &Config,
+) -> CascadeRouterConfig {
+    let classifier_mode = match cascade_cfg.classifier_mode {
+        crate::config::CascadeClassifierMode::Heuristic => ClassifierMode::Heuristic,
+        crate::config::CascadeClassifierMode::Judge => ClassifierMode::Judge,
+    };
+    // SEC-CASCADE-01: clamp quality_threshold to [0.0, 1.0]; reject NaN/Inf.
+    let raw_threshold = cascade_cfg.quality_threshold;
+    let quality_threshold = if raw_threshold.is_finite() {
+        raw_threshold.clamp(0.0, 1.0)
+    } else {
+        tracing::warn!(
+            raw_threshold,
+            "cascade quality_threshold is non-finite, defaulting to 0.5"
+        );
+        0.5
+    };
+    if (quality_threshold - raw_threshold).abs() > f64::EPSILON {
+        tracing::warn!(
+            raw_threshold,
+            clamped = quality_threshold,
+            "cascade quality_threshold out of range [0.0, 1.0], clamped"
+        );
+    }
+    // SEC-CASCADE-02: clamp window_size to minimum 1 to prevent silent no-op tracking.
+    let window_size = cascade_cfg.window_size.max(1);
+    if window_size != cascade_cfg.window_size {
+        tracing::warn!(
+            raw = cascade_cfg.window_size,
+            "cascade window_size=0 is invalid, clamped to 1"
+        );
+    }
+    // Build summary provider for judge mode.
+    let summary_provider = if classifier_mode == ClassifierMode::Judge {
+        if let Some(model_spec) = config.llm.summary_model.as_deref() {
+            match create_summary_provider(model_spec, config) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "cascade: failed to build judge provider, falling back to heuristic"
+                    );
+                    None
+                }
+            }
+        } else {
+            tracing::warn!(
+                "cascade: classifier_mode=judge requires [llm] summary_model to \
+                 be configured; falling back to heuristic"
+            );
+            None
+        }
+    } else {
+        None
+    };
+    CascadeRouterConfig {
+        quality_threshold,
+        max_escalations: cascade_cfg.max_escalations,
+        classifier_mode,
+        window_size,
+        max_cascade_tokens: cascade_cfg.max_cascade_tokens,
+        summary_provider,
+        cost_tiers: cascade_cfg.cost_tiers.clone(),
     }
 }
 
