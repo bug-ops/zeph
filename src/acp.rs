@@ -269,8 +269,9 @@ async fn build_acp_deps(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager = prebuilt_mcp_manager
-        .unwrap_or_else(|| std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config)));
+    let mcp_manager = prebuilt_mcp_manager.unwrap_or_else(|| {
+        std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config, false))
+    });
     let mcp_tools = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
@@ -1214,7 +1215,10 @@ pub(crate) async fn run_acp_http_server(
 
     // CLI flag overrides config/env values for auth token.
     let auth_bearer_token = auth_token_override.or(app.config().acp.auth_token.clone());
-    let mcp_manager_for_acp = Arc::new(zeph_core::bootstrap::create_mcp_manager(app.config()));
+    let mcp_manager_for_acp = Arc::new(zeph_core::bootstrap::create_mcp_manager(
+        app.config(),
+        false,
+    ));
     let server_config = zeph_acp::AcpServerConfig {
         agent_name: app.config().acp.agent_name.clone(),
         agent_version: app.config().acp.agent_version.clone(),

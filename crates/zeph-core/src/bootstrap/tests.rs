@@ -775,7 +775,7 @@ fn create_mcp_manager_with_http_transport() {
         policy: Default::default(),
     }];
 
-    let manager = create_mcp_manager(&config);
+    let manager = create_mcp_manager(&config, false);
     let debug = format!("{manager:?}");
     assert!(debug.contains("server_count: 1"));
 }
@@ -795,7 +795,7 @@ fn create_mcp_manager_with_stdio_transport() {
         policy: Default::default(),
     }];
 
-    let manager = create_mcp_manager(&config);
+    let manager = create_mcp_manager(&config, false);
     let debug = format!("{manager:?}");
     assert!(debug.contains("server_count: 1"));
 }
@@ -805,7 +805,7 @@ fn create_mcp_manager_empty_servers() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.mcp.servers = vec![];
 
-    let manager = create_mcp_manager(&config);
+    let manager = create_mcp_manager(&config, false);
     let debug = format!("{manager:?}");
     assert!(debug.contains("server_count: 0"));
 }

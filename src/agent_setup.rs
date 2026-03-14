@@ -264,6 +264,7 @@ pub(crate) async fn build_tool_setup(
     config: &Config,
     permission_policy: zeph_tools::PermissionPolicy,
     with_tool_events: bool,
+    suppress_stderr: bool,
 ) -> ToolSetup {
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -299,7 +300,10 @@ pub(crate) async fn build_tool_setup(
             .collect(),
     );
 
-    let mcp_manager = Arc::new(zeph_core::bootstrap::create_mcp_manager(config));
+    let mcp_manager = Arc::new(zeph_core::bootstrap::create_mcp_manager(
+        config,
+        suppress_stderr,
+    ));
     let mcp_tools = mcp_manager.connect_all().await;
     tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
 

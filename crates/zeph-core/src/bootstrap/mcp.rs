@@ -6,7 +6,7 @@ use zeph_memory::QdrantOps;
 
 use crate::config::Config;
 
-pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
+pub fn create_mcp_manager(config: &Config, suppress_stderr: bool) -> zeph_mcp::McpManager {
     let entries: Vec<zeph_mcp::ServerEntry> = config
         .mcp
         .servers
@@ -37,6 +37,7 @@ pub fn create_mcp_manager(config: &Config) -> zeph_mcp::McpManager {
         .collect();
     let enforcer = zeph_mcp::PolicyEnforcer::new(policy_entries);
     zeph_mcp::McpManager::new(entries, config.mcp.allowed_commands.clone(), enforcer)
+        .with_suppress_stderr(suppress_stderr)
 }
 
 pub async fn create_mcp_registry(

@@ -110,11 +110,30 @@ fn cli_requested_any_acp_mode(cli: &Cli) -> bool {
 
 #[cfg(feature = "acp")]
 fn configured_acp_autostart_transport(config: &Config, cli: &Cli) -> Option<AcpTransport> {
-    if config.acp.enabled && !cli_requested_any_acp_mode(cli) {
-        Some(config.acp.transport.clone())
-    } else {
-        None
+    if !config.acp.enabled || cli_requested_any_acp_mode(cli) {
+        return None;
     }
+
+    #[cfg(feature = "tui")]
+    if cli.tui {
+        // TUI owns stdin/stdout — stdio ACP transport is incompatible.
+        // Allow HTTP transport only when the acp-http feature is enabled;
+        // otherwise Http would silently fall back to stdio (which is also incompatible).
+        return match &config.acp.transport {
+            #[cfg(feature = "acp-http")]
+            AcpTransport::Http => Some(AcpTransport::Http),
+            _ => {
+                tracing::warn!(
+                    "ACP autostart skipped in TUI mode: \
+                     stdio and both transports are incompatible with TUI (both own stdin/stdout); \
+                     set [acp] transport = \"http\" to run ACP alongside TUI"
+                );
+                None
+            }
+        };
+    }
+
+    Some(config.acp.transport.clone())
 }
 
 #[cfg(feature = "acp")]
@@ -420,9 +439,19 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(tokio::spawn(async move { warmup_provider(&p).await }))
     };
 
+    #[cfg(feature = "tui")]
+    let suppress_mcp_stderr = tui_active;
+    #[cfg(not(feature = "tui"))]
+    let suppress_mcp_stderr = false;
+
     let (memory_result, tool_setup) = tokio::join!(
         app.build_memory(&provider),
-        agent_setup::build_tool_setup(config, permission_policy.clone(), with_tool_events),
+        agent_setup::build_tool_setup(
+            config,
+            permission_policy.clone(),
+            with_tool_events,
+            suppress_mcp_stderr
+        ),
     );
     let memory = std::sync::Arc::new(memory_result?);
 
@@ -1415,6 +1444,49 @@ mod tests {
         let cli = Cli::parse_from(["zeph", "--acp-http"]);
         let mut config = Config::default();
         config.acp.enabled = true;
+        assert!(configured_acp_autostart_transport(&config, &cli).is_none());
+    }
+
+    #[cfg(all(feature = "acp", feature = "tui"))]
+    #[test]
+    fn configured_acp_autostart_transport_suppresses_stdio_in_tui_mode() {
+        let cli = Cli::parse_from(["zeph", "--tui"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        config.acp.transport = AcpTransport::Stdio;
+        assert!(configured_acp_autostart_transport(&config, &cli).is_none());
+    }
+
+    #[cfg(all(feature = "acp", feature = "tui"))]
+    #[test]
+    fn configured_acp_autostart_transport_suppresses_both_in_tui_mode() {
+        let cli = Cli::parse_from(["zeph", "--tui"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        config.acp.transport = AcpTransport::Both;
+        assert!(configured_acp_autostart_transport(&config, &cli).is_none());
+    }
+
+    #[cfg(all(feature = "acp", feature = "tui", feature = "acp-http"))]
+    #[test]
+    fn configured_acp_autostart_transport_allows_http_in_tui_mode_with_acp_http() {
+        let cli = Cli::parse_from(["zeph", "--tui"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        config.acp.transport = AcpTransport::Http;
+        assert!(matches!(
+            configured_acp_autostart_transport(&config, &cli),
+            Some(AcpTransport::Http)
+        ));
+    }
+
+    #[cfg(all(feature = "acp", feature = "tui", not(feature = "acp-http")))]
+    #[test]
+    fn configured_acp_autostart_transport_suppresses_http_in_tui_mode_without_acp_http() {
+        let cli = Cli::parse_from(["zeph", "--tui"]);
+        let mut config = Config::default();
+        config.acp.enabled = true;
+        config.acp.transport = AcpTransport::Http;
         assert!(configured_acp_autostart_transport(&config, &cli).is_none());
     }
 }

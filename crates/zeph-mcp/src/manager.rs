@@ -45,6 +45,7 @@ pub struct McpManager {
     clients: Arc<RwLock<HashMap<String, McpClient>>>,
     connected_server_ids: std::sync::RwLock<HashSet<String>>,
     enforcer: Arc<PolicyEnforcer>,
+    suppress_stderr: bool,
 }
 
 impl std::fmt::Debug for McpManager {
@@ -68,7 +69,17 @@ impl McpManager {
             clients: Arc::new(RwLock::new(HashMap::new())),
             connected_server_ids: std::sync::RwLock::new(HashSet::new()),
             enforcer: Arc::new(enforcer),
+            suppress_stderr: false,
         }
+    }
+
+    /// When `true`, stderr of spawned MCP child processes is suppressed (`Stdio::null()`).
+    ///
+    /// Use in TUI mode to prevent child stderr from corrupting the terminal.
+    #[must_use]
+    pub fn with_suppress_stderr(mut self, suppress: bool) -> Self {
+        self.suppress_stderr = suppress;
+        self
     }
 
     /// Connect to all configured servers concurrently, return aggregated tool list.
@@ -81,10 +92,11 @@ impl McpManager {
         let mut join_set = JoinSet::new();
 
         let allowed = self.allowed_commands.clone();
+        let suppress = self.suppress_stderr;
         for config in self.configs.clone() {
             let allowed = allowed.clone();
             join_set.spawn(async move {
-                let result = connect_entry(&config, &allowed).await;
+                let result = connect_entry(&config, &allowed, suppress).await;
                 (config.id, result)
             });
         }
@@ -168,7 +180,7 @@ impl McpManager {
             }
         }
 
-        let client = connect_entry(entry, &self.allowed_commands).await?;
+        let client = connect_entry(entry, &self.allowed_commands, self.suppress_stderr).await?;
         let tools = match client.list_tools().await {
             Ok(tools) => tools,
             Err(e) => {
@@ -284,6 +296,7 @@ impl McpManager {
 async fn connect_entry(
     entry: &ServerEntry,
     allowed_commands: &[String],
+    suppress_stderr: bool,
 ) -> Result<McpClient, McpError> {
     match &entry.transport {
         McpTransport::Stdio { command, args, env } => {
@@ -294,6 +307,7 @@ async fn connect_entry(
                 env,
                 allowed_commands,
                 entry.timeout,
+                suppress_stderr,
             )
             .await
         }
@@ -571,6 +585,14 @@ mod tests {
         let tools = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());
+    }
+
+    #[test]
+    fn with_suppress_stderr_builder() {
+        let mgr =
+            McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])).with_suppress_stderr(true);
+        let dbg = format!("{mgr:?}");
+        assert!(dbg.contains("McpManager"));
     }
 
     impl McpManager {

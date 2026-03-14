@@ -48,6 +48,7 @@ impl McpClient {
         env: &std::collections::HashMap<String, String>,
         allowed_commands: &[String],
         timeout: Duration,
+        suppress_stderr: bool,
     ) -> Result<Self, McpError> {
         crate::security::validate_command(command, allowed_commands)?;
         crate::security::validate_env(env)?;
@@ -58,10 +59,21 @@ impl McpClient {
             cmd.env(k, v);
         }
 
-        let transport = TokioChildProcess::new(cmd).map_err(|e| McpError::Connection {
-            server_id: server_id.into(),
-            message: e.to_string(),
-        })?;
+        let transport = if suppress_stderr {
+            let (proc, _stderr) = TokioChildProcess::builder(cmd)
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| McpError::Connection {
+                    server_id: server_id.into(),
+                    message: e.to_string(),
+                })?;
+            proc
+        } else {
+            TokioChildProcess::new(cmd).map_err(|e| McpError::Connection {
+                server_id: server_id.into(),
+                message: e.to_string(),
+            })?
+        };
 
         let service =
             ().serve(transport)
