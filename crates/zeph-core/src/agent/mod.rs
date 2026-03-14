@@ -1727,6 +1727,16 @@ impl<C: Channel> Agent<C> {
             manager.shutdown_all_shared().await;
         }
 
+        // Finalize compaction trajectory: push the last open segment into the Vec.
+        // This segment would otherwise only be pushed when the next hard compaction fires,
+        // which never happens at session end.
+        if let Some(turns) = self.context_manager.turns_since_last_hard_compaction {
+            self.update_metrics(|m| {
+                m.compaction_turns_after_hard.push(turns);
+            });
+            self.context_manager.turns_since_last_hard_compaction = None;
+        }
+
         if let Some(ref tx) = self.metrics.metrics_tx {
             let m = tx.borrow();
             if m.filter_applications > 0 {
@@ -1742,6 +1752,13 @@ impl<C: Channel> Agent<C> {
                     applications = m.filter_applications,
                     "tool output filtering saved ~{} tokens ({pct:.0}%)",
                     m.filter_saved_tokens,
+                );
+            }
+            if m.compaction_hard_count > 0 {
+                tracing::info!(
+                    hard_compactions = m.compaction_hard_count,
+                    turns_after_hard = ?m.compaction_turns_after_hard,
+                    "hard compaction trajectory"
                 );
             }
         }
