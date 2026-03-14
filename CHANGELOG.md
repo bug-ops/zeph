@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(mcp,core): extract the 17 injection-detection regexes into `zeph_mcp::sanitize::RAW_INJECTION_PATTERNS` (`pub const`); `zeph-core`'s `ContentSanitizer` now compiles its `INJECTION_PATTERNS` from this single shared slice instead of maintaining a duplicate list — any future pattern change is automatically reflected in both sanitization layers. Also fixes two patterns in `zeph-core` that were missing the `(?i)` case-insensitive flag (`xml_tag_injection`, `markdown_image_exfil`) which existed in the `zeph-mcp` copy but had drifted out (closes #1747)
 - `zeph-core`: replace `anyhow` with typed `thiserror` errors in `subagent/` and `config_watcher.rs`; remove `anyhow` dependency from `zeph-core`
 - refactor(core): split `config/types.rs` (3331 lines) into domain modules — `agent`, `channels`, `defaults`, `features`, `logging`, `memory`, `providers`, `security`, `ui`, `mod` (Config struct + re-exports), and `tests`; no API changes, TOML format unchanged (#1735)
 - refactor(memory): split `semantic.rs` (3335 lines) into sub-modules — `mod` (struct + constructors + accessors), `recall`, `summarization`, `cross_session`, `corrections`, `graph`, and `tests`; public API unchanged (#1736)
@@ -28,9 +29,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(llm): `cascade_chat` and `cascade_chat_stream` no longer store an empty-string provider response as `best_seen`; a provider returning `""` is now skipped for best-seen tracking so the caller receives an explicit error instead of a silent empty response on all-fail fallback (#1754)
 - fix(tui): skip ACP stdio/both autostart when `--tui` is active; stdio and TUI are mutually exclusive (both own stdin/stdout); HTTP transport is still allowed alongside TUI when `acp-http` feature is enabled (#1729)
 - fix(mcp): suppress MCP child process stderr in TUI mode to prevent ratatui display corruption; `McpManager` gains `with_suppress_stderr` builder method (#1729)
 - fix(llm): `cascade_chat_stream` now tracks best-seen response across early providers (#1722); on token budget exhaustion with a would-escalate response the highest-scoring prior response is returned; when the last provider fails and an early provider succeeded, the best-seen response is returned instead of propagating the error — achieving parity with `cascade_chat`
+- fix(llm): `cascade_chat` and `cascade_chat_stream` now return the best-seen response when `escalations_remaining == 0` and the current response would have triggered escalation, matching the existing budget-exhaustion behaviour and closing the parity gap with `best_seen` tracking (#1755)
 
 ## [0.15.0] - 2026-03-14
 
