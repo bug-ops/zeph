@@ -29,6 +29,9 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::any::AnyProvider;
+use crate::provider::{LlmProvider, Message, Role};
+
 /// Controls the quality classification strategy.
 ///
 /// # Accuracy
@@ -251,6 +254,53 @@ fn coherence_signal(response: &str) -> f64 {
     if avg_sentence_len < 3.0 { 0.4 } else { 1.0 }
 }
 
+// ── LLM judge scorer ──────────────────────────────────────────────────────────
+
+/// Score a response using an LLM judge.
+///
+/// Sends a single-turn prompt to `judge` asking it to rate `response` on a 0–10 scale.
+/// Normalises the result to [0.0, 1.0].
+///
+/// Returns `None` on any error (network, parse, etc.); callers must fall back to heuristic.
+///
+/// # Errors
+///
+/// Any `LlmError` from the judge call is swallowed and represented as `None`.
+pub async fn judge_score(judge: &AnyProvider, response: &str) -> Option<f64> {
+    let prompt = format!(
+        "Rate the following AI response on a scale from 0 to 10, \
+         where 0 is completely useless or degenerate and 10 is high quality and coherent. \
+         Reply with ONLY a single number (integer or decimal, e.g. 7 or 8.5). \
+         Do not add any explanation.\n\nResponse to rate:\n{response}"
+    );
+    let messages = vec![Message::from_legacy(Role::User, prompt)];
+    let reply = judge.chat(&messages).await.ok()?;
+    parse_judge_score(&reply)
+}
+
+/// Parse the first finite non-negative number from a judge reply.
+///
+/// Expects scores on a 0–10 scale; normalises to [0.0, 1.0].
+fn parse_judge_score(reply: &str) -> Option<f64> {
+    for token in reply.split_whitespace() {
+        // Strip trailing punctuation before parsing.
+        let clean: String = token
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if clean.is_empty() {
+            continue;
+        }
+        if let Ok(n) = clean.parse::<f64>()
+            && n.is_finite()
+            && n >= 0.0
+        {
+            return Some((n / 10.0).clamp(0.0, 1.0));
+        }
+    }
+    None
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -353,6 +403,51 @@ mod tests {
     #[test]
     fn classifier_mode_default_is_heuristic() {
         assert_eq!(ClassifierMode::default(), ClassifierMode::Heuristic);
+    }
+
+    #[test]
+    fn parse_judge_score_integer() {
+        let score = parse_judge_score("7").unwrap();
+        assert!(
+            (score - 0.7).abs() < f64::EPSILON,
+            "expected 0.7, got {score}"
+        );
+    }
+
+    #[test]
+    fn parse_judge_score_decimal() {
+        let score = parse_judge_score("8.5").unwrap();
+        assert!((score - 0.85).abs() < 1e-9, "expected 0.85, got {score}");
+    }
+
+    #[test]
+    fn parse_judge_score_with_surrounding_text() {
+        let score = parse_judge_score("I would rate this response a 6 out of 10.").unwrap();
+        assert!(
+            (score - 0.6).abs() < f64::EPSILON,
+            "expected 0.6, got {score}"
+        );
+    }
+
+    #[test]
+    fn parse_judge_score_ten_clamps_to_one() {
+        let score = parse_judge_score("10").unwrap();
+        assert!(
+            (score - 1.0).abs() < f64::EPSILON,
+            "expected 1.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn parse_judge_score_zero_is_valid() {
+        let score = parse_judge_score("0").unwrap();
+        assert!(score.abs() < f64::EPSILON, "expected 0.0, got {score}");
+    }
+
+    #[test]
+    fn parse_judge_score_garbage_returns_none() {
+        assert!(parse_judge_score("no number here").is_none());
+        assert!(parse_judge_score("").is_none());
     }
 
     #[test]

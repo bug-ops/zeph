@@ -23,7 +23,6 @@ scheduler = []
 
 [dependencies]
 age.workspace = true
-anyhow.workspace = true
 blake3.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
 futures.workspace = true

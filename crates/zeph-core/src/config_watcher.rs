@@ -7,6 +7,18 @@ use std::time::Duration;
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigWatcherError {
+    #[error("config path has no parent directory")]
+    NoParentDir,
+
+    #[error("config path has no filename")]
+    NoFilename,
+
+    #[error("filesystem watcher error: {0}")]
+    Notify(#[from] notify::Error),
+}
+
 #[derive(Clone)]
 pub enum ConfigEvent {
     Changed,
@@ -26,14 +38,14 @@ impl ConfigWatcher {
     ///
     /// Returns an error if the filesystem watcher cannot be initialized
     /// or the config file path has no parent directory.
-    pub fn start(path: &Path, tx: mpsc::Sender<ConfigEvent>) -> anyhow::Result<Self> {
+    pub fn start(path: &Path, tx: mpsc::Sender<ConfigEvent>) -> Result<Self, ConfigWatcherError> {
         let dir = path
             .parent()
-            .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?
+            .ok_or(ConfigWatcherError::NoParentDir)?
             .to_path_buf();
         let filename = path
             .file_name()
-            .ok_or_else(|| anyhow::anyhow!("config path has no filename"))?
+            .ok_or(ConfigWatcherError::NoFilename)?
             .to_os_string();
 
         let (notify_tx, mut notify_rx) = mpsc::channel(16);

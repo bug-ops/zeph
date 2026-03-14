@@ -656,8 +656,13 @@ impl App {
             &self.metrics.model_name
         };
 
+        let ctx_badge = if self.metrics.extended_context {
+            " [1M CTX]"
+        } else {
+            ""
+        };
         let text = format!(
-            " Zeph v{} | Provider: {provider} | Model: {model}",
+            " Zeph v{} | Provider: {provider} | Model: {model}{ctx_badge}",
             env!("CARGO_PKG_VERSION")
         );
 
@@ -3284,5 +3289,41 @@ mod tests {
                 "status should be cleared on closed sender"
             );
         }
+    }
+
+    #[test]
+    fn draw_header_shows_1m_ctx_badge_when_extended_context() {
+        use crate::test_utils::render_to_string;
+
+        let (mut app, _rx, _tx) = make_app();
+        app.metrics.provider_name = "claude".into();
+        app.metrics.model_name = "claude-sonnet-4-6".into();
+        app.metrics.extended_context = true;
+
+        let output = render_to_string(80, 1, |frame, area| {
+            app.draw_header(frame, area);
+        });
+        assert!(
+            output.contains("[1M CTX]"),
+            "header must contain [1M CTX] badge when extended_context is true; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn draw_header_no_badge_without_extended_context() {
+        use crate::test_utils::render_to_string;
+
+        let (mut app, _rx, _tx) = make_app();
+        app.metrics.provider_name = "claude".into();
+        app.metrics.model_name = "claude-sonnet-4-6".into();
+        app.metrics.extended_context = false;
+
+        let output = render_to_string(80, 1, |frame, area| {
+            app.draw_header(frame, area);
+        });
+        assert!(
+            !output.contains("[1M CTX]"),
+            "header must not contain [1M CTX] badge when extended_context is false; got: {output:?}"
+        );
     }
 }

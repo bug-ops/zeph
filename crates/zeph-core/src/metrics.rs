@@ -211,6 +211,9 @@ pub struct MetricsSnapshot {
     pub graph_communities_total: u64,
     pub graph_extraction_count: u64,
     pub graph_extraction_failures: u64,
+    /// `true` when `config.llm.cloud.enable_extended_context = true`.
+    /// Never set for other providers to avoid false positives.
+    pub extended_context: bool,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.

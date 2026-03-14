@@ -39,6 +39,12 @@ pub enum SubAgentError {
     #[error("I/O error at {path}: {reason}")]
     Io { path: String, reason: String },
 
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
+    #[error("LLM call failed: {0}")]
+    Llm(String),
+
+    #[error("channel send failed: {0}")]
+    Channel(String),
+
+    #[error("task panicked: {0}")]
+    TaskPanic(String),
 }
