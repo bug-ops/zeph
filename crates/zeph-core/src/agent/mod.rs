@@ -796,6 +796,8 @@ impl<C: Channel> Agent<C> {
     /// Each iteration yields at `wait_event()`, during which `channel.recv()` is polled
     /// concurrently via `tokio::select!`. If the user sends `/plan cancel`, all running
     /// sub-agent tasks are aborted and the loop exits with [`GraphStatus::Canceled`].
+    /// If the channel is closed (`Ok(None)`), all running sub-agent tasks are aborted
+    /// and the loop exits with [`GraphStatus::Failed`].
     /// Other messages received during execution are queued in `message_queue` and
     /// processed after the plan completes.
     ///
@@ -1077,7 +1079,9 @@ impl<C: Channel> Agent<C> {
                         }
                         self.enqueue_or_merge(msg.text, vec![], msg.attachments);
                     } else {
-                        // Channel closed — cancel running sub-agents and exit cleanly.
+                        // Channel closed — cancel running sub-agents and exit with Failed.
+                        // This is an error condition (not a user-initiated cancel), so
+                        // Done actions from cancel_all() are intentionally ignored.
                         let cancel_actions = scheduler.cancel_all();
                         let n = cancel_actions
                             .iter()
@@ -1096,15 +1100,13 @@ impl<C: Channel> Agent<C> {
                                         });
                                     }
                                 }
-                                SchedulerAction::Done { status } => {
-                                    break 'tick status;
-                                }
-                                SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                                // Intentionally ignore Done here — channel close is not a user cancel.
+                                SchedulerAction::Done { .. }
+                                | SchedulerAction::Spawn { .. }
+                                | SchedulerAction::RunInline { .. } => {}
                             }
                         }
-                        // Defensive fallback: cancel_all always emits Done, but guard
-                        // against future changes.
-                        break 'tick crate::orchestration::GraphStatus::Canceled;
+                        break 'tick crate::orchestration::GraphStatus::Failed;
                     }
                 }
                 // Shutdown signal received — cancel running sub-agents and exit cleanly.

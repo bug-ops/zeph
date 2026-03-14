@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- test(core): add COV-04 unit test for channel-close (`Ok(None)`) → `GraphStatus::Failed` transition in `run_scheduler_loop`; fix implementation to return `Failed` instead of `Canceled` on channel close — channel close is an error condition, not a user-initiated cancel (closes #1614)
 - feat(llm): `cost_tiers` config field for `[llm.router.cascade]` — explicit cheapest-first provider ordering independent of chain order; providers are sorted once at construction time (zero per-request cost); unknown names are silently ignored; empty list is equivalent to `None` (#1724)
 - feat(cost): add gpt-5 and gpt-5-mini to default pricing table (closes #1744)
 - feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
