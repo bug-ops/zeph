@@ -1856,7 +1856,233 @@ fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Option<String>) 
     (response, compaction_summary)
 }
 
-#[allow(clippy::too_many_lines)]
+fn push_tool_use_block(
+    blocks: &mut Vec<AnthropicContentBlock>,
+    id: &str,
+    name: &str,
+    input: &serde_json::Value,
+    matched_tool_ids: Option<&std::collections::HashSet<&str>>,
+    last_emitted_tool_ids: &mut std::collections::HashSet<String>,
+) {
+    let matched = matched_tool_ids.is_some_and(|ids| ids.contains(id));
+    if matched {
+        last_emitted_tool_ids.insert(id.to_owned());
+        blocks.push(AnthropicContentBlock::ToolUse {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            input: input.clone(),
+        });
+    } else {
+        tracing::warn!(
+            tool_use_id = %id,
+            tool_name = %name,
+            "downgrading unmatched tool_use to text in API request"
+        );
+        blocks.push(AnthropicContentBlock::Text {
+            text: format!("[tool_use: {name}] {input}"),
+            cache_control: None,
+        });
+    }
+}
+
+fn push_tool_result_block(
+    blocks: &mut Vec<AnthropicContentBlock>,
+    tool_use_id: &str,
+    content: &str,
+    is_error: bool,
+    last_emitted_tool_ids: &std::collections::HashSet<String>,
+) {
+    if last_emitted_tool_ids.contains(tool_use_id) {
+        blocks.push(AnthropicContentBlock::ToolResult {
+            tool_use_id: tool_use_id.to_owned(),
+            content: content.to_owned(),
+            is_error,
+            cache_control: None,
+        });
+    } else {
+        tracing::warn!(
+            tool_use_id = %tool_use_id,
+            "downgrading orphaned tool_result to text in API request"
+        );
+        if !content.trim().is_empty() {
+            blocks.push(AnthropicContentBlock::Text {
+                text: content.to_owned(),
+                cache_control: None,
+            });
+        }
+    }
+}
+
+/// Convert message parts into `AnthropicContentBlock`s, respecting tool-use/result pairing rules.
+///
+/// - `is_assistant`: whether the message is from the assistant role
+/// - `matched_tool_ids`: set of `tool_use` IDs that are matched by the next user message
+/// - `last_emitted_tool_ids`: tracks IDs emitted as native `ToolUse` to detect orphaned results
+fn convert_parts_to_blocks(
+    parts: &[MessagePart],
+    is_assistant: bool,
+    matched_tool_ids: Option<&std::collections::HashSet<&str>>,
+    last_emitted_tool_ids: &mut std::collections::HashSet<String>,
+) -> Vec<AnthropicContentBlock> {
+    let mut blocks = Vec::new();
+    for part in parts {
+        match part {
+            MessagePart::Text { text }
+            | MessagePart::Recall { text }
+            | MessagePart::CodeContext { text }
+            | MessagePart::Summary { text }
+            | MessagePart::CrossSession { text } => {
+                if !text.trim().is_empty() {
+                    blocks.push(AnthropicContentBlock::Text {
+                        text: text.clone(),
+                        cache_control: None,
+                    });
+                }
+            }
+            MessagePart::ToolOutput {
+                tool_name, body, ..
+            } => {
+                blocks.push(AnthropicContentBlock::Text {
+                    text: format!("[tool output: {tool_name}]\n{body}"),
+                    cache_control: None,
+                });
+            }
+            MessagePart::ToolUse { id, name, input } if is_assistant => {
+                // Downgrade to text if the tool_use ID is not matched by the
+                // next user message — prevents API 400 on orphaned tool_use.
+                push_tool_use_block(
+                    &mut blocks,
+                    id,
+                    name,
+                    input,
+                    matched_tool_ids,
+                    last_emitted_tool_ids,
+                );
+            }
+            MessagePart::ToolUse { name, input, .. } => {
+                blocks.push(AnthropicContentBlock::Text {
+                    text: format!("[tool_use: {name}] {input}"),
+                    cache_control: None,
+                });
+            }
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } if !is_assistant => {
+                // Downgrade to text if the tool_use_id was not emitted as a
+                // native ToolUse by the preceding assistant message (RC1 fix).
+                push_tool_result_block(
+                    &mut blocks,
+                    tool_use_id,
+                    content,
+                    *is_error,
+                    last_emitted_tool_ids,
+                );
+            }
+            MessagePart::ToolResult { content, .. } => {
+                if !content.trim().is_empty() {
+                    blocks.push(AnthropicContentBlock::Text {
+                        text: content.clone(),
+                        cache_control: None,
+                    });
+                }
+            }
+            MessagePart::Image(img) => {
+                blocks.push(AnthropicContentBlock::Image {
+                    source: ImageSource {
+                        source_type: "base64".to_owned(),
+                        media_type: img.mime_type.clone(),
+                        data: STANDARD.encode(&img.data),
+                    },
+                });
+            }
+            MessagePart::ThinkingBlock {
+                thinking,
+                signature,
+            } if is_assistant => {
+                blocks.push(AnthropicContentBlock::Thinking {
+                    thinking: thinking.clone(),
+                    signature: signature.clone(),
+                });
+            }
+            MessagePart::RedactedThinkingBlock { data } if is_assistant => {
+                blocks.push(AnthropicContentBlock::RedactedThinking { data: data.clone() });
+            }
+            // Compaction blocks must be sent back verbatim in subsequent turns
+            // so the Claude API can prune prior history correctly.
+            MessagePart::Compaction { summary } if is_assistant => {
+                blocks.push(AnthropicContentBlock::Compaction {
+                    summary: summary.clone(),
+                });
+            }
+            // Compaction blocks in user messages and thinking blocks are silently dropped.
+            MessagePart::Compaction { .. }
+            | MessagePart::ThinkingBlock { .. }
+            | MessagePart::RedactedThinkingBlock { .. } => {}
+        }
+    }
+    blocks
+}
+
+fn compute_matched_tool_ids<'m>(
+    msg: &'m Message,
+    next: Option<&&'m Message>,
+) -> std::collections::HashSet<&'m str> {
+    msg.parts
+        .iter()
+        .filter_map(|p| {
+            if let MessagePart::ToolUse { id, .. } = p {
+                Some(id.as_str())
+            } else {
+                None
+            }
+        })
+        .filter(|uid| {
+            next.is_some_and(|next_msg| {
+                next_msg.role == Role::User
+                    && next_msg.parts.iter().any(|np| {
+                        matches!(
+                            np,
+                            MessagePart::ToolResult { tool_use_id, .. }
+                                if tool_use_id.as_str() == *uid
+                        )
+                    })
+            })
+        })
+        .collect()
+}
+
+fn apply_cache_breakpoint(chat: &mut [StructuredApiMessage]) {
+    let target = chat.len().saturating_sub(20);
+    let breakpoint_idx = (target..chat.len())
+        .find(|&i| chat[i].role == "user")
+        .unwrap_or(0);
+    let msg = &mut chat[breakpoint_idx];
+    match &mut msg.content {
+        StructuredContent::Blocks(blocks) => {
+            if let Some(
+                AnthropicContentBlock::Text { cache_control, .. }
+                | AnthropicContentBlock::ToolResult { cache_control, .. },
+            ) = blocks.last_mut()
+            {
+                *cache_control = Some(CacheControl {
+                    cache_type: CacheType::Ephemeral,
+                });
+            }
+        }
+        StructuredContent::Text(text) => {
+            let owned = std::mem::take(text);
+            msg.content = StructuredContent::Blocks(vec![AnthropicContentBlock::Text {
+                text: owned,
+                cache_control: Some(CacheControl {
+                    cache_type: CacheType::Ephemeral,
+                }),
+            }]);
+        }
+    }
+}
+
 fn split_messages_structured(
     messages: &[Message],
     cache_user_messages: bool,
@@ -1864,7 +2090,6 @@ fn split_messages_structured(
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
 
-    // Collect agent-visible system messages first.
     for msg in messages
         .iter()
         .filter(|m| m.metadata.agent_visible && m.role == Role::System)
@@ -1909,171 +2134,25 @@ fn split_messages_structured(
 
                 if has_structured_parts {
                     let is_assistant = msg.role == Role::Assistant;
-
                     // For assistant messages, pre-compute which tool_use IDs are matched by
                     // the next visible user message. Unmatched IDs are downgraded to text to
                     // prevent Claude API 400 (tool_use without tool_result).
-                    let matched_tool_ids: Option<std::collections::HashSet<&str>> = if is_assistant
-                    {
-                        let next = visible.get(idx + 1);
-                        Some(
-                            msg.parts
-                                .iter()
-                                .filter_map(|p| {
-                                    if let MessagePart::ToolUse { id, .. } = p {
-                                        Some(id.as_str())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .filter(|uid| {
-                                    next.is_some_and(|next_msg| {
-                                        next_msg.role == Role::User
-                                            && next_msg.parts.iter().any(|np| {
-                                                matches!(
-                                                    np,
-                                                    MessagePart::ToolResult { tool_use_id, .. }
-                                                        if tool_use_id.as_str() == *uid
-                                                )
-                                            })
-                                    })
-                                })
-                                .collect(),
-                        )
+                    let matched_tool_ids = if is_assistant {
+                        Some(compute_matched_tool_ids(msg, visible.get(idx + 1)))
                     } else {
                         None
                     };
-
-                    let mut blocks = Vec::new();
                     // Reset emitted tool IDs at the start of each assistant message so user
                     // messages can check against the immediately preceding assistant only.
                     if is_assistant {
                         last_emitted_tool_ids.clear();
                     }
-                    for part in &msg.parts {
-                        match part {
-                            MessagePart::Text { text }
-                            | MessagePart::Recall { text }
-                            | MessagePart::CodeContext { text }
-                            | MessagePart::Summary { text }
-                            | MessagePart::CrossSession { text } => {
-                                if !text.trim().is_empty() {
-                                    blocks.push(AnthropicContentBlock::Text {
-                                        text: text.clone(),
-                                        cache_control: None,
-                                    });
-                                }
-                            }
-                            MessagePart::ToolOutput {
-                                tool_name, body, ..
-                            } => {
-                                blocks.push(AnthropicContentBlock::Text {
-                                    text: format!("[tool output: {tool_name}]\n{body}"),
-                                    cache_control: None,
-                                });
-                            }
-                            MessagePart::ToolUse { id, name, input } if is_assistant => {
-                                // Downgrade to text if the tool_use ID is not matched by the
-                                // next user message — prevents API 400 on orphaned tool_use.
-                                let matched = matched_tool_ids
-                                    .as_ref()
-                                    .is_some_and(|ids| ids.contains(id.as_str()));
-                                if matched {
-                                    last_emitted_tool_ids.insert(id.clone());
-                                    blocks.push(AnthropicContentBlock::ToolUse {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        input: input.clone(),
-                                    });
-                                } else {
-                                    tracing::warn!(
-                                        tool_use_id = %id,
-                                        tool_name = %name,
-                                        "downgrading unmatched tool_use to text in API request"
-                                    );
-                                    blocks.push(AnthropicContentBlock::Text {
-                                        text: format!("[tool_use: {name}] {input}"),
-                                        cache_control: None,
-                                    });
-                                }
-                            }
-                            MessagePart::ToolUse { name, input, .. } => {
-                                blocks.push(AnthropicContentBlock::Text {
-                                    text: format!("[tool_use: {name}] {input}"),
-                                    cache_control: None,
-                                });
-                            }
-                            MessagePart::ToolResult {
-                                tool_use_id,
-                                content,
-                                is_error,
-                            } if !is_assistant => {
-                                // Downgrade to text if the tool_use_id was not emitted as a
-                                // native ToolUse by the preceding assistant message (RC1 fix).
-                                if last_emitted_tool_ids.contains(tool_use_id.as_str()) {
-                                    blocks.push(AnthropicContentBlock::ToolResult {
-                                        tool_use_id: tool_use_id.clone(),
-                                        content: content.clone(),
-                                        is_error: *is_error,
-                                        cache_control: None,
-                                    });
-                                } else {
-                                    tracing::warn!(
-                                        tool_use_id = %tool_use_id,
-                                        "downgrading orphaned tool_result to text in API request"
-                                    );
-                                    if !content.trim().is_empty() {
-                                        blocks.push(AnthropicContentBlock::Text {
-                                            text: content.clone(),
-                                            cache_control: None,
-                                        });
-                                    }
-                                }
-                            }
-                            MessagePart::ToolResult { content, .. } => {
-                                if !content.trim().is_empty() {
-                                    blocks.push(AnthropicContentBlock::Text {
-                                        text: content.clone(),
-                                        cache_control: None,
-                                    });
-                                }
-                            }
-                            MessagePart::Image(img) => {
-                                blocks.push(AnthropicContentBlock::Image {
-                                    source: ImageSource {
-                                        source_type: "base64".to_owned(),
-                                        media_type: img.mime_type.clone(),
-                                        data: STANDARD.encode(&img.data),
-                                    },
-                                });
-                            }
-                            MessagePart::ThinkingBlock {
-                                thinking,
-                                signature,
-                            } if is_assistant => {
-                                blocks.push(AnthropicContentBlock::Thinking {
-                                    thinking: thinking.clone(),
-                                    signature: signature.clone(),
-                                });
-                            }
-                            MessagePart::RedactedThinkingBlock { data } if is_assistant => {
-                                blocks.push(AnthropicContentBlock::RedactedThinking {
-                                    data: data.clone(),
-                                });
-                            }
-                            // Compaction blocks must be sent back verbatim in subsequent turns
-                            // so the Claude API can prune prior history correctly.
-                            MessagePart::Compaction { summary } if is_assistant => {
-                                blocks.push(AnthropicContentBlock::Compaction {
-                                    summary: summary.clone(),
-                                });
-                            }
-                            // Compaction blocks in user messages and thinking blocks are silently dropped.
-                            MessagePart::Compaction { .. }
-                            | MessagePart::ThinkingBlock { .. }
-                            | MessagePart::RedactedThinkingBlock { .. } => {}
-                        }
-                    }
+                    let blocks = convert_parts_to_blocks(
+                        &msg.parts,
+                        is_assistant,
+                        matched_tool_ids.as_ref(),
+                        &mut last_emitted_tool_ids,
+                    );
                     chat.push(StructuredApiMessage {
                         role: role.to_owned(),
                         content: StructuredContent::Blocks(blocks),
@@ -2099,33 +2178,7 @@ fn split_messages_structured(
     // Place 1 message-level cache breakpoint at the user message closest to position
     // (total - 20) to maximize the 20-block lookback window coverage.
     if cache_user_messages && chat.len() > 1 {
-        let target = chat.len().saturating_sub(20);
-        let breakpoint_idx = (target..chat.len())
-            .find(|&i| chat[i].role == "user")
-            .unwrap_or(0);
-        let msg = &mut chat[breakpoint_idx];
-        match &mut msg.content {
-            StructuredContent::Blocks(blocks) => {
-                if let Some(
-                    AnthropicContentBlock::Text { cache_control, .. }
-                    | AnthropicContentBlock::ToolResult { cache_control, .. },
-                ) = blocks.last_mut()
-                {
-                    *cache_control = Some(CacheControl {
-                        cache_type: CacheType::Ephemeral,
-                    });
-                }
-            }
-            StructuredContent::Text(text) => {
-                let owned = std::mem::take(text);
-                msg.content = StructuredContent::Blocks(vec![AnthropicContentBlock::Text {
-                    text: owned,
-                    cache_control: Some(CacheControl {
-                        cache_type: CacheType::Ephemeral,
-                    }),
-                }]);
-            }
-        }
+        apply_cache_breakpoint(&mut chat);
     }
 
     let system = if system_parts.is_empty() {

@@ -2044,7 +2044,6 @@ mod tests {
     /// - initial aliases are seeded from entity names
     /// - `graph_edges` survive (FK cascade did not wipe them)
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
     async fn migration_024_backfill_preserves_entities_and_edges() {
         use sqlx::Acquire as _;
         use sqlx::ConnectOptions as _;

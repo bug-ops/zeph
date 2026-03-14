@@ -631,7 +631,6 @@ impl LlmProvider for OpenAiProvider {
         true
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn chat_with_tools(
         &self,
         messages: &[Message],
@@ -702,7 +701,13 @@ impl LlmProvider for OpenAiProvider {
             )));
         }
 
-        let resp: ToolChatResponse = serde_json::from_str(&text)?;
+        self.decode_tool_chat_response(&text)
+    }
+}
+
+impl OpenAiProvider {
+    fn decode_tool_chat_response(&self, text: &str) -> Result<ChatResponse, LlmError> {
+        let resp: ToolChatResponse = serde_json::from_str(text)?;
 
         if let Some(ref usage) = resp.usage {
             self.store_cache_usage(usage);

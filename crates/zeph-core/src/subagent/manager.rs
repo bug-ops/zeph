@@ -197,7 +197,7 @@ fn append_transcript(writer: &mut Option<TranscriptWriter>, seq: &mut u32, msg: 
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)] // subagent loop: LLM call + tool execution + retry + cancellation, sequential coupling
 async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
     let AgentLoopArgs {
         provider,
@@ -768,7 +768,7 @@ impl SubAgentManager {
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
     /// does not allow it (`allow_bypass_permissions: false`).
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // spawn: definition lookup + validation + transcript setup + tokio::spawn, tight coupling
     pub fn spawn(
         &mut self,
         def_name: &str,

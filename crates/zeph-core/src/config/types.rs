@@ -489,6 +489,17 @@ pub struct SttConfig {
     pub base_url: Option<String>,
 }
 
+impl SttConfig {
+    pub(crate) fn default_instance() -> Self {
+        Self {
+            provider: default_stt_provider(),
+            model: default_stt_model(),
+            language: default_stt_language(),
+            base_url: None,
+        }
+    }
+}
+
 pub(crate) fn default_stt_provider() -> String {
     "whisper".into()
 }

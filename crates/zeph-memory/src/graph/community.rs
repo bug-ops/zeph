@@ -16,6 +16,7 @@ use zeph_llm::provider::{Message, Role};
 use crate::error::MemoryError;
 
 use super::store::GraphStore;
+use super::types::Entity;
 
 const MAX_LABEL_PROPAGATION_ITERATIONS: usize = 50;
 
@@ -93,58 +94,32 @@ struct CommunityData {
     name: String,
 }
 
-/// Run label propagation on the full entity graph, generate community summaries via LLM,
-/// and upsert results to `SQLite`.
-///
-/// Returns the number of communities detected (with `>= 2` entities).
-///
-/// Unchanged communities (same entity membership and intra-community edges) are skipped —
-/// their existing summaries are preserved without LLM calls (incremental detection, #1262).
-/// LLM calls for changed communities are parallelized via a `JoinSet` bounded by a
-/// semaphore with `concurrency` permits (#1260).
-///
-/// # Panics
-///
-/// Does not panic in normal operation. The `semaphore.acquire().await.expect(...)` call is
-/// infallible because the semaphore is never closed during the lifetime of this function.
-///
-/// # Errors
-///
-/// Returns an error if `SQLite` queries or LLM calls fail.
-#[allow(clippy::too_many_lines)]
-pub async fn detect_communities(
-    store: &GraphStore,
-    provider: &AnyProvider,
-    community_summary_max_prompt_bytes: usize,
-    concurrency: usize,
-    edge_chunk_size: usize,
-) -> Result<usize, MemoryError> {
-    let entities = store.all_entities().await?;
-    if entities.len() < 2 {
-        return Ok(0);
-    }
+type UndirectedGraph = Graph<i64, (), petgraph::Undirected>;
 
-    // Build undirected graph: node weight = entity_id, no edge weight.
-    // Tie-breaking in label propagation is deterministic for a given dataset
-    // (labels are NodeIndex values assigned in ORDER BY id ASC order), but may
-    // vary if entity IDs change after deletion/re-insertion.
-    let mut graph = Graph::<i64, (), petgraph::Undirected>::new_undirected();
+async fn build_entity_graph_and_maps(
+    store: &GraphStore,
+    entities: &[Entity],
+    edge_chunk_size: usize,
+) -> Result<
+    (
+        UndirectedGraph,
+        HashMap<(i64, i64), Vec<String>>,
+        HashMap<(i64, i64), Vec<i64>>,
+    ),
+    MemoryError,
+> {
+    let mut graph = UndirectedGraph::new_undirected();
     let mut node_map: HashMap<i64, NodeIndex> = HashMap::new();
 
-    for entity in &entities {
+    for entity in entities {
         let idx = graph.add_node(entity.id);
         node_map.insert(entity.id, idx);
     }
 
-    // Build edge fact/id lookup maps alongside the petgraph, consuming edges in chunks.
-    // Each chunk is fetched and discarded, eliminating the need to hold a full Vec<Edge>.
-    // The true peak memory saving is in the Edge struct overhead (~130-180 bytes per edge
-    // beyond chunk_size): fact strings are still fully materialized in edge_facts_map.
     let mut edge_facts_map: HashMap<(i64, i64), Vec<String>> = HashMap::new();
     let mut edge_id_map: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
 
     if edge_chunk_size == 0 {
-        // chunk_size=0: fall back to streaming all edges at once (legacy path).
         let edges: Vec<_> = store.all_active_edges_stream().try_collect().await?;
         for edge in &edges {
             if let (Some(&src_idx), Some(&tgt_idx)) = (
@@ -168,7 +143,6 @@ pub async fn detect_communities(
             if chunk.is_empty() {
                 break;
             }
-            // Safe: chunk is non-empty (checked above).
             last_id = chunk.last().expect("non-empty chunk has a last element").id;
             for edge in &chunk {
                 if let (Some(&src_idx), Some(&tgt_idx)) = (
@@ -184,11 +158,13 @@ pub async fn detect_communities(
                     .push(edge.fact.clone());
                 edge_id_map.entry(key).or_default().push(edge.id);
             }
-            // chunk is dropped here; only edge_facts_map and edge_id_map retain edge data.
         }
     }
 
-    // Label propagation: each node starts with its own NodeIndex as label.
+    Ok((graph, edge_facts_map, edge_id_map))
+}
+
+fn run_label_propagation(graph: &UndirectedGraph) -> HashMap<usize, Vec<i64>> {
     let mut labels: Vec<usize> = (0..graph.node_count()).collect();
 
     for _ in 0..MAX_LABEL_PROPAGATION_ITERATIONS {
@@ -198,22 +174,17 @@ pub async fn detect_communities(
             if neighbors.is_empty() {
                 continue;
             }
-
             let mut freq: HashMap<usize, usize> = HashMap::new();
             for &nbr in &neighbors {
                 *freq.entry(labels[nbr.index()]).or_insert(0) += 1;
             }
-
-            // neighbors is non-empty, so freq is non-empty — max and min are safe.
             let max_count = *freq.values().max().unwrap_or(&0);
-            // Tie-break: smallest label value among tied candidates (deterministic).
             let best_label = freq
                 .iter()
                 .filter(|&(_, count)| *count == max_count)
                 .map(|(&label, _)| label)
                 .min()
                 .unwrap_or(labels[node_idx.index()]);
-
             if labels[node_idx.index()] != best_label {
                 labels[node_idx.index()] = best_label;
                 changed = true;
@@ -224,7 +195,6 @@ pub async fn detect_communities(
         }
     }
 
-    // Group entities by final label.
     let mut communities: HashMap<usize, Vec<i64>> = HashMap::new();
     for node_idx in graph.node_indices() {
         let entity_id = graph[node_idx];
@@ -233,22 +203,24 @@ pub async fn detect_communities(
             .or_default()
             .push(entity_id);
     }
-
-    // Keep only communities with >= 2 entities.
     communities.retain(|_, members| members.len() >= 2);
+    communities
+}
 
-    // Build entity name lookup for summary generation.
-    let entity_name_map: HashMap<i64, &str> =
-        entities.iter().map(|e| (e.id, e.name.as_str())).collect();
+struct ClassifyResult {
+    to_summarize: Vec<CommunityData>,
+    unchanged_count: usize,
+    new_fingerprints: std::collections::HashSet<String>,
+}
 
-    // Load stored fingerprints: fingerprint -> community_id (for unchanged partition detection).
-    let stored_fingerprints = store.community_fingerprints().await?;
-
-    // Sort community labels for stable label_index assignment (HIGH-02 fix).
-    let mut sorted_labels: Vec<usize> = communities.keys().copied().collect();
-    sorted_labels.sort_unstable();
-
-    // Prepare per-community data: compute fingerprints, classify into changed/unchanged.
+fn classify_communities(
+    communities: &HashMap<usize, Vec<i64>>,
+    edge_facts_map: &HashMap<(i64, i64), Vec<String>>,
+    edge_id_map: &HashMap<(i64, i64), Vec<i64>>,
+    entity_name_map: &HashMap<i64, &str>,
+    stored_fingerprints: &HashMap<String, i64>,
+    sorted_labels: &[usize],
+) -> ClassifyResult {
     let mut to_summarize: Vec<CommunityData> = Vec::new();
     let mut unchanged_count = 0usize;
     let mut new_fingerprints: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -259,7 +231,7 @@ pub async fn detect_communities(
 
         let mut intra_facts: Vec<String> = Vec::new();
         let mut intra_edge_ids: Vec<i64> = Vec::new();
-        for (&(src, tgt), facts) in &edge_facts_map {
+        for (&(src, tgt), facts) in edge_facts_map {
             if member_set.contains(&src) && member_set.contains(&tgt) {
                 intra_facts.extend(facts.iter().map(|f| scrub_content(f)));
                 if let Some(ids) = edge_id_map.get(&(src, tgt)) {
@@ -272,7 +244,6 @@ pub async fn detect_communities(
         new_fingerprints.insert(fingerprint.clone());
 
         if stored_fingerprints.contains_key(&fingerprint) {
-            // Partition unchanged — no LLM call needed.
             unchanged_count += 1;
             continue;
         }
@@ -301,22 +272,20 @@ pub async fn detect_communities(
         });
     }
 
-    tracing::debug!(
-        total = sorted_labels.len(),
-        unchanged = unchanged_count,
-        to_summarize = to_summarize.len(),
-        "community detection: partition classification complete"
-    );
-
-    // Delete dissolved communities — those whose fingerprints no longer appear in the new
-    // partition set. Only applicable when stored fingerprints exist (not the first run).
-    for (stored_fp, community_id) in &stored_fingerprints {
-        if !new_fingerprints.contains(stored_fp.as_str()) {
-            store.delete_community_by_id(*community_id).await?;
-        }
+    ClassifyResult {
+        to_summarize,
+        unchanged_count,
+        new_fingerprints,
     }
+}
 
-    // Spawn LLM summarization tasks concurrently, bounded by semaphore.
+async fn summarize_and_upsert_communities(
+    store: &GraphStore,
+    provider: &AnyProvider,
+    to_summarize: Vec<CommunityData>,
+    concurrency: usize,
+    community_summary_max_prompt_bytes: usize,
+) -> Result<usize, MemoryError> {
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut join_set: JoinSet<(String, String, Vec<i64>, String)> = JoinSet::new();
 
@@ -336,10 +305,7 @@ pub async fn detect_communities(
             {
                 Ok(text) => text,
                 Err(e) => {
-                    tracing::warn!(
-                        community = %data.name,
-                        "community summary generation failed: {e:#}"
-                    );
+                    tracing::warn!(community = %data.name, "community summary generation failed: {e:#}");
                     String::new()
                 }
             };
@@ -362,11 +328,9 @@ pub async fn detect_communities(
         }
     }
 
-    // Sort results for deterministic upsert order.
     results.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-    // Upsert sequentially (SQLite is single-writer).
-    let mut count = unchanged_count;
+    let mut count = 0usize;
     for (name, summary, entity_ids, fingerprint) in results {
         store
             .upsert_community(&name, &summary, &entity_ids, Some(&fingerprint))
@@ -375,6 +339,87 @@ pub async fn detect_communities(
     }
 
     Ok(count)
+}
+
+/// Run label propagation on the full entity graph, generate community summaries via LLM,
+/// and upsert results to `SQLite`.
+///
+/// Returns the number of communities detected (with `>= 2` entities).
+///
+/// Unchanged communities (same entity membership and intra-community edges) are skipped —
+/// their existing summaries are preserved without LLM calls (incremental detection, #1262).
+/// LLM calls for changed communities are parallelized via a `JoinSet` bounded by a
+/// semaphore with `concurrency` permits (#1260).
+///
+/// # Panics
+///
+/// Does not panic in normal operation. The `semaphore.acquire().await.expect(...)` call is
+/// infallible because the semaphore is never closed during the lifetime of this function.
+///
+/// # Errors
+///
+/// Returns an error if `SQLite` queries or LLM calls fail.
+pub async fn detect_communities(
+    store: &GraphStore,
+    provider: &AnyProvider,
+    community_summary_max_prompt_bytes: usize,
+    concurrency: usize,
+    edge_chunk_size: usize,
+) -> Result<usize, MemoryError> {
+    let entities = store.all_entities().await?;
+    if entities.len() < 2 {
+        return Ok(0);
+    }
+
+    let (graph, edge_facts_map, edge_id_map) =
+        build_entity_graph_and_maps(store, &entities, edge_chunk_size).await?;
+
+    let communities = run_label_propagation(&graph);
+
+    let entity_name_map: HashMap<i64, &str> =
+        entities.iter().map(|e| (e.id, e.name.as_str())).collect();
+    let stored_fingerprints = store.community_fingerprints().await?;
+
+    let mut sorted_labels: Vec<usize> = communities.keys().copied().collect();
+    sorted_labels.sort_unstable();
+
+    let ClassifyResult {
+        to_summarize,
+        unchanged_count,
+        new_fingerprints,
+    } = classify_communities(
+        &communities,
+        &edge_facts_map,
+        &edge_id_map,
+        &entity_name_map,
+        &stored_fingerprints,
+        &sorted_labels,
+    );
+
+    tracing::debug!(
+        total = sorted_labels.len(),
+        unchanged = unchanged_count,
+        to_summarize = to_summarize.len(),
+        "community detection: partition classification complete"
+    );
+
+    // Delete dissolved communities (fingerprints no longer in new partition set).
+    for (stored_fp, community_id) in &stored_fingerprints {
+        if !new_fingerprints.contains(stored_fp.as_str()) {
+            store.delete_community_by_id(*community_id).await?;
+        }
+    }
+
+    let new_count = summarize_and_upsert_communities(
+        store,
+        provider,
+        to_summarize,
+        concurrency,
+        community_summary_max_prompt_bytes,
+    )
+    .await?;
+
+    Ok(unchanged_count + new_count)
 }
 
 /// Assign a single entity to an existing community via neighbor majority vote.

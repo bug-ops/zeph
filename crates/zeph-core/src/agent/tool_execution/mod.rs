@@ -427,7 +427,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn inject_active_skill_env(&self) {
         if self.skill_state.active_skill_names.is_empty()
             || self.skill_state.available_custom_secrets.is_empty()

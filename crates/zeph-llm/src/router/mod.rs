@@ -743,7 +743,7 @@ impl RouterProvider {
     /// occurs, the user experiences: cheap model's full response time + expensive model's
     /// TTFT. This is strictly worse than direct routing to the expensive model for
     /// hard queries. Acceptable for v1; see CRIT-01 in critic handoff for alternatives.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // sequential cascade semantics: buffer→classify→escalate
     async fn cascade_chat_stream(
         &self,
         providers: &[AnyProvider],

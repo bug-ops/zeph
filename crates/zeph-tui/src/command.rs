@@ -206,9 +206,13 @@ pub fn daemon_command_registry() -> &'static [CommandEntry] {
 
 /// Extended command registry: filter/ingest/gateway entries.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn extra_command_registry() -> &'static [CommandEntry] {
-    static EXTRA: &[CommandEntry] = &[
+    static EXTRA: std::sync::OnceLock<Vec<CommandEntry>> = std::sync::OnceLock::new();
+    EXTRA.get_or_init(build_extra_commands)
+}
+
+fn build_extra_commands() -> Vec<CommandEntry> {
+    let mut cmds = vec![
         CommandEntry {
             id: "view:filters",
             label: "Show output filter statistics",
@@ -412,14 +416,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::ExperimentBest,
         },
-        #[cfg(feature = "lsp-context")]
-        CommandEntry {
-            id: "lsp:status",
-            label: "Show LSP context injection status (/lsp)",
-            category: "lsp",
-            shortcut: None,
-            command: TuiCommand::LspStatus,
-        },
         CommandEntry {
             id: "log:status",
             label: "Show log file path and recent entries (/log)",
@@ -442,7 +438,15 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             command: TuiCommand::ServerCompactionStatus,
         },
     ];
-    EXTRA
+    #[cfg(feature = "lsp-context")]
+    cmds.push(CommandEntry {
+        id: "lsp:status",
+        label: "Show LSP context injection status (/lsp)",
+        category: "lsp",
+        shortcut: None,
+        command: TuiCommand::LspStatus,
+    });
+    cmds
 }
 
 /// Fuzzy score: count of matched characters in order, with penalty for gaps.
