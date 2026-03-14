@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - feat(tui): show `[1M CTX]` badge in the TUI header bar when Claude extended context (`enable_extended_context = true`) is active; also shows `Max context: 1M` in the Resources panel (#1686)
+- feat(llm): `--extended-context` CLI flag enables Claude 1M context window for the session; overrides `llm.cloud.enable_extended_context` from config and emits a cost warning (tokens above 200K use long-context pricing) (#1685)
+- test(llm): add `build_request` integration test for extended context enabled path, asserting `anthropic-beta` header contains `context-1m-2025-08-07` (#1687)
+
+### Changed
+
+- `zeph-core`: replace `anyhow` with typed `thiserror` errors in `subagent/` and `config_watcher.rs`; remove `anyhow` dependency from `zeph-core`
+
+### Security
+
+- **MCP tool-poisoning injection defense** (closes #1691): `zeph-mcp` now sanitizes all tool definition text fields at registration time before they reach the LLM context. New `sanitize` module applies 17 injection-detection regexes (covering system-prompt override, role injection, jailbreak phrases, data exfiltration, URL execution, and XML/HTML tag escape) plus a Unicode Cf-category strip pass to `tool.description`, `tool.name`, `tool.server_id`, and all string values in `input_schema` (recursively, depth-capped at 10). Fields triggering a pattern are replaced wholesale with `"[sanitized]"` and a structured `WARN` log is emitted. Descriptions are capped at 1024 bytes. Tool registration is never blocked — only text is cleaned. Sanitization runs in both `connect_all()` and `add_server()` paths immediately after `list_tools()` returns.
 
 ### Fixed
 
