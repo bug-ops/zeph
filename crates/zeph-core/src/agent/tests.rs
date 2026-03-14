@@ -1219,7 +1219,7 @@ pub mod agent_tests {
             let channel = MockChannel::new(vec![]);
             let executor = MockToolExecutor::no_tools();
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-            agent.stt = stt;
+            agent.providers.stt = stt;
             agent
         }
 
@@ -1477,7 +1477,7 @@ pub mod agent_tests {
             source: None,
             file_path: None,
         });
-        agent.subagent_manager = Some(mgr);
+        agent.orchestration.subagent_manager = Some(mgr);
         agent
     }
 
@@ -2265,7 +2265,7 @@ mod compaction_e2e {
             source: None,
             file_path: None,
         });
-        agent.subagent_manager = Some(mgr);
+        agent.orchestration.subagent_manager = Some(mgr);
 
         // Spawn the sub-agent in background — returns immediately with the task id.
         let spawn_resp = agent
@@ -2297,7 +2297,7 @@ mod compaction_e2e {
         // Poll until the sub-agent reaches a terminal state (max 5s).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let full_id = loop {
-            let mgr = agent.subagent_manager.as_ref().unwrap();
+            let mgr = agent.orchestration.subagent_manager.as_ref().unwrap();
             let statuses = mgr.statuses();
             let found = statuses.iter().find(|(id, _)| id.starts_with(&short_id));
             if let Some((id, status)) = found {
@@ -2321,6 +2321,7 @@ mod compaction_e2e {
 
         // Collect result and verify output.
         let result = agent
+            .orchestration
             .subagent_manager
             .as_mut()
             .unwrap()
@@ -2379,7 +2380,7 @@ mod compaction_e2e {
             source: None,
             file_path: None,
         });
-        agent.subagent_manager = Some(mgr);
+        agent.orchestration.subagent_manager = Some(mgr);
 
         // Foreground spawn — blocks until sub-agent completes.
         let resp: String = agent
@@ -2417,7 +2418,7 @@ mod compaction_e2e {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.orchestration_config.enabled = true;
+        agent.orchestration.orchestration_config.enabled = true;
         agent
     }
 
@@ -2453,7 +2454,7 @@ mod compaction_e2e {
         let mut agent = agent_with_orchestration();
 
         let graph = make_simple_graph(GraphStatus::Created);
-        agent.pending_graph = Some(graph);
+        agent.orchestration.pending_graph = Some(graph);
 
         // No subagent_manager set.
         agent
@@ -2463,7 +2464,7 @@ mod compaction_e2e {
 
         // Graph must be restored.
         assert!(
-            agent.pending_graph.is_some(),
+            agent.orchestration.pending_graph.is_some(),
             "graph must be restored when no manager configured"
         );
         let msgs = agent.channel.sent_messages();
@@ -2505,7 +2506,7 @@ mod compaction_e2e {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.orchestration_config.enabled = true;
+        agent.orchestration.orchestration_config.enabled = true;
 
         let mut mgr = SubAgentManager::new(4);
         mgr.definitions_mut().push(SubAgentDef {
@@ -2522,7 +2523,7 @@ mod compaction_e2e {
             source: None,
             file_path: None,
         });
-        agent.subagent_manager = Some(mgr);
+        agent.orchestration.subagent_manager = Some(mgr);
 
         // Graph with one already-Completed task in Running status: resume_from() accepts it,
         // and the first tick() will find no running/ready tasks → Done{Completed}.
@@ -2538,7 +2539,7 @@ mod compaction_e2e {
         });
         graph.tasks.push(node);
         graph.status = GraphStatus::Running;
-        agent.pending_graph = Some(graph);
+        agent.orchestration.pending_graph = Some(graph);
 
         agent
             .handle_plan_command(PlanCommand::Confirm)
@@ -2553,7 +2554,7 @@ mod compaction_e2e {
         );
         // Graph must be cleared after successful completion.
         assert!(
-            agent.pending_graph.is_none(),
+            agent.orchestration.pending_graph.is_none(),
             "pending_graph must be cleared after Completed"
         );
     }
@@ -2574,10 +2575,10 @@ mod compaction_e2e {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.orchestration_config.enabled = true;
+        agent.orchestration.orchestration_config.enabled = true;
 
         // Manager with no defined agents → route() returns None → RunInline.
-        agent.subagent_manager = Some(SubAgentManager::new(4));
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
         // Graph in Created status with one task; scheduler emits RunInline,
         // provider fails → TaskOutcome::Failed → graph Failed.
@@ -2585,7 +2586,7 @@ mod compaction_e2e {
         let node = TaskNode::new(0, "task-0", "will fail inline");
         graph.tasks.push(node);
         graph.status = GraphStatus::Created;
-        agent.pending_graph = Some(graph);
+        agent.orchestration.pending_graph = Some(graph);
 
         agent
             .handle_plan_command(PlanCommand::Confirm)
@@ -2605,7 +2606,7 @@ mod compaction_e2e {
     async fn plan_list_with_pending_graph_shows_summary() {
         let mut agent = agent_with_orchestration();
 
-        agent.pending_graph = Some(make_simple_graph(GraphStatus::Created));
+        agent.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
 
         agent.handle_plan_command(PlanCommand::List).await.unwrap();
 
@@ -2644,7 +2645,7 @@ mod compaction_e2e {
         graph.tasks.push(failed);
         graph.tasks.push(stale_running);
         graph.status = GraphStatus::Failed;
-        agent.pending_graph = Some(graph);
+        agent.orchestration.pending_graph = Some(graph);
 
         agent
             .handle_plan_command(PlanCommand::Retry(None))
@@ -2652,6 +2653,7 @@ mod compaction_e2e {
             .unwrap();
 
         let g = agent
+            .orchestration
             .pending_graph
             .as_ref()
             .expect("graph must be present after retry");
@@ -2705,7 +2707,7 @@ mod compaction_e2e {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.orchestration_config.enabled = true;
+        agent.orchestration.orchestration_config.enabled = true;
 
         // Build a manager with one agent definition (needed by finalize_plan_execution).
         let mut mgr = SubAgentManager::new(4);
@@ -2765,7 +2767,7 @@ mod compaction_e2e {
                 transcript_dir: None,
             },
         );
-        agent.subagent_manager = Some(mgr);
+        agent.orchestration.subagent_manager = Some(mgr);
 
         // Graph with one already-Completed task in Running status: the first tick() finds no
         // Running/Ready tasks and emits Done{Completed} immediately (instant completion).
@@ -2781,7 +2783,7 @@ mod compaction_e2e {
         });
         graph.tasks.push(node);
         graph.status = GraphStatus::Running;
-        agent.pending_graph = Some(graph);
+        agent.orchestration.pending_graph = Some(graph);
 
         // Run the plan loop — the fix adds a post-loop drain call.
         agent
@@ -2792,6 +2794,7 @@ mod compaction_e2e {
         // After plan completion, the secret request must have been drained.
         // If the drain was NOT called, try_recv_secret_request() would return Some(_).
         let leftover = agent
+            .orchestration
             .subagent_manager
             .as_mut()
             .and_then(SubAgentManager::try_recv_secret_request);
@@ -2815,17 +2818,17 @@ mod compaction_e2e {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.orchestration_config.enabled = true;
+        agent.orchestration.orchestration_config.enabled = true;
 
         // SubAgentManager with no definitions → route() returns None → RunInline.
-        agent.subagent_manager = Some(SubAgentManager::new(4));
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
         // Simple single-task graph.
         let mut graph = TaskGraph::new("inline goal");
         let node = TaskNode::new(0, "task-0", "do something inline");
         graph.tasks.push(node);
         graph.status = GraphStatus::Created;
-        agent.pending_graph = Some(graph);
+        agent.orchestration.pending_graph = Some(graph);
 
         agent
             .handle_plan_command(PlanCommand::Confirm)
@@ -2834,7 +2837,7 @@ mod compaction_e2e {
 
         // Graph must be cleared after successful execution.
         assert!(
-            agent.pending_graph.is_none(),
+            agent.orchestration.pending_graph.is_none(),
             "pending_graph must be cleared after inline plan completion"
         );
         let msgs = agent.channel.sent_messages();
@@ -2860,8 +2863,8 @@ mod compaction_e2e {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.orchestration_config.enabled = true;
-        agent.subagent_manager = Some(SubAgentManager::new(4));
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
         // Graph in Running status with one task in Running state: tick() will not emit
         // any actions (no Ready tasks, no timed-out running tasks), so the loop reaches
@@ -2916,8 +2919,8 @@ mod compaction_e2e {
         let (metrics_tx, metrics_rx) = watch::channel(MetricsSnapshot::default());
         let mut agent =
             Agent::new(provider, channel, registry, None, 5, executor).with_metrics(metrics_tx);
-        agent.orchestration_config.enabled = true;
-        agent.subagent_manager = Some(SubAgentManager::new(4));
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
         // Graph with one completed task and one canceled task — typical mid-cancel state.
         let mut graph = TaskGraph::new("cancel finalize test");
@@ -2952,7 +2955,7 @@ mod compaction_e2e {
             "must report completed task count (1/2); got: {msgs:?}"
         );
         assert!(
-            agent.pending_graph.is_none(),
+            agent.orchestration.pending_graph.is_none(),
             "canceled plan must NOT be stored in pending_graph"
         );
         let snapshot = metrics_rx.borrow().clone();
@@ -2982,8 +2985,8 @@ mod compaction_e2e {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.orchestration_config.enabled = true;
-        agent.subagent_manager = Some(SubAgentManager::new(4));
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
         // Graph in Running status with one task in Running state: tick() emits no actions
         // (no Ready tasks, running_in_graph_now > 0 suppresses Done), so the loop reaches
@@ -3040,7 +3043,7 @@ mod compaction_e2e {
 
         // GraphStatus::Created → awaiting confirmation.
         let mut agent = agent_with_orchestration();
-        agent.pending_graph = Some(make_simple_graph(GraphStatus::Created));
+        agent.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
         agent
             .handle_plan_command(PlanCommand::Status(None))
             .await
@@ -3055,7 +3058,7 @@ mod compaction_e2e {
         let mut agent = agent_with_orchestration();
         let mut failed_graph = make_simple_graph(GraphStatus::Created);
         failed_graph.status = GraphStatus::Failed;
-        agent.pending_graph = Some(failed_graph);
+        agent.orchestration.pending_graph = Some(failed_graph);
         agent
             .handle_plan_command(PlanCommand::Status(None))
             .await
@@ -3071,7 +3074,7 @@ mod compaction_e2e {
         let mut agent = agent_with_orchestration();
         let mut paused_graph = make_simple_graph(GraphStatus::Created);
         paused_graph.status = GraphStatus::Paused;
-        agent.pending_graph = Some(paused_graph);
+        agent.orchestration.pending_graph = Some(paused_graph);
         agent
             .handle_plan_command(PlanCommand::Status(None))
             .await
@@ -3087,7 +3090,7 @@ mod compaction_e2e {
         let mut agent = agent_with_orchestration();
         let mut completed_graph = make_simple_graph(GraphStatus::Created);
         completed_graph.status = GraphStatus::Completed;
-        agent.pending_graph = Some(completed_graph);
+        agent.orchestration.pending_graph = Some(completed_graph);
         agent
             .handle_plan_command(PlanCommand::Status(None))
             .await

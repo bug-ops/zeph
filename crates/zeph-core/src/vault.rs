@@ -55,12 +55,34 @@ impl fmt::Display for Secret {
     }
 }
 
+/// Error type for vault operations.
+///
+/// Returned by [`VaultProvider::get_secret`] on failure.
+///
+/// The `Backend(String)` variant is the escape hatch for third-party vault implementations:
+/// format the underlying error into the `String` when no more specific variant applies.
+#[derive(Debug, thiserror::Error)]
+pub enum VaultError {
+    #[error("secret not found: {0}")]
+    NotFound(String),
+    /// Generic backend failure. Third-party vault implementors should use this variant
+    /// to surface errors that do not fit `NotFound` or `Io`.
+    #[error("vault backend error: {0}")]
+    Backend(String),
+    #[error("vault I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 /// Pluggable secret retrieval backend.
 pub trait VaultProvider: Send + Sync {
+    /// Retrieve a secret by key.
+    ///
+    /// Returns `Ok(None)` when the key does not exist. Returns `Err(VaultError)` on
+    /// backend failures (I/O, decryption, network, etc.).
     fn get_secret(
         &self,
         key: &str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>>;
 
     /// Return all known secret keys. Used for scanning `ZEPH_SECRET_*` prefixes.
     fn list_keys(&self) -> Vec<String> {
@@ -318,7 +340,7 @@ impl VaultProvider for AgeVaultProvider {
     fn get_secret(
         &self,
         key: &str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
         let result = self.secrets.get(key).map(|v| (**v).clone());
         Box::pin(async move { Ok(result) })
     }
@@ -334,7 +356,7 @@ impl VaultProvider for EnvVaultProvider {
     fn get_secret(
         &self,
         key: &str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
         let key = key.to_owned();
         Box::pin(async move { Ok(std::env::var(&key).ok()) })
     }
@@ -385,7 +407,7 @@ impl VaultProvider for MockVaultProvider {
     fn get_secret(
         &self,
         key: &str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
         let result = self.secrets.get(key).cloned();
         Box::pin(async move { Ok(result) })
     }

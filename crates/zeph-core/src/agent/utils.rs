@@ -64,8 +64,8 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
-        if let Some(ref tx) = self.metrics_tx {
-            let elapsed = self.start_time.elapsed().as_secs();
+        if let Some(ref tx) = self.metrics.metrics_tx {
+            let elapsed = self.lifecycle.start_time.elapsed().as_secs();
             tx.send_modify(|m| {
                 m.uptime_seconds = elapsed;
                 f(m);
@@ -79,9 +79,9 @@ impl<C: Channel> Agent<C> {
         source: &str,
         detail: impl Into<String>,
     ) {
-        if let Some(ref tx) = self.metrics_tx {
+        if let Some(ref tx) = self.metrics.metrics_tx {
             let event = SecurityEvent::new(category, source, detail);
-            let elapsed = self.start_time.elapsed().as_secs();
+            let elapsed = self.lifecycle.start_time.elapsed().as_secs();
             tx.send_modify(|m| {
                 m.uptime_seconds = elapsed;
                 if m.security_events.len() >= SECURITY_EVENT_CAP {
@@ -93,20 +93,21 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn recompute_prompt_tokens(&mut self) {
-        self.cached_prompt_tokens = self
+        self.providers.cached_prompt_tokens = self
             .messages
             .iter()
-            .map(|m| self.token_counter.count_message_tokens(m) as u64)
+            .map(|m| self.metrics.token_counter.count_message_tokens(m) as u64)
             .sum();
     }
 
     pub(super) fn push_message(&mut self, msg: Message) {
-        self.cached_prompt_tokens += self.token_counter.count_message_tokens(&msg) as u64;
+        self.providers.cached_prompt_tokens +=
+            self.metrics.token_counter.count_message_tokens(&msg) as u64;
         self.messages.push(msg);
     }
 
     pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {
-        if let Some(ref tracker) = self.cost_tracker {
+        if let Some(ref tracker) = self.metrics.cost_tracker {
             tracker.record_usage(&self.runtime.model_name, prompt_tokens, completion_tokens);
             self.update_metrics(|m| {
                 m.cost_spent_cents = tracker.current_spend();
@@ -162,16 +163,19 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let before = agent.cached_prompt_tokens;
+        let before = agent.providers.cached_prompt_tokens;
         let msg = Message {
             role: Role::User,
             content: "hello world!!".to_string(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         };
-        let expected_delta = agent.token_counter.count_message_tokens(&msg) as u64;
+        let expected_delta = agent.metrics.token_counter.count_message_tokens(&msg) as u64;
         agent.push_message(msg);
-        assert_eq!(agent.cached_prompt_tokens, before + expected_delta);
+        assert_eq!(
+            agent.providers.cached_prompt_tokens,
+            before + expected_delta
+        );
     }
 
     #[test]
@@ -200,9 +204,9 @@ mod tests {
         let expected: u64 = agent
             .messages
             .iter()
-            .map(|m| agent.token_counter.count_message_tokens(m) as u64)
+            .map(|m| agent.metrics.token_counter.count_message_tokens(m) as u64)
             .sum();
-        assert_eq!(agent.cached_prompt_tokens, expected);
+        assert_eq!(agent.providers.cached_prompt_tokens, expected);
     }
 
     #[test]

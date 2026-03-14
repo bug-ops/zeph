@@ -17,16 +17,25 @@ pub enum ComponentStatus {
     Stopped,
 }
 
+/// Error type for daemon component task failures.
+#[derive(Debug, thiserror::Error)]
+pub enum DaemonError {
+    #[error("task error: {0}")]
+    Task(String),
+    #[error("shutdown error: {0}")]
+    Shutdown(String),
+}
+
 pub struct ComponentHandle {
     pub name: String,
-    handle: JoinHandle<anyhow::Result<()>>,
+    handle: JoinHandle<Result<(), DaemonError>>,
     pub status: ComponentStatus,
     pub restart_count: u32,
 }
 
 impl ComponentHandle {
     #[must_use]
-    pub fn new(name: impl Into<String>, handle: JoinHandle<anyhow::Result<()>>) -> Self {
+    pub fn new(name: impl Into<String>, handle: JoinHandle<Result<(), DaemonError>>) -> Self {
         Self {
             name: name.into(),
             handle,
@@ -215,7 +224,7 @@ mod tests {
         let (_tx, rx) = watch::channel(false);
         let mut supervisor = DaemonSupervisor::new(&config, rx);
 
-        let handle = tokio::spawn(async { Ok(()) });
+        let handle = tokio::spawn(async { Ok::<(), DaemonError>(()) });
         supervisor.add_component(ComponentHandle::new("test", handle));
         assert_eq!(supervisor.component_count(), 1);
     }
@@ -226,7 +235,7 @@ mod tests {
         let (_tx, rx) = watch::channel(false);
         let mut supervisor = DaemonSupervisor::new(&config, rx);
 
-        let handle = tokio::spawn(async { Ok(()) });
+        let handle = tokio::spawn(async { Ok::<(), DaemonError>(()) });
         tokio::time::sleep(Duration::from_millis(10)).await;
         supervisor.add_component(ComponentHandle::new("finished", handle));
         supervisor.check_health();

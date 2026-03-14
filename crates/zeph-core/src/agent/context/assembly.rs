@@ -169,7 +169,7 @@ impl<C: Channel> Agent<C> {
             &self.memory_state,
             query,
             token_budget,
-            &self.token_counter,
+            &self.metrics.token_counter,
             None,
         )
         .await?
@@ -350,9 +350,13 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_cross_session_messages();
 
-        if let Some(msg) =
-            Self::fetch_cross_session(&self.memory_state, query, token_budget, &self.token_counter)
-                .await?
+        if let Some(msg) = Self::fetch_cross_session(
+            &self.memory_state,
+            query,
+            token_budget,
+            &self.metrics.token_counter,
+        )
+        .await?
             && self.messages.len() > 1
         {
             self.messages.insert(1, msg);
@@ -416,8 +420,12 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_summary_messages();
 
-        if let Some(msg) =
-            Self::fetch_summaries(&self.memory_state, token_budget, &self.token_counter).await?
+        if let Some(msg) = Self::fetch_summaries(
+            &self.memory_state,
+            token_budget,
+            &self.metrics.token_counter,
+        )
+        .await?
             && self.messages.len() > 1
         {
             self.messages.insert(1, msg);
@@ -489,7 +497,10 @@ impl<C: Channel> Agent<C> {
         let mut keep_from = self.messages.len();
 
         for i in (history_start..self.messages.len()).rev() {
-            let msg_tokens = self.token_counter.count_message_tokens(&self.messages[i]);
+            let msg_tokens = self
+                .metrics
+                .token_counter
+                .count_message_tokens(&self.messages[i]);
             if total + msg_tokens > token_budget {
                 break;
             }
@@ -526,7 +537,7 @@ impl<C: Channel> Agent<C> {
         let alloc = budget.allocate(
             system_prompt,
             &self.skill_state.last_skills_prompt,
-            &self.token_counter,
+            &self.metrics.token_counter,
             graph_enabled,
         );
 
@@ -574,7 +585,7 @@ impl<C: Channel> Agent<C> {
                 >,
             >;
 
-            let tc = self.token_counter.clone();
+            let tc = self.metrics.token_counter.clone();
             let router = self.context_manager.build_router();
             let memory_state = &self.memory_state;
             let index = &self.index;
@@ -1175,7 +1186,7 @@ impl<C: Channel> Agent<C> {
             } else {
                 let cwd2 = cwd.clone();
                 let token_budget = self.index.repo_map_tokens;
-                let tc = Arc::clone(&self.token_counter);
+                let tc = Arc::clone(&self.metrics.token_counter);
                 let fresh = tokio::task::spawn_blocking(move || {
                     zeph_index::repo_map::generate_repo_map(&cwd2, token_budget, &tc)
                 })

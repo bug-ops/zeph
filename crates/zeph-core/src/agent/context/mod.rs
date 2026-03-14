@@ -86,7 +86,7 @@ pub(super) enum ContextSlot {
 impl<C: Channel> Agent<C> {
     pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {
         self.context_manager
-            .compaction_tier(self.cached_prompt_tokens)
+            .compaction_tier(self.providers.cached_prompt_tokens)
     }
 }
 
@@ -1465,7 +1465,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(1000, 0.20, 0.75, 4, 0)
             .with_soft_compaction_threshold(0.50);
-        agent.cached_prompt_tokens = 900;
+        agent.providers.cached_prompt_tokens = 900;
 
         assert_eq!(
             agent.compaction_tier(),
@@ -1485,7 +1485,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(1000, 0.20, 0.75, 4, 0)
             .with_soft_compaction_threshold(0.50);
-        agent.cached_prompt_tokens = 100;
+        agent.providers.cached_prompt_tokens = 100;
 
         assert_eq!(
             agent.compaction_tier(),
@@ -2681,7 +2681,7 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.cached_prompt_tokens = 200_000; // very high token count
+        agent.providers.cached_prompt_tokens = 200_000; // very high token count
 
         // should_proactively_compress returns None for Reactive → no compression
         let result = agent.maybe_proactive_compress().await;
@@ -3253,7 +3253,7 @@ mod tests {
 
         agent.messages[2].metadata.deferred_summary = Some("s".into());
         // Simulate token usage above 70% soft threshold
-        agent.cached_prompt_tokens = 75_000;
+        agent.providers.cached_prompt_tokens = 75_000;
 
         assert!(!agent.context_manager.compacted_this_turn);
         agent.maybe_apply_deferred_summaries();
@@ -3290,7 +3290,7 @@ mod tests {
         agent.messages[12].metadata.deferred_summary = Some("s_f".into());
 
         // Token count well below budget threshold (simulates post-pruning state)
-        agent.cached_prompt_tokens = 5_000;
+        agent.providers.cached_prompt_tokens = 5_000;
 
         agent.maybe_apply_deferred_summaries();
 
@@ -3505,7 +3505,7 @@ mod tests {
         // Seed cached_prompt_tokens above threshold so maybe_compact proceeds past Guard 1.
         // Messages were pushed directly (bypassing push_message), so we set this explicitly.
         // Use a large value so freed_tokens > 0 after compact_context() recomputes.
-        agent.cached_prompt_tokens = 10_000;
+        agent.providers.cached_prompt_tokens = 10_000;
 
         agent.maybe_compact().await.unwrap();
 

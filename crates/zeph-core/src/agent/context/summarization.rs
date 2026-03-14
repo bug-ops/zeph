@@ -106,7 +106,7 @@ impl<C: Channel> Agent<C> {
             messages,
             CHUNK_TOKEN_BUDGET,
             OVERSIZED_THRESHOLD,
-            &self.token_counter,
+            &self.metrics.token_counter,
         );
 
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
@@ -389,7 +389,7 @@ impl<C: Channel> Agent<C> {
 
         tracing::info!(
             compacted_count,
-            summary_tokens = self.token_counter.count_tokens(&summary),
+            summary_tokens = self.metrics.token_counter.count_tokens(&summary),
             "compacted context"
         );
 
@@ -451,7 +451,7 @@ impl<C: Channel> Agent<C> {
         let mut protection_boundary = self.messages.len();
         if protect > 0 {
             for (i, msg) in self.messages.iter().enumerate().rev() {
-                tail_tokens += self.token_counter.count_message_tokens(msg);
+                tail_tokens += self.metrics.token_counter.count_message_tokens(msg);
                 if tail_tokens >= protect {
                     protection_boundary = i;
                     break;
@@ -482,7 +482,7 @@ impl<C: Channel> Agent<C> {
                     && compacted_at.is_none()
                     && !body.is_empty()
                 {
-                    freed += self.token_counter.count_tokens(body);
+                    freed += self.metrics.token_counter.count_tokens(body);
                     *compacted_at = Some(now);
                     *body = String::new();
                     modified = true;
@@ -531,13 +531,13 @@ impl<C: Channel> Agent<C> {
                     MessagePart::ToolOutput {
                         body, compacted_at, ..
                     } if compacted_at.is_none() && !body.is_empty() => {
-                        freed += self.token_counter.count_tokens(body);
+                        freed += self.metrics.token_counter.count_tokens(body);
                         *compacted_at = Some(now);
                         *body = String::new();
                         modified = true;
                     }
                     MessagePart::ToolResult { content, .. } => {
-                        let tokens = self.token_counter.count_tokens(content);
+                        let tokens = self.metrics.token_counter.count_tokens(content);
                         if tokens > 20 {
                             freed += tokens;
                             "[pruned]".clone_into(content);
@@ -866,7 +866,7 @@ impl<C: Channel> Agent<C> {
 
         // S1: skip client-side compaction when server compaction is active — unless context
         // has grown past 95% of the budget without a server compaction event (safety fallback).
-        if self.server_compaction_active {
+        if self.providers.server_compaction_active {
             let budget = self
                 .context_manager
                 .budget
@@ -876,7 +876,7 @@ impl<C: Channel> Agent<C> {
                 let total_tokens: usize = self
                     .messages
                     .iter()
-                    .map(|m| self.token_counter.count_message_tokens(m))
+                    .map(|m| self.metrics.token_counter.count_message_tokens(m))
                     .sum();
                 let fallback_threshold = budget * 95 / 100;
                 if total_tokens < fallback_threshold {
@@ -918,7 +918,8 @@ impl<C: Channel> Agent<C> {
                     .map_or(0, ContextBudget::max_tokens);
                 let soft_threshold =
                     (budget as f32 * self.context_manager.soft_compaction_threshold) as usize;
-                let cached = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
+                let cached =
+                    usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let min_to_free = cached.saturating_sub(soft_threshold);
                 if min_to_free > 0 {
                     self.prune_tool_outputs(min_to_free);
@@ -926,7 +927,7 @@ impl<C: Channel> Agent<C> {
 
                 let _ = self.channel.send_status("").await;
                 tracing::info!(
-                    cached_tokens = self.cached_prompt_tokens,
+                    cached_tokens = self.providers.cached_prompt_tokens,
                     soft_threshold,
                     "soft compaction complete"
                 );
@@ -951,7 +952,8 @@ impl<C: Channel> Agent<C> {
                     .map_or(0, ContextBudget::max_tokens);
                 let hard_threshold =
                     (budget as f32 * self.context_manager.hard_compaction_threshold) as usize;
-                let cached = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
+                let cached =
+                    usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let min_to_free = cached.saturating_sub(hard_threshold);
 
                 let _ = self.channel.send_status("compacting context...").await;
@@ -990,12 +992,13 @@ impl<C: Channel> Agent<C> {
                     min_to_free,
                     "hard compaction: pruning insufficient, falling back to LLM summarization"
                 );
-                let tokens_before = self.cached_prompt_tokens;
+                let tokens_before = self.providers.cached_prompt_tokens;
                 let result = self.compact_context().await;
                 if result.is_ok() {
                     // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all
                     // freed space — no net reduction).
-                    let freed_tokens = tokens_before.saturating_sub(self.cached_prompt_tokens);
+                    let freed_tokens =
+                        tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
                     if freed_tokens == 0 {
                         tracing::warn!(
                             "hard compaction: summary consumed all freed tokens — no net \
@@ -1035,7 +1038,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         // S1: skip proactive compression when server compaction is active — unless context
         // has grown past 95% of the budget without a server compaction event (safety fallback).
-        if self.server_compaction_active {
+        if self.providers.server_compaction_active {
             let budget = self
                 .context_manager
                 .budget
@@ -1043,11 +1046,11 @@ impl<C: Channel> Agent<C> {
                 .map_or(0, ContextBudget::max_tokens);
             if budget > 0 {
                 let fallback_threshold = (budget * 95 / 100) as u64;
-                if self.cached_prompt_tokens <= fallback_threshold {
+                if self.providers.cached_prompt_tokens <= fallback_threshold {
                     return Ok(());
                 }
                 tracing::warn!(
-                    cached_prompt_tokens = self.cached_prompt_tokens,
+                    cached_prompt_tokens = self.providers.cached_prompt_tokens,
                     fallback_threshold,
                     "server compaction active but context at 95%+ — falling back to client-side proactive"
                 );
@@ -1057,12 +1060,12 @@ impl<C: Channel> Agent<C> {
         }
         let Some((_threshold, max_summary_tokens)) = self
             .context_manager
-            .should_proactively_compress(self.cached_prompt_tokens)
+            .should_proactively_compress(self.providers.cached_prompt_tokens)
         else {
             return Ok(());
         };
 
-        let tokens_before = self.cached_prompt_tokens;
+        let tokens_before = self.providers.cached_prompt_tokens;
         let _ = self.channel.send_status("compressing context...").await;
         tracing::info!(
             max_summary_tokens,
@@ -1076,7 +1079,7 @@ impl<C: Channel> Agent<C> {
 
         if result.is_ok() {
             self.context_manager.compacted_this_turn = true;
-            let tokens_saved = tokens_before.saturating_sub(self.cached_prompt_tokens);
+            let tokens_saved = tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
             self.update_metrics(|m| {
                 m.compression_events += 1;
                 m.compression_tokens_saved += tokens_saved;
@@ -1130,7 +1133,7 @@ impl<C: Channel> Agent<C> {
 
         tracing::info!(
             compacted_count,
-            summary_tokens = self.token_counter.count_tokens(&summary),
+            summary_tokens = self.metrics.token_counter.count_tokens(&summary),
             "compacted context (with budget)"
         );
 
@@ -1192,7 +1195,7 @@ impl<C: Channel> Agent<C> {
             messages,
             chunk_token_budget,
             oversized_threshold,
-            &self.token_counter,
+            &self.metrics.token_counter,
         );
 
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);

@@ -191,6 +191,58 @@ pub(super) struct DebugState {
     pub(super) logging_config: crate::config::LoggingConfig,
 }
 
+/// Groups agent lifecycle state: shutdown signaling, timing, and I/O notification channels.
+pub(super) struct LifecycleState {
+    pub(super) shutdown: watch::Receiver<bool>,
+    pub(super) start_time: Instant,
+    pub(super) cancel_signal: Arc<Notify>,
+    pub(super) cancel_token: CancellationToken,
+    pub(super) config_path: Option<PathBuf>,
+    pub(super) config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
+    pub(super) warmup_ready: Option<watch::Receiver<bool>>,
+    pub(super) update_notify_rx: Option<mpsc::Receiver<String>>,
+    pub(super) custom_task_rx: Option<mpsc::Receiver<String>>,
+}
+
+/// Groups provider-related state: alternate providers, runtime switching, and compaction flags.
+pub(super) struct ProviderState {
+    pub(super) summary_provider: Option<AnyProvider>,
+    /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
+    pub(super) provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
+    pub(super) judge_provider: Option<AnyProvider>,
+    pub(super) cached_prompt_tokens: u64,
+    /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
+    /// When true, client-side compaction is skipped.
+    pub(super) server_compaction_active: bool,
+    pub(super) stt: Option<Box<dyn SpeechToText>>,
+}
+
+/// Groups metrics and cost tracking state.
+pub(super) struct MetricsState {
+    pub(super) metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
+    pub(super) cost_tracker: Option<CostTracker>,
+    pub(super) token_counter: Arc<TokenCounter>,
+}
+
+/// Groups task orchestration and subagent state.
+pub(super) struct OrchestrationState {
+    /// Graph waiting for `/plan confirm` before execution starts.
+    pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
+    /// Cancellation token for the currently executing plan. `None` when no plan is running.
+    /// Created fresh in `handle_plan_confirm()`, cancelled in `handle_plan_cancel()`.
+    ///
+    /// # Known limitation
+    ///
+    /// Token plumbing is ready; the delivery path requires the agent message loop to be
+    /// restructured so `/plan cancel` can be received while `run_scheduler_loop` holds
+    /// `&mut self`. See follow-up issue #1603 (SEC-M34-002).
+    pub(super) plan_cancel_token: Option<CancellationToken>,
+    /// Manages spawned sub-agents.
+    pub(super) subagent_manager: Option<crate::subagent::SubAgentManager>,
+    pub(super) subagent_config: crate::config::SubAgentConfig,
+    pub(super) orchestration_config: crate::config::OrchestrationConfig,
+}
+
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
     channel: C,
@@ -203,37 +255,11 @@ pub struct Agent<C: Channel> {
     pub(super) learning_engine: learning_engine::LearningEngine,
     pub(super) feedback_detector: feedback_detector::FeedbackDetector,
     pub(super) judge_detector: Option<feedback_detector::JudgeDetector>,
-    pub(super) judge_provider: Option<AnyProvider>,
-    config_path: Option<PathBuf>,
-    config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
-    shutdown: watch::Receiver<bool>,
-    metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     pub(super) runtime: RuntimeConfig,
     pub(super) mcp: McpState,
     pub(super) index: IndexState,
-    cancel_signal: Arc<Notify>,
-    cancel_token: CancellationToken,
-    start_time: Instant,
     message_queue: VecDeque<QueuedMessage>,
-    summary_provider: Option<AnyProvider>,
-    /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
-    provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
-    warmup_ready: Option<watch::Receiver<bool>>,
-    cost_tracker: Option<CostTracker>,
-    cached_prompt_tokens: u64,
     env_context: EnvironmentContext,
-    pub(crate) token_counter: Arc<TokenCounter>,
-    stt: Option<Box<dyn SpeechToText>>,
-    update_notify_rx: Option<mpsc::Receiver<String>>,
-    custom_task_rx: Option<mpsc::Receiver<String>>,
-    /// Manages spawned sub-agents. Wired up during construction but not yet
-    /// dispatched to in the current agent loop iteration; retained for
-    /// forward-compatible multi-agent orchestration.
-    pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
-    pub(crate) subagent_config: crate::config::SubAgentConfig,
-    pub(crate) orchestration_config: crate::config::OrchestrationConfig,
-    #[cfg(feature = "experiments")]
-    pub(super) experiment_config: crate::config::ExperimentConfig,
     pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
     /// Parent tool call ID when this agent runs as a subagent inside another agent session.
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
@@ -247,22 +273,8 @@ pub struct Agent<C: Channel> {
     pub(super) security: SecurityState,
     /// Image parts staged by `/image` commands, attached to the next user message.
     pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
-    /// Graph waiting for `/plan confirm` before execution starts.
-    pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
-    /// Cancellation token for the currently executing plan. `None` when no plan is running.
-    /// Created fresh in `handle_plan_confirm()`, cancelled in `handle_plan_cancel()`.
-    ///
-    /// # Known limitation
-    ///
-    /// Token plumbing is ready; the delivery path requires the agent message loop to be
-    /// restructured so `/plan cancel` can be received while `run_scheduler_loop` holds
-    /// `&mut self`. See follow-up issue #1603 (SEC-M34-002).
-    plan_cancel_token: Option<CancellationToken>,
-
-    /// LSP context injection hooks. Fires after native tool execution, injects
-    /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
-    #[cfg(feature = "lsp-context")]
-    pub(super) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
+    #[cfg(feature = "experiments")]
+    pub(super) experiment_config: crate::config::ExperimentConfig,
     /// Cancellation token for a running experiment session. `Some` means an experiment is active.
     #[cfg(feature = "experiments")]
     pub(super) experiment_cancel: Option<tokio_util::sync::CancellationToken>,
@@ -279,9 +291,15 @@ pub struct Agent<C: Channel> {
     /// Feature-gated because it is only used in `experiment_cmd.rs`.
     #[cfg(feature = "experiments")]
     pub(super) experiment_notify_tx: tokio::sync::mpsc::Sender<String>,
-    /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
-    /// When true, client-side compaction is skipped.
-    pub(super) server_compaction_active: bool,
+    /// LSP context injection hooks. Fires after native tool execution, injects
+    /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
+    #[cfg(feature = "lsp-context")]
+    pub(super) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
+    // --- New sub-structs ---
+    pub(super) lifecycle: LifecycleState,
+    pub(super) providers: ProviderState,
+    pub(super) metrics: MetricsState,
+    pub(super) orchestration: OrchestrationState,
 }
 
 impl<C: Channel> Agent<C> {
@@ -393,17 +411,12 @@ impl<C: Channel> Agent<C> {
             learning_engine: learning_engine::LearningEngine::new(),
             feedback_detector: feedback_detector::FeedbackDetector::new(0.6),
             judge_detector: None,
-            judge_provider: None,
-            config_path: None,
             debug_state: DebugState {
                 debug_dumper: None,
                 dump_format: crate::debug_dump::DumpFormat::default(),
                 anomaly_detector: None,
                 logging_config: crate::config::LoggingConfig::default(),
             },
-            config_reload_rx: None,
-            shutdown: rx,
-            metrics_tx: None,
             runtime: RuntimeConfig {
                 security: SecurityConfig::default(),
                 timeouts: TimeoutConfig::default(),
@@ -425,30 +438,8 @@ impl<C: Channel> Agent<C> {
                 cached_repo_map: None,
                 repo_map_ttl: std::time::Duration::from_secs(300),
             },
-            cancel_signal: Arc::new(Notify::new()),
-            cancel_token: CancellationToken::new(),
-            start_time: Instant::now(),
             message_queue: VecDeque::new(),
-            summary_provider: None,
-            provider_override: None,
-            warmup_ready: None,
-            cost_tracker: None,
-            cached_prompt_tokens: initial_prompt_tokens,
             env_context: EnvironmentContext::gather(""),
-            token_counter,
-            stt: None,
-            update_notify_rx: None,
-            custom_task_rx: None,
-            subagent_manager: None,
-            subagent_config: crate::config::SubAgentConfig::default(),
-            orchestration_config: crate::config::OrchestrationConfig::default(),
-            #[cfg(feature = "experiments")]
-            experiment_config: crate::config::ExperimentConfig::default(),
-            #[cfg(feature = "experiments")]
-            experiment_baseline: crate::experiments::ConfigSnapshot::default(),
-            experiment_notify_rx: Some(exp_notify_rx),
-            #[cfg(feature = "experiments")]
-            experiment_notify_tx: exp_notify_tx,
             response_cache: None,
             parent_tool_use_id: None,
             instruction_blocks: Vec::new(),
@@ -465,14 +456,49 @@ impl<C: Channel> Agent<C> {
                 flagged_urls: std::collections::HashSet::new(),
             },
             pending_image_parts: Vec::new(),
-            pending_graph: None,
-            plan_cancel_token: None,
-
+            #[cfg(feature = "experiments")]
+            experiment_config: crate::config::ExperimentConfig::default(),
+            #[cfg(feature = "experiments")]
+            experiment_baseline: crate::experiments::ConfigSnapshot::default(),
+            experiment_notify_rx: Some(exp_notify_rx),
+            #[cfg(feature = "experiments")]
+            experiment_notify_tx: exp_notify_tx,
             #[cfg(feature = "lsp-context")]
             lsp_hooks: None,
             #[cfg(feature = "experiments")]
             experiment_cancel: None,
-            server_compaction_active: false,
+            // --- New sub-structs ---
+            lifecycle: LifecycleState {
+                shutdown: rx,
+                start_time: Instant::now(),
+                cancel_signal: Arc::new(Notify::new()),
+                cancel_token: CancellationToken::new(),
+                config_path: None,
+                config_reload_rx: None,
+                warmup_ready: None,
+                update_notify_rx: None,
+                custom_task_rx: None,
+            },
+            providers: ProviderState {
+                summary_provider: None,
+                provider_override: None,
+                judge_provider: None,
+                cached_prompt_tokens: initial_prompt_tokens,
+                server_compaction_active: false,
+                stt: None,
+            },
+            metrics: MetricsState {
+                metrics_tx: None,
+                cost_tracker: None,
+                token_counter,
+            },
+            orchestration: OrchestrationState {
+                pending_graph: None,
+                plan_cancel_token: None,
+                subagent_manager: None,
+                subagent_config: crate::config::SubAgentConfig::default(),
+                orchestration_config: crate::config::OrchestrationConfig::default(),
+            },
         }
     }
 
@@ -481,7 +507,7 @@ impl<C: Channel> Agent<C> {
     /// Non-blocking: returns immediately with a list of `(task_id, result)` pairs
     /// for agents that have finished. Each completed agent is removed from the manager.
     pub async fn poll_subagents(&mut self) -> Vec<(String, String)> {
-        let Some(mgr) = &mut self.subagent_manager else {
+        let Some(mgr) = &mut self.orchestration.subagent_manager else {
             return vec![];
         };
 
@@ -541,13 +567,13 @@ impl<C: Channel> Agent<C> {
     }
 
     fn config_for_orchestration(&self) -> &crate::config::OrchestrationConfig {
-        &self.orchestration_config
+        &self.orchestration.orchestration_config
     }
 
     async fn handle_plan_goal(&mut self, goal: &str) -> Result<(), error::AgentError> {
         use crate::orchestration::{LlmPlanner, Planner};
 
-        if self.pending_graph.is_some() {
+        if self.orchestration.pending_graph.is_some() {
             self.channel
                 .send(
                     "A plan is already pending confirmation. \
@@ -560,16 +586,23 @@ impl<C: Channel> Agent<C> {
         self.channel.send("Planning task decomposition...").await?;
 
         let available_agents = self
+            .orchestration
             .subagent_manager
             .as_ref()
             .map(|m| m.definitions().to_vec())
             .unwrap_or_default();
 
-        let confirm_before_execute = self.orchestration_config.confirm_before_execute;
-        let graph = LlmPlanner::new(self.provider.clone(), &self.orchestration_config)
-            .plan(goal, &available_agents)
-            .await
-            .map_err(|e| error::AgentError::Other(e.to_string()))?;
+        let confirm_before_execute = self
+            .orchestration
+            .orchestration_config
+            .confirm_before_execute;
+        let graph = LlmPlanner::new(
+            self.provider.clone(),
+            &self.orchestration.orchestration_config,
+        )
+        .plan(goal, &available_agents)
+        .await
+        .map_err(|e| error::AgentError::Other(e.to_string()))?;
 
         let task_count = graph.tasks.len() as u64;
         let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
@@ -585,7 +618,7 @@ impl<C: Channel> Agent<C> {
             self.channel
                 .send("Type `/plan confirm` to execute, or `/plan cancel` to abort.")
                 .await?;
-            self.pending_graph = Some(graph);
+            self.orchestration.pending_graph = Some(graph);
         } else {
             // confirm_before_execute = false: display and proceed (Phase 5 will run scheduler).
             // TODO(#1241): wire DagScheduler tick updates for Running task state
@@ -611,7 +644,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
         use crate::orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
 
-        let Some(graph) = self.pending_graph.take() else {
+        let Some(graph) = self.orchestration.pending_graph.take() else {
             self.channel
                 .send("No pending plan to confirm. Use `/plan <goal>` to create one.")
                 .await?;
@@ -619,14 +652,14 @@ impl<C: Channel> Agent<C> {
         };
 
         // When subagent manager is not configured, restore graph and inform the user.
-        if self.subagent_manager.is_none() {
+        if self.orchestration.subagent_manager.is_none() {
             self.channel
                 .send(
                     "No sub-agents configured. Add sub-agent definitions to config \
                      to enable plan execution.",
                 )
                 .await?;
-            self.pending_graph = Some(graph);
+            self.orchestration.pending_graph = Some(graph);
             return Ok(());
         }
 
@@ -634,7 +667,7 @@ impl<C: Channel> Agent<C> {
         // restore it to pending_graph on failure.
         if graph.tasks.is_empty() {
             self.channel.send("Plan has no tasks.").await?;
-            self.pending_graph = Some(graph);
+            self.orchestration.pending_graph = Some(graph);
             return Ok(());
         }
         // resume_from() rejects Completed and Canceled — guard those here too.
@@ -645,11 +678,12 @@ impl<C: Channel> Agent<C> {
                     graph.status
                 ))
                 .await?;
-            self.pending_graph = Some(graph);
+            self.orchestration.pending_graph = Some(graph);
             return Ok(());
         }
 
         let available_agents = self
+            .orchestration
             .subagent_manager
             .as_ref()
             .map(|m| m.definitions().to_vec())
@@ -658,8 +692,8 @@ impl<C: Channel> Agent<C> {
         // Warn when max_concurrent is too low to support the configured parallelism.
         // This is the main cause of DagScheduler deadlocks (#1619): a planning-phase
         // sub-agent occupies the only slot while orchestration tasks are waiting.
-        let max_concurrent = self.subagent_config.max_concurrent;
-        let max_parallel = self.orchestration_config.max_parallel as usize;
+        let max_concurrent = self.orchestration.subagent_config.max_concurrent;
+        let max_parallel = self.orchestration.orchestration_config.max_parallel as usize;
         if max_concurrent < max_parallel + 1 {
             tracing::warn!(
                 max_concurrent,
@@ -673,7 +707,7 @@ impl<C: Channel> Agent<C> {
         // Reserve slots equal to max_parallel so the scheduler is guaranteed capacity
         // even if a planning-phase sub-agent is occupying a slot (#1619).
         let reserved = max_parallel.min(max_concurrent.saturating_sub(1));
-        if let Some(mgr) = self.subagent_manager.as_mut() {
+        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
             mgr.reserve_slots(reserved);
         }
 
@@ -682,21 +716,21 @@ impl<C: Channel> Agent<C> {
         let mut scheduler = if graph.status == GraphStatus::Created {
             DagScheduler::new(
                 graph,
-                &self.orchestration_config,
+                &self.orchestration.orchestration_config,
                 Box::new(RuleBasedRouter),
                 available_agents,
             )
         } else {
             DagScheduler::resume_from(
                 graph,
-                &self.orchestration_config,
+                &self.orchestration.orchestration_config,
                 Box::new(RuleBasedRouter),
                 available_agents,
             )
         }
         .map_err(|e| {
             // Release reservation before propagating error.
-            if let Some(mgr) = self.subagent_manager.as_mut() {
+            if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                 mgr.release_reservation(reserved);
             }
             error::AgentError::Other(e.to_string())
@@ -710,16 +744,16 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         let plan_token = CancellationToken::new();
-        self.plan_cancel_token = Some(plan_token.clone());
+        self.orchestration.plan_cancel_token = Some(plan_token.clone());
 
         // Use match instead of ? so plan_cancel_token is always cleared (CRIT-07).
         let scheduler_result = self
             .run_scheduler_loop(&mut scheduler, task_count, plan_token)
             .await;
-        self.plan_cancel_token = None;
+        self.orchestration.plan_cancel_token = None;
 
         // Always release the reservation, regardless of scheduler outcome.
-        if let Some(mgr) = self.subagent_manager.as_mut() {
+        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
             mgr.release_reservation(reserved);
         }
 
@@ -805,10 +839,11 @@ impl<C: Channel> Agent<C> {
                         let provider = self.provider.clone();
                         let tool_executor = Arc::clone(&self.tool_executor);
                         let skills = self.filtered_skills_for(&agent_def_name);
-                        let cfg = self.subagent_config.clone();
+                        let cfg = self.orchestration.subagent_config.clone();
                         let event_tx = scheduler.event_sender();
 
                         let mgr = self
+                            .orchestration
                             .subagent_manager
                             .as_mut()
                             .expect("subagent_manager checked above");
@@ -845,7 +880,9 @@ impl<C: Channel> Agent<C> {
                                 for a in extra {
                                     match a {
                                         SchedulerAction::Cancel { agent_handle_id } => {
-                                            if let Some(m) = self.subagent_manager.as_mut() {
+                                            if let Some(m) =
+                                                self.orchestration.subagent_manager.as_mut()
+                                            {
                                                 // benign race: agent may have already finished
                                                 let _ =
                                                     m.cancel(&agent_handle_id).inspect_err(|err| {
@@ -867,7 +904,7 @@ impl<C: Channel> Agent<C> {
                         }
                     }
                     SchedulerAction::Cancel { agent_handle_id } => {
-                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                             // benign race: agent may have already finished
                             let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                                 tracing::trace!(error = %e, "cancel: agent already gone");
@@ -985,7 +1022,7 @@ impl<C: Channel> Agent<C> {
                     for action in cancel_actions {
                         match action {
                             SchedulerAction::Cancel { agent_handle_id } => {
-                                if let Some(mgr) = self.subagent_manager.as_mut() {
+                                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                                     let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                                         tracing::trace!(
                                             error = %e,
@@ -1013,7 +1050,7 @@ impl<C: Channel> Agent<C> {
                             for ca in cancel_actions {
                                 match ca {
                                     SchedulerAction::Cancel { agent_handle_id } => {
-                                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                                             // benign race: agent may have already finished
                                             let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                                                 tracing::trace!(error = %e, "cancel on user request: agent already gone");
@@ -1043,7 +1080,7 @@ impl<C: Channel> Agent<C> {
                         for action in cancel_actions {
                             match action {
                                 SchedulerAction::Cancel { agent_handle_id } => {
-                                    if let Some(mgr) = self.subagent_manager.as_mut() {
+                                    if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                                         let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                                             tracing::trace!(
                                                 error = %e,
@@ -1064,7 +1101,7 @@ impl<C: Channel> Agent<C> {
                     }
                 }
                 // Shutdown signal received — cancel running sub-agents and exit cleanly.
-                () = shutdown_signal(&mut self.shutdown) => {
+                () = shutdown_signal(&mut self.lifecycle.shutdown) => {
                     let cancel_actions = scheduler.cancel_all();
                     let n = cancel_actions
                         .iter()
@@ -1074,7 +1111,7 @@ impl<C: Channel> Agent<C> {
                     for action in cancel_actions {
                         match action {
                             SchedulerAction::Cancel { agent_handle_id } => {
-                                if let Some(mgr) = self.subagent_manager.as_mut() {
+                                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                                     let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                                         tracing::trace!(
                                             error = %e,
@@ -1221,6 +1258,7 @@ impl<C: Channel> Agent<C> {
     ) {
         loop {
             let pending = self
+                .orchestration
                 .subagent_manager
                 .as_mut()
                 .and_then(crate::subagent::SubAgentManager::try_recv_secret_request);
@@ -1234,7 +1272,7 @@ impl<C: Channel> Agent<C> {
                     secret_key = %req.secret_key,
                     "skipping duplicate secret prompt for already-denied key"
                 );
-                if let Some(mgr) = self.subagent_manager.as_mut() {
+                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                     let _ = mgr.deny_secret(&req_handle_id);
                 }
                 continue;
@@ -1255,7 +1293,7 @@ impl<C: Channel> Agent<C> {
                     false
                 }
             };
-            if let Some(mgr) = self.subagent_manager.as_mut() {
+            if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                 if approved {
                     let ttl = std::time::Duration::from_secs(300);
                     let key = req.secret_key.clone();
@@ -1290,8 +1328,10 @@ impl<C: Channel> Agent<C> {
                     .count() as u64;
                 self.update_metrics(|m| m.orchestration.tasks_completed += completed_count);
 
-                let aggregator =
-                    LlmAggregator::new(self.provider.clone(), &self.orchestration_config);
+                let aggregator = LlmAggregator::new(
+                    self.provider.clone(),
+                    &self.orchestration.orchestration_config,
+                );
                 match aggregator.aggregate(&completed_graph).await {
                     Ok(synthesis) => {
                         self.channel.send(&synthesis).await?;
@@ -1337,7 +1377,7 @@ impl<C: Channel> Agent<C> {
                 msg.push_str("\nUse `/plan retry` to retry failed tasks.");
                 self.channel.send(&msg).await?;
                 // Store graph back so /plan retry and /plan resume work.
-                self.pending_graph = Some(completed_graph);
+                self.orchestration.pending_graph = Some(completed_graph);
                 "failed"
             }
             GraphStatus::Paused => {
@@ -1347,7 +1387,7 @@ impl<C: Channel> Agent<C> {
                          Use `/plan resume` to continue or `/plan retry` to retry failed tasks.",
                     )
                     .await?;
-                self.pending_graph = Some(completed_graph);
+                self.orchestration.pending_graph = Some(completed_graph);
                 "paused"
             }
             GraphStatus::Canceled => {
@@ -1383,7 +1423,7 @@ impl<C: Channel> Agent<C> {
         _graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
         use crate::orchestration::GraphStatus;
-        let Some(ref graph) = self.pending_graph else {
+        let Some(ref graph) = self.orchestration.pending_graph else {
             self.channel.send("No active plan.").await?;
             return Ok(());
         };
@@ -1406,7 +1446,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_plan_list(&mut self) -> Result<(), error::AgentError> {
-        if let Some(ref graph) = self.pending_graph {
+        if let Some(ref graph) = self.orchestration.pending_graph {
             let summary = format_plan_summary(graph);
             let status_label = match graph.status {
                 crate::orchestration::GraphStatus::Created => "awaiting confirmation",
@@ -1428,7 +1468,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         _graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
-        if let Some(token) = self.plan_cancel_token.take() {
+        if let Some(token) = self.orchestration.plan_cancel_token.take() {
             // In-flight plan: signal cancellation. The scheduler loop will pick this up
             // in the next tokio::select! iteration at wait_event().
             // NOTE: Due to &mut self being held by run_scheduler_loop, this branch is only
@@ -1437,7 +1477,7 @@ impl<C: Channel> Agent<C> {
             // (see #1603, SEC-M34-002).
             token.cancel();
             self.channel.send("Canceling plan execution...").await?;
-        } else if self.pending_graph.take().is_some() {
+        } else if self.orchestration.pending_graph.take().is_some() {
             let now = std::time::Instant::now();
             self.update_metrics(|m| {
                 if let Some(ref mut s) = m.orchestration_graph {
@@ -1462,7 +1502,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), error::AgentError> {
         use crate::orchestration::GraphStatus;
 
-        let Some(ref graph) = self.pending_graph else {
+        let Some(ref graph) = self.orchestration.pending_graph else {
             self.channel
                 .send("No paused plan to resume. Use `/plan status` to check the current state.")
                 .await?;
@@ -1494,7 +1534,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let graph = self.pending_graph.take().unwrap();
+        let graph = self.orchestration.pending_graph.take().unwrap();
 
         tracing::info!(
             graph_id = %graph.id,
@@ -1509,7 +1549,7 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         // Store resumed graph back as pending. resume_from() will set status=Running in confirm.
-        self.pending_graph = Some(graph);
+        self.orchestration.pending_graph = Some(graph);
         Ok(())
     }
 
@@ -1521,7 +1561,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_plan_retry(&mut self, graph_id: Option<&str>) -> Result<(), error::AgentError> {
         use crate::orchestration::{GraphStatus, dag};
 
-        let Some(ref graph) = self.pending_graph else {
+        let Some(ref graph) = self.orchestration.pending_graph else {
             self.channel
                 .send("No active plan to retry. Use `/plan status` to check the current state.")
                 .await?;
@@ -1552,7 +1592,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let mut graph = self.pending_graph.take().unwrap();
+        let mut graph = self.orchestration.pending_graph.take().unwrap();
 
         // IC3: count before reset so the message reflects actual failed tasks, not Ready count.
         let failed_count = graph
@@ -1589,7 +1629,7 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         // Store retried graph back for re-execution via /plan confirm.
-        self.pending_graph = Some(graph);
+        self.orchestration.pending_graph = Some(graph);
         Ok(())
     }
 
@@ -1599,7 +1639,7 @@ impl<C: Channel> Agent<C> {
         // CRIT-1: persist Thompson state accumulated during this session.
         self.provider.save_router_state();
 
-        if let Some(ref mut mgr) = self.subagent_manager {
+        if let Some(ref mut mgr) = self.orchestration.subagent_manager {
             mgr.shutdown_all();
         }
 
@@ -1607,7 +1647,7 @@ impl<C: Channel> Agent<C> {
             manager.shutdown_all_shared().await;
         }
 
-        if let Some(ref tx) = self.metrics_tx {
+        if let Some(ref tx) = self.metrics.metrics_tx {
             let m = tx.borrow();
             if m.filter_applications > 0 {
                 #[allow(clippy::cast_precision_loss)]
@@ -1635,7 +1675,7 @@ impl<C: Channel> Agent<C> {
     /// Returns an error if channel I/O or LLM communication fails.
     #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) -> Result<(), error::AgentError> {
-        if let Some(mut rx) = self.warmup_ready.take()
+        if let Some(mut rx) = self.lifecycle.warmup_ready.take()
             && !*rx.borrow()
         {
             let _ = rx.changed().await;
@@ -1646,7 +1686,7 @@ impl<C: Channel> Agent<C> {
 
         loop {
             // Apply any pending provider override (from ACP set_session_config_option).
-            if let Some(ref slot) = self.provider_override
+            if let Some(ref slot) = self.providers.provider_override
                 && let Some(new_provider) = slot
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1657,7 +1697,7 @@ impl<C: Channel> Agent<C> {
             }
 
             // Refresh sub-agent status in metrics before polling.
-            if let Some(ref mgr) = self.subagent_manager {
+            if let Some(ref mgr) = self.orchestration.subagent_manager {
                 let sub_agent_metrics: Vec<crate::metrics::SubAgentMetrics> = mgr
                     .statuses()
                     .into_iter()
@@ -1721,7 +1761,7 @@ impl<C: Channel> Agent<C> {
             } else {
                 let incoming = tokio::select! {
                     result = self.channel.recv() => result?,
-                    () = shutdown_signal(&mut self.shutdown) => {
+                    () = shutdown_signal(&mut self.lifecycle.shutdown) => {
                         tracing::info!("shutting down");
                         break;
                     }
@@ -1733,11 +1773,11 @@ impl<C: Channel> Agent<C> {
                         self.reload_instructions();
                         continue;
                     }
-                    Some(_) = recv_optional(&mut self.config_reload_rx) => {
+                    Some(_) = recv_optional(&mut self.lifecycle.config_reload_rx) => {
                         self.reload_config();
                         continue;
                     }
-                    Some(msg) = recv_optional(&mut self.update_notify_rx) => {
+                    Some(msg) = recv_optional(&mut self.lifecycle.update_notify_rx) => {
                         if let Err(e) = self.channel.send(&msg).await {
                             tracing::warn!("failed to send update notification: {e}");
                         }
@@ -1753,7 +1793,7 @@ impl<C: Channel> Agent<C> {
                         }
                         continue;
                     }
-                    Some(prompt) = recv_optional(&mut self.custom_task_rx) => {
+                    Some(prompt) = recv_optional(&mut self.lifecycle.custom_task_rx) => {
                         tracing::info!("scheduler: injecting custom task as agent turn");
                         let text = format!("[Scheduled task] {prompt}");
                         Some(crate::channel::ChannelMessage { text, attachments: Vec::new() })
@@ -2027,12 +2067,12 @@ impl<C: Channel> Agent<C> {
 
         tracing::debug!(
             audio = audio_attachments.len(),
-            has_stt = self.stt.is_some(),
+            has_stt = self.providers.stt.is_some(),
             "resolve_message attachments"
         );
 
         let text = if !audio_attachments.is_empty()
-            && let Some(stt) = self.stt.as_ref()
+            && let Some(stt) = self.providers.stt.as_ref()
         {
             let mut transcribed_parts = Vec::new();
             for attachment in &audio_attachments {
@@ -2107,9 +2147,9 @@ impl<C: Channel> Agent<C> {
         text: String,
         image_parts: Vec<zeph_llm::provider::MessagePart>,
     ) -> Result<(), error::AgentError> {
-        self.cancel_token = CancellationToken::new();
-        let signal = Arc::clone(&self.cancel_signal);
-        let token = self.cancel_token.clone();
+        self.lifecycle.cancel_token = CancellationToken::new();
+        let signal = Arc::clone(&self.lifecycle.cancel_signal);
+        let token = self.lifecycle.cancel_token.clone();
         tokio::spawn(async move {
             signal.notified().await;
             token.cancel();
@@ -2217,6 +2257,7 @@ impl<C: Channel> Agent<C> {
 
         if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
             let known: Vec<String> = self
+                .orchestration
                 .subagent_manager
                 .as_ref()
                 .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
@@ -2286,6 +2327,7 @@ impl<C: Channel> Agent<C> {
 
             let signal = if judge_should_run {
                 let judge_provider = self
+                    .providers
                     .judge_provider
                     .clone()
                     .unwrap_or_else(|| self.provider.clone());
@@ -2589,7 +2631,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_status_command(&mut self) -> Result<(), error::AgentError> {
         use std::fmt::Write;
 
-        let uptime = self.start_time.elapsed().as_secs();
+        let uptime = self.lifecycle.start_time.elapsed().as_secs();
         let msg_count = self
             .messages
             .iter()
@@ -2597,7 +2639,7 @@ impl<C: Channel> Agent<C> {
             .count();
 
         let (api_calls, prompt_tokens, completion_tokens, cost_cents, mcp_servers) =
-            if let Some(ref tx) = self.metrics_tx {
+            if let Some(ref tx) = self.metrics.metrics_tx {
                 let m = tx.borrow();
                 (
                     m.api_calls,
@@ -2746,7 +2788,7 @@ impl<C: Channel> Agent<C> {
 
         match cmd {
             AgentCommand::List => {
-                let mgr = self.subagent_manager.as_ref()?;
+                let mgr = self.orchestration.subagent_manager.as_ref()?;
                 let defs = mgr.definitions();
                 if defs.is_empty() {
                     return Some("No sub-agent definitions found.".into());
@@ -2775,8 +2817,8 @@ impl<C: Channel> Agent<C> {
                 let provider = self.provider.clone();
                 let tool_executor = Arc::clone(&self.tool_executor);
                 let skills = self.filtered_skills_for(&name);
-                let mgr = self.subagent_manager.as_mut()?;
-                let cfg = self.subagent_config.clone();
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
+                let cfg = self.orchestration.subagent_config.clone();
                 match mgr.spawn(&name, &prompt, provider, tool_executor, skills, &cfg) {
                     Ok(id) => Some(format!(
                         "Sub-agent '{name}' started in background (id: {short})",
@@ -2794,8 +2836,8 @@ impl<C: Channel> Agent<C> {
                 let provider = self.provider.clone();
                 let tool_executor = Arc::clone(&self.tool_executor);
                 let skills = self.filtered_skills_for(&name);
-                let mgr = self.subagent_manager.as_mut()?;
-                let cfg = self.subagent_config.clone();
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
+                let cfg = self.orchestration.subagent_config.clone();
                 let task_id = match mgr.spawn(&name, &prompt, provider, tool_executor, skills, &cfg)
                 {
                     Ok(id) => id,
@@ -2815,6 +2857,7 @@ impl<C: Channel> Agent<C> {
                     // calling channel.confirm() (which requires &mut self).
                     #[allow(clippy::redundant_closure_for_method_calls)]
                     let pending = self
+                        .orchestration
                         .subagent_manager
                         .as_mut()
                         .and_then(|m| m.try_recv_secret_request());
@@ -2831,7 +2874,7 @@ impl<C: Channel> Agent<C> {
                             crate::text::truncate_to_chars(&req.secret_key, 100)
                         );
                         let approved = self.channel.confirm(&prompt).await.unwrap_or(false);
-                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                             if approved {
                                 let ttl = std::time::Duration::from_secs(300);
                                 let key = req.secret_key.clone();
@@ -2844,7 +2887,7 @@ impl<C: Channel> Agent<C> {
                         }
                     }
 
-                    let mgr = self.subagent_manager.as_ref()?;
+                    let mgr = self.orchestration.subagent_manager.as_ref()?;
                     let statuses = mgr.statuses();
                     let Some((_, status)) = statuses.iter().find(|(id, _)| id == &task_id) else {
                         break "Sub-agent completed (no status available).".to_owned();
@@ -2870,7 +2913,8 @@ impl<C: Channel> Agent<C> {
                                 .send_status(&format!(
                                     "sub-agent '{name}': turn {}/{}",
                                     status.turns_used,
-                                    self.subagent_manager
+                                    self.orchestration
+                                        .subagent_manager
                                         .as_ref()
                                         .and_then(|m| m.agents_def(&task_id))
                                         .map_or(20, |d| d.permissions.max_turns)
@@ -2882,7 +2926,7 @@ impl<C: Channel> Agent<C> {
                 Some(result)
             }
             AgentCommand::Status => {
-                let mgr = self.subagent_manager.as_ref()?;
+                let mgr = self.orchestration.subagent_manager.as_ref()?;
                 let statuses = mgr.statuses();
                 if statuses.is_empty() {
                     return Some("No active sub-agents.".into());
@@ -2910,7 +2954,7 @@ impl<C: Channel> Agent<C> {
                 Some(out)
             }
             AgentCommand::Cancel { id } => {
-                let mgr = self.subagent_manager.as_mut()?;
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
                 // Accept prefix match on task_id.
                 let ids: Vec<String> = mgr
                     .statuses()
@@ -2935,7 +2979,7 @@ impl<C: Channel> Agent<C> {
             }
             AgentCommand::Approve { id } => {
                 // Look up pending secret request for the given task_id prefix.
-                let mgr = self.subagent_manager.as_mut()?;
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
                 let full_ids: Vec<String> = mgr
                     .statuses()
                     .into_iter()
@@ -2970,7 +3014,7 @@ impl<C: Channel> Agent<C> {
                 ))
             }
             AgentCommand::Deny { id } => {
-                let mgr = self.subagent_manager.as_mut()?;
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
                 let full_ids: Vec<String> = mgr
                     .statuses()
                     .into_iter()
@@ -2993,11 +3037,11 @@ impl<C: Channel> Agent<C> {
                 }
             }
             AgentCommand::Resume { id, prompt } => {
-                let cfg = self.subagent_config.clone();
+                let cfg = self.orchestration.subagent_config.clone();
                 // Resolve definition name from transcript meta before spawning so we can
                 // look up skills by definition name rather than the UUID prefix (S1 fix).
                 let def_name = {
-                    let mgr = self.subagent_manager.as_ref()?;
+                    let mgr = self.orchestration.subagent_manager.as_ref()?;
                     match mgr.def_name_for_resume(&id, &cfg) {
                         Ok(name) => name,
                         Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
@@ -3006,7 +3050,7 @@ impl<C: Channel> Agent<C> {
                 let skills = self.filtered_skills_for(&def_name);
                 let provider = self.provider.clone();
                 let tool_executor = Arc::clone(&self.tool_executor);
-                let mgr = self.subagent_manager.as_mut()?;
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
                 let (task_id, _) =
                     match mgr.resume(&id, &prompt, provider, tool_executor, skills, &cfg) {
                         Ok(pair) => pair,
@@ -3023,6 +3067,7 @@ impl<C: Channel> Agent<C> {
 
                     #[allow(clippy::redundant_closure_for_method_calls)]
                     let pending = self
+                        .orchestration
                         .subagent_manager
                         .as_mut()
                         .and_then(|m| m.try_recv_secret_request());
@@ -3032,7 +3077,7 @@ impl<C: Channel> Agent<C> {
                             crate::text::truncate_to_chars(&req.secret_key, 100)
                         );
                         let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
-                        if let Some(mgr) = self.subagent_manager.as_mut() {
+                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                             if approved {
                                 let ttl = std::time::Duration::from_secs(300);
                                 let key = req.secret_key.clone();
@@ -3045,7 +3090,7 @@ impl<C: Channel> Agent<C> {
                         }
                     }
 
-                    let mgr = self.subagent_manager.as_ref()?;
+                    let mgr = self.orchestration.subagent_manager.as_ref()?;
                     let statuses = mgr.statuses();
                     let Some((_, status)) = statuses.iter().find(|(tid, _)| tid == &task_id) else {
                         break "Sub-agent resume completed (no status available).".to_owned();
@@ -3071,7 +3116,8 @@ impl<C: Channel> Agent<C> {
                                 .send_status(&format!(
                                     "resumed sub-agent: turn {}/{}",
                                     status.turns_used,
-                                    self.subagent_manager
+                                    self.orchestration
+                                        .subagent_manager
                                         .as_ref()
                                         .and_then(|m| m.agents_def(&task_id))
                                         .map_or(20, |d| d.permissions.max_turns)
@@ -3086,7 +3132,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
-        let mgr = self.subagent_manager.as_ref()?;
+        let mgr = self.orchestration.subagent_manager.as_ref()?;
         let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
         let reg = self
             .skill_state
@@ -3298,7 +3344,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn reload_config(&mut self) {
-        let Some(ref path) = self.config_path else {
+        let Some(ref path) = self.lifecycle.config_path else {
             return;
         };
         let config = match Config::load(path) {

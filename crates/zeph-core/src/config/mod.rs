@@ -24,7 +24,7 @@ pub enum ConfigError {
     #[error("config validation failed: {0}")]
     Validation(String),
     #[error("vault error: {0}")]
-    Vault(#[from] anyhow::Error),
+    Vault(#[from] crate::vault::VaultError),
 }
 
 impl Config {

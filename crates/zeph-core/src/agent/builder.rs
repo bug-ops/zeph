@@ -58,7 +58,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
-        self.stt = Some(stt);
+        self.providers.stt = Some(stt);
         self
     }
 
@@ -79,13 +79,13 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
-        self.update_notify_rx = Some(rx);
+        self.lifecycle.update_notify_rx = Some(rx);
         self
     }
 
     #[must_use]
     pub fn with_custom_task_rx(mut self, rx: mpsc::Receiver<String>) -> Self {
-        self.custom_task_rx = Some(rx);
+        self.lifecycle.custom_task_rx = Some(rx);
         self
     }
 
@@ -217,7 +217,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.shutdown = rx;
+        self.lifecycle.shutdown = rx;
         self
     }
 
@@ -246,8 +246,8 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
-        self.config_path = Some(path);
-        self.config_reload_rx = Some(rx);
+        self.lifecycle.config_path = Some(path);
+        self.lifecycle.config_reload_rx = Some(rx);
         self
     }
 
@@ -304,7 +304,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_judge_provider(mut self, provider: AnyProvider) -> Self {
-        self.judge_provider = Some(provider);
+        self.providers.judge_provider = Some(provider);
         self
     }
 
@@ -313,7 +313,7 @@ impl<C: Channel> Agent<C> {
     /// When active, client-side reactive and proactive compaction are skipped.
     #[must_use]
     pub fn with_server_compaction(mut self, enabled: bool) -> Self {
-        self.server_compaction_active = enabled;
+        self.providers.server_compaction_active = enabled;
         self
     }
 
@@ -376,7 +376,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
-        self.summary_provider = Some(provider);
+        self.providers.summary_provider = Some(provider);
         self
     }
 
@@ -390,7 +390,10 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
-        self.summary_provider.as_ref().unwrap_or(&self.provider)
+        self.providers
+            .summary_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
     }
 
     /// Extract the last assistant message, truncated to 500 chars, for the judge prompt.
@@ -471,13 +474,13 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.warmup_ready = Some(rx);
+        self.lifecycle.warmup_ready = Some(rx);
         self
     }
 
     #[must_use]
     pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
-        self.cost_tracker = Some(tracker);
+        self.metrics.cost_tracker = Some(tracker);
         self
     }
 
@@ -537,7 +540,7 @@ impl<C: Channel> Agent<C> {
             m.mcp_tool_count = mcp_tool_count;
             m.mcp_server_count = mcp_server_count;
         });
-        self.metrics_tx = Some(tx);
+        self.metrics.metrics_tx = Some(tx);
         self
     }
 
@@ -546,32 +549,32 @@ impl<C: Channel> Agent<C> {
     /// `notify_waiters()` to cancel whatever operation is running.
     #[must_use]
     pub fn cancel_signal(&self) -> Arc<Notify> {
-        Arc::clone(&self.cancel_signal)
+        Arc::clone(&self.lifecycle.cancel_signal)
     }
 
     /// Inject a shared cancel signal so an external caller (e.g. ACP session) can
     /// interrupt the agent loop by calling `notify_one()`.
     #[must_use]
     pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
-        self.cancel_signal = signal;
+        self.lifecycle.cancel_signal = signal;
         self
     }
 
     #[must_use]
     pub fn with_subagent_manager(mut self, manager: crate::subagent::SubAgentManager) -> Self {
-        self.subagent_manager = Some(manager);
+        self.orchestration.subagent_manager = Some(manager);
         self
     }
 
     #[must_use]
     pub fn with_subagent_config(mut self, config: crate::config::SubAgentConfig) -> Self {
-        self.subagent_config = config;
+        self.orchestration.subagent_config = config;
         self
     }
 
     #[must_use]
     pub fn with_orchestration_config(mut self, config: crate::config::OrchestrationConfig) -> Self {
-        self.orchestration_config = config;
+        self.orchestration.orchestration_config = config;
         self
     }
 
@@ -605,7 +608,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         slot: Arc<std::sync::RwLock<Option<AnyProvider>>>,
     ) -> Self {
-        self.provider_override = Some(slot);
+        self.providers.provider_override = Some(slot);
         self
     }
 }

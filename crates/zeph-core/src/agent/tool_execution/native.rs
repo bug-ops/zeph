@@ -50,7 +50,7 @@ impl<C: Channel> Agent<C> {
                         "server compaction beta header rejected; \
                         falling back to client-side compaction and retrying"
                     );
-                    self.server_compaction_active = false;
+                    self.providers.server_compaction_active = false;
                     let _ = self
                         .channel
                         .send_status(
@@ -98,11 +98,11 @@ impl<C: Channel> Agent<C> {
         }
 
         for iteration in 0..self.tool_orchestrator.max_iterations {
-            if *self.shutdown.borrow() {
+            if *self.lifecycle.shutdown.borrow() {
                 tracing::info!("native tool loop interrupted by shutdown");
                 break;
             }
-            if self.cancel_token.is_cancelled() {
+            if self.lifecycle.cancel_token.is_cancelled() {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
@@ -117,7 +117,7 @@ impl<C: Channel> Agent<C> {
             if self.lsp_hooks.is_some() {
                 // Clear stale notes before borrowing lsp_hooks mutably (borrow checker).
                 self.remove_lsp_messages();
-                let tc = std::sync::Arc::clone(&self.token_counter);
+                let tc = std::sync::Arc::clone(&self.metrics.token_counter);
                 if let Some(ref mut lsp) = self.lsp_hooks
                     && let Some(note_text) = lsp.drain_notes(&tc)
                 {
@@ -130,7 +130,8 @@ impl<C: Channel> Agent<C> {
             }
 
             if let Some(ref budget) = self.context_manager.budget {
-                let used = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
+                let used =
+                    usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let threshold = budget.max_tokens() * 4 / 5;
                 if used >= threshold {
                     tracing::warn!(
@@ -218,7 +219,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         tool_defs: &[ToolDefinition],
     ) -> Result<Option<ChatResponse>, super::super::error::AgentError> {
-        if let Some(ref tracker) = self.cost_tracker
+        if let Some(ref tracker) = self.metrics.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
             self.channel
@@ -261,7 +262,7 @@ impl<C: Channel> Agent<C> {
         );
         let timeout_result = tokio::select! {
             r = chat_fut => r,
-            () = self.cancel_token.cancelled() => {
+            () = self.lifecycle.cancel_token.cancelled() => {
                 tracing::info!("chat_with_tools cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
@@ -278,7 +279,7 @@ impl<C: Channel> Agent<C> {
         };
 
         let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let prompt_estimate = self.cached_prompt_tokens;
+        let prompt_estimate = self.providers.cached_prompt_tokens;
         let completion_heuristic = match &result {
             ChatResponse::Text(t) => u64::try_from(t.len()).unwrap_or(0) / 4,
             ChatResponse::ToolUse {
@@ -544,7 +545,7 @@ impl<C: Channel> Agent<C> {
         let max_retries = self.tool_orchestrator.max_tool_retries;
         // Clamp to 1 to prevent Semaphore(0) deadlock when config is set to 0.
         let max_parallel = self.runtime.timeouts.max_parallel_tools.max(1);
-        let cancel = self.cancel_token.clone();
+        let cancel = self.lifecycle.cancel_token.clone();
 
         // Phase 1: Tiered parallel execution bounded by a shared semaphore.
         //
@@ -1216,7 +1217,7 @@ impl<C: Channel> Agent<C> {
         // `&mut self.lsp_hooks` without conflicting borrows.
         #[cfg(feature = "lsp-context")]
         if self.lsp_hooks.is_some() {
-            let tc_arc = std::sync::Arc::clone(&self.token_counter);
+            let tc_arc = std::sync::Arc::clone(&self.metrics.token_counter);
             let sanitizer = self.security.sanitizer.clone();
             for (name, input, output) in lsp_tool_calls {
                 if let Some(ref mut lsp) = self.lsp_hooks {

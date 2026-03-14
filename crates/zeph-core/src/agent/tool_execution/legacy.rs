@@ -37,7 +37,7 @@ impl<C: Channel> Agent<C> {
         self.tool_orchestrator.clear_recent_tool_calls();
 
         for iteration in 0..self.tool_orchestrator.max_iterations {
-            if self.cancel_token.is_cancelled() {
+            if self.lifecycle.cancel_token.is_cancelled() {
                 tracing::info!("tool loop cancelled by user");
                 break;
             }
@@ -46,7 +46,8 @@ impl<C: Channel> Agent<C> {
 
             // Context budget check at 80% threshold
             if let Some(ref budget) = self.context_manager.budget {
-                let used = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
+                let used =
+                    usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
                 let threshold = budget.max_tokens() * 4 / 5;
                 if used >= threshold {
                     tracing::warn!(
@@ -199,11 +200,11 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn call_llm_with_timeout(
         &mut self,
     ) -> Result<Option<String>, super::super::error::AgentError> {
-        if self.cancel_token.is_cancelled() {
+        if self.lifecycle.cancel_token.is_cancelled() {
             return Ok(None);
         }
 
-        if let Some(ref tracker) = self.cost_tracker
+        if let Some(ref tracker) = self.metrics.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
             self.channel
@@ -218,7 +219,7 @@ impl<C: Channel> Agent<C> {
 
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
-        let prompt_estimate = self.cached_prompt_tokens;
+        let prompt_estimate = self.providers.cached_prompt_tokens;
 
         let dump_id =
             self.debug_state
@@ -239,7 +240,7 @@ impl<C: Channel> Agent<C> {
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         if self.provider.supports_streaming() {
-            let cancel = self.cancel_token.clone();
+            let cancel = self.lifecycle.cancel_token.clone();
             let streaming_fut = self.process_response_streaming().instrument(llm_span);
             let result = tokio::select! {
                 r = tokio::time::timeout(llm_timeout, streaming_fut) => r,
@@ -299,7 +300,7 @@ impl<C: Channel> Agent<C> {
                 Ok(None)
             }
         } else {
-            let cancel = self.cancel_token.clone();
+            let cancel = self.lifecycle.cancel_token.clone();
             let chat_fut = self.provider.chat(&self.messages).instrument(llm_span);
             let result = tokio::select! {
                 r = tokio::time::timeout(llm_timeout, chat_fut) => r,
@@ -647,11 +648,11 @@ impl<C: Channel> Agent<C> {
                     Some(r) => r,
                     None => break,
                 },
-                () = super::super::shutdown_signal(&mut self.shutdown) => {
+                () = super::super::shutdown_signal(&mut self.lifecycle.shutdown) => {
                     tracing::info!("streaming interrupted by shutdown");
                     break;
                 }
-                () = self.cancel_token.cancelled() => {
+                () = self.lifecycle.cancel_token.cancelled() => {
                     tracing::info!("streaming interrupted by cancellation");
                     break;
                 }

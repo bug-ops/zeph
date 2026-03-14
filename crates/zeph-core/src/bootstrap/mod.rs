@@ -15,15 +15,14 @@ pub use mcp::{create_mcp_manager, create_mcp_registry};
 #[cfg(feature = "candle")]
 pub use provider::select_device;
 pub use provider::{
-    build_orchestrator, create_named_provider, create_provider, create_provider_from_config,
-    create_summary_provider,
+    BootstrapError, build_orchestrator, create_named_provider, create_provider,
+    create_provider_from_config, create_summary_provider,
 };
 pub use skills::{create_skill_matcher, effective_embedding_model, managed_skills_dir};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
 use tokio::sync::{mpsc, watch};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
@@ -64,12 +63,17 @@ impl AppBuilder {
     /// Resolve config, load it, create vault, resolve secrets.
     ///
     /// CLI-provided overrides take priority over environment variables and config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BootstrapError`] if config loading, validation, vault construction,
+    /// secret resolution, or Qdrant URL parsing fails.
     pub async fn new(
         config_override: Option<&Path>,
         vault_override: Option<&str>,
         vault_key_override: Option<&Path>,
         vault_path_override: Option<&Path>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, BootstrapError> {
         let config_path = resolve_config_path(config_override);
         let mut config = Config::load(&config_path)?;
         config.validate()?;
@@ -83,15 +87,22 @@ impl AppBuilder {
         let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
             "env" => Box::new(EnvVaultProvider),
             "age" => {
-                let key = vault_args
-                    .key_path
-                    .context("--vault-key required for age backend")?;
-                let path = vault_args
-                    .vault_path
-                    .context("--vault-path required for age backend")?;
-                Box::new(AgeVaultProvider::new(Path::new(&key), Path::new(&path))?)
+                let key = vault_args.key_path.ok_or_else(|| {
+                    BootstrapError::Provider("--vault-key required for age backend".into())
+                })?;
+                let path = vault_args.vault_path.ok_or_else(|| {
+                    BootstrapError::Provider("--vault-path required for age backend".into())
+                })?;
+                Box::new(
+                    AgeVaultProvider::new(Path::new(&key), Path::new(&path))
+                        .map_err(BootstrapError::VaultInit)?,
+                )
             }
-            other => bail!("unknown vault backend: {other}"),
+            other => {
+                return Err(BootstrapError::Provider(format!(
+                    "unknown vault backend: {other}"
+                )));
+            }
         };
 
         config.resolve_secrets(vault.as_ref()).await?;
@@ -99,7 +110,10 @@ impl AppBuilder {
         let qdrant_ops = match config.memory.vector_backend {
             crate::config::VectorBackend::Qdrant => {
                 let ops = QdrantOps::new(&config.memory.qdrant_url).map_err(|e| {
-                    anyhow::anyhow!("invalid qdrant_url '{}': {e}", config.memory.qdrant_url)
+                    BootstrapError::Provider(format!(
+                        "invalid qdrant_url '{}': {e}",
+                        config.memory.qdrant_url
+                    ))
                 })?;
                 Some(ops)
             }
@@ -138,9 +152,12 @@ impl AppBuilder {
         self.vault.as_ref()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`BootstrapError`] if provider creation or health check fails.
     pub async fn build_provider(
         &self,
-    ) -> anyhow::Result<(AnyProvider, tokio::sync::mpsc::UnboundedReceiver<String>)> {
+    ) -> Result<(AnyProvider, tokio::sync::mpsc::UnboundedReceiver<String>), BootstrapError> {
         let mut provider = create_provider(&self.config)?;
 
         let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -183,10 +200,13 @@ impl AppBuilder {
 
     /// # Errors
     ///
-    /// Returns an error if `SQLite` cannot be initialized or if `vector_backend = Qdrant`
+    /// Returns [`BootstrapError`] if `SQLite` cannot be initialized or if `vector_backend = "Qdrant"`
     /// but `qdrant_ops` is `None` (invariant violation — should not happen if `AppBuilder::new`
     /// succeeded).
-    pub async fn build_memory(&self, provider: &AnyProvider) -> anyhow::Result<SemanticMemory> {
+    pub async fn build_memory(
+        &self,
+        provider: &AnyProvider,
+    ) -> Result<SemanticMemory, BootstrapError> {
         let embed_model = self.embedding_model();
         let mut memory = match self.config.memory.vector_backend {
             crate::config::VectorBackend::Sqlite => {
@@ -198,13 +218,18 @@ impl AppBuilder {
                     self.config.memory.semantic.keyword_weight,
                     self.config.memory.sqlite_pool_size,
                 )
-                .await?
+                .await
+                .map_err(|e| BootstrapError::Memory(e.to_string()))?
             }
             crate::config::VectorBackend::Qdrant => {
                 let ops = self
                     .qdrant_ops
                     .as_ref()
-                    .context("qdrant_ops must be Some when vector_backend = Qdrant")?
+                    .ok_or_else(|| {
+                        BootstrapError::Memory(
+                            "qdrant_ops must be Some when vector_backend = Qdrant".into(),
+                        )
+                    })?
                     .clone();
                 SemanticMemory::with_qdrant_ops(
                     &self.config.memory.sqlite_path,
@@ -215,7 +240,8 @@ impl AppBuilder {
                     self.config.memory.semantic.keyword_weight,
                     self.config.memory.sqlite_pool_size,
                 )
-                .await?
+                .await
+                .map_err(|e| BootstrapError::Memory(e.to_string()))?
             }
         };
 
