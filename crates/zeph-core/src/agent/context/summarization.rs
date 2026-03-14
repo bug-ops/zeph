@@ -893,6 +893,12 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn maybe_compact(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
+        // Increment the turn counter unconditionally so every user-message turn is counted
+        // regardless of early-return guards (exhaustion, server compaction, cooldown).
+        if let Some(ref mut count) = self.context_manager.turns_since_last_hard_compaction {
+            *count += 1;
+        }
+
         // Guard 3 — Exhaustion: stop compaction permanently when it cannot reduce context.
         if self.context_manager.compaction_exhausted {
             if !self.context_manager.exhaustion_warned {
@@ -982,6 +988,20 @@ impl<C: Channel> Agent<C> {
                 Ok(())
             }
             CompactionTier::Hard => {
+                // Track hard compaction event: finalize the previous segment's turn count
+                // and start a new one. Counted regardless of cooldown — captures pressure,
+                // not just action. When compaction_hard_count == 0, compaction_turns_after_hard
+                // is expected to be empty.
+                if let Some(turns) = self.context_manager.turns_since_last_hard_compaction {
+                    self.update_metrics(|m| {
+                        m.compaction_turns_after_hard.push(turns);
+                    });
+                }
+                self.context_manager.turns_since_last_hard_compaction = Some(0);
+                self.update_metrics(|m| {
+                    m.compaction_hard_count += 1;
+                });
+
                 // Cooldown guard: skip LLM summarization while cooling down.
                 if in_cooldown {
                     tracing::debug!(

@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
 - feat(core): when pruning a tool output that has an overflow file, emit `[tool output pruned; full content at {path}]` instead of clearing the body, preserving the reference across hard compaction, `prune_tool_outputs`, and `prune_stale_tool_outputs` (#1740)
 - feat(memory): validate `temporal_decay_rate` in `[memory.graph]` on deserialization — rejects NaN, Inf, negative values, and values outside `[0.0, 10.0]`; invalid configs produce a descriptive error at startup instead of silently producing NaN scores (closes #1777)
+- feat(core): hard compaction trajectory-elongation metrics (closes #1739) — `compaction_hard_count` and `compaction_turns_after_hard` added to `MetricsSnapshot`; tracks how many user-message turns elapsed between consecutive hard compaction events; turn counter increments before all early-return guards (exhaustion, server compaction, `compacted_this_turn`) to ensure no turns are silently dropped; last open segment is finalized at `shutdown()` and both fields are logged via `tracing::info!` when at least one hard compaction occurred
 
 ### Changed
 

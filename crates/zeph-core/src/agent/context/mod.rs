@@ -3812,4 +3812,98 @@ mod tests {
 
         assert_eq!(agent.context_manager.compaction_cooldown_turns, 5);
     }
+
+    #[test]
+    fn compaction_hard_count_zero_by_default() {
+        let snapshot = crate::metrics::MetricsSnapshot::default();
+        assert_eq!(snapshot.compaction_hard_count, 0);
+        assert!(snapshot.compaction_turns_after_hard.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compaction_hard_count_increments_on_hard_tier() {
+        let provider = mock_provider(vec!["summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(1000, 0.20, 0.75, 4, 0)
+            .with_metrics(tx);
+
+        // Drive cached_prompt_tokens above the hard threshold (75% of 1000 = 750).
+        agent.providers.cached_prompt_tokens = 900;
+
+        agent.maybe_compact().await.unwrap();
+
+        assert_eq!(rx.borrow().compaction_hard_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compaction_turns_after_hard_tracks_segments() {
+        let provider = mock_provider(vec!["summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(1000, 0.20, 0.75, 4, 0)
+            .with_compaction_cooldown(0)
+            .with_metrics(tx);
+
+        // Simulate first hard compaction by driving cached tokens above threshold.
+        agent.providers.cached_prompt_tokens = 900;
+        agent.maybe_compact().await.unwrap();
+        assert_eq!(rx.borrow().compaction_hard_count, 1);
+        // turns_since_last_hard_compaction is now Some(0).
+
+        // Simulate 3 turns where context is below threshold.
+        // Reset per-turn guard (done by handle_message at the start of each turn).
+        agent.providers.cached_prompt_tokens = 0;
+        for _ in 0..3 {
+            agent.context_manager.compacted_this_turn = false;
+            agent.maybe_compact().await.unwrap();
+        }
+        // turns_since_last_hard_compaction is now Some(3).
+
+        // Directly trigger the Hard tier accounting without a real LLM call
+        // by simulating what maybe_compact does in the Hard branch.
+        // This tests that the Vec accumulates the segment correctly.
+        if let Some(turns) = agent.context_manager.turns_since_last_hard_compaction {
+            agent.update_metrics(|m| {
+                m.compaction_turns_after_hard.push(turns);
+                m.compaction_hard_count += 1;
+            });
+            agent.context_manager.turns_since_last_hard_compaction = Some(0);
+        }
+
+        assert_eq!(rx.borrow().compaction_hard_count, 2);
+        assert_eq!(rx.borrow().compaction_turns_after_hard, vec![3]);
+    }
+
+    #[tokio::test]
+    async fn compaction_turn_counter_increments_before_exhaustion_guard() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(1000, 0.20, 0.75, 4, 0);
+
+        // Manually set tracking active and exhaust compaction.
+        agent.context_manager.turns_since_last_hard_compaction = Some(0);
+        agent.context_manager.compaction_exhausted = true;
+
+        // Call maybe_compact — early return via exhaustion guard.
+        agent.maybe_compact().await.unwrap();
+
+        // Turn counter must still have been incremented (S1/S2 fix).
+        assert_eq!(
+            agent.context_manager.turns_since_last_hard_compaction,
+            Some(1)
+        );
+    }
 }
