@@ -36,6 +36,8 @@ pub struct MockProvider {
     pub tool_call_count: Arc<Mutex<u32>>,
     /// Model list returned by `list_models_remote()`.
     pub models: Vec<RemoteModelInfo>,
+    /// Optional name override for tests that require distinct provider names.
+    pub name_override: Option<String>,
 }
 
 impl Default for MockProvider {
@@ -54,6 +56,7 @@ impl Default for MockProvider {
             tool_responses: Arc::new(Mutex::new(VecDeque::new())),
             tool_call_count: Arc::new(Mutex::new(0)),
             models: vec![],
+            name_override: None,
         }
     }
 }
@@ -73,6 +76,14 @@ impl MockProvider {
             fail_chat: true,
             ..Self::default()
         }
+    }
+
+    /// Set a custom name returned by `name()`. Useful for `cost_tiers` tests that
+    /// need distinct provider names without spinning up real provider instances.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name_override = Some(name.into());
+        self
     }
 
     /// Prepend a sequence of errors returned before normal responses.
@@ -133,7 +144,7 @@ impl MockProvider {
 impl LlmProvider for MockProvider {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "mock"
+        self.name_override.as_deref().unwrap_or("mock")
     }
 
     async fn chat(&self, messages: &[Message]) -> Result<String, crate::LlmError> {

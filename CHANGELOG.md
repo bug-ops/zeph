@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(llm): `cost_tiers` config field for `[llm.router.cascade]` — explicit cheapest-first provider ordering independent of chain order; providers are sorted once at construction time (zero per-request cost); unknown names are silently ignored; empty list is equivalent to `None` (#1724)
+
+### Changed
+
+- perf(llm): `RouterProvider` now stores providers as `Arc<[AnyProvider]>` instead of `Vec<AnyProvider>`; `self.clone()` on every LLM request drops from O(N × provider_size) to O(1) for the providers field across all routing strategies (EMA, Thompson, Cascade) (#1724)
+- perf(llm): cascade `chat` and `chat_stream` bypass `ordered_providers()` for the Cascade strategy and pass `&self.providers` slice directly to `cascade_chat`/`cascade_chat_stream`, eliminating an unnecessary `Vec` allocation on the hot path (#1724)
+
 - feat(tui): show `[1M CTX]` badge in the TUI header bar when Claude extended context (`enable_extended_context = true`) is active; also shows `Max context: 1M` in the Resources panel (#1686)
 - feat(llm): implement `ClassifierMode::Judge` for cascade routing — calls `summary_model` with a lightweight scoring prompt, parses the 0–10 score and normalises to [0.0, 1.0]; falls back to heuristic on any LLM error; warns at startup when judge mode is configured without `summary_model` (#1723)
 - feat(llm): `--extended-context` CLI flag enables Claude 1M context window for the session; overrides `llm.cloud.enable_extended_context` from config and emits a cost warning (tokens above 200K use long-context pricing) (#1685)

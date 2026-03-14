@@ -356,6 +356,13 @@ pub struct CascadeConfig {
     /// `None` disables the budget (unbounded escalation cost).
     #[serde(default)]
     pub max_cascade_tokens: Option<u32>,
+
+    /// Explicit cost ordering of provider names (cheapest first).
+    /// When set, cascade routing sorts providers by their position in this list before
+    /// trying them. Providers not in the list are appended after listed ones in their
+    /// original chain order. When unset, chain order is used (default behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_tiers: Option<Vec<String>>,
 }
 
 impl Default for CascadeConfig {
@@ -366,6 +373,7 @@ impl Default for CascadeConfig {
             classifier_mode: CascadeClassifierMode::default(),
             window_size: default_cascade_window_size(),
             max_cascade_tokens: None,
+            cost_tiers: None,
         }
     }
 }
