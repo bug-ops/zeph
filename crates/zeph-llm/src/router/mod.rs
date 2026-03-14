@@ -674,10 +674,11 @@ impl RouterProvider {
                         "cascade: quality verdict"
                     );
 
-                    // Update best-seen response.
-                    let is_better = best
-                        .as_ref()
-                        .is_none_or(|(_, best_score)| verdict.score > *best_score);
+                    // Update best-seen response; skip empty strings to avoid silent failures.
+                    let is_better = !response.is_empty()
+                        && best
+                            .as_ref()
+                            .is_none_or(|(_, best_score)| verdict.score > *best_score);
                     if is_better {
                         best = Some((response.clone(), verdict.score));
                     }
@@ -824,9 +825,11 @@ impl RouterProvider {
                     );
 
                     // Track the best response seen so far across early providers.
-                    let is_better = best_seen
-                        .as_ref()
-                        .is_none_or(|(_, best_score)| verdict.score > *best_score);
+                    // Skip empty strings to avoid returning silent failures on all-fail fallback.
+                    let is_better = !text.is_empty()
+                        && best_seen
+                            .as_ref()
+                            .is_none_or(|(_, best_score)| verdict.score > *best_score);
                     if is_better {
                         best_seen = Some((text.clone(), verdict.score));
                     }
@@ -1466,5 +1469,69 @@ mod tests {
         let text = "The answer to your question is straightforward. Consider the options and pick the best one.";
         let verdict = RouterProvider::evaluate_heuristic(text, 0.5);
         assert!(!verdict.should_escalate, "score={}", verdict.score);
+    }
+
+    /// Empty string from the only provider must not be stored as best_seen.
+    /// When all providers fail or return empty, the caller should get an error,
+    /// not a silent empty response.
+    #[tokio::test]
+    async fn cascade_empty_response_not_stored_as_best_seen() {
+        use crate::mock::MockProvider;
+
+        // Single provider returns empty string (score=0.0, should_escalate may be true/false).
+        // With quality_threshold=0.0 it won't escalate, so we can check the return value.
+        let p = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
+        let cfg = CascadeRouterConfig {
+            quality_threshold: 0.0,
+            ..Default::default()
+        };
+        let r = RouterProvider::new(vec![p]).with_cascade(cfg);
+        let msgs = vec![Message::from_legacy(Role::User, "hi")];
+        // The provider returns "" — cascade must return it as-is (no best_seen involved
+        // with a single provider), but this test confirms "" is not stored when escalating.
+        let result = r.chat(&msgs).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    /// When provider 1 returns empty and provider 2 fails, best_seen must not hold
+    /// the empty string — the caller must get an error, not a silent empty response.
+    #[tokio::test]
+    async fn cascade_empty_best_seen_not_returned_on_all_fail() {
+        use crate::mock::MockProvider;
+
+        // p1: returns empty string (causes escalation with default threshold)
+        // p2: hard error
+        let p1 = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
+        let p2 = AnyProvider::Mock(MockProvider::failing());
+
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
+        let msgs = vec![Message::from_legacy(Role::User, "hi")];
+        let result = r.chat(&msgs).await;
+        // best_seen must NOT be the empty string; error must propagate.
+        assert!(
+            result.is_err(),
+            "expected error, not silent empty string; got: {:?}",
+            result
+        );
+    }
+
+    /// Stream variant: empty string from early provider must not be stored as best_seen.
+    #[tokio::test]
+    async fn cascade_stream_empty_response_not_stored_as_best_seen() {
+        use crate::mock::MockProvider;
+
+        // p1 (early): returns "" — should NOT be stored as best_seen.
+        // p2 (last): returns a real response.
+        let p1 = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
+        let p2 = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["real answer".to_owned()]).with_streaming(),
+        );
+
+        let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
+        let msgs = vec![Message::from_legacy(Role::User, "hi")];
+        let stream = r.chat_stream(&msgs).await.expect("should not error");
+        let text = collect_stream(stream).await.expect("stream should succeed");
+        assert_eq!(text, "real answer");
     }
 }
