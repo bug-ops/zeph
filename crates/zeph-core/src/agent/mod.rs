@@ -222,6 +222,9 @@ pub(super) struct MetricsState {
     pub(super) metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     pub(super) cost_tracker: Option<CostTracker>,
     pub(super) token_counter: Arc<TokenCounter>,
+    /// Set to `true` when Claude extended context (`enable_extended_context = true`) is active.
+    /// Read from config at build time, not derived from provider internals.
+    pub(super) extended_context: bool,
 }
 
 /// Groups task orchestration and subagent state.
@@ -491,6 +494,7 @@ impl<C: Channel> Agent<C> {
                 metrics_tx: None,
                 cost_tracker: None,
                 token_counter,
+                extended_context: false,
             },
             orchestration: OrchestrationState {
                 pending_graph: None,

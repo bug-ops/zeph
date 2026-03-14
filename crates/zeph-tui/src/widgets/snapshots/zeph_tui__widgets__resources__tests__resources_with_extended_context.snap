@@ -1,0 +1,15 @@
+---
+source: crates/zeph-tui/src/widgets/resources.rs
+expression: output
+---
+┌ Resources ──────────────────────┐
+│  Provider: claude               │
+│  Model: claude-sonnet-4-6       │
+│  Context: 50000                 │
+│  Session: 75000                 │
+│  API calls: 3                   │
+│  Latency: 400ms                 │
+│  Max context: 1M                │
+│                                 │
+│                                 │
+└─────────────────────────────────┘

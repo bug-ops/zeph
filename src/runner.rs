@@ -387,6 +387,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         cloud.server_compaction = true;
     }
 
+    if cli.extended_context
+        && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
+    {
+        cloud.enable_extended_context = true;
+        tracing::warn!(
+            "Extended context (1M tokens) enabled via --extended-context. \
+             Tokens above 200K use long-context pricing."
+        );
+    }
+
     #[cfg(feature = "lsp-context")]
     if cli.lsp_context {
         app.config_mut().lsp.enabled = true;
@@ -997,7 +1007,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     });
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();
-    let agent = agent.with_metrics(metrics_tx);
+    let extended_context = config
+        .llm
+        .cloud
+        .as_ref()
+        .is_some_and(|c| c.enable_extended_context);
+    let agent = agent
+        .with_extended_context(extended_context)
+        .with_metrics(metrics_tx);
     #[cfg(not(feature = "tui"))]
     drop(metrics_rx);
 

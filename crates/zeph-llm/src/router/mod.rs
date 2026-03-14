@@ -43,6 +43,9 @@ pub struct CascadeRouterConfig {
     pub classifier_mode: ClassifierMode,
     pub window_size: usize,
     pub max_cascade_tokens: Option<u32>,
+    /// LLM provider used for judge-mode quality scoring.
+    /// Required when `classifier_mode = Judge`; falls back to heuristic if `None`.
+    pub summary_provider: Option<AnyProvider>,
 }
 
 impl Default for CascadeRouterConfig {
@@ -53,6 +56,7 @@ impl Default for CascadeRouterConfig {
             classifier_mode: ClassifierMode::Heuristic,
             window_size: 50,
             max_cascade_tokens: None,
+            summary_provider: None,
         }
     }
 }
@@ -319,12 +323,45 @@ impl RouterProvider {
         Ok(all)
     }
 
-    /// Evaluate quality and return a verdict. Uses heuristic mode only (judge mode
-    /// requires async context and is applied at the call site).
+    /// Evaluate quality with heuristics only.
     fn evaluate_heuristic(response: &str, threshold: f64) -> cascade::QualityVerdict {
         let mut verdict = heuristic_score(response);
         verdict.should_escalate = verdict.score < threshold;
         verdict
+    }
+
+    /// Evaluate quality using the configured classifier mode.
+    ///
+    /// For `ClassifierMode::Judge`, calls the summary provider and falls back to heuristic
+    /// on any error. For `ClassifierMode::Heuristic`, evaluates synchronously.
+    async fn evaluate_quality(
+        response: &str,
+        threshold: f64,
+        mode: ClassifierMode,
+        summary_provider: Option<&AnyProvider>,
+    ) -> cascade::QualityVerdict {
+        if mode == ClassifierMode::Judge {
+            if let Some(judge) = summary_provider {
+                match cascade::judge_score(judge, response).await {
+                    Some(score) => {
+                        return cascade::QualityVerdict {
+                            score,
+                            should_escalate: score < threshold,
+                            reason: format!("judge score: {score:.2}"),
+                        };
+                    }
+                    None => {
+                        tracing::warn!("cascade: judge call failed, falling back to heuristic");
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "cascade: classifier_mode=judge but no summary_provider configured, \
+                     using heuristic"
+                );
+            }
+        }
+        Self::evaluate_heuristic(response, threshold)
     }
 }
 
@@ -612,7 +649,13 @@ impl RouterProvider {
                         u32::try_from((response.chars().count() / 4).max(1)).unwrap_or(u32::MAX);
                     tokens_used = tokens_used.saturating_add(estimated_tokens);
 
-                    let verdict = Self::evaluate_heuristic(&response, cfg.quality_threshold);
+                    let verdict = Self::evaluate_quality(
+                        &response,
+                        cfg.quality_threshold,
+                        cfg.classifier_mode,
+                        cfg.summary_provider.as_ref(),
+                    )
+                    .await;
 
                     // Record quality score separately from availability.
                     {
@@ -700,6 +743,7 @@ impl RouterProvider {
     /// occurs, the user experiences: cheap model's full response time + expensive model's
     /// TTFT. This is strictly worse than direct routing to the expensive model for
     /// hard queries. Acceptable for v1; see CRIT-01 in critic handoff for alternatives.
+    #[allow(clippy::too_many_lines)]
     async fn cascade_chat_stream(
         &self,
         providers: &[AnyProvider],
@@ -753,7 +797,13 @@ impl RouterProvider {
                         u32::try_from((text.chars().count() / 4).max(1)).unwrap_or(u32::MAX);
                     tokens_used = tokens_used.saturating_add(estimated_tokens);
 
-                    let verdict = Self::evaluate_heuristic(&text, cfg.quality_threshold);
+                    let verdict = Self::evaluate_quality(
+                        &text,
+                        cfg.quality_threshold,
+                        cfg.classifier_mode,
+                        cfg.summary_provider.as_ref(),
+                    )
+                    .await;
 
                     {
                         let mut state = cascade_state

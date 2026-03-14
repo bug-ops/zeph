@@ -153,12 +153,36 @@ pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
                         "cascade window_size=0 is invalid, clamped to 1"
                     );
                 }
+                // Build summary provider for judge mode.
+                let summary_provider = if classifier_mode == ClassifierMode::Judge {
+                    if let Some(model_spec) = config.llm.summary_model.as_deref() {
+                        match create_summary_provider(model_spec, config) {
+                            Ok(p) => Some(p),
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "cascade: failed to build judge provider, falling back to heuristic"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "cascade: classifier_mode=judge requires [llm] summary_model to \
+                             be configured; falling back to heuristic"
+                        );
+                        None
+                    }
+                } else {
+                    None
+                };
                 let router_cascade_cfg = CascadeRouterConfig {
                     quality_threshold,
                     max_escalations: cascade_cfg.max_escalations,
                     classifier_mode,
                     window_size,
                     max_cascade_tokens: cascade_cfg.max_cascade_tokens,
+                    summary_provider,
                 };
                 RouterProvider::new(providers).with_cascade(router_cascade_cfg)
             } else if config.llm.router_ema_enabled {
