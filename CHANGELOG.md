@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `zeph-core`: replace `anyhow` with typed `thiserror` errors in `subagent/` and `config_watcher.rs`; remove `anyhow` dependency from `zeph-core`
+- refactor(core): split `config/types.rs` (3331 lines) into domain modules — `agent`, `channels`, `defaults`, `features`, `logging`, `memory`, `providers`, `security`, `ui`, `mod` (Config struct + re-exports), and `tests`; no API changes, TOML format unchanged (#1735)
+- refactor(memory): split `semantic.rs` (3335 lines) into sub-modules — `mod` (struct + constructors + accessors), `recall`, `summarization`, `cross_session`, `corrections`, `graph`, and `tests`; public API unchanged (#1736)
+- Box large `LoopbackEvent` variants (`ToolStart`, `ToolOutput`) to reduce enum size on the stack; extracted `ToolStartData` and `ToolOutputData` structs with public fields (#1737)
+- Replace `async-trait` with native async traits in `zeph-tools` search backends (`SemanticSearchBackend`, `LspSearchBackend`); removed `async-trait` dependency from `zeph-tools` (#1733)
 
 ### Security
 

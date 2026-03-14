@@ -10,6 +10,7 @@
 use super::helpers::*;
 use super::*;
 use agent_client_protocol::{self as acp, Agent as _};
+use zeph_core::channel::{ToolOutputData, ToolStartData};
 
 fn make_spawner() -> AgentSpawner {
     Arc::new(|_channel, _ctx, _session_ctx| Box::pin(async {}))
@@ -463,13 +464,13 @@ fn loopback_empty_chunk_returns_none() {
 
 #[test]
 fn loopback_tool_start_parent_tool_use_id_injected_into_meta() {
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "child-id".to_owned(),
         params: None,
         parent_tool_use_id: Some("parent-uuid".to_owned()),
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -491,7 +492,7 @@ fn loopback_tool_start_parent_tool_use_id_injected_into_meta() {
 
 #[test]
 fn loopback_tool_output_parent_tool_use_id_injected_into_meta() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "done".to_owned(),
         diff: None,
@@ -504,7 +505,7 @@ fn loopback_tool_output_parent_tool_use_id_injected_into_meta() {
         parent_tool_use_id: Some("parent-uuid".to_owned()),
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -531,13 +532,13 @@ fn loopback_tool_output_parent_tool_use_id_injected_into_meta() {
 
 #[test]
 fn loopback_tool_start_maps_to_tool_call_in_progress() {
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "test-id".to_owned(),
         params: None,
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -553,13 +554,13 @@ fn loopback_tool_start_maps_to_tool_call_in_progress() {
 #[test]
 fn loopback_tool_start_uses_command_as_title() {
     let params = serde_json::json!({ "command": "ls -la /tmp" });
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "test-id-2".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -575,13 +576,13 @@ fn loopback_tool_start_uses_command_as_title() {
 fn loopback_tool_start_truncates_long_command() {
     let long_cmd = "a".repeat(200);
     let params = serde_json::json!({ "command": long_cmd });
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "test-id-3".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     match &updates[0] {
         acp::SessionUpdate::ToolCall(tc) => {
@@ -595,7 +596,7 @@ fn loopback_tool_start_truncates_long_command() {
 
 #[test]
 fn loopback_tool_output_maps_to_tool_call_update() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "done".to_owned(),
         diff: None,
@@ -608,7 +609,7 @@ fn loopback_tool_output_maps_to_tool_call_update() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -621,7 +622,7 @@ fn loopback_tool_output_maps_to_tool_call_update() {
 
 #[test]
 fn loopback_tool_output_error_maps_to_failed() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "error".to_owned(),
         diff: None,
@@ -634,7 +635,7 @@ fn loopback_tool_output_error_maps_to_failed() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -648,13 +649,13 @@ fn loopback_tool_output_error_maps_to_failed() {
 // #1037 — toolName always present in claudeCode, even without parentToolUseId
 #[test]
 fn tool_start_always_includes_tool_name_in_claude_code() {
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "tc-1".to_owned(),
         params: None,
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -677,13 +678,13 @@ fn tool_start_always_includes_tool_name_in_claude_code() {
 
 #[test]
 fn tool_start_tool_name_and_parent_merged_in_claude_code() {
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "read_file".to_owned(),
         tool_call_id: "tc-2".to_owned(),
         params: None,
         parent_tool_use_id: Some("parent-abc".to_owned()),
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -712,7 +713,7 @@ fn tool_start_tool_name_and_parent_merged_in_claude_code() {
 // #1037 — toolName always present in claudeCode of tool output, even without parent
 #[test]
 fn tool_output_always_includes_tool_name_in_claude_code() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "ok".to_owned(),
         diff: None,
@@ -725,7 +726,7 @@ fn tool_output_always_includes_tool_name_in_claude_code() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -748,13 +749,13 @@ fn tool_output_always_includes_tool_name_in_claude_code() {
 #[test]
 fn tool_start_read_kind_sets_location_from_file_path_param() {
     let params = serde_json::json!({ "file_path": "/src/main.rs" });
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "read_file".to_owned(),
         tool_call_id: "tc-read".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -770,13 +771,13 @@ fn tool_start_read_kind_sets_location_from_file_path_param() {
 #[test]
 fn tool_start_read_kind_sets_location_from_path_param() {
     let params = serde_json::json!({ "path": "/tmp/file.txt" });
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "read_file".to_owned(),
         tool_call_id: "tc-read2".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -792,13 +793,13 @@ fn tool_start_read_kind_sets_location_from_path_param() {
 #[test]
 fn tool_start_execute_kind_does_not_set_locations() {
     let params = serde_json::json!({ "command": "ls" });
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "tc-bash".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -816,7 +817,7 @@ fn tool_output_with_raw_response_emits_intermediate_before_final() {
         "type": "text",
         "file": { "filePath": "/foo.rs", "content": "fn main(){}", "numLines": 1, "startLine": 1, "totalLines": 1 }
     });
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "read_file".to_owned(),
         display: "fn main(){}".to_owned(),
         diff: None,
@@ -829,7 +830,7 @@ fn tool_output_with_raw_response_emits_intermediate_before_final() {
         parent_tool_use_id: None,
         raw_response: Some(raw_resp),
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 2, "expected intermediate + final");
     // First: intermediate with toolResponse, no status
@@ -870,7 +871,7 @@ fn tool_output_terminal_with_raw_response_emits_three_updates() {
     let raw_resp = serde_json::json!({
         "stdout": "hello", "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false
     });
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "hello".to_owned(),
         diff: None,
@@ -883,7 +884,7 @@ fn tool_output_terminal_with_raw_response_emits_three_updates() {
         parent_tool_use_id: None,
         raw_response: Some(raw_resp),
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     // toolResponse intermediate + terminal_output intermediate + terminal_exit final
     assert_eq!(
@@ -1199,7 +1200,7 @@ fn mime_to_ext_known_types() {
 
 #[test]
 fn loopback_tool_output_with_locations() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "read_file".to_owned(),
         display: "content".to_owned(),
         diff: None,
@@ -1212,7 +1213,7 @@ fn loopback_tool_output_with_locations() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -1228,7 +1229,7 @@ fn loopback_tool_output_with_locations() {
 
 #[test]
 fn loopback_tool_output_empty_locations() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "ok".to_owned(),
         diff: None,
@@ -1241,7 +1242,7 @@ fn loopback_tool_output_empty_locations() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -1267,7 +1268,7 @@ fn tool_use_marker_filtered_duplicate() {
 
 #[test]
 fn loopback_tool_output_with_terminal_id() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "ls output".to_owned(),
         diff: None,
@@ -1280,7 +1281,7 @@ fn loopback_tool_output_with_terminal_id() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     // Expect 2 updates: intermediate with terminal_output meta, final with terminal_exit +
     // Terminal content.
@@ -1325,13 +1326,13 @@ fn loopback_tool_output_with_terminal_id() {
 
 #[test]
 fn loopback_tool_start_execute_sets_terminal_info() {
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "tc-bash".to_owned(),
         params: Some(serde_json::json!({ "command": "ls" })),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -2209,7 +2210,7 @@ fn loopback_plan_empty_entries() {
 #[test]
 fn loopback_tool_output_multiline_preserves_newlines_in_terminal_data() {
     let raw = "file1.rs\nfile2.rs\nfile3.rs".to_owned();
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: raw.clone(),
         diff: None,
@@ -2222,7 +2223,7 @@ fn loopback_tool_output_multiline_preserves_newlines_in_terminal_data() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 2, "expected intermediate + final update");
 
@@ -2380,13 +2381,13 @@ async fn new_session_meta_absent_when_no_rules() {
 
 #[test]
 fn tool_start_includes_started_at_in_meta() {
-    let event = LoopbackEvent::ToolStart {
+    let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
         tool_name: "bash".to_owned(),
         tool_call_id: "tc-elapsed".to_owned(),
         params: None,
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -2417,7 +2418,7 @@ fn tool_start_includes_started_at_in_meta() {
 #[test]
 fn tool_output_includes_elapsed_ms_in_meta() {
     let started_at = std::time::Instant::now();
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "ok".to_owned(),
         diff: None,
@@ -2430,7 +2431,7 @@ fn tool_output_includes_elapsed_ms_in_meta() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: Some(started_at),
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -2457,7 +2458,7 @@ fn tool_output_includes_elapsed_ms_in_meta() {
 
 #[test]
 fn tool_output_no_elapsed_ms_when_started_at_absent() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "bash".to_owned(),
         display: "ok".to_owned(),
         diff: None,
@@ -2470,7 +2471,7 @@ fn tool_output_no_elapsed_ms_when_started_at_absent() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     match &updates[0] {
@@ -2760,7 +2761,7 @@ fn build_available_commands_includes_review() {
 
 #[test]
 fn tool_output_with_diff_includes_diff_content() {
-    let event = LoopbackEvent::ToolOutput {
+    let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
         tool_name: "write_file".into(),
         display: "new content".into(),
         diff: Some(zeph_core::DiffData {
@@ -2777,7 +2778,7 @@ fn tool_output_with_diff_includes_diff_content() {
         parent_tool_use_id: None,
         raw_response: None,
         started_at: None,
-    };
+    }));
     let updates = loopback_event_to_updates(event);
     let has_diff = updates.iter().any(|u| {
         if let acp::SessionUpdate::ToolCallUpdate(tcu) = u {
