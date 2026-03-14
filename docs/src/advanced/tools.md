@@ -254,27 +254,27 @@ When `[tools.permissions]` is absent, legacy `blocked_commands` and `confirm_pat
 
 ## Output Overflow
 
-When tool output exceeds a configurable character threshold, the full response is offloaded to a file and the LLM receives a truncated version (head + tail split) with a pointer to the saved file. This prevents large outputs from consuming the entire context window while preserving access to the complete data.
+When tool output exceeds a configurable character threshold, the full response is stored in the SQLite memory database and the LLM receives a truncated version (head + tail split) with an opaque reference (`overflow:<uuid>`). This prevents large outputs from consuming the entire context window while preserving access to the complete data.
 
-Overflow files are written to `~/.zeph/data/tool-output/` by default. The pointer returned to the LLM contains only the filename (`{uuid}.txt`), not the full path, to avoid leaking the home directory.
+Stale overflow entries are cleaned up automatically on startup based on `retention_days`. Overflow entries are also removed automatically via CASCADE when the parent conversation is deleted.
 
-Stale overflow files are cleaned up automatically on startup based on `retention_days`.
+The `read_overflow` native tool allows the agent to retrieve a stored overflow entry by its UUID. The reference is intentionally opaque — no filesystem paths are exposed to the LLM.
 
 ### Configuration
 
 ```toml
 [tools.overflow]
 threshold = 50000       # Character count above which output is offloaded (default: 50000)
-retention_days = 7      # Days to retain overflow files before cleanup (default: 7)
-# dir = "/custom/path"  # Custom overflow directory (default: ~/.zeph/data/tool-output)
+retention_days = 7      # Days to retain overflow entries before cleanup (default: 7)
+max_overflow_bytes = 10485760  # Max bytes per entry (default: 10 MiB, 0 = unlimited)
 ```
 
 ### Security
 
-- Overflow directory is canonicalized after creation to prevent symlink-based path traversal.
-- Files are created with `0o600` permissions on Unix (owner read/write only).
-- Cleanup uses `symlink_metadata` and skips non-regular files (symlinks, directories) to prevent symlink attacks.
-- The returned pointer is a bare filename, never an absolute path.
+- Overflow content is stored in the SQLite database, not on the filesystem — no path traversal risk.
+- The reference returned to the LLM is a UUID (`overflow:<uuid>`), never a filesystem path.
+- `read_overflow` validates the UUID format before querying the database.
+- Overflow entries are scoped to the conversation they belong to and are deleted via CASCADE when the conversation is purged.
 
 ## Output Filter Pipeline
 

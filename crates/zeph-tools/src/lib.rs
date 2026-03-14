@@ -12,7 +12,6 @@ pub mod executor;
 pub mod file;
 pub mod filter;
 pub mod net;
-pub mod overflow;
 pub mod permissions;
 pub mod registry;
 pub mod scrape;
@@ -40,7 +39,6 @@ pub use filter::{
     OutputFilterRegistry, sanitize_output, strip_ansi,
 };
 pub use net::is_private_ip;
-pub use overflow::{cleanup_overflow_files, save_overflow};
 pub use permissions::{
     AutonomyLevel, PermissionAction, PermissionPolicy, PermissionRule, PermissionsConfig,
 };

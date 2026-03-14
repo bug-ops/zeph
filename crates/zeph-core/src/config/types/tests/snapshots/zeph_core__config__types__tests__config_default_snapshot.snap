@@ -1,6 +1,5 @@
 ---
-source: crates/zeph-core/src/config/types/tests.rs
-assertion_line: 42
+source: crates/zeph-core/src/config/types/tests/mod.rs
 expression: toml_str
 ---
 [agent]
@@ -174,6 +173,7 @@ extra_patterns = []
 [tools.overflow]
 threshold = 50000
 retention_days = 7
+max_overflow_bytes = 10485760
 
 [tools.anomaly]
 enabled = false

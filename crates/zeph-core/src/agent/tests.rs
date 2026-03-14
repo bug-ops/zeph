@@ -972,8 +972,23 @@ pub mod agent_tests {
     }
 
     #[tokio::test]
-    async fn test_overflow_notice_contains_filename() {
-        let dir = tempfile::tempdir().unwrap();
+    async fn test_overflow_notice_contains_uuid() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::semantic::SemanticMemory;
+
+        let memory = SemanticMemory::with_sqlite_backend(
+            ":memory:",
+            AnyProvider::Mock(MockProvider::default()),
+            "test-model",
+            0.7,
+            0.3,
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -984,18 +999,29 @@ pub mod agent_tests {
             .with_overflow_config(zeph_tools::OverflowConfig {
                 threshold: 100,
                 retention_days: 7,
-                dir: Some(dir.path().to_path_buf()),
-            });
+                max_overflow_bytes: 0,
+            })
+            .with_memory(Arc::new(memory), cid, 100, 5, 1000);
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
-        assert!(result.contains("full output saved to"));
-        // Notice must contain the absolute path and byte count
-        let notice_start = result.find("full output saved to").unwrap();
-        let notice_part = &result[notice_start..];
-        assert!(notice_part.contains(".txt"));
-        assert!(notice_part.contains(std::path::MAIN_SEPARATOR));
-        assert!(notice_part.contains("bytes"));
+        assert!(
+            result.contains("overflow:"),
+            "notice must use overflow:<uuid> format, got: {result}"
+        );
+        assert!(
+            result.contains("bytes"),
+            "notice must contain byte count, got: {result}"
+        );
+        assert!(
+            result.contains("read_overflow"),
+            "notice must mention read_overflow tool, got: {result}"
+        );
+        // Must NOT contain filesystem paths.
+        assert!(
+            !result.contains(".txt"),
+            "notice must not contain filesystem path, got: {result}"
+        );
     }
 
     #[tokio::test]
@@ -1010,7 +1036,7 @@ pub mod agent_tests {
             .with_overflow_config(zeph_tools::OverflowConfig {
                 threshold: 1000,
                 retention_days: 7,
-                dir: None,
+                max_overflow_bytes: 0,
             });
 
         // Must exceed overflow threshold (1000) so that truncate_tool_output_at produces
@@ -1032,7 +1058,7 @@ pub mod agent_tests {
             .with_overflow_config(zeph_tools::OverflowConfig {
                 threshold: 1000,
                 retention_days: 7,
-                dir: None,
+                max_overflow_bytes: 0,
             });
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
@@ -1054,12 +1080,38 @@ pub mod agent_tests {
             .with_overflow_config(zeph_tools::OverflowConfig {
                 threshold: 1000,
                 retention_days: 7,
-                dir: None,
+                max_overflow_bytes: 0,
             });
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
         assert!(result.contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn test_overflow_no_memory_backend_s3_fallback() {
+        // S3 fix: when no memory backend or conversation_id is present, the overflow notice
+        // must include the fallback message rather than panicking or attempting a DB insert.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tool_summarization(false)
+            .with_overflow_config(zeph_tools::OverflowConfig {
+                threshold: 100,
+                retention_days: 7,
+                max_overflow_bytes: 0,
+            });
+        // No memory backend set.
+
+        let long = "x".repeat(200);
+        let result = agent.maybe_summarize_tool_output(&long).await;
+        assert!(
+            result.contains("could not be saved — no memory backend or conversation available"),
+            "S3 fallback message must appear when no memory backend, got: {result}"
+        );
     }
 
     #[test]

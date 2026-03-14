@@ -9,6 +9,7 @@ use zeph_llm::provider::{
 use super::super::Agent;
 use super::{AnomalyOutcome, retry_backoff_ms, tool_args_hash, tool_def_to_definition};
 use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
+use crate::overflow_tools::OverflowToolExecutor;
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 use tracing::Instrument;
 use zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER;
@@ -1150,7 +1151,12 @@ impl<C: Channel> Agent<C> {
             }
             self.record_anomaly_outcome(anomaly_outcome).await?;
 
-            let processed = self.maybe_summarize_tool_output(&output).await;
+            // read_overflow returns the full stored content and must not be re-overflowed.
+            let processed = if tc.name == OverflowToolExecutor::TOOL_NAME {
+                output.clone()
+            } else {
+                self.maybe_summarize_tool_output(&output).await
+            };
             let body = if let Some(ref stats) = inline_stats {
                 format!("{stats}\n{processed}")
             } else {

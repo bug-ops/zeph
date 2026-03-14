@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
 use crate::permissions::{AutonomyLevel, PermissionPolicy, PermissionsConfig};
@@ -44,15 +42,20 @@ fn default_retention_days() -> u64 {
     7
 }
 
-/// Configuration for large tool response offload to filesystem.
+fn default_max_overflow_bytes() -> usize {
+    10 * 1024 * 1024 // 10 MiB
+}
+
+/// Configuration for large tool response offload to `SQLite`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OverflowConfig {
     #[serde(default = "default_overflow_threshold")]
     pub threshold: usize,
     #[serde(default = "default_retention_days")]
     pub retention_days: u64,
-    #[serde(default)]
-    pub dir: Option<PathBuf>,
+    /// Maximum bytes per overflow entry. `0` means unlimited.
+    #[serde(default = "default_max_overflow_bytes")]
+    pub max_overflow_bytes: usize,
 }
 
 impl Default for OverflowConfig {
@@ -60,7 +63,7 @@ impl Default for OverflowConfig {
         Self {
             threshold: default_overflow_threshold(),
             retention_days: default_retention_days(),
-            dir: None,
+            max_overflow_bytes: default_max_overflow_bytes(),
         }
     }
 }
@@ -445,19 +448,28 @@ mod tests {
 
     #[test]
     fn deserialize_overflow_config_full() {
-        let toml_str = r#"
+        let toml_str = r"
             [overflow]
             threshold = 100000
             retention_days = 14
-            dir = "/tmp/overflow"
-        "#;
+            max_overflow_bytes = 5242880
+        ";
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.overflow.threshold, 100_000);
         assert_eq!(config.overflow.retention_days, 14);
-        assert_eq!(
-            config.overflow.dir.unwrap().to_str().unwrap(),
-            "/tmp/overflow"
-        );
+        assert_eq!(config.overflow.max_overflow_bytes, 5_242_880);
+    }
+
+    #[test]
+    fn deserialize_overflow_config_unknown_dir_field_is_ignored() {
+        // Old configs with `dir = "..."` must not fail deserialization.
+        let toml_str = r#"
+            [overflow]
+            threshold = 75000
+            dir = "/tmp/overflow"
+        "#;
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.overflow.threshold, 75_000);
     }
 
     #[test]
@@ -469,7 +481,6 @@ mod tests {
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.overflow.threshold, 75_000);
         assert_eq!(config.overflow.retention_days, 7);
-        assert!(config.overflow.dir.is_none());
     }
 
     #[test]
@@ -477,6 +488,6 @@ mod tests {
         let config: ToolsConfig = toml::from_str("").unwrap();
         assert_eq!(config.overflow.threshold, 50_000);
         assert_eq!(config.overflow.retention_days, 7);
-        assert!(config.overflow.dir.is_none());
+        assert_eq!(config.overflow.max_overflow_bytes, 10 * 1024 * 1024);
     }
 }

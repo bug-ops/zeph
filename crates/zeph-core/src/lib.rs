@@ -31,6 +31,7 @@ pub mod orchestration;
 pub mod hash;
 pub mod http;
 pub mod memory_tools;
+pub mod overflow_tools;
 pub mod sanitizer;
 pub mod skill_loader;
 pub mod subagent;

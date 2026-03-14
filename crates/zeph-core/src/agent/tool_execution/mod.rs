@@ -191,20 +191,43 @@ impl<C: Channel> Agent<C> {
         if output.len() <= threshold {
             return output.to_string();
         }
-        let overflow_notice = match zeph_tools::save_overflow(
-            output,
-            &self.tool_orchestrator.overflow_config,
-        ) {
-            Some(path) => format!(
-                "\n[full output saved to {} — {} bytes, use read tool to access]",
-                path.display(),
+
+        let max_bytes = self.tool_orchestrator.overflow_config.max_overflow_bytes;
+        let overflow_notice = if max_bytes > 0 && output.len() > max_bytes {
+            format!(
+                "\n[warning: full output ({} bytes) exceeds max_overflow_bytes ({max_bytes}) — \
+                 not saved]",
                 output.len()
-            ),
-            None => format!(
-                "\n[warning: full output ({} bytes) could not be saved to disk — truncated output shown]",
+            )
+        } else if let (Some(memory), Some(conv_id)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
+        {
+            match memory
+                .sqlite()
+                .save_overflow(conv_id.0, output.as_bytes())
+                .await
+            {
+                Ok(uuid) => format!(
+                    "\n[full output stored as overflow:{uuid} — {} bytes, use read_overflow \
+                         tool to retrieve]",
+                    output.len()
+                ),
+                Err(e) => {
+                    tracing::warn!("failed to save overflow to SQLite: {e}");
+                    format!(
+                        "\n[warning: full output ({} bytes) could not be saved to overflow store]",
+                        output.len()
+                    )
+                }
+            }
+        } else {
+            format!(
+                "\n[warning: full output ({} bytes) could not be saved — no memory backend or \
+                 conversation available]",
                 output.len()
-            ),
+            )
         };
+
         let truncated = if self.tool_orchestrator.summarize_tool_output_enabled {
             self.summarize_tool_output(output, threshold).await
         } else {

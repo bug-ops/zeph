@@ -8,6 +8,7 @@ pub mod experiments;
 pub mod graph_store;
 mod history;
 pub(crate) mod messages;
+pub mod overflow;
 mod skills;
 mod summaries;
 mod trust;

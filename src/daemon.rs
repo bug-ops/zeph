@@ -201,6 +201,18 @@ pub(crate) async fn run_daemon(
         None => memory.sqlite().create_conversation().await?,
     };
 
+    {
+        let sqlite = memory.sqlite().clone();
+        let retention_secs = config.tools.overflow.retention_days.saturating_mul(86_400);
+        tokio::spawn(async move {
+            match sqlite.cleanup_overflow(retention_secs).await {
+                Ok(n) if n > 0 => tracing::info!("cleaned up {n} stale overflow entries"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("overflow cleanup failed: {e}"),
+            }
+        });
+    }
+
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
 
     let filter_registry = if config.tools.filters.enabled {
@@ -245,6 +257,10 @@ pub(crate) async fn run_daemon(
         std::sync::Arc::clone(&memory),
         conversation_id,
     );
+    let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
+        std::sync::Arc::new(memory.sqlite().clone()),
+    )
+    .with_conversation(conversation_id.0);
     let skill_loader_executor =
         zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
     let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
@@ -253,7 +269,13 @@ pub(crate) async fn run_daemon(
     let tool_executor =
         zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
-            zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base_tool)),
+            zeph_tools::CompositeExecutor::new(
+                memory_executor,
+                zeph_tools::CompositeExecutor::new(
+                    overflow_executor,
+                    zeph_tools::DynExecutor(base_tool),
+                ),
+            ),
         )));
 
     let mcp_registry = create_mcp_registry(

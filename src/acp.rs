@@ -227,6 +227,24 @@ async fn build_acp_deps(
     let budget_tokens = app.auto_budget_tokens(&provider);
     let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+
+    {
+        let sqlite = memory.sqlite().clone();
+        let retention_secs = app
+            .config()
+            .tools
+            .overflow
+            .retention_days
+            .saturating_mul(86_400);
+        tokio::spawn(async move {
+            match sqlite.cleanup_overflow(retention_secs).await {
+                Ok(n) if n > 0 => tracing::info!("cleaned up {n} stale overflow entries"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("overflow cleanup failed: {e}"),
+            }
+        });
+    }
+
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
         .read()
         .expect("registry read lock")
@@ -604,6 +622,14 @@ async fn spawn_acp_agent(
             .conversation_id
             .unwrap_or(zeph_memory::ConversationId(0)),
     );
+    let overflow_executor = {
+        let mut ex =
+            zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()));
+        if let Some(cid) = session_ctx.conversation_id {
+            ex = ex.with_conversation(cid.0);
+        }
+        ex
+    };
     let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
     let (tool_executor, cancel_signal, provider_override, parent_tool_use_id) =
         if let Some(ctx) = acp_ctx {
@@ -636,7 +662,13 @@ async fn spawn_acp_agent(
             }
             base = Arc::new(zeph_tools::CompositeExecutor::new(
                 skill_loader_executor,
-                zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base)),
+                zeph_tools::CompositeExecutor::new(
+                    memory_executor,
+                    zeph_tools::CompositeExecutor::new(
+                        overflow_executor,
+                        zeph_tools::DynExecutor(base),
+                    ),
+                ),
             ));
             (
                 zeph_tools::DynExecutor(base),
@@ -652,7 +684,10 @@ async fn spawn_acp_agent(
                 skill_loader_executor,
                 zeph_tools::CompositeExecutor::new(
                     memory_executor,
-                    zeph_tools::DynExecutor(Arc::clone(&tool_executor) as Arc<_>),
+                    zeph_tools::CompositeExecutor::new(
+                        overflow_executor,
+                        zeph_tools::DynExecutor(Arc::clone(&tool_executor) as Arc<_>),
+                    ),
                 ),
             ));
             (zeph_tools::DynExecutor(base), None, None, None)

@@ -318,9 +318,8 @@ enabled = true              # Enable smart output filtering for tool results
 # ]
 
 [tools.overflow]
-threshold = 50000           # Offload output larger than N chars to file (default: 50000)
-retention_days = 7          # Days to retain overflow files before cleanup (default: 7)
-# dir = "/custom/path"     # Custom overflow directory (default: ~/.zeph/data/tool-output)
+threshold = 50000           # Offload output larger than N chars to SQLite overflow table (default: 50000)
+retention_days = 7          # Days to retain overflow entries before age-based cleanup (default: 7)
 
 [tools.audit]
 enabled = false             # Structured JSON audit log for tool executions

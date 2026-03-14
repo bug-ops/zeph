@@ -9652,8 +9652,6 @@ dependencies = [
 name = "zeph-tools"
 version = "0.15.0"
 dependencies = [
- "dirs",
- "filetime",
  "glob",
  "insta",
  "proptest",
@@ -9671,7 +9669,6 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "url",
- "uuid",
  "wiremock",
  "zeph-index",
 ]

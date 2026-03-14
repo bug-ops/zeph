@@ -566,9 +566,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let config = app.config();
 
     {
-        let overflow_cfg = config.tools.overflow.clone();
-        tokio::task::spawn_blocking(move || {
-            zeph_tools::cleanup_overflow_files(&overflow_cfg);
+        let sqlite = memory.sqlite().clone();
+        let retention_secs = config.tools.overflow.retention_days.saturating_mul(86_400);
+        tokio::spawn(async move {
+            match sqlite.cleanup_overflow(retention_secs).await {
+                Ok(n) if n > 0 => tracing::info!("cleaned up {n} stale overflow entries"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("overflow cleanup failed: {e}"),
+            }
         });
     }
 
@@ -595,6 +600,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         std::sync::Arc::clone(&memory),
         conversation_id,
     );
+    let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
+        std::sync::Arc::new(memory.sqlite().clone()),
+    )
+    .with_conversation(conversation_id.0);
     let skill_loader_executor =
         zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
     let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
@@ -602,7 +611,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let inner_executor =
         zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
-            zeph_tools::CompositeExecutor::new(memory_executor, zeph_tools::DynExecutor(base)),
+            zeph_tools::CompositeExecutor::new(
+                memory_executor,
+                zeph_tools::CompositeExecutor::new(
+                    overflow_executor,
+                    zeph_tools::DynExecutor(base),
+                ),
+            ),
         )));
     let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
         zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone()),
