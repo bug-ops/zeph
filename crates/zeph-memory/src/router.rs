@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use chrono::{DateTime, Duration, Utc};
+
 /// Classification of which memory backend(s) to query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryRoute {
@@ -13,6 +15,13 @@ pub enum MemoryRoute {
     /// Graph-based retrieval via BFS traversal. Good for relationship queries.
     /// When the `graph-memory` feature is disabled, callers treat this as `Hybrid`.
     Graph,
+    /// FTS5 search with a timestamp-range filter. Used for temporal/episodic queries
+    /// ("what did we discuss yesterday", "last week's conversation about Rust").
+    ///
+    /// Known trade-off (MVP): skips vector search entirely for speed. Semantically similar
+    /// but lexically different messages may be missed. Use `Hybrid` route when semantic
+    /// precision matters more than temporal filtering.
+    Episodic,
 }
 
 /// Decides which memory backend(s) to query for a given input.
@@ -21,13 +30,73 @@ pub trait MemoryRouter: Send + Sync {
     fn route(&self, query: &str) -> MemoryRoute;
 }
 
+/// Resolved datetime boundaries for a temporal query.
+///
+/// Both fields use `SQLite` datetime format (`YYYY-MM-DD HH:MM:SS`, UTC).
+/// `None` means "no bound" on that side.
+///
+/// Note: All timestamps are UTC. The `created_at` column in the `messages` table
+/// defaults to `datetime('now')` which is also UTC, so comparisons are consistent.
+/// Users in non-UTC timezones may get slightly unexpected results for "yesterday"
+/// queries (e.g. at 01:00 UTC+5 the user's local yesterday differs from UTC yesterday).
+/// This is an accepted approximation for the heuristic-only MVP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemporalRange {
+    /// Exclusive lower bound: `created_at > after`.
+    pub after: Option<String>,
+    /// Exclusive upper bound: `created_at < before`.
+    pub before: Option<String>,
+}
+
+/// Temporal patterns that indicate an episodic / time-scoped recall query.
+///
+/// Multi-word patterns are preferred over single-word ones to reduce false positives.
+/// Single-word patterns that can appear inside other words (e.g. "ago" in "Chicago")
+/// must be checked with `contains_word()` to enforce word-boundary semantics.
+///
+/// Omitted on purpose: "before", "after", "since", "during", "earlier", "recently"
+/// — these are too ambiguous in technical contexts ("before the function returns",
+/// "since you asked", "during compilation"). They are not in this list.
+const TEMPORAL_PATTERNS: &[&str] = &[
+    // relative day
+    "yesterday",
+    "today",
+    "this morning",
+    "tonight",
+    "last night",
+    // relative week
+    "last week",
+    "this week",
+    "past week",
+    // relative month
+    "last month",
+    "this month",
+    "past month",
+    // temporal questions
+    "when did",
+    "remember when",
+    "last time",
+    "how long ago",
+    // relative phrases requiring word-boundary check
+    // (checked separately via `contains_word` to avoid matching "a few days ago" substring in longer words)
+    "few days ago",
+    "few hours ago",
+    "earlier today",
+];
+
+/// Single-word temporal tokens that require word-boundary checking.
+/// These are NOT in `TEMPORAL_PATTERNS` to avoid substring false positives.
+const WORD_BOUNDARY_TEMPORAL: &[&str] = &["ago"];
+
 /// Heuristic-based memory router.
 ///
-/// Decision logic:
-/// - If query contains code-like patterns (paths, `::`, pure `snake_case` identifiers)
-///   AND does NOT start with a question word → Keyword
-/// - If query is a natural language question or long → Semantic
-/// - Default → Hybrid
+/// Decision logic (in priority order):
+/// 1. Temporal patterns → `Episodic`
+/// 2. Relationship patterns → `Graph`
+/// 3. Code-like patterns (paths, `::`) without question word → `Keyword`
+/// 4. Long NL query or question word → `Semantic`
+/// 5. Short non-question query → `Keyword`
+/// 6. Default → `Hybrid`
 pub struct HeuristicRouter;
 
 const QUESTION_WORDS: &[&str] = &[
@@ -47,6 +116,247 @@ const RELATIONSHIP_PATTERNS: &[&str] = &[
     "history of",
     "know about",
 ];
+
+/// Returns true if `text` contains `word` as a whole word (word-boundary semantics).
+///
+/// A "word boundary" here means the character before and after `word` (if present)
+/// is not an ASCII alphanumeric character or underscore.
+fn contains_word(text: &str, word: &str) -> bool {
+    let bytes = text.as_bytes();
+    let wbytes = word.as_bytes();
+    let wlen = wbytes.len();
+    if wlen > bytes.len() {
+        return false;
+    }
+    for start in 0..=(bytes.len() - wlen) {
+        if bytes[start..start + wlen].eq_ignore_ascii_case(wbytes) {
+            let before_ok =
+                start == 0 || !bytes[start - 1].is_ascii_alphanumeric() && bytes[start - 1] != b'_';
+            let after_ok = start + wlen == bytes.len()
+                || !bytes[start + wlen].is_ascii_alphanumeric() && bytes[start + wlen] != b'_';
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns true if the lowercased query contains any temporal cue that indicates
+/// an episodic / time-scoped recall request.
+fn has_temporal_cue(lower: &str) -> bool {
+    if TEMPORAL_PATTERNS.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    WORD_BOUNDARY_TEMPORAL
+        .iter()
+        .any(|w| contains_word(lower, w))
+}
+
+/// Temporal patterns sorted longest-first for stripping. Initialized once via `LazyLock`
+/// to avoid allocating and sorting on every call to `strip_temporal_keywords`.
+static SORTED_TEMPORAL_PATTERNS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        let mut v: Vec<&str> = TEMPORAL_PATTERNS.to_vec();
+        v.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        v
+    });
+
+/// Strip matched temporal keywords from a query string before passing to FTS5.
+///
+/// Temporal keywords are routing metadata, not search terms. Passing them to FTS5
+/// causes BM25 score distortion — messages that literally mention "yesterday" get
+/// boosted regardless of actual content relevance.
+///
+/// All occurrences of each pattern are removed (not just the first), preventing
+/// score distortion from repeated temporal tokens in edge cases like
+/// "yesterday I mentioned yesterday's bug".
+///
+/// # Example
+/// ```
+/// # use zeph_memory::router::strip_temporal_keywords;
+/// let cleaned = strip_temporal_keywords("what did we discuss yesterday about Rust");
+/// assert_eq!(cleaned, "what did we discuss about Rust");
+/// ```
+#[must_use]
+pub fn strip_temporal_keywords(query: &str) -> String {
+    // Lowercase once for pattern matching; track removal positions in the original string.
+    // We operate on the lowercased copy for matching, then remove spans from `result`
+    // by rebuilding via byte indices (both strings have identical byte lengths because
+    // to_ascii_lowercase is a 1:1 byte mapping for ASCII).
+    let lower = query.to_ascii_lowercase();
+    // Collect all (start, end) spans to remove, then rebuild the string in one pass.
+    let mut remove: Vec<(usize, usize)> = Vec::new();
+
+    for pattern in SORTED_TEMPORAL_PATTERNS.iter() {
+        let plen = pattern.len();
+        let mut search_from = 0;
+        while let Some(pos) = lower[search_from..].find(pattern) {
+            let abs = search_from + pos;
+            remove.push((abs, abs + plen));
+            search_from = abs + plen;
+        }
+    }
+
+    // Strip word-boundary tokens (single-word, e.g. "ago") — all occurrences.
+    for word in WORD_BOUNDARY_TEMPORAL {
+        let wlen = word.len();
+        let lbytes = lower.as_bytes();
+        let mut i = 0;
+        while i + wlen <= lower.len() {
+            if lower[i..].starts_with(*word) {
+                let before_ok =
+                    i == 0 || !lbytes[i - 1].is_ascii_alphanumeric() && lbytes[i - 1] != b'_';
+                let after_ok = i + wlen == lower.len()
+                    || !lbytes[i + wlen].is_ascii_alphanumeric() && lbytes[i + wlen] != b'_';
+                if before_ok && after_ok {
+                    remove.push((i, i + wlen));
+                    i += wlen;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    if remove.is_empty() {
+        // Fast path: no patterns found — return the original string.
+        return query.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+
+    // Merge overlapping/adjacent spans and remove them from the original string.
+    remove.sort_unstable_by_key(|r| r.0);
+    let bytes = query.as_bytes();
+    let mut result = Vec::with_capacity(query.len());
+    let mut cursor = 0;
+    for (start, end) in remove {
+        if start > cursor {
+            result.extend_from_slice(&bytes[cursor..start]);
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < bytes.len() {
+        result.extend_from_slice(&bytes[cursor..]);
+    }
+
+    // Collapse multiple spaces and trim.
+    // SAFETY: We only removed ASCII byte spans; remaining bytes are still valid UTF-8.
+    let s = String::from_utf8(result).unwrap_or_default();
+    s.split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Resolve temporal keywords in `query` to a `(after, before)` datetime boundary pair.
+///
+/// Returns `None` when no specific range can be computed (the episodic path then falls
+/// back to FTS5 without a time filter, relying on temporal decay for recency boosting).
+///
+/// The `now` parameter is injectable for deterministic unit testing. Production callers
+/// should pass `chrono::Utc::now()`.
+///
+/// All datetime strings are in `SQLite` format: `YYYY-MM-DD HH:MM:SS` (UTC).
+#[must_use]
+pub fn resolve_temporal_range(query: &str, now: DateTime<Utc>) -> Option<TemporalRange> {
+    let lower = query.to_ascii_lowercase();
+
+    // yesterday: the full calendar day before today (UTC)
+    if lower.contains("yesterday") {
+        let yesterday = now.date_naive() - Duration::days(1);
+        return Some(TemporalRange {
+            after: Some(format!("{yesterday} 00:00:00")),
+            before: Some(format!("{yesterday} 23:59:59")),
+        });
+    }
+
+    // last night: 18:00 yesterday to 06:00 today (UTC approximation)
+    if lower.contains("last night") {
+        let yesterday = now.date_naive() - Duration::days(1);
+        let today = now.date_naive();
+        return Some(TemporalRange {
+            after: Some(format!("{yesterday} 18:00:00")),
+            before: Some(format!("{today} 06:00:00")),
+        });
+    }
+
+    // tonight: 18:00 today onwards
+    if lower.contains("tonight") {
+        let today = now.date_naive();
+        return Some(TemporalRange {
+            after: Some(format!("{today} 18:00:00")),
+            before: None,
+        });
+    }
+
+    // this morning: midnight to noon today
+    if lower.contains("this morning") {
+        let today = now.date_naive();
+        return Some(TemporalRange {
+            after: Some(format!("{today} 00:00:00")),
+            before: Some(format!("{today} 12:00:00")),
+        });
+    }
+
+    // today / earlier today: midnight to now.
+    // Note: "earlier today" always contains "today", so a separate branch would be
+    // dead code — the "today" check subsumes it.
+    if lower.contains("today") {
+        let today = now.date_naive();
+        return Some(TemporalRange {
+            after: Some(format!("{today} 00:00:00")),
+            before: None,
+        });
+    }
+
+    // last week / past week / this week: 7-day lookback
+    if lower.contains("last week") || lower.contains("past week") || lower.contains("this week") {
+        let start = now - Duration::days(7);
+        return Some(TemporalRange {
+            after: Some(start.format("%Y-%m-%d %H:%M:%S").to_string()),
+            before: None,
+        });
+    }
+
+    // last month / past month / this month: 30-day lookback (approximate)
+    if lower.contains("last month") || lower.contains("past month") || lower.contains("this month")
+    {
+        let start = now - Duration::days(30);
+        return Some(TemporalRange {
+            after: Some(start.format("%Y-%m-%d %H:%M:%S").to_string()),
+            before: None,
+        });
+    }
+
+    // "few days ago" / "few hours ago": 3-day lookback
+    if lower.contains("few days ago") {
+        let start = now - Duration::days(3);
+        return Some(TemporalRange {
+            after: Some(start.format("%Y-%m-%d %H:%M:%S").to_string()),
+            before: None,
+        });
+    }
+    if lower.contains("few hours ago") {
+        let start = now - Duration::hours(6);
+        return Some(TemporalRange {
+            after: Some(start.format("%Y-%m-%d %H:%M:%S").to_string()),
+            before: None,
+        });
+    }
+
+    // "ago" (word-boundary): generic recent lookback (24h)
+    if contains_word(&lower, "ago") {
+        let start = now - Duration::hours(24);
+        return Some(TemporalRange {
+            after: Some(start.format("%Y-%m-%d %H:%M:%S").to_string()),
+            before: None,
+        });
+    }
+
+    // Generic temporal cues without a specific range ("when did", "remember when",
+    // "last time", "how long ago") — fall back to FTS5-only with temporal decay.
+    None
+}
 
 fn starts_with_question(words: &[&str]) -> bool {
     words
@@ -71,17 +381,22 @@ fn is_pure_snake_case(word: &str) -> bool {
 
 impl MemoryRouter for HeuristicRouter {
     fn route(&self, query: &str) -> MemoryRoute {
+        let lower = query.to_ascii_lowercase();
+
+        // 1. Temporal queries take highest priority — must run before relationship check
+        //    to prevent "history of changes last week" from routing to Graph instead of Episodic.
+        if has_temporal_cue(&lower) {
+            return MemoryRoute::Episodic;
+        }
+
+        // 2. Relationship queries go to graph retrieval (feature-gated at call site)
+        let has_relationship = RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p));
+        if has_relationship {
+            return MemoryRoute::Graph;
+        }
+
         let words: Vec<&str> = query.split_whitespace().collect();
         let word_count = words.len();
-
-        // Relationship queries go to graph retrieval (feature-gated at call site)
-        {
-            let lower = query.to_ascii_lowercase();
-            let has_relationship = RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p));
-            if has_relationship {
-                return MemoryRoute::Graph;
-            }
-        }
 
         // Code-like patterns that unambiguously indicate keyword search:
         // file paths (contain '/'), Rust paths (contain '::')
@@ -118,10 +433,17 @@ impl MemoryRouter for HeuristicRouter {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone as _;
+
     use super::*;
 
     fn route(q: &str) -> MemoryRoute {
         HeuristicRouter.route(q)
+    }
+
+    fn fixed_now() -> DateTime<Utc> {
+        // 2026-03-14 12:00:00 UTC — fixed reference point for all temporal tests
+        Utc.with_ymd_and_hms(2026, 3, 14, 12, 0, 0).unwrap()
     }
 
     #[test]
@@ -278,5 +600,223 @@ mod tests {
             route("What does memory_search return?"),
             MemoryRoute::Semantic
         );
+    }
+
+    // ── Temporal routing tests ────────────────────────────────────────────────
+
+    #[test]
+    fn temporal_yesterday_routes_episodic() {
+        assert_eq!(
+            route("what did we discuss yesterday"),
+            MemoryRoute::Episodic
+        );
+    }
+
+    #[test]
+    fn temporal_last_week_routes_episodic() {
+        assert_eq!(
+            route("remember what happened last week"),
+            MemoryRoute::Episodic
+        );
+    }
+
+    #[test]
+    fn temporal_when_did_routes_episodic() {
+        assert_eq!(
+            route("when did we last talk about Qdrant"),
+            MemoryRoute::Episodic
+        );
+    }
+
+    #[test]
+    fn temporal_last_time_routes_episodic() {
+        assert_eq!(
+            route("last time we discussed the scheduler"),
+            MemoryRoute::Episodic
+        );
+    }
+
+    #[test]
+    fn temporal_today_routes_episodic() {
+        assert_eq!(
+            route("what did I mention today about testing"),
+            MemoryRoute::Episodic
+        );
+    }
+
+    #[test]
+    fn temporal_this_morning_routes_episodic() {
+        assert_eq!(route("what did we say this morning"), MemoryRoute::Episodic);
+    }
+
+    #[test]
+    fn temporal_last_month_routes_episodic() {
+        assert_eq!(
+            route("find the config change from last month"),
+            MemoryRoute::Episodic
+        );
+    }
+
+    #[test]
+    fn temporal_history_collision_routes_episodic() {
+        // CRIT-01: "history of" is a relationship pattern, but temporal wins when both match.
+        // Temporal check is first — "last week" causes Episodic, not Graph.
+        assert_eq!(route("history of changes last week"), MemoryRoute::Episodic);
+    }
+
+    #[test]
+    fn temporal_ago_word_boundary_routes_episodic() {
+        assert_eq!(route("we fixed this a day ago"), MemoryRoute::Episodic);
+    }
+
+    #[test]
+    fn ago_in_chicago_no_false_positive() {
+        // MED-01: "Chicago" contains "ago" but must NOT route to Episodic.
+        // word-boundary check prevents this false positive.
+        assert_ne!(
+            route("meeting in Chicago about the project"),
+            MemoryRoute::Episodic
+        );
+    }
+
+    #[test]
+    fn non_temporal_unchanged() {
+        assert_eq!(route("how does the agent loop work"), MemoryRoute::Semantic);
+    }
+
+    #[test]
+    fn code_query_unchanged() {
+        assert_eq!(route("zeph_memory::recall"), MemoryRoute::Keyword);
+    }
+
+    // ── resolve_temporal_range tests ─────────────────────────────────────────
+
+    #[test]
+    fn resolve_yesterday_range() {
+        let now = fixed_now(); // 2026-03-14 12:00:00 UTC
+        let range = resolve_temporal_range("what did we discuss yesterday", now).unwrap();
+        assert_eq!(range.after.as_deref(), Some("2026-03-13 00:00:00"));
+        assert_eq!(range.before.as_deref(), Some("2026-03-13 23:59:59"));
+    }
+
+    #[test]
+    fn resolve_last_week_range() {
+        let now = fixed_now(); // 2026-03-14 12:00:00 UTC
+        let range = resolve_temporal_range("remember last week's discussion", now).unwrap();
+        // 7 days before 2026-03-14 = 2026-03-07
+        assert!(range.after.as_deref().unwrap().starts_with("2026-03-07"));
+        assert!(range.before.is_none());
+    }
+
+    #[test]
+    fn resolve_last_month_range() {
+        let now = fixed_now();
+        let range = resolve_temporal_range("find the bug from last month", now).unwrap();
+        // 30 days before 2026-03-14 = 2026-02-12
+        assert!(range.after.as_deref().unwrap().starts_with("2026-02-12"));
+        assert!(range.before.is_none());
+    }
+
+    #[test]
+    fn resolve_today_range() {
+        let now = fixed_now();
+        let range = resolve_temporal_range("what did we do today", now).unwrap();
+        assert_eq!(range.after.as_deref(), Some("2026-03-14 00:00:00"));
+        assert!(range.before.is_none());
+    }
+
+    #[test]
+    fn resolve_this_morning_range() {
+        let now = fixed_now();
+        let range = resolve_temporal_range("what did we say this morning", now).unwrap();
+        assert_eq!(range.after.as_deref(), Some("2026-03-14 00:00:00"));
+        assert_eq!(range.before.as_deref(), Some("2026-03-14 12:00:00"));
+    }
+
+    #[test]
+    fn resolve_last_night_range() {
+        let now = fixed_now();
+        let range = resolve_temporal_range("last night's conversation", now).unwrap();
+        assert_eq!(range.after.as_deref(), Some("2026-03-13 18:00:00"));
+        assert_eq!(range.before.as_deref(), Some("2026-03-14 06:00:00"));
+    }
+
+    #[test]
+    fn resolve_tonight_range() {
+        let now = fixed_now();
+        let range = resolve_temporal_range("remind me tonight what we agreed on", now).unwrap();
+        assert_eq!(range.after.as_deref(), Some("2026-03-14 18:00:00"));
+        assert!(range.before.is_none());
+    }
+
+    #[test]
+    fn resolve_no_temporal_returns_none() {
+        let now = fixed_now();
+        assert!(resolve_temporal_range("what is the purpose of semantic memory", now).is_none());
+    }
+
+    #[test]
+    fn resolve_generic_temporal_returns_none() {
+        // "when did", "remember when", "last time", "how long ago" — no specific range
+        let now = fixed_now();
+        assert!(resolve_temporal_range("when did we discuss this feature", now).is_none());
+        assert!(resolve_temporal_range("remember when we fixed that bug", now).is_none());
+    }
+
+    // ── strip_temporal_keywords tests ────────────────────────────────────────
+
+    #[test]
+    fn strip_yesterday_from_query() {
+        let cleaned = strip_temporal_keywords("what did we discuss yesterday about Rust");
+        assert_eq!(cleaned, "what did we discuss about Rust");
+    }
+
+    #[test]
+    fn strip_last_week_from_query() {
+        let cleaned = strip_temporal_keywords("find the config change from last week");
+        assert_eq!(cleaned, "find the config change from");
+    }
+
+    #[test]
+    fn strip_does_not_alter_non_temporal() {
+        let q = "what is the purpose of semantic memory";
+        assert_eq!(strip_temporal_keywords(q), q);
+    }
+
+    #[test]
+    fn strip_ago_word_boundary() {
+        let cleaned = strip_temporal_keywords("we fixed this a day ago in the scheduler");
+        // "ago" removed, rest preserved
+        assert!(!cleaned.contains("ago"));
+        assert!(cleaned.contains("scheduler"));
+    }
+
+    #[test]
+    fn strip_does_not_touch_chicago() {
+        let q = "meeting in Chicago about the project";
+        assert_eq!(strip_temporal_keywords(q), q);
+    }
+
+    #[test]
+    fn strip_empty_string_returns_empty() {
+        assert_eq!(strip_temporal_keywords(""), "");
+    }
+
+    #[test]
+    fn strip_only_temporal_keyword_returns_empty() {
+        // When the entire query is a temporal keyword, stripping leaves an empty string.
+        // recall_routed falls back to the original query in this case.
+        assert_eq!(strip_temporal_keywords("yesterday"), "");
+    }
+
+    #[test]
+    fn strip_repeated_temporal_keyword_removes_all_occurrences() {
+        // IMPL-02: all occurrences must be removed, not just the first.
+        let cleaned = strip_temporal_keywords("yesterday I mentioned yesterday's bug");
+        assert!(
+            !cleaned.contains("yesterday"),
+            "both occurrences must be removed: got '{cleaned}'"
+        );
+        assert!(cleaned.contains("mentioned"));
     }
 }

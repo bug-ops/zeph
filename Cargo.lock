@@ -9584,6 +9584,7 @@ version = "0.15.0"
 dependencies = [
  "blake3",
  "bytemuck",
+ "chrono",
  "criterion",
  "dashmap",
  "futures",

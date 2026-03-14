@@ -526,6 +526,74 @@ impl SqliteStore {
         Ok(rows)
     }
 
+    /// Full-text keyword search over messages using FTS5, filtered by a `created_at` time range.
+    ///
+    /// Used by the `Episodic` recall path to combine keyword matching with temporal filtering.
+    /// Temporal keywords are stripped from `query` by the caller before this method is invoked
+    /// (see `strip_temporal_keywords`) to prevent BM25 score distortion.
+    ///
+    /// `after` and `before` are `SQLite` datetime strings in `YYYY-MM-DD HH:MM:SS` format (UTC).
+    /// `None` means "no bound" on that side.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn keyword_search_with_time_range(
+        &self,
+        query: &str,
+        limit: usize,
+        conversation_id: Option<ConversationId>,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<Vec<(MessageId, f64)>, MemoryError> {
+        let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let safe_query = sanitize_fts5_query(query);
+        if safe_query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build time-range clauses dynamically. Both bounds are optional.
+        let after_clause = if after.is_some() {
+            " AND m.created_at > ?"
+        } else {
+            ""
+        };
+        let before_clause = if before.is_some() {
+            " AND m.created_at < ?"
+        } else {
+            ""
+        };
+        let conv_clause = if conversation_id.is_some() {
+            " AND m.conversation_id = ?"
+        } else {
+            ""
+        };
+
+        let sql = format!(
+            "SELECT m.id, -rank AS score \
+             FROM messages_fts f \
+             JOIN messages m ON m.id = f.rowid \
+             WHERE messages_fts MATCH ? AND m.agent_visible = 1 AND m.deleted_at IS NULL\
+             {after_clause}{before_clause}{conv_clause} \
+             ORDER BY rank \
+             LIMIT ?"
+        );
+
+        let mut q = sqlx::query_as::<_, (MessageId, f64)>(&sql).bind(&safe_query);
+        if let Some(a) = after {
+            q = q.bind(a);
+        }
+        if let Some(b) = before {
+            q = q.bind(b);
+        }
+        if let Some(cid) = conversation_id {
+            q = q.bind(cid);
+        }
+        q = q.bind(effective_limit);
+
+        Ok(q.fetch_all(&self.pool).await?)
+    }
+
     /// Fetch creation timestamps (Unix epoch seconds) for the given message IDs.
     ///
     /// Messages without a `created_at` column fall back to 0.
@@ -1340,6 +1408,146 @@ mod tests {
         assert!(
             msgs[0].parts.is_empty(),
             "\"[]\" fast-path must yield empty parts Vec in load_history_filtered"
+        );
+    }
+
+    // ── keyword_search_with_time_range tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn keyword_search_with_time_range_empty_query_returns_empty() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+        store
+            .save_message(cid, "user", "rust programming")
+            .await
+            .unwrap();
+
+        // Empty query after sanitization returns Ok([]) without hitting FTS5.
+        let results = store
+            .keyword_search_with_time_range("", 10, None, None, None)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn keyword_search_with_time_range_no_bounds_matches_like_keyword_search() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+        store
+            .save_message(cid, "user", "rust async programming")
+            .await
+            .unwrap();
+        store
+            .save_message(cid, "assistant", "python tutorial")
+            .await
+            .unwrap();
+
+        // With no time bounds, should behave like keyword_search.
+        let results = store
+            .keyword_search_with_time_range("rust", 10, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn keyword_search_with_time_range_after_bound_excludes_old_messages() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message(cid, "user", "rust programming guide")
+            .await
+            .unwrap();
+        store
+            .save_message(cid, "user", "rust async patterns")
+            .await
+            .unwrap();
+
+        // Use a far-future after bound — should exclude all messages.
+        let results = store
+            .keyword_search_with_time_range("rust", 10, None, Some("2099-01-01 00:00:00"), None)
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "no messages after year 2099");
+    }
+
+    #[tokio::test]
+    async fn keyword_search_with_time_range_before_bound_excludes_future_messages() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message(cid, "user", "rust programming guide")
+            .await
+            .unwrap();
+
+        // Use a far-past before bound — should exclude all messages (created now, not in 2000).
+        let results = store
+            .keyword_search_with_time_range("rust", 10, None, None, Some("2000-01-01 00:00:00"))
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "no messages before year 2000");
+    }
+
+    #[tokio::test]
+    async fn keyword_search_with_time_range_wide_bounds_returns_results() {
+        let store = test_store().await;
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .save_message(cid, "user", "rust programming guide")
+            .await
+            .unwrap();
+        store
+            .save_message(cid, "assistant", "python basics")
+            .await
+            .unwrap();
+
+        // Wide time window (past to future) should return all matching messages.
+        let results = store
+            .keyword_search_with_time_range(
+                "rust",
+                10,
+                None,
+                Some("2000-01-01 00:00:00"),
+                Some("2099-12-31 23:59:59"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn keyword_search_with_time_range_conversation_filter() {
+        let store = test_store().await;
+        let cid1 = store.create_conversation().await.unwrap();
+        let cid2 = store.create_conversation().await.unwrap();
+
+        store
+            .save_message(cid1, "user", "rust memory safety")
+            .await
+            .unwrap();
+        store
+            .save_message(cid2, "user", "rust async patterns")
+            .await
+            .unwrap();
+
+        let results = store
+            .keyword_search_with_time_range(
+                "rust",
+                10,
+                Some(cid1),
+                Some("2000-01-01 00:00:00"),
+                Some("2099-12-31 23:59:59"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "conversation filter must restrict to cid1 only"
         );
     }
 }
