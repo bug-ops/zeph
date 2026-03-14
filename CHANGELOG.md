@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(llm): `cascade_chat` and `cascade_chat_stream` no longer store an empty-string provider response as `best_seen`; a provider returning `""` is now skipped for best-seen tracking so the caller receives an explicit error instead of a silent empty response on all-fail fallback (#1754)
 - fix(tui): skip ACP stdio/both autostart when `--tui` is active; stdio and TUI are mutually exclusive (both own stdin/stdout); HTTP transport is still allowed alongside TUI when `acp-http` feature is enabled (#1729)
 - fix(mcp): suppress MCP child process stderr in TUI mode to prevent ratatui display corruption; `McpManager` gains `with_suppress_stderr` builder method (#1729)
 - fix(llm): `cascade_chat_stream` now tracks best-seen response across early providers (#1722); on token budget exhaustion with a would-escalate response the highest-scoring prior response is returned; when the last provider fails and an early provider succeeded, the best-seen response is returned instead of propagating the error — achieving parity with `cascade_chat`
