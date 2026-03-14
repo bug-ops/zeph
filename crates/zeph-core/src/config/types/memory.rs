@@ -161,6 +161,10 @@ fn default_graph_expired_edge_retention_days() -> u32 {
     90
 }
 
+fn default_graph_temporal_decay_rate() -> f64 {
+    0.0
+}
+
 /// Vector backend selector for embedding storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -416,6 +420,13 @@ pub struct GraphConfig {
     /// Set to 0 to disable chunking and load all edges at once (legacy behavior).
     #[serde(default = "default_lpa_edge_chunk_size")]
     pub lpa_edge_chunk_size: usize,
+    /// Temporal recency decay rate for graph recall scoring (units: 1/day).
+    ///
+    /// When > 0, recent edges receive a small additive score boost over older edges.
+    /// The boost formula is `1 / (1 + age_days * rate)`, blended additively with the base
+    /// composite score. Default 0.0 preserves existing scoring behavior exactly.
+    #[serde(default = "default_graph_temporal_decay_rate")]
+    pub temporal_decay_rate: f64,
 }
 
 impl Default for GraphConfig {
@@ -437,6 +448,7 @@ impl Default for GraphConfig {
             community_summary_max_prompt_bytes: default_graph_community_summary_max_prompt_bytes(),
             community_summary_concurrency: default_graph_community_summary_concurrency(),
             lpa_edge_chunk_size: default_lpa_edge_chunk_size(),
+            temporal_decay_rate: default_graph_temporal_decay_rate(),
         }
     }
 }

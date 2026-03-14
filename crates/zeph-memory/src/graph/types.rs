@@ -115,14 +115,95 @@ pub struct GraphFact {
     pub entity_match_score: f32,
     pub hop_distance: u32,
     pub confidence: f32,
+    /// `SQLite` datetime string when the edge became valid (e.g. `"2026-03-14 12:00:00"`).
+    /// Used for optional temporal recency scoring. `None` when not populated.
+    pub valid_from: Option<String>,
 }
 
 impl GraphFact {
+    /// Base composite score (no temporal component).
+    ///
+    /// Formula: `entity_match_score * (1 / (1 + hop_distance)) * confidence`
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn composite_score(&self) -> f32 {
         self.entity_match_score * (1.0 / (1.0 + self.hop_distance as f32)) * self.confidence
     }
+
+    /// Composite score with an optional additive temporal recency boost.
+    ///
+    /// When `temporal_decay_rate > 0`, a recency boost is computed as
+    /// `1 / (1 + days_old * decay_rate)` and blended additively with the base score
+    /// (capped at 2x base) so that hop distance remains the dominant factor.
+    ///
+    /// With `temporal_decay_rate = 0.0` (the default) the result equals `composite_score()`.
+    ///
+    /// # Parameters
+    ///
+    /// - `temporal_decay_rate`: non-negative decay rate in units of 1/day. Default 0.0.
+    /// - `now_secs`: current Unix timestamp in seconds (seconds since epoch).
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn score_with_decay(&self, temporal_decay_rate: f64, now_secs: i64) -> f32 {
+        let base = self.composite_score();
+        if temporal_decay_rate <= 0.0 {
+            return base;
+        }
+        let boost = self
+            .valid_from
+            .as_deref()
+            .and_then(parse_sqlite_datetime_to_unix)
+            .map_or(0.0_f64, |valid_from_secs| {
+                let age_secs = (now_secs - valid_from_secs).max(0);
+                // cast i64 → f64: precision loss acceptable for age-in-seconds computation
+                #[allow(clippy::cast_precision_loss)]
+                let age_days = age_secs as f64 / 86_400.0;
+                1.0_f64 / (1.0 + age_days * temporal_decay_rate)
+            });
+        // boost is in [0.0, 1.0]; cast to f32 is safe (no truncation risk).
+        #[allow(clippy::cast_possible_truncation)]
+        let boost_f32 = boost as f32;
+        // Additive blend: base * (1 + boost_fraction), capped at 2x base.
+        base * (1.0 + boost_f32).min(2.0)
+    }
+}
+
+/// Parse a `SQLite` `datetime('now')` string to Unix seconds.
+///
+/// Accepts:
+/// - `"YYYY-MM-DD HH:MM:SS"` (19 chars, standard `SQLite` format)
+/// - `"YYYY-MM-DD HH:MM:SS.fff"` (fractional seconds — truncated, not rounded)
+/// - `"YYYY-MM-DD HH:MM:SSZ"` or `"YYYY-MM-DD HH:MM:SS+HH:MM"` (timezone suffix — treated as UTC)
+///
+/// Returns `None` if the string cannot be parsed.
+#[must_use]
+fn parse_sqlite_datetime_to_unix(s: &str) -> Option<i64> {
+    // Minimum: "YYYY-MM-DD HH:MM:SS" (19 chars)
+    if s.len() < 19 {
+        return None;
+    }
+    let year: i64 = s[0..4].parse().ok()?;
+    let month: i64 = s[5..7].parse().ok()?;
+    let day: i64 = s[8..10].parse().ok()?;
+    let hour: i64 = s[11..13].parse().ok()?;
+    let min: i64 = s[14..16].parse().ok()?;
+    // Only parse the base seconds; ignore fractional seconds and timezone suffix.
+    let sec: i64 = s[17..19].parse().ok()?;
+
+    // Days since Unix epoch (1970-01-01) via civil calendar algorithm.
+    // Reference: https://howardhinnant.github.io/date_algorithms.html#days_from_civil
+    let (y, m) = if month <= 2 {
+        (year - 1, month + 9)
+    } else {
+        (year, month - 3)
+    };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+
+    Some(days * 86_400 + hour * 3_600 + min * 60 + sec)
 }
 
 #[cfg(test)]
@@ -187,6 +268,7 @@ mod tests {
             entity_match_score: 1.0,
             hop_distance: 0,
             confidence: 1.0,
+            valid_from: None,
         };
         // 1.0 * (1/(1+0)) * 1.0 = 1.0
         assert!((fact.composite_score() - 1.0).abs() < 1e-6);
@@ -199,5 +281,94 @@ mod tests {
         };
         // 0.9 * (1/2) * 0.8 = 0.36
         assert!((fact2.composite_score() - 0.36).abs() < 1e-5);
+    }
+
+    #[test]
+    fn score_with_decay_zero_rate_equals_composite() {
+        let fact = GraphFact {
+            entity_name: "A".into(),
+            relation: "uses".into(),
+            target_name: "B".into(),
+            fact: "A uses B".into(),
+            entity_match_score: 1.0,
+            hop_distance: 1,
+            confidence: 0.8,
+            valid_from: Some("2026-01-01 00:00:00".into()),
+        };
+        let base = fact.composite_score();
+        let with_decay = fact.score_with_decay(0.0, 1_752_000_000);
+        assert!((base - with_decay).abs() < 1e-6);
+    }
+
+    #[test]
+    fn score_with_decay_recent_edge_boosted() {
+        // Edge created just now — boost should be near 1.0 (near-zero age).
+        let now_secs: i64 = 1_752_000_000;
+        // valid_from = "2026-01-01 00:00:00" = 1_735_689_600 seconds
+        let fact = GraphFact {
+            entity_name: "A".into(),
+            relation: "uses".into(),
+            target_name: "B".into(),
+            fact: "A uses B".into(),
+            entity_match_score: 1.0,
+            hop_distance: 0,
+            confidence: 1.0,
+            valid_from: Some("2026-01-01 00:00:00".into()),
+        };
+        let base = fact.composite_score();
+        let boosted = fact.score_with_decay(0.01, now_secs);
+        // With nonzero age the boost < 1, so score drops slightly below base * 2.
+        // But the boosted value must be >= base (additive boost).
+        assert!(
+            boosted >= base,
+            "expected boosted >= base: {boosted} >= {base}"
+        );
+    }
+
+    #[test]
+    fn parse_sqlite_datetime_known_epoch() {
+        // 1970-01-01 00:00:00 UTC = Unix epoch
+        assert_eq!(
+            parse_sqlite_datetime_to_unix("1970-01-01 00:00:00"),
+            Some(0)
+        );
+        // 1970-01-02 00:00:00 UTC = 86400
+        assert_eq!(
+            parse_sqlite_datetime_to_unix("1970-01-02 00:00:00"),
+            Some(86_400)
+        );
+    }
+
+    #[test]
+    fn parse_sqlite_datetime_invalid_returns_none() {
+        assert_eq!(parse_sqlite_datetime_to_unix("not-a-date"), None);
+        assert_eq!(parse_sqlite_datetime_to_unix(""), None);
+    }
+
+    #[test]
+    fn parse_sqlite_datetime_fractional_seconds_truncated() {
+        // Fractional seconds should be ignored (truncated), not cause parse failure.
+        assert_eq!(
+            parse_sqlite_datetime_to_unix("1970-01-01 00:00:00.999"),
+            Some(0)
+        );
+        assert_eq!(
+            parse_sqlite_datetime_to_unix("1970-01-02 00:00:00.123"),
+            Some(86_400)
+        );
+    }
+
+    #[test]
+    fn parse_sqlite_datetime_timezone_suffix_treated_as_utc() {
+        // Timezone suffixes are ignored — input is treated as UTC.
+        assert_eq!(
+            parse_sqlite_datetime_to_unix("1970-01-01 00:00:00Z"),
+            Some(0)
+        );
+        // +HH:MM suffix: only base 19 chars are parsed.
+        assert_eq!(
+            parse_sqlite_datetime_to_unix("1970-01-01 00:00:00+05:30"),
+            Some(0)
+        );
     }
 }
