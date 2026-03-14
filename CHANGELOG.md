@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(memory): add `edge_history_limit` config field to `[memory.graph]` (default 100); `GraphStore::edge_history()` already accepted a `limit` parameter but callers had no config-driven default — future TUI/API call sites must read `config.memory.graph.edge_history_limit` instead of hardcoding a value (closes #1778)
 - fix(llm): `cascade_chat` and `cascade_chat_stream` no longer store an empty-string provider response as `best_seen`; a provider returning `""` is now skipped for best-seen tracking so the caller receives an explicit error instead of a silent empty response on all-fail fallback (#1754)
 - fix(tui): skip ACP stdio/both autostart when `--tui` is active; stdio and TUI are mutually exclusive (both own stdin/stdout); HTTP transport is still allowed alongside TUI when `acp-http` feature is enabled (#1729)
 - fix(mcp): suppress MCP child process stderr in TUI mode to prevent ratatui display corruption; `McpManager` gains `with_suppress_stderr` builder method (#1729)

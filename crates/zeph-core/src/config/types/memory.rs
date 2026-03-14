@@ -165,6 +165,10 @@ fn default_graph_temporal_decay_rate() -> f64 {
     0.0
 }
 
+fn default_graph_edge_history_limit() -> usize {
+    100
+}
+
 /// Vector backend selector for embedding storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -427,6 +431,13 @@ pub struct GraphConfig {
     /// composite score. Default 0.0 preserves existing scoring behavior exactly.
     #[serde(default = "default_graph_temporal_decay_rate")]
     pub temporal_decay_rate: f64,
+    /// Maximum number of historical edge versions returned by `edge_history()`. Default: 100.
+    ///
+    /// Caps the result set returned for a given source entity + predicate pair. Prevents
+    /// unbounded memory usage for high-churn predicates when this method is exposed via TUI
+    /// or API endpoints.
+    #[serde(default = "default_graph_edge_history_limit")]
+    pub edge_history_limit: usize,
 }
 
 impl Default for GraphConfig {
@@ -449,6 +460,7 @@ impl Default for GraphConfig {
             community_summary_concurrency: default_graph_community_summary_concurrency(),
             lpa_edge_chunk_size: default_lpa_edge_chunk_size(),
             temporal_decay_rate: default_graph_temporal_decay_rate(),
+            edge_history_limit: default_graph_edge_history_limit(),
         }
     }
 }
