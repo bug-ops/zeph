@@ -2927,21 +2927,31 @@ mod tests {
             .edges_at_timestamp(a, "2020-06-01 00:00:00")
             .await
             .unwrap();
-        assert_eq!(during.len(), 1, "expired edge must be visible during its validity window");
+        assert_eq!(
+            during.len(),
+            1,
+            "expired edge must be visible during its validity window"
+        );
 
         // Before valid_from → not visible.
         let before = gs
             .edges_at_timestamp(a, "2019-01-01 00:00:00")
             .await
             .unwrap();
-        assert!(before.is_empty(), "edge must not be visible before valid_from");
+        assert!(
+            before.is_empty(),
+            "edge must not be visible before valid_from"
+        );
 
         // After valid_to → not visible.
         let after = gs
             .edges_at_timestamp(a, "2026-01-01 00:00:00")
             .await
             .unwrap();
-        assert!(after.is_empty(), "expired edge must not be visible after valid_to");
+        assert!(
+            after.is_empty(),
+            "expired edge must not be visible after valid_to"
+        );
     }
 
     #[tokio::test]
@@ -2964,7 +2974,11 @@ mod tests {
             .edges_at_timestamp(tgt, "2026-01-01 00:00:00")
             .await
             .unwrap();
-        assert_eq!(edges.len(), 1, "edge must be found when querying by target entity_id");
+        assert_eq!(
+            edges.len(),
+            1,
+            "edge must be found when querying by target entity_id"
+        );
     }
 
     #[tokio::test]
@@ -2983,11 +2997,18 @@ mod tests {
             .await
             .unwrap();
 
-        // A → B is an active edge (valid now).
-        gs.insert_edge(a, b, "knows", "BA knows BB", 1.0, None)
-            .await
-            .unwrap();
-        // B → C expired in 2021 (valid 2020→2021).
+        // A → B: active edge with explicit valid_from in 2019 so it predates all test timestamps.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'knows', 'BA knows BB', 1.0, '2019-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+        // B → C: expired edge valid 2020→2021.
         sqlx::query(
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
@@ -3000,7 +3021,7 @@ mod tests {
         .await
         .unwrap();
 
-        // BFS at 2026: A→B active; B→C expired → C not reachable at 2026.
+        // BFS at 2026: A→B active (valid since 2019); B→C expired → C not reachable at 2026.
         let (entities, _edges, depth_map) = gs
             .bfs_at_timestamp(a, 3, "2026-01-01 00:00:00")
             .await
@@ -3019,7 +3040,7 @@ mod tests {
             "C must not be reachable at 2026 because B→C expired in 2021"
         );
 
-        // BFS at 2020-06-01: both A→B (active) and B→C (within window) are valid.
+        // BFS at 2020-06-01: both A→B (active since 2019) and B→C (within window) are valid.
         let (_entities2, _edges2, depth_map2) = gs
             .bfs_at_timestamp(a, 3, "2020-06-01 00:00:00")
             .await
@@ -3067,10 +3088,7 @@ mod tests {
         .unwrap();
 
         // History without relation filter — both versions returned, newest first.
-        let history = gs
-            .edge_history(src, "works at", None, 100)
-            .await
-            .unwrap();
+        let history = gs.edge_history(src, "works at", None, 100).await.unwrap();
         assert_eq!(history.len(), 2, "both edge versions must be returned");
         // Ordered valid_from DESC — version 2 (2022) before version 1 (2020).
         assert!(
@@ -3083,7 +3101,11 @@ mod tests {
             .edge_history(src, "works at", Some("works_at"), 100)
             .await
             .unwrap();
-        assert_eq!(filtered.len(), 2, "relation filter must retain both versions");
+        assert_eq!(
+            filtered.len(),
+            2,
+            "relation filter must retain both versions"
+        );
 
         // History with non-matching predicate.
         let empty = gs
@@ -3142,13 +3164,12 @@ mod tests {
             .unwrap();
 
         // Before invalidation: valid_to and expired_at must be NULL.
-        let active_edge: (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1",
-        )
-        .bind(edge_id)
-        .fetch_one(gs.pool())
-        .await
-        .unwrap();
+        let active_edge: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1")
+                .bind(edge_id)
+                .fetch_one(gs.pool())
+                .await
+                .unwrap();
         assert!(
             active_edge.0.is_none(),
             "valid_to must be NULL before invalidation"
@@ -3161,13 +3182,12 @@ mod tests {
         gs.invalidate_edge(edge_id).await.unwrap();
 
         // After invalidation: both valid_to and expired_at must be set.
-        let dead_edge: (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1",
-        )
-        .bind(edge_id)
-        .fetch_one(gs.pool())
-        .await
-        .unwrap();
+        let dead_edge: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1")
+                .bind(edge_id)
+                .fetch_one(gs.pool())
+                .await
+                .unwrap();
         assert!(
             dead_edge.0.is_some(),
             "valid_to must be set after invalidation"
