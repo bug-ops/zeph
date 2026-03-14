@@ -56,6 +56,15 @@ url = "https://trusted-server.example.com/mcp"
 - Verify the server's TLS certificate chain
 - Monitor server logs for unexpected tool invocations
 
+## Tool List Refresh Security
+
+When an MCP server sends a `notifications/tools/list_changed` notification, Zeph fetches the updated tool list and passes it through `sanitize_tools()` before the tools are made available to the agent. This ensures that:
+
+- Injection patterns introduced via a server-side tool list update are caught immediately.
+- The sanitization invariant (sanitize before use) is maintained for both initial connection and all subsequent refreshes.
+
+Refreshes are also rate-limited per server (minimum 5 seconds between refreshes) and capped at `MAX_TOOLS_PER_SERVER` (100) tools per server to limit the attack surface.
+
 ## Command Allowlist Validation
 
 The `mcp.allowed_commands` setting restricts which binaries can be spawned as MCP stdio servers. Validation enforces:
