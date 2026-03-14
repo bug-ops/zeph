@@ -1,6 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types.rs
-assertion_line: 2663
+assertion_line: 2659
 expression: toml_str
 ---
 [agent]
@@ -65,7 +65,8 @@ history_limit = 50
 qdrant_url = "http://localhost:6334"
 summarization_threshold = 50
 context_budget_tokens = 0
-compaction_threshold = 0.8
+soft_compaction_threshold = 0.7
+hard_compaction_threshold = 0.9
 compaction_preserve_tail = 6
 compaction_cooldown_turns = 2
 auto_budget = true
@@ -78,7 +79,6 @@ autosave_assistant = false
 autosave_min_length = 20
 tool_call_cutoff = 6
 sqlite_pool_size = 5
-deferred_apply_threshold = 0.7
 
 [memory.semantic]
 enabled = true

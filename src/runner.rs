@@ -638,12 +638,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_context_budget(
         budget_tokens,
         0.20,
-        config.memory.compaction_threshold,
+        config.memory.hard_compaction_threshold,
         config.memory.compaction_preserve_tail,
         config.memory.prune_protect_tokens,
     )
+    .with_soft_compaction_threshold(config.memory.soft_compaction_threshold)
     .with_compaction_cooldown(config.memory.compaction_cooldown_turns)
-    .with_deferred_apply_threshold(config.memory.deferred_apply_threshold)
     .with_compression(config.memory.compression.clone())
     .with_routing(config.memory.routing.clone())
     .with_shutdown(shutdown_rx.clone())

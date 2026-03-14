@@ -414,22 +414,22 @@ impl<C: Channel> Agent<C> {
         mut self,
         budget_tokens: usize,
         reserve_ratio: f32,
-        compaction_threshold: f32,
+        hard_compaction_threshold: f32,
         compaction_preserve_tail: usize,
         prune_protect_tokens: usize,
     ) -> Self {
         if budget_tokens > 0 {
             self.context_manager.budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
         }
-        self.context_manager.compaction_threshold = compaction_threshold;
+        self.context_manager.hard_compaction_threshold = hard_compaction_threshold;
         self.context_manager.compaction_preserve_tail = compaction_preserve_tail;
         self.context_manager.prune_protect_tokens = prune_protect_tokens;
         self
     }
 
     #[must_use]
-    pub fn with_deferred_apply_threshold(mut self, threshold: f32) -> Self {
-        self.context_manager.deferred_apply_threshold = threshold;
+    pub fn with_soft_compaction_threshold(mut self, threshold: f32) -> Self {
+        self.context_manager.soft_compaction_threshold = threshold;
         self
     }
 

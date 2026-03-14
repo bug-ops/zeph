@@ -84,9 +84,9 @@ pub(super) enum ContextSlot {
     GraphFacts(Option<Message>),
 }
 impl<C: Channel> Agent<C> {
-    pub(super) fn should_compact(&self) -> bool {
+    pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {
         self.context_manager
-            .should_compact(self.cached_prompt_tokens)
+            .compaction_tier(self.cached_prompt_tokens)
     }
 }
 
@@ -108,6 +108,7 @@ mod tests {
     use super::*;
     #[allow(clippy::wildcard_imports)]
     use crate::agent::agent_tests::*;
+    use crate::agent::context_manager::CompactionTier;
 
     #[test]
     fn chunk_messages_empty_input_returns_single_empty_chunk() {
@@ -232,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn should_compact_disabled_without_budget() {
+    fn compaction_tier_disabled_without_budget() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -247,30 +248,31 @@ mod tests {
                 metadata: MessageMetadata::default(),
             });
         }
-        assert!(!agent.should_compact());
+        assert_eq!(agent.compaction_tier(), CompactionTier::None);
     }
 
     #[test]
-    fn should_compact_below_threshold() {
+    fn compaction_tier_none_below_soft() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(1000, 0.20, 0.75, 4, 0);
-        assert!(!agent.should_compact());
+            .with_context_budget(1000, 0.20, 0.90, 4, 0);
+        assert_eq!(agent.compaction_tier(), CompactionTier::None);
     }
 
     #[test]
-    fn should_compact_above_threshold() {
+    fn compaction_tier_hard_above_threshold() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(100, 0.20, 0.75, 4, 0);
+            .with_context_budget(100, 0.20, 0.75, 4, 0)
+            .with_soft_compaction_threshold(0.50);
 
         for i in 0..20 {
             agent.messages.push(Message {
@@ -280,7 +282,7 @@ mod tests {
                 metadata: MessageMetadata::default(),
             });
         }
-        assert!(agent.should_compact());
+        assert_eq!(agent.compaction_tier(), CompactionTier::Hard);
     }
 
     #[tokio::test]
@@ -377,7 +379,7 @@ mod tests {
             agent.context_manager.budget.as_ref().unwrap().max_tokens(),
             4096
         );
-        assert!((agent.context_manager.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert!((agent.context_manager.hard_compaction_threshold - 0.80).abs() < f32::EPSILON);
         assert_eq!(agent.context_manager.compaction_preserve_tail, 6);
     }
 
@@ -1453,38 +1455,42 @@ mod tests {
     }
 
     #[test]
-    fn should_compact_triggers_when_cached_tokens_exceed_threshold() {
+    fn compaction_tier_hard_triggers_when_cached_tokens_exceed_hard_threshold() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        // budget 1000, threshold 0.75 → compact at 750 tokens
+        // budget 1000, hard=0.75, soft=0.50 → hard fires above 750
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(1000, 0.20, 0.75, 4, 0);
+            .with_context_budget(1000, 0.20, 0.75, 4, 0)
+            .with_soft_compaction_threshold(0.50);
         agent.cached_prompt_tokens = 900;
 
-        assert!(
-            agent.should_compact(),
-            "cached_prompt_tokens above threshold must trigger compaction"
+        assert_eq!(
+            agent.compaction_tier(),
+            CompactionTier::Hard,
+            "cached_prompt_tokens above hard threshold must return Hard"
         );
     }
 
     #[test]
-    fn should_compact_does_not_trigger_below_threshold() {
+    fn compaction_tier_none_does_not_trigger_below_soft_threshold() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        // budget 1000, threshold 0.75 → compact at 750 tokens
+        // budget 1000, hard=0.75, soft=0.50 → nothing fires below 500
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_context_budget(1000, 0.20, 0.75, 4, 0);
+            .with_context_budget(1000, 0.20, 0.75, 4, 0)
+            .with_soft_compaction_threshold(0.50);
         agent.cached_prompt_tokens = 100;
 
-        assert!(
-            !agent.should_compact(),
-            "cached_prompt_tokens below threshold must not trigger compaction"
+        assert_eq!(
+            agent.compaction_tier(),
+            CompactionTier::None,
+            "cached_prompt_tokens below soft threshold must return None"
         );
     }
 
@@ -3240,13 +3246,13 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(100_000, 0.20, 0.80, 4, 0)
-            .with_deferred_apply_threshold(0.70);
+            .with_soft_compaction_threshold(0.70);
 
         make_tool_pair(&mut agent, "a");
         make_tool_pair(&mut agent, "b");
 
         agent.messages[2].metadata.deferred_summary = Some("s".into());
-        // Simulate token usage above 70% threshold
+        // Simulate token usage above 70% soft threshold
         agent.cached_prompt_tokens = 75_000;
 
         assert!(!agent.context_manager.compacted_this_turn);
@@ -3266,10 +3272,10 @@ mod tests {
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
-        // Large budget: 70% threshold = 70_000 tokens — far above cached_prompt_tokens
+        // Large budget: soft threshold 70% = 70_000 tokens — far above cached_prompt_tokens
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_context_budget(100_000, 0.20, 0.80, 4, 0)
-            .with_deferred_apply_threshold(0.70);
+            .with_soft_compaction_threshold(0.70);
 
         // tool_call_cutoff defaults to 6; add exactly that many deferred summaries
         for label in ["a", "b", "c", "d", "e", "f"] {

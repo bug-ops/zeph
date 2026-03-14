@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Tiered context compaction** (#1338): replaced single `compaction_threshold` with soft tier (`soft_compaction_threshold`, default 0.70 — prune tool outputs + apply deferred summaries, no LLM) and hard tier (`hard_compaction_threshold`, default 0.90 — full LLM summarization). Old `compaction_threshold` field still accepted via serde alias.
 - **`/plan cancel` during execution** — cancel commands are now delivered immediately during active plan execution via concurrent channel polling; previously only reachable from multi-reader channels.
 - **DagScheduler exponential backoff** — concurrency-limit deferral now uses 250ms→500ms→1s→2s→4s (cap 5s) instead of a fixed 250ms sleep, eliminating CPU spin-loops under sustained load.
 - **Single shared `QdrantOps` instance** — all subsystems (semantic memory, skill matcher, MCP tool registry, code store) share one gRPC connection instead of creating independent connections on startup.
