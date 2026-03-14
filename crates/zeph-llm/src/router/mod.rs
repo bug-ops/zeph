@@ -438,7 +438,7 @@ impl LlmProvider for RouterProvider {
                 // Cascade: pass Arc slice directly — providers are sorted at construction,
                 // so no Vec allocation needed on the hot path.
                 return router
-                    .cascade_chat(&router.providers.clone(), &messages, status_tx)
+                    .cascade_chat(&router.providers, &messages, status_tx)
                     .await;
             }
             let providers = router.ordered_providers();
@@ -481,7 +481,7 @@ impl LlmProvider for RouterProvider {
             if router.strategy == RouterStrategy::Cascade {
                 // Cascade: pass Arc slice directly — no Vec allocation on the hot path.
                 return router
-                    .cascade_chat_stream(&router.providers.clone(), &messages, status_tx)
+                    .cascade_chat_stream(&router.providers, &messages, status_tx)
                     .await;
             }
             let providers = router.ordered_providers();
