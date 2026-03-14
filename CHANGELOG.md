@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(cost): add gpt-5 and gpt-5-mini to default pricing table (closes #1744)
 - feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
 - feat(core): when pruning a tool output that has an overflow file, emit `[tool output pruned; full content at {path}]` instead of clearing the body, preserving the reference across hard compaction, `prune_tool_outputs`, and `prune_stale_tool_outputs` (#1740)
+- feat(memory): validate `temporal_decay_rate` in `[memory.graph]` on deserialization — rejects NaN, Inf, negative values, and values outside `[0.0, 10.0]`; invalid configs produce a descriptive error at startup instead of silently producing NaN scores (closes #1777)
 
 ### Changed
 
