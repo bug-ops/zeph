@@ -702,9 +702,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             chain: vec![],
             strategy: match s {
                 "thompson" => RouterStrategyConfig::Thompson,
+                "cascade" => RouterStrategyConfig::Cascade,
                 _ => RouterStrategyConfig::Ema,
             },
             thompson_state_path: state.router_thompson_state_path.clone(),
+            cascade: None,
         }),
         stt: None,
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),

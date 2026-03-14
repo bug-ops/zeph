@@ -600,12 +600,14 @@ pub enum RouterStrategyConfig {
     Ema,
     /// Thompson Sampling with Beta distributions (persistence-backed).
     Thompson,
+    /// Cascade routing: try cheapest provider first, escalate on degenerate output.
+    Cascade,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
     pub chain: Vec<String>,
-    /// Routing strategy: `"ema"` (default) or `"thompson"`.
+    /// Routing strategy: `"ema"` (default), `"thompson"`, or `"cascade"`.
     #[serde(default)]
     pub strategy: RouterStrategyConfig,
     /// Path for persisting Thompson Sampling state. Defaults to `~/.zeph/router_thompson_state.json`.
@@ -617,6 +619,86 @@ pub struct RouterConfig {
     /// (e.g., avoid `/tmp`). The file is created with mode `0o600` on Unix.
     #[serde(default)]
     pub thompson_state_path: Option<String>,
+    /// Cascade routing configuration. Only used when `strategy = "cascade"`.
+    #[serde(default)]
+    pub cascade: Option<CascadeConfig>,
+}
+
+/// Configuration for cascade routing (`strategy = "cascade"`).
+///
+/// Cascade routing tries providers in chain order (cheapest first), escalating to
+/// the next provider when the response is classified as degenerate (empty, repetitive,
+/// incoherent). Chain order determines cost order: first provider = cheapest.
+///
+/// # Limitations
+///
+/// The heuristic classifier detects degenerate outputs only, not semantic failures.
+/// Use `classifier_mode = "judge"` for semantic quality gating (adds LLM call cost).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CascadeConfig {
+    /// Minimum quality score [0.0, 1.0] to accept a response without escalating.
+    /// Responses scoring below this threshold trigger escalation.
+    #[serde(default = "default_cascade_quality_threshold")]
+    pub quality_threshold: f64,
+
+    /// Maximum number of quality-based escalations per request.
+    /// Network/API errors do not count against this budget.
+    /// Default: 2 (allows up to 3 providers: cheap → mid → expensive).
+    #[serde(default = "default_cascade_max_escalations")]
+    pub max_escalations: u8,
+
+    /// Quality classifier mode: `"heuristic"` (default) or `"judge"`.
+    /// Heuristic is zero-cost but detects only degenerate outputs.
+    /// Judge requires a configured `summary_model` and adds one LLM call per evaluation.
+    #[serde(default)]
+    pub classifier_mode: CascadeClassifierMode,
+
+    /// Rolling quality history window size per provider. Default: 50.
+    #[serde(default = "default_cascade_window_size")]
+    pub window_size: usize,
+
+    /// Maximum cumulative input+output tokens across all escalation levels.
+    /// When exceeded, returns the best-seen response instead of escalating further.
+    /// `None` disables the budget (unbounded escalation cost).
+    #[serde(default)]
+    pub max_cascade_tokens: Option<u32>,
+}
+
+impl Default for CascadeConfig {
+    fn default() -> Self {
+        Self {
+            quality_threshold: default_cascade_quality_threshold(),
+            max_escalations: default_cascade_max_escalations(),
+            classifier_mode: CascadeClassifierMode::default(),
+            window_size: default_cascade_window_size(),
+            max_cascade_tokens: None,
+        }
+    }
+}
+
+/// Quality classifier mode for cascade routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CascadeClassifierMode {
+    /// Zero-cost heuristic: detects degenerate outputs (empty, repetitive, incoherent).
+    /// Does not detect semantic failures (hallucinations, wrong answers).
+    #[default]
+    Heuristic,
+    /// LLM-based judge: more accurate but adds latency. Falls back to heuristic on failure.
+    /// Requires `summary_model` to be configured.
+    Judge,
+}
+
+fn default_cascade_quality_threshold() -> f64 {
+    0.5
+}
+
+fn default_cascade_max_escalations() -> u8 {
+    2
+}
+
+fn default_cascade_window_size() -> usize {
+    50
 }
 
 #[derive(Debug, Deserialize, Serialize)]
