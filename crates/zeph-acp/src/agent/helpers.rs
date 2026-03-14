@@ -259,13 +259,12 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::Sessio
             acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new("\n".into())),
             acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(text.into())),
         ],
-        LoopbackEvent::ToolStart {
-            tool_name,
-            tool_call_id,
-            params,
-            parent_tool_use_id,
-            started_at,
-        } => {
+        LoopbackEvent::ToolStart(data) => {
+            let tool_name = data.tool_name;
+            let tool_call_id = data.tool_call_id;
+            let params = data.params;
+            let parent_tool_use_id = data.parent_tool_use_id;
+            let started_at = data.started_at;
             // Derive a human-readable title from params when available.
             // For bash: use the command string (truncated). For others: fall back to tool_name.
             let title = params
@@ -348,19 +347,17 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::Sessio
             tool_call = tool_call.meta(meta);
             vec![acp::SessionUpdate::ToolCall(tool_call)]
         }
-        LoopbackEvent::ToolOutput {
-            tool_name,
-            display,
-            diff,
-            locations,
-            tool_call_id,
-            is_error,
-            terminal_id,
-            parent_tool_use_id,
-            raw_response,
-            started_at,
-            ..
-        } => {
+        LoopbackEvent::ToolOutput(data) => {
+            let tool_name = data.tool_name;
+            let display = data.display;
+            let diff = data.diff;
+            let locations = data.locations;
+            let tool_call_id = data.tool_call_id;
+            let is_error = data.is_error;
+            let terminal_id = data.terminal_id;
+            let parent_tool_use_id = data.parent_tool_use_id;
+            let raw_response = data.raw_response;
+            let started_at = data.started_at;
             let elapsed_ms: Option<u64> =
                 started_at.map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
             let acp_locations: Vec<acp::ToolCallLocation> = locations

@@ -261,6 +261,40 @@ pub enum StopHint {
     MaxTurnRequests,
 }
 
+/// Data carried by a [`LoopbackEvent::ToolStart`] variant.
+#[derive(Debug, Clone)]
+pub struct ToolStartData {
+    pub tool_name: String,
+    pub tool_call_id: String,
+    /// Raw input parameters passed to the tool (e.g. `{"command": "..."}` for bash).
+    pub params: Option<serde_json::Value>,
+    /// Set when this tool call is made by a subagent; identifies the parent's `tool_call_id`.
+    pub parent_tool_use_id: Option<String>,
+    /// Wall-clock instant when the tool call was initiated; used to compute elapsed time.
+    pub started_at: std::time::Instant,
+}
+
+/// Data carried by a [`LoopbackEvent::ToolOutput`] variant.
+#[derive(Debug, Clone)]
+pub struct ToolOutputData {
+    pub tool_name: String,
+    pub display: String,
+    pub diff: Option<crate::DiffData>,
+    pub filter_stats: Option<String>,
+    pub kept_lines: Option<Vec<usize>>,
+    pub locations: Option<Vec<String>>,
+    pub tool_call_id: String,
+    pub is_error: bool,
+    /// Terminal ID for shell tool calls routed through the IDE terminal.
+    pub terminal_id: Option<String>,
+    /// Set when this tool output belongs to a subagent; identifies the parent's `tool_call_id`.
+    pub parent_tool_use_id: Option<String>,
+    /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
+    pub raw_response: Option<serde_json::Value>,
+    /// Wall-clock instant when the corresponding `ToolStart` was emitted; used for elapsed time.
+    pub started_at: Option<std::time::Instant>,
+}
+
 /// Events emitted by the agent side toward the A2A caller.
 #[derive(Debug, Clone)]
 pub enum LoopbackEvent {
@@ -269,34 +303,8 @@ pub enum LoopbackEvent {
     FullMessage(String),
     Status(String),
     /// Emitted immediately before tool execution begins.
-    ToolStart {
-        tool_name: String,
-        tool_call_id: String,
-        /// Raw input parameters passed to the tool (e.g. `{"command": "..."}` for bash).
-        params: Option<serde_json::Value>,
-        /// Set when this tool call is made by a subagent; identifies the parent's `tool_call_id`.
-        parent_tool_use_id: Option<String>,
-        /// Wall-clock instant when the tool call was initiated; used to compute elapsed time.
-        started_at: std::time::Instant,
-    },
-    ToolOutput {
-        tool_name: String,
-        display: String,
-        diff: Option<crate::DiffData>,
-        filter_stats: Option<String>,
-        kept_lines: Option<Vec<usize>>,
-        locations: Option<Vec<String>>,
-        tool_call_id: String,
-        is_error: bool,
-        /// Terminal ID for shell tool calls routed through the IDE terminal.
-        terminal_id: Option<String>,
-        /// Set when this tool output belongs to a subagent; identifies the parent's `tool_call_id`.
-        parent_tool_use_id: Option<String>,
-        /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
-        raw_response: Option<serde_json::Value>,
-        /// Wall-clock instant when the corresponding `ToolStart` was emitted; used for elapsed time.
-        started_at: Option<std::time::Instant>,
-    },
+    ToolStart(Box<ToolStartData>),
+    ToolOutput(Box<ToolOutputData>),
     /// Token usage from the last LLM turn.
     Usage {
         input_tokens: u64,
@@ -404,20 +412,20 @@ impl Channel for LoopbackChannel {
 
     async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
         self.output_tx
-            .send(LoopbackEvent::ToolStart {
+            .send(LoopbackEvent::ToolStart(Box::new(ToolStartData {
                 tool_name: event.tool_name.to_owned(),
                 tool_call_id: event.tool_call_id.to_owned(),
                 params: event.params,
                 parent_tool_use_id: event.parent_tool_use_id,
                 started_at: std::time::Instant::now(),
-            })
+            })))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
     async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
         self.output_tx
-            .send(LoopbackEvent::ToolOutput {
+            .send(LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
                 tool_name: event.tool_name.to_owned(),
                 display: event.body.to_owned(),
                 diff: event.diff,
@@ -430,7 +438,7 @@ impl Channel for LoopbackChannel {
                 parent_tool_use_id: event.parent_tool_use_id,
                 raw_response: event.raw_response,
                 started_at: event.started_at,
-            })
+            })))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }
@@ -692,31 +700,18 @@ mod tests {
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
         match event {
-            LoopbackEvent::ToolOutput {
-                tool_name,
-                display,
-                diff,
-                filter_stats,
-                kept_lines,
-                locations,
-                tool_call_id,
-                is_error,
-                terminal_id,
-                parent_tool_use_id,
-                raw_response,
-                ..
-            } => {
-                assert_eq!(tool_name, "bash");
-                assert_eq!(display, "exit 0");
-                assert!(diff.is_none());
-                assert!(filter_stats.is_none());
-                assert!(kept_lines.is_none());
-                assert!(locations.is_none());
-                assert_eq!(tool_call_id, "");
-                assert!(!is_error);
-                assert!(terminal_id.is_none());
-                assert!(parent_tool_use_id.is_none());
-                assert!(raw_response.is_none());
+            LoopbackEvent::ToolOutput(data) => {
+                assert_eq!(data.tool_name, "bash");
+                assert_eq!(data.display, "exit 0");
+                assert!(data.diff.is_none());
+                assert!(data.filter_stats.is_none());
+                assert!(data.kept_lines.is_none());
+                assert!(data.locations.is_none());
+                assert_eq!(data.tool_call_id, "");
+                assert!(!data.is_error);
+                assert!(data.terminal_id.is_none());
+                assert!(data.parent_tool_use_id.is_none());
+                assert!(data.raw_response.is_none());
             }
             _ => panic!("expected ToolOutput event"),
         }
@@ -842,17 +837,11 @@ mod tests {
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
         match event {
-            LoopbackEvent::ToolStart {
-                tool_name,
-                tool_call_id,
-                params,
-                parent_tool_use_id,
-                ..
-            } => {
-                assert_eq!(tool_name, "shell");
-                assert_eq!(tool_call_id, "tc-001");
-                assert!(params.is_some());
-                assert!(parent_tool_use_id.is_none());
+            LoopbackEvent::ToolStart(data) => {
+                assert_eq!(data.tool_name, "shell");
+                assert_eq!(data.tool_call_id, "tc-001");
+                assert!(data.params.is_some());
+                assert!(data.parent_tool_use_id.is_none());
             }
             _ => panic!("expected ToolStart event"),
         }
@@ -873,7 +862,7 @@ mod tests {
         let event = handle.output_rx.recv().await.unwrap();
         assert!(matches!(
             event,
-            LoopbackEvent::ToolStart { parent_tool_use_id: Some(ref id), .. } if id == "parent-123"
+            LoopbackEvent::ToolStart(ref data) if data.parent_tool_use_id.as_deref() == Some("parent-123")
         ));
     }
 

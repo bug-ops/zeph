@@ -49,57 +49,62 @@ struct CompiledPattern {
     regex: Regex,
 }
 
-/// Injection detection patterns — same coverage as `zeph_core::sanitizer::INJECTION_PATTERNS`.
+/// Canonical injection-detection pattern set shared with `zeph-core::sanitizer`.
 ///
-/// Note: these are defined locally to keep `zeph-mcp` self-contained (avoids pulling
-/// `ContentIsolationConfig` and the full sanitizer pipeline as a dependency). When patterns
-/// are updated in `zeph-core`, update them here too.
+/// Both `zeph-mcp` (tool-definition sanitization) and `zeph-core` (content isolation
+/// pipeline) compile their own [`Regex`] instances from this slice at startup. Keeping
+/// the raw patterns here — in the crate that `zeph-core` depends on — ensures a single
+/// source of truth: any pattern added or changed here is automatically picked up by
+/// both sanitization layers.
 ///
-/// Follow-up: extract shared patterns into a lightweight `zeph-core` feature to avoid drift
-/// (filed as a separate issue).
-static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
-    let raw: &[(&str, &str)] = &[
-        (
-            "ignore_instructions",
-            r"(?i)ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions",
-        ),
-        ("role_override", r"(?i)you\s+are\s+now"),
-        (
-            "new_directive",
-            r"(?i)new\s+(instructions?|directives?|roles?|personas?)",
-        ),
-        ("developer_mode", r"(?i)developer\s+mode"),
-        ("system_prompt_leak", r"(?i)system\s+prompt"),
-        (
-            "reveal_instructions",
-            r"(?i)(reveal|show|display|print)\s+your\s+(instructions?|prompts?|rules?)",
-        ),
-        ("jailbreak", r"(?i)\b(DAN|jailbreak)\b"),
-        ("base64_payload", r"(?i)(decode|eval|execute).*base64"),
-        (
-            "xml_tag_injection",
-            r"(?i)</?\s*(system|assistant|user|tool_result|function_call)\s*>",
-        ),
-        ("markdown_image_exfil", r"(?i)!\[.*?\]\(https?://[^)]+\)"),
-        ("forget_everything", r"(?i)forget\s+(everything|all)"),
-        (
-            "disregard_instructions",
-            r"(?i)disregard\s+(your|all|previous)",
-        ),
-        (
-            "override_directives",
-            r"(?i)override\s+(your|all)\s+(directives?|instructions?|rules?)",
-        ),
-        ("act_as_if", r"(?i)act\s+as\s+if"),
-        ("html_image_exfil", r"(?i)<img\s+[^>]*src\s*="),
-        ("delimiter_escape_tool_output", r"(?i)</?tool-output[\s>]"),
-        (
-            "delimiter_escape_external_data",
-            r"(?i)</?external-data[\s>]",
-        ),
-    ];
+/// # Pattern coverage
+/// Common English-language prompt-injection techniques (OWASP LLM Top 10), Unicode
+/// bypass vectors (handled upstream by [`strip_format_chars`]), exfiltration channels
+/// (markdown/HTML images), and delimiter-escape attempts against Zeph's own wrapper tags.
+pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
+    (
+        "ignore_instructions",
+        r"(?i)ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions",
+    ),
+    ("role_override", r"(?i)you\s+are\s+now"),
+    (
+        "new_directive",
+        r"(?i)new\s+(instructions?|directives?|roles?|personas?)",
+    ),
+    ("developer_mode", r"(?i)developer\s+mode"),
+    ("system_prompt_leak", r"(?i)system\s+prompt"),
+    (
+        "reveal_instructions",
+        r"(?i)(reveal|show|display|print)\s+your\s+(instructions?|prompts?|rules?)",
+    ),
+    ("jailbreak", r"(?i)\b(DAN|jailbreak)\b"),
+    ("base64_payload", r"(?i)(decode|eval|execute).*base64"),
+    (
+        "xml_tag_injection",
+        r"(?i)</?\s*(system|assistant|user|tool_result|function_call)\s*>",
+    ),
+    ("markdown_image_exfil", r"(?i)!\[.*?\]\(https?://[^)]+\)"),
+    ("forget_everything", r"(?i)forget\s+(everything|all)"),
+    (
+        "disregard_instructions",
+        r"(?i)disregard\s+(your|all|previous)",
+    ),
+    (
+        "override_directives",
+        r"(?i)override\s+(your|all)\s+(directives?|instructions?|rules?)",
+    ),
+    ("act_as_if", r"(?i)act\s+as\s+if"),
+    ("html_image_exfil", r"(?i)<img\s+[^>]*src\s*="),
+    ("delimiter_escape_tool_output", r"(?i)</?tool-output[\s>]"),
+    (
+        "delimiter_escape_external_data",
+        r"(?i)</?external-data[\s>]",
+    ),
+];
 
-    raw.iter()
+static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
+    RAW_INJECTION_PATTERNS
+        .iter()
         .filter_map(|(name, pattern)| {
             Regex::new(pattern)
                 .map(|regex| CompiledPattern { name, regex })

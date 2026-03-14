@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use zeph_core::channel::Channel;
@@ -33,61 +34,69 @@ struct SemanticCodeSearch {
     score_threshold: f32,
 }
 
-#[async_trait::async_trait]
 impl SemanticSearchBackend for SemanticCodeSearch {
-    async fn search(
-        &self,
-        query: &str,
-        file_pattern: Option<&str>,
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        file_pattern: Option<&'a str>,
         max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, zeph_tools::ToolError> {
-        use zeph_llm::provider::LlmProvider;
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<SearchCodeHit>, zeph_tools::ToolError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            use zeph_llm::provider::LlmProvider;
 
-        let matcher = file_pattern
-            .map(glob::Pattern::new)
-            .transpose()
-            .map_err(|e| zeph_tools::ToolError::InvalidParams {
-                message: format!("invalid file_pattern: {e}"),
-            })?;
-        let vector =
-            self.provider.embed(query).await.map_err(|e| {
+            let matcher = file_pattern
+                .map(glob::Pattern::new)
+                .transpose()
+                .map_err(|e| zeph_tools::ToolError::InvalidParams {
+                    message: format!("invalid file_pattern: {e}"),
+                })?;
+            let vector = self.provider.embed(query).await.map_err(|e| {
                 zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string()))
             })?;
-        let mut hits = self
-            .store
-            .search(vector, max_results.saturating_mul(2), None)
-            .await
-            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
-        hits.retain(|hit| hit.score >= self.score_threshold);
+            let mut hits = self
+                .store
+                .search(vector, max_results.saturating_mul(2), None)
+                .await
+                .map_err(|e| {
+                    zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string()))
+                })?;
+            hits.retain(|hit| hit.score >= self.score_threshold);
 
-        let mut out = hits
-            .into_iter()
-            .filter(|hit| {
-                matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
-                    pattern.matches_path(std::path::Path::new(&hit.file_path))
+            let mut out = hits
+                .into_iter()
+                .filter(|hit| {
+                    matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
+                        pattern.matches_path(std::path::Path::new(&hit.file_path))
+                    })
                 })
-            })
-            .map(|hit| SearchCodeHit {
-                file_path: std::fs::canonicalize(&hit.file_path)
-                    .unwrap_or_else(|_| PathBuf::from(&hit.file_path))
-                    .display()
-                    .to_string(),
-                line_start: hit.line_range.0,
-                line_end: hit.line_range.1,
-                snippet: hit
-                    .code
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string(),
-                source: SearchCodeSource::Semantic,
-                score: hit.score,
-                symbol_name: hit.entity_name,
-            })
-            .collect::<Vec<_>>();
-        out.truncate(max_results);
-        Ok(out)
+                .map(|hit| SearchCodeHit {
+                    file_path: std::fs::canonicalize(&hit.file_path)
+                        .unwrap_or_else(|_| PathBuf::from(&hit.file_path))
+                        .display()
+                        .to_string(),
+                    line_start: hit.line_range.0,
+                    line_end: hit.line_range.1,
+                    snippet: hit
+                        .code
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                    source: SearchCodeSource::Semantic,
+                    score: hit.score,
+                    symbol_name: hit.entity_name,
+                })
+                .collect::<Vec<_>>();
+            out.truncate(max_results);
+            Ok(out)
+        })
     }
 }
 
@@ -121,107 +130,129 @@ struct LspSymbolInformation {
     location: LspLocation,
 }
 
-#[async_trait::async_trait]
 impl LspSearchBackend for McpCodeSearch {
-    async fn workspace_symbol(
-        &self,
-        symbol: &str,
-        file_pattern: Option<&str>,
+    fn workspace_symbol<'a>(
+        &'a self,
+        symbol: &'a str,
+        file_pattern: Option<&'a str>,
         max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, zeph_tools::ToolError> {
-        let matcher = file_pattern
-            .map(glob::Pattern::new)
-            .transpose()
-            .map_err(|e| zeph_tools::ToolError::InvalidParams {
-                message: format!("invalid file_pattern: {e}"),
-            })?;
-        let args = serde_json::json!({ "query": symbol });
-        let value = mcp_text_json(
-            &self.manager,
-            &self.server_id,
-            "workspace_symbol_search",
-            args,
-        )
-        .await?;
-        let mut symbols: Vec<LspSymbolInformation> = serde_json::from_value(value)
-            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
-        symbols.truncate(max_results);
-        Ok(symbols
-            .into_iter()
-            .filter(|item| {
-                matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
-                    pattern.matches_path(std::path::Path::new(&uri_to_path(&item.location.uri)))
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<SearchCodeHit>, zeph_tools::ToolError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let matcher = file_pattern
+                .map(glob::Pattern::new)
+                .transpose()
+                .map_err(|e| zeph_tools::ToolError::InvalidParams {
+                    message: format!("invalid file_pattern: {e}"),
+                })?;
+            let args = serde_json::json!({ "query": symbol });
+            let value = mcp_text_json(
+                &self.manager,
+                &self.server_id,
+                "workspace_symbol_search",
+                args,
+            )
+            .await?;
+            let mut symbols: Vec<LspSymbolInformation> =
+                serde_json::from_value(value).map_err(|e| {
+                    zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string()))
+                })?;
+            symbols.truncate(max_results);
+            Ok(symbols
+                .into_iter()
+                .filter(|item| {
+                    matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
+                        pattern.matches_path(std::path::Path::new(&uri_to_path(&item.location.uri)))
+                    })
                 })
-            })
-            .map(|item| SearchCodeHit {
-                file_path: uri_to_path(&item.location.uri),
-                line_start: item.location.range.start.line as usize,
-                line_end: item.location.range.end.line as usize,
-                snippet: format!(
-                    "{} at {}:{}",
-                    item.name, item.location.range.start.line, item.location.range.start.character
-                ),
-                source: SearchCodeSource::LspSymbol,
-                score: SearchCodeSource::LspSymbol.default_score(),
-                symbol_name: Some(item.name),
-            })
-            .collect())
+                .map(|item| SearchCodeHit {
+                    file_path: uri_to_path(&item.location.uri),
+                    line_start: item.location.range.start.line as usize,
+                    line_end: item.location.range.end.line as usize,
+                    snippet: format!(
+                        "{} at {}:{}",
+                        item.name,
+                        item.location.range.start.line,
+                        item.location.range.start.character
+                    ),
+                    source: SearchCodeSource::LspSymbol,
+                    score: SearchCodeSource::LspSymbol.default_score(),
+                    symbol_name: Some(item.name),
+                })
+                .collect())
+        })
     }
 
-    async fn references(
-        &self,
-        symbol: &str,
-        file_pattern: Option<&str>,
+    fn references<'a>(
+        &'a self,
+        symbol: &'a str,
+        file_pattern: Option<&'a str>,
         max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, zeph_tools::ToolError> {
-        let value = mcp_text_json(
-            &self.manager,
-            &self.server_id,
-            "workspace_symbol_search",
-            serde_json::json!({ "query": symbol }),
-        )
-        .await?;
-        let defs: Vec<LspSymbolInformation> = serde_json::from_value(value)
-            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
-        let Some(def) = defs.first() else {
-            return Ok(vec![]);
-        };
-        let matcher = file_pattern
-            .map(glob::Pattern::new)
-            .transpose()
-            .map_err(|e| zeph_tools::ToolError::InvalidParams {
-                message: format!("invalid file_pattern: {e}"),
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<SearchCodeHit>, zeph_tools::ToolError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let value = mcp_text_json(
+                &self.manager,
+                &self.server_id,
+                "workspace_symbol_search",
+                serde_json::json!({ "query": symbol }),
+            )
+            .await?;
+            let defs: Vec<LspSymbolInformation> = serde_json::from_value(value).map_err(|e| {
+                zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string()))
             })?;
-        let args = serde_json::json!({
-            "file_path": uri_to_path(&def.location.uri),
-            "line": def.location.range.start.line,
-            "character": def.location.range.start.character,
-            "include_declaration": false,
-        });
-        let value = mcp_text_json(&self.manager, &self.server_id, "get_references", args).await?;
-        let mut refs: Vec<LspLocation> = serde_json::from_value(value)
-            .map_err(|e| zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string())))?;
-        refs.truncate(max_results);
-        Ok(refs
-            .into_iter()
-            .filter(|location| {
-                matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
-                    pattern.matches_path(std::path::Path::new(&uri_to_path(&location.uri)))
+            let Some(def) = defs.first() else {
+                return Ok(vec![]);
+            };
+            let matcher = file_pattern
+                .map(glob::Pattern::new)
+                .transpose()
+                .map_err(|e| zeph_tools::ToolError::InvalidParams {
+                    message: format!("invalid file_pattern: {e}"),
+                })?;
+            let args = serde_json::json!({
+                "file_path": uri_to_path(&def.location.uri),
+                "line": def.location.range.start.line,
+                "character": def.location.range.start.character,
+                "include_declaration": false,
+            });
+            let value =
+                mcp_text_json(&self.manager, &self.server_id, "get_references", args).await?;
+            let mut refs: Vec<LspLocation> = serde_json::from_value(value).map_err(|e| {
+                zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string()))
+            })?;
+            refs.truncate(max_results);
+            Ok(refs
+                .into_iter()
+                .filter(|location| {
+                    matcher.as_ref().is_none_or(|pattern: &glob::Pattern| {
+                        pattern.matches_path(std::path::Path::new(&uri_to_path(&location.uri)))
+                    })
                 })
-            })
-            .map(|location| SearchCodeHit {
-                file_path: uri_to_path(&location.uri),
-                line_start: location.range.start.line as usize,
-                line_end: location.range.end.line as usize,
-                snippet: format!(
-                    "reference at {}:{}",
-                    location.range.start.line, location.range.start.character
-                ),
-                source: SearchCodeSource::LspReferences,
-                score: SearchCodeSource::LspReferences.default_score(),
-                symbol_name: Some(symbol.to_owned()),
-            })
-            .collect())
+                .map(|location| SearchCodeHit {
+                    file_path: uri_to_path(&location.uri),
+                    line_start: location.range.start.line as usize,
+                    line_end: location.range.end.line as usize,
+                    snippet: format!(
+                        "reference at {}:{}",
+                        location.range.start.line, location.range.start.character
+                    ),
+                    source: SearchCodeSource::LspReferences,
+                    score: SearchCodeSource::LspReferences.default_score(),
+                    symbol_name: Some(symbol.to_owned()),
+                })
+                .collect())
+        })
     }
 }
 
