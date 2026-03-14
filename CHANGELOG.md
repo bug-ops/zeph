@@ -9,11 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - test(core): add COV-04 unit test for channel-close (`Ok(None)`) → `GraphStatus::Failed` transition in `run_scheduler_loop`; fix implementation to return `Failed` instead of `Canceled` on channel close — channel close is an error condition, not a user-initiated cancel (closes #1614)
-- feat(core): when pruning a tool output that has an overflow file, emit `[tool output pruned; full content at {path}]` instead of clearing the body, preserving the reference across hard compaction, `prune_tool_outputs`, and `prune_stale_tool_outputs` (#1740)
 - feat(gemini): SSE streaming now handles `functionCall` parts — `StreamChunk::ToolUse` is emitted for tool calls received during Gemini streaming (resolves #1659)
 - feat(llm): `cost_tiers` config field for `[llm.router.cascade]` — explicit cheapest-first provider ordering independent of chain order; providers are sorted once at construction time (zero per-request cost); unknown names are silently ignored; empty list is equivalent to `None` (#1724)
 - feat(cost): add gpt-5 and gpt-5-mini to default pricing table (closes #1744)
 - feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
+- feat(core): when pruning a tool output that has an overflow file, emit `[tool output pruned; full content at {path}]` instead of clearing the body, preserving the reference across hard compaction, `prune_tool_outputs`, and `prune_stale_tool_outputs` (#1740)
 
 ### Changed
 

@@ -292,7 +292,11 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
             compacted_at,
         } => {
             let text = if compacted_at.is_some() {
-                format!("[tool output: {tool_name}] (pruned)")
+                if body.is_empty() {
+                    format!("[tool output: {tool_name}] (pruned)")
+                } else {
+                    format!("[tool output: {tool_name}] {body}")
+                }
             } else {
                 format!("[tool output: {tool_name}]\n{body}")
             };

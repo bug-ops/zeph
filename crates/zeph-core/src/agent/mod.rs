@@ -906,88 +906,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    /// Wait for the next scheduler event, handling cancellation and channel messages.
-    ///
-    /// Called each tick after processing actions. Returns `Some(status)` when the loop
-    /// should terminate (token cancel, user `/plan cancel`, channel close, or shutdown),
-    /// `None` when a scheduler event was received and the tick should continue.
-    ///
-    /// # Cancellation paths
-    /// - `cancel_token.cancelled()` — fired by `handle_plan_cancel()` from concurrent channels
-    ///   (TUI, Telegram, ACP) that have their own event loops.
-    /// - `channel.recv("/plan cancel")` — for CLI where the main dispatch loop is blocked.
-    /// - `scheduler.wait_event()` — normal event (task completed, timeout, etc.).
-    async fn poll_scheduler_event(
-        &mut self,
-        scheduler: &mut crate::orchestration::DagScheduler,
-        cancel_token: &CancellationToken,
-    ) -> Option<crate::orchestration::GraphStatus> {
-        use crate::orchestration::SchedulerAction;
-        tokio::select! {
-            // biased: token cancellation takes priority over new events and input.
-            biased;
-            () = cancel_token.cancelled() => {
-                let cancel_actions = scheduler.cancel_all();
-                Some(self.cancel_agents_from_actions(cancel_actions)
-                    .unwrap_or(crate::orchestration::GraphStatus::Canceled))
-            }
-            () = scheduler.wait_event() => None,
-            result = self.channel.recv() => {
-                if let Ok(Some(msg)) = result {
-                    if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
-                        let _ = self.channel.send_status("Canceling plan...").await;
-                        let cancel_actions = scheduler.cancel_all();
-                        return Some(self.cancel_agents_from_actions(cancel_actions)
-                            .unwrap_or(crate::orchestration::GraphStatus::Canceled));
-                    }
-                    self.enqueue_or_merge(msg.text, vec![], msg.attachments);
-                    None
-                } else {
-                    // Channel closed — cancel running sub-agents and exit with Failed.
-                    // Channel close is an error condition (not a user-initiated cancel), so
-                    // Done actions from cancel_all() are intentionally ignored (#1614).
-                    let cancel_actions = scheduler.cancel_all();
-                    let n = cancel_actions
-                        .iter()
-                        .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
-                        .count();
-                    tracing::warn!(
-                        sub_agents = n,
-                        "scheduler channel closed, canceling running sub-agents"
-                    );
-                    for action in cancel_actions {
-                        if let SchedulerAction::Cancel { agent_handle_id } = action
-                            && let Some(mgr) = self.orchestration.subagent_manager.as_mut()
-                        {
-                            let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
-                                tracing::trace!(
-                                    error = %e,
-                                    "cancel on channel close: agent already gone"
-                                );
-                            });
-                        }
-                        // Intentionally ignore Done here — channel close is not a user cancel.
-                    }
-                    Some(crate::orchestration::GraphStatus::Failed)
-                }
-            }
-            // Shutdown signal received — cancel running sub-agents and exit cleanly.
-            () = shutdown_signal(&mut self.lifecycle.shutdown) => {
-                let cancel_actions = scheduler.cancel_all();
-                let n = cancel_actions
-                    .iter()
-                    .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
-                    .count();
-                tracing::warn!(
-                    sub_agents = n,
-                    "shutdown signal received, canceling running sub-agents"
-                );
-                Some(self.cancel_agents_from_actions(cancel_actions)
-                    .unwrap_or(crate::orchestration::GraphStatus::Canceled))
-            }
-        }
-    }
-
     /// Execute a `RunInline` scheduler action: run the task synchronously in the current agent.
     ///
     /// Sends a status update, registers the spawn with the scheduler, runs the inline tool
@@ -1049,11 +967,18 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    // too_many_lines: sequential scheduler event loop with 4 tokio::select! branches
+    // (cancel token, scheduler tick, channel recv with /plan cancel + channel-close paths,
+    // shutdown signal) — each branch requires distinct cancel/fail/ignore semantics that
+    // cannot be split without introducing shared mutable state across async boundaries.
+    #[allow(clippy::too_many_lines)]
     /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
     ///
     /// Each iteration yields at `wait_event()`, during which `channel.recv()` is polled
     /// concurrently via `tokio::select!`. If the user sends `/plan cancel`, all running
     /// sub-agent tasks are aborted and the loop exits with [`GraphStatus::Canceled`].
+    /// If the channel is closed (`Ok(None)`), all running sub-agent tasks are aborted
+    /// and the loop exits with [`GraphStatus::Failed`].
     /// Other messages received during execution are queued in `message_queue` and
     /// processed after the plan completes.
     ///
@@ -1169,8 +1094,122 @@ impl<C: Channel> Agent<C> {
             // /plan cancel cannot interrupt an inline LLM call mid-execution; it is
             // delivered on the next tick after the inline call completes.
             // TODO(post-MVP): wire CancellationToken into run_inline_tool_loop.
-            if let Some(status) = self.poll_scheduler_event(scheduler, &cancel_token).await {
-                break 'tick status;
+            tokio::select! {
+                // biased: token cancellation takes priority over new events and input.
+                biased;
+                () = cancel_token.cancelled() => {
+                    let cancel_actions = scheduler.cancel_all();
+                    for action in cancel_actions {
+                        match action {
+                            SchedulerAction::Cancel { agent_handle_id } => {
+                                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                                    let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                        tracing::trace!(
+                                            error = %e,
+                                            "cancel during plan cancellation: agent already gone"
+                                        );
+                                    });
+                                }
+                            }
+                            SchedulerAction::Done { status } => {
+                                break 'tick status;
+                            }
+                            SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                        }
+                    }
+                    // Defensive fallback: cancel_all always emits Done, but guard against
+                    // future changes.
+                    break 'tick crate::orchestration::GraphStatus::Canceled;
+                }
+                () = scheduler.wait_event() => {}
+                result = self.channel.recv() => {
+                    if let Ok(Some(msg)) = result {
+                        if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
+                            let _ = self.channel.send_status("Canceling plan...").await;
+                            let cancel_actions = scheduler.cancel_all();
+                            for ca in cancel_actions {
+                                match ca {
+                                    SchedulerAction::Cancel { agent_handle_id } => {
+                                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                                            // benign race: agent may have already finished
+                                            let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                                tracing::trace!(error = %e, "cancel on user request: agent already gone");
+                                            });
+                                        }
+                                    }
+                                    SchedulerAction::Done { status } => {
+                                        break 'tick status;
+                                    }
+                                    SchedulerAction::Spawn { .. }
+                                    | SchedulerAction::RunInline { .. } => {}
+                                }
+                            }
+                            // Defensive fallback: cancel_all always emits Done, but guard
+                            // against future changes.
+                            break 'tick crate::orchestration::GraphStatus::Canceled;
+                        }
+                        self.enqueue_or_merge(msg.text, vec![], msg.attachments);
+                    } else {
+                        // Channel closed — cancel running sub-agents and exit with Failed.
+                        // This is an error condition (not a user-initiated cancel), so
+                        // Done actions from cancel_all() are intentionally ignored.
+                        let cancel_actions = scheduler.cancel_all();
+                        let n = cancel_actions
+                            .iter()
+                            .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
+                            .count();
+                        tracing::warn!(sub_agents = n, "scheduler channel closed, canceling running sub-agents");
+                        for action in cancel_actions {
+                            match action {
+                                SchedulerAction::Cancel { agent_handle_id } => {
+                                    if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                                        let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                            tracing::trace!(
+                                                error = %e,
+                                                "cancel on channel close: agent already gone"
+                                            );
+                                        });
+                                    }
+                                }
+                                // Intentionally ignore Done here — channel close is not a user cancel.
+                                SchedulerAction::Done { .. }
+                                | SchedulerAction::Spawn { .. }
+                                | SchedulerAction::RunInline { .. } => {}
+                            }
+                        }
+                        break 'tick crate::orchestration::GraphStatus::Failed;
+                    }
+                }
+                // Shutdown signal received — cancel running sub-agents and exit cleanly.
+                () = shutdown_signal(&mut self.lifecycle.shutdown) => {
+                    let cancel_actions = scheduler.cancel_all();
+                    let n = cancel_actions
+                        .iter()
+                        .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
+                        .count();
+                    tracing::warn!(sub_agents = n, "shutdown signal received, canceling running sub-agents");
+                    for action in cancel_actions {
+                        match action {
+                            SchedulerAction::Cancel { agent_handle_id } => {
+                                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                                    let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                        tracing::trace!(
+                                            error = %e,
+                                            "cancel on shutdown: agent already gone"
+                                        );
+                                    });
+                                }
+                            }
+                            SchedulerAction::Done { status } => {
+                                break 'tick status;
+                            }
+                            SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                        }
+                    }
+                    // Defensive fallback: cancel_all always emits Done, but guard against
+                    // future changes.
+                    break 'tick crate::orchestration::GraphStatus::Canceled;
+                }
             }
         };
 

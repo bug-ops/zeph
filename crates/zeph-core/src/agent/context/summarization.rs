@@ -8,10 +8,9 @@ use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, MessagePart, Rol
 
 use super::super::Agent;
 use super::super::context_manager::CompactionTier;
+use super::super::tool_execution::OVERFLOW_NOTICE_PREFIX;
 use crate::channel::Channel;
 use crate::context::ContextBudget;
-
-const OVERFLOW_NOTICE_PREFIX: &str = "\n[full output saved to ";
 
 /// Extract the overflow file path from a tool output body, if present.
 ///
@@ -24,6 +23,35 @@ fn extract_overflow_ref(body: &str) -> Option<&str> {
     let rest = &body[start + OVERFLOW_NOTICE_PREFIX.len()..];
     let end = rest.find(" \u{2014} ")?;
     Some(&rest[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_overflow_ref_returns_path_when_present() {
+        let body = "some output\n[full output saved to /tmp/overflow/abc.txt \u{2014} 12345 bytes, use read tool to access]";
+        assert_eq!(extract_overflow_ref(body), Some("/tmp/overflow/abc.txt"));
+    }
+
+    #[test]
+    fn extract_overflow_ref_returns_none_when_absent() {
+        let body = "normal small output without overflow notice";
+        assert_eq!(extract_overflow_ref(body), None);
+    }
+
+    #[test]
+    fn extract_overflow_ref_returns_none_for_empty_body() {
+        assert_eq!(extract_overflow_ref(""), None);
+    }
+
+    #[test]
+    fn extract_overflow_ref_handles_prefix_at_start() {
+        let body =
+            "[full output saved to /var/tmp/out.txt \u{2014} 9999 bytes, use read tool to access]";
+        assert_eq!(extract_overflow_ref(body), Some("/var/tmp/out.txt"));
+    }
 }
 
 impl<C: Channel> Agent<C> {
