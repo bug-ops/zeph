@@ -2969,9 +2969,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Query by target entity_id — must find the edge.
+        // Query by target entity_id at a far-future timestamp — must find the active edge.
         let edges = gs
-            .edges_at_timestamp(tgt, "2026-01-01 00:00:00")
+            .edges_at_timestamp(tgt, "2099-01-01 00:00:00")
             .await
             .unwrap();
         assert_eq!(
@@ -3127,19 +3127,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Insert an edge with literal fact text.
-        gs.insert_edge(src, tgt, "ref", "specific_fact here", 1.0, None)
+        // Insert an edge with a fact that contains neither '%' nor '_'.
+        gs.insert_edge(src, tgt, "ref", "plain text fact no wildcards", 1.0, None)
             .await
             .unwrap();
 
         // Searching with '%' as predicate must NOT match all edges (wildcard injection).
+        // After LIKE escaping '%' becomes '\%', so only facts containing literal '%' match.
         let results = gs.edge_history(src, "%", None, 100).await.unwrap();
         assert!(
             results.is_empty(),
             "LIKE wildcard '%' in predicate must be escaped and not match all edges"
         );
 
-        // Searching with '_' similarly must be escaped.
+        // Searching with '_' must only match facts containing literal '_'.
+        // Our fact has no '_', so result must be empty.
         let results_underscore = gs.edge_history(src, "_", None, 100).await.unwrap();
         assert!(
             results_underscore.is_empty(),
