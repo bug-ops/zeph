@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
 - feat(tui): show `[1M CTX]` badge in the TUI header bar when Claude extended context (`enable_extended_context = true`) is active; also shows `Max context: 1M` in the Resources panel (#1686)
 - feat(llm): implement `ClassifierMode::Judge` for cascade routing — calls `summary_model` with a lightweight scoring prompt, parses the 0–10 score and normalises to [0.0, 1.0]; falls back to heuristic on any LLM error; warns at startup when judge mode is configured without `summary_model` (#1723)
 - feat(llm): `--extended-context` CLI flag enables Claude 1M context window for the session; overrides `llm.cloud.enable_extended_context` from config and emits a cost warning (tokens above 200K use long-context pricing) (#1685)
