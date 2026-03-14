@@ -45,6 +45,7 @@ max_daily_cents = 500   # Daily spending limit in cents (USD)
 | Claude Opus | $15.00 | $75.00 |
 | GPT-4o | $2.50 | $10.00 |
 | GPT-4o mini | $0.15 | $0.60 |
+| GPT-5 mini | $0.25 | $2.00 |
 | Ollama (local) | Free | Free |
 
 Budget resets at UTC midnight. When `max_daily_cents` is reached, LLM calls are blocked until the next reset.

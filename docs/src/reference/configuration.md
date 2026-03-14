@@ -29,6 +29,7 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `memory.context_budget_tokens` | <= 1,000,000 (when > 0) |
 | `memory.soft_compaction_threshold` | 0.0–1.0, must be < `hard_compaction_threshold` |
 | `memory.hard_compaction_threshold` | 0.0–1.0, must be > `soft_compaction_threshold` |
+| `memory.graph.temporal_decay_rate` | finite, in [0.0, 10.0]; NaN and Inf rejected at deserialization |
 | `memory.compression.threshold_tokens` | >= 1,000 (proactive only) |
 | `memory.compression.max_summary_tokens` | >= 128 (proactive only) |
 | `memory.token_safety_margin` | > 0.0 |
@@ -170,6 +171,8 @@ router_reorder_interval = 10       # Re-order providers every N requests (defaul
 # max_escalations = 2                 # Max escalation steps per request (default: 2)
 # classifier_mode = "heuristic"       # "heuristic" (default) or "judge" (LLM-backed)
 # max_cascade_tokens = 0              # Cumulative token cap across escalation levels; 0 = unlimited
+# cost_tiers = ["ollama", "claude"]   # Explicit cost ordering (cheapest first); providers not listed
+#                                     # are appended after listed ones in original chain order
 
 [llm.stt]
 provider = "whisper"
@@ -257,6 +260,9 @@ extraction_timeout_secs = 15           # Timeout for background extraction (defa
 use_embedding_resolution = false       # Use embedding-based entity resolution (default: false)
 max_hops = 2                           # BFS traversal depth for graph recall (default: 2)
 recall_limit = 10                      # Max graph facts injected into context (default: 10)
+temporal_decay_rate = 0.0              # Recency boost for graph recall; 0.0 = disabled (default: 0.0)
+                                       # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
+edge_history_limit = 100               # Max historical edge versions per source+predicate pair (default: 100)
 
 [tools]
 enabled = true

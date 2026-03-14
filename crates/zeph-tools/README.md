@@ -28,7 +28,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `trust_gate` | Trust-based tool access control |
 | `anomaly` | `AnomalyDetector` — sliding-window failure rate detection; integrated into the agent tool execution pipeline — records every tool outcome, emits `Severity::Critical` when the failure rate exceeds `failure_threshold` in the last `window_size` executions, and auto-blocks the tool via the trust system |
 | `overflow` | (removed — overflow storage migrated to SQLite in `zeph-memory`) |
-| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block) |
+| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block) |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`
 

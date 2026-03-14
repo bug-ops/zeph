@@ -169,6 +169,24 @@ fn default_graph_edge_history_limit() -> usize {
     100
 }
 
+fn validate_temporal_decay_rate<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "temporal_decay_rate must be a finite number",
+        ));
+    }
+    if !(0.0..=10.0).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "temporal_decay_rate must be in [0.0, 10.0]",
+        ));
+    }
+    Ok(value)
+}
+
 /// Vector backend selector for embedding storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -429,7 +447,10 @@ pub struct GraphConfig {
     /// When > 0, recent edges receive a small additive score boost over older edges.
     /// The boost formula is `1 / (1 + age_days * rate)`, blended additively with the base
     /// composite score. Default 0.0 preserves existing scoring behavior exactly.
-    #[serde(default = "default_graph_temporal_decay_rate")]
+    #[serde(
+        default = "default_graph_temporal_decay_rate",
+        deserialize_with = "validate_temporal_decay_rate"
+    )]
     pub temporal_decay_rate: f64,
     /// Maximum number of historical edge versions returned by `edge_history()`. Default: 100.
     ///

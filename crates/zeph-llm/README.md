@@ -19,11 +19,11 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `ollama` | Ollama HTTP backend |
 | `claude` | Anthropic Claude backend with `with_client()` builder for shared `reqwest::Client` |
 | `openai` | OpenAI backend with `with_client()` builder for shared `reqwest::Client` |
-| `gemini` | Google Gemini backend (`generateContent` + `streamGenerateContent?alt=sse`); system prompt mapped to `systemInstruction`, `assistant` role to `"model"`, consecutive same-role message merging, thinking parts surfaced as `StreamChunk::Thinking`; configured via `[llm.gemini]` and `ZEPH_GEMINI_API_KEY` |
+| `gemini` | Google Gemini backend (`generateContent` + `streamGenerateContent?alt=sse`); system prompt mapped to `systemInstruction`, `assistant` role to `"model"`, consecutive same-role message merging, thinking parts surfaced as `StreamChunk::Thinking`, `functionCall` parts in SSE stream emitted as `StreamChunk::ToolUse`; configured via `[llm.gemini]` and `ZEPH_GEMINI_API_KEY` |
 | `compatible` | Generic OpenAI-compatible endpoint backend |
 | `candle_provider` | Local inference via Candle (optional feature) |
 | `orchestrator` | Multi-model coordination and fallback; `send_with_retry()` helper deduplicates retry logic |
-| `router` | Model selection and routing logic with two strategies: EMA latency tracking and Thompson Sampling (Beta distributions). `RouterProvider` dispatches to the configured strategy and records outcomes per provider |
+| `router` | Model selection and routing logic with two strategies: EMA latency tracking and Thompson Sampling (Beta distributions). `RouterProvider` dispatches to the configured strategy and records outcomes per provider. Providers stored as `Arc<[AnyProvider]>` — `clone()` on every LLM request is O(1) regardless of chain length |
 | `vision` | Image input support — base64-encoded images in LLM requests; optional dedicated `vision_model` per provider |
 | `extractor` | `chat_typed<T>()` — typed LLM output via JSON Schema (`schemars`); per-`TypeId` schema caching |
 | `sse` | Shared `sse_to_chat_stream()` helpers for Claude and OpenAI SSE parsing |
@@ -76,6 +76,23 @@ TUI: `/router stats` displays the same information in the dashboard.
 
 > [!NOTE]
 > Thompson Sampling is most useful when you have multiple providers with varying reliability and want the router to automatically converge on the best one while still occasionally probing alternatives.
+
+## Cascade routing
+
+The cascade strategy tries providers in order and escalates to the next when a quality threshold is not met. Configure via `[llm.router.cascade]`:
+
+```toml
+[llm.router]
+strategy = "cascade"
+chain = ["ollama", "claude", "openai"]
+
+[llm.router.cascade]
+quality_threshold = 0.7
+max_escalations = 2
+cost_tiers = ["ollama", "claude", "openai"]  # optional: explicit cheapest-first ordering
+```
+
+`cost_tiers` reorders providers once at construction time (zero per-request cost). Providers absent from the list are appended after listed ones in original chain order. Unknown names are silently ignored.
 
 ## Claude extended thinking
 

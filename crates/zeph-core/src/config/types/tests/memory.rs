@@ -111,6 +111,70 @@ fn graph_config_defaults() {
     assert_eq!(cfg.community_summary_concurrency, 4);
     assert_eq!(cfg.lpa_edge_chunk_size, 10_000);
     assert_eq!(cfg.edge_history_limit, 100);
+    assert!((cfg.temporal_decay_rate - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn graph_config_temporal_decay_rate_valid_zero() {
+    let toml = r#"temporal_decay_rate = 0.0"#;
+    let cfg: GraphConfig = toml::from_str(toml).unwrap();
+    assert!((cfg.temporal_decay_rate - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn graph_config_temporal_decay_rate_valid_mid() {
+    let toml = r#"temporal_decay_rate = 5.0"#;
+    let cfg: GraphConfig = toml::from_str(toml).unwrap();
+    assert!((cfg.temporal_decay_rate - 5.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn graph_config_temporal_decay_rate_valid_max() {
+    let toml = r#"temporal_decay_rate = 10.0"#;
+    let cfg: GraphConfig = toml::from_str(toml).unwrap();
+    assert!((cfg.temporal_decay_rate - 10.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn graph_config_temporal_decay_rate_negative_rejected() {
+    let toml = r#"temporal_decay_rate = -0.1"#;
+    assert!(
+        toml::from_str::<GraphConfig>(toml).is_err(),
+        "negative temporal_decay_rate must be rejected"
+    );
+}
+
+#[test]
+fn graph_config_temporal_decay_rate_above_max_rejected() {
+    let toml = r#"temporal_decay_rate = 10.1"#;
+    assert!(
+        toml::from_str::<GraphConfig>(toml).is_err(),
+        "temporal_decay_rate > 10.0 must be rejected"
+    );
+}
+
+// NaN cannot be expressed in TOML or JSON; the is_nan() guard in validate_temporal_decay_rate
+// is a defense-in-depth check against programmatic misuse (e.g. direct struct construction),
+// not reachable through normal deserialization paths.
+
+#[test]
+fn graph_config_temporal_decay_rate_inf_rejected() {
+    // TOML does not support Inf literals; test via a sufficiently large JSON float that
+    // overflows to f64::INFINITY when parsed by serde_json.
+    let json = r#"{"temporal_decay_rate": 1e309}"#;
+    assert!(
+        serde_json::from_str::<GraphConfig>(json).is_err(),
+        "+Inf temporal_decay_rate must be rejected"
+    );
+}
+
+#[test]
+fn graph_config_temporal_decay_rate_neg_inf_rejected() {
+    let json = r#"{"temporal_decay_rate": -1e309}"#;
+    assert!(
+        serde_json::from_str::<GraphConfig>(json).is_err(),
+        "-Inf temporal_decay_rate must be rejected"
+    );
 }
 
 #[test]
@@ -121,4 +185,5 @@ fn graph_config_toml_round_trip() {
     assert_eq!(back.enabled, original.enabled);
     assert_eq!(back.max_hops, original.max_hops);
     assert_eq!(back.recall_limit, original.recall_limit);
+    assert_eq!(back.temporal_decay_rate, original.temporal_decay_rate);
 }

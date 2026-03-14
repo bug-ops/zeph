@@ -12,12 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(memory,core): add `/graph history <name>` slash command to display temporal edge history including superseded (expired) facts for a given entity (closes #1693)
 - feat(memory): temporal versioning on graph edges (closes #1341) — `edges_at_timestamp()`, `bfs_at_timestamp()`, `edge_history()` on `GraphStore`; optional `at_timestamp` parameter on `graph_recall()` and `SemanticMemory::recall_graph()` for historical graph queries; `valid_from` field on `GraphFact` for recency-aware scoring; `temporal_decay_rate` config knob in `[memory.graph]` (default `0.0`, existing behavior unchanged); migration 030 adds two partial indexes (`idx_graph_edges_src_temporal`, `idx_graph_edges_tgt_temporal`) to accelerate temporal range queries on expired edges
 
+- test(memory): add direct unit tests for `edges_at_timestamp`, `edge_history`, `bfs_at_timestamp` — boundary conditions (valid_from==ts inclusive, valid_to==ts exclusive, open-ended active edges), limit/predicate filtering, BFS traversal blocking on expired edges (closes #1776)
 - test(core): add COV-04 unit test for channel-close (`Ok(None)`) → `GraphStatus::Failed` transition in `run_scheduler_loop`; fix implementation to return `Failed` instead of `Canceled` on channel close — channel close is an error condition, not a user-initiated cancel (closes #1614)
 - feat(gemini): SSE streaming now handles `functionCall` parts — `StreamChunk::ToolUse` is emitted for tool calls received during Gemini streaming (resolves #1659)
 - feat(llm): `cost_tiers` config field for `[llm.router.cascade]` — explicit cheapest-first provider ordering independent of chain order; providers are sorted once at construction time (zero per-request cost); unknown names are silently ignored; empty list is equivalent to `None` (#1724)
 - feat(cost): add gpt-5 and gpt-5-mini to default pricing table (closes #1744)
 - feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
 - feat(core): when pruning a tool output that has an overflow file, emit `[tool output pruned; full content at {path}]` instead of clearing the body, preserving the reference across hard compaction, `prune_tool_outputs`, and `prune_stale_tool_outputs` (#1740)
+- feat(memory): validate `temporal_decay_rate` in `[memory.graph]` on deserialization — rejects NaN, Inf, negative values, and values outside `[0.0, 10.0]`; invalid configs produce a descriptive error at startup instead of silently producing NaN scores (closes #1777)
 
 ### Changed
 
