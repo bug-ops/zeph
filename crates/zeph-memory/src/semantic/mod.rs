@@ -27,7 +27,10 @@ pub(crate) const CORRECTIONS_COLLECTION: &str = "zeph_corrections";
 
 pub use algorithms::{apply_mmr, apply_temporal_decay};
 pub use cross_session::SessionSummaryResult;
-pub use graph::{ExtractionStats, GraphExtractionConfig, extract_and_store};
+pub use graph::{
+    ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
+    extract_and_store, link_memory_notes,
+};
 pub use recall::RecalledMessage;
 pub use summarization::{StructuredSummary, Summary, build_summarization_prompt};
 

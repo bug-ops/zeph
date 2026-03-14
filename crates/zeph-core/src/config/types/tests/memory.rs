@@ -187,3 +187,96 @@ fn graph_config_toml_round_trip() {
     assert_eq!(back.recall_limit, original.recall_limit);
     assert_eq!(back.temporal_decay_rate, original.temporal_decay_rate);
 }
+
+// ── NoteLinkingConfig serde validation tests ──────────────────────────────
+
+#[test]
+fn note_linking_config_defaults() {
+    let cfg = NoteLinkingConfig::default();
+    assert!(!cfg.enabled);
+    assert!((cfg.similarity_threshold - 0.85_f32).abs() < f32::EPSILON);
+    assert_eq!(cfg.top_k, 10);
+    assert_eq!(cfg.timeout_secs, 5);
+}
+
+#[test]
+fn note_linking_config_valid_threshold_round_trips() {
+    let toml = r#"
+        enabled = true
+        similarity_threshold = 0.9
+        top_k = 5
+        timeout_secs = 10
+    "#;
+    let cfg: NoteLinkingConfig = toml::from_str(toml).unwrap();
+    assert!(cfg.enabled);
+    assert!((cfg.similarity_threshold - 0.9_f32).abs() < 1e-6_f32);
+    assert_eq!(cfg.top_k, 5);
+    assert_eq!(cfg.timeout_secs, 10);
+}
+
+#[test]
+fn note_linking_config_threshold_boundary_zero_valid() {
+    let toml = "similarity_threshold = 0.0";
+    assert!(
+        toml::from_str::<NoteLinkingConfig>(toml).is_ok(),
+        "threshold 0.0 must be valid"
+    );
+}
+
+#[test]
+fn note_linking_config_threshold_boundary_one_valid() {
+    let toml = "similarity_threshold = 1.0";
+    assert!(
+        toml::from_str::<NoteLinkingConfig>(toml).is_ok(),
+        "threshold 1.0 must be valid"
+    );
+}
+
+#[test]
+fn note_linking_config_threshold_negative_rejected() {
+    let toml = "similarity_threshold = -0.1";
+    assert!(
+        toml::from_str::<NoteLinkingConfig>(toml).is_err(),
+        "negative threshold must be rejected"
+    );
+}
+
+#[test]
+fn note_linking_config_threshold_above_one_rejected() {
+    let toml = "similarity_threshold = 1.1";
+    assert!(
+        toml::from_str::<NoteLinkingConfig>(toml).is_err(),
+        "threshold > 1.0 must be rejected"
+    );
+}
+
+#[test]
+fn note_linking_config_threshold_inf_rejected() {
+    let json = r#"{"similarity_threshold": 1e39}"#;
+    assert!(
+        serde_json::from_str::<NoteLinkingConfig>(json).is_err(),
+        "+Inf similarity_threshold must be rejected"
+    );
+}
+
+#[test]
+fn graph_config_includes_note_linking_defaults() {
+    let cfg = GraphConfig::default();
+    assert!(!cfg.note_linking.enabled);
+    assert!((cfg.note_linking.similarity_threshold - 0.85_f32).abs() < f32::EPSILON);
+    assert_eq!(cfg.note_linking.top_k, 10);
+    assert_eq!(cfg.note_linking.timeout_secs, 5);
+}
+
+#[test]
+fn graph_config_note_linking_toml_round_trip() {
+    let original = GraphConfig::default();
+    let toml_str = toml::to_string_pretty(&original).expect("serialize");
+    let back: GraphConfig = toml::from_str(&toml_str).expect("deserialize");
+    assert_eq!(back.note_linking.enabled, original.note_linking.enabled);
+    assert_eq!(back.note_linking.top_k, original.note_linking.top_k);
+    assert_eq!(
+        back.note_linking.timeout_secs,
+        original.note_linking.timeout_secs
+    );
+}

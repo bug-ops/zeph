@@ -169,6 +169,18 @@ fn default_graph_edge_history_limit() -> usize {
     100
 }
 
+fn default_note_linking_similarity_threshold() -> f32 {
+    0.85
+}
+
+fn default_note_linking_top_k() -> usize {
+    10
+}
+
+fn default_note_linking_timeout_secs() -> u64 {
+    5
+}
+
 fn validate_temporal_decay_rate<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -185,6 +197,54 @@ where
         ));
     }
     Ok(value)
+}
+
+fn validate_similarity_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "similarity_threshold must be a finite number",
+        ));
+    }
+    if !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "similarity_threshold must be in [0.0, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+/// Configuration for A-MEM dynamic note linking.
+///
+/// When enabled, after each graph extraction pass, entities extracted from the message are
+/// compared against the entity embedding collection. Pairs with cosine similarity above
+/// `similarity_threshold` receive a `similar_to` edge in the graph.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NoteLinkingConfig {
+    /// Enable A-MEM note linking after graph extraction. Default: `false`.
+    pub enabled: bool,
+    /// Minimum cosine similarity score to create a `similar_to` edge. Default: `0.85`.
+    #[serde(deserialize_with = "validate_similarity_threshold")]
+    pub similarity_threshold: f32,
+    /// Maximum number of similar entities to link per extracted entity. Default: `10`.
+    pub top_k: usize,
+    /// Timeout for the entire linking pass in seconds. Default: `5`.
+    pub timeout_secs: u64,
+}
+
+impl Default for NoteLinkingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            similarity_threshold: default_note_linking_similarity_threshold(),
+            top_k: default_note_linking_top_k(),
+            timeout_secs: default_note_linking_timeout_secs(),
+        }
+    }
 }
 
 /// Vector backend selector for embedding storage.
@@ -459,6 +519,13 @@ pub struct GraphConfig {
     /// or API endpoints.
     #[serde(default = "default_graph_edge_history_limit")]
     pub edge_history_limit: usize,
+    /// A-MEM dynamic note linking configuration.
+    ///
+    /// When `note_linking.enabled = true`, entities extracted from each message are linked to
+    /// semantically similar entities via `similar_to` edges. Requires an embedding store
+    /// (`qdrant` or `sqlite` vector backend) to be configured.
+    #[serde(default)]
+    pub note_linking: NoteLinkingConfig,
 }
 
 impl Default for GraphConfig {
@@ -482,6 +549,7 @@ impl Default for GraphConfig {
             lpa_edge_chunk_size: default_lpa_edge_chunk_size(),
             temporal_decay_rate: default_graph_temporal_decay_rate(),
             edge_history_limit: default_graph_edge_history_limit(),
+            note_linking: NoteLinkingConfig::default(),
         }
     }
 }

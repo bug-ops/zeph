@@ -425,6 +425,12 @@ impl<C: Channel> Agent<C> {
                 community_summary_max_prompt_bytes: cfg.community_summary_max_prompt_bytes,
                 community_summary_concurrency: cfg.community_summary_concurrency,
                 lpa_edge_chunk_size: cfg.lpa_edge_chunk_size,
+                note_linking: zeph_memory::NoteLinkingConfig {
+                    enabled: cfg.note_linking.enabled,
+                    similarity_threshold: cfg.note_linking.similarity_threshold,
+                    top_k: cfg.note_linking.top_k,
+                    timeout_secs: cfg.note_linking.timeout_secs,
+                },
             }
         };
 

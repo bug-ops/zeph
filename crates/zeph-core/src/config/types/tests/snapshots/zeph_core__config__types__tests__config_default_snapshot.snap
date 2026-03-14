@@ -132,6 +132,12 @@ lpa_edge_chunk_size = 10000
 temporal_decay_rate = 0.0
 edge_history_limit = 100
 
+[memory.graph.note_linking]
+enabled = false
+similarity_threshold = 0.85
+top_k = 10
+timeout_secs = 5
+
 [tools]
 enabled = true
 summarize_output = true

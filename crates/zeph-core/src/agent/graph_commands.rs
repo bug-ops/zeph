@@ -359,6 +359,9 @@ impl<C: Channel> Agent<C> {
                         .community_summary_max_prompt_bytes,
                     community_summary_concurrency: graph_cfg.community_summary_concurrency,
                     lpa_edge_chunk_size: graph_cfg.lpa_edge_chunk_size,
+                    // Note linking is disabled for backfill — backfill doesn't have an
+                    // embedding store reference in this context.
+                    note_linking: zeph_memory::NoteLinkingConfig::default(),
                 };
                 let pool = store.pool().clone();
                 match extract_and_store(
@@ -370,9 +373,9 @@ impl<C: Channel> Agent<C> {
                 )
                 .await
                 {
-                    Ok(stats) => {
-                        total_entities += stats.entities_upserted;
-                        total_edges += stats.edges_inserted;
+                    Ok(result) => {
+                        total_entities += result.stats.entities_upserted;
+                        total_edges += result.stats.edges_inserted;
                     }
                     Err(e) => {
                         tracing::warn!("backfill extraction error: {e:#}");
