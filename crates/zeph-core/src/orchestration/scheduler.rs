@@ -372,6 +372,13 @@ impl DagScheduler {
         // Check for completion or deadlock.
         // Use graph Running status count to avoid false positives while Spawn actions
         // are in-flight (record_spawn hasn't been called yet for freshly emitted spawns).
+        // Note: non-transient spawn failures (e.g. capability errors) are handled by
+        // record_spawn_failure() which marks the task Failed and propagates failure per
+        // the task's FailureStrategy — this detector does not fire for those cases because
+        // failed tasks are terminal and dag::ready_tasks() returns their unblocked dependents.
+        // ConcurrencyLimit errors are transient: record_spawn_failure() reverts the task
+        // from Running back to Ready, so ready_tasks() is non-empty and deadlock is not
+        // triggered.
         let running_in_graph_now = self
             .graph
             .tasks
@@ -466,6 +473,12 @@ impl DagScheduler {
     /// Record that a spawn action was successfully executed.
     ///
     /// Called by the caller after successfully spawning via `SubAgentManager`.
+    ///
+    /// Resets `consecutive_spawn_failures` to 0 as a "spawn succeeded = scheduler healthy"
+    /// signal. This is intentionally separate from the batch-level backoff in
+    /// [`record_batch_backoff`]: `record_spawn` provides an immediate reset on the first
+    /// success within a batch, while `record_batch_backoff` governs the tick-granular
+    /// failure counter used for exponential wait backoff.
     pub fn record_spawn(
         &mut self,
         task_id: TaskId,
@@ -2135,11 +2148,15 @@ mod tests {
 
     #[test]
     fn test_buffer_guard_uses_task_count() {
-        // wait_event buffer guard must be graph.tasks.len() * 2, not max_parallel * 2.
-        // Verify by checking that a scheduler with more tasks than max_parallel * 2
-        // would have a larger guard — tested indirectly by inspecting the field used.
-        // We verify the field access compiles and the scheduler can be constructed
-        // with tasks.len() > max_parallel * 2 without panic.
+        // Structural guard: verifies that the buffer capacity expression uses
+        // graph.tasks.len() * 2 rather than max_parallel * 2. This is an intentional
+        // regression-prevention test — if wait_event() is accidentally reverted to
+        // max_parallel * 2 the assertion below catches the discrepancy.
+        // Behavioral coverage (actual buffer drop prevention) requires an async harness
+        // with a real channel, which is outside the scope of this unit test.
+        //
+        // Scenario: 10 tasks, max_parallel=2 → tasks.len()*2=20, max_parallel*2=4.
+        // The guard must use 20, not 4.
         let nodes: Vec<_> = (0..10).map(|i| make_node(i, &[])).collect();
         let graph = graph_from_nodes(nodes);
         let config = crate::config::OrchestrationConfig {
@@ -2156,5 +2173,63 @@ mod tests {
         // Confirm: tasks.len() * 2 = 20, max_parallel * 2 = 4.
         assert_eq!(scheduler.graph.tasks.len() * 2, 20);
         assert_eq!(scheduler.max_parallel * 2, 4);
+    }
+
+    #[test]
+    fn test_batch_mixed_concurrency_and_fatal_failure() {
+        // Mixed batch: task 0 gets ConcurrencyLimit (transient), task 1 gets a
+        // non-transient Spawn error (fatal). Two independent tasks, no deps between them.
+        // Verify:
+        // - task 0 reverts to Ready (retried next tick)
+        // - task 1 is marked Failed; with FailureStrategy::Skip the graph stays Running
+        //   because task 1 has no dependents that would abort the graph
+        // - record_batch_backoff(false, true) increments counter by 1
+        let mut nodes = vec![make_node(0, &[]), make_node(1, &[])];
+        // FailureStrategy::Skip: task 1 fails but its absence is ignored.
+        nodes[1].failure_strategy = Some(FailureStrategy::Skip);
+        let graph = graph_from_nodes(nodes);
+        let mut scheduler = make_scheduler(graph);
+
+        // Optimistically mark both as Running (as tick() would do).
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.graph.tasks[1].status = TaskStatus::Running;
+
+        // Task 0: ConcurrencyLimit (transient).
+        let concurrency_err = SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+        let actions0 = scheduler.record_spawn_failure(TaskId(0), &concurrency_err);
+        assert!(
+            actions0.is_empty(),
+            "ConcurrencyLimit must produce no extra actions"
+        );
+        assert_eq!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Ready,
+            "task 0 must revert to Ready"
+        );
+
+        // Task 1: non-transient Spawn failure. record_spawn_failure marks it Failed,
+        // then propagate_failure applies FailureStrategy::Skip → status becomes Skipped.
+        let fatal_err = SubAgentError::Spawn("provider unavailable".to_string());
+        let actions1 = scheduler.record_spawn_failure(TaskId(1), &fatal_err);
+        assert_eq!(
+            scheduler.graph.tasks[1].status,
+            TaskStatus::Skipped,
+            "task 1: Skip strategy turns Failed into Skipped via propagate_failure"
+        );
+        // No Done action from record_spawn_failure — graph still has task 0 alive.
+        assert!(
+            actions1
+                .iter()
+                .all(|a| !matches!(a, SchedulerAction::Done { .. })),
+            "no Done action expected: task 0 is still Ready"
+        );
+
+        // Batch result: no success, one ConcurrencyLimit failure.
+        scheduler.consecutive_spawn_failures = 0;
+        scheduler.record_batch_backoff(false, true);
+        assert_eq!(
+            scheduler.consecutive_spawn_failures, 1,
+            "batch with only ConcurrencyLimit must increment counter"
+        );
     }
 }
