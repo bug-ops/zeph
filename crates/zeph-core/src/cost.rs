@@ -117,6 +117,22 @@ fn default_pricing() -> HashMap<String, ModelPricing> {
             completion_cents_per_1k: 0.06,
         },
     );
+    // GPT-5 family ($1.25/$10 per 1M tokens)
+    m.insert(
+        "gpt-5".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 0.125,
+            completion_cents_per_1k: 1.0,
+        },
+    );
+    // GPT-5 mini ($0.25/$2 per 1M tokens)
+    m.insert(
+        "gpt-5-mini".into(),
+        ModelPricing {
+            prompt_cents_per_1k: 0.025,
+            completion_cents_per_1k: 0.2,
+        },
+    );
     m
 }
 
@@ -268,6 +284,24 @@ mod tests {
         let tracker = CostTracker::new(true, 1000.0);
         tracker.record_usage("claude-haiku-4-5-20251001", 1000, 1000);
         assert!(tracker.current_spend() > 0.0);
+    }
+
+    #[test]
+    fn gpt5_pricing_is_correct() {
+        let tracker = CostTracker::new(true, 1000.0);
+        tracker.record_usage("gpt-5", 1000, 1000);
+        // 0.125 + 1.0 = 1.125
+        let spend = tracker.current_spend();
+        assert!((spend - 1.125).abs() < 0.001);
+    }
+
+    #[test]
+    fn gpt5_mini_pricing_is_correct() {
+        let tracker = CostTracker::new(true, 1000.0);
+        tracker.record_usage("gpt-5-mini", 1000, 1000);
+        // 0.025 + 0.2 = 0.225
+        let spend = tracker.current_spend();
+        assert!((spend - 0.225).abs() < 0.001);
     }
 
     #[test]
