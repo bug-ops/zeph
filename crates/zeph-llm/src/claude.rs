@@ -525,6 +525,15 @@ impl ClaudeProvider {
     /// this is active.
     #[must_use]
     pub fn with_server_compaction(mut self, enabled: bool) -> Self {
+        if enabled && self.model.contains("haiku") {
+            tracing::warn!(
+                model = %self.model,
+                "server-side compaction (compact-2026-01-12) not supported for Haiku models — \
+                disabling"
+            );
+            self.server_compaction = false;
+            return self;
+        }
         self.server_compaction = enabled;
         self
     }
@@ -4848,6 +4857,14 @@ mod tests {
         let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
             .with_server_compaction(true);
         assert!(provider.server_compaction_enabled());
+    }
+
+    #[test]
+    fn with_server_compaction_haiku_stays_disabled() {
+        // Haiku does not support the compact-2026-01-12 beta; flag must be ignored.
+        let provider = ClaudeProvider::new("key".into(), "claude-haiku-4-5-20251001".into(), 1024)
+            .with_server_compaction(true);
+        assert!(!provider.server_compaction_enabled());
     }
 
     #[test]

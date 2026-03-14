@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- llm: `with_server_compaction(true)` on Haiku models now emits a `WARN` and keeps the flag disabled — the `compact-2026-01-12` beta is not supported for Haiku
 - llm: extend `is_compact_beta_rejection()` to catch `invalid_request_error` 400s mentioning `context_management` (fixes #1706)
 - **`ContextManagement` serialization for Claude server compaction API** (closes #1705): `ContextManagement` struct now serializes to `{ "type": "auto_truncate", "trigger": { "type": "input_tokens", "value": N }, "pause_after_compaction": false }` matching the Claude API spec. Previously serialized as `{ "type": "enabled", "trigger_tokens": N }` which caused a `400 invalid_request_error: context_management.type: Extra inputs are not permitted`, making `--server-compaction` completely non-functional.
 
