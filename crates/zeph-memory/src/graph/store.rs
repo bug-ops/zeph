@@ -864,16 +864,25 @@ impl GraphStore {
         entity_id: i64,
         timestamp: &str,
     ) -> Result<Vec<Edge>, MemoryError> {
-        // Split into two UNIONed branches to leverage the partial indexes from migration 030:
-        //   Branch 1 (active edges):     idx_graph_edges_valid + idx_graph_edges_source/target
-        //   Branch 2 (historical edges): idx_graph_edges_src_temporal / idx_graph_edges_tgt_temporal
+        // Four UNION ALL branches guarantee each partial index from migration 030 is used.
+        // An OR across source_entity_id and target_entity_id in a single branch prevents SQLite
+        // from using both partial indexes (idx_graph_edges_src_temporal and
+        // idx_graph_edges_tgt_temporal). Splitting into source-only and target-only sub-branches
+        // lets the query planner use one index per branch unconditionally.
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?2
-               AND (source_entity_id = ?1 OR target_entity_id = ?1)
+               AND source_entity_id = ?1
+             UNION ALL
+             SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE valid_to IS NULL
+               AND valid_from <= ?2
+               AND target_entity_id = ?1
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
@@ -881,7 +890,15 @@ impl GraphStore {
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?2
                AND valid_to > ?2
-               AND (source_entity_id = ?1 OR target_entity_id = ?1)",
+               AND source_entity_id = ?1
+             UNION ALL
+             SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE valid_to IS NOT NULL
+               AND valid_from <= ?2
+               AND valid_to > ?2
+               AND target_entity_id = ?1",
         )
         .bind(entity_id)
         .bind(timestamp)
@@ -1027,8 +1044,10 @@ impl GraphStore {
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
         use std::collections::HashMap;
 
-        // SQLite binds frontier IDs 3× per hop; at >333 IDs the IN clause exceeds
-        // SQLITE_MAX_VARIABLE_NUMBER (999). Cap to 300 to stay safely within the limit.
+        // SQLite binds frontier IDs 3× per hop (CASE, source IN, target IN); at >333 IDs the
+        // IN clause exceeds SQLITE_MAX_VARIABLE_NUMBER (999). For the temporal path, 1 extra
+        // bind is added for the timestamp, so the effective per-hop limit is (999-1)/3 = 332.
+        // MAX_FRONTIER=300 provides a safety margin of ~32 IDs below that limit.
         const MAX_FRONTIER: usize = 300;
 
         let mut depth_map: HashMap<i64, u32> = HashMap::new();
@@ -3091,9 +3110,13 @@ mod tests {
         let history = gs.edge_history(src, "works at", None, 100).await.unwrap();
         assert_eq!(history.len(), 2, "both edge versions must be returned");
         // Ordered valid_from DESC — version 2 (2022) before version 1 (2020).
-        assert!(
-            history[0].valid_from >= history[1].valid_from,
-            "results must be ordered by valid_from DESC"
+        assert_eq!(
+            history[0].valid_from, "2022-01-01 00:00:00",
+            "newest version must be first"
+        );
+        assert_eq!(
+            history[1].valid_from, "2020-01-01 00:00:00",
+            "oldest version must be second"
         );
 
         // History with relation filter.
@@ -3198,5 +3221,53 @@ mod tests {
             dead_edge.1.is_some(),
             "expired_at must be set after invalidation"
         );
+    }
+
+    #[tokio::test]
+    async fn edge_history_limit_truncates_results() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("LimSrc", "LimSrc", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("LimTgt", "LimTgt", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        // Insert two versions with fixed timestamps.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'lim_rel', 'LimSrc lim_rel v1', 0.8,
+                     '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')",
+        )
+        .bind(src)
+        .bind(tgt)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'lim_rel', 'LimSrc lim_rel v2', 0.9, '2021-01-01 00:00:00')",
+        )
+        .bind(src)
+        .bind(tgt)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // limit=1 must return only the newest version.
+        let one = gs.edge_history(src, "lim_rel", None, 1).await.unwrap();
+        assert_eq!(one.len(), 1, "limit=1 must return exactly one result");
+        assert_eq!(
+            one[0].valid_from, "2021-01-01 00:00:00",
+            "limit=1 must return the newest (ORDER BY valid_from DESC) version"
+        );
+
+        // limit=0 must return an empty result set (LIMIT 0 in SQLite returns nothing).
+        let none = gs.edge_history(src, "lim_rel", None, 0).await.unwrap();
+        assert!(none.is_empty(), "limit=0 must return an empty result");
     }
 }

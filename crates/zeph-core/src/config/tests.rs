@@ -2976,6 +2976,37 @@ fn soft_compaction_threshold_nan_rejected_by_validate() {
     );
 }
 
+#[test]
+fn temporal_decay_rate_above_max_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.graph.temporal_decay_rate = 10.001;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("temporal_decay_rate"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn temporal_decay_rate_negative_rejected_by_validate() {
+    let mut config = Config::default();
+    config.memory.graph.temporal_decay_rate = -0.1;
+    let err = config.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("temporal_decay_rate"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn temporal_decay_rate_boundary_values_accepted_by_validate() {
+    let mut config = Config::default();
+    config.memory.graph.temporal_decay_rate = 0.0;
+    assert!(config.validate().is_ok(), "0.0 must be accepted");
+    config.memory.graph.temporal_decay_rate = 10.0;
+    assert!(config.validate().is_ok(), "10.0 must be accepted");
+}
+
 fn minimal_cloud_toml(extra_cloud: &str) -> String {
     format!(
         r#"
