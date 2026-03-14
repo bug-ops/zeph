@@ -98,6 +98,7 @@ struct SharedAgentDeps {
     budget_tokens: usize,
     compaction_threshold: f32,
     compaction_preserve_tail: usize,
+    compaction_cooldown_turns: u8,
     prune_protect_tokens: usize,
     deferred_apply_threshold: f32,
     /// Broadcast sender for skill reload events. Each session subscribes independently.
@@ -416,6 +417,7 @@ async fn build_acp_deps(
         budget_tokens,
         compaction_threshold: config.memory.compaction_threshold,
         compaction_preserve_tail: config.memory.compaction_preserve_tail,
+        compaction_cooldown_turns: config.memory.compaction_cooldown_turns,
         prune_protect_tokens: config.memory.prune_protect_tokens,
         deferred_apply_threshold: config.memory.deferred_apply_threshold,
         shutdown_rx,
@@ -533,6 +535,7 @@ async fn spawn_acp_agent(
     let budget_tokens = d.budget_tokens;
     let compaction_threshold = d.compaction_threshold;
     let compaction_preserve_tail = d.compaction_preserve_tail;
+    let compaction_cooldown_turns = d.compaction_cooldown_turns;
     let prune_protect_tokens = d.prune_protect_tokens;
     let deferred_apply_threshold = d.deferred_apply_threshold;
     let shutdown_rx = d.shutdown_rx.clone();
@@ -678,6 +681,7 @@ async fn spawn_acp_agent(
         compaction_preserve_tail,
         prune_protect_tokens,
     )
+    .with_compaction_cooldown(compaction_cooldown_turns)
     .with_deferred_apply_threshold(deferred_apply_threshold)
     .with_shutdown(shutdown_rx)
     .with_security(security, timeouts)

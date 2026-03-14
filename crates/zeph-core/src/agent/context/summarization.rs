@@ -837,11 +837,29 @@ impl<C: Channel> Agent<C> {
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        clippy::too_many_lines
     )]
     pub(in crate::agent) async fn maybe_compact(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
+        // Guard 3 — Exhaustion: stop compaction permanently when it cannot reduce context.
+        if self.context_manager.compaction_exhausted {
+            if !self.context_manager.exhaustion_warned {
+                self.context_manager.exhaustion_warned = true;
+                tracing::warn!("compaction exhausted: context budget too tight for this session");
+                let _ = self
+                    .channel
+                    .send(
+                        "Warning: context budget is too tight — compaction cannot free enough \
+                         space. Consider increasing [memory] context_budget_tokens or starting \
+                         a new session.",
+                    )
+                    .await;
+            }
+            return Ok(());
+        }
+
         // S1: skip client-side compaction when server compaction is active — unless context
         // has grown past 95% of the budget without a server compaction event (safety fallback).
         if self.server_compaction_active {
@@ -873,6 +891,11 @@ impl<C: Channel> Agent<C> {
         if self.context_manager.compacted_this_turn {
             return Ok(());
         }
+        // Guard 1 — Cooldown: skip compaction for N turns after the last successful compaction.
+        if self.context_manager.compaction_turns_since > 0 {
+            self.context_manager.compaction_turns_since -= 1;
+            return Ok(());
+        }
         if !self.should_compact() {
             return Ok(());
         }
@@ -895,6 +918,8 @@ impl<C: Channel> Agent<C> {
         if freed >= min_to_free {
             tracing::info!(freed, "tier-1 pruning sufficient");
             self.context_manager.compacted_this_turn = true;
+            self.context_manager.compaction_turns_since =
+                self.context_manager.compaction_cooldown_turns;
             return Ok(());
         }
 
@@ -903,9 +928,49 @@ impl<C: Channel> Agent<C> {
             min_to_free,
             "tier-1 insufficient, falling back to tier-2 compaction"
         );
+
+        // Guard 2 — Counterproductive: check if compaction actually frees meaningful space.
+        // Messages with ≤1 compactable messages cannot be summarized usefully.
+        let preserve_tail = self.context_manager.compaction_preserve_tail;
+        let compactable = self.messages.len().saturating_sub(preserve_tail + 1);
+        if compactable <= 1 {
+            tracing::warn!(
+                compactable,
+                "compaction has too few messages to compact, marking exhausted"
+            );
+            self.context_manager.compaction_exhausted = true;
+            let _ = self.channel.send_status("").await;
+            return Ok(());
+        }
+
+        let tokens_before = self.cached_prompt_tokens;
         let result = self.compact_context().await;
         if result.is_ok() {
+            // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all freed space).
+            let freed_tokens = tokens_before.saturating_sub(self.cached_prompt_tokens);
+            if freed_tokens == 0 {
+                tracing::warn!(
+                    freed_tokens,
+                    "compaction summary consumed all freed tokens — no net reduction, marking exhausted"
+                );
+                self.context_manager.compaction_exhausted = true;
+                return result;
+            }
+            // Guard 3 — Still above threshold: compaction freed some tokens but not enough to
+            // drop below the compaction threshold; further attempts are unlikely to help.
+            let still_above_threshold = self.should_compact();
+            if still_above_threshold {
+                tracing::warn!(
+                    freed_tokens,
+                    still_above_threshold,
+                    "context still above compaction threshold after compaction, marking exhausted"
+                );
+                self.context_manager.compaction_exhausted = true;
+                return result;
+            }
             self.context_manager.compacted_this_turn = true;
+            self.context_manager.compaction_turns_since =
+                self.context_manager.compaction_cooldown_turns;
         }
         result
     }

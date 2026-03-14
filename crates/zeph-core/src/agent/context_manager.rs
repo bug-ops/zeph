@@ -19,6 +19,16 @@ pub(crate) struct ContextManager {
     /// Threshold ratio for applying deferred tool pair summaries (default 0.70).
     /// Must be below `compaction_threshold` so deferred application fires first.
     pub(super) deferred_apply_threshold: f32,
+    /// Number of turns to skip compaction after a successful compaction (cooldown guard).
+    /// Prevents compaction from re-triggering immediately when the summary itself is large.
+    pub(super) compaction_cooldown_turns: u8,
+    /// Remaining turns in the current cooldown. Counts down each turn; 0 means ready.
+    pub(super) compaction_turns_since: u8,
+    /// Set to `true` when compaction is counterproductive (summary >= freed tokens)
+    /// or when context cannot be reduced below threshold. No further compaction is attempted.
+    pub(super) compaction_exhausted: bool,
+    /// Tracks whether the exhaustion warning message has been sent to the user.
+    pub(super) exhaustion_warned: bool,
 }
 
 impl ContextManager {
@@ -33,6 +43,10 @@ impl ContextManager {
             routing: RoutingConfig::default(),
             compacted_this_turn: false,
             deferred_apply_threshold: 0.70,
+            compaction_cooldown_turns: 2,
+            compaction_turns_since: 0,
+            compaction_exhausted: false,
+            exhaustion_warned: false,
         }
     }
 

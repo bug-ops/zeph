@@ -3318,6 +3318,7 @@ impl<C: Channel> Agent<C> {
         }
         self.context_manager.compaction_threshold = config.memory.compaction_threshold;
         self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;
+        self.context_manager.compaction_cooldown_turns = config.memory.compaction_cooldown_turns;
         self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
         self.context_manager.compression = config.memory.compression.clone();
         self.context_manager.routing = config.memory.routing.clone();

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Context compaction loop when budget too tight: added cooldown guard (`compaction_cooldown_turns`, default 2), counterproductive summary guard (marks exhausted when net freed tokens is zero — summary consumed all freed space), exhaustion guard (marks exhausted when context remains above threshold after compaction — further attempts unlikely to help), and user-visible warning when compaction is exhausted (#1708)
 - llm: extend `is_compact_beta_rejection()` to catch `invalid_request_error` 400s mentioning `context_management` (fixes #1706)
 - **`ContextManagement` serialization for Claude server compaction API** (closes #1705): `ContextManagement` struct now serializes to `{ "type": "auto_truncate", "trigger": { "type": "input_tokens", "value": N }, "pause_after_compaction": false }` matching the Claude API spec. Previously serialized as `{ "type": "enabled", "trigger_tokens": N }` which caused a `400 invalid_request_error: context_management.type: Extra inputs are not permitted`, making `--server-compaction` completely non-functional.
 
