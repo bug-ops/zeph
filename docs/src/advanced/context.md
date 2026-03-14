@@ -406,8 +406,8 @@ Found configs are concatenated (global first, then ancestors from root to cwd) a
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget in tokens | `0` (unlimited) |
-| `ZEPH_MEMORY_DEFERRED_APPLY_THRESHOLD` | Apply deferred summaries when context usage exceeds this fraction | `0.70` |
-| `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold | `0.75` |
+| `ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD` | Soft compaction threshold: prune tool outputs + apply deferred summaries (no LLM) | `0.70` |
+| `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Hard compaction threshold (backward compat alias for `hard_compaction_threshold`) | `0.90` |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction | `4` |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning | `40000` |
 | `ZEPH_MEMORY_CROSS_SESSION_SCORE_THRESHOLD` | Minimum relevance score for cross-session memory results | `0.35` |
