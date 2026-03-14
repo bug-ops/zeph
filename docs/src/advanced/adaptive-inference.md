@@ -110,7 +110,25 @@ quality_threshold = 0.5        # score below this → escalate (default: 0.5)
 max_escalations = 2            # max escalation steps per request (default: 2)
 classifier_mode = "heuristic"  # "heuristic" (default) or "judge" (LLM-backed)
 # max_cascade_tokens = 100000  # cumulative token cap across escalation levels (optional)
+# cost_tiers = ["ollama", "claude"]  # explicit cost ordering (cheapest first)
 ```
+
+#### `cost_tiers`
+
+`cost_tiers` lets you override the escalation order without changing the `chain` list. It is applied once at construction time (no per-request cost). Providers listed in `cost_tiers` are reordered to match that sequence; any provider not mentioned is appended after the listed ones in the original chain order. Unknown names in `cost_tiers` are silently ignored.
+
+```toml
+[llm.router]
+chain = ["claude", "openai", "ollama"]  # default "quality first" order
+
+[llm.router.cascade]
+cost_tiers = ["ollama", "openai"]  # reorder to cheapest first; claude appended last
+```
+
+This separates the fallback chain definition (used by all strategies) from the cost ordering used specifically by cascade.
+
+> [!NOTE]
+> `cost_tiers` only affects `chat_stream` / `chat` calls. `chat_with_tools` bypasses cascade entirely and uses the original chain order.
 
 ### Classifier Modes
 
@@ -145,6 +163,7 @@ Full `[llm.router]` section:
 | `classifier_mode` | string | `"heuristic"` | `"heuristic"` or `"judge"` |
 | `window_size` | int? | unset | Sliding window size for repetition detection |
 | `max_cascade_tokens` | int? | unset | Cumulative token budget across escalation levels |
+| `cost_tiers` | string[]? | unset | Explicit cost ordering (cheapest first); providers not listed are appended after listed ones in original chain order |
 
 EMA-specific fields live in `[llm]`:
 
