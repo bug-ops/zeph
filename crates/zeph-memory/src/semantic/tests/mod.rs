@@ -13,7 +13,6 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_llm::provider::Role;
 
-use crate::embedding_store::SearchFilter;
 use crate::sqlite::SqliteStore;
 use crate::token_counter::TokenCounter;
 use crate::types::{ConversationId, MessageId};

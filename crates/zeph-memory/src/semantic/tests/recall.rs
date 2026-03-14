@@ -11,7 +11,7 @@ use zeph_llm::provider::Role;
 use crate::embedding_store::SearchFilter;
 use crate::sqlite::SqliteStore;
 use crate::token_counter::TokenCounter;
-use crate::types::{ConversationId, MessageId};
+use crate::types::ConversationId;
 
 use super::super::*;
 use super::test_semantic_memory;
