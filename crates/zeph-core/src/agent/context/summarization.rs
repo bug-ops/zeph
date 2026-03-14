@@ -37,16 +37,19 @@ impl<C: Channel> Agent<C> {
              Longer is better if it preserves actionable detail.\n\
              </analysis>\n\
              \n\
-             Produce exactly these 9 sections:\n\
-             1. User Intent — what the user is ultimately trying to accomplish\n\
-             2. Technical Concepts — key technologies, patterns, constraints discussed\n\
-             3. Files & Code — file paths, function names, structs, enums touched or relevant\n\
-             4. Errors & Fixes — every error encountered and whether/how it was resolved\n\
-             5. Problem Solving — approaches tried, decisions made, alternatives rejected\n\
-             6. User Messages — verbatim user requests that are still pending or relevant\n\
-             7. Pending Tasks — items explicitly promised or left TODO\n\
-             8. Current Work — the exact task in progress at the moment of compaction\n\
-             9. Next Step — the single most important action to take immediately after compaction\n\
+             Respond with a structured summary using exactly these sections:\n\
+             \n\
+             **Goal**: What the user originally asked for and the overall objective.\n\
+             \n\
+             **Completed**: Actions and tools that succeeded, including key results. Note any errors encountered and how they were resolved.\n\
+             \n\
+             **Decisions**: Key choices made with rationale (e.g., approach chosen, alternatives rejected).\n\
+             \n\
+             **Open**: Unresolved questions, pending steps, or outstanding user requests that must not be lost.\n\
+             \n\
+             **Files modified**: List of files created or modified with a brief description of each change.\n\
+             \n\
+             **Next**: The single recommended immediate next action to continue progress.\n\
              \n\
              Conversation:\n{history_text}"
         )
@@ -192,16 +195,8 @@ impl<C: Channel> Agent<C> {
         let consolidation_prompt = format!(
             "<analysis>\n\
              Merge these partial conversation summaries into a single structured compaction note.\n\
-             Produce exactly these 9 sections covering all partial summaries:\n\
-             1. User Intent\n\
-             2. Technical Concepts\n\
-             3. Files & Code\n\
-             4. Errors & Fixes\n\
-             5. Problem Solving\n\
-             6. User Messages\n\
-             7. Pending Tasks\n\
-             8. Current Work\n\
-             9. Next Step\n\
+             Produce a summary using exactly these sections covering all partial summaries:\n\
+             Goal, Completed, Decisions, Open, Files modified, Next.\n\
              </analysis>\n\
              \n\
              Partial summaries:\n{numbered}"

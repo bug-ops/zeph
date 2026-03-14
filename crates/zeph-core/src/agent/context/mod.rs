@@ -2030,7 +2030,7 @@ mod tests {
     // --- build_chunk_prompt ---
 
     #[test]
-    fn build_chunk_prompt_contains_all_nine_sections() {
+    fn build_chunk_prompt_contains_all_sections() {
         let messages = vec![Message {
             role: Role::User,
             content: "help me refactor this code".into(),
@@ -2040,15 +2040,12 @@ mod tests {
         let prompt = Agent::<MockChannel>::build_chunk_prompt(&messages);
 
         let sections = [
-            "User Intent",
-            "Technical Concepts",
-            "Files & Code",
-            "Errors & Fixes",
-            "Problem Solving",
-            "User Messages",
-            "Pending Tasks",
-            "Current Work",
-            "Next Step",
+            "**Goal**",
+            "**Completed**",
+            "**Decisions**",
+            "**Open**",
+            "**Files modified**",
+            "**Next**",
         ];
         for section in sections {
             assert!(
@@ -2063,8 +2060,8 @@ mod tests {
         let messages: &[Message] = &[];
         let prompt = Agent::<MockChannel>::build_chunk_prompt(messages);
         // Even with no messages the prompt structure must be valid (not panic, contains sections)
-        assert!(prompt.contains("User Intent"));
-        assert!(prompt.contains("Next Step"));
+        assert!(prompt.contains("**Goal**"));
+        assert!(prompt.contains("**Next**"));
     }
 
     // --- rebuild_system_prompt block order ---
