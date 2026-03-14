@@ -596,9 +596,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let skill_paths = app.skill_paths();
 
-    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
+    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         std::sync::Arc::clone(&memory),
         conversation_id,
+        zeph_core::sanitizer::memory_validation::MemoryWriteValidator::new(
+            config.security.memory_validation.clone(),
+        ),
     );
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
         std::sync::Arc::new(memory.sqlite().clone()),

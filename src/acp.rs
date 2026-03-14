@@ -616,11 +616,14 @@ async fn spawn_acp_agent(
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
     // When conversation_id is None (store unavailable), memory_tools use id=0 which maps to no
     // persisted history — the tool calls succeed but return empty results.
-    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
+    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         Arc::clone(&memory),
         session_ctx
             .conversation_id
             .unwrap_or(zeph_memory::ConversationId(0)),
+        zeph_core::sanitizer::memory_validation::MemoryWriteValidator::new(
+            d.security.memory_validation.clone(),
+        ),
     );
     let overflow_executor = {
         let mut ex =

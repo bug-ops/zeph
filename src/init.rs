@@ -107,6 +107,9 @@ pub(crate) struct WizardState {
     pub(crate) experiments_eval_model: Option<String>,
     pub(crate) experiments_schedule_enabled: bool,
     pub(crate) experiments_schedule_cron: String,
+    // Security
+    pub(crate) pii_filter_enabled: bool,
+    pub(crate) rate_limit_enabled: bool,
     // Logging
     pub(crate) log_file: String,
     pub(crate) log_level: String,
@@ -194,6 +197,8 @@ impl Default for WizardState {
             experiments_eval_model: None,
             experiments_schedule_enabled: false,
             experiments_schedule_cron: String::new(),
+            pii_filter_enabled: false,
+            rate_limit_enabled: false,
             log_file: String::new(),
             log_level: String::new(),
             log_rotation: String::new(),
@@ -251,6 +256,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_agents(&mut state)?;
     step_router(&mut state)?;
     step_learning(&mut state)?;
+    step_security(&mut state)?;
     step_debug(&mut state)?;
     step_logging(&mut state)?;
     step_experiments(&mut state)?;
@@ -944,6 +950,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.debug.enabled = state.debug_dump_enabled;
 
+    config.security.pii_filter.enabled = state.pii_filter_enabled;
+    config.security.rate_limit.enabled = state.rate_limit_enabled;
+
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);
     config.logging.rotation = match state.log_rotation.as_str() {
@@ -1514,6 +1523,27 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
         state.detector_mode = Some("regex".into());
     }
 
+    println!();
+    Ok(())
+}
+
+fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Security ==\n");
+    println!(
+        "Memory write validation is enabled by default (size limits, forbidden patterns, entity PII scan).\n"
+    );
+    state.pii_filter_enabled = Confirm::new()
+        .with_prompt(
+            "Enable PII filter? (scrubs emails, phone numbers, SSNs, and credit card numbers from tool outputs before LLM context and debug dumps)",
+        )
+        .default(false)
+        .interact()?;
+    state.rate_limit_enabled = Confirm::new()
+        .with_prompt(
+            "Enable tool rate limiter? (sliding-window per-category limits: shell 30/min, web 20/min, memory 60/min)",
+        )
+        .default(false)
+        .interact()?;
     println!();
     Ok(())
 }

@@ -18,6 +18,7 @@ mod lsp_commands;
 mod mcp;
 mod message_queue;
 mod persistence;
+pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
 mod skill_management;
@@ -183,6 +184,8 @@ pub(super) struct SecurityState {
     pub(super) quarantine_summarizer: Option<QuarantinedSummarizer>,
     pub(super) exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard,
     pub(super) flagged_urls: std::collections::HashSet<String>,
+    pub(super) pii_filter: crate::sanitizer::pii::PiiFilter,
+    pub(super) memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, anomaly detector, logging config).
@@ -305,6 +308,7 @@ pub struct Agent<C: Channel> {
     pub(super) providers: ProviderState,
     pub(super) metrics: MetricsState,
     pub(super) orchestration: OrchestrationState,
+    pub(super) rate_limiter: rate_limiter::ToolRateLimiter,
 }
 
 impl<C: Channel> Agent<C> {
@@ -459,6 +463,12 @@ impl<C: Channel> Agent<C> {
                     crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
                 ),
                 flagged_urls: std::collections::HashSet::new(),
+                pii_filter: crate::sanitizer::pii::PiiFilter::new(
+                    crate::sanitizer::pii::PiiFilterConfig::default(),
+                ),
+                memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator::new(
+                    crate::sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
+                ),
             },
             pending_image_parts: Vec::new(),
             #[cfg(feature = "experiments")]
@@ -505,6 +515,9 @@ impl<C: Channel> Agent<C> {
                 subagent_config: crate::config::SubAgentConfig::default(),
                 orchestration_config: crate::config::OrchestrationConfig::default(),
             },
+            rate_limiter: rate_limiter::ToolRateLimiter::new(
+                crate::agent::rate_limiter::RateLimitConfig::default(),
+            ),
         }
     }
 

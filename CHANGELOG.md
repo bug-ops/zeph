@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(security): OWASP AI Agent Security 2026 hardening (closes #1650) — three new defenses wired end-to-end:
+  - **PiiFilter** (`[security.pii_filter]`): regex-based scrubber (email, phone, SSN, credit card + custom patterns) applied to tool outputs before they enter LLM context and before debug dumps are written; zero-alloc `Cow` fast path; disabled by default (opt-in)
+  - **MemoryWriteValidator** (`[security.memory_validation]`): structural checks on `memory_save` content (size cap, forbidden substring patterns) and graph extraction results (entity/edge count caps, entity name length, entity name PII scan); enabled by default with conservative limits
+  - **ToolRateLimiter** (`[security.rate_limit]`): sliding-window per-category (shell/web/memory/mcp/other) rate limiter with circuit-breaker cooldown; `check_batch()` atomically reserves slots before parallel tool dispatch to prevent bypass; disabled by default; injects synthetic error `ToolOutput` for blocked calls without interrupting other tools in the tier
+
 - feat(memory,core): migrate tool overflow storage from filesystem to SQLite (`tool_overflow` table, migration 031); `maybe_summarize_tool_output` now writes to `SqliteStore.save_overflow` instead of disk files; overflow references use opaque `overflow:<uuid>` format (eliminates absolute-path leakage SEC-JIT-03); new `read_overflow` native tool allows LLM to retrieve full content; age-based cleanup via `SqliteStore.cleanup_overflow` on startup; `ON DELETE CASCADE` automatically removes overflow rows when conversation is deleted (closes #1774)
 - feat(memory): temporal versioning on graph edges (closes #1341) — `edges_at_timestamp()`, `bfs_at_timestamp()`, `edge_history()` on `GraphStore`; optional `at_timestamp` parameter on `graph_recall()` and `SemanticMemory::recall_graph()` for historical graph queries; `valid_from` field on `GraphFact` for recency-aware scoring; `temporal_decay_rate` config knob in `[memory.graph]` (default `0.0`, existing behavior unchanged); migration 030 adds two partial indexes (`idx_graph_edges_src_temporal`, `idx_graph_edges_tgt_temporal`) to accelerate temporal range queries on expired edges
 

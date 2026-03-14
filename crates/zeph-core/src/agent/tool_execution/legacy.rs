@@ -550,7 +550,12 @@ impl<C: Channel> Agent<C> {
             })
             .await?;
         if let Some(ref d) = self.debug_state.debug_dumper {
-            d.dump_tool_output(&output.tool_name, &output.summary);
+            let dump_content = if self.security.pii_filter.is_enabled() {
+                self.security.pii_filter.scrub(&output.summary).into_owned()
+            } else {
+                output.summary.clone()
+            };
+            d.dump_tool_output(&output.tool_name, &dump_content);
         }
         let processed = self.maybe_summarize_tool_output(&output.summary).await;
         let body = if let Some(ref fs) = output.filter_stats
@@ -631,7 +636,12 @@ impl<C: Channel> Agent<C> {
                     })
                     .await?;
                 if let Some(ref d) = self.debug_state.debug_dumper {
-                    d.dump_tool_output(&out.tool_name, &out.summary);
+                    let dump_content = if self.security.pii_filter.is_enabled() {
+                        self.security.pii_filter.scrub(&out.summary).into_owned()
+                    } else {
+                        out.summary.clone()
+                    };
+                    d.dump_tool_output(&out.tool_name, &dump_content);
                 }
                 let processed = self.maybe_summarize_tool_output(&out.summary).await;
                 let formatted = format_tool_output(&out.tool_name, &processed);

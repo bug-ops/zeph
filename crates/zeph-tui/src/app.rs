@@ -1463,6 +1463,8 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
             SecurityEventCategory::ExfiltrationBlock => "EXFIL_BLOCK    ",
             SecurityEventCategory::Quarantine => "QUARANTINE     ",
             SecurityEventCategory::Truncation => "TRUNCATION     ",
+            SecurityEventCategory::RateLimit => "RATE_LIMIT     ",
+            SecurityEventCategory::MemoryValidation => "MEM_VALIDATION ",
         };
         lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
     }

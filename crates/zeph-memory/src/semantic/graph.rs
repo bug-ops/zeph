@@ -6,8 +6,15 @@ use std::sync::atomic::Ordering;
 use zeph_llm::any::AnyProvider;
 
 use crate::error::MemoryError;
+use crate::graph::extractor::ExtractionResult;
 
 use super::SemanticMemory;
+
+/// Callback type for post-extraction validation.
+///
+/// A generic predicate opaque to zeph-memory — callers (zeph-core) provide security
+/// validation without introducing a dependency on security policy in this crate.
+pub type PostExtractValidator = Option<Box<dyn Fn(&ExtractionResult) -> Result<(), String> + Send>>;
 
 /// Config for the spawned background extraction task.
 ///
@@ -46,6 +53,7 @@ pub async fn extract_and_store(
     provider: AnyProvider,
     pool: sqlx::SqlitePool,
     config: GraphExtractionConfig,
+    post_extract_validator: PostExtractValidator,
 ) -> Result<ExtractionStats, MemoryError> {
     use crate::graph::{EntityResolver, GraphExtractor, GraphStore};
 
@@ -72,6 +80,18 @@ pub async fn extract_and_store(
     let Some(result) = extractor.extract(&content, &ctx_refs).await? else {
         return Ok(ExtractionStats::default());
     };
+
+    // Post-extraction validation callback. zeph-memory does not know the callback is a
+    // security validator — it is a generic predicate opaque to this crate (design decision D1).
+    if let Some(ref validator) = post_extract_validator
+        && let Err(reason) = validator(&result)
+    {
+        tracing::warn!(
+            reason,
+            "graph extraction validation failed, skipping upsert"
+        );
+        return Ok(ExtractionStats::default());
+    }
 
     let resolver = EntityResolver::new(&store);
 
@@ -128,11 +148,15 @@ impl SemanticMemory {
     ///
     /// Extraction runs in a separate tokio task with a timeout. Any error or timeout is
     /// logged and the task exits silently; the agent response is never blocked.
+    ///
+    /// The optional `post_extract_validator` is called after extraction, before upsert.
+    /// It is a generic predicate opaque to zeph-memory (design decision D1).
     pub fn spawn_graph_extraction(
         &self,
         content: String,
         context_messages: Vec<String>,
         config: GraphExtractionConfig,
+        post_extract_validator: PostExtractValidator,
     ) {
         let pool = self.sqlite.pool().clone();
         let provider = self.provider.clone();
@@ -150,6 +174,7 @@ impl SemanticMemory {
                     provider.clone(),
                     pool.clone(),
                     config.clone(),
+                    post_extract_validator,
                 ),
             )
             .await

@@ -363,6 +363,14 @@ impl<C: Channel> Agent<C> {
         self.security.exfiltration_guard = crate::sanitizer::exfiltration::ExfiltrationGuard::new(
             security.exfiltration_guard.clone(),
         );
+        self.security.pii_filter =
+            crate::sanitizer::pii::PiiFilter::new(security.pii_filter.clone());
+        self.security.memory_validator =
+            crate::sanitizer::memory_validation::MemoryWriteValidator::new(
+                security.memory_validation.clone(),
+            );
+        self.rate_limiter =
+            crate::agent::rate_limiter::ToolRateLimiter::new(security.rate_limit.clone());
         self.runtime.security = security;
         self.runtime.timeouts = timeouts;
         self

@@ -10,6 +10,8 @@ use zeph_memory::types::ConversationId;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use zeph_tools::registry::{InvocationHint, ToolDef};
 
+use crate::sanitizer::memory_validation::MemoryWriteValidator;
+
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 struct MemorySearchParams {
     /// Natural language query to search memory for relevant past messages and facts.
@@ -39,6 +41,7 @@ fn default_role() -> String {
 pub struct MemoryToolExecutor {
     memory: Arc<SemanticMemory>,
     conversation_id: ConversationId,
+    validator: MemoryWriteValidator,
 }
 
 impl MemoryToolExecutor {
@@ -47,6 +50,23 @@ impl MemoryToolExecutor {
         Self {
             memory,
             conversation_id,
+            validator: MemoryWriteValidator::new(
+                crate::sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
+            ),
+        }
+    }
+
+    /// Create with a custom validator (used when security config is loaded).
+    #[must_use]
+    pub fn with_validator(
+        memory: Arc<SemanticMemory>,
+        conversation_id: ConversationId,
+        validator: MemoryWriteValidator,
+    ) -> Self {
+        Self {
+            memory,
+            conversation_id,
+            validator,
         }
     }
 }
@@ -73,6 +93,7 @@ impl ToolExecutor for MemoryToolExecutor {
         Ok(None)
     }
 
+    #[allow(clippy::too_many_lines)] // two tools with validation, search, and multi-source aggregation
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
             "memory_search" => {
@@ -154,6 +175,13 @@ impl ToolExecutor for MemoryToolExecutor {
                 if params.content.len() > 4096 {
                     return Err(ToolError::InvalidParams {
                         message: "content exceeds maximum length of 4096 characters".to_owned(),
+                    });
+                }
+
+                // Schema validation: check content before writing to memory.
+                if let Err(e) = self.validator.validate_memory_save(&params.content) {
+                    return Err(ToolError::InvalidParams {
+                        message: format!("memory write rejected: {e}"),
                     });
                 }
 

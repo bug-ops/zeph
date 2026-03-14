@@ -286,7 +286,7 @@ impl<C: Channel> Agent<C> {
         self.record_chat_metrics_and_compact(start, &result).await?;
 
         if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
-            let dump_text = match &result {
+            let raw_dump_text = match &result {
                 ChatResponse::Text(t) => t.clone(),
                 ChatResponse::ToolUse {
                     text, tool_calls, ..
@@ -297,6 +297,11 @@ impl<C: Channel> Agent<C> {
                         text.as_deref().unwrap_or("")
                     )
                 }
+            };
+            let dump_text = if self.security.pii_filter.is_enabled() {
+                self.security.pii_filter.scrub(&raw_dump_text).into_owned()
+            } else {
+                raw_dump_text
             };
             d.dump_response(id, &dump_text);
         }
@@ -633,7 +638,17 @@ impl<C: Channel> Agent<C> {
             // error result immediately (IMP-02: includes ConfirmationRequired dependencies).
             let mut tier_futs: Vec<(usize, ToolExecFut)> = Vec::with_capacity(tier.indices.len());
 
-            for &idx in &tier.indices {
+            // Rate limiter: atomic batch-reserve for this tier (S5 fix).
+            // check_batch() reserves slots before any future is dispatched, preventing
+            // parallel calls from all passing the check before any records the use.
+            let tier_tool_names: Vec<&str> = tier
+                .indices
+                .iter()
+                .map(|&i| tool_calls[i].name.as_str())
+                .collect();
+            let rate_results = self.rate_limiter.check_batch(&tier_tool_names);
+
+            for (tier_local_idx, &idx) in tier.indices.iter().enumerate() {
                 let tc = &tool_calls[idx];
                 let call = &calls[idx];
 
@@ -674,6 +689,39 @@ impl<C: Channel> Agent<C> {
                     let out = zeph_tools::ToolOutput {
                         tool_name: tc.name.clone(),
                         summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                // Rate limiter: check the pre-computed batch result for this call.
+                if let Some(ref exceeded) = rate_results[tier_local_idx] {
+                    tracing::warn!(
+                        tool = %tc.name,
+                        category = exceeded.category.as_str(),
+                        limit = exceeded.limit,
+                        "tool rate limiter: blocking call"
+                    );
+                    self.update_metrics(|m| m.rate_limit_trips += 1);
+                    self.push_security_event(
+                        crate::metrics::SecurityEventCategory::RateLimit,
+                        &tc.name,
+                        format!(
+                            "{} calls exceeded {}/min",
+                            exceeded.category.as_str(),
+                            exceeded.limit
+                        ),
+                    );
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: exceeded.to_error_message(),
                         blocks_executed: 0,
                         filter_stats: None,
                         diff: None,
@@ -1007,6 +1055,18 @@ impl<C: Channel> Agent<C> {
                     };
                     if let Some(ref d) = self.debug_state.debug_dumper {
                         d.dump_tool_error(&tc.name, e);
+                    }
+                    // Count memory write validation rejections.
+                    if tc.name == "memory_save"
+                        && matches!(e, zeph_tools::ToolError::InvalidParams { .. })
+                        && e.to_string().contains("memory write rejected")
+                    {
+                        self.update_metrics(|m| m.memory_validation_failures += 1);
+                        self.push_security_event(
+                            crate::metrics::SecurityEventCategory::MemoryValidation,
+                            "memory_save",
+                            e.to_string(),
+                        );
                     }
                     (format!("[error] {e}"), true, None, None, false, None, None)
                 }
