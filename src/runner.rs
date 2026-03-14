@@ -610,6 +610,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
+    let mcp_tool_rx = tool_setup.mcp_tool_rx;
     // Clone the Arc before it is consumed by with_mcp so LSP hooks can share it.
     #[cfg(feature = "lsp-context")]
     let lsp_mcp_manager = std::sync::Arc::clone(&mcp_manager);
@@ -849,6 +850,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
+    let agent = agent.with_mcp_tool_rx(mcp_tool_rx);
 
     // Wire LSP context injection hooks when the feature is enabled and configured.
     #[cfg(feature = "lsp-context")]

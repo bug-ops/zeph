@@ -22,6 +22,7 @@ pub mod testing;
 pub mod mock;
 
 pub use caller::McpCaller;
+pub use client::ToolRefreshEvent;
 pub use error::McpError;
 pub use executor::McpToolExecutor;
 pub use manager::{McpManager, McpTransport, ServerEntry};
