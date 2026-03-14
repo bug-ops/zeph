@@ -311,28 +311,32 @@ impl<C: Channel> Agent<C> {
             );
         }
 
-        if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
-            let raw_dump_text = match &result {
-                ChatResponse::Text(t) => t.clone(),
-                ChatResponse::ToolUse {
-                    text, tool_calls, ..
-                } => {
-                    let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
-                    format!(
-                        "{}\n\n---TOOL_CALLS---\n{calls}",
-                        text.as_deref().unwrap_or("")
-                    )
-                }
-            };
-            let dump_text = if self.security.pii_filter.is_enabled() {
-                self.security.pii_filter.scrub(&raw_dump_text).into_owned()
-            } else {
-                raw_dump_text
-            };
-            d.dump_response(id, &dump_text);
-        }
-
+        self.write_chat_debug_dump(dump_id, &result);
         Ok(Some(result))
+    }
+
+    fn write_chat_debug_dump(&self, dump_id: Option<u32>, result: &ChatResponse) {
+        let Some((d, id)) = self.debug_state.debug_dumper.as_ref().zip(dump_id) else {
+            return;
+        };
+        let raw = match result {
+            ChatResponse::Text(t) => t.clone(),
+            ChatResponse::ToolUse {
+                text, tool_calls, ..
+            } => {
+                let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
+                format!(
+                    "{}\n\n---TOOL_CALLS---\n{calls}",
+                    text.as_deref().unwrap_or("")
+                )
+            }
+        };
+        let text = if self.security.pii_filter.is_enabled() {
+            self.security.pii_filter.scrub(&raw).into_owned()
+        } else {
+            raw
+        };
+        d.dump_response(id, &text);
     }
 
     async fn record_chat_metrics_and_compact(
