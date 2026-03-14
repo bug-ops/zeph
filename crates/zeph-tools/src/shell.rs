@@ -201,7 +201,6 @@ impl ShellExecutor {
         self.execute_inner(response, true).await
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn execute_inner(
         &self,
         response: &str,
@@ -218,166 +217,27 @@ impl ShellExecutor {
         let blocks_executed = blocks.len() as u32;
 
         for block in &blocks {
-            // Always check the blocklist first — it is a hard security boundary
-            // that must not be bypassed by the PermissionPolicy layer.
-            if let Some(blocked) = self.find_blocked_command(block) {
-                self.log_audit(
-                    block,
-                    AuditResult::Blocked {
-                        reason: format!("blocked command: {blocked}"),
-                    },
-                    0,
-                )
-                .await;
-                return Err(ToolError::Blocked {
-                    command: blocked.to_owned(),
+            let (output_line, per_block_stats) = self.execute_block(block, skip_confirm).await?;
+            if let Some(fs) = per_block_stats {
+                let stats = cumulative_filter_stats.get_or_insert_with(FilterStats::default);
+                stats.raw_chars += fs.raw_chars;
+                stats.filtered_chars += fs.filtered_chars;
+                stats.raw_lines += fs.raw_lines;
+                stats.filtered_lines += fs.filtered_lines;
+                stats.confidence = Some(match (stats.confidence, fs.confidence) {
+                    (Some(prev), Some(cur)) => crate::filter::worse_confidence(prev, cur),
+                    (Some(prev), None) => prev,
+                    (None, Some(cur)) => cur,
+                    (None, None) => unreachable!(),
                 });
-            }
-
-            if let Some(ref policy) = self.permission_policy {
-                match policy.check("bash", block) {
-                    PermissionAction::Deny => {
-                        self.log_audit(
-                            block,
-                            AuditResult::Blocked {
-                                reason: "denied by permission policy".to_owned(),
-                            },
-                            0,
-                        )
-                        .await;
-                        return Err(ToolError::Blocked {
-                            command: (*block).to_owned(),
-                        });
-                    }
-                    PermissionAction::Ask if !skip_confirm => {
-                        return Err(ToolError::ConfirmationRequired {
-                            command: (*block).to_owned(),
-                        });
-                    }
-                    _ => {}
+                if stats.command.is_none() {
+                    stats.command = fs.command;
                 }
-            } else if !skip_confirm && let Some(pattern) = self.find_confirm_command(block) {
-                return Err(ToolError::ConfirmationRequired {
-                    command: pattern.to_owned(),
-                });
-            }
-
-            self.validate_sandbox(block)?;
-
-            if let Some(ref tx) = self.tool_event_tx {
-                let _ = tx.send(ToolEvent::Started {
-                    tool_name: "bash".to_owned(),
-                    command: (*block).to_owned(),
-                });
-            }
-
-            let start = Instant::now();
-            let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
-                self.skill_env.read().ok().and_then(|g| g.clone());
-            let (out, exit_code) = execute_bash(
-                block,
-                self.timeout,
-                self.tool_event_tx.as_ref(),
-                self.cancel_token.as_ref(),
-                skill_env_snapshot.as_ref(),
-            )
-            .await;
-            if exit_code == 130
-                && self
-                    .cancel_token
-                    .as_ref()
-                    .is_some_and(CancellationToken::is_cancelled)
-            {
-                return Err(ToolError::Cancelled);
-            }
-            #[allow(clippy::cast_possible_truncation)]
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            let is_timeout = out.contains("[error] command timed out");
-            let result = if is_timeout {
-                AuditResult::Timeout
-            } else if out.contains("[error]") || out.contains("[stderr]") {
-                AuditResult::Error {
-                    message: out.clone(),
+                if stats.kept_lines.is_empty() && !fs.kept_lines.is_empty() {
+                    stats.kept_lines = fs.kept_lines;
                 }
-            } else {
-                AuditResult::Success
-            };
-            self.log_audit(block, result, duration_ms).await;
-
-            if is_timeout {
-                if let Some(ref tx) = self.tool_event_tx {
-                    let _ = tx.send(ToolEvent::Completed {
-                        tool_name: "bash".to_owned(),
-                        command: (*block).to_owned(),
-                        output: out.clone(),
-                        success: false,
-                        filter_stats: None,
-                        diff: None,
-                    });
-                }
-                return Err(ToolError::Timeout {
-                    timeout_secs: self.timeout.as_secs(),
-                });
             }
-
-            let sanitized = sanitize_output(&out);
-            let mut per_block_stats: Option<FilterStats> = None;
-            let filtered = if let Some(ref registry) = self.output_filter_registry {
-                match registry.apply(block, &sanitized, exit_code) {
-                    Some(fr) => {
-                        tracing::debug!(
-                            command = block,
-                            raw = fr.raw_chars,
-                            filtered = fr.filtered_chars,
-                            savings_pct = fr.savings_pct(),
-                            "output filter applied"
-                        );
-                        let block_fs = FilterStats {
-                            raw_chars: fr.raw_chars,
-                            filtered_chars: fr.filtered_chars,
-                            raw_lines: fr.raw_lines,
-                            filtered_lines: fr.filtered_lines,
-                            confidence: Some(fr.confidence),
-                            command: Some((*block).to_owned()),
-                            kept_lines: fr.kept_lines.clone(),
-                        };
-                        let stats =
-                            cumulative_filter_stats.get_or_insert_with(FilterStats::default);
-                        stats.raw_chars += fr.raw_chars;
-                        stats.filtered_chars += fr.filtered_chars;
-                        stats.raw_lines += fr.raw_lines;
-                        stats.filtered_lines += fr.filtered_lines;
-                        stats.confidence = Some(match (stats.confidence, fr.confidence) {
-                            (Some(prev), cur) => crate::filter::worse_confidence(prev, cur),
-                            (None, cur) => cur,
-                        });
-                        if stats.command.is_none() {
-                            stats.command = Some((*block).to_owned());
-                        }
-                        if stats.kept_lines.is_empty() && !fr.kept_lines.is_empty() {
-                            stats.kept_lines.clone_from(&fr.kept_lines);
-                        }
-                        per_block_stats = Some(block_fs);
-                        fr.output
-                    }
-                    None => sanitized,
-                }
-            } else {
-                sanitized
-            };
-
-            if let Some(ref tx) = self.tool_event_tx {
-                let _ = tx.send(ToolEvent::Completed {
-                    tool_name: "bash".to_owned(),
-                    command: (*block).to_owned(),
-                    output: out.clone(),
-                    success: !out.contains("[error]"),
-                    filter_stats: per_block_stats,
-                    diff: None,
-                });
-            }
-            outputs.push(format!("$ {block}\n{filtered}"));
+            outputs.push(output_line);
         }
 
         Ok(Some(ToolOutput {
@@ -391,6 +251,163 @@ impl ShellExecutor {
             locations: None,
             raw_response: None,
         }))
+    }
+
+    async fn execute_block(
+        &self,
+        block: &str,
+        skip_confirm: bool,
+    ) -> Result<(String, Option<FilterStats>), ToolError> {
+        self.check_permissions(block, skip_confirm).await?;
+        self.validate_sandbox(block)?;
+
+        if let Some(ref tx) = self.tool_event_tx {
+            let _ = tx.send(ToolEvent::Started {
+                tool_name: "bash".to_owned(),
+                command: block.to_owned(),
+            });
+        }
+
+        let start = Instant::now();
+        let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
+            self.skill_env.read().ok().and_then(|g| g.clone());
+        let (out, exit_code) = execute_bash(
+            block,
+            self.timeout,
+            self.tool_event_tx.as_ref(),
+            self.cancel_token.as_ref(),
+            skill_env_snapshot.as_ref(),
+        )
+        .await;
+        if exit_code == 130
+            && self
+                .cancel_token
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(ToolError::Cancelled);
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        let is_timeout = out.contains("[error] command timed out");
+        let audit_result = if is_timeout {
+            AuditResult::Timeout
+        } else if out.contains("[error]") || out.contains("[stderr]") {
+            AuditResult::Error {
+                message: out.clone(),
+            }
+        } else {
+            AuditResult::Success
+        };
+        self.log_audit(block, audit_result, duration_ms).await;
+
+        if is_timeout {
+            if let Some(ref tx) = self.tool_event_tx {
+                let _ = tx.send(ToolEvent::Completed {
+                    tool_name: "bash".to_owned(),
+                    command: block.to_owned(),
+                    output: out.clone(),
+                    success: false,
+                    filter_stats: None,
+                    diff: None,
+                });
+            }
+            return Err(ToolError::Timeout {
+                timeout_secs: self.timeout.as_secs(),
+            });
+        }
+
+        let sanitized = sanitize_output(&out);
+        let mut per_block_stats: Option<FilterStats> = None;
+        let filtered = if let Some(ref registry) = self.output_filter_registry {
+            match registry.apply(block, &sanitized, exit_code) {
+                Some(fr) => {
+                    tracing::debug!(
+                        command = block,
+                        raw = fr.raw_chars,
+                        filtered = fr.filtered_chars,
+                        savings_pct = fr.savings_pct(),
+                        "output filter applied"
+                    );
+                    per_block_stats = Some(FilterStats {
+                        raw_chars: fr.raw_chars,
+                        filtered_chars: fr.filtered_chars,
+                        raw_lines: fr.raw_lines,
+                        filtered_lines: fr.filtered_lines,
+                        confidence: Some(fr.confidence),
+                        command: Some(block.to_owned()),
+                        kept_lines: fr.kept_lines.clone(),
+                    });
+                    fr.output
+                }
+                None => sanitized,
+            }
+        } else {
+            sanitized
+        };
+
+        if let Some(ref tx) = self.tool_event_tx {
+            let _ = tx.send(ToolEvent::Completed {
+                tool_name: "bash".to_owned(),
+                command: block.to_owned(),
+                output: out.clone(),
+                success: !out.contains("[error]"),
+                filter_stats: per_block_stats.clone(),
+                diff: None,
+            });
+        }
+
+        Ok((format!("$ {block}\n{filtered}"), per_block_stats))
+    }
+
+    /// Check blocklist, permission policy, and confirmation requirements for `block`.
+    async fn check_permissions(&self, block: &str, skip_confirm: bool) -> Result<(), ToolError> {
+        // Always check the blocklist first — it is a hard security boundary
+        // that must not be bypassed by the PermissionPolicy layer.
+        if let Some(blocked) = self.find_blocked_command(block) {
+            self.log_audit(
+                block,
+                AuditResult::Blocked {
+                    reason: format!("blocked command: {blocked}"),
+                },
+                0,
+            )
+            .await;
+            return Err(ToolError::Blocked {
+                command: blocked.to_owned(),
+            });
+        }
+
+        if let Some(ref policy) = self.permission_policy {
+            match policy.check("bash", block) {
+                PermissionAction::Deny => {
+                    self.log_audit(
+                        block,
+                        AuditResult::Blocked {
+                            reason: "denied by permission policy".to_owned(),
+                        },
+                        0,
+                    )
+                    .await;
+                    return Err(ToolError::Blocked {
+                        command: block.to_owned(),
+                    });
+                }
+                PermissionAction::Ask if !skip_confirm => {
+                    return Err(ToolError::ConfirmationRequired {
+                        command: block.to_owned(),
+                    });
+                }
+                _ => {}
+            }
+        } else if !skip_confirm && let Some(pattern) = self.find_confirm_command(block) {
+            return Err(ToolError::ConfirmationRequired {
+                command: pattern.to_owned(),
+            });
+        }
+
+        Ok(())
     }
 
     fn validate_sandbox(&self, code: &str) -> Result<(), ToolError> {

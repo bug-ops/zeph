@@ -137,7 +137,23 @@ impl<C: Channel> Agent<C> {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    async fn single_pass_summary(
+        &self,
+        messages: &[Message],
+        timeout: std::time::Duration,
+    ) -> Result<String, zeph_llm::LlmError> {
+        let prompt = Self::build_chunk_prompt(messages);
+        let msgs = [Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        tokio::time::timeout(timeout, self.summary_or_primary_provider().chat(&msgs))
+            .await
+            .map_err(|_| zeph_llm::LlmError::Timeout)?
+    }
+
     async fn try_summarize_with_llm(
         &self,
         messages: &[Message],
@@ -155,19 +171,7 @@ impl<C: Channel> Agent<C> {
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
 
         if chunks.len() <= 1 {
-            let prompt = Self::build_chunk_prompt(messages);
-            let msgs = [Message {
-                role: Role::User,
-                content: prompt,
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            }];
-            return tokio::time::timeout(
-                llm_timeout,
-                self.summary_or_primary_provider().chat(&msgs),
-            )
-            .await
-            .map_err(|_| zeph_llm::LlmError::Timeout)?;
+            return self.single_pass_summary(messages, llm_timeout).await;
         }
 
         // Summarize chunks with bounded concurrency to prevent runaway API calls
@@ -203,19 +207,7 @@ impl<C: Channel> Agent<C> {
 
         if partial_summaries.is_empty() {
             // Fallback: single-pass on full messages
-            let prompt = Self::build_chunk_prompt(messages);
-            let msgs = [Message {
-                role: Role::User,
-                content: prompt,
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            }];
-            return tokio::time::timeout(
-                llm_timeout,
-                self.summary_or_primary_provider().chat(&msgs),
-            )
-            .await
-            .map_err(|_| zeph_llm::LlmError::Timeout)?;
+            return self.single_pass_summary(messages, llm_timeout).await;
         }
 
         // Consolidate partial summaries
@@ -236,17 +228,9 @@ impl<C: Channel> Agent<C> {
             "<analysis>\n\
              Merge these partial conversation summaries into a single structured compaction note.\n\
              Produce exactly these 9 sections covering all partial summaries:\n\
-             1. User Intent\n\
-             2. Technical Concepts\n\
-             3. Files & Code\n\
-             4. Errors & Fixes\n\
-             5. Problem Solving\n\
-             6. User Messages\n\
-             7. Pending Tasks\n\
-             8. Current Work\n\
-             9. Next Step\n\
-             </analysis>\n\
-             \n\
+             1. User Intent\n2. Technical Concepts\n3. Files & Code\n4. Errors & Fixes\n\
+             5. Problem Solving\n6. User Messages\n7. Pending Tasks\n8. Current Work\n9. Next Step\n\
+             </analysis>\n\n\
              Partial summaries:\n{numbered}"
         );
 

@@ -264,266 +264,323 @@ impl AgentManagerState {
     }
 
     /// Handle a key event. Returns `true` if the panel should be closed.
-    #[allow(clippy::too_many_lines)]
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
-        match self {
-            Self::List {
-                definitions,
-                list_state,
-            } => {
-                match key.code {
-                    KeyCode::Esc => return true,
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let next = list_state
-                            .selected()
-                            .map_or(0, |i| (i + 1).min(definitions.len().saturating_sub(1)));
-                        list_state.select(Some(next));
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        let prev = list_state.selected().map_or(0, |i| i.saturating_sub(1));
-                        list_state.select(Some(prev));
-                    }
-                    KeyCode::Enter => {
-                        if let Some(i) = list_state.selected() {
-                            let defs = std::mem::take(definitions);
-                            *self = Self::Detail {
+        // Extract next state from helper; None means no state transition.
+        // Returns (close_panel, Option<new_state>).
+        let (close, next) = handle_key_dispatch(self, key);
+        if let Some(s) = next {
+            *self = s;
+        }
+        close
+    }
+}
+
+/// Returns `(close_panel, Option<new_state>)`.
+fn handle_key_dispatch(
+    state: &mut AgentManagerState,
+    key: KeyEvent,
+) -> (bool, Option<AgentManagerState>) {
+    match state {
+        AgentManagerState::List {
+            definitions,
+            list_state,
+        } => {
+            match key.code {
+                KeyCode::Esc => return (true, None),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let next = list_state
+                        .selected()
+                        .map_or(0, |i| (i + 1).min(definitions.len().saturating_sub(1)));
+                    list_state.select(Some(next));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let prev = list_state.selected().map_or(0, |i| i.saturating_sub(1));
+                    list_state.select(Some(prev));
+                }
+                KeyCode::Enter => {
+                    if let Some(i) = list_state.selected() {
+                        let defs = std::mem::take(definitions);
+                        return (
+                            false,
+                            Some(AgentManagerState::Detail {
                                 definitions: defs,
                                 index: i,
-                            };
-                        }
+                            }),
+                        );
                     }
-                    KeyCode::Char('c') => {
-                        let defs = std::mem::take(definitions);
-                        *self = Self::Create {
+                }
+                KeyCode::Char('c') => {
+                    let defs = std::mem::take(definitions);
+                    return (
+                        false,
+                        Some(AgentManagerState::Create {
                             definitions: defs,
                             form: AgentFormState::new_empty(),
-                        };
-                    }
-                    _ => {}
+                        }),
+                    );
                 }
-                false
+                _ => {}
             }
+            (false, None)
+        }
+        AgentManagerState::Detail { definitions, index } => {
+            handle_key_detail(definitions, *index, key)
+        }
+        AgentManagerState::Create { definitions, form } => {
+            handle_key_form_create(definitions, form, key)
+        }
+        AgentManagerState::Edit {
+            definitions,
+            index,
+            form,
+        } => handle_key_form_edit(definitions, *index, form, key),
+        AgentManagerState::ConfirmDelete {
+            definitions,
+            index,
+            non_project,
+            awaiting_second,
+        } => handle_key_confirm_delete(definitions, *index, *non_project, awaiting_second, key),
+    }
+}
 
-            Self::Detail { definitions, index } => match key.code {
-                KeyCode::Esc => {
-                    let defs = std::mem::take(definitions);
-                    let mut state = ListState::default();
-                    state.select(Some(*index));
-                    *self = Self::List {
-                        definitions: defs,
-                        list_state: state,
-                    };
-                    false
-                }
-                KeyCode::Char('e') => {
-                    let i = *index;
-                    let form = AgentFormState::from_def(&definitions[i]);
-                    let defs = std::mem::take(definitions);
-                    *self = Self::Edit {
-                        definitions: defs,
-                        index: i,
-                        form,
-                    };
-                    false
-                }
-                KeyCode::Char('d') => {
-                    let i = *index;
-                    let source = definitions[i].source.as_deref().unwrap_or("");
-                    let non_project = !source.starts_with("project/");
-                    let defs = std::mem::take(definitions);
-                    *self = Self::ConfirmDelete {
-                        definitions: defs,
-                        index: i,
-                        non_project,
-                        awaiting_second: false,
-                    };
-                    false
-                }
-                _ => false,
-            },
+fn handle_key_detail(
+    definitions: &mut Vec<SubAgentDef>,
+    index: usize,
+    key: KeyEvent,
+) -> (bool, Option<AgentManagerState>) {
+    match key.code {
+        KeyCode::Esc => {
+            let defs = std::mem::take(definitions);
+            let mut list_state = ListState::default();
+            list_state.select(Some(index));
+            (
+                false,
+                Some(AgentManagerState::List {
+                    definitions: defs,
+                    list_state,
+                }),
+            )
+        }
+        KeyCode::Char('e') => {
+            let form = AgentFormState::from_def(&definitions[index]);
+            let defs = std::mem::take(definitions);
+            (
+                false,
+                Some(AgentManagerState::Edit {
+                    definitions: defs,
+                    index,
+                    form,
+                }),
+            )
+        }
+        KeyCode::Char('d') => {
+            let source = definitions[index].source.as_deref().unwrap_or("");
+            let non_project = !source.starts_with("project/");
+            let defs = std::mem::take(definitions);
+            (
+                false,
+                Some(AgentManagerState::ConfirmDelete {
+                    definitions: defs,
+                    index,
+                    non_project,
+                    awaiting_second: false,
+                }),
+            )
+        }
+        _ => (false, None),
+    }
+}
 
-            Self::Create { definitions, form } => match key.code {
-                KeyCode::Esc => {
-                    // Restore definitions list on cancel (S3 fix).
-                    let defs = std::mem::take(definitions);
-                    *self = Self::from_definitions(defs);
-                    false
-                }
-                KeyCode::Tab => {
-                    form.focus_next();
-                    false
-                }
-                KeyCode::BackTab => {
-                    form.focus_prev();
-                    false
-                }
-                KeyCode::Backspace => {
-                    form.delete_char_before_cursor();
-                    false
-                }
-                KeyCode::Enter => {
-                    match form.to_def() {
-                        Ok(def) => {
-                            // C3: canonicalize CWD + ".zeph/agents" for project root resolution.
-                            let dir = std::env::current_dir()
-                                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                                .join(".zeph/agents");
-                            match def.save_atomic(&dir) {
-                                Ok(_) => {
-                                    // Restore list after successful create (S3 fix).
-                                    let defs = std::mem::take(definitions);
-                                    *self = Self::from_definitions(defs);
-                                }
-                                Err(e) => {
-                                    form.error = Some(e.to_string());
-                                }
-                            }
+fn handle_key_form_create(
+    definitions: &mut Vec<SubAgentDef>,
+    form: &mut AgentFormState,
+    key: KeyEvent,
+) -> (bool, Option<AgentManagerState>) {
+    match key.code {
+        KeyCode::Esc => {
+            // Restore definitions list on cancel (S3 fix).
+            let defs = std::mem::take(definitions);
+            (false, Some(AgentManagerState::from_definitions(defs)))
+        }
+        KeyCode::Tab => {
+            form.focus_next();
+            (false, None)
+        }
+        KeyCode::BackTab => {
+            form.focus_prev();
+            (false, None)
+        }
+        KeyCode::Backspace => {
+            form.delete_char_before_cursor();
+            (false, None)
+        }
+        KeyCode::Enter => {
+            match form.to_def() {
+                Ok(def) => {
+                    // C3: canonicalize CWD + ".zeph/agents" for project root resolution.
+                    let dir = std::env::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                        .join(".zeph/agents");
+                    match def.save_atomic(&dir) {
+                        Ok(_) => {
+                            // Restore list after successful create (S3 fix).
+                            let defs = std::mem::take(definitions);
+                            return (false, Some(AgentManagerState::from_definitions(defs)));
                         }
-                        Err(msg) => {
-                            form.error = Some(msg);
-                        }
-                    }
-                    false
-                }
-                KeyCode::Char(c) => {
-                    form.insert_char(c);
-                    false
-                }
-                _ => false,
-            },
-
-            Self::Edit {
-                definitions,
-                index,
-                form,
-            } => match key.code {
-                KeyCode::Esc => {
-                    let i = *index;
-                    let defs = std::mem::take(definitions);
-                    *self = Self::Detail {
-                        definitions: defs,
-                        index: i,
-                    };
-                    false
-                }
-                KeyCode::Tab => {
-                    form.focus_next();
-                    false
-                }
-                KeyCode::BackTab => {
-                    form.focus_prev();
-                    false
-                }
-                KeyCode::Backspace => {
-                    form.delete_char_before_cursor();
-                    false
-                }
-                KeyCode::Enter => {
-                    let i = *index;
-                    match form.to_def() {
-                        Ok(mut def) => {
-                            if let Some(path) = definitions[i].file_path.as_deref() {
-                                let dir = path.parent().unwrap_or(std::path::Path::new("."));
-                                // Preserve file_path on the new def so Detail view can edit/delete.
-                                def.file_path = Some(path.to_path_buf());
-                                def.source.clone_from(&definitions[i].source);
-                                match def.save_atomic(dir) {
-                                    Ok(_) => {
-                                        // S2: update in-memory definition after save.
-                                        definitions[i] = def;
-                                        let defs = std::mem::take(definitions);
-                                        *self = Self::Detail {
-                                            definitions: defs,
-                                            index: i,
-                                        };
-                                    }
-                                    Err(e) => {
-                                        form.error = Some(e.to_string());
-                                    }
-                                }
-                            } else {
-                                form.error =
-                                    Some("Cannot determine file path for this definition".into());
-                            }
-                        }
-                        Err(msg) => {
-                            form.error = Some(msg);
+                        Err(e) => {
+                            form.error = Some(e.to_string());
                         }
                     }
-                    false
                 }
-                KeyCode::Char(c) => {
-                    form.insert_char(c);
-                    false
+                Err(msg) => {
+                    form.error = Some(msg);
                 }
-                _ => false,
-            },
+            }
+            (false, None)
+        }
+        KeyCode::Char(c) => {
+            form.insert_char(c);
+            (false, None)
+        }
+        _ => (false, None),
+    }
+}
 
-            Self::ConfirmDelete {
-                definitions,
-                index,
-                non_project,
-                awaiting_second,
-            } => match key.code {
-                KeyCode::Esc => {
-                    let i = *index;
-                    let defs = std::mem::take(definitions);
-                    *self = Self::Detail {
-                        definitions: defs,
-                        index: i,
-                    };
-                    false
-                }
-                KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
-                    // IMP-04: extra confirmation for non-project scope
-                    if *non_project && !*awaiting_second {
-                        *awaiting_second = true;
-                        return false;
-                    }
-                    let i = *index;
-                    if let Some(path) = definitions[i].file_path.as_deref() {
-                        match SubAgentDef::delete_file(path) {
-                            Ok(()) => {
-                                // S4: remove deleted entry from list, keep the rest.
-                                let mut defs = std::mem::take(definitions);
-                                defs.remove(i);
-                                let selected = if defs.is_empty() {
-                                    None
-                                } else {
-                                    Some(i.saturating_sub(1).min(defs.len() - 1))
-                                };
-                                let mut list_state = ListState::default();
-                                list_state.select(selected);
-                                *self = Self::List {
-                                    definitions: defs,
-                                    list_state,
-                                };
+fn handle_key_form_edit(
+    definitions: &mut Vec<SubAgentDef>,
+    index: usize,
+    form: &mut AgentFormState,
+    key: KeyEvent,
+) -> (bool, Option<AgentManagerState>) {
+    match key.code {
+        KeyCode::Esc => {
+            let defs = std::mem::take(definitions);
+            (
+                false,
+                Some(AgentManagerState::Detail {
+                    definitions: defs,
+                    index,
+                }),
+            )
+        }
+        KeyCode::Tab => {
+            form.focus_next();
+            (false, None)
+        }
+        KeyCode::BackTab => {
+            form.focus_prev();
+            (false, None)
+        }
+        KeyCode::Backspace => {
+            form.delete_char_before_cursor();
+            (false, None)
+        }
+        KeyCode::Enter => {
+            match form.to_def() {
+                Ok(mut def) => {
+                    if let Some(path) = definitions[index].file_path.as_deref() {
+                        let dir = path.parent().unwrap_or(std::path::Path::new("."));
+                        // Preserve file_path on the new def so Detail view can edit/delete.
+                        def.file_path = Some(path.to_path_buf());
+                        def.source.clone_from(&definitions[index].source);
+                        match def.save_atomic(dir) {
+                            Ok(_) => {
+                                // S2: update in-memory definition after save.
+                                definitions[index] = def;
+                                let defs = std::mem::take(definitions);
+                                return (
+                                    false,
+                                    Some(AgentManagerState::Detail {
+                                        definitions: defs,
+                                        index,
+                                    }),
+                                );
                             }
                             Err(e) => {
-                                // S5: surface delete error to user.
-                                let defs = std::mem::take(definitions);
-                                *self = Self::Detail {
-                                    definitions: defs,
-                                    index: i,
-                                };
-                                // Re-borrow after state transition is not possible here;
-                                // error is shown via a Detail render with no error field.
-                                // For now, log the error; a dedicated error state could be
-                                // added in a follow-up if inline error display is required.
-                                tracing::warn!(error = %e, "failed to delete agent definition");
+                                form.error = Some(e.to_string());
                             }
                         }
                     } else {
-                        // No file_path — just remove from in-memory list.
-                        let mut defs = std::mem::take(definitions);
-                        defs.remove(i);
-                        *self = Self::from_definitions(defs);
+                        form.error = Some("Cannot determine file path for this definition".into());
                     }
-                    false
                 }
-                _ => false,
-            },
+                Err(msg) => {
+                    form.error = Some(msg);
+                }
+            }
+            (false, None)
         }
+        KeyCode::Char(c) => {
+            form.insert_char(c);
+            (false, None)
+        }
+        _ => (false, None),
+    }
+}
+
+fn handle_key_confirm_delete(
+    definitions: &mut Vec<SubAgentDef>,
+    index: usize,
+    non_project: bool,
+    awaiting_second: &mut bool,
+    key: KeyEvent,
+) -> (bool, Option<AgentManagerState>) {
+    match key.code {
+        KeyCode::Esc => {
+            let defs = std::mem::take(definitions);
+            (
+                false,
+                Some(AgentManagerState::Detail {
+                    definitions: defs,
+                    index,
+                }),
+            )
+        }
+        KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
+            // IMP-04: extra confirmation for non-project scope
+            if non_project && !*awaiting_second {
+                *awaiting_second = true;
+                return (false, None);
+            }
+            let next = if let Some(path) = definitions[index].file_path.as_deref() {
+                match SubAgentDef::delete_file(path) {
+                    Ok(()) => {
+                        // S4: remove deleted entry from list, keep the rest.
+                        let mut defs = std::mem::take(definitions);
+                        defs.remove(index);
+                        let selected = if defs.is_empty() {
+                            None
+                        } else {
+                            Some(index.saturating_sub(1).min(defs.len() - 1))
+                        };
+                        let mut list_state = ListState::default();
+                        list_state.select(selected);
+                        AgentManagerState::List {
+                            definitions: defs,
+                            list_state,
+                        }
+                    }
+                    Err(e) => {
+                        // S5: surface delete error to user.
+                        let defs = std::mem::take(definitions);
+                        // Re-borrow after state transition is not possible here;
+                        // error is shown via a Detail render with no error field.
+                        tracing::warn!(error = %e, "failed to delete agent definition");
+                        AgentManagerState::Detail {
+                            definitions: defs,
+                            index,
+                        }
+                    }
+                }
+            } else {
+                // No file_path — just remove from in-memory list.
+                let mut defs = std::mem::take(definitions);
+                defs.remove(index);
+                AgentManagerState::from_definitions(defs)
+            };
+            (false, Some(next))
+        }
+        _ => (false, None),
     }
 }
 

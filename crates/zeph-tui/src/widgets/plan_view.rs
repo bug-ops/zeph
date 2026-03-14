@@ -97,7 +97,6 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8) -> Row<'stat
 ///
 /// When `metrics.orchestration_graph` is `None`, renders a placeholder paragraph.
 /// When it contains a snapshot, renders a table with per-task rows.
-#[allow(clippy::too_many_lines)]
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8) {
     let Some(ref snapshot) = metrics.orchestration_graph else {
         render_placeholder(frame, area);

@@ -431,7 +431,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn inject_active_skill_env(&self) {
         if self.skill_state.active_skill_names.is_empty()
             || self.skill_state.available_custom_secrets.is_empty()
@@ -534,7 +533,6 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::too_many_lines)]
 
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

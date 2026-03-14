@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// Commands that can be sent from TUI to Agent loop.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TuiCommand {
     // Existing view commands
     SkillList,
@@ -206,9 +206,13 @@ pub fn daemon_command_registry() -> &'static [CommandEntry] {
 
 /// Extended command registry: filter/ingest/gateway entries.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn extra_command_registry() -> &'static [CommandEntry] {
-    static EXTRA: &[CommandEntry] = &[
+    static EXTRA: std::sync::OnceLock<Vec<CommandEntry>> = std::sync::OnceLock::new();
+    EXTRA.get_or_init(build_extra_commands)
+}
+
+fn build_infra_commands() -> Vec<CommandEntry> {
+    vec![
         CommandEntry {
             id: "view:filters",
             label: "Show output filter statistics",
@@ -238,6 +242,46 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             command: TuiCommand::SchedulerList,
         },
         CommandEntry {
+            id: "router:stats",
+            label: "Show Thompson router alpha/beta per provider",
+            category: "router",
+            shortcut: None,
+            command: TuiCommand::RouterStats,
+        },
+        CommandEntry {
+            id: "security:events",
+            label: "Show security event history",
+            category: "security",
+            shortcut: None,
+            command: TuiCommand::SecurityEvents,
+        },
+        CommandEntry {
+            id: "log:status",
+            label: "Show log file path and recent entries (/log)",
+            category: "log",
+            shortcut: None,
+            command: TuiCommand::ViewLog,
+        },
+        CommandEntry {
+            id: "config:migrate",
+            label: "Show config migration diff (missing parameters)",
+            category: "config",
+            shortcut: None,
+            command: TuiCommand::MigrateConfig,
+        },
+        CommandEntry {
+            id: "compaction:status",
+            label: "Show server-side compaction status",
+            category: "context",
+            shortcut: None,
+            command: TuiCommand::ServerCompactionStatus,
+        },
+    ]
+}
+
+fn build_agent_plan_commands() -> Vec<CommandEntry> {
+    vec![
+        CommandEntry {
             id: "agent:list",
             label: "List sub-agents (/agent list)",
             category: "agent",
@@ -266,13 +310,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             command: TuiCommand::AgentSpawnPrompt,
         },
         CommandEntry {
-            id: "router:stats",
-            label: "Show Thompson router alpha/beta per provider",
-            category: "router",
-            shortcut: None,
-            command: TuiCommand::RouterStats,
-        },
-        CommandEntry {
             id: "agents:show",
             label: "Show sub-agent definition details (/agents show <name>)",
             category: "agents",
@@ -299,13 +336,6 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             category: "agents",
             shortcut: None,
             command: TuiCommand::AgentsDelete,
-        },
-        CommandEntry {
-            id: "security:events",
-            label: "Show security event history",
-            category: "security",
-            shortcut: None,
-            command: TuiCommand::SecurityEvents,
         },
         CommandEntry {
             id: "plan:status",
@@ -342,6 +372,11 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: Some("p"),
             command: TuiCommand::PlanToggleView,
         },
+    ]
+}
+
+fn build_graph_experiment_commands() -> Vec<CommandEntry> {
+    vec![
         CommandEntry {
             id: "graph:stats",
             label: "Show graph memory statistics (/graph)",
@@ -412,37 +447,22 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::ExperimentBest,
         },
-        #[cfg(feature = "lsp-context")]
-        CommandEntry {
-            id: "lsp:status",
-            label: "Show LSP context injection status (/lsp)",
-            category: "lsp",
-            shortcut: None,
-            command: TuiCommand::LspStatus,
-        },
-        CommandEntry {
-            id: "log:status",
-            label: "Show log file path and recent entries (/log)",
-            category: "log",
-            shortcut: None,
-            command: TuiCommand::ViewLog,
-        },
-        CommandEntry {
-            id: "config:migrate",
-            label: "Show config migration diff (missing parameters)",
-            category: "config",
-            shortcut: None,
-            command: TuiCommand::MigrateConfig,
-        },
-        CommandEntry {
-            id: "compaction:status",
-            label: "Show server-side compaction status",
-            category: "context",
-            shortcut: None,
-            command: TuiCommand::ServerCompactionStatus,
-        },
-    ];
-    EXTRA
+    ]
+}
+
+fn build_extra_commands() -> Vec<CommandEntry> {
+    let mut cmds = build_infra_commands();
+    cmds.extend(build_agent_plan_commands());
+    cmds.extend(build_graph_experiment_commands());
+    #[cfg(feature = "lsp-context")]
+    cmds.push(CommandEntry {
+        id: "lsp:status",
+        label: "Show LSP context injection status (/lsp)",
+        category: "lsp",
+        shortcut: None,
+        command: TuiCommand::LspStatus,
+    });
+    cmds
 }
 
 /// Fuzzy score: count of matched characters in order, with penalty for gaps.

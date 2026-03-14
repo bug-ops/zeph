@@ -523,7 +523,7 @@ impl<C: Channel> Agent<C> {
 
     // FuturesUnordered is chosen for extensibility (graph-memory, future sources) rather
     // than performance. The overhead of ~7 heap allocations is negligible vs. network I/O.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // parallel context gathering: memory, graph, skill, knowledge — coupled async fanout
     pub(in crate::agent) async fn prepare_context(
         &mut self,
         query: &str,
@@ -881,7 +881,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // system prompt assembly: skills + tools + knowledge sections, tightly coupled formatting
     pub(in crate::agent) async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
             .skill_state

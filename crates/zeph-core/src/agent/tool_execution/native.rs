@@ -65,7 +65,6 @@ impl<C: Channel> Agent<C> {
         unreachable!("loop covers all attempts")
     }
 
-    #[allow(clippy::too_many_lines)]
     pub(super) async fn process_response_native_tools(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
@@ -106,115 +105,120 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
-
-            self.channel.send_typing().await?;
-
-            // Inject any pending LSP notes as a Role::System message before calling
-            // the LLM. Stale notes are cleared unconditionally each iteration so they
-            // never accumulate when no new notes were produced.
-            // Role::System ensures they are skipped by tool-pair summarization.
-            #[cfg(feature = "lsp-context")]
-            if self.lsp_hooks.is_some() {
-                // Clear stale notes before borrowing lsp_hooks mutably (borrow checker).
-                self.remove_lsp_messages();
-                let tc = std::sync::Arc::clone(&self.metrics.token_counter);
-                if let Some(ref mut lsp) = self.lsp_hooks
-                    && let Some(note_text) = lsp.drain_notes(&tc)
-                {
-                    self.push_message(zeph_llm::provider::Message::from_legacy(
-                        zeph_llm::provider::Role::System,
-                        &note_text,
-                    ));
-                    self.recompute_prompt_tokens();
-                }
-            }
-
-            if let Some(ref budget) = self.context_manager.budget {
-                let used =
-                    usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
-                let threshold = budget.max_tokens() * 4 / 5;
-                if used >= threshold {
-                    tracing::warn!(
-                        iteration,
-                        used,
-                        threshold,
-                        "stopping tool loop: context budget nearing limit"
-                    );
-                    self.channel
-                        .send("Stopping: context window is nearly full.")
-                        .await?;
-                    break;
-                }
-            }
-
-            let _ = self.channel.send_status("thinking...").await;
-            let chat_result = self.call_chat_with_tools_retry(&tool_defs, 2).await?;
-            let _ = self.channel.send_status("").await;
-
-            let Some(chat_result) = chat_result else {
-                tracing::debug!("chat_with_tools returned None (timeout)");
-                return Ok(());
-            };
-
-            tracing::debug!(iteration, ?chat_result, "native tool loop iteration");
-
-            // Text → display and return
-            if let ChatResponse::Text(text) = &chat_result {
-                // S4 / M4: scan LLM text output for markdown image exfiltration.
-                let cleaned = self.scan_output_and_warn(text);
-                if !cleaned.is_empty() {
-                    let display = self.maybe_redact(&cleaned);
-                    self.channel.send(&display).await?;
-                }
-                self.store_response_in_cache(&cleaned).await;
-                self.persist_message(Role::Assistant, &cleaned, &[], false)
-                    .await;
-                self.messages
-                    .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
-                // Emit MaxTokens stop hint before flush when the provider truncated the response.
-                if cleaned.contains(MAX_TOKENS_TRUNCATION_MARKER) {
-                    let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
-                }
-                self.channel.flush_chunks().await?;
+            // None = continue loop, Some(()) = return Ok, Err = propagate
+            if self
+                .process_single_native_turn(&tool_defs, iteration)
+                .await?
+                .is_some()
+            {
                 return Ok(());
             }
-
-            // ToolUse → execute tools and loop
-            let ChatResponse::ToolUse {
-                text,
-                tool_calls,
-                thinking_blocks,
-            } = chat_result
-            else {
-                unreachable!();
-            };
-            self.preserve_thinking_blocks(thinking_blocks);
-            self.handle_native_tool_calls(text.as_deref(), &tool_calls)
-                .await?;
-
-            // Summarize before pruning: summarizer must see intact tool output content.
-            // Pruning runs after so it never destroys content the summarizer needs.
-            // Apply deferred summaries immediately after pruning: once a pair's content is
-            // replaced with "[pruned]", the cache prefix for that pair is gone and the
-            // pre-computed summary should be visible to the LLM on the very next iteration.
-            self.maybe_summarize_tool_pair().await;
-            let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
-            self.prune_stale_tool_outputs(keep_recent);
-            self.maybe_apply_deferred_summaries();
-
             if self.check_doom_loop(iteration).await? {
                 break;
             }
         }
 
-        // Signal that the turn ended because the iteration limit was reached,
-        // not because the model produced a natural end-of-turn response.
         let _ = self.channel.send_stop_hint(StopHint::MaxTurnRequests).await;
         self.channel.flush_chunks().await?;
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Execute one turn of the native tool loop. Returns `Ok(Some(()))` when the LLM produced
+    /// a terminal text response (caller should return `Ok(())`), `Ok(None)` to continue the
+    /// loop, or `Err` on a hard error.
+    async fn process_single_native_turn(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+        iteration: usize,
+    ) -> Result<Option<()>, super::super::error::AgentError> {
+        self.channel.send_typing().await?;
+
+        // Inject any pending LSP notes as a Role::System message before calling
+        // the LLM. Stale notes are cleared unconditionally each iteration so they
+        // never accumulate when no new notes were produced.
+        // Role::System ensures they are skipped by tool-pair summarization.
+        #[cfg(feature = "lsp-context")]
+        if self.lsp_hooks.is_some() {
+            self.remove_lsp_messages();
+            let tc = std::sync::Arc::clone(&self.metrics.token_counter);
+            if let Some(ref mut lsp) = self.lsp_hooks
+                && let Some(note_text) = lsp.drain_notes(&tc)
+            {
+                self.push_message(zeph_llm::provider::Message::from_legacy(
+                    zeph_llm::provider::Role::System,
+                    &note_text,
+                ));
+                self.recompute_prompt_tokens();
+            }
+        }
+
+        if let Some(ref budget) = self.context_manager.budget {
+            let used = usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+            let threshold = budget.max_tokens() * 4 / 5;
+            if used >= threshold {
+                tracing::warn!(
+                    iteration,
+                    used,
+                    threshold,
+                    "stopping tool loop: context budget nearing limit"
+                );
+                self.channel
+                    .send("Stopping: context window is nearly full.")
+                    .await?;
+                return Ok(Some(()));
+            }
+        }
+
+        let _ = self.channel.send_status("thinking...").await;
+        let chat_result = self.call_chat_with_tools_retry(tool_defs, 2).await?;
+        let _ = self.channel.send_status("").await;
+
+        let Some(chat_result) = chat_result else {
+            tracing::debug!("chat_with_tools returned None (timeout)");
+            return Ok(Some(()));
+        };
+
+        tracing::debug!(iteration, ?chat_result, "native tool loop iteration");
+
+        if let ChatResponse::Text(text) = &chat_result {
+            let cleaned = self.scan_output_and_warn(text);
+            if !cleaned.is_empty() {
+                let display = self.maybe_redact(&cleaned);
+                self.channel.send(&display).await?;
+            }
+            self.store_response_in_cache(&cleaned).await;
+            self.persist_message(Role::Assistant, &cleaned, &[], false)
+                .await;
+            self.messages
+                .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
+            if cleaned.contains(MAX_TOKENS_TRUNCATION_MARKER) {
+                let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
+            }
+            self.channel.flush_chunks().await?;
+            return Ok(Some(()));
+        }
+
+        let ChatResponse::ToolUse {
+            text,
+            tool_calls,
+            thinking_blocks,
+        } = chat_result
+        else {
+            unreachable!();
+        };
+        self.preserve_thinking_blocks(thinking_blocks);
+        self.handle_native_tool_calls(text.as_deref(), &tool_calls)
+            .await?;
+
+        // Summarize before pruning; apply deferred summaries after pruning.
+        self.maybe_summarize_tool_pair().await;
+        let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
+        self.prune_stale_tool_outputs(keep_recent);
+        self.maybe_apply_deferred_summaries();
+
+        Ok(None)
+    }
+
     async fn call_chat_with_tools(
         &mut self,
         tool_defs: &[ToolDefinition],
@@ -278,9 +282,35 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         };
 
+        self.record_chat_metrics_and_compact(start, &result).await?;
+
+        if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
+            let dump_text = match &result {
+                ChatResponse::Text(t) => t.clone(),
+                ChatResponse::ToolUse {
+                    text, tool_calls, ..
+                } => {
+                    let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
+                    format!(
+                        "{}\n\n---TOOL_CALLS---\n{calls}",
+                        text.as_deref().unwrap_or("")
+                    )
+                }
+            };
+            d.dump_response(id, &dump_text);
+        }
+
+        Ok(Some(result))
+    }
+
+    async fn record_chat_metrics_and_compact(
+        &mut self,
+        start: std::time::Instant,
+        result: &ChatResponse,
+    ) -> Result<(), super::super::error::AgentError> {
         let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let prompt_estimate = self.providers.cached_prompt_tokens;
-        let completion_heuristic = match &result {
+        let completion_heuristic = match result {
             ChatResponse::Text(t) => u64::try_from(t.len()).unwrap_or(0) / 4,
             ChatResponse::ToolUse {
                 text, tool_calls, ..
@@ -321,9 +351,7 @@ impl<C: Channel> Agent<C> {
                 .await;
         }
 
-        // C2: if the server returned a compaction block, prune old messages from context
-        // and insert a synthetic assistant message containing the compaction summary.
-        // This keeps self.messages consistent with what the API has already summarized.
+        // C2: server-side compaction — prune old messages and insert synthetic compaction message.
         if let Some(raw_summary) = self.provider.take_compaction_summary() {
             let _ = self
                 .channel
@@ -334,13 +362,10 @@ impl<C: Channel> Agent<C> {
                 messages_before = self.messages.len(),
                 "server-side compaction received; pruning old messages"
             );
-            // SEC-COMPACT-01: sanitize compaction summary — it originates from the API but
-            // may encode injected content from tool results the model summarized.
-            // Use McpResponse (ExternalUntrusted) as the conservative trust level.
+            // SEC-COMPACT-01: sanitize (McpResponse = ExternalUntrusted).
             let source = ContentSource::new(ContentSourceKind::McpResponse);
             let sanitized = self.security.sanitizer.sanitize(&raw_summary, source);
             let summary = sanitized.body;
-            // Keep only the final user turn so the next API call has a valid alternating history.
             let last_user = self
                 .messages
                 .iter()
@@ -348,7 +373,6 @@ impl<C: Channel> Agent<C> {
                 .unwrap_or(0);
             let tail: Vec<Message> = self.messages.drain(last_user..).collect();
             self.messages.clear();
-            // Re-insert the compaction summary as a synthetic assistant message.
             self.messages.push(Message {
                 role: Role::Assistant,
                 content: summary.clone(),
@@ -362,23 +386,7 @@ impl<C: Channel> Agent<C> {
             let _ = self.channel.send_status("").await;
         }
 
-        if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
-            let dump_text = match &result {
-                ChatResponse::Text(t) => t.clone(),
-                ChatResponse::ToolUse {
-                    text, tool_calls, ..
-                } => {
-                    let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
-                    format!(
-                        "{}\n\n---TOOL_CALLS---\n{calls}",
-                        text.as_deref().unwrap_or("")
-                    )
-                }
-            };
-            d.dump_response(id, &dump_text);
-        }
-
-        Ok(Some(result))
+        Ok(())
     }
 
     /// Prepend thinking blocks to the last assistant message in the context as `MessagePart`s.
@@ -412,7 +420,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // parallel tool execution with DAG scheduling, retry, self-reflection, cancellation — inherently sequential control flow
     pub(super) async fn handle_native_tool_calls(
         &mut self,
         text: Option<&str>,

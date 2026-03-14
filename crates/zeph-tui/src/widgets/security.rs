@@ -10,7 +10,6 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::metrics::{MetricsSnapshot, SecurityEventCategory};
 use crate::theme::Theme;
 
-#[allow(clippy::too_many_lines)]
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
     let block = Block::default()
@@ -47,7 +46,20 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         .add_modifier(Modifier::BOLD);
     let block_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
 
-    let mut items: Vec<ListItem<'_>> = vec![
+    let mut items = build_metric_items(metrics, base, flag_style, block_style);
+    append_event_items(metrics, &mut items, base, flag_style, block_style);
+
+    let list = List::new(items);
+    frame.render_widget(list, inner);
+}
+
+fn build_metric_items<'a>(
+    metrics: &MetricsSnapshot,
+    base: Style,
+    flag_style: Style,
+    block_style: Style,
+) -> Vec<ListItem<'a>> {
+    vec![
         ListItem::new(Line::from(Span::styled(
             format!("Sanitizer runs:    {}", metrics.sanitizer_runs),
             base,
@@ -101,42 +113,46 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
             format!("Memory guards:     {}", metrics.exfiltration_memory_guards),
             base,
         ))),
-    ];
+    ]
+}
 
-    if !metrics.security_events.is_empty() {
-        items.push(ListItem::new(Line::from(Span::styled(
-            "Recent events:",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::UNDERLINED),
-        ))));
-
-        // Show last 5 events (most recent last).
-        let start = metrics.security_events.len().saturating_sub(5);
-        for ev in metrics.security_events.range(start..) {
-            let (cat_str, cat_style) = match ev.category {
-                SecurityEventCategory::InjectionFlag => ("[inj]  ", flag_style),
-                SecurityEventCategory::ExfiltrationBlock => ("[exfil]", block_style),
-                SecurityEventCategory::Quarantine => ("[quar] ", Style::default().fg(Color::Cyan)),
-                SecurityEventCategory::Truncation => {
-                    ("[trunc]", Style::default().fg(Color::DarkGray))
-                }
-            };
-            let hm = format_hm(ev.timestamp);
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(format!("{hm} "), Style::default().fg(Color::DarkGray)),
-                Span::styled(cat_str, cat_style),
-                Span::styled(format!(" {}", ev.source), base),
-            ])));
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("  {}", ev.detail),
-                Style::default().fg(Color::DarkGray),
-            ))));
-        }
+fn append_event_items<'a>(
+    metrics: &'a MetricsSnapshot,
+    items: &mut Vec<ListItem<'a>>,
+    base: Style,
+    flag_style: Style,
+    block_style: Style,
+) {
+    if metrics.security_events.is_empty() {
+        return;
     }
+    items.push(ListItem::new(Line::from(Span::styled(
+        "Recent events:",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::UNDERLINED),
+    ))));
 
-    let list = List::new(items);
-    frame.render_widget(list, inner);
+    // Show last 5 events (most recent last).
+    let start = metrics.security_events.len().saturating_sub(5);
+    for ev in metrics.security_events.range(start..) {
+        let (cat_str, cat_style) = match ev.category {
+            SecurityEventCategory::InjectionFlag => ("[inj]  ", flag_style),
+            SecurityEventCategory::ExfiltrationBlock => ("[exfil]", block_style),
+            SecurityEventCategory::Quarantine => ("[quar] ", Style::default().fg(Color::Cyan)),
+            SecurityEventCategory::Truncation => ("[trunc]", Style::default().fg(Color::DarkGray)),
+        };
+        let hm = format_hm(ev.timestamp);
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(format!("{hm} "), Style::default().fg(Color::DarkGray)),
+            Span::styled(cat_str, cat_style),
+            Span::styled(format!(" {}", ev.source), base),
+        ])));
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("  {}", ev.detail),
+            Style::default().fg(Color::DarkGray),
+        ))));
+    }
 }
 
 fn format_hm(ts: u64) -> String {
