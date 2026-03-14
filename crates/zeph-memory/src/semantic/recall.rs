@@ -406,6 +406,40 @@ impl SemanticMemory {
                 let vr = self.recall_vectors_raw(query, limit, filter).await?;
                 (kw, vr)
             }
+            // Episodic: FTS5 keyword search with an optional timestamp-range filter.
+            // Temporal keywords are stripped from the query before passing to FTS5 to
+            // prevent BM25 score distortion (e.g. "yesterday" matching messages that
+            // literally contain the word "yesterday" regardless of actual relevance).
+            // Vector search is skipped for speed; temporal decay in recall_merge_and_rank
+            // provides recency boosting for the FTS5 results.
+            // Known trade-off (MVP): semantically similar but lexically different messages
+            // may be missed. See issue #1629 for a future hybrid_temporal mode.
+            MemoryRoute::Episodic => {
+                let range = crate::router::resolve_temporal_range(query, chrono::Utc::now());
+                let cleaned = crate::router::strip_temporal_keywords(query);
+                let search_query = if cleaned.is_empty() { query } else { &cleaned };
+                let kw = if let Some(ref r) = range {
+                    self.sqlite
+                        .keyword_search_with_time_range(
+                            search_query,
+                            limit,
+                            conversation_id,
+                            r.after.as_deref(),
+                            r.before.as_deref(),
+                        )
+                        .await?
+                } else {
+                    self.recall_fts5_raw(search_query, limit, conversation_id)
+                        .await?
+                };
+                tracing::debug!(
+                    has_range = range.is_some(),
+                    cleaned_query = %search_query,
+                    keyword_count = kw.len(),
+                    "recall: episodic path"
+                );
+                (kw, Vec::new())
+            }
             // Graph routing triggers graph_recall separately in agent/context.rs.
             // For the message-based recall, behave like Hybrid.
             MemoryRoute::Graph => {

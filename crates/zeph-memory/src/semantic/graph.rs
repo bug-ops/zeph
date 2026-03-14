@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::LlmProvider as _;
 
+use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
-use crate::graph::extractor::ExtractionResult;
+use crate::graph::extractor::ExtractionResult as ExtractorResult;
+use crate::vector_store::VectorFilter;
 
 use super::SemanticMemory;
 
@@ -14,7 +18,7 @@ use super::SemanticMemory;
 ///
 /// A generic predicate opaque to zeph-memory — callers (zeph-core) provide security
 /// validation without introducing a dependency on security policy in this crate.
-pub type PostExtractValidator = Option<Box<dyn Fn(&ExtractionResult) -> Result<(), String> + Send>>;
+pub type PostExtractValidator = Option<Box<dyn Fn(&ExtractorResult) -> Result<(), String> + Send>>;
 
 /// Config for the spawned background extraction task.
 ///
@@ -31,6 +35,28 @@ pub struct GraphExtractionConfig {
     pub community_summary_max_prompt_bytes: usize,
     pub community_summary_concurrency: usize,
     pub lpa_edge_chunk_size: usize,
+    /// A-MEM note linking config, cloned from `GraphConfig.note_linking`.
+    pub note_linking: NoteLinkingConfig,
+}
+
+/// Config for A-MEM dynamic note linking, owned by the spawned extraction task.
+#[derive(Debug, Clone)]
+pub struct NoteLinkingConfig {
+    pub enabled: bool,
+    pub similarity_threshold: f32,
+    pub top_k: usize,
+    pub timeout_secs: u64,
+}
+
+impl Default for NoteLinkingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            similarity_threshold: 0.85,
+            top_k: 10,
+            timeout_secs: 5,
+        }
+    }
 }
 
 /// Stats returned from a completed extraction.
@@ -38,6 +64,197 @@ pub struct GraphExtractionConfig {
 pub struct ExtractionStats {
     pub entities_upserted: usize,
     pub edges_inserted: usize,
+}
+
+/// Result returned from `extract_and_store`, combining stats with entity IDs needed for linking.
+#[derive(Debug, Default)]
+pub struct ExtractionResult {
+    pub stats: ExtractionStats,
+    /// IDs of entities upserted during this extraction pass. Passed to `link_memory_notes`.
+    pub entity_ids: Vec<i64>,
+}
+
+/// Stats returned from a completed note-linking pass.
+#[derive(Debug, Default)]
+pub struct LinkingStats {
+    pub entities_processed: usize,
+    pub edges_created: usize,
+}
+
+/// Qdrant collection name for entity embeddings (mirrors the constant in `resolver.rs`).
+const ENTITY_COLLECTION: &str = "zeph_graph_entities";
+
+/// Work item for a single entity during a note-linking pass.
+struct EntityWorkItem {
+    entity_id: i64,
+    canonical_name: String,
+    embed_text: String,
+    self_point_id: Option<String>,
+}
+
+/// Link newly extracted entities to semantically similar entities in the graph.
+///
+/// For each entity in `entity_ids`:
+/// 1. Load the entity name + summary from `SQLite`.
+/// 2. Embed all entity texts in parallel.
+/// 3. Search the entity embedding collection in parallel for the `top_k + 1` most similar points.
+/// 4. Filter out the entity itself (by `qdrant_point_id` or `entity_id` payload) and points
+///    below `similarity_threshold`.
+/// 5. Insert a unidirectional `similar_to` edge where `source_id < target_id` to avoid
+///    double-counting in BFS recall while still being traversable via the OR clause in
+///    `edges_for_entity`. The edge confidence is set to the cosine similarity score.
+/// 6. Deduplicate pairs within a single pass so that a pair encountered from both A→B and B→A
+///    directions is only inserted once, keeping `edges_created` accurate.
+///
+/// Errors are logged and not propagated — this is a best-effort background enrichment step.
+#[allow(clippy::too_many_lines)]
+pub async fn link_memory_notes(
+    entity_ids: &[i64],
+    pool: sqlx::SqlitePool,
+    embedding_store: Arc<EmbeddingStore>,
+    provider: AnyProvider,
+    cfg: &NoteLinkingConfig,
+) -> LinkingStats {
+    use futures::future;
+
+    use crate::graph::GraphStore;
+
+    let store = GraphStore::new(pool);
+    let mut stats = LinkingStats::default();
+
+    // Phase 1: load entities from DB sequentially (cheap; avoids connection-pool contention).
+    let mut work_items: Vec<EntityWorkItem> = Vec::with_capacity(entity_ids.len());
+    for &entity_id in entity_ids {
+        let entity = match store.find_entity_by_id(entity_id).await {
+            Ok(Some(e)) => e,
+            Ok(None) => {
+                tracing::debug!("note_linking: entity {entity_id} not found, skipping");
+                continue;
+            }
+            Err(e) => {
+                tracing::debug!("note_linking: DB error loading entity {entity_id}: {e:#}");
+                continue;
+            }
+        };
+        let embed_text = match &entity.summary {
+            Some(s) if !s.is_empty() => format!("{}: {s}", entity.canonical_name),
+            _ => entity.canonical_name.clone(),
+        };
+        work_items.push(EntityWorkItem {
+            entity_id,
+            canonical_name: entity.canonical_name,
+            embed_text,
+            self_point_id: entity.qdrant_point_id,
+        });
+    }
+
+    if work_items.is_empty() {
+        return stats;
+    }
+
+    // Phase 2: embed all entity texts in parallel to reduce N serial HTTP round-trips to 1.
+    let embed_results: Vec<_> =
+        future::join_all(work_items.iter().map(|w| provider.embed(&w.embed_text))).await;
+
+    // Phase 3: search for similar entities in parallel for all successfully embedded entities.
+    let search_limit = cfg.top_k + 1; // +1 to account for self-match
+    let valid: Vec<(usize, Vec<f32>)> = embed_results
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, r)| match r {
+            Ok(v) => Some((i, v)),
+            Err(e) => {
+                tracing::debug!(
+                    "note_linking: embed failed for entity {:?}: {e:#}",
+                    work_items[i].canonical_name
+                );
+                None
+            }
+        })
+        .collect();
+
+    let search_results: Vec<_> = future::join_all(valid.iter().map(|(_, vec)| {
+        embedding_store.search_collection(
+            ENTITY_COLLECTION,
+            vec,
+            search_limit,
+            None::<VectorFilter>,
+        )
+    }))
+    .await;
+
+    // Phase 4: insert edges; deduplicate pairs seen from both A→B and B→A directions.
+    // Without deduplication, both directions call insert_edge for the same normalised pair and
+    // both return Ok (the second call updates confidence on the existing row), inflating
+    // edges_created by the number of bidirectional hits.
+    let mut seen_pairs = std::collections::HashSet::new();
+
+    for ((work_idx, _), search_result) in valid.iter().zip(search_results.iter()) {
+        let w = &work_items[*work_idx];
+
+        let results = match search_result {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(
+                    "note_linking: search failed for entity {:?}: {e:#}",
+                    w.canonical_name
+                );
+                continue;
+            }
+        };
+
+        stats.entities_processed += 1;
+
+        let self_point_id = w.self_point_id.as_deref();
+        let candidates = results
+            .iter()
+            .filter(|p| Some(p.id.as_str()) != self_point_id && p.score >= cfg.similarity_threshold)
+            .take(cfg.top_k);
+
+        for point in candidates {
+            let Some(target_id) = point
+                .payload
+                .get("entity_id")
+                .and_then(serde_json::Value::as_i64)
+            else {
+                tracing::debug!(
+                    "note_linking: missing entity_id in payload for point {}",
+                    point.id
+                );
+                continue;
+            };
+
+            if target_id == w.entity_id {
+                continue; // secondary self-guard when qdrant_point_id is null
+            }
+
+            // Normalise direction: always store source_id < target_id.
+            let (src, tgt) = if w.entity_id < target_id {
+                (w.entity_id, target_id)
+            } else {
+                (target_id, w.entity_id)
+            };
+
+            // Skip pairs already processed in this pass to avoid double-counting.
+            if !seen_pairs.insert((src, tgt)) {
+                continue;
+            }
+
+            let fact = format!("Semantically similar entities (score: {:.3})", point.score);
+
+            match store
+                .insert_edge(src, tgt, "similar_to", &fact, point.score, None)
+                .await
+            {
+                Ok(_) => stats.edges_created += 1,
+                Err(e) => {
+                    tracing::debug!("note_linking: insert_edge failed: {e:#}");
+                }
+            }
+        }
+    }
+
+    stats
 }
 
 /// Extract entities and edges from `content` and persist them to the graph store.
@@ -54,7 +271,7 @@ pub async fn extract_and_store(
     pool: sqlx::SqlitePool,
     config: GraphExtractionConfig,
     post_extract_validator: PostExtractValidator,
-) -> Result<ExtractionStats, MemoryError> {
+) -> Result<ExtractionResult, MemoryError> {
     use crate::graph::{EntityResolver, GraphExtractor, GraphStore};
 
     let extractor = GraphExtractor::new(provider, config.max_entities, config.max_edges);
@@ -78,7 +295,7 @@ pub async fn extract_and_store(
     .await?;
 
     let Some(result) = extractor.extract(&content, &ctx_refs).await? else {
-        return Ok(ExtractionStats::default());
+        return Ok(ExtractionResult::default());
     };
 
     // Post-extraction validation callback. zeph-memory does not know the callback is a
@@ -90,13 +307,14 @@ pub async fn extract_and_store(
             reason,
             "graph extraction validation failed, skipping upsert"
         );
-        return Ok(ExtractionStats::default());
+        return Ok(ExtractionResult::default());
     }
 
     let resolver = EntityResolver::new(&store);
 
     let mut entities_upserted = 0usize;
-    let mut entity_ids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut entity_name_to_id: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
 
     for entity in &result.entities {
         match resolver
@@ -104,7 +322,7 @@ pub async fn extract_and_store(
             .await
         {
             Ok((id, _outcome)) => {
-                entity_ids.insert(entity.name.clone(), id);
+                entity_name_to_id.insert(entity.name.clone(), id);
                 entities_upserted += 1;
             }
             Err(e) => {
@@ -115,9 +333,10 @@ pub async fn extract_and_store(
 
     let mut edges_inserted = 0usize;
     for edge in &result.edges {
-        let (Some(&src_id), Some(&tgt_id)) =
-            (entity_ids.get(&edge.source), entity_ids.get(&edge.target))
-        else {
+        let (Some(&src_id), Some(&tgt_id)) = (
+            entity_name_to_id.get(&edge.source),
+            entity_name_to_id.get(&edge.target),
+        ) else {
             tracing::debug!(
                 "graph: skipping edge {:?}->{:?}: entity not resolved",
                 edge.source,
@@ -137,9 +356,14 @@ pub async fn extract_and_store(
         }
     }
 
-    Ok(ExtractionStats {
-        entities_upserted,
-        edges_inserted,
+    let new_entity_ids: Vec<i64> = entity_name_to_id.into_values().collect();
+
+    Ok(ExtractionResult {
+        stats: ExtractionStats {
+            entities_upserted,
+            edges_inserted,
+        },
+        entity_ids: new_entity_ids,
     })
 }
 
@@ -151,6 +375,11 @@ impl SemanticMemory {
     ///
     /// The optional `post_extract_validator` is called after extraction, before upsert.
     /// It is a generic predicate opaque to zeph-memory (design decision D1).
+    ///
+    /// When `config.note_linking.enabled` is `true` and an embedding store is available,
+    /// `link_memory_notes` runs after successful extraction inside the same task, bounded
+    /// by `config.note_linking.timeout_secs`.
+    #[allow(clippy::too_many_lines)]
     pub fn spawn_graph_extraction(
         &self,
         content: String,
@@ -163,10 +392,12 @@ impl SemanticMemory {
         let failure_counter = self.community_detection_failures.clone();
         let extraction_count = self.graph_extraction_count.clone();
         let extraction_failures = self.graph_extraction_failures.clone();
+        // Clone the embedding store Arc before moving into the task.
+        let embedding_store = self.qdrant.clone();
 
         tokio::spawn(async move {
             let timeout_dur = std::time::Duration::from_secs(config.extraction_timeout_secs);
-            let extraction_ok = match tokio::time::timeout(
+            let extraction_result = tokio::time::timeout(
                 timeout_dur,
                 extract_and_store(
                     content,
@@ -177,28 +408,62 @@ impl SemanticMemory {
                     post_extract_validator,
                 ),
             )
-            .await
-            {
-                Ok(Ok(stats)) => {
+            .await;
+
+            let (extraction_ok, new_entity_ids) = match extraction_result {
+                Ok(Ok(result)) => {
                     tracing::debug!(
-                        entities = stats.entities_upserted,
-                        edges = stats.edges_inserted,
+                        entities = result.stats.entities_upserted,
+                        edges = result.stats.edges_inserted,
                         "graph extraction completed"
                     );
                     extraction_count.fetch_add(1, Ordering::Relaxed);
-                    true
+                    (true, result.entity_ids)
                 }
                 Ok(Err(e)) => {
                     tracing::warn!("graph extraction failed: {e:#}");
                     extraction_failures.fetch_add(1, Ordering::Relaxed);
-                    false
+                    (false, vec![])
                 }
                 Err(_elapsed) => {
                     tracing::warn!("graph extraction timed out");
                     extraction_failures.fetch_add(1, Ordering::Relaxed);
-                    false
+                    (false, vec![])
                 }
             };
+
+            // A-MEM note linking: run after successful extraction when enabled.
+            if extraction_ok
+                && config.note_linking.enabled
+                && !new_entity_ids.is_empty()
+                && let Some(store) = embedding_store
+            {
+                let linking_timeout =
+                    std::time::Duration::from_secs(config.note_linking.timeout_secs);
+                match tokio::time::timeout(
+                    linking_timeout,
+                    link_memory_notes(
+                        &new_entity_ids,
+                        pool.clone(),
+                        store,
+                        provider.clone(),
+                        &config.note_linking,
+                    ),
+                )
+                .await
+                {
+                    Ok(stats) => {
+                        tracing::debug!(
+                            entities_processed = stats.entities_processed,
+                            edges_created = stats.edges_created,
+                            "note linking completed"
+                        );
+                    }
+                    Err(_elapsed) => {
+                        tracing::debug!("note linking timed out (partial edges may exist)");
+                    }
+                }
+            }
 
             if extraction_ok && config.community_refresh_interval > 0 {
                 use crate::graph::GraphStore;

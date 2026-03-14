@@ -406,6 +406,33 @@ impl GraphStore {
         Ok(rows.into_iter().map(edge_from_row).collect())
     }
 
+    /// Get all edges (active and expired) where entity is source or target, ordered by
+    /// `valid_from DESC`. Used by the `/graph history <name>` slash command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or if `limit` overflows `i64`.
+    pub async fn edge_history_for_entity(
+        &self,
+        entity_id: i64,
+        limit: usize,
+    ) -> Result<Vec<Edge>, MemoryError> {
+        let limit = i64::try_from(limit)?;
+        let rows: Vec<EdgeRow> = sqlx::query_as(
+            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE source_entity_id = ?1 OR target_entity_id = ?1
+             ORDER BY valid_from DESC
+             LIMIT ?2",
+        )
+        .bind(entity_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(edge_from_row).collect())
+    }
+
     /// Get all active edges between two entities (both directions).
     ///
     /// # Errors
@@ -3412,6 +3439,102 @@ mod tests {
             history[0].valid_from > history[1].valid_from,
             "ordered valid_from DESC — versions have distinct timestamps"
         );
+    }
+
+    #[tokio::test]
+    async fn edge_history_for_entity_includes_expired() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("HistA", "HistA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("HistB", "HistB", EntityType::Concept, None)
+            .await
+            .unwrap();
+
+        // Insert and immediately invalidate first edge
+        let e1 = gs
+            .insert_edge(a, b, "uses", "old fact", 0.8, None)
+            .await
+            .unwrap();
+        gs.invalidate_edge(e1).await.unwrap();
+        // Insert new active edge
+        gs.insert_edge(a, b, "uses", "new fact", 0.9, None)
+            .await
+            .unwrap();
+
+        let history = gs.edge_history_for_entity(a, 10).await.unwrap();
+        assert_eq!(
+            history.len(),
+            2,
+            "both active and expired edges must appear"
+        );
+
+        // Most recent first — active edge has later valid_from
+        let active = history.iter().find(|e| e.valid_to.is_none());
+        let expired = history.iter().find(|e| e.valid_to.is_some());
+        assert!(active.is_some(), "active edge must be in history");
+        assert!(expired.is_some(), "expired edge must be in history");
+    }
+
+    #[tokio::test]
+    async fn edge_history_for_entity_both_directions() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("DirA", "DirA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("DirB", "DirB", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let c = gs
+            .upsert_entity("DirC", "DirC", EntityType::Concept, None)
+            .await
+            .unwrap();
+
+        gs.insert_edge(a, b, "r1", "f1", 1.0, None).await.unwrap();
+        gs.insert_edge(c, a, "r2", "f2", 1.0, None).await.unwrap();
+
+        let history = gs.edge_history_for_entity(a, 10).await.unwrap();
+        assert_eq!(
+            history.len(),
+            2,
+            "both outgoing and incoming edges must appear"
+        );
+        assert!(
+            history
+                .iter()
+                .any(|e| e.source_entity_id == a && e.target_entity_id == b)
+        );
+        assert!(
+            history
+                .iter()
+                .any(|e| e.source_entity_id == c && e.target_entity_id == a)
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_history_for_entity_respects_limit() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("LimA", "LimA", EntityType::Concept, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("LimB", "LimB", EntityType::Concept, None)
+            .await
+            .unwrap();
+
+        for i in 0..5u32 {
+            gs.insert_edge(a, b, &format!("r{i}"), &format!("fact {i}"), 1.0, None)
+                .await
+                .unwrap();
+        }
+
+        let history = gs.edge_history_for_entity(a, 2).await.unwrap();
+        assert_eq!(history.len(), 2, "limit must be respected");
     }
 
     #[tokio::test]

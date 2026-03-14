@@ -256,6 +256,98 @@ async fn recall_routed_hybrid_route_falls_back_to_fts5_on_no_qdrant() {
     assert!(!recalled.is_empty(), "FTS5 should find the stored message");
 }
 
+#[tokio::test]
+async fn recall_routed_episodic_route_no_time_range() {
+    use crate::{HeuristicRouter, MemoryRoute, MemoryRouter};
+
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+
+    // "when did" routes to Episodic and resolve_temporal_range returns None (no specific range),
+    // so the dispatch uses plain FTS5 without a time filter — allowing recently stored messages
+    // to be found in tests without time-zone or exact-timestamp dependencies.
+    memory
+        .remember(cid, "user", "we should discuss rust ownership")
+        .await
+        .unwrap();
+    memory
+        .remember(cid, "assistant", "python tutorial instead")
+        .await
+        .unwrap();
+
+    let router = HeuristicRouter;
+    assert_eq!(
+        router.route("when did we discuss rust ownership"),
+        MemoryRoute::Episodic
+    );
+
+    // Episodic dispatch pipeline:
+    // 1. router returns Episodic
+    // 2. strip_temporal_keywords strips "when did" → cleaned = "we discuss rust ownership"
+    // 3. resolve_temporal_range returns None → falls back to recall_fts5_raw
+    // 4. FTS5 finds the stored message by "rust" keyword
+    let recalled = memory
+        .recall_routed(
+            "when did we discuss rust ownership",
+            5,
+            Some(SearchFilter {
+                conversation_id: Some(cid),
+                role: None,
+            }),
+            &router,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !recalled.is_empty(),
+        "Episodic dispatch must find messages matching the stripped query"
+    );
+    assert!(
+        recalled[0].message.content.contains("rust"),
+        "first result must contain 'rust'"
+    );
+}
+
+#[tokio::test]
+async fn recall_routed_episodic_all_temporal_stripped_falls_back_to_original() {
+    use crate::{HeuristicRouter, MemoryRoute, MemoryRouter};
+
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+
+    // "last time" routes to Episodic, strip_temporal_keywords removes it leaving "".
+    // recall_routed must fall back to the original query for FTS5 search.
+    // resolve_temporal_range("last time") returns None so no time filter is applied,
+    // allowing the recently stored message to be found.
+    memory
+        .remember(cid, "user", "last time we deployed the service it broke")
+        .await
+        .unwrap();
+
+    let router = HeuristicRouter;
+    assert_eq!(router.route("last time"), MemoryRoute::Episodic);
+
+    // strip_temporal_keywords("last time") → "" → fallback to original "last time" for FTS5.
+    // The stored message contains "last time" so it must be found.
+    let recalled = memory
+        .recall_routed(
+            "last time",
+            5,
+            Some(SearchFilter {
+                conversation_id: Some(cid),
+                role: None,
+            }),
+            &router,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !recalled.is_empty(),
+        "fallback to original query must find the message containing 'last time'"
+    );
+}
+
 #[test]
 fn recalled_message_debug() {
     use zeph_llm::provider::{Message, MessageMetadata};

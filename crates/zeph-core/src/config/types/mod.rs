@@ -36,7 +36,8 @@ pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{
     CompressionConfig, CompressionStrategy, DocumentConfig, GraphConfig, MemoryConfig,
-    RoutingConfig, RoutingStrategy, SemanticConfig, SessionsConfig, VectorBackend,
+    NoteLinkingConfig, RoutingConfig, RoutingStrategy, SemanticConfig, SessionsConfig,
+    VectorBackend,
 };
 pub use providers::{
     CandleConfig, CascadeClassifierMode, CascadeConfig, CloudLlmConfig, CompatibleConfig,
