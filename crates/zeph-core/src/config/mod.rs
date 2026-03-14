@@ -137,6 +137,14 @@ impl Config {
                 self.memory.soft_compaction_threshold, self.memory.hard_compaction_threshold,
             )));
         }
+        if self.memory.graph.temporal_decay_rate < 0.0
+            || self.memory.graph.temporal_decay_rate > 10.0
+        {
+            return Err(ConfigError::Validation(format!(
+                "memory.graph.temporal_decay_rate must be in [0.0, 10.0], got {}",
+                self.memory.graph.temporal_decay_rate
+            )));
+        }
         self.experiments.validate()?;
         Ok(())
     }

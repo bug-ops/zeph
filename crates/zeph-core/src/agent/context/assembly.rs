@@ -91,8 +91,9 @@ impl<C: Channel> Agent<C> {
         };
         let recall_limit = memory_state.graph_config.recall_limit;
         let max_hops = memory_state.graph_config.max_hops;
+        let temporal_decay_rate = memory_state.graph_config.temporal_decay_rate;
         let facts = memory
-            .recall_graph(query, recall_limit, max_hops)
+            .recall_graph(query, recall_limit, max_hops, None, temporal_decay_rate)
             .await
             .map_err(|e| {
                 tracing::warn!("graph recall failed: {e:#}");

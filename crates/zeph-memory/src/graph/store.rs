@@ -846,6 +846,108 @@ impl GraphStore {
         Ok(usize::try_from(result.rows_affected())?)
     }
 
+    // ── Temporal Edge Queries ─────────────────────────────────────────────────
+
+    /// Return all edges for `entity_id` (as source or target) that were valid at `timestamp`.
+    ///
+    /// An edge is valid at `timestamp` when:
+    /// - `valid_from <= timestamp`, AND
+    /// - `valid_to IS NULL` (open-ended) OR `valid_to > timestamp`.
+    ///
+    /// `timestamp` must be a `SQLite` datetime string: `"YYYY-MM-DD HH:MM:SS"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn edges_at_timestamp(
+        &self,
+        entity_id: i64,
+        timestamp: &str,
+    ) -> Result<Vec<Edge>, MemoryError> {
+        // Split into two UNIONed branches to leverage the partial indexes from migration 030:
+        //   Branch 1 (active edges):     idx_graph_edges_valid + idx_graph_edges_source/target
+        //   Branch 2 (historical edges): idx_graph_edges_src_temporal / idx_graph_edges_tgt_temporal
+        let rows: Vec<EdgeRow> = sqlx::query_as(
+            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE valid_to IS NULL
+               AND valid_from <= ?2
+               AND (source_entity_id = ?1 OR target_entity_id = ?1)
+             UNION ALL
+             SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+             FROM graph_edges
+             WHERE valid_to IS NOT NULL
+               AND valid_from <= ?2
+               AND valid_to > ?2
+               AND (source_entity_id = ?1 OR target_entity_id = ?1)",
+        )
+        .bind(entity_id)
+        .bind(timestamp)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(edge_from_row).collect())
+    }
+
+    /// Return all edge versions (active and expired) for the given `(source, predicate)` pair.
+    ///
+    /// The optional `relation` filter restricts results to a specific relation label.
+    /// Results are ordered by `valid_from DESC` (most recent first).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn edge_history(
+        &self,
+        source_entity_id: i64,
+        predicate: &str,
+        relation: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Edge>, MemoryError> {
+        // Escape LIKE wildcards so `%` and `_` in the predicate are treated as literals.
+        let escaped = predicate
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like_pattern = format!("%{escaped}%");
+        let limit = i64::try_from(limit)?;
+        let rows: Vec<EdgeRow> = if let Some(rel) = relation {
+            sqlx::query_as(
+                "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                 FROM graph_edges
+                 WHERE source_entity_id = ?1
+                   AND fact LIKE ?2 ESCAPE '\\'
+                   AND relation = ?3
+                 ORDER BY valid_from DESC
+                 LIMIT ?4",
+            )
+            .bind(source_entity_id)
+            .bind(&like_pattern)
+            .bind(rel)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                 FROM graph_edges
+                 WHERE source_entity_id = ?1
+                   AND fact LIKE ?2 ESCAPE '\\'
+                 ORDER BY valid_from DESC
+                 LIMIT ?3",
+            )
+            .bind(source_entity_id)
+            .bind(&like_pattern)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        Ok(rows.into_iter().map(edge_from_row).collect())
+    }
+
     // ── BFS Traversal ─────────────────────────────────────────────────────────
 
     /// Breadth-first traversal from `start_entity_id` up to `max_hops` hops.
@@ -887,6 +989,42 @@ impl GraphStore {
         start_entity_id: i64,
         max_hops: u32,
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+        self.bfs_core(start_entity_id, max_hops, None).await
+    }
+
+    /// BFS traversal considering only edges that were valid at `timestamp`.
+    ///
+    /// Equivalent to [`bfs_with_depth`] but replaces the `valid_to IS NULL` filter with
+    /// the temporal range predicate `valid_from <= ts AND (valid_to IS NULL OR valid_to > ts)`.
+    ///
+    /// `timestamp` must be a `SQLite` datetime string: `"YYYY-MM-DD HH:MM:SS"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database query fails.
+    pub async fn bfs_at_timestamp(
+        &self,
+        start_entity_id: i64,
+        max_hops: u32,
+        timestamp: &str,
+    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+        self.bfs_core(start_entity_id, max_hops, Some(timestamp))
+            .await
+    }
+
+    /// Shared BFS implementation.
+    ///
+    /// When `at_timestamp` is `None`, only active edges (`valid_to IS NULL`) are traversed.
+    /// When `at_timestamp` is `Some(ts)`, edges valid at `ts` are traversed (temporal BFS).
+    ///
+    /// All IDs used in dynamic SQL come from our own database — no user input reaches the
+    /// format string, so there is no SQL injection risk.
+    async fn bfs_core(
+        &self,
+        start_entity_id: i64,
+        max_hops: u32,
+        at_timestamp: Option<&str>,
+    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
         use std::collections::HashMap;
 
         // SQLite binds frontier IDs 3× per hop; at >333 IDs the IN clause exceeds
@@ -909,13 +1047,19 @@ impl GraphStore {
                 .map(|(i, _)| format!("?{}", i + 1))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let edge_filter = if at_timestamp.is_some() {
+                let ts_pos = frontier.len() * 3 + 1;
+                format!("valid_from <= ?{ts_pos} AND (valid_to IS NULL OR valid_to > ?{ts_pos})")
+            } else {
+                "valid_to IS NULL".to_owned()
+            };
             let neighbour_sql = format!(
                 "SELECT DISTINCT CASE
                      WHEN source_entity_id IN ({placeholders}) THEN target_entity_id
                      ELSE source_entity_id
                  END as neighbour_id
                  FROM graph_edges
-                 WHERE valid_to IS NULL
+                 WHERE {edge_filter}
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders}))"
             );
             let mut q = sqlx::query_scalar::<_, i64>(&neighbour_sql);
@@ -928,8 +1072,10 @@ impl GraphStore {
             for id in &frontier {
                 q = q.bind(*id);
             }
+            if let Some(ts) = at_timestamp {
+                q = q.bind(ts);
+            }
             let neighbours: Vec<i64> = q.fetch_all(&self.pool).await?;
-
             let mut next_frontier: Vec<i64> = Vec::new();
             for nbr in neighbours {
                 if let std::collections::hash_map::Entry::Vacant(e) = depth_map.entry(nbr) {
@@ -940,26 +1086,47 @@ impl GraphStore {
             frontier = next_frontier;
         }
 
+        self.bfs_fetch_results(depth_map, at_timestamp).await
+    }
+
+    /// Fetch entities and edges for a completed BFS depth map.
+    async fn bfs_fetch_results(
+        &self,
+        depth_map: std::collections::HashMap<i64, u32>,
+        at_timestamp: Option<&str>,
+    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
         let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
         if visited_ids.is_empty() {
             return Ok((Vec::new(), Vec::new(), depth_map));
         }
         // Edge query binds visited_ids twice — cap at 499 to stay under SQLite 999 limit.
-        visited_ids.truncate(499);
+        if visited_ids.len() > 499 {
+            tracing::warn!(
+                total = visited_ids.len(),
+                retained = 499,
+                "bfs_fetch_results: visited entity set truncated to 499 to stay within SQLite bind limit; \
+                 some reachable entities will be dropped from results"
+            );
+            visited_ids.truncate(499);
+        }
 
-        // Fetch edges between visited entities
         let placeholders = visited_ids
             .iter()
             .enumerate()
             .map(|(i, _)| format!("?{}", i + 1))
             .collect::<Vec<_>>()
             .join(", ");
-
+        let edge_filter = if at_timestamp.is_some() {
+            let ts_pos = visited_ids.len() * 2 + 1;
+            format!("valid_from <= ?{ts_pos} AND (valid_to IS NULL OR valid_to > ?{ts_pos})")
+        } else {
+            "valid_to IS NULL".to_owned()
+        };
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
              FROM graph_edges
-             WHERE valid_to IS NULL
+             WHERE {edge_filter}
                AND source_entity_id IN ({placeholders})
                AND target_entity_id IN ({placeholders})"
         );
@@ -969,6 +1136,9 @@ impl GraphStore {
         }
         for id in &visited_ids {
             edge_query = edge_query.bind(*id);
+        }
+        if let Some(ts) = at_timestamp {
+            edge_query = edge_query.bind(ts);
         }
         let edge_rows: Vec<EdgeRow> = edge_query.fetch_all(&self.pool).await?;
 
@@ -2667,5 +2837,344 @@ mod tests {
         let page = gs.edges_after_id(0, 10).await.unwrap();
         assert_eq!(page.len(), 1, "invalidated edge must be excluded");
         assert_eq!(page[0].id, e2);
+    }
+
+    // ── Temporal query tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn edges_at_timestamp_returns_active_edge() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("TA", "TA", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("TB", "TB", EntityType::Person, None)
+            .await
+            .unwrap();
+        gs.insert_edge(a, b, "knows", "TA knows TB", 1.0, None)
+            .await
+            .unwrap();
+
+        // Active edge (valid_to IS NULL) must be visible at any timestamp.
+        let edges = gs
+            .edges_at_timestamp(a, "2099-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(edges.len(), 1, "active edge must be visible at future ts");
+        assert_eq!(edges[0].relation, "knows");
+    }
+
+    #[tokio::test]
+    async fn edges_at_timestamp_excludes_future_valid_from() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("FA", "FA", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("FB", "FB", EntityType::Person, None)
+            .await
+            .unwrap();
+        // Insert edge with valid_from in the far future.
+        sqlx::query(
+            "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'rel', 'fact', 1.0, '2100-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // Query at 2026 — future-valid_from edge must be excluded.
+        let edges = gs
+            .edges_at_timestamp(a, "2026-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(
+            edges.is_empty(),
+            "edge with future valid_from must not be visible at earlier timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn edges_at_timestamp_historical_window_visible() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("HA", "HA", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("HB", "HB", EntityType::Person, None)
+            .await
+            .unwrap();
+        // Expired edge valid 2020-01-01 → 2021-01-01.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'managed', 'HA managed HB', 0.8,
+                     '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // During validity window → visible.
+        let during = gs
+            .edges_at_timestamp(a, "2020-06-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(during.len(), 1, "expired edge must be visible during its validity window");
+
+        // Before valid_from → not visible.
+        let before = gs
+            .edges_at_timestamp(a, "2019-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(before.is_empty(), "edge must not be visible before valid_from");
+
+        // After valid_to → not visible.
+        let after = gs
+            .edges_at_timestamp(a, "2026-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(after.is_empty(), "expired edge must not be visible after valid_to");
+    }
+
+    #[tokio::test]
+    async fn edges_at_timestamp_entity_as_target() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("SRC", "SRC", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("TGT", "TGT", EntityType::Person, None)
+            .await
+            .unwrap();
+        gs.insert_edge(src, tgt, "links", "SRC links TGT", 0.9, None)
+            .await
+            .unwrap();
+
+        // Query by target entity_id — must find the edge.
+        let edges = gs
+            .edges_at_timestamp(tgt, "2026-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(edges.len(), 1, "edge must be found when querying by target entity_id");
+    }
+
+    #[tokio::test]
+    async fn bfs_at_timestamp_excludes_expired_edges() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("BA", "BA", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("BB", "BB", EntityType::Person, None)
+            .await
+            .unwrap();
+        let c = gs
+            .upsert_entity("BC", "BC", EntityType::Concept, None)
+            .await
+            .unwrap();
+
+        // A → B is an active edge (valid now).
+        gs.insert_edge(a, b, "knows", "BA knows BB", 1.0, None)
+            .await
+            .unwrap();
+        // B → C expired in 2021 (valid 2020→2021).
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'used', 'BB used BC', 0.9,
+                     '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')",
+        )
+        .bind(b)
+        .bind(c)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // BFS at 2026: A→B active; B→C expired → C not reachable at 2026.
+        let (entities, _edges, depth_map) = gs
+            .bfs_at_timestamp(a, 3, "2026-01-01 00:00:00")
+            .await
+            .unwrap();
+        let entity_ids: Vec<i64> = entities.iter().map(|e| e.id).collect();
+        assert!(
+            depth_map.contains_key(&a),
+            "start entity must be in depth_map"
+        );
+        assert!(
+            depth_map.contains_key(&b),
+            "B should be reachable via active A→B edge"
+        );
+        assert!(
+            !entity_ids.contains(&c),
+            "C must not be reachable at 2026 because B→C expired in 2021"
+        );
+
+        // BFS at 2020-06-01: both A→B (active) and B→C (within window) are valid.
+        let (_entities2, _edges2, depth_map2) = gs
+            .bfs_at_timestamp(a, 3, "2020-06-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(
+            depth_map2.contains_key(&c),
+            "C should be reachable at 2020-06-01 when B→C was valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_history_returns_all_versions_ordered() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("ESrc", "ESrc", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("ETgt", "ETgt", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        // Version 1: valid 2020→2022 (expired).
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'works_at', 'ESrc works at CompanyA', 0.9,
+                     '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')",
+        )
+        .bind(src)
+        .bind(tgt)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+        // Version 2: active since 2022.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'works_at', 'ESrc works at CompanyB', 0.95, '2022-01-01 00:00:00')",
+        )
+        .bind(src)
+        .bind(tgt)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // History without relation filter — both versions returned, newest first.
+        let history = gs
+            .edge_history(src, "works at", None, 100)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 2, "both edge versions must be returned");
+        // Ordered valid_from DESC — version 2 (2022) before version 1 (2020).
+        assert!(
+            history[0].valid_from >= history[1].valid_from,
+            "results must be ordered by valid_from DESC"
+        );
+
+        // History with relation filter.
+        let filtered = gs
+            .edge_history(src, "works at", Some("works_at"), 100)
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 2, "relation filter must retain both versions");
+
+        // History with non-matching predicate.
+        let empty = gs
+            .edge_history(src, "nonexistent_predicate_xyz", None, 100)
+            .await
+            .unwrap();
+        assert!(empty.is_empty(), "non-matching predicate must return empty");
+    }
+
+    #[tokio::test]
+    async fn edge_history_like_escaping() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("EscSrc", "EscSrc", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("EscTgt", "EscTgt", EntityType::Concept, None)
+            .await
+            .unwrap();
+
+        // Insert an edge with literal fact text.
+        gs.insert_edge(src, tgt, "ref", "specific_fact here", 1.0, None)
+            .await
+            .unwrap();
+
+        // Searching with '%' as predicate must NOT match all edges (wildcard injection).
+        let results = gs.edge_history(src, "%", None, 100).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "LIKE wildcard '%' in predicate must be escaped and not match all edges"
+        );
+
+        // Searching with '_' similarly must be escaped.
+        let results_underscore = gs.edge_history(src, "_", None, 100).await.unwrap();
+        assert!(
+            results_underscore.is_empty(),
+            "LIKE wildcard '_' in predicate must be escaped and not match single-char substrings"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidate_edge_sets_valid_to_and_expired_at() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("InvA", "InvA", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("InvB", "InvB", EntityType::Person, None)
+            .await
+            .unwrap();
+        let edge_id = gs
+            .insert_edge(a, b, "rel", "InvA rel InvB", 1.0, None)
+            .await
+            .unwrap();
+
+        // Before invalidation: valid_to and expired_at must be NULL.
+        let active_edge: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1",
+        )
+        .bind(edge_id)
+        .fetch_one(gs.pool())
+        .await
+        .unwrap();
+        assert!(
+            active_edge.0.is_none(),
+            "valid_to must be NULL before invalidation"
+        );
+        assert!(
+            active_edge.1.is_none(),
+            "expired_at must be NULL before invalidation"
+        );
+
+        gs.invalidate_edge(edge_id).await.unwrap();
+
+        // After invalidation: both valid_to and expired_at must be set.
+        let dead_edge: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1",
+        )
+        .bind(edge_id)
+        .fetch_one(gs.pool())
+        .await
+        .unwrap();
+        assert!(
+            dead_edge.0.is_some(),
+            "valid_to must be set after invalidation"
+        );
+        assert!(
+            dead_edge.1.is_some(),
+            "expired_at must be set after invalidation"
+        );
     }
 }
