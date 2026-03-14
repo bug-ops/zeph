@@ -9,9 +9,16 @@ use zeph_llm::provider::LlmProvider as _;
 
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
+use crate::graph::extractor::ExtractionResult as ExtractorResult;
 use crate::vector_store::VectorFilter;
 
 use super::SemanticMemory;
+
+/// Callback type for post-extraction validation.
+///
+/// A generic predicate opaque to zeph-memory — callers (zeph-core) provide security
+/// validation without introducing a dependency on security policy in this crate.
+pub type PostExtractValidator = Option<Box<dyn Fn(&ExtractorResult) -> Result<(), String> + Send>>;
 
 /// Config for the spawned background extraction task.
 ///
@@ -77,18 +84,30 @@ pub struct LinkingStats {
 /// Qdrant collection name for entity embeddings (mirrors the constant in `resolver.rs`).
 const ENTITY_COLLECTION: &str = "zeph_graph_entities";
 
+/// Work item for a single entity during a note-linking pass.
+struct EntityWorkItem {
+    entity_id: i64,
+    canonical_name: String,
+    embed_text: String,
+    self_point_id: Option<String>,
+}
+
 /// Link newly extracted entities to semantically similar entities in the graph.
 ///
 /// For each entity in `entity_ids`:
 /// 1. Load the entity name + summary from `SQLite`.
-/// 2. Re-embed the entity text using `provider.embed()`.
-/// 3. Search the entity embedding collection for the `top_k + 1` most similar points.
-/// 4. Filter out the entity itself (by `qdrant_point_id`) and points below `similarity_threshold`.
+/// 2. Embed all entity texts in parallel.
+/// 3. Search the entity embedding collection in parallel for the `top_k + 1` most similar points.
+/// 4. Filter out the entity itself (by `qdrant_point_id` or `entity_id` payload) and points
+///    below `similarity_threshold`.
 /// 5. Insert a unidirectional `similar_to` edge where `source_id < target_id` to avoid
 ///    double-counting in BFS recall while still being traversable via the OR clause in
 ///    `edges_for_entity`. The edge confidence is set to the cosine similarity score.
+/// 6. Deduplicate pairs within a single pass so that a pair encountered from both A→B and B→A
+///    directions is only inserted once, keeping `edges_created` accurate.
 ///
 /// Errors are logged and not propagated — this is a best-effort background enrichment step.
+#[allow(clippy::too_many_lines)]
 pub async fn link_memory_notes(
     entity_ids: &[i64],
     pool: sqlx::SqlitePool,
@@ -96,11 +115,15 @@ pub async fn link_memory_notes(
     provider: AnyProvider,
     cfg: &NoteLinkingConfig,
 ) -> LinkingStats {
+    use futures::future;
+
     use crate::graph::GraphStore;
 
     let store = GraphStore::new(pool);
     let mut stats = LinkingStats::default();
 
+    // Phase 1: load entities from DB sequentially (cheap; avoids connection-pool contention).
+    let mut work_items: Vec<EntityWorkItem> = Vec::with_capacity(entity_ids.len());
     for &entity_id in entity_ids {
         let entity = match store.find_entity_by_id(entity_id).await {
             Ok(Some(e)) => e,
@@ -113,39 +136,68 @@ pub async fn link_memory_notes(
                 continue;
             }
         };
-
-        // Build embed text matching the pattern used during entity resolution.
         let embed_text = match &entity.summary {
             Some(s) if !s.is_empty() => format!("{}: {s}", entity.canonical_name),
             _ => entity.canonical_name.clone(),
         };
+        work_items.push(EntityWorkItem {
+            entity_id,
+            canonical_name: entity.canonical_name,
+            embed_text,
+            self_point_id: entity.qdrant_point_id,
+        });
+    }
 
-        let query_vec = match provider.embed(&embed_text).await {
-            Ok(v) => v,
+    if work_items.is_empty() {
+        return stats;
+    }
+
+    // Phase 2: embed all entity texts in parallel to reduce N serial HTTP round-trips to 1.
+    let embed_results: Vec<_> =
+        future::join_all(work_items.iter().map(|w| provider.embed(&w.embed_text))).await;
+
+    // Phase 3: search for similar entities in parallel for all successfully embedded entities.
+    let search_limit = cfg.top_k + 1; // +1 to account for self-match
+    let valid: Vec<(usize, Vec<f32>)> = embed_results
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, r)| match r {
+            Ok(v) => Some((i, v)),
             Err(e) => {
                 tracing::debug!(
                     "note_linking: embed failed for entity {:?}: {e:#}",
-                    entity.canonical_name
+                    work_items[i].canonical_name
                 );
-                continue;
+                None
             }
-        };
+        })
+        .collect();
 
-        let search_limit = cfg.top_k + 1; // +1 to account for self-match
-        let results = match embedding_store
-            .search_collection(
-                ENTITY_COLLECTION,
-                &query_vec,
-                search_limit,
-                None::<VectorFilter>,
-            )
-            .await
-        {
+    let search_results: Vec<_> = future::join_all(valid.iter().map(|(_, vec)| {
+        embedding_store.search_collection(
+            ENTITY_COLLECTION,
+            vec,
+            search_limit,
+            None::<VectorFilter>,
+        )
+    }))
+    .await;
+
+    // Phase 4: insert edges; deduplicate pairs seen from both A→B and B→A directions.
+    // Without deduplication, both directions call insert_edge for the same normalised pair and
+    // both return Ok (the second call updates confidence on the existing row), inflating
+    // edges_created by the number of bidirectional hits.
+    let mut seen_pairs = std::collections::HashSet::new();
+
+    for ((work_idx, _), search_result) in valid.iter().zip(search_results.iter()) {
+        let w = &work_items[*work_idx];
+
+        let results = match search_result {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(
                     "note_linking: search failed for entity {:?}: {e:#}",
-                    entity.canonical_name
+                    w.canonical_name
                 );
                 continue;
             }
@@ -153,16 +205,11 @@ pub async fn link_memory_notes(
 
         stats.entities_processed += 1;
 
-        // Filter: exclude self, exclude below-threshold, then take top_k.
-        let self_point_id = entity.qdrant_point_id.as_deref();
-        let candidates: Vec<_> = results
+        let self_point_id = w.self_point_id.as_deref();
+        let candidates = results
             .iter()
-            .filter(|p| {
-                // Exclude self by point_id comparison.
-                Some(p.id.as_str()) != self_point_id && p.score >= cfg.similarity_threshold
-            })
-            .take(cfg.top_k)
-            .collect();
+            .filter(|p| Some(p.id.as_str()) != self_point_id && p.score >= cfg.similarity_threshold)
+            .take(cfg.top_k);
 
         for point in candidates {
             let Some(target_id) = point
@@ -177,18 +224,21 @@ pub async fn link_memory_notes(
                 continue;
             };
 
-            if target_id == entity_id {
-                continue; // additional self-guard in case qdrant_point_id was null
+            if target_id == w.entity_id {
+                continue; // secondary self-guard when qdrant_point_id is null
             }
 
-            // Unidirectional: only insert where source < target to avoid double-counting in BFS.
-            // edges_for_entity uses "source = ? OR target = ?" so the edge is still traversable
-            // in both directions without creating a duplicate in the opposite direction.
-            let (src, tgt) = if entity_id < target_id {
-                (entity_id, target_id)
+            // Normalise direction: always store source_id < target_id.
+            let (src, tgt) = if w.entity_id < target_id {
+                (w.entity_id, target_id)
             } else {
-                (target_id, entity_id)
+                (target_id, w.entity_id)
             };
+
+            // Skip pairs already processed in this pass to avoid double-counting.
+            if !seen_pairs.insert((src, tgt)) {
+                continue;
+            }
 
             let fact = format!("Semantically similar entities (score: {:.3})", point.score);
 
@@ -220,6 +270,7 @@ pub async fn extract_and_store(
     provider: AnyProvider,
     pool: sqlx::SqlitePool,
     config: GraphExtractionConfig,
+    post_extract_validator: PostExtractValidator,
 ) -> Result<ExtractionResult, MemoryError> {
     use crate::graph::{EntityResolver, GraphExtractor, GraphStore};
 
@@ -246,6 +297,18 @@ pub async fn extract_and_store(
     let Some(result) = extractor.extract(&content, &ctx_refs).await? else {
         return Ok(ExtractionResult::default());
     };
+
+    // Post-extraction validation callback. zeph-memory does not know the callback is a
+    // security validator — it is a generic predicate opaque to this crate (design decision D1).
+    if let Some(ref validator) = post_extract_validator
+        && let Err(reason) = validator(&result)
+    {
+        tracing::warn!(
+            reason,
+            "graph extraction validation failed, skipping upsert"
+        );
+        return Ok(ExtractionResult::default());
+    }
 
     let resolver = EntityResolver::new(&store);
 
@@ -310,6 +373,9 @@ impl SemanticMemory {
     /// Extraction runs in a separate tokio task with a timeout. Any error or timeout is
     /// logged and the task exits silently; the agent response is never blocked.
     ///
+    /// The optional `post_extract_validator` is called after extraction, before upsert.
+    /// It is a generic predicate opaque to zeph-memory (design decision D1).
+    ///
     /// When `config.note_linking.enabled` is `true` and an embedding store is available,
     /// `link_memory_notes` runs after successful extraction inside the same task, bounded
     /// by `config.note_linking.timeout_secs`.
@@ -319,6 +385,7 @@ impl SemanticMemory {
         content: String,
         context_messages: Vec<String>,
         config: GraphExtractionConfig,
+        post_extract_validator: PostExtractValidator,
     ) {
         let pool = self.sqlite.pool().clone();
         let provider = self.provider.clone();
@@ -338,6 +405,7 @@ impl SemanticMemory {
                     provider.clone(),
                     pool.clone(),
                     config.clone(),
+                    post_extract_validator,
                 ),
             )
             .await;

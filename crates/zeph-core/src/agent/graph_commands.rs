@@ -370,6 +370,7 @@ impl<C: Channel> Agent<C> {
                     provider.clone(),
                     pool,
                     extraction_cfg,
+                    None,
                 )
                 .await
                 {

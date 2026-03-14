@@ -507,6 +507,55 @@ sources = ["web_scrape", "a2a_message"]
 # (e.g. "claude", "ollama", "openai", or a compatible entry name)
 model = "claude"
 
+[security.pii_filter]
+# Scrub PII from tool outputs before they enter LLM context and debug dumps (default: false)
+enabled = false
+# Scrub email addresses (default: true)
+filter_email = true
+# Scrub US phone numbers (default: true)
+filter_phone = true
+# Scrub US Social Security Numbers (default: true)
+filter_ssn = true
+# Scrub credit card numbers (16-digit patterns) (default: true)
+filter_credit_card = true
+# Custom regex patterns (optional, in addition to built-ins)
+# [[security.pii_filter.custom_patterns]]
+# name = "employee_id"
+# pattern = "EMP-\\d{6}"
+# replacement = "[PII:employee_id]"
+
+[security.memory_validation]
+# Validate content before memory_save writes and graph extraction (default: true)
+enabled = true
+# Maximum byte length of content passed to memory_save (default: 4096)
+max_content_bytes = 4096
+# Maximum byte length of a single entity name in graph extraction (default: 256)
+max_entity_name_bytes = 256
+# Maximum byte length of an edge fact string in graph extraction (default: 1024)
+max_fact_bytes = 1024
+# Maximum number of entities allowed per graph extraction result (default: 50)
+max_entities_per_extraction = 50
+# Maximum number of edges allowed per graph extraction result (default: 100)
+max_edges_per_extraction = 100
+# Forbidden substring patterns — content containing any is rejected (default: empty)
+# forbidden_content_patterns = ["<script", "javascript:"]
+
+[security.rate_limit]
+# Per-category sliding-window rate limiter for tool calls (default: false)
+enabled = false
+# Maximum shell tool calls per 60-second window (default: 30)
+shell_calls_per_minute = 30
+# Maximum web scrape tool calls per 60-second window (default: 20)
+web_calls_per_minute = 20
+# Maximum memory tool calls per 60-second window (default: 60)
+memory_calls_per_minute = 60
+# Maximum MCP tool calls per 60-second window (default: 40)
+mcp_calls_per_minute = 40
+# Maximum other tool calls per 60-second window (default: 60)
+other_calls_per_minute = 60
+# Circuit breaker cooldown in seconds after limit is exceeded (default: 30)
+circuit_breaker_cooldown_secs = 30
+
 # [telegram]
 # token = "your-bot-token"
 # Allowed usernames (empty = allow all except for /start command)

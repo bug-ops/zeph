@@ -240,6 +240,32 @@ block_markdown_images = true
 validate_tool_urls = true
 guard_memory_writes = true
 
+[security.memory_validation]
+enabled = true
+max_content_bytes = 4096
+max_entity_name_bytes = 256
+max_fact_bytes = 1024
+max_entities_per_extraction = 50
+max_edges_per_extraction = 100
+forbidden_content_patterns = []
+
+[security.pii_filter]
+enabled = false
+filter_email = true
+filter_phone = true
+filter_ssn = true
+filter_credit_card = true
+custom_patterns = []
+
+[security.rate_limit]
+enabled = false
+shell_calls_per_minute = 30
+web_calls_per_minute = 20
+memory_calls_per_minute = 60
+mcp_calls_per_minute = 40
+other_calls_per_minute = 60
+circuit_breaker_cooldown_secs = 30
+
 [timeouts]
 llm_seconds = 120
 llm_request_timeout_secs = 600

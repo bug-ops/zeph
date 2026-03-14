@@ -141,6 +141,10 @@ fn append_event_items<'a>(
             SecurityEventCategory::ExfiltrationBlock => ("[exfil]", block_style),
             SecurityEventCategory::Quarantine => ("[quar] ", Style::default().fg(Color::Cyan)),
             SecurityEventCategory::Truncation => ("[trunc]", Style::default().fg(Color::DarkGray)),
+            SecurityEventCategory::RateLimit => ("[rlim] ", Style::default().fg(Color::Yellow)),
+            SecurityEventCategory::MemoryValidation => {
+                ("[mval] ", Style::default().fg(Color::Magenta))
+            }
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![

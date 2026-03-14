@@ -357,7 +357,20 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        (sanitized.body, has_injection_flags)
+        // PII scrub: apply after sanitization so the filter processes the same content
+        // that will enter the LLM context (post-truncation, post-spotlight delimiters).
+        let body = if self.security.pii_filter.is_enabled() {
+            let scrubbed = self.security.pii_filter.scrub(&sanitized.body);
+            if matches!(scrubbed, std::borrow::Cow::Owned(_)) {
+                self.update_metrics(|m| m.pii_scrub_count += 1);
+                tracing::debug!(tool = %tool_name, "PII scrubbed from tool output");
+            }
+            scrubbed.into_owned()
+        } else {
+            sanitized.body
+        };
+
+        (body, has_injection_flags)
     }
 
     fn scan_output_and_warn(&mut self, text: &str) -> String {

@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use zeph_skills::TrustLevel;
 use zeph_tools::AutonomyLevel;
 
+use crate::agent::rate_limiter::RateLimitConfig;
 use crate::sanitizer::ContentIsolationConfig;
 use crate::sanitizer::exfiltration::ExfiltrationGuardConfig;
+use crate::sanitizer::memory_validation::MemoryWriteValidationConfig;
+use crate::sanitizer::pii::PiiFilterConfig;
 
 use super::defaults::default_true;
 
@@ -72,6 +75,19 @@ pub struct SecurityConfig {
     pub content_isolation: ContentIsolationConfig,
     #[serde(default)]
     pub exfiltration_guard: ExfiltrationGuardConfig,
+    /// Memory write validation (enabled by default).
+    #[serde(default)]
+    pub memory_validation: MemoryWriteValidationConfig,
+    /// PII filter for tool outputs and debug dumps (opt-in, disabled by default).
+    #[serde(default)]
+    pub pii_filter: PiiFilterConfig,
+    /// Tool action rate limiter (opt-in, disabled by default).
+    ///
+    /// Note: The legacy tool path (`providers without native function-calling`) is not
+    /// covered by this rate limiter. For MVP, only the native tool dispatch path is
+    /// rate-limited. See architecture decision S2.
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for SecurityConfig {
@@ -81,6 +97,9 @@ impl Default for SecurityConfig {
             autonomy_level: AutonomyLevel::default(),
             content_isolation: ContentIsolationConfig::default(),
             exfiltration_guard: ExfiltrationGuardConfig::default(),
+            memory_validation: MemoryWriteValidationConfig::default(),
+            pii_filter: PiiFilterConfig::default(),
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
