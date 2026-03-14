@@ -13,6 +13,10 @@ use crate::redact::redact_secrets;
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::loader::Skill;
 
+/// Prefix used in the overflow notice appended to tool outputs that exceed the size threshold.
+/// Shared with the pruning logic so both sides stay in sync if the format changes.
+pub(crate) const OVERFLOW_NOTICE_PREFIX: &str = "[full output saved to ";
+
 enum AnomalyOutcome {
     Success,
     Error,
