@@ -800,7 +800,7 @@ impl ClaudeProvider {
         }
         let context_window =
             u32::try_from(self.context_window().unwrap_or(200_000)).unwrap_or(200_000_u32);
-        // Default compaction_threshold of 0.80 — matches client-side default.
+        // Default hard_compaction_threshold of 0.90 — matches client-side default.
         // Multiply before dividing to preserve precision (avoid losing up to 99 tokens).
         let trigger_tokens = context_window * 80 / 100;
         Some(ContextManagement {

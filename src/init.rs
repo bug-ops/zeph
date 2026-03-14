@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    AcpConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, McpServerConfig,
-    MemoryConfig, OrchestrationConfig, OrchestratorConfig, OrchestratorProviderConfig,
-    ProviderKind, RouterConfig, RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig,
-    TelegramConfig, VaultConfig,
+    AcpConfig, CascadeConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig,
+    McpServerConfig, MemoryConfig, OrchestrationConfig, OrchestratorConfig,
+    OrchestratorProviderConfig, ProviderKind, RouterConfig, RouterStrategyConfig, SemanticConfig,
+    SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -71,10 +71,14 @@ pub(crate) struct WizardState {
     /// "regex" or "judge" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
-    /// Router strategy: None = no router, "ema", or "thompson".
+    /// Router strategy: None = no router, "ema", "thompson", or "cascade".
     pub(crate) router_strategy: Option<String>,
     /// Custom path for Thompson state file (None = use default).
     pub(crate) router_thompson_state_path: Option<String>,
+    /// Cascade: minimum quality score to accept without escalating (default 0.5).
+    pub(crate) router_cascade_quality_threshold: Option<f64>,
+    /// Cascade: maximum number of quality-based escalations per request (default 2).
+    pub(crate) router_cascade_max_escalations: Option<u8>,
     // Orchestration settings
     pub(crate) orchestration_enabled: bool,
     pub(crate) orchestration_max_tasks: u32,
@@ -95,7 +99,7 @@ pub(crate) struct WizardState {
     pub(crate) mcpls_workspace_roots: Vec<String>,
     // LSP context injection
     pub(crate) lsp_context_enabled: bool,
-    pub(crate) deferred_apply_threshold: f32,
+    pub(crate) soft_compaction_threshold: f32,
     // Experiments
     pub(crate) experiments_enabled: bool,
     pub(crate) experiments_eval_model: Option<String>,
@@ -134,7 +138,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_max_parallel: 4,
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
-        deferred_apply_threshold: 0.70,
+        soft_compaction_threshold: 0.70,
         log_file: zeph_core::config::default_log_file_path(),
         log_level: "info".into(),
         log_rotation: "daily".into(),
@@ -485,17 +489,17 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         );
     }
 
-    // If compaction_threshold becomes wizard-configurable, replace with state.compaction_threshold.
-    let compaction_threshold = zeph_core::config::Config::default()
+    let hard_compaction_threshold = zeph_core::config::Config::default()
         .memory
-        .compaction_threshold;
+        .hard_compaction_threshold;
     loop {
         let val: f32 = Input::new()
             .with_prompt(format!(
-                "Apply deferred tool summaries when context usage exceeds this fraction \
-                 (0.0-1.0, must be below compaction threshold {compaction_threshold})"
+                "Soft compaction threshold: prune tool outputs + apply deferred summaries \
+                 when context usage exceeds this fraction \
+                 (0.0-1.0, must be below hard_compaction_threshold {hard_compaction_threshold})"
             ))
-            .default(state.deferred_apply_threshold)
+            .default(state.soft_compaction_threshold)
             .validate_with(|v: &f32| {
                 if *v > 0.0 && *v < 1.0 {
                     Ok(())
@@ -504,12 +508,12 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
                 }
             })
             .interact_text()?;
-        if val < compaction_threshold {
-            state.deferred_apply_threshold = val;
+        if val < hard_compaction_threshold {
+            state.soft_compaction_threshold = val;
             break;
         }
         eprintln!(
-            "error: value must be less than compaction_threshold ({compaction_threshold}), got {val}",
+            "error: value must be less than hard_compaction_threshold ({hard_compaction_threshold}), got {val}",
         );
     }
 
@@ -702,9 +706,22 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             chain: vec![],
             strategy: match s {
                 "thompson" => RouterStrategyConfig::Thompson,
+                "cascade" => RouterStrategyConfig::Cascade,
                 _ => RouterStrategyConfig::Ema,
             },
             thompson_state_path: state.router_thompson_state_path.clone(),
+            cascade: if s == "cascade" {
+                let mut cfg = CascadeConfig::default();
+                if let Some(t) = state.router_cascade_quality_threshold {
+                    cfg.quality_threshold = t;
+                }
+                if let Some(e) = state.router_cascade_max_escalations {
+                    cfg.max_escalations = e;
+                }
+                Some(cfg)
+            } else {
+                None
+            },
         }),
         stt: None,
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
@@ -741,7 +758,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     if let Some(ref m) = state.graph_extract_model {
         config.memory.graph.extract_model.clone_from(m);
     }
-    config.memory.deferred_apply_threshold = state.deferred_apply_threshold;
+    config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
     if state.server_compaction_enabled
         && let Some(cloud) = config.llm.cloud.as_mut()
     {
@@ -1299,6 +1316,7 @@ fn step_router(state: &mut WizardState) -> anyhow::Result<()> {
         "None (single provider, no routing)",
         "EMA (latency-aware exponential moving average)",
         "Thompson (probabilistic exploration/exploitation)",
+        "Cascade (try cheapest provider first, escalate on degenerate output)",
     ];
     let sel = Select::new()
         .with_prompt("Router strategy")
@@ -1324,6 +1342,21 @@ fn step_router(state: &mut WizardState) -> anyhow::Result<()> {
             if !custom_path.is_empty() {
                 state.router_thompson_state_path = Some(custom_path);
             }
+        }
+        3 => {
+            state.router_strategy = Some("cascade".into());
+            let threshold: f64 = Input::new()
+                .with_prompt(
+                    "Quality threshold [0.0–1.0] — responses below this score trigger escalation",
+                )
+                .default(0.5_f64)
+                .interact_text()?;
+            state.router_cascade_quality_threshold = Some(threshold.clamp(0.0, 1.0));
+            let max_esc: u8 = Input::new()
+                .with_prompt("Max escalations per request (0 = no escalation)")
+                .default(2_u8)
+                .interact_text()?;
+            state.router_cascade_max_escalations = Some(max_esc);
         }
         _ => unreachable!(),
     }

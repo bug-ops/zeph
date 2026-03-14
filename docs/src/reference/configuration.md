@@ -27,7 +27,8 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 |-------|-----------|
 | `memory.history_limit` | <= 10,000 |
 | `memory.context_budget_tokens` | <= 1,000,000 (when > 0) |
-| `memory.deferred_apply_threshold` | 0.0–1.0, must be < `compaction_threshold` |
+| `memory.soft_compaction_threshold` | 0.0–1.0, must be < `hard_compaction_threshold` |
+| `memory.hard_compaction_threshold` | 0.0–1.0, must be > `soft_compaction_threshold` |
 | `memory.compression.threshold_tokens` | >= 1,000 (proactive only) |
 | `memory.compression.max_summary_tokens` | >= 128 (proactive only) |
 | `memory.token_safety_margin` | > 0.0 |
@@ -50,7 +51,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 |---------|--------|
 | `[security]` | `redact_secrets` |
 | `[timeouts]` | `llm_seconds`, `embedding_seconds`, `a2a_seconds` |
-| `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `deferred_apply_threshold`, `compaction_threshold`, `compaction_preserve_tail`, `prune_protect_tokens`, `cross_session_score_threshold` |
+| `[memory]` | `history_limit`, `summarization_threshold`, `context_budget_tokens`, `soft_compaction_threshold`, `hard_compaction_threshold`, `compaction_preserve_tail`, `prune_protect_tokens`, `cross_session_score_threshold` |
 | `[memory.semantic]` | `recall_limit` |
 | `[index]` | `repo_map_ttl_secs`, `watch` |
 | `[agent]` | `max_tool_iterations` |
@@ -194,8 +195,8 @@ judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses jud
 history_limit = 50
 summarization_threshold = 100  # Trigger summarization after N messages
 context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
-deferred_apply_threshold = 0.70  # Apply pre-computed tool pair summaries when usage exceeds this fraction (must be < compaction_threshold; default: 0.70)
-compaction_threshold = 0.75    # Compact when context usage exceeds this fraction
+soft_compaction_threshold = 0.70  # Soft tier: prune tool outputs + apply deferred summaries (no LLM); default: 0.70
+hard_compaction_threshold = 0.90  # Hard tier: full LLM summarization when usage exceeds this fraction; default: 0.90
 compaction_preserve_tail = 4   # Keep last N messages during compaction
 prune_protect_tokens = 40000   # Protect recent N tokens from tool output pruning
 cross_session_score_threshold = 0.35  # Minimum relevance for cross-session results

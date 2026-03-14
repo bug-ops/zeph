@@ -113,28 +113,28 @@ impl Config {
                 )));
             }
         }
-        if !self.memory.compaction_threshold.is_finite()
-            || self.memory.compaction_threshold <= 0.0
-            || self.memory.compaction_threshold >= 1.0
+        if !self.memory.soft_compaction_threshold.is_finite()
+            || self.memory.soft_compaction_threshold <= 0.0
+            || self.memory.soft_compaction_threshold >= 1.0
         {
             return Err(ConfigError::Validation(format!(
-                "compaction_threshold must be in (0.0, 1.0) exclusive, got {}",
-                self.memory.compaction_threshold
+                "soft_compaction_threshold must be in (0.0, 1.0) exclusive, got {}",
+                self.memory.soft_compaction_threshold
             )));
         }
-        if !self.memory.deferred_apply_threshold.is_finite()
-            || self.memory.deferred_apply_threshold <= 0.0
-            || self.memory.deferred_apply_threshold >= 1.0
+        if !self.memory.hard_compaction_threshold.is_finite()
+            || self.memory.hard_compaction_threshold <= 0.0
+            || self.memory.hard_compaction_threshold >= 1.0
         {
             return Err(ConfigError::Validation(format!(
-                "deferred_apply_threshold must be in (0.0, 1.0) exclusive, got {}",
-                self.memory.deferred_apply_threshold
+                "hard_compaction_threshold must be in (0.0, 1.0) exclusive, got {}",
+                self.memory.hard_compaction_threshold
             )));
         }
-        if self.memory.deferred_apply_threshold >= self.memory.compaction_threshold {
+        if self.memory.soft_compaction_threshold >= self.memory.hard_compaction_threshold {
             return Err(ConfigError::Validation(format!(
-                "deferred_apply_threshold ({}) must be less than compaction_threshold ({})",
-                self.memory.deferred_apply_threshold, self.memory.compaction_threshold,
+                "soft_compaction_threshold ({}) must be less than hard_compaction_threshold ({})",
+                self.memory.soft_compaction_threshold, self.memory.hard_compaction_threshold,
             )));
         }
         self.experiments.validate()?;

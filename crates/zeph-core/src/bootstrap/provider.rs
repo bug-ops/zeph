@@ -9,7 +9,8 @@ use zeph_llm::gemini::GeminiProvider;
 use zeph_llm::http::llm_client;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::openai::OpenAiProvider;
-use zeph_llm::router::RouterProvider;
+use zeph_llm::router::cascade::ClassifierMode;
+use zeph_llm::router::{CascadeRouterConfig, RouterProvider};
 
 use crate::config::{Config, ProviderKind};
 
@@ -100,6 +101,46 @@ pub fn create_provider(config: &Config) -> anyhow::Result<AnyProvider> {
                     .as_deref()
                     .map(std::path::Path::new);
                 RouterProvider::new(providers).with_thompson(state_path)
+            } else if router_cfg.strategy == crate::config::RouterStrategyConfig::Cascade {
+                let cascade_cfg = router_cfg.cascade.clone().unwrap_or_default();
+                let classifier_mode = match cascade_cfg.classifier_mode {
+                    crate::config::CascadeClassifierMode::Heuristic => ClassifierMode::Heuristic,
+                    crate::config::CascadeClassifierMode::Judge => ClassifierMode::Judge,
+                };
+                // SEC-CASCADE-01: clamp quality_threshold to [0.0, 1.0]; reject NaN/Inf.
+                let raw_threshold = cascade_cfg.quality_threshold;
+                let quality_threshold = if raw_threshold.is_finite() {
+                    raw_threshold.clamp(0.0, 1.0)
+                } else {
+                    tracing::warn!(
+                        raw_threshold,
+                        "cascade quality_threshold is non-finite, defaulting to 0.5"
+                    );
+                    0.5
+                };
+                if (quality_threshold - raw_threshold).abs() > f64::EPSILON {
+                    tracing::warn!(
+                        raw_threshold,
+                        clamped = quality_threshold,
+                        "cascade quality_threshold out of range [0.0, 1.0], clamped"
+                    );
+                }
+                // SEC-CASCADE-02: clamp window_size to minimum 1 to prevent silent no-op tracking.
+                let window_size = cascade_cfg.window_size.max(1);
+                if window_size != cascade_cfg.window_size {
+                    tracing::warn!(
+                        raw = cascade_cfg.window_size,
+                        "cascade window_size=0 is invalid, clamped to 1"
+                    );
+                }
+                let router_cascade_cfg = CascadeRouterConfig {
+                    quality_threshold,
+                    max_escalations: cascade_cfg.max_escalations,
+                    classifier_mode,
+                    window_size,
+                    max_cascade_tokens: cascade_cfg.max_cascade_tokens,
+                };
+                RouterProvider::new(providers).with_cascade(router_cascade_cfg)
             } else if config.llm.router_ema_enabled {
                 let raw_alpha = config.llm.router_ema_alpha;
                 let alpha = raw_alpha.clamp(f64::MIN_POSITIVE, 1.0);

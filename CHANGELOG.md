@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Tiered context compaction** (#1338): replaced single `compaction_threshold` (0.80) with
+  two-tier compaction. Soft tier (`soft_compaction_threshold`, default 0.70) prunes tool outputs
+  and applies deferred summaries without LLM calls. Hard tier (`hard_compaction_threshold`,
+  default 0.90) triggers full LLM-based summarization. Old config field `compaction_threshold`
+  is still accepted via serde alias and maps to `hard_compaction_threshold`.
+  `deferred_apply_threshold` is removed — absorbed into the soft compaction tier.
+
 ### Fixed
 
 - llm: `with_server_compaction(true)` on Haiku models now emits a `WARN` and keeps the flag disabled — the `compact-2026-01-12` beta is not supported for Haiku
@@ -29,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **Integration test for `ConfirmationRequired` dependency propagation in tiered dispatch** (closes #1713): added `confirmation_propagation_tests` module to `zeph-core` agent tests with two tests — `confirmation_required_propagates_to_dependent_tier` verifies that a tier-1 dependent tool receives a synthetic `ToolResult::Error` containing "Skipped: a prerequisite tool failed or requires confirmation" when the tier-0 prerequisite returns `ConfirmationRequired`; `independent_tool_not_affected_by_confirmation_required` verifies that an independent tool in the same dispatch executes normally.
+- **Cascade routing strategy** (closes #1339): new `RouterStrategy::Cascade` in `zeph-llm`. When `strategy = "cascade"` is configured, the router tries providers in chain order (cheapest first) and escalates to the next provider only when the response is classified as degenerate (empty, repetitive, incoherent). The heuristic classifier (`ClassifierMode::Heuristic`, default) detects degenerate outputs only — not semantic failures; `ClassifierMode::Judge` (requires `summary_model`) provides LLM-based quality scoring with automatic fallback to heuristic on failure. Key behaviors: network/API errors do not consume the escalation budget; the best-seen response is returned on exhaustion (not `NoProviders`); `max_cascade_tokens` caps cumulative token cost across escalation levels; cascade is intentionally skipped for `chat_with_tools`; Thompson/EMA outcome tracking is not contaminated by quality-based failures. Config: `[llm.router.cascade]` section with `quality_threshold` (default 0.5), `max_escalations` (default 2), `classifier_mode`, `window_size`, `max_cascade_tokens`.
 
 - **Gemini `thinking_level` / `thinking_budget` support** (closes #1652): `GeminiThinkingLevel` enum (`Minimal/Low/Medium/High`, lowercase serde matching Gemini API) and `GeminiThinkingConfig` struct (`thinkingLevel`, `thinkingBudget`, `includeThoughts`, camelCase per API spec) added to `zeph-llm`. `GeminiProvider` gains builder methods `with_thinking_level()`, `with_thinking_budget()` (fallible — validates -1/0/1..=32768, returns `LlmError` on out-of-range), and `with_include_thoughts()`. `GeminiConfig` in `zeph-core` gains `thinking_level`, `thinking_budget`, and `include_thoughts` optional fields. Thinking config is wired at all three `GeminiProvider` construction sites (primary, orchestrator, router). `--init` wizard adds a `thinking_level` select prompt in the Gemini section. Applies to Gemini 3+ (`thinkingLevel`) and Gemini 2.5 (`thinkingBudget`) models.
 - **Async parallel dispatch in `DagScheduler`** (closes #1628): `DagScheduler::tick()` now dispatches all ready tasks in a single tick instead of capping at `max_parallel - running_in_graph`. Concurrency is enforced by `SubAgentManager` which returns `ConcurrencyLimit` when capacity is exceeded; tasks revert to `Ready` and are retried on the next tick. Event buffer guard in `wait_event()` changed from `max_parallel * 2` to `graph.tasks.len() * 2` to prevent dropped completion events during parallel bursts. Added `record_batch_backoff(any_success, any_concurrency_failure)` for batch-aware backoff tracking: the `consecutive_spawn_failures` counter now increments once per all-failed tick rather than once per rejected spawn, preventing incorrect exponential backoff after concurrent rejections from the same batch.

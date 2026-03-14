@@ -96,10 +96,10 @@ struct SharedAgentDeps {
     recall_limit: usize,
     summarization_threshold: usize,
     budget_tokens: usize,
-    compaction_threshold: f32,
+    soft_compaction_threshold: f32,
+    hard_compaction_threshold: f32,
     compaction_preserve_tail: usize,
     prune_protect_tokens: usize,
-    deferred_apply_threshold: f32,
     /// Broadcast sender for skill reload events. Each session subscribes independently.
     skill_reload_tx: tokio::sync::broadcast::Sender<zeph_skills::watcher::SkillEvent>,
     /// Broadcast sender for config reload events. Each session subscribes independently.
@@ -414,10 +414,10 @@ async fn build_acp_deps(
         recall_limit: config.memory.semantic.recall_limit,
         summarization_threshold: config.memory.summarization_threshold,
         budget_tokens,
-        compaction_threshold: config.memory.compaction_threshold,
+        soft_compaction_threshold: config.memory.soft_compaction_threshold,
+        hard_compaction_threshold: config.memory.hard_compaction_threshold,
         compaction_preserve_tail: config.memory.compaction_preserve_tail,
         prune_protect_tokens: config.memory.prune_protect_tokens,
-        deferred_apply_threshold: config.memory.deferred_apply_threshold,
         shutdown_rx,
         security: config.security.clone(),
         timeouts: config.timeouts,
@@ -531,10 +531,10 @@ async fn spawn_acp_agent(
     let recall_limit = d.recall_limit;
     let summarization_threshold = d.summarization_threshold;
     let budget_tokens = d.budget_tokens;
-    let compaction_threshold = d.compaction_threshold;
+    let soft_compaction_threshold = d.soft_compaction_threshold;
+    let hard_compaction_threshold = d.hard_compaction_threshold;
     let compaction_preserve_tail = d.compaction_preserve_tail;
     let prune_protect_tokens = d.prune_protect_tokens;
-    let deferred_apply_threshold = d.deferred_apply_threshold;
     let shutdown_rx = d.shutdown_rx.clone();
     let security = d.security.clone();
     let timeouts = d.timeouts;
@@ -674,11 +674,11 @@ async fn spawn_acp_agent(
     .with_context_budget(
         budget_tokens,
         0.20,
-        compaction_threshold,
+        hard_compaction_threshold,
         compaction_preserve_tail,
         prune_protect_tokens,
     )
-    .with_deferred_apply_threshold(deferred_apply_threshold)
+    .with_soft_compaction_threshold(soft_compaction_threshold)
     .with_shutdown(shutdown_rx)
     .with_security(security, timeouts)
     .with_redact_credentials(redact_credentials)

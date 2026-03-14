@@ -6,7 +6,7 @@ Zeph uses a dual-store memory system: SQLite for structured conversation history
 
 All messages are stored in SQLite. The CLI channel provides persistent input history with arrow-key navigation, prefix search, and Emacs keybindings. History persists across restarts.
 
-When conversations grow long, Zeph compacts history automatically (triggered when token usage exceeds `compaction_threshold`). Compaction uses dual-visibility flags on each message: original messages are marked `agent_visible=false` (hidden from the LLM) while remaining `user_visible=true` (preserved in UI). A summary is inserted as `agent_visible=true, user_visible=false` — visible to the LLM but hidden from the user. This is performed atomically via `replace_conversation()` in SQLite. The result: the user retains full scroll-back history while the LLM operates on a compact context.
+When conversations grow long, Zeph compacts history automatically using a two-tier strategy. The soft tier fires at `soft_compaction_threshold` (default 0.70): it prunes tool outputs and applies pre-computed deferred summaries without an LLM call. The hard tier fires at `hard_compaction_threshold` (default 0.90): it runs full LLM-based chunked compaction. Compaction uses dual-visibility flags on each message: original messages are marked `agent_visible=false` (hidden from the LLM) while remaining `user_visible=true` (preserved in UI). A summary is inserted as `agent_visible=true, user_visible=false` — visible to the LLM but hidden from the user. This is performed atomically via `replace_conversation()` in SQLite. The result: the user retains full scroll-back history while the LLM operates on a compact context.
 
 ## Semantic Memory
 
