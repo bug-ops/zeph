@@ -99,6 +99,7 @@ Run `zeph init` and choose Gemini as the provider to have the wizard generate a 
 | Chat | Yes | Yes |
 | Streaming (SSE) | Yes | Yes |
 | Tool use | Yes | Yes |
+| Streaming tool use | Yes | Yes |
 | Vision | Yes | Yes |
 | Embeddings | Yes (`text-embedding-004`) | Yes (`text-embedding-004`) |
 | Extended thinking | No | Yes (`thinking_level` / `thinking_budget`) |
@@ -116,9 +117,15 @@ embedding_model = "text-embedding-004"
 
 ### Streaming and Thinking
 
-When streaming is active, Zeph emits chunks as they arrive from the SSE stream. For Gemini 2.5 models that return thinking parts, the TUI shows a "Thinking…" indicator while the model reasons and then switches to the response stream. Both paths use the same retry infrastructure (`send_with_retry`) — HTTP 429 (rate limit) and 503 (service unavailable) responses trigger automatic backoff and retry.
+When streaming is active, Zeph emits chunks as they arrive from the SSE stream (`streamGenerateContent?alt=sse`). For Gemini 2.5 models that return thinking parts, the TUI shows a "Thinking…" indicator while the model reasons and then switches to the response stream. Both paths use the same retry infrastructure (`send_with_retry`) — HTTP 429 (rate limit) and 503 (service unavailable) responses trigger automatic backoff and retry.
 
 Configure thinking via `thinking_level` (categorical) or `thinking_budget` (token count). Both fields are optional and apply only to Gemini 2.5+ models.
+
+### Streaming Tool Use
+
+Gemini delivers `functionCall` parts as complete objects within a single SSE event (not incrementally chunked). The SSE parser collects all `functionCall` parts from the event's `parts` array and emits a single `StreamChunk::ToolUse` with all tool calls. When an event contains both text and function call parts, tool calls take priority and any text in that event is dropped (matching the non-streaming behavior).
+
+Streaming tool use is available on all Gemini models that support function calling, including Gemini 2.0 Flash.
 
 ## Switching Providers
 

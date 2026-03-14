@@ -254,11 +254,15 @@ When `[tools.permissions]` is absent, legacy `blocked_commands` and `confirm_pat
 
 ## Output Overflow
 
-When tool output exceeds a configurable character threshold, the full response is stored in the SQLite memory database and the LLM receives a truncated version (head + tail split) with an opaque reference (`overflow:<uuid>`). This prevents large outputs from consuming the entire context window while preserving access to the complete data.
+When tool output exceeds a configurable character threshold, the full response is stored in the SQLite memory database (table `tool_overflow`) and the LLM receives a truncated version (head + tail split) with an opaque reference (`overflow:<uuid>`). This prevents large outputs from consuming the entire context window while preserving access to the complete data.
 
-Stale overflow entries are cleaned up automatically on startup based on `retention_days`. Overflow entries are also removed automatically via CASCADE when the parent conversation is deleted.
+Overflow content is stored inside the main `zeph.db` database — no separate files are written to disk. Stale entries are cleaned up automatically on startup based on `retention_days`. Entries are also removed automatically via `ON DELETE CASCADE` when the parent conversation is deleted.
 
-The `read_overflow` native tool allows the agent to retrieve a stored overflow entry by its UUID. The reference is intentionally opaque — no filesystem paths are exposed to the LLM.
+The `read_overflow` native tool allows the agent to retrieve a stored overflow entry by its UUID. The reference is intentionally opaque — no filesystem paths are exposed to the LLM. Retrieval is scoped to the current conversation: a query with a UUID that belongs to a different conversation returns `NotFound`, preventing cross-conversation data access.
+
+### JIT retrieval
+
+Large tool outputs are stored as references and injected into the context window on demand. When the agent sends a `read_overflow` call, the full content is loaded from SQLite at that point, rather than being kept resident in memory across turns. This keeps per-turn memory usage predictable regardless of how large previous tool outputs were.
 
 ### Configuration
 
@@ -275,6 +279,7 @@ max_overflow_bytes = 10485760  # Max bytes per entry (default: 10 MiB, 0 = unlim
 - The reference returned to the LLM is a UUID (`overflow:<uuid>`), never a filesystem path.
 - `read_overflow` validates the UUID format before querying the database.
 - Overflow entries are scoped to the conversation they belong to and are deleted via CASCADE when the conversation is purged.
+- Cross-conversation access is blocked at the query level: `load_overflow` requires both the UUID and the conversation ID to match.
 
 ## Output Filter Pipeline
 

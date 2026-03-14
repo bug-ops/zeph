@@ -54,9 +54,11 @@ Directed relationships between entities. Each edge carries:
 - **relation** — verb describing the relationship (`prefers`, `uses`, `works_on`)
 - **fact** — human-readable sentence ("User prefers neovim for Rust development")
 - **confidence** — 0.0 to 1.0 score
-- **bi-temporal timestamps** — `valid_from`/`valid_to` for fact validity, `created_at`/`expired_at` for ingestion time
+- **bi-temporal timestamps** — `valid_from`/`valid_until` for fact validity, `created_at`/`expired_at` for ingestion time
 
-When a fact changes (e.g., user switches from vim to neovim), the old edge is invalidated (`valid_to` and `expired_at` set) and a new edge is created. Both are preserved for temporal queries.
+When a fact changes (e.g., user switches from vim to neovim), the old edge is invalidated (`valid_until` and `expired_at` set) and a new edge is created. Both are preserved for temporal queries.
+
+Partial indexes on `(source_entity_id, valid_from) WHERE valid_to IS NOT NULL` and `(target_entity_id, valid_from) WHERE valid_to IS NOT NULL` accelerate temporal range queries (migration 030).
 
 Active edges are deduplicated on `(source_entity_id, target_entity_id, relation)`. When the same relation is re-extracted, the existing row is updated with the higher confidence value instead of creating a duplicate row. This prevents repeated extractions from inflating edge counts over long conversations.
 
@@ -112,10 +114,33 @@ Graph recall uses breadth-first search to find relevant facts:
 
 1. Match query to entities (by name or embedding similarity)
 2. Traverse edges up to `max_hops` (default: 2) from matched entities
-3. Collect active edges (`valid_to IS NULL`) along the path
+3. Collect active edges (`valid_until IS NULL`) along the path
 4. Score facts using `composite_score = entity_match * (1 / (1 + hop_distance)) * confidence`
 
 The BFS implementation is cycle-safe and uses at most `max_hops + 2` SQLite queries regardless of graph size.
+
+### Temporal Queries
+
+Two temporal query methods allow point-in-time fact retrieval:
+
+| Method | Description |
+|--------|-------------|
+| `edges_at_timestamp(entity_id, timestamp)` | Returns all edges where `valid_from <= timestamp` and (`valid_until IS NULL` OR `valid_until > timestamp`). Covers both active and historically valid edges. |
+| `bfs_at_timestamp(start_entity_id, max_hops, timestamp)` | BFS traversal that only follows edges valid at the given timestamp. Returns entities, edges, and depth map. |
+| `edge_history(source_entity_id, predicate, relation?, limit)` | All historical versions of edges matching a predicate, ordered `valid_from DESC` (most recent first). LIKE wildcards in the predicate are escaped. |
+
+Timestamps must be SQLite datetime strings: `"YYYY-MM-DD HH:MM:SS"`.
+
+### Temporal Decay Scoring
+
+When `temporal_decay_rate > 0`, a recency boost is applied to graph fact scores:
+
+```
+boost = 1 / (1 + age_days * temporal_decay_rate)
+final_score = base_score + boost (capped at 2× base)
+```
+
+With `temporal_decay_rate = 0.0` (default), scoring is unchanged. The `temporal_decay_rate` field is validated at deserialization: finite values in `[0.0, 10.0]` only; NaN and Inf are rejected.
 
 ## Community Detection
 
@@ -211,17 +236,22 @@ community_summary_concurrency = 4 # Parallel LLM calls for community summaries (
 lpa_edge_chunk_size = 10000       # Edges per chunk during community detection (0 = legacy stream-all)
 expired_edge_retention_days = 90  # Days to retain expired (superseded) edges
 max_entities = 0                  # Entity cap (0 = unlimited)
+temporal_decay_rate = 0.0         # Recency boost for graph recall; 0.0 = disabled (default)
+                                  # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
+edge_history_limit = 100          # Max versions returned by edge_history() per source+predicate pair
 ```
 
 ## Schema
 
-Graph memory uses five SQLite tables (created by migrations 021, 023, and 024, independent of feature flag):
+Graph memory uses five SQLite tables (created by migrations 021, 023, 024, 027–030, independent of feature flag):
 
 - `graph_entities` — entity nodes with `canonical_name` (unique key) and `name` (display form)
 - `graph_entity_aliases` — maps variant names to entity IDs for canonicalization
-- `graph_edges` — directed relationships with bi-temporal timestamps
+- `graph_edges` — directed relationships with bi-temporal timestamps (`valid_from`, `valid_until`, `expired_at`)
 - `graph_communities` — entity groups with summaries
 - `graph_metadata` — persistent key-value counters
+
+Migration 030 adds partial indexes for temporal range queries (see [Temporal Queries](#temporal-queries) above).
 
 A `graph_processed` flag on the existing `messages` table tracks which messages have been processed for entity extraction.
 

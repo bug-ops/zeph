@@ -40,6 +40,10 @@ pub(crate) struct ContextManager {
     pub(super) compaction_exhausted: bool,
     /// Tracks whether the exhaustion warning message has been sent to the user.
     pub(super) exhaustion_warned: bool,
+    /// Counts user-message turns since the last hard compaction event.
+    /// `None` = no hard compaction has occurred yet in this session.
+    /// `Some(n)` = n turns have elapsed since the last hard compaction.
+    pub(super) turns_since_last_hard_compaction: Option<u64>,
 }
 
 impl ContextManager {
@@ -58,6 +62,7 @@ impl ContextManager {
             compaction_turns_since: 0,
             compaction_exhausted: false,
             exhaustion_warned: false,
+            turns_since_last_hard_compaction: None,
         }
     }
 
