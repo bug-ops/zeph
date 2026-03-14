@@ -3198,4 +3198,566 @@ mod tests {
             "expired_at must be set after invalidation"
         );
     }
+
+    // ── New temporal unit tests (issue-1776) ──────────────────────────────────
+
+    // edges_at_timestamp
+
+    #[tokio::test]
+    async fn edges_at_timestamp_valid_from_inclusive() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("VFI_A", "VFI_A", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("VFI_B", "VFI_B", EntityType::Person, None)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'knows', 'VFI_A knows VFI_B', 1.0, '2025-06-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // Query at exactly valid_from — must be included (valid_from <= ts).
+        let edges = gs
+            .edges_at_timestamp(a, "2025-06-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(
+            edges.len(),
+            1,
+            "edge with valid_from == ts must be visible (inclusive boundary)"
+        );
+    }
+
+    #[tokio::test]
+    async fn edges_at_timestamp_valid_to_exclusive() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("VTO_A", "VTO_A", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("VTO_B", "VTO_B", EntityType::Person, None)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence,
+              valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'knows', 'VTO_A knows VTO_B', 1.0,
+                     '2020-01-01 00:00:00', '2025-06-01 00:00:00', '2025-06-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // Query at exactly valid_to — must be excluded (valid_to > ts fails when equal).
+        let at_boundary = gs
+            .edges_at_timestamp(a, "2025-06-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(
+            at_boundary.is_empty(),
+            "edge with valid_to == ts must NOT be visible (exclusive upper boundary)"
+        );
+
+        // Query one second before valid_to — must be included.
+        let before_boundary = gs
+            .edges_at_timestamp(a, "2025-05-31 23:59:59")
+            .await
+            .unwrap();
+        assert_eq!(
+            before_boundary.len(),
+            1,
+            "edge must be visible one second before valid_to"
+        );
+    }
+
+    #[tokio::test]
+    async fn edges_at_timestamp_multiple_edges_same_entity() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("ME_A", "ME_A", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("ME_B", "ME_B", EntityType::Person, None)
+            .await
+            .unwrap();
+        let c = gs
+            .upsert_entity("ME_C", "ME_C", EntityType::Person, None)
+            .await
+            .unwrap();
+        let d = gs
+            .upsert_entity("ME_D", "ME_D", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // A->B: active since 2020, no expiry — visible at 2025.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'knows', 'ME_A knows ME_B', 1.0, '2020-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+        // A->C: expired in 2023 — NOT visible at 2025.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence,
+              valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'knows', 'ME_A knows ME_C', 1.0,
+                     '2020-01-01 00:00:00', '2023-01-01 00:00:00', '2023-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(c)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+        // A->D: future valid_from 2030 — NOT visible at 2025.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'knows', 'ME_A knows ME_D', 1.0, '2030-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(d)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        let edges = gs
+            .edges_at_timestamp(a, "2025-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(
+            edges.len(),
+            1,
+            "only A->B must be visible at 2025 (C expired, D future)"
+        );
+        assert_eq!(edges[0].target_entity_id, b);
+    }
+
+    #[tokio::test]
+    async fn edges_at_timestamp_no_edges_returns_empty() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("NE_A", "NE_A", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        let edges = gs
+            .edges_at_timestamp(a, "2025-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(
+            edges.is_empty(),
+            "entity with no edges must return empty vec"
+        );
+    }
+
+    // edge_history
+
+    #[tokio::test]
+    async fn edge_history_basic_history() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("EH_Src", "EH_Src", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("EH_Tgt", "EH_Tgt", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence,
+              valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'works_at', 'EH_Src works at OrgA', 0.9,
+                     '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')",
+        )
+        .bind(src)
+        .bind(tgt)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'works_at', 'EH_Src works at OrgB', 0.95, '2022-01-01 00:00:00')",
+        )
+        .bind(src)
+        .bind(tgt)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        let history = gs.edge_history(src, "works at", None, 100).await.unwrap();
+        assert_eq!(history.len(), 2, "both versions must be returned");
+        assert!(
+            history[0].valid_from > history[1].valid_from,
+            "ordered valid_from DESC — versions have distinct timestamps"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_history_limit_parameter() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("EHL_Src", "EHL_Src", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("EHL_Tgt", "EHL_Tgt", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        for (year, rel) in [
+            (2018i32, "worked_at_v1"),
+            (2019, "worked_at_v2"),
+            (2020, "worked_at_v3"),
+            (2021, "worked_at_v4"),
+            (2022, "worked_at_v5"),
+        ] {
+            let valid_from = format!("{year}-01-01 00:00:00");
+            sqlx::query(
+                "INSERT INTO graph_edges
+                 (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+                 VALUES (?1, ?2, ?3, 'EHL_Src worked at org', 1.0, ?4)",
+            )
+            .bind(src)
+            .bind(tgt)
+            .bind(rel)
+            .bind(valid_from)
+            .execute(gs.pool())
+            .await
+            .unwrap();
+        }
+
+        // Pre-condition: all 5 rows match without a limit.
+        let all = gs.edge_history(src, "worked at", None, 100).await.unwrap();
+        assert_eq!(
+            all.len(),
+            5,
+            "all 5 rows must match without limit constraint"
+        );
+
+        let limited = gs.edge_history(src, "worked at", None, 2).await.unwrap();
+        assert_eq!(limited.len(), 2, "limit=2 must truncate to 2 results");
+        assert!(
+            limited[0].valid_from > limited[1].valid_from,
+            "most recent results first"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_history_non_matching_relation_returns_empty() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("EHR_Src", "EHR_Src", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("EHR_Tgt", "EHR_Tgt", EntityType::Organization, None)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'works_at', 'EHR_Src works at place', 1.0, '2020-01-01 00:00:00')",
+        )
+        .bind(src)
+        .bind(tgt)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        let result = gs
+            .edge_history(src, "works at", Some("lives_in"), 100)
+            .await
+            .unwrap();
+        assert!(
+            result.is_empty(),
+            "relation filter with no match must return empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_history_empty_entity() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("EHE_Src", "EHE_Src", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        let result = gs.edge_history(src, "anything", None, 100).await.unwrap();
+        assert!(
+            result.is_empty(),
+            "entity with no edges must return empty history"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_history_fact_substring_filters_subset() {
+        let gs = setup().await;
+        let src = gs
+            .upsert_entity("EHP_Src", "EHP_Src", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tgt = gs
+            .upsert_entity("EHP_Tgt", "EHP_Tgt", EntityType::Concept, None)
+            .await
+            .unwrap();
+
+        // Two facts containing "uses" and one containing "knows" (distinct relations to avoid
+        // UNIQUE(source, target, relation) violation).
+        for (rel, fact) in [
+            ("uses_lang1", "EHP_Src uses Rust"),
+            ("uses_lang2", "EHP_Src uses Python"),
+            ("knows_person", "EHP_Src knows Bob"),
+        ] {
+            sqlx::query(
+                "INSERT INTO graph_edges
+                 (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+                 VALUES (?1, ?2, ?3, ?4, 1.0, '2020-01-01 00:00:00')",
+            )
+            .bind(src)
+            .bind(tgt)
+            .bind(rel)
+            .bind(fact)
+            .execute(gs.pool())
+            .await
+            .unwrap();
+        }
+
+        // All 3 facts match the empty-ish predicate "src" (present in every fact prefix).
+        let all = gs.edge_history(src, "EHP_Src", None, 100).await.unwrap();
+        assert_eq!(all.len(), 3, "broad predicate must return all 3 facts");
+
+        // Narrow predicate "uses" matches only the two Rust/Python facts.
+        let filtered = gs.edge_history(src, "uses", None, 100).await.unwrap();
+        assert_eq!(
+            filtered.len(),
+            2,
+            "predicate 'uses' must match only the two 'uses' facts"
+        );
+        assert!(
+            filtered.len() < all.len(),
+            "filtered count must be less than total count"
+        );
+    }
+
+    // bfs_at_timestamp
+
+    #[tokio::test]
+    async fn bfs_at_timestamp_zero_hops() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("ZH_A", "ZH_A", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("ZH_B", "ZH_B", EntityType::Person, None)
+            .await
+            .unwrap();
+        // Use an explicit valid_from so the query timestamp is within the data range.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'knows', 'ZH_A knows ZH_B', 1.0, '2020-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        let (_entities, edges, depth_map) = gs
+            .bfs_at_timestamp(a, 0, "2025-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(
+            depth_map.contains_key(&a),
+            "start entity must be in depth_map"
+        );
+        assert_eq!(depth_map.len(), 1, "depth=0 must include only start entity");
+        assert!(edges.is_empty(), "depth=0 must return no edges");
+    }
+
+    #[tokio::test]
+    async fn bfs_at_timestamp_expired_intermediate_blocks() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("EI_A", "EI_A", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("EI_B", "EI_B", EntityType::Person, None)
+            .await
+            .unwrap();
+        let c = gs
+            .upsert_entity("EI_C", "EI_C", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // A->B: expired in 2022.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence,
+              valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'link', 'EI_A link EI_B', 1.0,
+                     '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+        // B->C: active.
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'link', 'EI_B link EI_C', 1.0, '2020-01-01 00:00:00')",
+        )
+        .bind(b)
+        .bind(c)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        let (entities, _edges, depth_map) = gs
+            .bfs_at_timestamp(a, 3, "2025-01-01 00:00:00")
+            .await
+            .unwrap();
+        let entity_ids: Vec<i64> = entities.iter().map(|e| e.id).collect();
+        assert!(
+            !depth_map.contains_key(&b),
+            "B must not be reachable (A->B expired)"
+        );
+        assert!(
+            !entity_ids.contains(&c),
+            "C must not be reachable (blocked by expired A->B)"
+        );
+    }
+
+    #[tokio::test]
+    async fn bfs_at_timestamp_disconnected_entity() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("DC_A", "DC_A", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        let (_entities, edges, depth_map) = gs
+            .bfs_at_timestamp(a, 3, "2025-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(depth_map.len(), 1, "disconnected entity has only itself");
+        assert!(depth_map.contains_key(&a));
+        assert!(edges.is_empty(), "disconnected entity has no edges");
+    }
+
+    #[tokio::test]
+    async fn bfs_at_timestamp_reverse_direction() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("RD_A", "RD_A", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("RD_B", "RD_B", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // B -> A (B is source, A is target).
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'points_to', 'RD_B points_to RD_A', 1.0, '2020-01-01 00:00:00')",
+        )
+        .bind(b)
+        .bind(a)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        let (entities, edges, depth_map) = gs
+            .bfs_at_timestamp(a, 1, "2099-01-01 00:00:00")
+            .await
+            .unwrap();
+        let entity_ids: Vec<i64> = entities.iter().map(|e| e.id).collect();
+        assert!(
+            depth_map.contains_key(&b),
+            "B must be reachable when BFS traverses reverse direction"
+        );
+        assert!(entity_ids.contains(&b), "B must appear in entities vec");
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.source_entity_id == b && e.target_entity_id == a),
+            "traversed edge B->A must appear in returned edges"
+        );
+    }
+
+    #[tokio::test]
+    async fn bfs_at_timestamp_valid_to_boundary() {
+        let gs = setup().await;
+        let a = gs
+            .upsert_entity("VTB_A", "VTB_A", EntityType::Person, None)
+            .await
+            .unwrap();
+        let b = gs
+            .upsert_entity("VTB_B", "VTB_B", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // A->B: valid_to = "2025-06-01 00:00:00" (exactly).
+        sqlx::query(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence,
+              valid_from, valid_to, expired_at)
+             VALUES (?1, ?2, 'link', 'VTB_A link VTB_B', 1.0,
+                     '2020-01-01 00:00:00', '2025-06-01 00:00:00', '2025-06-01 00:00:00')",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(gs.pool())
+        .await
+        .unwrap();
+
+        // Query at exactly valid_to — B must NOT be reachable (exclusive upper bound).
+        let (_entities, _edges, depth_map_at) = gs
+            .bfs_at_timestamp(a, 1, "2025-06-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(
+            !depth_map_at.contains_key(&b),
+            "B must not be reachable when valid_to == ts (exclusive boundary)"
+        );
+
+        // Query one second before — B must be reachable.
+        let (_entities2, _edges2, depth_map_before) = gs
+            .bfs_at_timestamp(a, 1, "2025-05-31 23:59:59")
+            .await
+            .unwrap();
+        assert!(
+            depth_map_before.contains_key(&b),
+            "B must be reachable one second before valid_to"
+        );
+    }
 }
