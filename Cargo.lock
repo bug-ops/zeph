@@ -9564,6 +9564,7 @@ dependencies = [
  "dashmap",
  "glob",
  "qdrant-client",
+ "regex",
  "rmcp",
  "schemars 1.2.1",
  "serde",
