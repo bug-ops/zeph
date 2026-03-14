@@ -3332,7 +3332,8 @@ impl<C: Channel> Agent<C> {
         {
             self.memory_state.graph_config = config.memory.graph.clone();
         }
-        self.context_manager.compaction_threshold = config.memory.compaction_threshold;
+        self.context_manager.soft_compaction_threshold = config.memory.soft_compaction_threshold;
+        self.context_manager.hard_compaction_threshold = config.memory.hard_compaction_threshold;
         self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;
         self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
         self.context_manager.compression = config.memory.compression.clone();

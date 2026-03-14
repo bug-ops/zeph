@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Tiered context compaction** (#1338): replaced single `compaction_threshold` (0.80) with
+  two-tier compaction. Soft tier (`soft_compaction_threshold`, default 0.70) prunes tool outputs
+  and applies deferred summaries without LLM calls. Hard tier (`hard_compaction_threshold`,
+  default 0.90) triggers full LLM-based summarization. Old config field `compaction_threshold`
+  is still accepted via serde alias and maps to `hard_compaction_threshold`.
+  `deferred_apply_threshold` is removed — absorbed into the soft compaction tier.
+
 ### Fixed
 
 - llm: `with_server_compaction(true)` on Haiku models now emits a `WARN` and keeps the flag disabled — the `compact-2026-01-12` beta is not supported for Haiku

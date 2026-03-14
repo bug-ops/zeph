@@ -989,8 +989,13 @@ pub struct MemoryConfig {
     pub summarization_threshold: usize,
     #[serde(default = "default_context_budget_tokens")]
     pub context_budget_tokens: usize,
-    #[serde(default = "default_compaction_threshold")]
-    pub compaction_threshold: f32,
+    #[serde(default = "default_soft_compaction_threshold")]
+    pub soft_compaction_threshold: f32,
+    #[serde(
+        default = "default_hard_compaction_threshold",
+        alias = "compaction_threshold"
+    )]
+    pub hard_compaction_threshold: f32,
     #[serde(default = "default_compaction_preserve_tail")]
     pub compaction_preserve_tail: usize,
     #[serde(default = "default_auto_budget")]
@@ -1025,16 +1030,10 @@ pub struct MemoryConfig {
     pub routing: RoutingConfig,
     #[serde(default)]
     pub graph: GraphConfig,
-    #[serde(default = "default_deferred_apply_threshold")]
-    pub deferred_apply_threshold: f32,
 }
 
 fn default_sqlite_pool_size() -> u32 {
     5
-}
-
-fn default_deferred_apply_threshold() -> f32 {
-    0.70
 }
 
 fn default_max_history() -> usize {
@@ -1201,8 +1200,12 @@ fn default_context_budget_tokens() -> usize {
     0
 }
 
-fn default_compaction_threshold() -> f32 {
-    0.80
+fn default_soft_compaction_threshold() -> f32 {
+    0.70
+}
+
+fn default_hard_compaction_threshold() -> f32 {
+    0.90
 }
 
 fn default_compaction_preserve_tail() -> usize {
@@ -2044,7 +2047,8 @@ impl Default for Config {
                 semantic: SemanticConfig::default(),
                 summarization_threshold: default_summarization_threshold(),
                 context_budget_tokens: default_context_budget_tokens(),
-                compaction_threshold: default_compaction_threshold(),
+                soft_compaction_threshold: default_soft_compaction_threshold(),
+                hard_compaction_threshold: default_hard_compaction_threshold(),
                 compaction_preserve_tail: default_compaction_preserve_tail(),
                 auto_budget: default_auto_budget(),
                 prune_protect_tokens: default_prune_protect_tokens(),
@@ -2062,7 +2066,6 @@ impl Default for Config {
                 compression: CompressionConfig::default(),
                 routing: RoutingConfig::default(),
                 graph: GraphConfig::default(),
-                deferred_apply_threshold: default_deferred_apply_threshold(),
             },
             telegram: None,
             discord: None,

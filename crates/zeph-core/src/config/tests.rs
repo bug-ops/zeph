@@ -1857,7 +1857,8 @@ history_limit = 50
 #[test]
 fn compaction_config_defaults() {
     let config = Config::default();
-    assert!((config.memory.compaction_threshold - 0.80).abs() < f32::EPSILON);
+    assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+    assert!((config.memory.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
     assert_eq!(config.memory.compaction_preserve_tail, 6);
 }
 
@@ -1884,7 +1885,8 @@ paths = [".zeph/skills"]
 [memory]
 sqlite_path = ".zeph/data/zeph.db"
 history_limit = 50
-compaction_threshold = 0.90
+soft_compaction_threshold = 0.75
+hard_compaction_threshold = 0.95
 compaction_preserve_tail = 6
 "#
     )
@@ -1893,7 +1895,8 @@ compaction_preserve_tail = 6
     clear_env();
 
     let config = Config::load(&path).unwrap();
-    assert!((config.memory.compaction_threshold - 0.90).abs() < f32::EPSILON);
+    assert!((config.memory.soft_compaction_threshold - 0.75).abs() < f32::EPSILON);
+    assert!((config.memory.hard_compaction_threshold - 0.95).abs() < f32::EPSILON);
     assert_eq!(config.memory.compaction_preserve_tail, 6);
 }
 
@@ -1902,16 +1905,21 @@ compaction_preserve_tail = 6
 fn compaction_env_overrides() {
     clear_env();
     let mut config = Config::default();
-    assert!((config.memory.compaction_threshold - 0.80).abs() < f32::EPSILON);
+    assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+    assert!((config.memory.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
     assert_eq!(config.memory.compaction_preserve_tail, 6);
 
-    unsafe { std::env::set_var("ZEPH_MEMORY_COMPACTION_THRESHOLD", "0.50") };
+    // ZEPH_MEMORY_COMPACTION_THRESHOLD maps to hard_compaction_threshold (backward compat).
+    unsafe { std::env::set_var("ZEPH_MEMORY_COMPACTION_THRESHOLD", "0.85") };
+    unsafe { std::env::set_var("ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD", "0.60") };
     unsafe { std::env::set_var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL", "8") };
     config.apply_env_overrides();
     unsafe { std::env::remove_var("ZEPH_MEMORY_COMPACTION_THRESHOLD") };
+    unsafe { std::env::remove_var("ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD") };
     unsafe { std::env::remove_var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL") };
 
-    assert!((config.memory.compaction_threshold - 0.50).abs() < f32::EPSILON);
+    assert!((config.memory.hard_compaction_threshold - 0.85).abs() < f32::EPSILON);
+    assert!((config.memory.soft_compaction_threshold - 0.60).abs() < f32::EPSILON);
     assert_eq!(config.memory.compaction_preserve_tail, 8);
 }
 
@@ -2859,122 +2867,110 @@ fn logging_rotation_serde_roundtrip() {
 // --- Threshold ordering validation tests ---
 
 #[test]
-fn deferred_above_compaction_rejected_by_validate() {
+fn soft_above_hard_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.deferred_apply_threshold = 0.85;
-    config.memory.compaction_threshold = 0.80;
+    config.memory.soft_compaction_threshold = 0.95;
+    config.memory.hard_compaction_threshold = 0.90;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("deferred_apply_threshold") && err.contains("compaction_threshold"),
+        err.contains("soft_compaction_threshold") && err.contains("hard_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn deferred_equal_compaction_rejected_by_validate() {
+fn soft_equal_hard_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.deferred_apply_threshold = 0.80;
-    config.memory.compaction_threshold = 0.80;
+    config.memory.soft_compaction_threshold = 0.90;
+    config.memory.hard_compaction_threshold = 0.90;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("deferred_apply_threshold") && err.contains("compaction_threshold"),
+        err.contains("soft_compaction_threshold") && err.contains("hard_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn deferred_below_compaction_accepted_by_validate() {
+fn soft_below_hard_accepted_by_validate() {
     let mut config = Config::default();
-    config.memory.deferred_apply_threshold = 0.70;
-    config.memory.compaction_threshold = 0.80;
+    config.memory.soft_compaction_threshold = 0.70;
+    config.memory.hard_compaction_threshold = 0.90;
     assert!(config.validate().is_ok());
 }
 
 #[test]
-fn compaction_threshold_zero_rejected_by_validate() {
+fn soft_compaction_threshold_zero_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.compaction_threshold = 0.0;
+    config.memory.soft_compaction_threshold = 0.0;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("compaction_threshold"),
+        err.contains("soft_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn compaction_threshold_one_rejected_by_validate() {
+fn soft_compaction_threshold_one_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.compaction_threshold = 1.0;
-    config.memory.deferred_apply_threshold = 0.70;
+    config.memory.soft_compaction_threshold = 1.0;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("compaction_threshold"),
+        err.contains("soft_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn compaction_threshold_negative_rejected_by_validate() {
+fn soft_compaction_threshold_negative_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.compaction_threshold = -0.1;
+    config.memory.soft_compaction_threshold = -0.1;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("compaction_threshold"),
+        err.contains("soft_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn deferred_threshold_zero_rejected_by_validate() {
+fn hard_compaction_threshold_zero_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.deferred_apply_threshold = 0.0;
+    config.memory.hard_compaction_threshold = 0.0;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("deferred_apply_threshold"),
+        err.contains("hard_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn deferred_threshold_one_rejected_by_validate() {
+fn hard_compaction_threshold_one_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.deferred_apply_threshold = 1.0;
+    config.memory.hard_compaction_threshold = 1.0;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("deferred_apply_threshold"),
+        err.contains("hard_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn deferred_threshold_above_one_rejected_by_validate() {
+fn hard_compaction_threshold_infinity_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.deferred_apply_threshold = 1.5;
+    config.memory.hard_compaction_threshold = f32::INFINITY;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("deferred_apply_threshold"),
+        err.contains("hard_compaction_threshold"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
-fn deferred_threshold_nan_rejected_by_validate() {
+fn soft_compaction_threshold_nan_rejected_by_validate() {
     let mut config = Config::default();
-    config.memory.deferred_apply_threshold = f32::NAN;
+    config.memory.soft_compaction_threshold = f32::NAN;
     let err = config.validate().unwrap_err().to_string();
     assert!(
-        err.contains("deferred_apply_threshold"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn compaction_threshold_infinity_rejected_by_validate() {
-    let mut config = Config::default();
-    config.memory.compaction_threshold = f32::INFINITY;
-    let err = config.validate().unwrap_err().to_string();
-    assert!(
-        err.contains("compaction_threshold"),
+        err.contains("soft_compaction_threshold"),
         "unexpected error: {err}"
     );
 }

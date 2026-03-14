@@ -4,9 +4,23 @@
 use crate::config::{CompressionConfig, RoutingConfig};
 use crate::context::ContextBudget;
 
+/// Indicates which compaction tier applies for the current context size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactionTier {
+    /// Context is within budget — no compaction needed.
+    None,
+    /// Soft tier: prune tool outputs + apply deferred summaries. No LLM call.
+    Soft,
+    /// Hard tier: full LLM-based summarization.
+    Hard,
+}
+
 pub(crate) struct ContextManager {
     pub(super) budget: Option<ContextBudget>,
-    pub(super) compaction_threshold: f32,
+    /// Soft compaction threshold (default 0.70): prune tool outputs + apply deferred summaries.
+    pub(super) soft_compaction_threshold: f32,
+    /// Hard compaction threshold (default 0.90): full LLM-based summarization.
+    pub(super) hard_compaction_threshold: f32,
     pub(super) compaction_preserve_tail: usize,
     pub(super) prune_protect_tokens: usize,
     /// Compression configuration for proactive compression (#1161).
@@ -14,11 +28,8 @@ pub(crate) struct ContextManager {
     /// Routing configuration for query-aware memory routing (#1162).
     pub(super) routing: RoutingConfig,
     /// Set to `true` when compaction or proactive compression fires in the current turn.
-    /// Cleared at the start of each turn. Prevents double compaction per turn (CRIT-03).
+    /// Cleared at the start of each turn. Prevents double LLM summarization per turn (CRIT-03).
     pub(super) compacted_this_turn: bool,
-    /// Threshold ratio for applying deferred tool pair summaries (default 0.70).
-    /// Must be below `compaction_threshold` so deferred application fires first.
-    pub(super) deferred_apply_threshold: f32,
 }
 
 impl ContextManager {
@@ -26,52 +37,56 @@ impl ContextManager {
     pub(crate) fn new() -> Self {
         Self {
             budget: None,
-            compaction_threshold: 0.80,
+            soft_compaction_threshold: 0.70,
+            hard_compaction_threshold: 0.90,
             compaction_preserve_tail: 6,
             prune_protect_tokens: 40_000,
             compression: CompressionConfig::default(),
             routing: RoutingConfig::default(),
             compacted_this_turn: false,
-            deferred_apply_threshold: 0.70,
         }
     }
 
+    /// Determine which compaction tier applies for the given token count.
+    ///
+    /// - `Hard` when `cached_tokens > budget * hard_compaction_threshold`
+    /// - `Soft` when `cached_tokens > budget * soft_compaction_threshold`
+    /// - `None` otherwise (or when no budget is set)
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    pub(super) fn should_compact(&self, cached_tokens: u64) -> bool {
+    pub(super) fn compaction_tier(&self, cached_tokens: u64) -> CompactionTier {
         let Some(ref budget) = self.budget else {
-            return false;
+            return CompactionTier::None;
         };
         let used = usize::try_from(cached_tokens).unwrap_or(usize::MAX);
-        let threshold = (budget.max_tokens() as f32 * self.compaction_threshold) as usize;
-        let should = used > threshold;
+        let max = budget.max_tokens();
+        let hard = (max as f32 * self.hard_compaction_threshold) as usize;
+        if used > hard {
+            tracing::debug!(
+                cached_tokens,
+                hard_threshold = hard,
+                "context budget check: Hard tier"
+            );
+            return CompactionTier::Hard;
+        }
+        let soft = (max as f32 * self.soft_compaction_threshold) as usize;
+        if used > soft {
+            tracing::debug!(
+                cached_tokens,
+                soft_threshold = soft,
+                "context budget check: Soft tier"
+            );
+            return CompactionTier::Soft;
+        }
         tracing::debug!(
             cached_tokens,
-            threshold,
-            should_compact = should,
-            "context budget check"
+            soft_threshold = soft,
+            "context budget check: None"
         );
-        should
-    }
-
-    /// Check whether deferred tool pair summaries should be batch-applied now.
-    ///
-    /// Returns `true` when context usage exceeds `deferred_apply_threshold`.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
-    pub(super) fn should_apply_deferred(&self, cached_tokens: u64) -> bool {
-        let Some(ref budget) = self.budget else {
-            return false;
-        };
-        let used = usize::try_from(cached_tokens).unwrap_or(usize::MAX);
-        let threshold = (budget.max_tokens() as f32 * self.deferred_apply_threshold) as usize;
-        used > threshold
+        CompactionTier::None
     }
 
     /// Build a memory router from the current routing configuration.
@@ -122,40 +137,74 @@ mod tests {
     fn new_defaults() {
         let cm = ContextManager::new();
         assert!(cm.budget.is_none());
-        assert!((cm.compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert!((cm.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+        assert!((cm.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
         assert_eq!(cm.compaction_preserve_tail, 6);
         assert_eq!(cm.prune_protect_tokens, 40_000);
         assert!(!cm.compacted_this_turn);
     }
 
     #[test]
-    fn should_compact_no_budget() {
+    fn compaction_tier_no_budget() {
         let cm = ContextManager::new();
-        assert!(!cm.should_compact(1_000_000));
+        assert_eq!(cm.compaction_tier(1_000_000), CompactionTier::None);
     }
 
     #[test]
-    fn should_compact_below_threshold() {
+    fn compaction_tier_below_soft() {
         let mut cm = ContextManager::new();
         cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // threshold = 80_000; 1_000 < 80_000
-        assert!(!cm.should_compact(1_000));
+        // soft=70_000, hard=90_000; 50_000 < 70_000 → None
+        assert_eq!(cm.compaction_tier(50_000), CompactionTier::None);
     }
 
     #[test]
-    fn should_compact_above_threshold() {
+    fn compaction_tier_between_soft_and_hard() {
         let mut cm = ContextManager::new();
-        cm.budget = Some(ContextBudget::new(100, 0.1));
-        cm.compaction_threshold = 0.01;
-        // threshold = 1; 100 > 1
-        assert!(cm.should_compact(100));
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // soft=70_000, hard=90_000; 75_000 > 70_000 && < 90_000 → Soft
+        assert_eq!(cm.compaction_tier(75_000), CompactionTier::Soft);
     }
 
     #[test]
-    fn should_compact_at_zero_tokens() {
+    fn compaction_tier_above_hard() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // soft=70_000, hard=90_000; 95_000 > 90_000 → Hard
+        assert_eq!(cm.compaction_tier(95_000), CompactionTier::Hard);
+    }
+
+    #[test]
+    fn compaction_tier_at_zero_tokens() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        assert_eq!(cm.compaction_tier(0), CompactionTier::None);
+    }
+
+    #[test]
+    fn compaction_tier_exact_soft_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // soft=70_000; 70_000 is NOT > 70_000 → None (must exceed, not equal)
+        assert_eq!(cm.compaction_tier(70_000), CompactionTier::None);
+    }
+
+    #[test]
+    fn compaction_tier_exact_hard_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // hard=90_000; 90_000 is NOT > 90_000 → Soft (not Hard)
+        assert_eq!(cm.compaction_tier(90_000), CompactionTier::Soft);
+    }
+
+    #[test]
+    fn compaction_tier_custom_thresholds() {
         let mut cm = ContextManager::new();
         cm.budget = Some(ContextBudget::new(100, 0.1));
-        assert!(!cm.should_compact(0));
+        cm.soft_compaction_threshold = 0.01;
+        cm.hard_compaction_threshold = 0.50;
+        // soft=1, hard=50; 100 > 50 → Hard
+        assert_eq!(cm.compaction_tier(100), CompactionTier::Hard);
     }
 
     #[test]
@@ -194,42 +243,5 @@ mod tests {
         };
         cm.compacted_this_turn = true;
         assert!(cm.should_proactively_compress(100_000).is_none());
-    }
-
-    #[test]
-    fn should_apply_deferred_default_threshold() {
-        let cm = ContextManager::new();
-        assert!((cm.deferred_apply_threshold - 0.70).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn should_apply_deferred_no_budget() {
-        let cm = ContextManager::new();
-        // No budget → always false regardless of token count
-        assert!(!cm.should_apply_deferred(999_999));
-    }
-
-    #[test]
-    fn should_apply_deferred_below_threshold() {
-        let mut cm = ContextManager::new();
-        cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // threshold = 70_000; 50_000 < 70_000 → false
-        assert!(!cm.should_apply_deferred(50_000));
-    }
-
-    #[test]
-    fn should_apply_deferred_above_threshold() {
-        let mut cm = ContextManager::new();
-        cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // threshold = 70_000; 75_000 > 70_000 → true
-        assert!(cm.should_apply_deferred(75_000));
-    }
-
-    #[test]
-    fn should_apply_deferred_exact_threshold() {
-        let mut cm = ContextManager::new();
-        cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // threshold = 70_000; 70_000 is NOT > 70_000 → false (must exceed, not equal)
-        assert!(!cm.should_apply_deferred(70_000));
     }
 }

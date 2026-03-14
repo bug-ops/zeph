@@ -95,7 +95,7 @@ pub(crate) struct WizardState {
     pub(crate) mcpls_workspace_roots: Vec<String>,
     // LSP context injection
     pub(crate) lsp_context_enabled: bool,
-    pub(crate) deferred_apply_threshold: f32,
+    pub(crate) soft_compaction_threshold: f32,
     // Experiments
     pub(crate) experiments_enabled: bool,
     pub(crate) experiments_eval_model: Option<String>,
@@ -134,7 +134,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_max_parallel: 4,
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
-        deferred_apply_threshold: 0.70,
+        soft_compaction_threshold: 0.70,
         log_file: zeph_core::config::default_log_file_path(),
         log_level: "info".into(),
         log_rotation: "daily".into(),
@@ -485,17 +485,17 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         );
     }
 
-    // If compaction_threshold becomes wizard-configurable, replace with state.compaction_threshold.
-    let compaction_threshold = zeph_core::config::Config::default()
+    let hard_compaction_threshold = zeph_core::config::Config::default()
         .memory
-        .compaction_threshold;
+        .hard_compaction_threshold;
     loop {
         let val: f32 = Input::new()
             .with_prompt(format!(
-                "Apply deferred tool summaries when context usage exceeds this fraction \
-                 (0.0-1.0, must be below compaction threshold {compaction_threshold})"
+                "Soft compaction threshold: prune tool outputs + apply deferred summaries \
+                 when context usage exceeds this fraction \
+                 (0.0-1.0, must be below hard_compaction_threshold {hard_compaction_threshold})"
             ))
-            .default(state.deferred_apply_threshold)
+            .default(state.soft_compaction_threshold)
             .validate_with(|v: &f32| {
                 if *v > 0.0 && *v < 1.0 {
                     Ok(())
@@ -504,12 +504,12 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
                 }
             })
             .interact_text()?;
-        if val < compaction_threshold {
-            state.deferred_apply_threshold = val;
+        if val < hard_compaction_threshold {
+            state.soft_compaction_threshold = val;
             break;
         }
         eprintln!(
-            "error: value must be less than compaction_threshold ({compaction_threshold}), got {val}",
+            "error: value must be less than hard_compaction_threshold ({hard_compaction_threshold}), got {val}",
         );
     }
 
@@ -741,7 +741,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     if let Some(ref m) = state.graph_extract_model {
         config.memory.graph.extract_model.clone_from(m);
     }
-    config.memory.deferred_apply_threshold = state.deferred_apply_threshold;
+    config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
     if state.server_compaction_enabled
         && let Some(cloud) = config.llm.cloud.as_mut()
     {

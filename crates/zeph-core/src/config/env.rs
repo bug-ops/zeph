@@ -56,7 +56,12 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_MEMORY_COMPACTION_THRESHOLD")
             && let Ok(threshold) = v.parse::<f32>()
         {
-            self.memory.compaction_threshold = threshold;
+            self.memory.hard_compaction_threshold = threshold;
+        }
+        if let Ok(v) = std::env::var("ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD")
+            && let Ok(threshold) = v.parse::<f32>()
+        {
+            self.memory.soft_compaction_threshold = threshold;
         }
         if let Ok(v) = std::env::var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL")
             && let Ok(tail) = v.parse::<usize>()

@@ -7,6 +7,7 @@ use futures::StreamExt as _;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, MessagePart, Role};
 
 use super::super::Agent;
+use super::super::context_manager::CompactionTier;
 use crate::channel::Channel;
 use crate::context::ContextBudget;
 
@@ -799,25 +800,27 @@ impl<C: Channel> Agent<C> {
         count
     }
 
-    /// Apply deferred summaries if context usage exceeds the deferred threshold,
+    /// Apply deferred summaries if context usage exceeds the soft compaction threshold,
     /// or when enough summaries have accumulated to prevent content loss from pruning.
     ///
     /// Two triggers:
-    /// - Token pressure: `cached_prompt_tokens > budget * deferred_apply_threshold`
+    /// - Token pressure: `cached_prompt_tokens > budget * soft_compaction_threshold`
     /// - Count pressure: `pending >= tool_call_cutoff` (guards against pruning replacing
     ///   summaries with `[pruned]` when `prepare_context` recomputes tokens to a low value)
     ///
     /// This is Tier 0 — a pure in-memory operation with no LLM call. Intentionally
     /// does NOT set `compacted_this_turn` so that proactive/reactive compaction may
     /// also fire in the same turn if tokens remain above their respective thresholds.
+    /// Called from tool execution loops on every iteration to apply summaries eagerly.
     pub(in crate::agent) fn maybe_apply_deferred_summaries(&mut self) {
         let pending = self.count_deferred_summaries();
         if pending == 0 {
             return;
         }
-        let token_pressure = self
-            .context_manager
-            .should_apply_deferred(self.cached_prompt_tokens);
+        let token_pressure = matches!(
+            self.compaction_tier(),
+            CompactionTier::Soft | CompactionTier::Hard
+        );
         let count_pressure = pending >= self.memory_state.tool_call_cutoff;
         if !token_pressure && !count_pressure {
             return;
@@ -833,7 +836,8 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    /// Two-tier compaction: Tier 1 prunes tool outputs, Tier 2 falls back to full LLM compaction.
+    /// Tiered compaction: Soft tier prunes tool outputs + applies deferred summaries (no LLM),
+    /// Hard tier falls back to full LLM summarization.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -869,45 +873,82 @@ impl<C: Channel> Agent<C> {
                 return Ok(());
             }
         }
-        // Skip if proactive compression already ran this turn (CRIT-03).
+        // Skip if hard compaction already ran this turn (CRIT-03).
         if self.context_manager.compacted_this_turn {
             return Ok(());
         }
-        if !self.should_compact() {
-            return Ok(());
-        }
 
-        let budget = self
-            .context_manager
-            .budget
-            .as_ref()
-            .map_or(0, ContextBudget::max_tokens);
-        let total_tokens: usize = self
-            .messages
-            .iter()
-            .map(|m| self.token_counter.count_message_tokens(m))
-            .sum();
-        let threshold = (budget as f32 * self.context_manager.compaction_threshold) as usize;
-        let min_to_free = total_tokens.saturating_sub(threshold);
+        match self.compaction_tier() {
+            CompactionTier::None => Ok(()),
+            CompactionTier::Soft => {
+                let _ = self.channel.send_status("soft compacting context...").await;
 
-        let _ = self.channel.send_status("compacting context...").await;
-        let freed = self.prune_tool_outputs(min_to_free);
-        if freed >= min_to_free {
-            tracing::info!(freed, "tier-1 pruning sufficient");
-            self.context_manager.compacted_this_turn = true;
-            return Ok(());
-        }
+                // Step 1: apply deferred tool summaries (free tokens without LLM).
+                self.apply_deferred_summaries();
 
-        tracing::info!(
-            freed,
-            min_to_free,
-            "tier-1 insufficient, falling back to tier-2 compaction"
-        );
-        let result = self.compact_context().await;
-        if result.is_ok() {
-            self.context_manager.compacted_this_turn = true;
+                // Step 2: prune tool outputs down to soft threshold.
+                let budget = self
+                    .context_manager
+                    .budget
+                    .as_ref()
+                    .map_or(0, ContextBudget::max_tokens);
+                let soft_threshold =
+                    (budget as f32 * self.context_manager.soft_compaction_threshold) as usize;
+                let cached = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
+                let min_to_free = cached.saturating_sub(soft_threshold);
+                if min_to_free > 0 {
+                    self.prune_tool_outputs(min_to_free);
+                }
+
+                let _ = self.channel.send_status("").await;
+                tracing::info!(
+                    cached_tokens = self.cached_prompt_tokens,
+                    soft_threshold,
+                    "soft compaction complete"
+                );
+                // Soft compaction does NOT set compacted_this_turn, allowing Hard to fire
+                // in the same turn if context is still above the hard threshold.
+                Ok(())
+            }
+            CompactionTier::Hard => {
+                let budget = self
+                    .context_manager
+                    .budget
+                    .as_ref()
+                    .map_or(0, ContextBudget::max_tokens);
+                let hard_threshold =
+                    (budget as f32 * self.context_manager.hard_compaction_threshold) as usize;
+                let cached = usize::try_from(self.cached_prompt_tokens).unwrap_or(usize::MAX);
+                let min_to_free = cached.saturating_sub(hard_threshold);
+
+                let _ = self.channel.send_status("compacting context...").await;
+
+                // Step 1: apply deferred summaries first (free tokens without LLM).
+                self.apply_deferred_summaries();
+
+                // Step 2: prune tool outputs.
+                let freed = self.prune_tool_outputs(min_to_free);
+                if freed >= min_to_free {
+                    tracing::info!(freed, "hard compaction: pruning sufficient");
+                    self.context_manager.compacted_this_turn = true;
+                    let _ = self.channel.send_status("").await;
+                    return Ok(());
+                }
+
+                // Step 3: fall back to full LLM summarization.
+                tracing::info!(
+                    freed,
+                    min_to_free,
+                    "hard compaction: pruning insufficient, falling back to LLM summarization"
+                );
+                let result = self.compact_context().await;
+                if result.is_ok() {
+                    self.context_manager.compacted_this_turn = true;
+                }
+                let _ = self.channel.send_status("").await;
+                result
+            }
         }
-        result
     }
 
     /// Proactive context compression: fires before reactive compaction when context exceeds
