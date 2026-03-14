@@ -1124,12 +1124,8 @@ impl acp::Agent for ZephAcpAgent {
             // Extract terminal_id from ToolOutput events before consuming the event.
             // The terminal must remain alive until after the tool_call_update notification
             // is delivered so the IDE can display the terminal output.
-            let pending_terminal_release = if let LoopbackEvent::ToolOutput {
-                ref terminal_id,
-                ..
-            } = event
-            {
-                terminal_id.clone()
+            let pending_terminal_release = if let LoopbackEvent::ToolOutput(ref data) = event {
+                data.terminal_id.clone()
             } else {
                 None
             };
