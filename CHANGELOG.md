@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - feat(llm): `--extended-context` CLI flag enables Claude 1M context window for the session; overrides `llm.cloud.enable_extended_context` from config and emits a cost warning (tokens above 200K use long-context pricing) (#1685)
+- test(llm): add `build_request` integration test for extended context enabled path, asserting `anthropic-beta` header contains `context-1m-2025-08-07` (#1687)
 
 ### Security
 
