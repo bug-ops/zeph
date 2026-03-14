@@ -11,6 +11,21 @@ use super::super::context_manager::CompactionTier;
 use crate::channel::Channel;
 use crate::context::ContextBudget;
 
+const OVERFLOW_NOTICE_PREFIX: &str = "\n[full output saved to ";
+
+/// Extract the overflow file path from a tool output body, if present.
+///
+/// The overflow notice has the format:
+/// `\n[full output saved to {path} — {bytes} bytes, use read tool to access]`
+///
+/// Returns the path substring on success, or `None` if the notice is absent.
+fn extract_overflow_ref(body: &str) -> Option<&str> {
+    let start = body.find(OVERFLOW_NOTICE_PREFIX)?;
+    let rest = &body[start + OVERFLOW_NOTICE_PREFIX.len()..];
+    let end = rest.find(" \u{2014} ")?;
+    Some(&rest[..end])
+}
+
 impl<C: Channel> Agent<C> {
     pub(super) fn build_chunk_prompt(messages: &[Message]) -> String {
         let estimated_len: usize = messages
@@ -271,13 +286,20 @@ impl<C: Channel> Agent<C> {
             for part in &mut msg.parts {
                 match part {
                     MessagePart::ToolResult { content, .. } => {
-                        "[compacted]".clone_into(content);
+                        let ref_notice = extract_overflow_ref(content).map_or_else(
+                            || String::from("[compacted]"),
+                            |p| format!("[tool output pruned; full content at {p}]"),
+                        );
+                        *content = ref_notice;
                     }
                     MessagePart::ToolOutput {
                         body, compacted_at, ..
                     } => {
                         if compacted_at.is_none() {
-                            *body = String::new();
+                            let ref_notice = extract_overflow_ref(body)
+                                .map(|p| format!("[tool output pruned; full content at {p}]"))
+                                .unwrap_or_default();
+                            *body = ref_notice;
                             *compacted_at = Some(
                                 std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -467,8 +489,12 @@ impl<C: Channel> Agent<C> {
                     && !body.is_empty()
                 {
                     freed += self.metrics.token_counter.count_tokens(body);
+                    let ref_notice = extract_overflow_ref(body)
+                        .map(|p| format!("[tool output pruned; full content at {p}]"))
+                        .unwrap_or_default();
+                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
-                    *body = String::new();
+                    *body = ref_notice;
                     modified = true;
                 }
             }
@@ -516,16 +542,24 @@ impl<C: Channel> Agent<C> {
                         body, compacted_at, ..
                     } if compacted_at.is_none() && !body.is_empty() => {
                         freed += self.metrics.token_counter.count_tokens(body);
+                        let ref_notice = extract_overflow_ref(body)
+                            .map(|p| format!("[tool output pruned; full content at {p}]"))
+                            .unwrap_or_default();
+                        freed -= self.metrics.token_counter.count_tokens(&ref_notice);
                         *compacted_at = Some(now);
-                        *body = String::new();
+                        *body = ref_notice;
                         modified = true;
                     }
                     MessagePart::ToolResult { content, .. } => {
                         let tokens = self.metrics.token_counter.count_tokens(content);
                         if tokens > 20 {
                             freed += tokens;
-                            "[pruned]".clone_into(content);
-                            freed -= 1;
+                            let ref_notice = extract_overflow_ref(content).map_or_else(
+                                || String::from("[pruned]"),
+                                |p| format!("[tool output pruned; full content at {p}]"),
+                            );
+                            freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                            *content = ref_notice;
                             modified = true;
                         }
                     }

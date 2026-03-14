@@ -3026,6 +3026,47 @@ mod compaction_e2e {
         );
     }
 
+    /// COV-04: channel close (`Ok(None)`) during `run_scheduler_loop` returns `GraphStatus::Failed`.
+    #[tokio::test]
+    async fn scheduler_loop_channel_close_returns_failed() {
+        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
+        use crate::subagent::SubAgentManager;
+
+        // Empty channel: first recv() returns Ok(None) immediately.
+        let channel = MockChannel::new(vec![]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        let mut graph = TaskGraph::new("channel close test goal");
+        let mut node = TaskNode::new(0, "task-0", "will fail on channel close");
+        node.status = TaskStatus::Running;
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            ..OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Failed,
+            "run_scheduler_loop must return Failed when channel is closed (Ok(None))"
+        );
+    }
+
     /// GAP-9: `handle_plan_status` shows the correct message for each graph status.
     #[tokio::test]
     async fn plan_status_reflects_graph_status() {

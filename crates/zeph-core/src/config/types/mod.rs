@@ -132,7 +132,7 @@ pub struct ResolvedSecrets {
 }
 
 impl Default for Config {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // flat struct literal with one field per config section — no meaningful split exists
     fn default() -> Self {
         use providers::{
             get_default_embedding_model, get_default_response_cache_ttl_secs,

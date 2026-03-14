@@ -335,7 +335,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // flat struct literal initializing all Agent sub-structs — one field per sub-struct, cannot be split further
     pub fn new_with_registry_arc(
         provider: AnyProvider,
         channel: C,
@@ -943,7 +943,9 @@ impl<C: Channel> Agent<C> {
                     self.enqueue_or_merge(msg.text, vec![], msg.attachments);
                     None
                 } else {
-                    // Channel closed — cancel running sub-agents and exit cleanly.
+                    // Channel closed — cancel running sub-agents and exit with Failed.
+                    // Channel close is an error condition (not a user-initiated cancel), so
+                    // Done actions from cancel_all() are intentionally ignored (#1614).
                     let cancel_actions = scheduler.cancel_all();
                     let n = cancel_actions
                         .iter()
@@ -953,8 +955,20 @@ impl<C: Channel> Agent<C> {
                         sub_agents = n,
                         "scheduler channel closed, canceling running sub-agents"
                     );
-                    Some(self.cancel_agents_from_actions(cancel_actions)
-                        .unwrap_or(crate::orchestration::GraphStatus::Canceled))
+                    for action in cancel_actions {
+                        if let SchedulerAction::Cancel { agent_handle_id } = action
+                            && let Some(mgr) = self.orchestration.subagent_manager.as_mut()
+                        {
+                            let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                tracing::trace!(
+                                    error = %e,
+                                    "cancel on channel close: agent already gone"
+                                );
+                            });
+                        }
+                        // Intentionally ignore Done here — channel close is not a user cancel.
+                    }
+                    Some(crate::orchestration::GraphStatus::Failed)
                 }
             }
             // Shutdown signal received — cancel running sub-agents and exit cleanly.

@@ -1144,6 +1144,48 @@ mod tests {
     }
 
     #[test]
+    fn prune_tool_outputs_preserves_overflow_reference() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, _rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(1000, 0.20, 0.75, 4, 0)
+            .with_metrics(tx);
+
+        let path = "/tmp/overflow/big.txt";
+        let body = format!(
+            "truncated output\n[full output saved to {path} \u{2014} 99999 bytes, use read tool to access]"
+        );
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body,
+                compacted_at: None,
+            }],
+        ));
+
+        let freed = agent.prune_tool_outputs(10);
+        assert!(freed > 0);
+
+        if let MessagePart::ToolOutput {
+            body, compacted_at, ..
+        } = &agent.messages[1].parts[0]
+        {
+            assert!(compacted_at.is_some());
+            assert_eq!(
+                body,
+                &format!("[tool output pruned; full content at {path}]")
+            );
+        } else {
+            panic!("expected ToolOutput");
+        }
+    }
+
+    #[test]
     fn prune_stale_tool_outputs_clears_old() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
