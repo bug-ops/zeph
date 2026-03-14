@@ -606,6 +606,7 @@ pub enum RouterStrategyConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
+    /// Ordered list of provider names to route across. Cost order for cascade: cheapest first.
     pub chain: Vec<String>,
     /// Routing strategy: `"ema"` (default), `"thompson"`, or `"cascade"`.
     #[serde(default)]
@@ -3269,6 +3270,14 @@ eval_budget_tokens = 50000
         assert_eq!(json, r#""thompson""#);
         let back: RouterStrategyConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, RouterStrategyConfig::Thompson);
+    }
+
+    #[test]
+    fn router_strategy_config_serde_cascade() {
+        let json = serde_json::to_string(&RouterStrategyConfig::Cascade).unwrap();
+        assert_eq!(json, r#""cascade""#);
+        let back: RouterStrategyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, RouterStrategyConfig::Cascade);
     }
 
     #[test]

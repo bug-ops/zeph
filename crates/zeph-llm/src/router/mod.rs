@@ -727,6 +727,8 @@ impl RouterProvider {
             let start = std::time::Instant::now();
             let stream = match p.chat_stream(messages).await {
                 Err(e) => {
+                    let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    self.record_availability(p.name(), false, latency);
                     tracing::warn!(provider = p.name(), error = %e, "cascade stream: provider error");
                     if let Some(tx) = &status_tx {
                         let _ = tx.send(format!("cascade: {} unavailable, trying next", p.name()));

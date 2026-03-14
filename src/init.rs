@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    AcpConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig, McpServerConfig,
-    MemoryConfig, OrchestrationConfig, OrchestratorConfig, OrchestratorProviderConfig,
-    ProviderKind, RouterConfig, RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig,
-    TelegramConfig, VaultConfig,
+    AcpConfig, CascadeConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig,
+    McpServerConfig, MemoryConfig, OrchestrationConfig, OrchestratorConfig,
+    OrchestratorProviderConfig, ProviderKind, RouterConfig, RouterStrategyConfig, SemanticConfig,
+    SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -71,10 +71,14 @@ pub(crate) struct WizardState {
     /// "regex" or "judge" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
-    /// Router strategy: None = no router, "ema", or "thompson".
+    /// Router strategy: None = no router, "ema", "thompson", or "cascade".
     pub(crate) router_strategy: Option<String>,
     /// Custom path for Thompson state file (None = use default).
     pub(crate) router_thompson_state_path: Option<String>,
+    /// Cascade: minimum quality score to accept without escalating (default 0.5).
+    pub(crate) router_cascade_quality_threshold: Option<f64>,
+    /// Cascade: maximum number of quality-based escalations per request (default 2).
+    pub(crate) router_cascade_max_escalations: Option<u8>,
     // Orchestration settings
     pub(crate) orchestration_enabled: bool,
     pub(crate) orchestration_max_tasks: u32,
@@ -706,7 +710,18 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 _ => RouterStrategyConfig::Ema,
             },
             thompson_state_path: state.router_thompson_state_path.clone(),
-            cascade: None,
+            cascade: if s == "cascade" {
+                let mut cfg = CascadeConfig::default();
+                if let Some(t) = state.router_cascade_quality_threshold {
+                    cfg.quality_threshold = t;
+                }
+                if let Some(e) = state.router_cascade_max_escalations {
+                    cfg.max_escalations = e;
+                }
+                Some(cfg)
+            } else {
+                None
+            },
         }),
         stt: None,
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
@@ -1301,6 +1316,7 @@ fn step_router(state: &mut WizardState) -> anyhow::Result<()> {
         "None (single provider, no routing)",
         "EMA (latency-aware exponential moving average)",
         "Thompson (probabilistic exploration/exploitation)",
+        "Cascade (try cheapest provider first, escalate on degenerate output)",
     ];
     let sel = Select::new()
         .with_prompt("Router strategy")
@@ -1326,6 +1342,21 @@ fn step_router(state: &mut WizardState) -> anyhow::Result<()> {
             if !custom_path.is_empty() {
                 state.router_thompson_state_path = Some(custom_path);
             }
+        }
+        3 => {
+            state.router_strategy = Some("cascade".into());
+            let threshold: f64 = Input::new()
+                .with_prompt(
+                    "Quality threshold [0.0–1.0] — responses below this score trigger escalation",
+                )
+                .default(0.5_f64)
+                .interact_text()?;
+            state.router_cascade_quality_threshold = Some(threshold.clamp(0.0, 1.0));
+            let max_esc: u8 = Input::new()
+                .with_prompt("Max escalations per request (0 = no escalation)")
+                .default(2_u8)
+                .interact_text()?;
+            state.router_cascade_max_escalations = Some(max_esc);
         }
         _ => unreachable!(),
     }
