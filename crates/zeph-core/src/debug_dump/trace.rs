@@ -152,6 +152,9 @@ struct IterationEntry {
 ///
 /// All methods take `&mut self`. The agent loop is single-threaded within a session.
 /// For concurrent iteration support (I-03), a `HashMap<usize, IterationEntry>` is used.
+/// Default cap on collected spans per session (SEC-02).
+const DEFAULT_MAX_SPANS: usize = 10_000;
+
 pub struct TracingCollector {
     trace_id: [u8; 16],
     session_span_id: [u8; 8],
@@ -161,6 +164,8 @@ pub struct TracingCollector {
     /// Active (open) iterations keyed by iteration index (I-03).
     active_iterations: HashMap<usize, IterationEntry>,
     completed_spans: Vec<SpanData>,
+    /// Hard cap on `completed_spans` length. Oldest span dropped when exceeded (SEC-02).
+    max_spans: usize,
     /// Whether to redact text attributes. Defaults to `true` (C-01).
     redact: bool,
     /// Guards against double-write on explicit `finish()` followed by `Drop`.
@@ -191,6 +196,7 @@ impl TracingCollector {
             output_dir: output_dir.to_owned(),
             active_iterations: HashMap::new(),
             completed_spans: Vec::new(),
+            max_spans: DEFAULT_MAX_SPANS,
             redact,
             flushed: false,
             trace_tx,
@@ -203,6 +209,18 @@ impl TracingCollector {
         } else {
             std::borrow::Cow::Borrowed(text)
         }
+    }
+
+    /// Append a span, dropping the oldest when `max_spans` is exceeded (SEC-02).
+    fn push_span(&mut self, span: SpanData) {
+        if self.completed_spans.len() >= self.max_spans {
+            tracing::warn!(
+                max_spans = self.max_spans,
+                "trace span cap reached, dropping oldest span"
+            );
+            self.completed_spans.remove(0);
+        }
+        self.completed_spans.push(span);
     }
 
     // ── Iteration spans ───────────────────────────────────────────────────────
@@ -243,7 +261,7 @@ impl TracingCollector {
                 )],
                 status,
             };
-            self.completed_spans.push(span);
+            self.push_span(span);
         } else {
             tracing::warn!(index, "end_iteration without matching begin_iteration");
         }
@@ -266,7 +284,7 @@ impl TracingCollector {
     pub fn end_llm_request(&mut self, guard: SpanGuard, attrs: &LlmAttributes) {
         let end_time = now_unix_nanos();
         let model_clean = self.maybe_redact(&attrs.model).into_owned();
-        self.completed_spans.push(SpanData {
+        self.push_span(SpanData {
             trace_id: self.trace_id,
             span_id: guard.span_id,
             parent_span_id: Some(guard.parent_span_id),
@@ -320,7 +338,9 @@ impl TracingCollector {
             ("zeph.tool.is_error".to_owned(), attrs.is_error.to_string()),
         ];
         if let Some(kind) = attrs.error_kind {
-            attributes.push(("zeph.tool.error_kind".to_owned(), kind));
+            // IMP-04: apply redaction to error messages (may contain secret data).
+            let kind_clean = self.maybe_redact(&kind).into_owned();
+            attributes.push(("zeph.tool.error_kind".to_owned(), kind_clean));
         }
         let status = if attrs.is_error {
             SpanStatus::Error {
@@ -329,7 +349,7 @@ impl TracingCollector {
         } else {
             SpanStatus::Ok
         };
-        self.completed_spans.push(SpanData {
+        self.push_span(SpanData {
             trace_id: self.trace_id,
             span_id: guard.span_id,
             parent_span_id: Some(guard.parent_span_id),
@@ -362,7 +382,7 @@ impl TracingCollector {
             .chars()
             .take(100)
             .collect::<String>();
-        self.completed_spans.push(SpanData {
+        self.push_span(SpanData {
             trace_id: self.trace_id,
             span_id: guard.span_id,
             parent_span_id: Some(guard.parent_span_id),
@@ -385,6 +405,12 @@ impl TracingCollector {
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
+
+    /// Return the path to the `trace.json` file that will be written on `finish()`.
+    #[must_use]
+    pub fn trace_json_path(&self) -> PathBuf {
+        self.output_dir.join("trace.json")
+    }
 
     /// Return the span ID of the currently active iteration, if any.
     #[must_use]
@@ -421,7 +447,7 @@ impl TracingCollector {
         let end_time = now_unix_nanos();
         for index in open_keys {
             if let Some(entry) = self.active_iterations.remove(&index) {
-                self.completed_spans.push(SpanData {
+                self.push_span(SpanData {
                     trace_id: self.trace_id,
                     span_id: entry.guard.span_id,
                     parent_span_id: Some(entry.guard.parent_span_id),
@@ -456,7 +482,7 @@ impl TracingCollector {
 
         let json = serialize_otlp_json(&all_spans, &self.service_name);
         let path = self.output_dir.join("trace.json");
-        if let Err(e) = std::fs::write(&path, json.as_bytes()) {
+        if let Err(e) = write_trace_file(&path, json.as_bytes()) {
             tracing::warn!(path = %path.display(), error = %e, "trace.json write failed");
         } else {
             tracing::info!(path = %path.display(), "OTel trace written");
@@ -559,6 +585,27 @@ pub fn serialize_otlp_json(spans: &[SpanData], service_name: &str) -> String {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Write `data` to `path` with mode 0o600 on Unix (SEC-01).
+/// Falls back to `std::fs::write` on non-Unix platforms.
+fn write_trace_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(data)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)
+    }
+}
 
 fn sanitize_name(name: &str) -> String {
     name.chars()
@@ -798,6 +845,95 @@ mod tests {
         assert!(
             files.is_empty(),
             "no legacy numbered files in Trace format session dir"
+        );
+    }
+
+    #[test]
+    fn tool_call_span_emitted() {
+        let tmp = tempdir().unwrap();
+        let mut c = make_collector(tmp.path());
+        c.begin_iteration(0, "test");
+        let iter_id = c.current_iteration_span_id(0).unwrap();
+        let guard = c.begin_tool_call("shell", iter_id);
+        c.end_tool_call(
+            guard,
+            "shell",
+            ToolAttributes {
+                latency_ms: 50,
+                is_error: false,
+                error_kind: None,
+            },
+        );
+        c.end_iteration(0, SpanStatus::Ok);
+        c.finish();
+
+        let content = std::fs::read_to_string(c.trace_json_path()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let spans = v["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            .as_array()
+            .unwrap();
+        assert!(
+            spans.iter().any(|s| s["name"] == "tool.shell"),
+            "tool.shell span must be emitted"
+        );
+    }
+
+    #[test]
+    fn tool_call_error_span_emitted() {
+        let tmp = tempdir().unwrap();
+        let mut c = make_collector(tmp.path());
+        c.begin_iteration(0, "test");
+        let iter_id = c.current_iteration_span_id(0).unwrap();
+        let guard = c.begin_tool_call("shell", iter_id);
+        c.end_tool_call(
+            guard,
+            "shell",
+            ToolAttributes {
+                latency_ms: 10,
+                is_error: true,
+                error_kind: Some("permission denied".to_owned()),
+            },
+        );
+        c.end_iteration(0, SpanStatus::Ok);
+        c.finish();
+
+        let content = std::fs::read_to_string(c.trace_json_path()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let spans = v["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            .as_array()
+            .unwrap();
+        let tool_span = spans
+            .iter()
+            .find(|s| s["name"] == "tool.shell")
+            .expect("tool.shell span missing");
+        assert_eq!(
+            tool_span["status"]["code"], 2_u64,
+            "error span must have status code 2"
+        );
+    }
+
+    #[test]
+    fn session_to_iteration_parent_span_id() {
+        let tmp = tempdir().unwrap();
+        let mut c = make_collector(tmp.path());
+        let session_id = c.session_span_id();
+        c.begin_iteration(0, "test");
+        c.end_iteration(0, SpanStatus::Ok);
+        c.finish();
+
+        let content = std::fs::read_to_string(c.trace_json_path()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let spans = v["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            .as_array()
+            .unwrap();
+        let iter_span = spans
+            .iter()
+            .find(|s| s["name"] == "iteration.0")
+            .expect("iteration.0 span missing");
+        assert_eq!(
+            iter_span["parentSpanId"],
+            serde_json::json!(hex8(session_id)),
+            "iteration span parent must be session span"
         );
     }
 

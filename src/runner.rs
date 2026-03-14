@@ -991,12 +991,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                         agent
                     }
                 };
+            // Store trace config so runtime `/dump-format trace` can create a collector (CR-04).
+            let agent = agent.with_trace_config(
+                dir.clone(),
+                config.debug.traces.service_name.clone(),
+                config.debug.traces.redact,
+            );
             // When format=Trace, also wire a TracingCollector (C-03: independent of legacy dumper).
             if effective_format == zeph_core::debug_dump::DumpFormat::Trace {
-                let trace_dir = dir.clone();
                 // OTLP channel is None here; wired in tracing_init.rs when otel feature enabled.
                 match zeph_core::debug_dump::trace::TracingCollector::new(
-                    trace_dir.as_path(),
+                    dir.as_path(),
                     &config.debug.traces.service_name,
                     config.debug.traces.redact,
                     None,

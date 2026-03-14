@@ -396,6 +396,22 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn dump_format_from_str_valid() {
+        assert_eq!("json".parse::<DumpFormat>().unwrap(), DumpFormat::Json);
+        assert_eq!("raw".parse::<DumpFormat>().unwrap(), DumpFormat::Raw);
+        assert_eq!("trace".parse::<DumpFormat>().unwrap(), DumpFormat::Trace);
+    }
+
+    #[test]
+    fn dump_format_from_str_invalid_returns_error() {
+        let err = "binary".parse::<DumpFormat>().unwrap_err();
+        assert!(
+            err.contains("unknown dump format"),
+            "error must mention unknown dump format: {err}"
+        );
+    }
+
     fn sample_messages() -> Vec<Message> {
         vec![
             Message::from_legacy(Role::System, "system prompt"),

@@ -195,6 +195,15 @@ pub(super) struct DebugState {
     pub(super) iteration_counter: usize,
     pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
     pub(super) logging_config: crate::config::LoggingConfig,
+    /// Base dump directory — stored so `/dump-format trace` can create a `TracingCollector` (CR-04).
+    pub(super) dump_dir: Option<PathBuf>,
+    /// Service name for `TracingCollector` created via runtime format switch (CR-04).
+    pub(super) trace_service_name: String,
+    /// Whether to redact in `TracingCollector` created via runtime format switch (CR-04).
+    pub(super) trace_redact: bool,
+    /// Span ID of the currently executing iteration — used by LLM/tool span wiring (CR-01).
+    /// Set to `Some` at the start of `process_user_message`, cleared at end.
+    pub(super) current_iteration_span_id: Option<[u8; 8]>,
 }
 
 /// Groups agent lifecycle state: shutdown signaling, timing, and I/O notification channels.
@@ -426,6 +435,10 @@ impl<C: Channel> Agent<C> {
                 iteration_counter: 0,
                 anomaly_detector: None,
                 logging_config: crate::config::LoggingConfig::default(),
+                dump_dir: None,
+                trace_service_name: String::new(),
+                trace_redact: true,
+                current_iteration_span_id: None,
             },
             runtime: RuntimeConfig {
                 security: SecurityConfig::default(),
@@ -2224,6 +2237,38 @@ impl<C: Channel> Agent<C> {
                 return;
             }
         };
+        let was_trace = self.debug_state.dump_format == crate::debug_dump::DumpFormat::Trace;
+        let now_trace = new_format == crate::debug_dump::DumpFormat::Trace;
+
+        // CR-04: when switching TO trace, create a fresh TracingCollector.
+        if now_trace
+            && !was_trace
+            && let Some(ref dump_dir) = self.debug_state.dump_dir.clone()
+        {
+            let service_name = self.debug_state.trace_service_name.clone();
+            let redact = self.debug_state.trace_redact;
+            match crate::debug_dump::trace::TracingCollector::new(
+                dump_dir.as_path(),
+                &service_name,
+                redact,
+                None,
+            ) {
+                Ok(collector) => {
+                    self.debug_state.trace_collector = Some(collector);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create TracingCollector on format switch");
+                }
+            }
+        }
+        // CR-04: when switching AWAY from trace, flush and drop the collector.
+        if was_trace
+            && !now_trace
+            && let Some(mut tc) = self.debug_state.trace_collector.take()
+        {
+            tc.finish();
+        }
+
         self.debug_state.dump_format = new_format;
         let _ = self
             .channel
@@ -2690,6 +2735,9 @@ impl<C: Channel> Agent<C> {
         self.debug_state.iteration_counter += 1;
         if let Some(ref mut tc) = self.debug_state.trace_collector {
             tc.begin_iteration(iteration_index, text.trim());
+            // CR-01: store the span ID so LLM/tool execution can attach child spans.
+            self.debug_state.current_iteration_span_id =
+                tc.current_iteration_span_id(iteration_index);
         }
 
         let result = self
@@ -2707,6 +2755,7 @@ impl<C: Channel> Agent<C> {
             };
             tc.end_iteration(iteration_index, status);
         }
+        self.debug_state.current_iteration_span_id = None;
 
         result
     }
@@ -2715,8 +2764,9 @@ impl<C: Channel> Agent<C> {
         &mut self,
         text: String,
         image_parts: Vec<zeph_llm::provider::MessagePart>,
-        _iteration_index: usize,
+        iteration_index: usize,
     ) -> Result<(), error::AgentError> {
+        let _ = iteration_index; // Used indirectly via debug_state.current_iteration_span_id.
         self.lifecycle.cancel_token = CancellationToken::new();
         let signal = Arc::clone(&self.lifecycle.cancel_signal);
         let token = self.lifecycle.cancel_token.clone();

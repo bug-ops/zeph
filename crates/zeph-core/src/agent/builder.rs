@@ -79,6 +79,20 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Store trace config so `/dump-format trace` can create a `TracingCollector` at runtime (CR-04).
+    #[must_use]
+    pub fn with_trace_config(
+        mut self,
+        dump_dir: std::path::PathBuf,
+        service_name: impl Into<String>,
+        redact: bool,
+    ) -> Self {
+        self.debug_state.dump_dir = Some(dump_dir);
+        self.debug_state.trace_service_name = service_name.into();
+        self.debug_state.trace_redact = redact;
+        self
+    }
+
     /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
     #[cfg(feature = "lsp-context")]
     #[must_use]

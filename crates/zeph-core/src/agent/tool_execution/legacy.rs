@@ -114,11 +114,7 @@ impl<C: Channel> Agent<C> {
 
         let status_msg = format!("running {tool_name}...");
         let _ = self.channel.send_status(&status_msg).await;
-        let result = self
-            .tool_executor
-            .execute_erased(&response)
-            .instrument(tracing::info_span!("tool_exec"))
-            .await;
+        let result = self.execute_tool_with_trace(tool_name, &response).await;
         let _ = self.channel.send_status("").await;
         self.tool_executor.set_skill_env(None);
         if !self.handle_tool_result(&response, result).await? {
@@ -157,6 +153,44 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(None)
+    }
+
+    /// Execute a tool call and record a trace span around it (CR-01).
+    async fn execute_tool_with_trace(
+        &mut self,
+        tool_name: &str,
+        response: &str,
+    ) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+        let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
+            self.debug_state
+                .current_iteration_span_id
+                .map(|id| tc.begin_tool_call(tool_name, id))
+        });
+        let start = std::time::Instant::now();
+
+        let result = self
+            .tool_executor
+            .execute_erased(response)
+            .instrument(tracing::info_span!("tool_exec"))
+            .await;
+
+        if let Some(guard) = trace_guard
+            && let Some(ref mut tc) = self.debug_state.trace_collector
+        {
+            let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let is_error = result.is_err();
+            let error_kind = result.as_ref().err().map(std::string::ToString::to_string);
+            tc.end_tool_call(
+                guard,
+                tool_name,
+                crate::debug_dump::trace::ToolAttributes {
+                    latency_ms: latency,
+                    is_error,
+                    error_kind,
+                },
+            );
+        }
+        result
     }
 
     /// Check for a repeated identical tool call (IMP-6).
@@ -247,14 +281,43 @@ impl<C: Channel> Agent<C> {
                     })
                 });
 
+        // CR-01: open LLM span before the actual call.
+        let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
+            self.debug_state
+                .current_iteration_span_id
+                .map(|id| tc.begin_llm_request(id))
+        });
+
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
-        if self.provider.supports_streaming() {
+        let result = if self.provider.supports_streaming() {
             self.call_llm_streaming(llm_timeout, start, prompt_estimate, dump_id, llm_span)
                 .await
         } else {
             self.call_llm_non_streaming(llm_timeout, start, prompt_estimate, dump_id, llm_span)
                 .await
+        };
+
+        // CR-01: close LLM span after the call completes.
+        if let Some(guard) = trace_guard
+            && let Some(ref mut tc) = self.debug_state.trace_collector
+        {
+            let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let (prompt_tokens, completion_tokens) =
+                self.provider.last_usage().unwrap_or((prompt_estimate, 0));
+            tc.end_llm_request(
+                guard,
+                &crate::debug_dump::trace::LlmAttributes {
+                    model: self.runtime.model_name.clone(),
+                    prompt_tokens,
+                    completion_tokens,
+                    latency_ms: latency,
+                    streaming: self.provider.supports_streaming(),
+                    cache_hit: false,
+                },
+            );
         }
+
+        result
     }
 
     async fn call_llm_streaming(
