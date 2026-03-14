@@ -9,12 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - feat(llm): `cost_tiers` config field for `[llm.router.cascade]` — explicit cheapest-first provider ordering independent of chain order; providers are sorted once at construction time (zero per-request cost); unknown names are silently ignored; empty list is equivalent to `None` (#1724)
+- feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
 
 ### Changed
 
 - perf(llm): `RouterProvider` now stores providers as `Arc<[AnyProvider]>` instead of `Vec<AnyProvider>`; `self.clone()` on every LLM request drops from O(N × provider_size) to O(1) for the providers field across all routing strategies (EMA, Thompson, Cascade) (#1724)
 - perf(llm): cascade `chat` and `chat_stream` bypass `ordered_providers()` for the Cascade strategy and pass `&self.providers` slice directly to `cascade_chat`/`cascade_chat_stream`, eliminating an unnecessary `Vec` allocation on the hot path (#1724)
-
 - feat(tui): show `[1M CTX]` badge in the TUI header bar when Claude extended context (`enable_extended_context = true`) is active; also shows `Max context: 1M` in the Resources panel (#1686)
 - feat(llm): implement `ClassifierMode::Judge` for cascade routing — calls `summary_model` with a lightweight scoring prompt, parses the 0–10 score and normalises to [0.0, 1.0]; falls back to heuristic on any LLM error; warns at startup when judge mode is configured without `summary_model` (#1723)
 - feat(llm): `--extended-context` CLI flag enables Claude 1M context window for the session; overrides `llm.cloud.enable_extended_context` from config and emits a cost warning (tokens above 200K use long-context pricing) (#1685)
@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(mcp,core): extract the 17 injection-detection regexes into `zeph_mcp::sanitize::RAW_INJECTION_PATTERNS` (`pub const`); `zeph-core`'s `ContentSanitizer` now compiles its `INJECTION_PATTERNS` from this single shared slice instead of maintaining a duplicate list — any future pattern change is automatically reflected in both sanitization layers. Also fixes two patterns in `zeph-core` that were missing the `(?i)` case-insensitive flag (`xml_tag_injection`, `markdown_image_exfil`) which existed in the `zeph-mcp` copy but had drifted out (closes #1747)
 - `zeph-core`: replace `anyhow` with typed `thiserror` errors in `subagent/` and `config_watcher.rs`; remove `anyhow` dependency from `zeph-core`
 - refactor(core): split `config/types.rs` (3331 lines) into domain modules — `agent`, `channels`, `defaults`, `features`, `logging`, `memory`, `providers`, `security`, `ui`, `mod` (Config struct + re-exports), and `tests`; no API changes, TOML format unchanged (#1735)
 - refactor(memory): split `semantic.rs` (3335 lines) into sub-modules — `mod` (struct + constructors + accessors), `recall`, `summarization`, `cross_session`, `corrections`, `graph`, and `tests`; public API unchanged (#1736)
@@ -31,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 
 - **MCP tool-poisoning injection defense** (closes #1691): `zeph-mcp` now sanitizes all tool definition text fields at registration time before they reach the LLM context. New `sanitize` module applies 17 injection-detection regexes (covering system-prompt override, role injection, jailbreak phrases, data exfiltration, URL execution, and XML/HTML tag escape) plus a Unicode Cf-category strip pass to `tool.description`, `tool.name`, `tool.server_id`, and all string values in `input_schema` (recursively, depth-capped at 10). Fields triggering a pattern are replaced wholesale with `"[sanitized]"` and a structured `WARN` log is emitted. Descriptions are capped at 1024 bytes. Tool registration is never blocked — only text is cleaned. Sanitization runs in both `connect_all()` and `add_server()` paths immediately after `list_tools()` returns.
+- **MCP `tools/list_changed` refresh path now sanitizes tool definitions** (closes #1746): MCP servers can push updated tool lists at runtime via the `tools/list_changed` notification. This refresh path previously bypassed `sanitize_tools()`, allowing a malicious server to inject prompt payloads after initial connection. `ToolListChangedHandler` now intercepts notifications and applies the same sanitization pipeline (rate-limited to once per 5 s per server, capped at 100 tools before sanitization) before storing or broadcasting the refreshed list. The agent polls a `watch::Receiver<Vec<McpTool>>` at the start of each turn to pick up updates atomically.
 
 ### Fixed
 

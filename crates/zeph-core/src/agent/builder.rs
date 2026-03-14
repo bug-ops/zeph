@@ -344,6 +344,18 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the watch receiver for MCP tool list updates from `tools/list_changed` notifications.
+    ///
+    /// The agent polls this receiver at the start of each turn to pick up refreshed tool lists.
+    #[must_use]
+    pub fn with_mcp_tool_rx(
+        mut self,
+        rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+    ) -> Self {
+        self.mcp.tool_rx = Some(rx);
+        self
+    }
+
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
         self.security.sanitizer =

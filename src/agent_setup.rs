@@ -25,6 +25,8 @@ pub(crate) struct ToolSetup {
     pub(crate) mcp_manager: Arc<zeph_mcp::McpManager>,
     pub(crate) mcp_shared_tools: Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
     pub(crate) tool_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
+    /// Watch receiver for MCP tool list updates from `tools/list_changed` notifications.
+    pub(crate) mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
 }
 
 #[derive(Clone)]
@@ -338,6 +340,11 @@ pub(crate) async fn build_tool_setup(
     let mcp_tools = mcp_manager.connect_all().await;
     tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
 
+    // Subscribe before spawning the refresh task so no events are missed.
+    let mcp_tool_rx = mcp_manager.subscribe_tool_changes();
+    // Spawn the background task that processes tools/list_changed events.
+    mcp_manager.spawn_refresh_task();
+
     let mcp_shared_tools = Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
@@ -353,6 +360,7 @@ pub(crate) async fn build_tool_setup(
         mcp_manager,
         mcp_shared_tools,
         tool_event_rx,
+        mcp_tool_rx,
     }
 }
 
