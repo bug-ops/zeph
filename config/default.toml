@@ -533,9 +533,20 @@ enabled = false
 # %LOCALAPPDATA%\Zeph\debug on Windows).
 # output_dir = "/absolute/path/to/debug"
 # Output format for LLM request files:
-#   "json" — internal zeph-llm representation (default)
-#   "raw"  — actual API payload (system extracted, content blocks, mirrors what is sent to the provider)
+#   "json"  — internal zeph-llm representation (default)
+#   "raw"   — actual API payload (system extracted, content blocks, mirrors what is sent to the provider)
+#   "trace" — OpenTelemetry-compatible OTLP JSON spans written to trace.json at session end
+#             Use --dump-format trace on the CLI to override at runtime.
 format = "json"
+
+[debug.traces]
+# OTLP gRPC endpoint for trace export (only used when format = "trace" and otel feature enabled).
+# Falls back to observability.endpoint if unset.
+otlp_endpoint = "http://localhost:4317"
+# Service name reported to the OTel collector.
+service_name = "zeph"
+# Redact secrets and sensitive paths from span attributes (recommended).
+redact = true
 
 [tui]
 # Show role prefix labels ([user], [zeph], etc.) in chat messages

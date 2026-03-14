@@ -89,6 +89,7 @@ pub(crate) struct WizardState {
     pub(crate) orchestration_planner_model: Option<String>,
     // Debug settings
     pub(crate) debug_dump_enabled: bool,
+    pub(crate) debug_dump_format: zeph_core::debug_dump::DumpFormat,
     // Graph memory settings
     pub(crate) graph_memory_enabled: bool,
     pub(crate) graph_extract_model: Option<String>,
@@ -179,6 +180,7 @@ impl Default for WizardState {
             orchestration_failure_strategy: String::new(),
             orchestration_planner_model: None,
             debug_dump_enabled: false,
+            debug_dump_format: zeph_core::debug_dump::DumpFormat::Json,
             graph_memory_enabled: false,
             graph_extract_model: None,
             gemini_thinking_level: None,
@@ -943,6 +945,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     };
 
     config.debug.enabled = state.debug_dump_enabled;
+    config.debug.format = state.debug_dump_format;
 
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);
@@ -1526,6 +1529,25 @@ fn step_debug(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(false)
         .interact()?;
+
+    if state.debug_dump_enabled {
+        let format_options = &[
+            "json (internal zeph-llm format)",
+            "raw (actual API payload)",
+            "trace (OpenTelemetry OTLP spans)",
+        ];
+        let idx = Select::new()
+            .with_prompt("Debug dump format")
+            .items(format_options)
+            .default(0)
+            .interact()?;
+        state.debug_dump_format = match idx {
+            1 => zeph_core::debug_dump::DumpFormat::Raw,
+            2 => zeph_core::debug_dump::DumpFormat::Trace,
+            _ => zeph_core::debug_dump::DumpFormat::Json,
+        };
+    }
+
     println!();
     Ok(())
 }

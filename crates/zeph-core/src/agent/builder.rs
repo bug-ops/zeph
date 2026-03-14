@@ -69,6 +69,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Enable `OTel` trace collection. The collector writes `trace.json` at session end.
+    #[must_use]
+    pub fn with_trace_collector(
+        mut self,
+        collector: crate::debug_dump::trace::TracingCollector,
+    ) -> Self {
+        self.debug_state.trace_collector = Some(collector);
+        self
+    }
+
     /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
     #[cfg(feature = "lsp-context")]
     #[must_use]

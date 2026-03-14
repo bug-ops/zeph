@@ -111,6 +111,10 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
     pub(crate) debug_dump: Option<PathBuf>,
 
+    /// Override debug dump format: `json`, `raw`, or `trace` (`OTel` OTLP spans).
+    #[arg(long = "dump-format", value_name = "FORMAT")]
+    pub(crate) dump_format: Option<zeph_core::debug_dump::DumpFormat>,
+
     /// Override scheduler tick interval in seconds (requires scheduler feature)
     #[cfg(feature = "scheduler")]
     #[arg(long, value_name = "SECS")]
@@ -421,5 +425,29 @@ mod tests {
     fn cli_log_file_bare_flag_disables_logging() {
         let cli = Cli::try_parse_from(["zeph", "--log-file"]).unwrap();
         assert_eq!(cli.log_file.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn cli_dump_format_defaults_to_none() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(cli.dump_format.is_none());
+    }
+
+    #[test]
+    fn cli_dump_format_parses_trace() {
+        let cli = Cli::try_parse_from(["zeph", "--dump-format", "trace"]).unwrap();
+        assert_eq!(
+            cli.dump_format,
+            Some(zeph_core::debug_dump::DumpFormat::Trace)
+        );
+    }
+
+    #[test]
+    fn cli_dump_format_parses_raw() {
+        let cli = Cli::try_parse_from(["zeph", "--dump-format", "raw"]).unwrap();
+        assert_eq!(
+            cli.dump_format,
+            Some(zeph_core::debug_dump::DumpFormat::Raw)
+        );
     }
 }

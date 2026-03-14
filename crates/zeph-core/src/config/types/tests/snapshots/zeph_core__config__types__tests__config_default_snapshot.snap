@@ -343,6 +343,11 @@ enabled = false
 output_dir = "<DEFAULT_DEBUG_DIR>"
 format = "json"
 
+[debug.traces]
+otlp_endpoint = "http://localhost:4317"
+service_name = "zeph"
+redact = true
+
 [logging]
 file = "<DEFAULT_LOG_FILE>"
 level = "info"

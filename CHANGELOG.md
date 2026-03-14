@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(debug): debug dumps can now emit OpenTelemetry-compatible OTLP JSON traces (`--dump-format trace`); span hierarchy: session → iteration → LLM request / tool call / memory search; `[debug.traces]` config section with `otlp_endpoint`, `service_name`, `redact` options; when `format = "trace"` legacy numbered dump files are NOT written (closes #1343)
+- feat(debug): `/dump-format <json|raw|trace>` TUI/CLI command to switch debug dump format at runtime
+- feat(cli): `--dump-format <FORMAT>` flag to override debug dump format from the command line
+- feat(config): `--init` wizard now prompts for debug dump format when debug dump is enabled
+- feat(config): `--migrate-config` auto-populates new `[debug.traces]` section for existing configs
+
 - feat(memory): A-MEM dynamic note linking — fire-and-forget similarity edges on graph write; `NoteLinkingConfig` nested in `[memory.graph.note_linking]`; `link_memory_notes` runs after each successful extraction inside the spawned task, bounded by `timeout_secs`; unidirectional `similar_to` edges (source < target) avoid BFS double-counting; `similarity_threshold` deserialization rejects NaN, Inf, and values outside `[0.0, 1.0]`; disabled by default (closes #1694)
 
 - feat(memory,core): migrate tool overflow storage from filesystem to SQLite (`tool_overflow` table, migration 031); `maybe_summarize_tool_output` now writes to `SqliteStore.save_overflow` instead of disk files; overflow references use opaque `overflow:<uuid>` format (eliminates absolute-path leakage SEC-JIT-03); new `read_overflow` native tool allows LLM to retrieve full content; age-based cleanup via `SqliteStore.cleanup_overflow` on startup; `ON DELETE CASCADE` automatically removes overflow rows when conversation is deleted (closes #1774)

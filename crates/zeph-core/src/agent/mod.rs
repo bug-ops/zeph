@@ -185,10 +185,14 @@ pub(super) struct SecurityState {
     pub(super) flagged_urls: std::collections::HashSet<String>,
 }
 
-/// Groups debug/diagnostics subsystems (dumper, anomaly detector, logging config).
+/// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).
 pub(super) struct DebugState {
     pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
     pub(super) dump_format: crate::debug_dump::DumpFormat,
+    pub(super) trace_collector: Option<crate::debug_dump::trace::TracingCollector>,
+    /// Monotonically increasing counter for `process_user_message` calls.
+    /// Used to key spans in `trace_collector.active_iterations`.
+    pub(super) iteration_counter: usize,
     pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
     pub(super) logging_config: crate::config::LoggingConfig,
 }
@@ -418,6 +422,8 @@ impl<C: Channel> Agent<C> {
             debug_state: DebugState {
                 debug_dumper: None,
                 dump_format: crate::debug_dump::DumpFormat::default(),
+                trace_collector: None,
+                iteration_counter: 0,
                 anomaly_detector: None,
                 logging_config: crate::config::LoggingConfig::default(),
             },
@@ -1926,6 +1932,11 @@ impl<C: Channel> Agent<C> {
             self.process_user_message(text, image_parts).await?;
         }
 
+        // Flush trace collector on normal exit (C-04: Drop handles error/panic paths).
+        if let Some(ref mut tc) = self.debug_state.trace_collector {
+            tc.finish();
+        }
+
         Ok(())
     }
 
@@ -1979,6 +1990,12 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/debug-dump" || trimmed.starts_with("/debug-dump ") {
             self.handle_debug_dump_command(trimmed).await;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed.starts_with("/dump-format") {
+            self.handle_dump_format_command(trimmed).await;
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));
         }
@@ -2178,6 +2195,40 @@ impl<C: Channel> Agent<C> {
                     .await;
             }
         }
+    }
+
+    /// Handle `/dump-format <json|raw|trace>` command — switch debug dump format at runtime.
+    async fn handle_dump_format_command(&mut self, trimmed: &str) {
+        let arg = trimmed.strip_prefix("/dump-format").map_or("", str::trim);
+        if arg.is_empty() {
+            let _ = self
+                .channel
+                .send(&format!(
+                    "Current dump format: {:?}. Use `/dump-format json|raw|trace` to change.",
+                    self.debug_state.dump_format
+                ))
+                .await;
+            return;
+        }
+        let new_format = match arg {
+            "json" => crate::debug_dump::DumpFormat::Json,
+            "raw" => crate::debug_dump::DumpFormat::Raw,
+            "trace" => crate::debug_dump::DumpFormat::Trace,
+            other => {
+                let _ = self
+                    .channel
+                    .send(&format!(
+                        "Unknown format '{other}'. Valid values: json, raw, trace."
+                    ))
+                    .await;
+                return;
+            }
+        };
+        self.debug_state.dump_format = new_format;
+        let _ = self
+            .channel
+            .send(&format!("Debug dump format set to: {arg}"))
+            .await;
     }
 
     async fn resolve_message(
@@ -2633,6 +2684,38 @@ impl<C: Channel> Agent<C> {
         &mut self,
         text: String,
         image_parts: Vec<zeph_llm::provider::MessagePart>,
+    ) -> Result<(), error::AgentError> {
+        // Record iteration start in trace collector (C-02: owned guard, no borrow held).
+        let iteration_index = self.debug_state.iteration_counter;
+        self.debug_state.iteration_counter += 1;
+        if let Some(ref mut tc) = self.debug_state.trace_collector {
+            tc.begin_iteration(iteration_index, text.trim());
+        }
+
+        let result = self
+            .process_user_message_inner(text, image_parts, iteration_index)
+            .await;
+
+        // Close iteration span regardless of outcome (partial trace preserved on error).
+        if let Some(ref mut tc) = self.debug_state.trace_collector {
+            let status = if result.is_ok() {
+                crate::debug_dump::trace::SpanStatus::Ok
+            } else {
+                crate::debug_dump::trace::SpanStatus::Error {
+                    message: "iteration failed".to_owned(),
+                }
+            };
+            tc.end_iteration(iteration_index, status);
+        }
+
+        result
+    }
+
+    async fn process_user_message_inner(
+        &mut self,
+        text: String,
+        image_parts: Vec<zeph_llm::provider::MessagePart>,
+        _iteration_index: usize,
     ) -> Result<(), error::AgentError> {
         self.lifecycle.cancel_token = CancellationToken::new();
         let signal = Arc::clone(&self.lifecycle.cancel_signal);
