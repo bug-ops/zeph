@@ -88,6 +88,12 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) server_compaction: bool,
 
+    /// Enable Claude 1M extended context window for this session.
+    /// Tokens above 200K use long-context pricing. Overrides `llm.cloud.enable_extended_context`
+    /// from config. Requires a Claude provider.
+    #[arg(long)]
+    pub(crate) extended_context: bool,
+
     /// Enable automatic LSP context injection (diagnostics after writes, hover on reads).
     /// Requires mcpls MCP server configured under [mcp.servers].
     #[cfg(feature = "lsp-context")]
@@ -352,6 +358,18 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
+
+    #[test]
+    fn cli_parses_extended_context_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--extended-context"]).unwrap();
+        assert!(cli.extended_context);
+    }
+
+    #[test]
+    fn cli_extended_context_defaults_to_false() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(!cli.extended_context);
+    }
 
     #[test]
     fn cli_parses_graph_memory_flag() {

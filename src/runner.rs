@@ -387,6 +387,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         cloud.server_compaction = true;
     }
 
+    if cli.extended_context
+        && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
+    {
+        cloud.enable_extended_context = true;
+        tracing::warn!(
+            "Extended context (1M tokens) enabled via --extended-context. \
+             Tokens above 200K use long-context pricing."
+        );
+    }
+
     #[cfg(feature = "lsp-context")]
     if cli.lsp_context {
         app.config_mut().lsp.enabled = true;

@@ -31,7 +31,7 @@ Enable `server_compaction = true` to let the Claude API manage context length on
 
 ### 1M Extended Context
 
-For Sonnet 4.6 and Opus 4.6, enable `enable_extended_context = true` to unlock the 1M token context window. The `auto_budget` feature scales accordingly. Enable with `--server-compaction` CLI flag or in `[llm.cloud]` in config.
+For Sonnet 4.6 and Opus 4.6, enable `enable_extended_context = true` to unlock the 1M token context window. The `auto_budget` feature scales accordingly. Enable with `--extended-context` CLI flag or in `[llm.cloud]` in config.
 
 ## Gemini
 
