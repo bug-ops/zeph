@@ -25,10 +25,11 @@ const MAX_RETRIES: u32 = 3;
 const MIN_MAX_TOKENS_WITH_THINKING: u32 = 16_000;
 
 /// Request field for Claude server-side context management (compact-2026-01-12 beta).
+///
+/// Note: the API does not accept a top-level `"type"` discriminator on this object — only
+/// `trigger` and `pause_after_compaction` are allowed.
 #[derive(Serialize, Clone, Debug)]
 struct ContextManagement {
-    #[serde(rename = "type")]
-    kind: &'static str,
     trigger: ContextManagementTrigger,
     pause_after_compaction: bool,
 }
@@ -804,7 +805,6 @@ impl ClaudeProvider {
         // Multiply before dividing to preserve precision (avoid losing up to 99 tokens).
         let trigger_tokens = context_window * 80 / 100;
         Some(ContextManagement {
-            kind: "auto_truncate",
             trigger: ContextManagementTrigger {
                 kind: "input_tokens",
                 value: trigger_tokens,
@@ -4901,7 +4901,6 @@ mod tests {
     #[test]
     fn context_management_serializes_correctly() {
         let cm = ContextManagement {
-            kind: "auto_truncate",
             trigger: ContextManagementTrigger {
                 kind: "input_tokens",
                 value: 160_000,
@@ -4909,7 +4908,11 @@ mod tests {
             pause_after_compaction: false,
         };
         let json = serde_json::to_value(&cm).unwrap();
-        assert_eq!(json["type"], "auto_truncate");
+        // The API rejects a top-level "type" field on context_management.
+        assert!(
+            json.get("type").is_none(),
+            "context_management must not have a top-level 'type' field"
+        );
         assert_eq!(json["trigger"]["type"], "input_tokens");
         assert_eq!(json["trigger"]["value"], 160_000);
         assert_eq!(json["pause_after_compaction"], false);
