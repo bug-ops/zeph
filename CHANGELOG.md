@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - fix(tui): skip ACP stdio/both autostart when `--tui` is active; stdio and TUI are mutually exclusive (both own stdin/stdout); HTTP transport is still allowed alongside TUI when `acp-http` feature is enabled (#1729)
 - fix(mcp): suppress MCP child process stderr in TUI mode to prevent ratatui display corruption; `McpManager` gains `with_suppress_stderr` builder method (#1729)
+- fix(llm): `cascade_chat_stream` now tracks best-seen response across early providers (#1722); on token budget exhaustion with a would-escalate response the highest-scoring prior response is returned; when the last provider fails and an early provider succeeded, the best-seen response is returned instead of propagating the error — achieving parity with `cascade_chat`
 
 ## [0.15.0] - 2026-03-14
 
