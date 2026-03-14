@@ -275,6 +275,23 @@ If a single chunk fits all messages, or if chunked summarization fails, the syst
 
 Both tiers are idempotent and run automatically during the agent loop.
 
+### Compaction Loop Prevention
+
+`maybe_compact()` tracks whether compaction is making progress. The `compaction_exhausted` flag is set permanently when any of the following conditions are detected after a hard-tier attempt:
+
+- Fewer than 2 messages are eligible for compaction (nothing useful to summarize).
+- The LLM summary consumes as many tokens as were freed — net reduction is zero.
+- Context usage remains above `hard_compaction_threshold` even after a successful summarization pass.
+
+Once exhausted, all further compaction calls are skipped for the session. A one-time warning is emitted to the user channel and to the log (`WARN` level):
+
+```
+Warning: context budget is too tight — compaction cannot free enough space.
+Consider increasing [memory] context_budget_tokens or starting a new session.
+```
+
+This prevents infinite compaction loops when the configured budget is smaller than the minimum required for the system prompt and response reservation combined.
+
 ### Structured Compaction Prompt
 
 Compaction summaries use a 9-section structured prompt designed for self-consumption. The LLM is instructed to produce exactly these sections:

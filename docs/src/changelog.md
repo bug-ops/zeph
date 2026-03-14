@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Context compaction loop: `maybe_compact()` now detects when the token budget is too tight to make progress (compactable message count ≤ 1, or compaction produced zero net token reduction, or context remains above threshold after a successful summarization pass) and sets a permanent `compaction_exhausted` flag. Subsequent calls skip compaction entirely and emit a one-time user-visible warning to increase `context_budget_tokens` or start a new session (#1727).
 - Claude server compaction: `ContextManagement` struct now serializes to the correct API shape (`auto_truncate` type with nested trigger); the previous shape caused non-functional `--server-compaction`.
 - Haiku models: `with_server_compaction(true)` now emits `WARN` and keeps the flag disabled (the `compact-2026-01-12` beta is not supported for Haiku).
 - Skill embedding log noise: `SkillMatcher::new()` no longer emits one `WARN` per skill when the provider does not support embeddings — all `EmbedUnsupported` errors are summarised into a single info-level message.
