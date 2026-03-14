@@ -18,7 +18,7 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
@@ -49,7 +49,7 @@ Zeph exposes an explicit readiness signal for both ACP entrypoints:
 - **stdio** emits a JSON-RPC notification as the first frame after startup completes:
 
 ```json
-{"jsonrpc":"2.0","method":"zeph/ready","params":{"version":"0.14.3","pid":12345,"log_file":"/path/to/zeph.log"}}
+{"jsonrpc":"2.0","method":"zeph/ready","params":{"version":"0.15.0","pid":12345,"log_file":"/path/to/zeph.log"}}
 ```
 
 - **HTTP** exposes `GET /health`, which returns `200 OK` with `{"status":"ok",...}` once startup is complete, and `503 Service Unavailable` with `{"status":"starting",...}` before readiness flips.

@@ -133,6 +133,16 @@ The `task` string determines how the agent behaves when the task fires. Two patt
 
 The `task` field is sanitized before injection: control characters below U+0020 (except `\n` and `\t`) are stripped, and the string is truncated to 512 Unicode code points.
 
+### `list_tasks`
+
+List all currently scheduled tasks with their kind, mode, and next run time.
+
+```json
+{}
+```
+
+Returns a formatted table with columns: NAME, KIND, MODE, and NEXT RUN. No parameters required. Also available as the `/scheduler list` slash command in the CLI and TUI, or as `/scheduler` with no subcommand.
+
 ### `cancel_task`
 
 Cancel a scheduled task by name. Works for both periodic and one-shot tasks.
@@ -272,6 +282,14 @@ let (shutdown_tx, shutdown_rx) = watch::channel(false);
 // ... build and start scheduler ...
 let _ = shutdown_tx.send(true); // signal shutdown
 ```
+
+## Listing Tasks
+
+Use any of the following to view all scheduled tasks:
+
+- **CLI / slash command**: `/scheduler list` (or `/scheduler` with no subcommand) — prints a table with NAME, KIND, MODE, and NEXT RUN columns.
+- **LLM tool**: ask the agent "list my scheduled tasks" — the `list_tasks` tool is called automatically.
+- **TUI command palette**: open the palette with `:`, type `scheduler`, and select `scheduler:list`.
 
 ## TUI Integration
 

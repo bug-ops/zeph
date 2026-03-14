@@ -7,7 +7,7 @@ skills-first architecture, semantic + graph memory with Qdrant/SQLite, MCP clien
 support, multi-model orchestration with Thompson Sampling, self-learning skill evolution, TUI
 dashboard, untrusted content isolation, and multi-channel I/O (CLI + Telegram + TUI).
 
-Current version: **v0.14.3**. MSRV: **1.88** (Edition 2024, resolver 3).
+Current version: **v0.15.0**. MSRV: **1.88** (Edition 2024, resolver 3).
 
 ## Architecture
 

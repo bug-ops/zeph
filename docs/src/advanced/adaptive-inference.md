@@ -1,11 +1,12 @@
 # Adaptive Inference
 
-When `provider = "router"`, Zeph routes each LLM request through a fallback chain of providers. The **routing strategy** determines which provider is tried first. Two strategies are available:
+When `provider = "router"`, Zeph routes each LLM request through a fallback chain of providers. The **routing strategy** determines which provider is tried first. Three strategies are available:
 
 | Strategy | Config value | Description |
 |----------|-------------|-------------|
 | **EMA** (default) | `"ema"` | Latency-weighted exponential moving average. Reorders providers every N requests based on observed response times |
 | **Thompson Sampling** | `"thompson"` | Bayesian exploration/exploitation via Beta distributions. Tracks per-provider success/failure counts and samples to choose the best provider |
+| **Cascade** | `"cascade"` | Cost-escalation routing. Tries providers cheapest-first; escalates to the next provider only when the response is classified as degenerate (empty, repetitive, incoherent) |
 
 ## Thompson Sampling
 
@@ -90,6 +91,41 @@ chain = ["claude", "openai", "ollama"]
 strategy = "ema"                # default, can be omitted
 ```
 
+## Cascade Routing
+
+The cascade strategy routes requests to the cheapest provider first and escalates only when the response is degenerate. This minimizes cost while maintaining quality.
+
+### Enabling Cascade Routing
+
+```toml
+[llm]
+provider = "router"
+
+[llm.router]
+chain = ["ollama", "claude"]   # cheapest first
+strategy = "cascade"
+
+[llm.router.cascade]
+quality_threshold = 0.5        # score below this → escalate (default: 0.5)
+max_escalations = 2            # max escalation steps per request (default: 2)
+classifier_mode = "heuristic"  # "heuristic" (default) or "judge" (LLM-backed)
+# max_cascade_tokens = 100000  # cumulative token cap across escalation levels (optional)
+```
+
+### Classifier Modes
+
+| Mode | Description |
+|------|-------------|
+| `heuristic` | Detects degenerate outputs only (empty, repetitive, incoherent) without LLM calls |
+| `judge` | LLM-based quality scoring; requires `summary_model` to be configured. Falls back to heuristic on failure |
+
+### Behavior
+
+- Network and API errors do **not** consume the escalation budget — only quality-based failures trigger escalation.
+- When all escalation levels are exhausted, the best-seen response is returned (not an error).
+- Cascade is intentionally skipped for `chat_with_tools` calls (tool use requires deterministic provider selection).
+- Thompson/EMA outcome tracking is not contaminated by quality-based escalations.
+
 ## Configuration Reference
 
 Full `[llm.router]` section:
@@ -97,8 +133,18 @@ Full `[llm.router]` section:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `chain` | string[] | required | Ordered list of provider names for fallback |
-| `strategy` | `"ema"` or `"thompson"` | `"ema"` | Routing strategy |
+| `strategy` | `"ema"`, `"thompson"`, or `"cascade"` | `"ema"` | Routing strategy |
 | `thompson_state_path` | string? | `~/.zeph/router_thompson_state.json` | Path for Thompson state persistence |
+
+`[llm.router.cascade]` fields (when `strategy = "cascade"`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `quality_threshold` | float | `0.5` | Score below which the response is considered degenerate |
+| `max_escalations` | int | `2` | Maximum escalation steps per request |
+| `classifier_mode` | string | `"heuristic"` | `"heuristic"` or `"judge"` |
+| `window_size` | int? | unset | Sliding window size for repetition detection |
+| `max_cascade_tokens` | int? | unset | Cumulative token budget across escalation levels |
 
 EMA-specific fields live in `[llm]`:
 

@@ -15,10 +15,10 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 
 ```toml
 [dependencies]
-zeph-acp = "0.14.3"
+zeph-acp = "0.15.0"
 
 # With HTTP+SSE transport
-zeph-acp = { version = "0.14.3", features = ["acp-http"] }
+zeph-acp = { version = "0.15.0", features = ["acp-http"] }
 ```
 
 > [!IMPORTANT]

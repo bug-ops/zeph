@@ -125,7 +125,7 @@ Community detection groups related entities into clusters using label propagatio
 
 Every `community_refresh_interval` messages (default: 100), a background task runs full community detection:
 
-1. Load all entities and active edges from SQLite
+1. Load all entities from SQLite; load active edges in chunks (keyset pagination via `WHERE id > ? LIMIT ?`, chunk size controlled by `lpa_edge_chunk_size`, default: 10,000). Chunked loading reduces peak memory on large graphs compared to loading all edges at once. Set `lpa_edge_chunk_size = 0` to restore the legacy stream-all path.
 2. Construct an undirected petgraph graph in memory
 3. Run label propagation for up to 50 iterations until convergence: each node adopts the most frequent label among its neighbors, with ties broken by smallest label value
 4. Discard groups with fewer than 2 entities

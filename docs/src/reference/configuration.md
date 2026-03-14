@@ -147,10 +147,29 @@ router_ema_enabled = false         # EMA-based provider latency routing (default
 router_ema_alpha = 0.1             # EMA smoothing factor, 0.0–1.0 (default: 0.1)
 router_reorder_interval = 10       # Re-order providers every N requests (default: 10)
 
+# [llm.gemini]
+# model = "gemini-2.0-flash"            # default model
+# max_tokens = 8192
+# embedding_model = "text-embedding-004"  # enable Gemini embeddings (optional)
+# thinking_level = "medium"             # minimal, low, medium, high (Gemini 2.5+ only)
+# thinking_budget = 8192               # token budget; -1 = dynamic, 0 = disabled (Gemini 2.5+ only)
+# include_thoughts = true              # surface thinking chunks in TUI
+# base_url = "https://generativelanguage.googleapis.com/v1beta"  # default
+
+# [llm.cloud]
+# server_compaction = false            # Enable Claude server-side context compaction (compact-2026-01-12 beta)
+# enable_extended_context = false      # Enable Claude 1M context window (context-1m-2025-08-07 beta, Sonnet/Opus 4.6)
+
 # [llm.router]
 # chain = ["claude", "openai", "ollama"]  # Ordered fallback chain (required when provider = "router")
-# strategy = "ema"                        # "ema" (default) or "thompson"
+# strategy = "ema"                        # "ema" (default), "thompson", or "cascade"
 # thompson_state_path = "~/.zeph/router_thompson_state.json"  # Thompson state persistence path
+#
+# [llm.router.cascade]                 # Required when strategy = "cascade"
+# quality_threshold = 0.5             # Score below which response is degenerate (default: 0.5)
+# max_escalations = 2                 # Max escalation steps per request (default: 2)
+# classifier_mode = "heuristic"       # "heuristic" (default) or "judge" (LLM-backed)
+# max_cascade_tokens = 0              # Cumulative token cap across escalation levels; 0 = unlimited
 
 [llm.stt]
 provider = "whisper"
@@ -471,13 +490,14 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_LLM_VISION_MODEL` | Vision model for Ollama image requests (optional) |
 | `ZEPH_CLAUDE_API_KEY` | Anthropic API key (required for Claude) |
 | `ZEPH_OPENAI_API_KEY` | OpenAI API key (required for OpenAI provider) |
+| `ZEPH_GEMINI_API_KEY` | Google Gemini API key (required for Gemini provider) |
 | `ZEPH_TELEGRAM_TOKEN` | Telegram bot token (enables Telegram mode) |
 | `ZEPH_SQLITE_PATH` | SQLite database path |
 | `ZEPH_QDRANT_URL` | Qdrant server URL (default: `http://localhost:6334`) |
 | `ZEPH_MEMORY_SUMMARIZATION_THRESHOLD` | Trigger summarization after N messages (default: 100) |
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
-| `ZEPH_MEMORY_DEFERRED_APPLY_THRESHOLD` | Apply pre-computed tool pair summaries when context usage exceeds this fraction (default: 0.70, must be < `ZEPH_MEMORY_COMPACTION_THRESHOLD`) |
-| `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Compaction trigger threshold as fraction of context budget (default: 0.75) |
+| `ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD` | Soft compaction tier: prune tool outputs + apply deferred summaries (no LLM) when context usage exceeds this fraction (default: 0.70, must be < hard threshold) |
+| `ZEPH_MEMORY_HARD_COMPACTION_THRESHOLD` | Hard compaction tier: full LLM summarization when context usage exceeds this fraction (default: 0.90). Also accepted as `ZEPH_MEMORY_COMPACTION_THRESHOLD` for backward compatibility. |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction (default: 4) |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning (default: 40000) |
 | `ZEPH_MEMORY_CROSS_SESSION_SCORE_THRESHOLD` | Minimum relevance score for cross-session memory (default: 0.35) |

@@ -21,7 +21,7 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
@@ -69,7 +69,7 @@ IDE integrations can stop guessing when Zeph has finished warming up:
 - **stdio transport:** wait for the first `zeph/ready` notification before sending the first interactive request. Example payload:
 
 ```json
-{"jsonrpc":"2.0","method":"zeph/ready","params":{"version":"0.14.3","pid":12345,"log_file":"/path/to/zeph.log"}}
+{"jsonrpc":"2.0","method":"zeph/ready","params":{"version":"0.15.0","pid":12345,"log_file":"/path/to/zeph.log"}}
 ```
 
 - **HTTP transport:** poll `GET /health` until it returns `200 OK`.

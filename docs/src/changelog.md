@@ -6,26 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-03-14
+
 ### Added
 
-- **Gemini provider** — Google Gemini API support (`gemini-2.0-flash` default, `gemini-2.5-pro` available). Phase 1: basic chat via `generateContent`; Phase 2: SSE streaming with thinking-part support. Configure with `[llm.gemini]` and `ZEPH_GEMINI_API_KEY`. See [LLM Providers](concepts/providers.md#gemini).
-- **`search_code` tool** — unified hybrid code search combining tree-sitter structural extraction, Qdrant semantic search, and LSP symbol resolution in a single agent-callable tool. Always available (no feature flag). See [Tools](concepts/tools.md#code-search).
+- **Gemini provider** — full Google Gemini API support across 6 phases: basic chat (`generateContent`), SSE streaming with thinking-part support, native tool use / function calling, vision / multimodal input (`inlineData`), semantic embeddings (`embedContent`), and remote model discovery (`GET /v1beta/models`). Default model: `gemini-2.0-flash`; extended thinking available with `gemini-2.5-pro`. Configure with `[llm.gemini]` and `ZEPH_GEMINI_API_KEY`. See [LLM Providers](concepts/providers.md#gemini).
+- **Gemini `thinking_level` / `thinking_budget` support** — `GeminiThinkingConfig` with `thinking_level` (`minimal`, `low`, `medium`, `high`), `thinking_budget` (validated -1/0/1–32768), and `include_thoughts` fields. Applies to Gemini 2.5+ models. Configurable in `[llm.gemini]` and the `--init` wizard.
+- **Cascade routing strategy** — new `strategy = "cascade"` for the `router` provider. Tries providers cheapest-first; escalates only when the response is classified as degenerate (empty, repetitive, incoherent). Heuristic and LLM-judge classifier modes. Configure via `[llm.router.cascade]` with `quality_threshold`, `max_escalations`, `classifier_mode`, and `max_cascade_tokens`. See [Adaptive Inference](advanced/adaptive-inference.md#cascade-routing).
+- **Claude server-side context compaction** — `[llm.cloud] server_compaction = true` enables the `compact-2026-01-12` beta API. Claude manages context on the server side; compaction summaries stream back and are surfaced in the TUI. Graceful fallback to client-side compaction when the beta header is rejected (e.g. on Haiku models). New `server_compaction_events` metric. Enable with `--server-compaction`.
+- **Claude 1M extended context window** — `[llm.cloud] enable_extended_context = true` injects the `context-1m-2025-08-07` beta header, unlocking 1M token context for Opus 4.6 and Sonnet 4.6. `context_window()` reports 1,000,000 when active so `auto_budget` scales correctly. Configurable in `--init` wizard.
+- **`/scheduler list` command and `list_tasks` tool** — lists all active scheduled tasks with NAME, KIND, MODE, and NEXT RUN columns. LLM-callable via the `list_tasks` tool; also available as `/scheduler list` slash command. See [Scheduler](concepts/scheduler.md#listing-tasks).
+- **`search_code` tool** — unified hybrid code search combining tree-sitter structural extraction, Qdrant semantic search, and LSP symbol resolution. Always available (no feature flag). See [Tools](concepts/tools.md#code-search).
 - **`zeph migrate-config`** — CLI command to add missing config parameters as commented-out blocks and reformat the file. Idempotent; never modifies existing values. See [Migrate Config](guides/migrate-config.md).
 - **ACP readiness probes** — `/health` HTTP endpoint returns `200 OK` when ready; stdio transport emits `zeph/ready` JSON-RPC notification as the first outbound packet.
 - **Request metadata in debug dumps** — model, token limit, temperature, exposed tools, and cache breakpoints included in both `json` and `raw` dump formats.
 
 ### Changed
 
-- **Tiered context compaction** (#1338): replaced single `compaction_threshold` with soft tier (`soft_compaction_threshold`, default 0.70 — prune tool outputs + apply deferred summaries, no LLM) and hard tier (`hard_compaction_threshold`, default 0.90 — full LLM summarization). Old `compaction_threshold` field still accepted via serde alias.
-- **`/plan cancel` during execution** — cancel commands are now delivered immediately during active plan execution via concurrent channel polling; previously only reachable from multi-reader channels.
-- **DagScheduler exponential backoff** — concurrency-limit deferral now uses 250ms→500ms→1s→2s→4s (cap 5s) instead of a fixed 250ms sleep, eliminating CPU spin-loops under sustained load.
-- **Single shared `QdrantOps` instance** — all subsystems (semantic memory, skill matcher, MCP tool registry, code store) share one gRPC connection instead of creating independent connections on startup.
-- **`zeph-index` always-on** — the `index` feature flag is removed; tree-sitter and code intelligence are compiled into every build. The `search_code` tool and repo map are available for all provider configurations.
+- **Tiered context compaction** (#1338): replaced single `compaction_threshold` with soft tier (`soft_compaction_threshold`, default 0.70 — prune tool outputs + apply deferred summaries, no LLM) and hard tier (`hard_compaction_threshold`, default 0.90 — full LLM summarization). Old `compaction_threshold` field still accepted via serde alias. `deferred_apply_threshold` removed — absorbed into soft tier. See [Context Engineering](advanced/context.md#two-tier-reactive-compaction).
+- **Async parallel dispatch in `DagScheduler`** — `tick()` now dispatches all ready tasks simultaneously instead of capping at `max_parallel - running`. Concurrency enforced by `SubAgentManager` returning `ConcurrencyLimit`; tasks revert to `Ready` and retry on the next tick.
+- **`/plan cancel` during execution** — cancel commands delivered immediately during active plan execution via concurrent channel polling.
+- **DagScheduler exponential backoff** — concurrency-limit deferral uses 250ms→500ms→1s→2s→4s (cap 5s) instead of a fixed 250ms sleep.
+- **Single shared `QdrantOps` instance** — all subsystems share one gRPC connection instead of creating independent connections on startup.
+- **`zeph-index` always-on** — the `index` feature flag is removed; tree-sitter and code intelligence are compiled into every build.
+- **Graph memory chunked edge loading** — community detection loads edges in configurable chunks (keyset pagination) instead of loading all edges at once, reducing peak memory on large graphs. Configurable via `memory.graph.lpa_edge_chunk_size` (default: 10,000).
 
 ### Security
 
 - **SEC-001–004 tool execution hardening** — randomized hash seeds, jitter-free retry timing, tool name length limits, wall-clock retry budget. See [Security](reference/security.md).
 - **Shell blocklist unconditional** — `blocked_commands` and `DEFAULT_BLOCKED` now apply regardless of `PermissionPolicy` configuration; previously skipped when a policy was attached.
+
+### Fixed
+
+- Claude server compaction: `ContextManagement` struct now serializes to the correct API shape (`auto_truncate` type with nested trigger); the previous shape caused non-functional `--server-compaction`.
+- Haiku models: `with_server_compaction(true)` now emits `WARN` and keeps the flag disabled (the `compact-2026-01-12` beta is not supported for Haiku).
+- Skill embedding log noise: `SkillMatcher::new()` no longer emits one `WARN` per skill when the provider does not support embeddings — all `EmbedUnsupported` errors are summarised into a single info-level message.
+- OpenAI / Gemini: tools with no parameters no longer cause `400 Bad Request` in strict mode.
+- Anomaly detector: outcomes now recorded correctly for native tool-use providers (Claude, OpenAI, Gemini).
 
 ## [0.14.3] - 2026-03-10
 
