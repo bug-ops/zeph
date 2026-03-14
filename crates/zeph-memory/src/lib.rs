@@ -40,7 +40,10 @@ pub use math::cosine_similarity;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
 pub use router::{HeuristicRouter, MemoryRoute, MemoryRouter};
-pub use semantic::{ExtractionStats, GraphExtractionConfig, extract_and_store};
+pub use semantic::{
+    ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
+    extract_and_store, link_memory_notes,
+};
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 pub use sqlite::corrections::UserCorrectionRow;
 #[cfg(feature = "experiments")]
