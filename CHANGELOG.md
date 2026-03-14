@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(tui): show `[1M CTX]` badge in the TUI header bar when Claude extended context (`enable_extended_context = true`) is active; also shows `Max context: 1M` in the Resources panel (#1686)
+
 ### Fixed
 
 - fix(tui): skip ACP stdio/both autostart when `--tui` is active; stdio and TUI are mutually exclusive (both own stdin/stdout); HTTP transport is still allowed alongside TUI when `acp-http` feature is enabled (#1729)

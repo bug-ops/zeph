@@ -485,6 +485,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_extended_context(mut self, enabled: bool) -> Self {
+        self.metrics.extended_context = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn with_repo_map(mut self, token_budget: usize, ttl_secs: u64) -> Self {
         self.index.repo_map_tokens = token_budget;
         self.index.repo_map_ttl = std::time::Duration::from_secs(ttl_secs);
@@ -528,6 +534,7 @@ impl<C: Channel> Agent<C> {
             .map(|t| &t.server_id)
             .collect::<std::collections::HashSet<_>>()
             .len();
+        let extended_context = self.metrics.extended_context;
         tx.send_modify(|m| {
             m.provider_name = provider_name;
             m.model_name = model_name;
@@ -539,6 +546,7 @@ impl<C: Channel> Agent<C> {
             m.total_tokens = prompt_estimate;
             m.mcp_tool_count = mcp_tool_count;
             m.mcp_server_count = mcp_server_count;
+            m.extended_context = extended_context;
         });
         self.metrics.metrics_tx = Some(tx);
         self

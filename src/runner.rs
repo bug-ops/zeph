@@ -997,7 +997,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     });
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();
-    let agent = agent.with_metrics(metrics_tx);
+    let extended_context = config
+        .llm
+        .cloud
+        .as_ref()
+        .is_some_and(|c| c.enable_extended_context);
+    let agent = agent
+        .with_extended_context(extended_context)
+        .with_metrics(metrics_tx);
     #[cfg(not(feature = "tui"))]
     drop(metrics_rx);
 

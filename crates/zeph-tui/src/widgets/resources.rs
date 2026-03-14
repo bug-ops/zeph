@@ -20,6 +20,9 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         Line::from(format!("  API calls: {}", metrics.api_calls)),
         Line::from(format!("  Latency: {}ms", metrics.last_llm_latency_ms)),
     ];
+    if metrics.extended_context {
+        res_lines.push(Line::from("  Max context: 1M"));
+    }
     if metrics.cache_creation_tokens > 0 || metrics.cache_read_tokens > 0 {
         res_lines.push(Line::from(format!(
             "  Cache write: {}",
@@ -89,6 +92,29 @@ mod tests {
         let output = render_to_string(35, 10, |frame, area| {
             super::render(&metrics, frame, area);
         });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn resources_with_extended_context() {
+        let metrics = MetricsSnapshot {
+            provider_name: "claude".into(),
+            model_name: "claude-sonnet-4-6".into(),
+            context_tokens: 50000,
+            total_tokens: 75000,
+            api_calls: 3,
+            last_llm_latency_ms: 400,
+            extended_context: true,
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(35, 11, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("Max context: 1M"),
+            "resources panel must contain 'Max context: 1M' when extended_context is true; got: {output:?}"
+        );
         assert_snapshot!(output);
     }
 }
