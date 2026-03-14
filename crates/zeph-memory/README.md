@@ -40,6 +40,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
+| `sqlite::overflow` | `tool_overflow` SQLite table (migration 031) — stores large tool outputs keyed by UUID; `SqliteStore::save_overflow` / `SqliteStore::cleanup_overflow` replace the old filesystem backend; `ON DELETE CASCADE` removes overflow rows when the parent conversation is deleted |
 | `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization |
 | `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction |
 | `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession |
@@ -136,11 +137,11 @@ The `graph` module provides SQLite-backed entity-relationship tracking:
 
 - **Entities** — named nodes with 8 types (person, tool, concept, project, language, file, config, organization)
 - **Entity canonicalization** — `canonical_name` + alias table prevents duplicates from name variations ("Rust", "rust-lang", "Rust language" resolve to one entity). Alias-first resolution with deterministic first-registered-wins semantics
-- **Edges** — directed relationships with bi-temporal timestamps (`valid_from`/`valid_to` for fact validity, `created_at`/`expired_at` for ingestion)
+- **Edges** — directed relationships with bi-temporal timestamps (`valid_from`/`valid_to` for fact validity, `created_at`/`expired_at` for ingestion); `edges_at_timestamp()` returns edges valid at a given point in time, `edge_history()` returns all versions of an edge ordered by `valid_from DESC`, migration 030 adds partial indexes for temporal range queries
 - **Communities** — groups of related entities detected via label propagation (petgraph) with LLM-generated summaries
 - **Graph eviction** — automatic cleanup of expired edges, orphan entities, and entity cap enforcement via `expired_edge_retention_days` and `max_entities` config
-- **BFS traversal** — cycle-safe breadth-first search with configurable hop limit
-- **GraphFact** — retrieval-side type with composite scoring for context injection
+- **BFS traversal** — cycle-safe breadth-first search with configurable hop limit; `bfs_at_timestamp()` variant traverses only edges valid at a given point in time for historical graph queries
+- **GraphFact** — retrieval-side type with composite scoring for context injection; includes `valid_from` field for recency-aware scoring when `temporal_decay_rate > 0`
 - **`graph_recall`** — query-time retrieval: splits the query into words, matches seed entities via FTS5 full-text index with BM25 ranking (including aliases), runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates by canonical name, and returns the top-K facts for context injection
 - **Embedding-based entity resolution** — when `use_embedding_resolution = true`, entities are deduplicated via cosine similarity in Qdrant with a two-threshold approach (auto-merge at >= 0.85, LLM disambiguation at >= 0.70, new entity below); integrated after alias and canonical-name lookup steps; falls back to create-new on failure
 
@@ -161,8 +162,10 @@ extraction_timeout_secs = 15
 use_embedding_resolution = true     # semantic entity dedup via Qdrant (default: false)
 entity_similarity_threshold = 0.85  # auto-merge threshold
 entity_ambiguous_threshold = 0.70   # LLM disambiguation threshold
-expired_edge_retention_days = 90  # Days to retain superseded edges
-max_entities = 0                  # Max entities cap (0 = unlimited)
+expired_edge_retention_days = 90    # Days to retain superseded edges
+max_entities = 0                    # Max entities cap (0 = unlimited)
+temporal_decay_rate = 0.0           # Decay rate for scoring older facts (0.0 = disabled); validated: must be in [0.0, 10.0], not NaN or Inf
+edge_history_limit = 100            # Max edge versions returned by edge_history()
 ```
 
 ## Features

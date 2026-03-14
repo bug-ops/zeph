@@ -13,8 +13,9 @@ Implements the Model Context Protocol client for Zeph, managing connections to m
 
 ## Key Modules
 
-- **client** — low-level MCP transport and session handling
+- **client** — low-level MCP transport and session handling; `ToolListChangedHandler` receives `tools/list_changed` notifications, applies `sanitize_tools()` (rate-limited to once per 5 s per server, capped at 100 tools), and forwards the sanitized list to `McpManager` via a refresh channel
 - **manager** — `McpManager`, `McpTransport`, `ServerEntry` for multi-server lifecycle; command allowlist validation (npx, uvx, node, python3, docker, mcpls, etc.), env var blocklist (LD_PRELOAD, DYLD_*, NODE_OPTIONS, etc.), and path separator rejection; statically configured servers (from `[[mcp.servers]]`) bypass SSRF validation to allow connections to `localhost` and private IPs — dynamically added servers retain full SSRF protection
+- **sanitize** — `sanitize_tools()` applied to all tool definitions at registration time and again on every `tools/list_changed` refresh; strips 17 injection-detection patterns, Unicode Cf-category characters, and caps descriptions at 1024 bytes; fields triggering a pattern are replaced with `"[sanitized]"` — tool registration is never blocked
 - **executor** — `McpToolExecutor` bridging MCP tools into the `ToolExecutor` trait
 - **registry** — `McpToolRegistry` for tool lookup and optional Qdrant-backed search
 - **tool** — `McpTool` wrapper with schema and metadata
