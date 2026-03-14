@@ -171,6 +171,7 @@ impl Default for WizardState {
             router_thompson_state_path: None,
             router_cascade_quality_threshold: None,
             router_cascade_max_escalations: None,
+            router_cascade_cost_tiers: None,
             orchestration_enabled: false,
             orchestration_max_tasks: 0,
             orchestration_max_parallel: 0,
