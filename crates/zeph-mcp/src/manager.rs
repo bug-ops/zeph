@@ -12,6 +12,7 @@ use tokio::task::JoinSet;
 use crate::client::McpClient;
 use crate::error::McpError;
 use crate::policy::PolicyEnforcer;
+use crate::sanitize::sanitize_tools;
 use crate::tool::McpTool;
 
 /// Transport type for MCP server connections.
@@ -112,7 +113,11 @@ impl McpManager {
 
             match connect_result {
                 Ok(client) => match client.list_tools().await {
-                    Ok(tools) => {
+                    Ok(mut tools) => {
+                        // Sanitize tool definitions before they enter the system prompt.
+                        // On server reconnect or tool list refresh, new tools must also
+                        // be passed through sanitize_tools() before use.
+                        sanitize_tools(&mut tools, &server_id);
                         tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
                         all_tools.extend(tools);
                         clients.insert(server_id.clone(), client);
@@ -181,13 +186,17 @@ impl McpManager {
         }
 
         let client = connect_entry(entry, &self.allowed_commands, self.suppress_stderr).await?;
-        let tools = match client.list_tools().await {
+        let mut tools = match client.list_tools().await {
             Ok(tools) => tools,
             Err(e) => {
                 client.shutdown().await;
                 return Err(e);
             }
         };
+        // Sanitize tool definitions before they enter the system prompt.
+        // On server reconnect or tool list refresh, new tools must also
+        // be passed through sanitize_tools() before use.
+        sanitize_tools(&mut tools, &entry.id);
 
         // Re-check under write lock to prevent TOCTOU race
         let mut clients = self.clients.write().await;

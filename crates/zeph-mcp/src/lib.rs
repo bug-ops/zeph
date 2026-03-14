@@ -11,6 +11,7 @@ pub mod manager;
 pub mod policy;
 pub mod prompt;
 pub mod registry;
+pub mod sanitize;
 pub mod security;
 pub mod tool;
 

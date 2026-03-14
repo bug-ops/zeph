@@ -4246,6 +4246,29 @@ mod tests {
         assert!(req.headers().get("x-api-key").is_some());
     }
 
+    #[test]
+    fn build_request_with_extended_context_includes_beta_header() {
+        let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256)
+            .with_extended_context(true);
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let req = provider.build_request(&messages, false).build().unwrap();
+        let header_value = req
+            .headers()
+            .get("anthropic-beta")
+            .expect("anthropic-beta header must be present when extended context is enabled")
+            .to_str()
+            .expect("header must be valid UTF-8");
+        assert!(
+            header_value.contains(ANTHROPIC_BETA_EXTENDED_CONTEXT),
+            "anthropic-beta header must contain '{ANTHROPIC_BETA_EXTENDED_CONTEXT}', got '{header_value}'"
+        );
+    }
+
     // ── #1084: cache_control only on last tool ────────────────────────────────
 
     #[test]
