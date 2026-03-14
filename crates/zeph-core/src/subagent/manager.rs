@@ -198,7 +198,7 @@ fn append_transcript(writer: &mut Option<TranscriptWriter>, seq: &mut u32, msg: 
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
+async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
     let AgentLoopArgs {
         provider,
         executor,
@@ -291,7 +291,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> anyhow::Result<String> {
                     turns_used: turns,
                     started_at,
                 });
-                return Err(anyhow::anyhow!("LLM call failed: {e}"));
+                return Err(SubAgentError::Llm(e.to_string()));
             }
         };
 
@@ -437,7 +437,7 @@ pub struct SubAgentHandle {
     /// Task ID (UUID). Currently the same as `id`; separated for future use.
     pub(crate) task_id: String,
     pub(crate) state: SubAgentState,
-    pub(crate) join_handle: Option<JoinHandle<anyhow::Result<String>>>,
+    pub(crate) join_handle: Option<JoinHandle<Result<String, SubAgentError>>>,
     pub(crate) cancel: CancellationToken,
     pub(crate) status_rx: watch::Receiver<SubAgentStatus>,
     pub(crate) grants: PermissionGrants,
@@ -916,7 +916,7 @@ impl SubAgentManager {
         };
 
         let task_id_for_loop = task_id.clone();
-        let join_handle: JoinHandle<anyhow::Result<String>> =
+        let join_handle: JoinHandle<Result<String, SubAgentError>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
                 provider,
                 executor,
@@ -1089,7 +1089,7 @@ impl SubAgentManager {
         handle
             .secret_tx
             .try_send(Some(key))
-            .map_err(|e| SubAgentError::Other(anyhow::anyhow!("{e}")))
+            .map_err(|e| SubAgentError::Channel(e.to_string()))
     }
 
     /// Deny a pending secret request — sends `None` to unblock the waiting sub-agent loop.
@@ -1097,7 +1097,7 @@ impl SubAgentManager {
     /// # Errors
     ///
     /// Returns [`SubAgentError::NotFound`] if the task ID is unknown,
-    /// [`SubAgentError::Other`] if the channel is full or closed.
+    /// [`SubAgentError::Channel`] if the channel is full or closed.
     pub fn deny_secret(&mut self, task_id: &str) -> Result<(), SubAgentError> {
         let handle = self
             .agents
@@ -1106,7 +1106,7 @@ impl SubAgentManager {
         handle
             .secret_tx
             .try_send(None)
-            .map_err(|e| SubAgentError::Other(anyhow::anyhow!("{e}")))
+            .map_err(|e| SubAgentError::Channel(e.to_string()))
     }
 
     /// Try to receive a pending secret request from a sub-agent (non-blocking).
@@ -1149,8 +1149,7 @@ impl SubAgentManager {
         handle.grants.revoke_all();
 
         let result = if let Some(jh) = handle.join_handle.take() {
-            let r = jh.await.map_err(|e| SubAgentError::Spawn(e.to_string()))?;
-            r.map_err(|e| SubAgentError::Spawn(e.to_string()))
+            jh.await.map_err(|e| SubAgentError::Spawn(e.to_string()))?
         } else {
             Ok(String::new())
         };
@@ -1353,7 +1352,7 @@ impl SubAgentManager {
         };
 
         let new_task_id_for_loop = new_task_id.clone();
-        let join_handle: JoinHandle<anyhow::Result<String>> =
+        let join_handle: JoinHandle<Result<String, SubAgentError>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
                 provider,
                 executor,
@@ -1528,7 +1527,7 @@ impl SubAgentManager {
             .expect("just spawned agent must have a join handle");
 
         let handle_id_clone = handle_id.clone();
-        let wrapped_join: tokio::task::JoinHandle<anyhow::Result<String>> =
+        let wrapped_join: tokio::task::JoinHandle<Result<String, SubAgentError>> =
             tokio::spawn(async move {
                 let result = original_join.await;
 
@@ -1540,18 +1539,21 @@ impl SubAgentManager {
                         },
                         Ok(output.clone()),
                     ),
-                    Ok(Err(e)) => (
-                        TaskOutcome::Failed {
-                            error: e.to_string(),
-                        },
-                        Err(anyhow::anyhow!("{e}")),
-                    ),
+                    Ok(Err(e)) => {
+                        let msg = e.to_string();
+                        (
+                            TaskOutcome::Failed { error: msg.clone() },
+                            Err(SubAgentError::Spawn(msg)),
+                        )
+                    }
                     Err(join_err) => (
                         TaskOutcome::Failed {
                             // Use Debug format to preserve panic backtrace info (S3).
                             error: format!("task panicked: {join_err:?}"),
                         },
-                        Err(anyhow::anyhow!("task panicked: {join_err:?}")),
+                        Err(SubAgentError::TaskPanic(format!(
+                            "task panicked: {join_err:?}"
+                        ))),
                     ),
                 };
 
@@ -1570,10 +1572,7 @@ impl SubAgentManager {
                     );
                 }
 
-                match output {
-                    Ok(s) => Ok(s),
-                    Err(e) => Err(e),
-                }
+                output
             });
 
         handle.join_handle = Some(wrapped_join);
