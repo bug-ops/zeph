@@ -352,7 +352,11 @@ impl Message {
                     compacted_at,
                 } => {
                     if compacted_at.is_some() {
-                        let _ = write!(out, "[tool output: {tool_name}] (pruned)");
+                        if body.is_empty() {
+                            let _ = write!(out, "[tool output: {tool_name}] (pruned)");
+                        } else {
+                            let _ = write!(out, "[tool output: {tool_name}] {body}");
+                        }
                     } else {
                         let _ = write!(out, "[tool output: {tool_name}]\n```\n{body}\n```");
                     }
@@ -857,7 +861,8 @@ mod tests {
     }
 
     #[test]
-    fn flatten_skips_compacted_tool_output() {
+    fn flatten_skips_compacted_tool_output_empty_body() {
+        // When compacted_at is set and body is empty, renders "(pruned)".
         let msg = Message::from_parts(
             Role::User,
             vec![
@@ -866,7 +871,7 @@ mod tests {
                 },
                 MessagePart::ToolOutput {
                     tool_name: "bash".into(),
-                    body: "big output".into(),
+                    body: String::new(),
                     compacted_at: Some(1234),
                 },
                 MessagePart::Text {
@@ -875,9 +880,24 @@ mod tests {
             ],
         );
         assert!(msg.content.contains("(pruned)"));
-        assert!(!msg.content.contains("big output"));
         assert!(msg.content.contains("prefix "));
         assert!(msg.content.contains(" suffix"));
+    }
+
+    #[test]
+    fn flatten_compacted_tool_output_with_reference_renders_body() {
+        // When compacted_at is set and body contains a reference notice, renders the body.
+        let ref_notice = "[tool output pruned; full content at /tmp/overflow/big.txt]";
+        let msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body: ref_notice.into(),
+                compacted_at: Some(1234),
+            }],
+        );
+        assert!(msg.content.contains(ref_notice));
+        assert!(!msg.content.contains("(pruned)"));
     }
 
     #[test]
@@ -894,10 +914,12 @@ mod tests {
 
         if let MessagePart::ToolOutput {
             ref mut compacted_at,
+            ref mut body,
             ..
         } = msg.parts[0]
         {
             *compacted_at = Some(999);
+            body.clear(); // simulate pruning: body cleared, no overflow notice
         }
         msg.rebuild_content();
 

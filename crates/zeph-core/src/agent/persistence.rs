@@ -105,7 +105,63 @@ fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
 /// Text parts are preserved; messages with no remaining content are removed entirely.
 ///
 /// Returns the number of messages removed (stripped-to-empty messages count as 1 each).
-#[allow(clippy::too_many_lines)]
+/// Collect `tool_use` IDs from `msg` that have no matching `ToolResult` in `next_msg`.
+fn orphaned_tool_use_ids(msg: &Message, next_msg: Option<&Message>) -> HashSet<String> {
+    let matched: HashSet<String> = next_msg
+        .filter(|n| n.role == Role::User)
+        .map(|n| {
+            msg.parts
+                .iter()
+                .filter_map(|p| if let MessagePart::ToolUse { id, .. } = p { Some(id.clone()) } else { None })
+                .filter(|uid| n.parts.iter().any(|np| matches!(np, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == uid)))
+                .collect()
+        })
+        .unwrap_or_default();
+    msg.parts
+        .iter()
+        .filter_map(|p| {
+            if let MessagePart::ToolUse { id, .. } = p
+                && !matched.contains(id)
+            {
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Collect `tool_result` IDs from `msg` that have no matching `ToolUse` in `prev_msg`.
+fn orphaned_tool_result_ids(msg: &Message, prev_msg: Option<&Message>) -> HashSet<String> {
+    let avail: HashSet<&str> = prev_msg
+        .filter(|p| p.role == Role::Assistant)
+        .map(|p| {
+            p.parts
+                .iter()
+                .filter_map(|part| {
+                    if let MessagePart::ToolUse { id, .. } = part {
+                        Some(id.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    msg.parts
+        .iter()
+        .filter_map(|p| {
+            if let MessagePart::ToolResult { tool_use_id, .. } = p
+                && !avail.contains(tool_use_id.as_str())
+            {
+                Some(tool_use_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
     let mut removed = 0;
     let mut i = 0;
@@ -119,64 +175,22 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
                 .iter()
                 .any(|p| matches!(p, MessagePart::ToolUse { .. }))
         {
-            // Build the set of tool_use IDs that have a matching ToolResult in the next message.
-            let matched_ids: HashSet<String> = messages
-                .get(i + 1)
-                .filter(|next| next.role == Role::User)
-                .map(|next| {
-                    messages[i]
-                        .parts
-                        .iter()
-                        .filter_map(|p| {
-                            if let MessagePart::ToolUse { id, .. } = p {
-                                Some(id.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .filter(|uid| {
-                            next.parts.iter().any(|np| {
-                                matches!(np, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == uid)
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            // Collect orphaned IDs (have no matching ToolResult) directly into a HashSet.
-            let orphaned_ids: HashSet<String> = messages[i]
-                .parts
-                .iter()
-                .filter_map(|p| {
-                    if let MessagePart::ToolUse { id, .. } = p
-                        && !matched_ids.contains(id)
-                    {
-                        return Some(id.clone());
-                    }
-                    None
-                })
-                .collect();
-
+            let orphaned_ids = orphaned_tool_use_ids(&messages[i], messages.get(i + 1));
             if !orphaned_ids.is_empty() {
                 tracing::warn!(
                     tool_ids = ?orphaned_ids,
                     index = i,
                     "stripping orphaned mid-history tool_use parts from assistant message"
                 );
-                messages[i].parts.retain(|p| {
-                    !matches!(
-                        p,
-                        MessagePart::ToolUse { id, .. } if orphaned_ids.contains(id)
-                    )
-                });
-
+                messages[i].parts.retain(
+                    |p| !matches!(p, MessagePart::ToolUse { id, .. } if orphaned_ids.contains(id)),
+                );
                 let is_empty =
                     messages[i].content.trim().is_empty() && messages[i].parts.is_empty();
                 if is_empty {
                     messages.remove(i);
                     removed += 1;
-                    // Do not advance i — the next message is now at position i.
-                    continue;
+                    continue; // Do not advance i — the next message is now at position i.
                 }
             }
         }
@@ -188,39 +202,10 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
                 .iter()
                 .any(|p| matches!(p, MessagePart::ToolResult { .. }))
         {
-            // Collect the tool_use IDs available from the preceding assistant message (if any).
-            let preceding_tool_use_ids: HashSet<&str> =
-                if i > 0 && messages[i - 1].role == Role::Assistant {
-                    messages[i - 1]
-                        .parts
-                        .iter()
-                        .filter_map(|p| {
-                            if let MessagePart::ToolUse { id, .. } = p {
-                                Some(id.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                } else {
-                    HashSet::new()
-                };
-
-            // Collect orphaned tool_use IDs directly into a HashSet (owned Strings to avoid
-            // borrow conflict with the retain() call that mutably borrows messages[i]).
-            let orphaned_ids: HashSet<String> = messages[i]
-                .parts
-                .iter()
-                .filter_map(|p| {
-                    if let MessagePart::ToolResult { tool_use_id, .. } = p
-                        && !preceding_tool_use_ids.contains(tool_use_id.as_str())
-                    {
-                        return Some(tool_use_id.clone());
-                    }
-                    None
-                })
-                .collect();
-
+            let orphaned_ids = orphaned_tool_result_ids(
+                &messages[i],
+                if i > 0 { messages.get(i - 1) } else { None },
+            );
             if !orphaned_ids.is_empty() {
                 tracing::warn!(
                     tool_use_ids = ?orphaned_ids,
@@ -228,11 +213,7 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
                     "stripping orphaned mid-history tool_result parts from user message"
                 );
                 messages[i].parts.retain(|p| {
-                    !matches!(
-                        p,
-                        MessagePart::ToolResult { tool_use_id, .. }
-                            if orphaned_ids.contains(tool_use_id.as_str())
-                    )
+                    !matches!(p, MessagePart::ToolResult { tool_use_id, .. } if orphaned_ids.contains(tool_use_id.as_str()))
                 });
 
                 let is_empty =

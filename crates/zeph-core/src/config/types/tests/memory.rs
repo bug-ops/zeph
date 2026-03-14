@@ -110,6 +110,7 @@ fn graph_config_defaults() {
     assert_eq!(cfg.community_summary_max_prompt_bytes, 8192);
     assert_eq!(cfg.community_summary_concurrency, 4);
     assert_eq!(cfg.lpa_edge_chunk_size, 10_000);
+    assert_eq!(cfg.edge_history_limit, 100);
 }
 
 #[test]

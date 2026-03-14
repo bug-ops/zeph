@@ -8,12 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- feat(memory,core): migrate tool overflow storage from filesystem to SQLite (`tool_overflow` table, migration 030); `maybe_summarize_tool_output` now writes to `SqliteStore.save_overflow` instead of disk files; overflow references use opaque `overflow:<uuid>` format (eliminates absolute-path leakage SEC-JIT-03); new `read_overflow` native tool allows LLM to retrieve full content; age-based cleanup via `SqliteStore.cleanup_overflow` on startup; `ON DELETE CASCADE` automatically removes overflow rows when conversation is deleted (closes #1774)
+- feat(memory,core): migrate tool overflow storage from filesystem to SQLite (`tool_overflow` table, migration 031); `maybe_summarize_tool_output` now writes to `SqliteStore.save_overflow` instead of disk files; overflow references use opaque `overflow:<uuid>` format (eliminates absolute-path leakage SEC-JIT-03); new `read_overflow` native tool allows LLM to retrieve full content; age-based cleanup via `SqliteStore.cleanup_overflow` on startup; `ON DELETE CASCADE` automatically removes overflow rows when conversation is deleted (closes #1774)
+- feat(memory): temporal versioning on graph edges (closes #1341) — `edges_at_timestamp()`, `bfs_at_timestamp()`, `edge_history()` on `GraphStore`; optional `at_timestamp` parameter on `graph_recall()` and `SemanticMemory::recall_graph()` for historical graph queries; `valid_from` field on `GraphFact` for recency-aware scoring; `temporal_decay_rate` config knob in `[memory.graph]` (default `0.0`, existing behavior unchanged); migration 030 adds two partial indexes (`idx_graph_edges_src_temporal`, `idx_graph_edges_tgt_temporal`) to accelerate temporal range queries on expired edges
+
 - test(core): add COV-04 unit test for channel-close (`Ok(None)`) → `GraphStatus::Failed` transition in `run_scheduler_loop`; fix implementation to return `Failed` instead of `Canceled` on channel close — channel close is an error condition, not a user-initiated cancel (closes #1614)
 - feat(gemini): SSE streaming now handles `functionCall` parts — `StreamChunk::ToolUse` is emitted for tool calls received during Gemini streaming (resolves #1659)
 - feat(llm): `cost_tiers` config field for `[llm.router.cascade]` — explicit cheapest-first provider ordering independent of chain order; providers are sorted once at construction time (zero per-request cost); unknown names are silently ignored; empty list is equivalent to `None` (#1724)
 - feat(cost): add gpt-5 and gpt-5-mini to default pricing table (closes #1744)
 - feat(init): add `hard_compaction_threshold` prompt to `--init` wizard (#1719); prompts for both soft and hard compaction thresholds in sequence with cross-field validation (hard > soft) and `is_finite()` guards
+- feat(core): when pruning a tool output that has an overflow file, emit `[tool output pruned; full content at {path}]` instead of clearing the body, preserving the reference across hard compaction, `prune_tool_outputs`, and `prune_stale_tool_outputs` (#1740)
 
 ### Changed
 
@@ -45,8 +48,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **MCP tool-poisoning injection defense** (closes #1691): `zeph-mcp` now sanitizes all tool definition text fields at registration time before they reach the LLM context. New `sanitize` module applies 17 injection-detection regexes (covering system-prompt override, role injection, jailbreak phrases, data exfiltration, URL execution, and XML/HTML tag escape) plus a Unicode Cf-category strip pass to `tool.description`, `tool.name`, `tool.server_id`, and all string values in `input_schema` (recursively, depth-capped at 10). Fields triggering a pattern are replaced wholesale with `"[sanitized]"` and a structured `WARN` log is emitted. Descriptions are capped at 1024 bytes. Tool registration is never blocked — only text is cleaned. Sanitization runs in both `connect_all()` and `add_server()` paths immediately after `list_tools()` returns.
 - **MCP `tools/list_changed` refresh path now sanitizes tool definitions** (closes #1746): MCP servers can push updated tool lists at runtime via the `tools/list_changed` notification. This refresh path previously bypassed `sanitize_tools()`, allowing a malicious server to inject prompt payloads after initial connection. `ToolListChangedHandler` now intercepts notifications and applies the same sanitization pipeline (rate-limited to once per 5 s per server, capped at 100 tools before sanitization) before storing or broadcasting the refreshed list. The agent polls a `watch::Receiver<Vec<McpTool>>` at the start of each turn to pick up updates atomically.
 
+### Refactor
+
+- refactor: eliminate all `#[allow(clippy::too_many_lines)]` suppressions workspace-wide (#1734); extract helper functions from `loopback_event_to_updates`, `prompt`, `new_session`, `load_session`, `fork_session`, `resume_session`, `set_session_config_option` in `zeph-acp`, and `push_event` in `zeph-tui`; zero behavior change
+
 ### Fixed
 
+- fix(memory): add `edge_history_limit` config field to `[memory.graph]` (default 100); `GraphStore::edge_history()` already accepted a `limit` parameter but callers had no config-driven default — future TUI/API call sites must read `config.memory.graph.edge_history_limit` instead of hardcoding a value (closes #1778)
 - fix(llm): `cascade_chat` and `cascade_chat_stream` no longer store an empty-string provider response as `best_seen`; a provider returning `""` is now skipped for best-seen tracking so the caller receives an explicit error instead of a silent empty response on all-fail fallback (#1754)
 - fix(tui): skip ACP stdio/both autostart when `--tui` is active; stdio and TUI are mutually exclusive (both own stdin/stdout); HTTP transport is still allowed alongside TUI when `acp-http` feature is enabled (#1729)
 - fix(mcp): suppress MCP child process stderr in TUI mode to prevent ratatui display corruption; `McpManager` gains `with_suppress_stderr` builder method (#1729)

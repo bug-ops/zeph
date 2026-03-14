@@ -435,6 +435,12 @@ impl SemanticMemory {
     ///
     /// Returns an empty `Vec` if no `graph_store` is configured.
     ///
+    /// # Parameters
+    ///
+    /// - `at_timestamp`: when `Some`, only edges valid at that `SQLite` datetime string are returned.
+    ///   When `None`, only currently active edges are used.
+    /// - `temporal_decay_rate`: non-negative decay rate (1/day). `0.0` preserves original ordering.
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying graph query fails.
@@ -443,6 +449,8 @@ impl SemanticMemory {
         query: &str,
         limit: usize,
         max_hops: u32,
+        at_timestamp: Option<&str>,
+        temporal_decay_rate: f64,
     ) -> Result<Vec<crate::graph::types::GraphFact>, MemoryError> {
         let Some(store) = &self.graph_store else {
             return Ok(Vec::new());
@@ -462,6 +470,8 @@ impl SemanticMemory {
             query,
             limit,
             max_hops,
+            at_timestamp,
+            temporal_decay_rate,
         )
         .await?;
 

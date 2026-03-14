@@ -933,6 +933,140 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prune_tool_outputs_preserves_overflow_reference() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, _rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(1000, 0.20, 0.75, 4, 0)
+            .with_metrics(tx);
+
+        let path = "/tmp/overflow/big.txt";
+        let body = format!(
+            "truncated output\n[full output saved to {path} \u{2014} 99999 bytes, use read tool to access]"
+        );
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body,
+                compacted_at: None,
+            }],
+        ));
+
+        let freed = agent.prune_tool_outputs(10);
+        assert!(freed > 0);
+
+        if let MessagePart::ToolOutput {
+            body, compacted_at, ..
+        } = &agent.messages[1].parts[0]
+        {
+            assert!(compacted_at.is_some());
+            assert_eq!(
+                body,
+                &format!("[tool output pruned; full content at {path}]")
+            );
+        } else {
+            panic!("expected ToolOutput");
+        }
+    }
+
+    #[test]
+    fn prune_stale_tool_outputs_preserves_overflow_reference_in_tool_output() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let path = "/tmp/overflow/big.txt";
+        let body = format!(
+            "truncated output\n[full output saved to {path} \u{2014} 99999 bytes, use read tool to access]"
+        );
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "bash".into(),
+                body,
+                compacted_at: None,
+            }],
+        ));
+        for _ in 0..4 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: "recent".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        let freed = agent.prune_stale_tool_outputs(4);
+        assert!(freed > 0);
+
+        if let MessagePart::ToolOutput {
+            body, compacted_at, ..
+        } = &agent.messages[1].parts[0]
+        {
+            assert!(compacted_at.is_some());
+            assert_eq!(
+                body,
+                &format!("[tool output pruned; full content at {path}]")
+            );
+        } else {
+            panic!("expected ToolOutput");
+        }
+    }
+
+    #[test]
+    fn prune_stale_tool_outputs_preserves_overflow_reference_in_tool_result() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let path = "/tmp/overflow/big.txt";
+        // Content large enough to exceed the 20-token threshold
+        let content = format!(
+            "{}\n[full output saved to {path} \u{2014} 99999 bytes, use read tool to access]",
+            "x".repeat(200)
+        );
+        agent.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content,
+                is_error: false,
+            }],
+        ));
+        for _ in 0..4 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: "recent".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        let freed = agent.prune_stale_tool_outputs(4);
+        assert!(freed > 0);
+
+        if let MessagePart::ToolResult { content, .. } = &agent.messages[1].parts[0] {
+            assert_eq!(
+                content,
+                &format!("[tool output pruned; full content at {path}]")
+            );
+        } else {
+            panic!("expected ToolResult");
+        }
+    }
+
     #[tokio::test]
     async fn test_tier2_after_insufficient_prune() {
         let provider = mock_provider(vec!["summary".to_string()]);

@@ -460,7 +460,6 @@ impl App {
         self.agent_event_rx.try_recv()
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
@@ -531,42 +530,7 @@ impl App {
                 kept_lines,
                 ..
             } => {
-                debug!(
-                    %tool_name,
-                    has_diff = diff.is_some(),
-                    has_filter_stats = filter_stats.is_some(),
-                    output_len = output.len(),
-                    "TUI ToolOutput event received"
-                );
-                if let Some(pos) = self
-                    .messages
-                    .iter()
-                    .rposition(|m| m.role == MessageRole::Tool && m.streaming)
-                {
-                    // Shell streaming path: finalize existing streaming tool message.
-                    debug!("attaching diff to existing streaming Tool message");
-                    self.messages[pos].streaming = false;
-                    self.messages[pos].diff_data = diff;
-                    self.messages[pos].filter_stats = filter_stats;
-                    self.messages[pos].kept_lines = kept_lines;
-                    self.render_cache.invalidate(pos);
-                } else if diff.is_some() || filter_stats.is_some() || kept_lines.is_some() {
-                    // Native tool_use path: no prior ToolStart, create the message now.
-                    debug!("creating new Tool message with diff (native path)");
-                    let mut msg = ChatMessage::new(MessageRole::Tool, output).with_tool(tool_name);
-                    msg.diff_data = diff;
-                    msg.filter_stats = filter_stats;
-                    msg.kept_lines = kept_lines;
-                    self.messages.push(msg);
-                } else if let Some(msg) = self
-                    .messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.role == MessageRole::Tool)
-                {
-                    msg.filter_stats = filter_stats;
-                }
-                self.auto_scroll();
+                self.handle_tool_output_event(tool_name, output, diff, filter_stats, kept_lines);
             }
             AgentEvent::ConfirmRequest {
                 prompt,
@@ -581,16 +545,7 @@ impl App {
                 self.queued_count = count;
                 self.pending_count = count;
             }
-            AgentEvent::DiffReady(diff) => {
-                if let Some(msg) = self
-                    .messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.role == MessageRole::Tool)
-                {
-                    msg.diff_data = Some(diff);
-                }
-            }
+            AgentEvent::DiffReady(diff) => self.handle_diff_ready(diff),
             AgentEvent::CommandResult { output, .. } => {
                 self.command_palette = None;
                 self.messages
@@ -598,6 +553,63 @@ impl App {
                 self.auto_scroll();
             }
         }
+    }
+
+    fn handle_diff_ready(&mut self, diff: zeph_core::DiffData) {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+        {
+            msg.diff_data = Some(diff);
+        }
+    }
+
+    fn handle_tool_output_event(
+        &mut self,
+        tool_name: String,
+        output: String,
+        diff: Option<zeph_core::DiffData>,
+        filter_stats: Option<String>,
+        kept_lines: Option<Vec<usize>>,
+    ) {
+        debug!(
+            %tool_name,
+            has_diff = diff.is_some(),
+            has_filter_stats = filter_stats.is_some(),
+            output_len = output.len(),
+            "TUI ToolOutput event received"
+        );
+        if let Some(pos) = self
+            .messages
+            .iter()
+            .rposition(|m| m.role == MessageRole::Tool && m.streaming)
+        {
+            // Shell streaming path: finalize existing streaming tool message.
+            debug!("attaching diff to existing streaming Tool message");
+            self.messages[pos].streaming = false;
+            self.messages[pos].diff_data = diff;
+            self.messages[pos].filter_stats = filter_stats;
+            self.messages[pos].kept_lines = kept_lines;
+            self.render_cache.invalidate(pos);
+        } else if diff.is_some() || filter_stats.is_some() || kept_lines.is_some() {
+            // Native tool_use path: no prior ToolStart, create the message now.
+            debug!("creating new Tool message with diff (native path)");
+            let mut msg = ChatMessage::new(MessageRole::Tool, output).with_tool(tool_name);
+            msg.diff_data = diff;
+            msg.filter_stats = filter_stats;
+            msg.kept_lines = kept_lines;
+            self.messages.push(msg);
+        } else if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+        {
+            msg.filter_stats = filter_stats;
+        }
+        self.auto_scroll();
     }
 
     #[must_use]
@@ -753,7 +765,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(entry) = palette.selected_entry() {
-                    let cmd = entry.command.clone();
+                    let cmd = entry.command;
                     self.execute_command(cmd);
                 }
                 self.command_palette = None;
@@ -774,90 +786,13 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute_command(&mut self, cmd: TuiCommand) {
         match cmd {
-            TuiCommand::SkillList => {
-                let skills = if self.metrics.active_skills.is_empty() {
-                    "No skills loaded.".to_owned()
-                } else {
-                    let lines: Vec<String> = self
-                        .metrics
-                        .active_skills
-                        .iter()
-                        .map(|s| format!("  - {s}"))
-                        .collect();
-                    format!(
-                        "Loaded skills ({}):\n{}",
-                        self.metrics.active_skills.len(),
-                        lines.join("\n")
-                    )
-                };
-                self.push_system_message(skills);
-            }
-            TuiCommand::McpList => {
-                let tools = if self.metrics.active_mcp_tools.is_empty() {
-                    "No MCP tools available.".to_owned()
-                } else {
-                    let lines: Vec<String> = self
-                        .metrics
-                        .active_mcp_tools
-                        .iter()
-                        .map(|t| format!("  - {t}"))
-                        .collect();
-                    format!(
-                        "MCP servers: {}  Tools ({}):\n{}",
-                        self.metrics.mcp_server_count,
-                        self.metrics.active_mcp_tools.len(),
-                        lines.join("\n")
-                    )
-                };
-                self.push_system_message(tools);
-            }
-            TuiCommand::MemoryStats => {
-                let vector_status = if self.metrics.qdrant_available {
-                    format!("{} (connected)", self.metrics.vector_backend)
-                } else if !self.metrics.vector_backend.is_empty() {
-                    format!("{} (offline)", self.metrics.vector_backend)
-                } else {
-                    "none".into()
-                };
-                let msg = format!(
-                    "Memory stats:\n  SQLite messages: {}\n  Vector store: {vector_status}\n  Embeddings generated: {}",
-                    self.metrics.sqlite_message_count, self.metrics.embeddings_generated,
-                );
-                self.push_system_message(msg);
-            }
-            TuiCommand::ViewCost => {
-                let msg = format!(
-                    "Cost:\n  Spent: ${:.4}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
-                    self.metrics.cost_spent_cents / 100.0,
-                    self.metrics.prompt_tokens,
-                    self.metrics.completion_tokens,
-                    self.metrics.total_tokens,
-                    self.metrics.cache_read_tokens,
-                    self.metrics.cache_creation_tokens,
-                );
-                self.push_system_message(msg);
-            }
-            TuiCommand::ViewTools => {
-                let tools = if self.metrics.active_mcp_tools.is_empty() {
-                    "No tools available.".to_owned()
-                } else {
-                    let lines: Vec<String> = self
-                        .metrics
-                        .active_mcp_tools
-                        .iter()
-                        .map(|t| format!("  - {t}"))
-                        .collect();
-                    format!(
-                        "Available tools ({}):\n{}",
-                        self.metrics.active_mcp_tools.len(),
-                        lines.join("\n")
-                    )
-                };
-                self.push_system_message(tools);
-            }
+            TuiCommand::SkillList => self.push_system_message(self.format_skill_list()),
+            TuiCommand::McpList => self.push_system_message(self.format_mcp_list()),
+            TuiCommand::MemoryStats => self.push_system_message(self.format_memory_stats()),
+            TuiCommand::ViewCost => self.push_system_message(self.format_cost_stats()),
+            TuiCommand::ViewTools => self.push_system_message(self.format_tool_list()),
             TuiCommand::ViewConfig | TuiCommand::ViewAutonomy => {
                 if let Some(ref tx) = self.command_tx {
                     // try_send: capacity 16, user-triggered one at a time — overflow not possible in practice
@@ -916,102 +851,23 @@ impl App {
             TuiCommand::AgentStatus => {
                 let _ = self.user_input_tx.try_send("/agent status".to_owned());
             }
-            TuiCommand::AgentCancelPrompt => {
-                // Pre-fill the input buffer so the user can complete the command.
-                self.input.clear();
-                self.input.push_str("/agent cancel ");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::AgentSpawnPrompt => {
-                // Pre-fill the input buffer so the user can complete the command.
-                self.input.clear();
-                self.input.push_str("/agent spawn ");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::AgentsShow => {
-                self.input.clear();
-                self.input.push_str("/agents show ");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::AgentsCreate => {
-                self.input.clear();
-                self.input.push_str("/agents create ");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::AgentsEdit => {
-                self.input.clear();
-                self.input.push_str("/agents edit ");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::AgentsDelete => {
-                self.input.clear();
-                self.input.push_str("/agents delete ");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::SchedulerList => {
-                let msg = if self.metrics.scheduled_tasks.is_empty() {
-                    "No scheduled tasks.".to_owned()
-                } else {
-                    let lines: Vec<String> = self
-                        .metrics
-                        .scheduled_tasks
-                        .iter()
-                        .map(|t| {
-                            let next = if t[3].is_empty() {
-                                "—".to_owned()
-                            } else {
-                                t[3].clone()
-                            };
-                            format!("  {:30}  {:15}  {:8}  {}", t[0], t[1], t[2], next)
-                        })
-                        .collect();
-                    format!(
-                        "Scheduled tasks ({}):\n  {:30}  {:15}  {:8}  {}\n{}",
-                        self.metrics.scheduled_tasks.len(),
-                        "NAME",
-                        "KIND",
-                        "MODE",
-                        "NEXT RUN",
-                        lines.join("\n")
-                    )
-                };
-                self.push_system_message(msg);
-            }
-            TuiCommand::RouterStats => {
-                let msg = if self.metrics.router_thompson_stats.is_empty() {
-                    "Router: no Thompson state available.\n\
-                     (Thompson strategy not active, or no LLM calls made yet)"
-                        .to_owned()
-                } else {
-                    let total_mean: f64 = self
-                        .metrics
-                        .router_thompson_stats
-                        .iter()
-                        .map(|(_, a, b)| a / (a + b))
-                        .sum();
-                    let lines: Vec<String> = self
-                        .metrics
-                        .router_thompson_stats
-                        .iter()
-                        .map(|(name, alpha, beta)| {
-                            let mean = alpha / (alpha + beta);
-                            let pct = if total_mean > 0.0 {
-                                mean / total_mean * 100.0
-                            } else {
-                                0.0
-                            };
-                            format!("  {name:<28}  α={alpha:.2}  β={beta:.2}  Mean={pct:.1}%")
-                        })
-                        .collect();
-                    let n = self.metrics.router_thompson_stats.len();
-                    let joined = lines.join("\n");
-                    format!("Thompson Sampling state ({n} providers):\n{joined}")
-                };
-                self.push_system_message(msg);
-            }
+            TuiCommand::AgentCancelPrompt => self.prefill_input("/agent cancel "),
+            TuiCommand::AgentSpawnPrompt => self.prefill_input("/agent spawn "),
+            TuiCommand::AgentsShow => self.prefill_input("/agents show "),
+            TuiCommand::AgentsCreate => self.prefill_input("/agents create "),
+            TuiCommand::AgentsEdit => self.prefill_input("/agents edit "),
+            TuiCommand::AgentsDelete => self.prefill_input("/agents delete "),
+            TuiCommand::SchedulerList => self.push_system_message(self.format_scheduler_list()),
+            TuiCommand::RouterStats => self.push_system_message(self.format_router_stats()),
             TuiCommand::SecurityEvents => {
                 self.push_system_message(format_security_report(&self.metrics));
             }
+            cmd => self.execute_plan_graph_command(cmd),
+        }
+    }
+
+    fn execute_plan_graph_command(&mut self, cmd: TuiCommand) {
+        match cmd {
             TuiCommand::PlanStatus => {
                 let _ = self.user_input_tx.try_send("/plan status".to_owned());
             }
@@ -1039,21 +895,9 @@ impl App {
                 self.push_system_message("Loading graph communities...".to_owned());
                 let _ = self.user_input_tx.try_send("/graph communities".to_owned());
             }
-            TuiCommand::GraphFactsPrompt => {
-                self.input.clear();
-                self.input.push_str("/graph facts ");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::GraphBackfillPrompt => {
-                self.input.clear();
-                self.input.push_str("/graph backfill");
-                self.cursor_position = self.input.len();
-            }
-            TuiCommand::ExperimentStart => {
-                self.input.clear();
-                self.input.push_str("/experiment start ");
-                self.cursor_position = self.input.len();
-            }
+            TuiCommand::GraphFactsPrompt => self.prefill_input("/graph facts "),
+            TuiCommand::GraphBackfillPrompt => self.prefill_input("/graph backfill"),
+            TuiCommand::ExperimentStart => self.prefill_input("/experiment start "),
             TuiCommand::ExperimentStop => {
                 let _ = self.user_input_tx.try_send("/experiment stop".to_owned());
             }
@@ -1084,7 +928,153 @@ impl App {
             TuiCommand::ServerCompactionStatus => {
                 let _ = self.user_input_tx.try_send("/server-compaction".to_owned());
             }
+            _ => {}
         }
+    }
+
+    fn prefill_input(&mut self, prefix: &str) {
+        self.input.clear();
+        self.input.push_str(prefix);
+        self.cursor_position = self.input.len();
+    }
+
+    fn format_skill_list(&self) -> String {
+        if self.metrics.active_skills.is_empty() {
+            return "No skills loaded.".to_owned();
+        }
+        let lines: Vec<String> = self
+            .metrics
+            .active_skills
+            .iter()
+            .map(|s| format!("  - {s}"))
+            .collect();
+        format!(
+            "Loaded skills ({}):\n{}",
+            self.metrics.active_skills.len(),
+            lines.join("\n")
+        )
+    }
+
+    fn format_mcp_list(&self) -> String {
+        if self.metrics.active_mcp_tools.is_empty() {
+            return "No MCP tools available.".to_owned();
+        }
+        let lines: Vec<String> = self
+            .metrics
+            .active_mcp_tools
+            .iter()
+            .map(|t| format!("  - {t}"))
+            .collect();
+        format!(
+            "MCP servers: {}  Tools ({}):\n{}",
+            self.metrics.mcp_server_count,
+            self.metrics.active_mcp_tools.len(),
+            lines.join("\n")
+        )
+    }
+
+    fn format_memory_stats(&self) -> String {
+        let vector_status = if self.metrics.qdrant_available {
+            format!("{} (connected)", self.metrics.vector_backend)
+        } else if !self.metrics.vector_backend.is_empty() {
+            format!("{} (offline)", self.metrics.vector_backend)
+        } else {
+            "none".into()
+        };
+        format!(
+            "Memory stats:\n  SQLite messages: {}\n  Vector store: {vector_status}\n  Embeddings generated: {}",
+            self.metrics.sqlite_message_count, self.metrics.embeddings_generated,
+        )
+    }
+
+    fn format_cost_stats(&self) -> String {
+        format!(
+            "Cost:\n  Spent: ${:.4}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
+            self.metrics.cost_spent_cents / 100.0,
+            self.metrics.prompt_tokens,
+            self.metrics.completion_tokens,
+            self.metrics.total_tokens,
+            self.metrics.cache_read_tokens,
+            self.metrics.cache_creation_tokens,
+        )
+    }
+
+    fn format_tool_list(&self) -> String {
+        if self.metrics.active_mcp_tools.is_empty() {
+            return "No tools available.".to_owned();
+        }
+        let lines: Vec<String> = self
+            .metrics
+            .active_mcp_tools
+            .iter()
+            .map(|t| format!("  - {t}"))
+            .collect();
+        format!(
+            "Available tools ({}):\n{}",
+            self.metrics.active_mcp_tools.len(),
+            lines.join("\n")
+        )
+    }
+
+    fn format_scheduler_list(&self) -> String {
+        if self.metrics.scheduled_tasks.is_empty() {
+            return "No scheduled tasks.".to_owned();
+        }
+        let lines: Vec<String> = self
+            .metrics
+            .scheduled_tasks
+            .iter()
+            .map(|t| {
+                let next = if t[3].is_empty() {
+                    "—".to_owned()
+                } else {
+                    t[3].clone()
+                };
+                format!("  {:30}  {:15}  {:8}  {}", t[0], t[1], t[2], next)
+            })
+            .collect();
+        format!(
+            "Scheduled tasks ({}):\n  {:30}  {:15}  {:8}  {}\n{}",
+            self.metrics.scheduled_tasks.len(),
+            "NAME",
+            "KIND",
+            "MODE",
+            "NEXT RUN",
+            lines.join("\n")
+        )
+    }
+
+    fn format_router_stats(&self) -> String {
+        if self.metrics.router_thompson_stats.is_empty() {
+            return "Router: no Thompson state available.\n\
+                (Thompson strategy not active, or no LLM calls made yet)"
+                .to_owned();
+        }
+        let total_mean: f64 = self
+            .metrics
+            .router_thompson_stats
+            .iter()
+            .map(|(_, a, b)| a / (a + b))
+            .sum();
+        let lines: Vec<String> = self
+            .metrics
+            .router_thompson_stats
+            .iter()
+            .map(|(name, alpha, beta)| {
+                let mean = alpha / (alpha + beta);
+                let pct = if total_mean > 0.0 {
+                    mean / total_mean * 100.0
+                } else {
+                    0.0
+                };
+                format!("  {name:<28}  α={alpha:.2}  β={beta:.2}  Mean={pct:.1}%")
+            })
+            .collect();
+        let n = self.metrics.router_thompson_stats.len();
+        format!(
+            "Thompson Sampling state ({n} providers):\n{}",
+            lines.join("\n")
+        )
     }
 
     fn push_system_message(&mut self, content: String) {
@@ -1209,7 +1199,6 @@ impl App {
         pos
     }
 
-    #[allow(clippy::too_many_lines)]
     fn handle_insert_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -1242,50 +1231,7 @@ impl App {
                 }
             }
             KeyCode::Up => {
-                if self.input.is_empty() && self.pending_count > 0 && self.history_index.is_none() {
-                    if let Some(last) = self.input_history.pop() {
-                        self.input = last;
-                        self.cursor_position = self.char_count();
-                        self.pending_count -= 1;
-                        self.queued_count = self.queued_count.saturating_sub(1);
-                        self.editing_queued = true;
-                        if let Some(pos) = self
-                            .messages
-                            .iter()
-                            .rposition(|m| m.role == MessageRole::User)
-                        {
-                            self.messages.remove(pos);
-                        }
-                        let _ = self.user_input_tx.try_send("/drop-last-queued".to_owned());
-                    }
-                    return;
-                }
-                match self.history_index {
-                    None => {
-                        if self.input_history.is_empty() {
-                            return;
-                        }
-                        self.draft_input = self.input.clone();
-                        let prefix = &self.draft_input;
-                        let found = self
-                            .input_history
-                            .iter()
-                            .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
-                        let Some(idx) = found else { return };
-                        self.history_index = Some(idx);
-                        self.input.clone_from(&self.input_history[idx]);
-                    }
-                    Some(i) => {
-                        let prefix = &self.draft_input;
-                        let found = self.input_history[..i]
-                            .iter()
-                            .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
-                        let Some(idx) = found else { return };
-                        self.history_index = Some(idx);
-                        self.input.clone_from(&self.input_history[idx]);
-                    }
-                }
-                self.cursor_position = self.char_count();
+                self.handle_history_up();
             }
             KeyCode::Down => {
                 let Some(i) = self.history_index else {
@@ -1344,6 +1290,53 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_history_up(&mut self) {
+        if self.input.is_empty() && self.pending_count > 0 && self.history_index.is_none() {
+            if let Some(last) = self.input_history.pop() {
+                self.input = last;
+                self.cursor_position = self.char_count();
+                self.pending_count -= 1;
+                self.queued_count = self.queued_count.saturating_sub(1);
+                self.editing_queued = true;
+                if let Some(pos) = self
+                    .messages
+                    .iter()
+                    .rposition(|m| m.role == MessageRole::User)
+                {
+                    self.messages.remove(pos);
+                }
+                let _ = self.user_input_tx.try_send("/drop-last-queued".to_owned());
+            }
+            return;
+        }
+        match self.history_index {
+            None => {
+                if self.input_history.is_empty() {
+                    return;
+                }
+                self.draft_input = self.input.clone();
+                let prefix = &self.draft_input;
+                let found = self
+                    .input_history
+                    .iter()
+                    .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
+                let Some(idx) = found else { return };
+                self.history_index = Some(idx);
+                self.input.clone_from(&self.input_history[idx]);
+            }
+            Some(i) => {
+                let prefix = &self.draft_input;
+                let found = self.input_history[..i]
+                    .iter()
+                    .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
+                let Some(idx) = found else { return };
+                self.history_index = Some(idx);
+                self.input.clone_from(&self.input_history[idx]);
+            }
+        }
+        self.cursor_position = self.char_count();
     }
 
     fn open_file_picker(&mut self) {

@@ -665,7 +665,7 @@ impl RouterProvider {
     /// Cascade chat: try providers in order, escalate on degenerate output.
     ///
     /// Returns the best-seen response if all providers fail or budget is exhausted.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // cascade loop: per-provider error/ok/budget/escalation branches are tightly coupled — extracting would obscure the control flow
     async fn cascade_chat(
         &self,
         providers: &[AnyProvider],
@@ -809,7 +809,7 @@ impl RouterProvider {
     /// occurs, the user experiences: cheap model's full response time + expensive model's
     /// TTFT. This is strictly worse than direct routing to the expensive model for
     /// hard queries. Acceptable for v1; see CRIT-01 in critic handoff for alternatives.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // sequential cascade semantics: buffer→classify→escalate
     async fn cascade_chat_stream(
         &self,
         providers: &[AnyProvider],

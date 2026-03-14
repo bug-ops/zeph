@@ -1,6 +1,6 @@
 ---
-source: crates/zeph-core/src/config/types/tests.rs
-assertion_line: 44
+source: crates/zeph-core/src/config/types/tests/mod.rs
+assertion_line: 46
 expression: toml_str
 ---
 [agent]
@@ -130,6 +130,7 @@ max_entities = 0
 community_summary_max_prompt_bytes = 8192
 community_summary_concurrency = 4
 lpa_edge_chunk_size = 10000
+temporal_decay_rate = 0.0
 
 [tools]
 enabled = true

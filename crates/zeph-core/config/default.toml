@@ -680,3 +680,5 @@ max_files = 7
 # expired_edge_retention_days = 90
 # # Maximum total entities in the graph (0 = unlimited)
 # max_entities = 0
+# # Temporal recency decay rate for graph recall scoring (1/day). 0.0 = disabled.
+# temporal_decay_rate = 0.0

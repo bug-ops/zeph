@@ -13,6 +13,10 @@ use crate::redact::redact_secrets;
 use crate::sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::loader::Skill;
 
+/// Prefix used in the overflow notice appended to tool outputs that exceed the size threshold.
+/// Shared with the pruning logic so both sides stay in sync if the format changes.
+pub(crate) const OVERFLOW_NOTICE_PREFIX: &str = "[full output saved to ";
+
 enum AnomalyOutcome {
     Success,
     Error,
@@ -450,7 +454,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn inject_active_skill_env(&self) {
         if self.skill_state.active_skill_names.is_empty()
             || self.skill_state.available_custom_secrets.is_empty()
@@ -553,7 +556,6 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::too_many_lines)]
 
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

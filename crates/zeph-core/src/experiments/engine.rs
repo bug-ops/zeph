@@ -209,7 +209,7 @@ impl ExperimentEngine {
     /// # Errors
     ///
     /// Returns [`EvalError`] if any LLM call or `SQLite` persist fails.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // experiment loop with inherent complexity: variation→evaluate→compare
     async fn run_loop(
         &mut self,
         start: Instant,

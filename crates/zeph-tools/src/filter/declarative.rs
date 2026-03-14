@@ -852,6 +852,38 @@ fn dedup_normalize(line: &str, patterns: &[(Regex, String)]) -> String {
     s
 }
 
+fn apply_truncate(
+    raw_output: &str,
+    clean: String,
+    max_lines: usize,
+    head: usize,
+    tail: usize,
+) -> FilterResult {
+    let lines: Vec<&str> = clean.lines().collect();
+    if lines.len() <= max_lines {
+        return make_result(raw_output, clean, FilterConfidence::Fallback, vec![]);
+    }
+    let total = lines.len();
+    let omitted = total - head - tail;
+    let mut output = String::new();
+    for line in &lines[..head] {
+        output.push_str(line);
+        output.push('\n');
+    }
+    let _ = write!(output, "\n... ({omitted} lines omitted) ...\n\n");
+    for line in &lines[total - tail..] {
+        output.push_str(line);
+        output.push('\n');
+    }
+    let kept_indices: Vec<usize> = (0..head).chain(total - tail..total).collect();
+    make_result(
+        raw_output,
+        output.trim_end().to_owned(),
+        FilterConfidence::Partial,
+        kept_indices,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // OutputFilter impl
 // ---------------------------------------------------------------------------
@@ -865,7 +897,6 @@ impl OutputFilter for DeclarativeFilter {
         &self.matcher
     }
 
-    #[allow(clippy::too_many_lines)]
     fn filter(&self, _command: &str, raw_output: &str, exit_code: i32) -> FilterResult {
         let clean = sanitize_output(raw_output);
         match &self.strategy {
@@ -892,31 +923,7 @@ impl OutputFilter for DeclarativeFilter {
                 max_lines,
                 head,
                 tail,
-            } => {
-                let lines: Vec<&str> = clean.lines().collect();
-                if lines.len() <= *max_lines {
-                    return make_result(raw_output, clean, FilterConfidence::Fallback, vec![]);
-                }
-                let total = lines.len();
-                let omitted = total - head - tail;
-                let mut output = String::new();
-                for line in &lines[..*head] {
-                    output.push_str(line);
-                    output.push('\n');
-                }
-                let _ = write!(output, "\n... ({omitted} lines omitted) ...\n\n");
-                for line in &lines[total - tail..] {
-                    output.push_str(line);
-                    output.push('\n');
-                }
-                let kept_indices: Vec<usize> = (0..*head).chain(total - tail..total).collect();
-                make_result(
-                    raw_output,
-                    output.trim_end().to_owned(),
-                    FilterConfidence::Partial,
-                    kept_indices,
-                )
-            }
+            } => apply_truncate(raw_output, clean, *max_lines, *head, *tail),
             CompiledStrategy::KeepMatching { patterns } => {
                 let raw_lines: Vec<&str> = clean.lines().collect();
                 let kept_indices: Vec<usize> = raw_lines

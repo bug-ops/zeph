@@ -180,6 +180,60 @@ async fn handle_tool_step(
     }
 }
 
+fn build_filtered_executor(
+    tool_executor: Arc<dyn ErasedToolExecutor>,
+    permission_mode: PermissionMode,
+    def: &SubAgentDef,
+) -> FilteredToolExecutor {
+    if permission_mode == PermissionMode::Plan {
+        let plan_inner = Arc::new(PlanModeExecutor::new(tool_executor));
+        FilteredToolExecutor::with_disallowed(
+            plan_inner,
+            def.tools.clone(),
+            def.disallowed_tools.clone(),
+        )
+    } else {
+        FilteredToolExecutor::with_disallowed(
+            tool_executor,
+            def.tools.clone(),
+            def.disallowed_tools.clone(),
+        )
+    }
+}
+
+fn apply_def_config_defaults(
+    def: &mut SubAgentDef,
+    config: &SubAgentConfig,
+) -> Result<(), SubAgentError> {
+    if def.permissions.permission_mode == PermissionMode::Default
+        && let Some(default_mode) = config.default_permission_mode
+    {
+        def.permissions.permission_mode = default_mode;
+    }
+
+    if !config.default_disallowed_tools.is_empty() {
+        let mut merged = def.disallowed_tools.clone();
+        for tool in &config.default_disallowed_tools {
+            if !merged.contains(tool) {
+                merged.push(tool.clone());
+            }
+        }
+        def.disallowed_tools = merged;
+    }
+
+    if def.permissions.permission_mode == PermissionMode::BypassPermissions
+        && !config.allow_bypass_permissions
+    {
+        return Err(SubAgentError::Invalid(format!(
+            "sub-agent '{}' requests bypass_permissions mode but it is not allowed by config \
+             (set agents.allow_bypass_permissions = true to enable)",
+            def.name
+        )));
+    }
+
+    Ok(())
+}
+
 fn make_hook_env(task_id: &str, agent_name: &str, tool_name: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("ZEPH_AGENT_ID".to_owned(), task_id.to_owned());
@@ -197,7 +251,7 @@ fn append_transcript(writer: &mut Option<TranscriptWriter>, seq: &mut u32, msg: 
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)] // subagent loop: LLM call + tool execution + retry + cancellation, sequential coupling
 async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
     let AgentLoopArgs {
         provider,
@@ -768,7 +822,6 @@ impl SubAgentManager {
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
     /// does not allow it (`allow_bypass_permissions: false`).
-    #[allow(clippy::too_many_lines)]
     pub fn spawn(
         &mut self,
         def_name: &str,
@@ -785,35 +838,7 @@ impl SubAgentManager {
             .cloned()
             .ok_or_else(|| SubAgentError::NotFound(def_name.to_owned()))?;
 
-        // Apply config-level defaults: if agent has Default permission mode, use the
-        // config default_permission_mode if set.
-        if def.permissions.permission_mode == PermissionMode::Default
-            && let Some(default_mode) = config.default_permission_mode
-        {
-            def.permissions.permission_mode = default_mode;
-        }
-
-        // Merge global disallowed_tools into per-agent disallowed_tools (deny wins).
-        if !config.default_disallowed_tools.is_empty() {
-            let mut merged = def.disallowed_tools.clone();
-            for tool in &config.default_disallowed_tools {
-                if !merged.contains(tool) {
-                    merged.push(tool.clone());
-                }
-            }
-            def.disallowed_tools = merged;
-        }
-
-        // Guard: bypass_permissions requires explicit opt-in at config level.
-        if def.permissions.permission_mode == PermissionMode::BypassPermissions
-            && !config.allow_bypass_permissions
-        {
-            return Err(SubAgentError::Invalid(format!(
-                "sub-agent '{}' requests bypass_permissions mode but it is not allowed by config \
-                 (set agents.allow_bypass_permissions = true to enable)",
-                def.name
-            )));
-        }
+        apply_def_config_defaults(&mut def, config)?;
 
         let active = self
             .agents
@@ -857,63 +882,13 @@ impl SubAgentManager {
         let agent_hooks = def.hooks.clone();
         let agent_name_clone = def.name.clone();
 
-        let filtered_executor = FilteredToolExecutor::with_disallowed(
-            tool_executor.clone(),
-            def.tools.clone(),
-            def.disallowed_tools.clone(),
-        );
-
-        // Plan mode: wrap executor to expose real tool definitions but block execution.
-        let executor: FilteredToolExecutor = if permission_mode == PermissionMode::Plan {
-            let plan_inner = Arc::new(PlanModeExecutor::new(tool_executor));
-            FilteredToolExecutor::with_disallowed(
-                plan_inner,
-                def.tools.clone(),
-                def.disallowed_tools.clone(),
-            )
-        } else {
-            filtered_executor
-        };
+        let executor = build_filtered_executor(tool_executor, permission_mode, &def);
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
 
         // Transcript setup: create writer if enabled, run sweep.
-        let transcript_writer = if config.transcript_enabled {
-            let dir = self.effective_transcript_dir(config);
-            if self.transcript_max_files > 0
-                && let Err(e) = sweep_old_transcripts(&dir, self.transcript_max_files)
-            {
-                tracing::warn!(error = %e, "transcript sweep failed");
-            }
-            let path = dir.join(format!("{task_id}.jsonl"));
-            match TranscriptWriter::new(&path) {
-                Ok(w) => {
-                    // Write initial meta with status=Submitted so running agents are
-                    // discoverable even before completion.
-                    let meta = TranscriptMeta {
-                        agent_id: task_id.clone(),
-                        agent_name: def.name.clone(),
-                        def_name: def.name.clone(),
-                        status: SubAgentState::Submitted,
-                        started_at: crate::subagent::transcript::utc_now_pub(),
-                        finished_at: None,
-                        resumed_from: None,
-                        turns_used: 0,
-                    };
-                    if let Err(e) = TranscriptWriter::write_meta(&dir, &task_id, &meta) {
-                        tracing::warn!(error = %e, "failed to write initial transcript meta");
-                    }
-                    Some(w)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to create transcript writer");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name);
 
         let task_id_for_loop = task_id.clone();
         let join_handle: JoinHandle<Result<String, SubAgentError>> =
@@ -969,25 +944,69 @@ impl SubAgentManager {
             "sub-agent spawned"
         );
 
-        // Cache stop hooks from config so cancel() and collect() can fire them
-        // without needing a config reference. Only update when non-empty to avoid
-        // overwriting a previously configured stop hook list with an empty default.
+        self.cache_and_fire_start_hooks(config, &task_id, def_name);
+
+        Ok(task_id)
+    }
+
+    fn cache_and_fire_start_hooks(
+        &mut self,
+        config: &SubAgentConfig,
+        task_id: &str,
+        def_name: &str,
+    ) {
         if !config.hooks.stop.is_empty() && self.stop_hooks.is_empty() {
             self.stop_hooks.clone_from(&config.hooks.stop);
         }
-
-        // Fire SubagentStart lifecycle hooks (fire-and-forget).
         if !config.hooks.start.is_empty() {
             let start_hooks = config.hooks.start.clone();
-            let start_env = make_hook_env(&task_id, def_name, "");
+            let start_env = make_hook_env(task_id, def_name, "");
             tokio::spawn(async move {
                 if let Err(e) = fire_hooks(&start_hooks, &start_env).await {
                     tracing::warn!(error = %e, "SubagentStart hook failed");
                 }
             });
         }
+    }
 
-        Ok(task_id)
+    fn create_transcript_writer(
+        &mut self,
+        config: &SubAgentConfig,
+        task_id: &str,
+        agent_name: &str,
+    ) -> Option<TranscriptWriter> {
+        if !config.transcript_enabled {
+            return None;
+        }
+        let dir = self.effective_transcript_dir(config);
+        if self.transcript_max_files > 0
+            && let Err(e) = sweep_old_transcripts(&dir, self.transcript_max_files)
+        {
+            tracing::warn!(error = %e, "transcript sweep failed");
+        }
+        let path = dir.join(format!("{task_id}.jsonl"));
+        match TranscriptWriter::new(&path) {
+            Ok(w) => {
+                let meta = TranscriptMeta {
+                    agent_id: task_id.to_owned(),
+                    agent_name: agent_name.to_owned(),
+                    def_name: agent_name.to_owned(),
+                    status: SubAgentState::Submitted,
+                    started_at: crate::subagent::transcript::utc_now_pub(),
+                    finished_at: None,
+                    resumed_from: None,
+                    turns_used: 0,
+                };
+                if let Err(e) = TranscriptWriter::write_meta(&dir, task_id, &meta) {
+                    tracing::warn!(error = %e, "failed to write initial transcript meta");
+                }
+                Some(w)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to create transcript writer");
+                None
+            }
+        }
     }
 
     /// Cancel all active sub-agents. Called during main agent shutdown.

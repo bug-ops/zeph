@@ -309,7 +309,6 @@ pub struct Agent<C: Channel> {
 
 impl<C: Channel> Agent<C> {
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn new(
         provider: AnyProvider,
         channel: C,
@@ -336,7 +335,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // flat struct literal initializing all Agent sub-structs — one field per sub-struct, cannot be split further
     pub fn new_with_registry_arc(
         provider: AnyProvider,
         channel: C,
@@ -647,47 +646,62 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
-    async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
-        use crate::orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
+    /// Validate that the pending plan graph can be executed.
+    ///
+    /// Sends an appropriate error message and restores the graph to `pending_graph` when
+    /// validation fails. Returns `Ok(graph)` on success, `Err(())` when validation failed
+    /// and the caller should return early.
+    async fn validate_pending_graph(
+        &mut self,
+        graph: crate::orchestration::TaskGraph,
+    ) -> Result<crate::orchestration::TaskGraph, ()> {
+        use crate::orchestration::GraphStatus;
 
-        let Some(graph) = self.orchestration.pending_graph.take() else {
-            self.channel
-                .send("No pending plan to confirm. Use `/plan <goal>` to create one.")
-                .await?;
-            return Ok(());
-        };
-
-        // When subagent manager is not configured, restore graph and inform the user.
         if self.orchestration.subagent_manager.is_none() {
-            self.channel
+            let _ = self
+                .channel
                 .send(
                     "No sub-agents configured. Add sub-agent definitions to config \
                      to enable plan execution.",
                 )
-                .await?;
+                .await;
             self.orchestration.pending_graph = Some(graph);
-            return Ok(());
+            return Err(());
         }
 
         // REV-2: pre-validate before moving graph into the constructor so we can
         // restore it to pending_graph on failure.
         if graph.tasks.is_empty() {
-            self.channel.send("Plan has no tasks.").await?;
+            let _ = self.channel.send("Plan has no tasks.").await;
             self.orchestration.pending_graph = Some(graph);
-            return Ok(());
+            return Err(());
         }
+
         // resume_from() rejects Completed and Canceled — guard those here too.
         if matches!(graph.status, GraphStatus::Completed | GraphStatus::Canceled) {
-            self.channel
+            let _ = self
+                .channel
                 .send(&format!(
                     "Cannot re-execute a {} plan. Use `/plan <goal>` to create a new one.",
                     graph.status
                 ))
-                .await?;
+                .await;
             self.orchestration.pending_graph = Some(graph);
-            return Ok(());
+            return Err(());
         }
+
+        Ok(graph)
+    }
+
+    /// Build a [`DagScheduler`] from the graph, reserving sub-agent slots.
+    ///
+    /// Returns `(scheduler, reserved)` on success or an `AgentError` on failure.
+    /// Callers must call `mgr.release_reservation(reserved)` when done.
+    fn build_dag_scheduler(
+        &mut self,
+        graph: crate::orchestration::TaskGraph,
+    ) -> Result<(crate::orchestration::DagScheduler, usize), error::AgentError> {
+        use crate::orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
 
         let available_agents = self
             .orchestration
@@ -720,7 +734,7 @@ impl<C: Channel> Agent<C> {
 
         // Use resume_from() for graphs that are no longer in Created status
         // (e.g., after /plan retry which calls reset_for_retry and sets status=Running).
-        let mut scheduler = if graph.status == GraphStatus::Created {
+        let scheduler = if graph.status == GraphStatus::Created {
             DagScheduler::new(
                 graph,
                 &self.orchestration.orchestration_config,
@@ -743,6 +757,24 @@ impl<C: Channel> Agent<C> {
             error::AgentError::Other(e.to_string())
         })?;
 
+        Ok((scheduler, reserved))
+    }
+
+    async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
+        let Some(graph) = self.orchestration.pending_graph.take() else {
+            self.channel
+                .send("No pending plan to confirm. Use `/plan <goal>` to create one.")
+                .await?;
+            return Ok(());
+        };
+
+        // validate_pending_graph sends the error message and restores the graph on failure.
+        let Ok(graph) = self.validate_pending_graph(graph).await else {
+            return Ok(());
+        };
+
+        let (mut scheduler, reserved) = self.build_dag_scheduler(graph)?;
+
         let task_count = scheduler.graph().tasks.len();
         self.channel
             .send(&format!(
@@ -764,11 +796,7 @@ impl<C: Channel> Agent<C> {
             mgr.release_reservation(reserved);
         }
 
-        let final_status = match scheduler_result {
-            Ok(s) => s,
-            Err(e) => return Err(e),
-        };
-
+        let final_status = scheduler_result?;
         let completed_graph = scheduler.into_graph();
 
         // Final TUI snapshot update.
@@ -791,6 +819,159 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    /// Cancel all agents referenced in `cancel_actions`.
+    ///
+    /// Returns `Some(status)` if a `Done` action is encountered, `None` otherwise.
+    fn cancel_agents_from_actions(
+        &mut self,
+        cancel_actions: Vec<crate::orchestration::SchedulerAction>,
+    ) -> Option<crate::orchestration::GraphStatus> {
+        use crate::orchestration::SchedulerAction;
+        for action in cancel_actions {
+            match action {
+                SchedulerAction::Cancel { agent_handle_id } => {
+                    if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                        let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                            tracing::trace!(error = %e, "cancel: agent already gone");
+                        });
+                    }
+                }
+                SchedulerAction::Done { status } => return Some(status),
+                SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+            }
+        }
+        None
+    }
+
+    /// Handle a `SchedulerAction::Spawn` — attempt to spawn a sub-agent for the given task.
+    ///
+    /// Returns `(spawn_success, concurrency_fail, done_status)`.
+    /// `done_status` is `Some` when spawn failure forces the scheduler to emit a `Done` action.
+    async fn handle_scheduler_spawn_action(
+        &mut self,
+        scheduler: &mut crate::orchestration::DagScheduler,
+        task_id: crate::orchestration::TaskId,
+        agent_def_name: String,
+        prompt: String,
+        spawn_counter: &mut usize,
+        task_count: usize,
+    ) -> (bool, bool, Option<crate::orchestration::GraphStatus>) {
+        let task_title = scheduler
+            .graph()
+            .tasks
+            .get(task_id.index())
+            .map_or("unknown", |t| t.title.as_str());
+
+        let provider = self.provider.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let skills = self.filtered_skills_for(&agent_def_name);
+        let cfg = self.orchestration.subagent_config.clone();
+        let event_tx = scheduler.event_sender();
+
+        let mgr = self
+            .orchestration
+            .subagent_manager
+            .as_mut()
+            .expect("subagent_manager checked above");
+
+        match mgr.spawn_for_task(
+            &agent_def_name,
+            &prompt,
+            provider,
+            tool_executor,
+            skills,
+            &cfg,
+            task_id,
+            event_tx,
+        ) {
+            Ok(handle_id) => {
+                *spawn_counter += 1;
+                let _ = self
+                    .channel
+                    .send_status(&format!(
+                        "Executing task {spawn_counter}/{task_count}: {task_title}..."
+                    ))
+                    .await;
+                scheduler.record_spawn(task_id, handle_id, agent_def_name);
+                (true, false, None)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, %task_id, "spawn_for_task failed");
+                let concurrency_fail =
+                    matches!(e, crate::subagent::SubAgentError::ConcurrencyLimit { .. });
+                let extra = scheduler.record_spawn_failure(task_id, &e);
+                let done_status = self.cancel_agents_from_actions(extra);
+                (false, concurrency_fail, done_status)
+            }
+        }
+    }
+
+    /// Execute a `RunInline` scheduler action: run the task synchronously in the current agent.
+    ///
+    /// Sends a status update, registers the spawn with the scheduler, runs the inline tool
+    /// loop (or cancels on token fire), and posts the completion event back to the scheduler.
+    async fn handle_run_inline_action(
+        &mut self,
+        scheduler: &mut crate::orchestration::DagScheduler,
+        task_id: crate::orchestration::TaskId,
+        prompt: String,
+        spawn_counter: usize,
+        task_count: usize,
+        cancel_token: &CancellationToken,
+    ) {
+        let task_title = scheduler
+            .graph()
+            .tasks
+            .get(task_id.index())
+            .map_or("unknown", |t| t.title.as_str());
+        let _ = self
+            .channel
+            .send_status(&format!(
+                "Executing task {spawn_counter}/{task_count} (inline): {task_title}..."
+            ))
+            .await;
+
+        // record_spawn before the inline call so the completion event is always
+        // buffered before any timeout check fires in the next tick().
+        let handle_id = format!("__inline_{task_id}__");
+        scheduler.record_spawn(task_id, handle_id.clone(), "__main__".to_string());
+
+        let event_tx = scheduler.event_sender();
+        let max_iter = self.tool_orchestrator.max_iterations;
+        let outcome = tokio::select! {
+            result = self.run_inline_tool_loop(&prompt, max_iter) => {
+                match result {
+                    Ok(output) => crate::orchestration::TaskOutcome::Completed {
+                        output,
+                        artifacts: vec![],
+                    },
+                    Err(e) => crate::orchestration::TaskOutcome::Failed {
+                        error: e.to_string(),
+                    },
+                }
+            }
+            () = cancel_token.cancelled() => {
+                // TODO: use TaskOutcome::Canceled when the variant is added (#1603)
+                crate::orchestration::TaskOutcome::Failed {
+                    error: "canceled".to_string(),
+                }
+            }
+        };
+        let event = crate::orchestration::TaskEvent {
+            task_id,
+            agent_handle_id: handle_id,
+            outcome,
+        };
+        if let Err(e) = event_tx.send(event).await {
+            tracing::warn!(%task_id, error = %e, "inline task event send failed");
+        }
+    }
+
+    // too_many_lines: sequential scheduler event loop with 4 tokio::select! branches
+    // (cancel token, scheduler tick, channel recv with /plan cancel + channel-close paths,
+    // shutdown signal) — each branch requires distinct cancel/fail/ignore semantics that
+    // cannot be split without introducing shared mutable state across async boundaries.
+    #[allow(clippy::too_many_lines)]
     /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
     ///
     /// Each iteration yields at `wait_event()`, during which `channel.recv()` is polled
@@ -806,7 +987,6 @@ impl<C: Channel> Agent<C> {
     /// `RunInline` tasks block the tick loop for their entire duration — `/plan cancel`
     /// cannot interrupt an in-progress inline LLM call and will only be delivered on the
     /// next iteration after the call completes.
-    #[allow(clippy::too_many_lines)]
     async fn run_scheduler_loop(
         &mut self,
         scheduler: &mut crate::orchestration::DagScheduler,
@@ -839,77 +1019,20 @@ impl<C: Channel> Agent<C> {
                         agent_def_name,
                         prompt,
                     } => {
-                        let task_title = scheduler
-                            .graph()
-                            .tasks
-                            .get(task_id.index())
-                            .map_or("unknown", |t| t.title.as_str());
-
-                        let provider = self.provider.clone();
-                        let tool_executor = Arc::clone(&self.tool_executor);
-                        let skills = self.filtered_skills_for(&agent_def_name);
-                        let cfg = self.orchestration.subagent_config.clone();
-                        let event_tx = scheduler.event_sender();
-
-                        let mgr = self
-                            .orchestration
-                            .subagent_manager
-                            .as_mut()
-                            .expect("subagent_manager checked above");
-                        match mgr.spawn_for_task(
-                            &agent_def_name,
-                            &prompt,
-                            provider,
-                            tool_executor,
-                            skills,
-                            &cfg,
-                            task_id,
-                            event_tx,
-                        ) {
-                            Ok(handle_id) => {
-                                spawn_counter += 1;
-                                let _ = self
-                                    .channel
-                                    .send_status(&format!(
-                                        "Executing task {spawn_counter}/{task_count}: {task_title}..."
-                                    ))
-                                    .await;
-                                scheduler.record_spawn(task_id, handle_id, agent_def_name);
-                                any_spawn_success = true;
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, %task_id, "spawn_for_task failed");
-                                if matches!(
-                                    e,
-                                    crate::subagent::SubAgentError::ConcurrencyLimit { .. }
-                                ) {
-                                    any_concurrency_failure = true;
-                                }
-                                let extra = scheduler.record_spawn_failure(task_id, &e);
-                                for a in extra {
-                                    match a {
-                                        SchedulerAction::Cancel { agent_handle_id } => {
-                                            if let Some(m) =
-                                                self.orchestration.subagent_manager.as_mut()
-                                            {
-                                                // benign race: agent may have already finished
-                                                let _ =
-                                                    m.cancel(&agent_handle_id).inspect_err(|err| {
-                                                        tracing::trace!(
-                                                            error = %err,
-                                                            "cancel after spawn failure: agent already gone"
-                                                        );
-                                                    });
-                                            }
-                                        }
-                                        SchedulerAction::Done { status } => {
-                                            break 'tick status;
-                                        }
-                                        SchedulerAction::Spawn { .. }
-                                        | SchedulerAction::RunInline { .. } => {}
-                                    }
-                                }
-                            }
+                        let (success, fail, done) = self
+                            .handle_scheduler_spawn_action(
+                                scheduler,
+                                task_id,
+                                agent_def_name,
+                                prompt,
+                                &mut spawn_counter,
+                                task_count,
+                            )
+                            .await;
+                        any_spawn_success |= success;
+                        any_concurrency_failure |= fail;
+                        if let Some(s) = done {
+                            break 'tick s;
                         }
                     }
                     SchedulerAction::Cancel { agent_handle_id } => {
@@ -932,57 +1055,15 @@ impl<C: Channel> Agent<C> {
                     // of waiting for the current iteration to complete.
                     SchedulerAction::RunInline { task_id, prompt } => {
                         spawn_counter += 1;
-                        let task_title = scheduler
-                            .graph()
-                            .tasks
-                            .get(task_id.index())
-                            .map_or("unknown", |t| t.title.as_str());
-                        let _ = self
-                            .channel
-                            .send_status(&format!(
-                                "Executing task {spawn_counter}/{task_count} (inline): {task_title}..."
-                            ))
-                            .await;
-
-                        // record_spawn before chat(): the inline call completes before
-                        // wait_event() runs, so the completion event is always buffered
-                        // before any timeout check fires in the next tick().
-                        let handle_id = format!("__inline_{task_id}__");
-                        scheduler.record_spawn(task_id, handle_id.clone(), "__main__".to_string());
-
-                        let event_tx = scheduler.event_sender();
-                        let max_iter = self.tool_orchestrator.max_iterations;
-                        let outcome = tokio::select! {
-                            result = self.run_inline_tool_loop(&prompt, max_iter) => {
-                                match result {
-                                    Ok(output) => crate::orchestration::TaskOutcome::Completed {
-                                        output,
-                                        artifacts: vec![],
-                                    },
-                                    Err(e) => crate::orchestration::TaskOutcome::Failed {
-                                        error: e.to_string(),
-                                    },
-                                }
-                            }
-                            () = cancel_token.cancelled() => {
-                                // TODO: use TaskOutcome::Canceled when the variant is added (#1603)
-                                crate::orchestration::TaskOutcome::Failed {
-                                    error: "canceled".to_string(),
-                                }
-                            }
-                        };
-                        let event = crate::orchestration::TaskEvent {
+                        self.handle_run_inline_action(
+                            scheduler,
                             task_id,
-                            agent_handle_id: handle_id,
-                            outcome,
-                        };
-                        if let Err(e) = event_tx.send(event).await {
-                            tracing::warn!(
-                                %task_id,
-                                error = %e,
-                                "inline task event send failed"
-                            );
-                        }
+                            prompt,
+                            spawn_counter,
+                            task_count,
+                            &cancel_token,
+                        )
+                        .await;
                     }
                     SchedulerAction::Done { status } => {
                         break 'tick status;
@@ -1003,16 +1084,6 @@ impl<C: Channel> Agent<C> {
                 m.orchestration_graph = Some(snapshot);
             });
 
-            // Poll channel.recv() and cancel_token concurrently with the scheduler's event wait
-            // so that /plan cancel can be delivered during plan execution. Without this select!,
-            // run_scheduler_loop holds &mut self for the entire plan, blocking the main
-            // run() loop's channel.recv() call.
-            //
-            // Cancellation paths:
-            //   cancel_token.cancelled() — fired by handle_plan_cancel() from concurrent channels
-            //                              (TUI, Telegram, ACP) that have their own event loops.
-            //   channel.recv("/plan cancel") — for CLI where the main dispatch loop is blocked.
-            //
             // NOTE(Telegram): Telegram's recv() is not fully cancel-safe — a message
             // consumed from the internal mpsc but not yet returned can be lost if the
             // select! cancels the future during the /start send().await path. For
@@ -1682,7 +1753,61 @@ impl<C: Channel> Agent<C> {
     /// # Errors
     ///
     /// Returns an error if channel I/O or LLM communication fails.
-    #[allow(clippy::too_many_lines)]
+    /// Refresh sub-agent metrics snapshot for the TUI metrics panel.
+    fn refresh_subagent_metrics(&mut self) {
+        let Some(ref mgr) = self.orchestration.subagent_manager else {
+            return;
+        };
+        let sub_agent_metrics: Vec<crate::metrics::SubAgentMetrics> = mgr
+            .statuses()
+            .into_iter()
+            .map(|(id, s)| {
+                let def = mgr.agents_def(&id);
+                crate::metrics::SubAgentMetrics {
+                    name: def.map_or_else(|| id[..8.min(id.len())].to_owned(), |d| d.name.clone()),
+                    id: id.clone(),
+                    state: format!("{:?}", s.state).to_lowercase(),
+                    turns_used: s.turns_used,
+                    max_turns: def.map_or(20, |d| d.permissions.max_turns),
+                    background: def.is_some_and(|d| d.permissions.background),
+                    elapsed_secs: s.started_at.elapsed().as_secs(),
+                    permission_mode: def.map_or_else(String::new, |d| {
+                        use crate::subagent::def::PermissionMode;
+                        match d.permissions.permission_mode {
+                            PermissionMode::Default => String::new(),
+                            PermissionMode::AcceptEdits => "accept_edits".into(),
+                            PermissionMode::DontAsk => "dont_ask".into(),
+                            PermissionMode::BypassPermissions => "bypass_permissions".into(),
+                            PermissionMode::Plan => "plan".into(),
+                        }
+                    }),
+                }
+            })
+            .collect();
+        self.update_metrics(|m| m.sub_agents = sub_agent_metrics);
+    }
+
+    /// Non-blocking poll: notify the user when background sub-agents complete.
+    async fn notify_completed_subagents(&mut self) -> Result<(), error::AgentError> {
+        let completed = self.poll_subagents().await;
+        for (task_id, result) in completed {
+            let notice = if result.is_empty() {
+                format!("[sub-agent {id}] completed (no output)", id = &task_id[..8])
+            } else {
+                format!("[sub-agent {id}] completed:\n{result}", id = &task_id[..8])
+            };
+            if let Err(e) = self.channel.send(&notice).await {
+                tracing::warn!(error = %e, "failed to send sub-agent completion notice");
+            }
+        }
+        Ok(())
+    }
+
+    /// Run the agent main loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the channel, LLM provider, or tool execution encounters a fatal error.
     pub async fn run(&mut self) -> Result<(), error::AgentError> {
         if let Some(mut rx) = self.lifecycle.warmup_ready.take()
             && !*rx.borrow()
@@ -1709,53 +1834,10 @@ impl<C: Channel> Agent<C> {
             self.check_tool_refresh().await;
 
             // Refresh sub-agent status in metrics before polling.
-            if let Some(ref mgr) = self.orchestration.subagent_manager {
-                let sub_agent_metrics: Vec<crate::metrics::SubAgentMetrics> = mgr
-                    .statuses()
-                    .into_iter()
-                    .map(|(id, s)| {
-                        let def = mgr.agents_def(&id);
-                        crate::metrics::SubAgentMetrics {
-                            name: def.map_or_else(
-                                || id[..8.min(id.len())].to_owned(),
-                                |d| d.name.clone(),
-                            ),
-                            id: id.clone(),
-                            state: format!("{:?}", s.state).to_lowercase(),
-                            turns_used: s.turns_used,
-                            max_turns: def.map_or(20, |d| d.permissions.max_turns),
-                            background: def.is_some_and(|d| d.permissions.background),
-                            elapsed_secs: s.started_at.elapsed().as_secs(),
-                            permission_mode: def.map_or_else(String::new, |d| {
-                                use crate::subagent::def::PermissionMode;
-                                match d.permissions.permission_mode {
-                                    PermissionMode::Default => String::new(),
-                                    PermissionMode::AcceptEdits => "accept_edits".into(),
-                                    PermissionMode::DontAsk => "dont_ask".into(),
-                                    PermissionMode::BypassPermissions => {
-                                        "bypass_permissions".into()
-                                    }
-                                    PermissionMode::Plan => "plan".into(),
-                                }
-                            }),
-                        }
-                    })
-                    .collect();
-                self.update_metrics(|m| m.sub_agents = sub_agent_metrics);
-            }
+            self.refresh_subagent_metrics();
 
             // Non-blocking poll: notify user when background sub-agents complete.
-            let completed = self.poll_subagents().await;
-            for (task_id, result) in completed {
-                let notice = if result.is_empty() {
-                    format!("[sub-agent {id}] completed (no output)", id = &task_id[..8])
-                } else {
-                    format!("[sub-agent {id}] completed:\n{result}", id = &task_id[..8])
-                };
-                if let Err(e) = self.channel.send(&notice).await {
-                    tracing::warn!(error = %e, "failed to send sub-agent completion notice");
-                }
-            }
+            self.notify_completed_subagents().await?;
 
             self.drain_channel();
 
@@ -1818,66 +1900,84 @@ impl<C: Channel> Agent<C> {
 
             let trimmed = text.trim();
 
-            if trimmed == "/clear-queue" {
-                let n = self.clear_queue();
-                self.notify_queue_count().await;
-                self.channel
-                    .send(&format!("Cleared {n} queued messages."))
-                    .await?;
-                let _ = self.channel.flush_chunks().await;
-                continue;
-            }
-
-            if trimmed == "/compact" {
-                if self.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
-                    match self.compact_context().await {
-                        Ok(()) => {
-                            let _ = self.channel.send("Context compacted successfully.").await;
-                        }
-                        Err(e) => {
-                            let _ = self.channel.send(&format!("Compaction failed: {e}")).await;
-                        }
-                    }
-                } else {
-                    let _ = self.channel.send("Nothing to compact.").await;
-                }
-                let _ = self.channel.flush_chunks().await;
-                continue;
-            }
-
-            if trimmed == "/clear" {
-                self.clear_history();
-                let _ = self.channel.flush_chunks().await;
-                continue;
-            }
-
-            if trimmed == "/model" || trimmed.starts_with("/model ") {
-                self.handle_model_command(trimmed).await;
-                let _ = self.channel.flush_chunks().await;
-                continue;
-            }
-
-            if trimmed == "/debug-dump" || trimmed.starts_with("/debug-dump ") {
-                self.handle_debug_dump_command(trimmed).await;
-                let _ = self.channel.flush_chunks().await;
-                continue;
-            }
-
-            if trimmed == "/exit" || trimmed == "/quit" {
-                if self.channel.supports_exit() {
-                    break;
-                }
-                let _ = self
-                    .channel
-                    .send("/exit is not supported in this channel.")
-                    .await;
-                continue;
+            match self.handle_builtin_command(trimmed).await? {
+                Some(true) => break,
+                Some(false) => continue,
+                None => {}
             }
 
             self.process_user_message(text, image_parts).await?;
         }
 
         Ok(())
+    }
+
+    /// Handle built-in slash commands that short-circuit the main `run` loop.
+    ///
+    /// Returns `Some(true)` to break the loop (exit), `Some(false)` to continue to the next
+    /// iteration, or `None` if the command was not recognized (caller should call
+    /// `process_user_message`).
+    async fn handle_builtin_command(
+        &mut self,
+        trimmed: &str,
+    ) -> Result<Option<bool>, error::AgentError> {
+        if trimmed == "/clear-queue" {
+            let n = self.clear_queue();
+            self.notify_queue_count().await;
+            self.channel
+                .send(&format!("Cleared {n} queued messages."))
+                .await?;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/compact" {
+            if self.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
+                match self.compact_context().await {
+                    Ok(()) => {
+                        let _ = self.channel.send("Context compacted successfully.").await;
+                    }
+                    Err(e) => {
+                        let _ = self.channel.send(&format!("Compaction failed: {e}")).await;
+                    }
+                }
+            } else {
+                let _ = self.channel.send("Nothing to compact.").await;
+            }
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/clear" {
+            self.clear_history();
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/model" || trimmed.starts_with("/model ") {
+            self.handle_model_command(trimmed).await;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/debug-dump" || trimmed.starts_with("/debug-dump ") {
+            self.handle_debug_dump_command(trimmed).await;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/exit" || trimmed == "/quit" {
+            if self.channel.supports_exit() {
+                return Ok(Some(true));
+            }
+            let _ = self
+                .channel
+                .send("/exit is not supported in this channel.")
+                .await;
+            return Ok(Some(false));
+        }
+
+        Ok(None)
     }
 
     /// Switch the active provider to one serving `model_id`.
@@ -1905,79 +2005,68 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    /// Handle `/model`, `/model <id>`, and `/model refresh` commands.
-    #[allow(clippy::too_many_lines)]
-    async fn handle_model_command(&mut self, trimmed: &str) {
-        let arg = trimmed.strip_prefix("/model").map_or("", str::trim);
-
-        if arg == "refresh" {
-            // Invalidate all model cache files in the cache directory.
-            if let Some(cache_dir) = dirs::cache_dir() {
-                let models_dir = cache_dir.join("zeph").join("models");
-                if let Ok(entries) = std::fs::read_dir(&models_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                            let _ = std::fs::remove_file(&path);
-                        }
+    async fn handle_model_refresh(&mut self) {
+        // Invalidate all model cache files in the cache directory.
+        if let Some(cache_dir) = dirs::cache_dir() {
+            let models_dir = cache_dir.join("zeph").join("models");
+            if let Ok(entries) = std::fs::read_dir(&models_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                        let _ = std::fs::remove_file(&path);
                     }
                 }
             }
+        }
+        match self.provider.list_models_remote().await {
+            Ok(models) => {
+                let _ = self
+                    .channel
+                    .send(&format!("Fetched {} models.", models.len()))
+                    .await;
+            }
+            Err(e) => {
+                let _ = self
+                    .channel
+                    .send(&format!("Error fetching models: {e}"))
+                    .await;
+            }
+        }
+    }
+
+    async fn handle_model_list(&mut self) {
+        let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
+        let cached = if cache.is_stale() {
+            None
+        } else {
+            cache.load().unwrap_or(None)
+        };
+        let models = if let Some(m) = cached {
+            m
+        } else {
             match self.provider.list_models_remote().await {
-                Ok(models) => {
-                    let _ = self
-                        .channel
-                        .send(&format!("Fetched {} models.", models.len()))
-                        .await;
-                }
+                Ok(m) => m,
                 Err(e) => {
                     let _ = self
                         .channel
                         .send(&format!("Error fetching models: {e}"))
                         .await;
+                    return;
                 }
             }
+        };
+        if models.is_empty() {
+            let _ = self.channel.send("No models available.").await;
             return;
         }
-
-        if arg.is_empty() {
-            // List models: try cache first, then remote.
-            let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
-            let models = if cache.is_stale() {
-                None
-            } else {
-                cache.load().unwrap_or(None)
-            };
-            let models = if let Some(m) = models {
-                m
-            } else {
-                match self.provider.list_models_remote().await {
-                    Ok(m) => m,
-                    Err(e) => {
-                        let _ = self
-                            .channel
-                            .send(&format!("Error fetching models: {e}"))
-                            .await;
-                        return;
-                    }
-                }
-            };
-
-            if models.is_empty() {
-                let _ = self.channel.send("No models available.").await;
-                return;
-            }
-            let mut lines = vec!["Available models:".to_string()];
-            for (i, m) in models.iter().enumerate() {
-                lines.push(format!("  {}. {} ({})", i + 1, m.display_name, m.id));
-            }
-            let _ = self.channel.send(&lines.join("\n")).await;
-            return;
+        let mut lines = vec!["Available models:".to_string()];
+        for (i, m) in models.iter().enumerate() {
+            lines.push(format!("  {}. {} ({})", i + 1, m.display_name, m.id));
         }
+        let _ = self.channel.send(&lines.join("\n")).await;
+    }
 
-        // `/model <id>` — switch model
-        let model_id = arg;
-
+    async fn handle_model_switch(&mut self, model_id: &str) {
         // Validate model_id against the known model list before switching.
         // Try disk cache first; fall back to a remote fetch if the cache is stale.
         let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
@@ -2007,7 +2096,6 @@ impl<C: Channel> Agent<C> {
                 )
                 .await;
         }
-
         match self.set_model(model_id) {
             Ok(()) => {
                 let _ = self
@@ -2018,6 +2106,18 @@ impl<C: Channel> Agent<C> {
             Err(e) => {
                 let _ = self.channel.send(&format!("Error: {e}")).await;
             }
+        }
+    }
+
+    /// Handle `/model`, `/model <id>`, and `/model refresh` commands.
+    async fn handle_model_command(&mut self, trimmed: &str) {
+        let arg = trimmed.strip_prefix("/model").map_or("", str::trim);
+        if arg == "refresh" {
+            self.handle_model_refresh().await;
+        } else if arg.is_empty() {
+            self.handle_model_list().await;
+        } else {
+            self.handle_model_switch(arg).await;
         }
     }
 
@@ -2153,7 +2253,365 @@ impl<C: Channel> Agent<C> {
         (text, image_parts)
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Dispatch slash commands. Returns `Some(Ok(()))` when handled,
+    /// `Some(Err(_))` on I/O error, `None` to fall through to LLM processing.
+    async fn dispatch_slash_command(
+        &mut self,
+        trimmed: &str,
+    ) -> Option<Result<(), error::AgentError>> {
+        macro_rules! handled {
+            ($expr:expr) => {{
+                if let Err(e) = $expr {
+                    return Some(Err(e));
+                }
+                let _ = self.channel.flush_chunks().await;
+                return Some(Ok(()));
+            }};
+        }
+
+        if trimmed == "/help" {
+            handled!(self.handle_help_command().await);
+        }
+
+        if trimmed == "/status" {
+            handled!(self.handle_status_command().await);
+        }
+
+        if trimmed == "/skills" {
+            handled!(self.handle_skills_command().await);
+        }
+
+        if trimmed == "/skill" || trimmed.starts_with("/skill ") {
+            let rest = trimmed
+                .strip_prefix("/skill")
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            handled!(self.handle_skill_command(&rest).await);
+        }
+
+        if trimmed == "/feedback" || trimmed.starts_with("/feedback ") {
+            let rest = trimmed
+                .strip_prefix("/feedback")
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            handled!(self.handle_feedback(&rest).await);
+        }
+
+        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
+            let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim().to_owned();
+            handled!(self.handle_mcp_command(&args).await);
+        }
+
+        if trimmed == "/image" || trimmed.starts_with("/image ") {
+            let path = trimmed
+                .strip_prefix("/image")
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            if path.is_empty() {
+                handled!(
+                    self.channel
+                        .send("Usage: /image <path>")
+                        .await
+                        .map_err(Into::into)
+                );
+            }
+            handled!(self.handle_image_command(&path).await);
+        }
+
+        if trimmed == "/plan" || trimmed.starts_with("/plan ") {
+            return Some(self.dispatch_plan_command(trimmed).await);
+        }
+
+        if trimmed == "/graph" || trimmed.starts_with("/graph ") {
+            handled!(self.handle_graph_command(trimmed).await);
+        }
+
+        #[cfg(feature = "scheduler")]
+        if trimmed == "/scheduler" || trimmed.starts_with("/scheduler ") {
+            handled!(self.handle_scheduler_command(trimmed).await);
+        }
+
+        #[cfg(feature = "experiments")]
+        if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
+            handled!(self.handle_experiment_command(trimmed).await);
+        }
+
+        #[cfg(feature = "lsp-context")]
+        if trimmed == "/lsp" {
+            handled!(self.handle_lsp_status_command().await);
+        }
+
+        if trimmed == "/log" {
+            handled!(self.handle_log_command().await);
+        }
+
+        if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
+            return self.dispatch_agent_command(trimmed).await;
+        }
+
+        None
+    }
+
+    async fn dispatch_plan_command(&mut self, trimmed: &str) -> Result<(), error::AgentError> {
+        match crate::orchestration::PlanCommand::parse(trimmed) {
+            Ok(cmd) => {
+                self.handle_plan_command(cmd).await?;
+            }
+            Err(e) => {
+                self.channel
+                    .send(&e.to_string())
+                    .await
+                    .map_err(error::AgentError::from)?;
+            }
+        }
+        let _ = self.channel.flush_chunks().await;
+        Ok(())
+    }
+
+    async fn dispatch_agent_command(
+        &mut self,
+        trimmed: &str,
+    ) -> Option<Result<(), error::AgentError>> {
+        let known: Vec<String> = self
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default();
+        match crate::subagent::AgentCommand::parse(trimmed, &known) {
+            Ok(cmd) => {
+                if let Some(msg) = self.handle_agent_command(cmd).await
+                    && let Err(e) = self.channel.send(&msg).await
+                {
+                    return Some(Err(e.into()));
+                }
+                let _ = self.channel.flush_chunks().await;
+                Some(Ok(()))
+            }
+            Err(e) if trimmed.starts_with('@') => {
+                // Unknown @token — fall through to normal LLM processing
+                tracing::debug!("@mention not matched as agent: {e}");
+                None
+            }
+            Err(e) => {
+                if let Err(send_err) = self.channel.send(&e.to_string()).await {
+                    return Some(Err(send_err.into()));
+                }
+                let _ = self.channel.flush_chunks().await;
+                Some(Ok(()))
+            }
+        }
+    }
+
+    /// Spawn a background task to evaluate the user message with the LLM judge and store the
+    /// correction result. Non-blocking: the task runs independently of the response pipeline.
+    ///
+    /// # Notes
+    ///
+    /// TODO(I3): `JoinHandle`s are not tracked — outstanding tasks may be aborted on runtime
+    /// shutdown before `store_user_correction` completes. Acceptable for MVP.
+    fn spawn_judge_correction_check(
+        &mut self,
+        trimmed: &str,
+        conv_id: Option<zeph_memory::ConversationId>,
+    ) {
+        let judge_provider = self
+            .providers
+            .judge_provider
+            .clone()
+            .unwrap_or_else(|| self.provider.clone());
+        let assistant_snippet = self.last_assistant_response();
+        let user_msg_owned = trimmed.to_owned();
+        let memory_arc = self.memory_state.memory.clone();
+        let skill_name = self
+            .skill_state
+            .active_skill_names
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let conv_id_bg = conv_id;
+        let confidence_threshold = self
+            .learning_engine
+            .config
+            .as_ref()
+            .map_or(0.6, |c| c.correction_confidence_threshold);
+
+        tokio::spawn(async move {
+            match feedback_detector::JudgeDetector::evaluate(
+                &judge_provider,
+                &user_msg_owned,
+                &assistant_snippet,
+                confidence_threshold,
+            )
+            .await
+            {
+                Ok(verdict) => {
+                    if let Some(signal) = verdict.into_signal(&user_msg_owned) {
+                        // Self-corrections (user corrects their own statement) must not
+                        // penalize skills. The judge path has no record_skill_outcomes()
+                        // call today, but this guard mirrors the regex path to make the
+                        // intent explicit and prevent future regressions if parity is added.
+                        let is_self_correction =
+                            signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
+                        tracing::info!(
+                            kind = signal.kind.as_str(),
+                            confidence = signal.confidence,
+                            source = "judge",
+                            is_self_correction,
+                            "correction signal detected"
+                        );
+                        if let Some(memory) = memory_arc {
+                            let correction_text = context::truncate_chars(&user_msg_owned, 500);
+                            match memory
+                                .sqlite()
+                                .store_user_correction(
+                                    conv_id_bg.map(|c| c.0),
+                                    &assistant_snippet,
+                                    &correction_text,
+                                    if skill_name.is_empty() {
+                                        None
+                                    } else {
+                                        Some(skill_name.as_str())
+                                    },
+                                    signal.kind.as_str(),
+                                )
+                                .await
+                            {
+                                Ok(correction_id) => {
+                                    if let Err(e) = memory
+                                        .store_correction_embedding(correction_id, &correction_text)
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            "failed to store correction embedding: {e:#}"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("failed to store judge correction: {e:#}");
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("judge detector failed: {e:#}");
+                }
+            }
+        });
+    }
+
+    /// Detect implicit corrections in the user's message and record them in the learning engine.
+    ///
+    /// Uses regex-based `FeedbackDetector` first. If a `JudgeDetector` is configured and the
+    /// regex result is borderline, the LLM judge runs in a background task (non-blocking).
+    async fn detect_and_record_corrections(
+        &mut self,
+        trimmed: &str,
+        conv_id: Option<zeph_memory::ConversationId>,
+    ) {
+        let correction_detection_enabled = self
+            .learning_engine
+            .config
+            .as_ref()
+            .is_none_or(|c| c.correction_detection);
+        if !self.is_learning_enabled() || !correction_detection_enabled {
+            return;
+        }
+
+        let previous_user_messages: Vec<&str> = self
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(|m| m.content.as_str())
+            .collect();
+        let regex_signal = self
+            .feedback_detector
+            .detect(trimmed, &previous_user_messages);
+
+        // Judge mode: invoke LLM in background if regex is borderline or missed.
+        //
+        // The judge call is decoupled from the response pipeline — it records the
+        // correction asynchronously via tokio::spawn and returns None immediately
+        // so the user response is not blocked.
+        //
+        // TODO(I3): JoinHandles are not tracked — outstanding tasks may be aborted
+        // on runtime shutdown before store_user_correction completes. This is
+        // acceptable for the learning subsystem at MVP. Future: collect handles in
+        // Agent and drain on graceful shutdown.
+        // Check rate limit synchronously before deciding to spawn.
+        // The judge_detector is &mut self so check_rate_limit() can update call_times.
+        let judge_should_run = self
+            .judge_detector
+            .as_ref()
+            .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
+            && self
+                .judge_detector
+                .as_mut()
+                .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
+
+        let signal = if judge_should_run {
+            self.spawn_judge_correction_check(trimmed, conv_id);
+            // Judge runs in background — return None so the response pipeline continues.
+            None
+        } else {
+            regex_signal
+        };
+
+        let Some(signal) = signal else { return };
+        tracing::info!(
+            kind = signal.kind.as_str(),
+            confidence = signal.confidence,
+            source = "regex",
+            "implicit correction detected"
+        );
+        // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)
+        let feedback_text = context::truncate_chars(&signal.feedback_text, 500);
+        // Self-corrections (user corrects their own statement) must not penalize skills —
+        // the agent did nothing wrong. Store for analytics but skip skill outcome recording.
+        if signal.kind != feedback_detector::CorrectionKind::SelfCorrection {
+            self.record_skill_outcomes(
+                "user_rejection",
+                Some(&feedback_text),
+                Some(signal.kind.as_str()),
+            )
+            .await;
+        }
+        if let Some(memory) = &self.memory_state.memory {
+            // Use `trimmed` (raw user input, untainted by secrets) instead of
+            // `feedback_text` (derived from previous_user_messages → self.messages)
+            // to avoid the CodeQL cleartext-logging taint path.
+            let correction_text = context::truncate_chars(trimmed, 500);
+            match memory
+                .sqlite()
+                .store_user_correction(
+                    conv_id.map(|c| c.0),
+                    "",
+                    &correction_text,
+                    self.skill_state
+                        .active_skill_names
+                        .first()
+                        .map(String::as_str),
+                    signal.kind.as_str(),
+                )
+                .await
+            {
+                Ok(correction_id) => {
+                    if let Err(e) = memory
+                        .store_correction_embedding(correction_id, &correction_text)
+                        .await
+                    {
+                        tracing::warn!("failed to store correction embedding: {e:#}");
+                    }
+                }
+                Err(e) => tracing::warn!("failed to store user correction: {e:#}"),
+            }
+        }
+    }
+
     async fn process_user_message(
         &mut self,
         text: String,
@@ -2168,130 +2626,8 @@ impl<C: Channel> Agent<C> {
         });
         let trimmed = text.trim();
 
-        if trimmed == "/help" {
-            self.handle_help_command().await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/status" {
-            self.handle_status_command().await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/skills" {
-            self.handle_skills_command().await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/skill" || trimmed.starts_with("/skill ") {
-            let rest = trimmed.strip_prefix("/skill").unwrap_or("").trim();
-            self.handle_skill_command(rest).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/feedback" || trimmed.starts_with("/feedback ") {
-            let rest = trimmed.strip_prefix("/feedback").unwrap_or("").trim();
-            self.handle_feedback(rest).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
-            let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
-            self.handle_mcp_command(args).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/image" || trimmed.starts_with("/image ") {
-            let path = trimmed.strip_prefix("/image").unwrap_or("").trim();
-            if path.is_empty() {
-                self.channel.send("Usage: /image <path>").await?;
-                let _ = self.channel.flush_chunks().await;
-                return Ok(());
-            }
-            self.handle_image_command(path).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/plan" || trimmed.starts_with("/plan ") {
-            match crate::orchestration::PlanCommand::parse(trimmed) {
-                Ok(cmd) => {
-                    self.handle_plan_command(cmd).await?;
-                    let _ = self.channel.flush_chunks().await;
-                    return Ok(());
-                }
-                Err(e) => {
-                    self.channel.send(&e.to_string()).await?;
-                    let _ = self.channel.flush_chunks().await;
-                    return Ok(());
-                }
-            }
-        }
-
-        if trimmed == "/graph" || trimmed.starts_with("/graph ") {
-            self.handle_graph_command(trimmed).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        #[cfg(feature = "scheduler")]
-        if trimmed == "/scheduler" || trimmed.starts_with("/scheduler ") {
-            self.handle_scheduler_command(trimmed).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        #[cfg(feature = "experiments")]
-        if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
-            self.handle_experiment_command(trimmed).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        #[cfg(feature = "lsp-context")]
-        if trimmed == "/lsp" {
-            self.handle_lsp_status_command().await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed == "/log" {
-            self.handle_log_command().await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
-            let known: Vec<String> = self
-                .orchestration
-                .subagent_manager
-                .as_ref()
-                .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
-                .unwrap_or_default();
-            match crate::subagent::AgentCommand::parse(trimmed, &known) {
-                Ok(cmd) => {
-                    if let Some(msg) = self.handle_agent_command(cmd).await {
-                        self.channel.send(&msg).await?;
-                    }
-                    let _ = self.channel.flush_chunks().await;
-                    return Ok(());
-                }
-                Err(e) if trimmed.starts_with('@') => {
-                    // Unknown @token — fall through to normal LLM processing
-                    tracing::debug!("@mention not matched as agent: {e}");
-                }
-                Err(e) => {
-                    self.channel.send(&e.to_string()).await?;
-                    let _ = self.channel.flush_chunks().await;
-                    return Ok(());
-                }
-            }
+        if let Some(result) = self.dispatch_slash_command(trimmed).await {
+            return result;
         }
 
         self.check_pending_rollbacks().await;
@@ -2300,193 +2636,7 @@ impl<C: Channel> Agent<C> {
         let conv_id = self.memory_state.conversation_id;
         self.rebuild_system_prompt(&text).await;
 
-        let correction_detection_enabled = self
-            .learning_engine
-            .config
-            .as_ref()
-            .is_none_or(|c| c.correction_detection);
-        if self.is_learning_enabled() && correction_detection_enabled {
-            let previous_user_messages: Vec<&str> = self
-                .messages
-                .iter()
-                .filter(|m| m.role == Role::User)
-                .map(|m| m.content.as_str())
-                .collect();
-            let regex_signal = self
-                .feedback_detector
-                .detect(trimmed, &previous_user_messages);
-
-            // Judge mode: invoke LLM in background if regex is borderline or missed.
-            //
-            // The judge call is decoupled from the response pipeline — it records the
-            // correction asynchronously via tokio::spawn and returns None immediately
-            // so the user response is not blocked.
-            //
-            // TODO(I3): JoinHandles are not tracked — outstanding tasks may be aborted
-            // on runtime shutdown before store_user_correction completes. This is
-            // acceptable for the learning subsystem at MVP. Future: collect handles in
-            // Agent and drain on graceful shutdown.
-            // Check rate limit synchronously before deciding to spawn.
-            // The judge_detector is &mut self so check_rate_limit() can update call_times.
-            let judge_should_run = self
-                .judge_detector
-                .as_ref()
-                .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
-                && self
-                    .judge_detector
-                    .as_mut()
-                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
-
-            let signal = if judge_should_run {
-                let judge_provider = self
-                    .providers
-                    .judge_provider
-                    .clone()
-                    .unwrap_or_else(|| self.provider.clone());
-                let assistant_snippet = self.last_assistant_response();
-                let user_msg_owned = trimmed.to_owned();
-                let memory_arc = self.memory_state.memory.clone();
-                let skill_name = self
-                    .skill_state
-                    .active_skill_names
-                    .first()
-                    .cloned()
-                    .unwrap_or_default();
-                let conv_id_bg = conv_id;
-                // Extract only the scalar config values needed by the spawned task.
-                let confidence_threshold = self
-                    .learning_engine
-                    .config
-                    .as_ref()
-                    .map_or(0.6, |c| c.correction_confidence_threshold);
-
-                tokio::spawn(async move {
-                    match feedback_detector::JudgeDetector::evaluate(
-                        &judge_provider,
-                        &user_msg_owned,
-                        &assistant_snippet,
-                        confidence_threshold,
-                    )
-                    .await
-                    {
-                        Ok(verdict) => {
-                            if let Some(signal) = verdict.into_signal(&user_msg_owned) {
-                                // Self-corrections (user corrects their own statement) must not
-                                // penalize skills. The judge path has no record_skill_outcomes()
-                                // call today, but this guard mirrors the regex path to make the
-                                // intent explicit and prevent future regressions if parity is added.
-                                let is_self_correction = signal.kind
-                                    == feedback_detector::CorrectionKind::SelfCorrection;
-                                tracing::info!(
-                                    kind = signal.kind.as_str(),
-                                    confidence = signal.confidence,
-                                    source = "judge",
-                                    is_self_correction,
-                                    "correction signal detected"
-                                );
-                                if let Some(memory) = memory_arc {
-                                    let correction_text =
-                                        context::truncate_chars(&user_msg_owned, 500);
-                                    match memory
-                                        .sqlite()
-                                        .store_user_correction(
-                                            conv_id_bg.map(|c| c.0),
-                                            &assistant_snippet,
-                                            &correction_text,
-                                            if skill_name.is_empty() {
-                                                None
-                                            } else {
-                                                Some(skill_name.as_str())
-                                            },
-                                            signal.kind.as_str(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(correction_id) => {
-                                            if let Err(e) = memory
-                                                .store_correction_embedding(
-                                                    correction_id,
-                                                    &correction_text,
-                                                )
-                                                .await
-                                            {
-                                                tracing::warn!(
-                                                    "failed to store correction embedding: {e:#}"
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "failed to store judge correction: {e:#}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("judge detector failed: {e:#}");
-                        }
-                    }
-                });
-
-                // Judge runs in background — return None so the response pipeline continues.
-                None
-            } else {
-                regex_signal
-            };
-
-            if let Some(signal) = signal {
-                tracing::info!(
-                    kind = signal.kind.as_str(),
-                    confidence = signal.confidence,
-                    source = "regex",
-                    "implicit correction detected"
-                );
-                // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)
-                let feedback_text = context::truncate_chars(&signal.feedback_text, 500);
-                // Self-corrections (user corrects their own statement) must not penalize skills —
-                // the agent did nothing wrong. Store for analytics but skip skill outcome recording.
-                if signal.kind != feedback_detector::CorrectionKind::SelfCorrection {
-                    self.record_skill_outcomes(
-                        "user_rejection",
-                        Some(&feedback_text),
-                        Some(signal.kind.as_str()),
-                    )
-                    .await;
-                }
-                if let Some(memory) = &self.memory_state.memory {
-                    // Use `trimmed` (raw user input, untainted by secrets) instead of
-                    // `feedback_text` (derived from previous_user_messages → self.messages)
-                    // to avoid the CodeQL cleartext-logging taint path.
-                    let correction_text = context::truncate_chars(trimmed, 500);
-                    match memory
-                        .sqlite()
-                        .store_user_correction(
-                            conv_id.map(|c| c.0),
-                            "",
-                            &correction_text,
-                            self.skill_state
-                                .active_skill_names
-                                .first()
-                                .map(String::as_str),
-                            signal.kind.as_str(),
-                        )
-                        .await
-                    {
-                        Ok(correction_id) => {
-                            if let Err(e) = memory
-                                .store_correction_embedding(correction_id, &correction_text)
-                                .await
-                            {
-                                tracing::warn!("failed to store correction embedding: {e:#}");
-                            }
-                        }
-                        Err(e) => tracing::warn!("failed to store user correction: {e:#}"),
-                    }
-                }
-            }
-        }
+        self.detect_and_record_corrections(trimmed, conv_id).await;
 
         // Reset per-turn compaction guard at the start of context management phase.
         self.context_manager.compacted_this_turn = false;
@@ -2793,38 +2943,200 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
-    async fn handle_agent_command(&mut self, cmd: crate::subagent::AgentCommand) -> Option<String> {
-        use crate::subagent::{AgentCommand, SubAgentState};
-        use std::fmt::Write as _;
+    /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
+    /// channel. Returns a human-readable status string suitable for sending to the user.
+    async fn poll_subagent_until_done(&mut self, task_id: &str, label: &str) -> Option<String> {
+        use crate::subagent::SubAgentState;
+        let result = loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        match cmd {
-            AgentCommand::List => {
-                let mgr = self.orchestration.subagent_manager.as_ref()?;
-                let defs = mgr.definitions();
-                if defs.is_empty() {
-                    return Some("No sub-agent definitions found.".into());
-                }
-                let mut out = String::from("Available sub-agents:\n");
-                for d in defs {
-                    let memory_label = match d.memory {
-                        Some(crate::subagent::MemoryScope::User) => " [memory:user]",
-                        Some(crate::subagent::MemoryScope::Project) => " [memory:project]",
-                        Some(crate::subagent::MemoryScope::Local) => " [memory:local]",
-                        None => "",
-                    };
-                    if let Some(ref src) = d.source {
-                        let _ = writeln!(
-                            out,
-                            "  {}{} — {} ({})",
-                            d.name, memory_label, d.description, src
-                        );
+            // Bridge secret requests from sub-agent to channel.confirm().
+            // Fetch the pending request first, then release the borrow before
+            // calling channel.confirm() (which requires &mut self).
+            #[allow(clippy::redundant_closure_for_method_calls)]
+            let pending = self
+                .orchestration
+                .subagent_manager
+                .as_mut()
+                .and_then(|m| m.try_recv_secret_request());
+            if let Some((req_task_id, req)) = pending {
+                // req.secret_key is pre-validated to [a-zA-Z0-9_-] in manager.rs
+                // (SEC-P1-02), so it is safe to embed in the prompt string.
+                let confirm_prompt = format!(
+                    "Sub-agent requests secret '{}'. Allow?",
+                    crate::text::truncate_to_chars(&req.secret_key, 100)
+                );
+                let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
+                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                    if approved {
+                        let ttl = std::time::Duration::from_secs(300);
+                        let key = req.secret_key.clone();
+                        if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
+                            let _ = mgr.deliver_secret(&req_task_id, key);
+                        }
                     } else {
-                        let _ = writeln!(out, "  {}{} — {}", d.name, memory_label, d.description);
+                        let _ = mgr.deny_secret(&req_task_id);
                     }
                 }
-                Some(out)
             }
+
+            let mgr = self.orchestration.subagent_manager.as_ref()?;
+            let statuses = mgr.statuses();
+            let Some((_, status)) = statuses.iter().find(|(id, _)| id == task_id) else {
+                break format!("{label} completed (no status available).");
+            };
+            match status.state {
+                SubAgentState::Completed => {
+                    let msg = status.last_message.clone().unwrap_or_else(|| "done".into());
+                    break format!("{label} completed: {msg}");
+                }
+                SubAgentState::Failed => {
+                    let msg = status
+                        .last_message
+                        .clone()
+                        .unwrap_or_else(|| "unknown error".into());
+                    break format!("{label} failed: {msg}");
+                }
+                SubAgentState::Canceled => {
+                    break format!("{label} was cancelled.");
+                }
+                _ => {
+                    let _ = self
+                        .channel
+                        .send_status(&format!(
+                            "{label}: turn {}/{}",
+                            status.turns_used,
+                            self.orchestration
+                                .subagent_manager
+                                .as_ref()
+                                .and_then(|m| m.agents_def(task_id))
+                                .map_or(20, |d| d.permissions.max_turns)
+                        ))
+                        .await;
+                }
+            }
+        };
+        Some(result)
+    }
+
+    /// Resolve a unique full `task_id` from a prefix. Returns `None` if the manager is absent,
+    /// `Some(Err(msg))` on ambiguity/not-found, `Some(Ok(full_id))` on success.
+    fn resolve_agent_id_prefix(&mut self, prefix: &str) -> Option<Result<String, String>> {
+        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let full_ids: Vec<String> = mgr
+            .statuses()
+            .into_iter()
+            .map(|(tid, _)| tid)
+            .filter(|tid| tid.starts_with(prefix))
+            .collect();
+        Some(match full_ids.as_slice() {
+            [] => Err(format!("No sub-agent with id prefix '{prefix}'")),
+            [fid] => Ok(fid.clone()),
+            _ => Err(format!(
+                "Ambiguous id prefix '{prefix}': matches {} agents",
+                full_ids.len()
+            )),
+        })
+    }
+
+    fn handle_agent_list(&self) -> Option<String> {
+        use std::fmt::Write as _;
+        let mgr = self.orchestration.subagent_manager.as_ref()?;
+        let defs = mgr.definitions();
+        if defs.is_empty() {
+            return Some("No sub-agent definitions found.".into());
+        }
+        let mut out = String::from("Available sub-agents:\n");
+        for d in defs {
+            let memory_label = match d.memory {
+                Some(crate::subagent::MemoryScope::User) => " [memory:user]",
+                Some(crate::subagent::MemoryScope::Project) => " [memory:project]",
+                Some(crate::subagent::MemoryScope::Local) => " [memory:local]",
+                None => "",
+            };
+            if let Some(ref src) = d.source {
+                let _ = writeln!(
+                    out,
+                    "  {}{} — {} ({})",
+                    d.name, memory_label, d.description, src
+                );
+            } else {
+                let _ = writeln!(out, "  {}{} — {}", d.name, memory_label, d.description);
+            }
+        }
+        Some(out)
+    }
+
+    fn handle_agent_status(&self) -> Option<String> {
+        use std::fmt::Write as _;
+        let mgr = self.orchestration.subagent_manager.as_ref()?;
+        let statuses = mgr.statuses();
+        if statuses.is_empty() {
+            return Some("No active sub-agents.".into());
+        }
+        let mut out = String::from("Active sub-agents:\n");
+        for (id, s) in &statuses {
+            let state = format!("{:?}", s.state).to_lowercase();
+            let elapsed = s.started_at.elapsed().as_secs();
+            let _ = writeln!(
+                out,
+                "  [{short}] {state}  turns={t}  elapsed={elapsed}s  {msg}",
+                short = &id[..8.min(id.len())],
+                t = s.turns_used,
+                msg = s.last_message.as_deref().unwrap_or(""),
+            );
+            // Show memory directory path for agents with memory enabled.
+            if let Some(def) = mgr.agents_def(id)
+                && let Some(scope) = def.memory
+                && let Ok(dir) = crate::subagent::memory::resolve_memory_dir(scope, &def.name)
+            {
+                let _ = writeln!(out, "       memory: {}", dir.display());
+            }
+        }
+        Some(out)
+    }
+
+    fn handle_agent_approve(&mut self, id: &str) -> Option<String> {
+        let full_id = match self.resolve_agent_id_prefix(id)? {
+            Ok(fid) => fid,
+            Err(msg) => return Some(msg),
+        };
+        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        if let Some((tid, req)) = mgr.try_recv_secret_request()
+            && tid == full_id
+        {
+            let key = req.secret_key.clone();
+            let ttl = std::time::Duration::from_secs(300);
+            if let Err(e) = mgr.approve_secret(&full_id, &key, ttl) {
+                return Some(format!("Approve failed: {e}"));
+            }
+            if let Err(e) = mgr.deliver_secret(&full_id, key.clone()) {
+                return Some(format!("Secret delivery failed: {e}"));
+            }
+            return Some(format!("Secret '{key}' approved for sub-agent {full_id}."));
+        }
+        Some(format!(
+            "No pending secret request for sub-agent '{full_id}'."
+        ))
+    }
+
+    fn handle_agent_deny(&mut self, id: &str) -> Option<String> {
+        let full_id = match self.resolve_agent_id_prefix(id)? {
+            Ok(fid) => fid,
+            Err(msg) => return Some(msg),
+        };
+        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        match mgr.deny_secret(&full_id) {
+            Ok(()) => Some(format!("Secret request denied for sub-agent '{full_id}'.")),
+            Err(e) => Some(format!("Deny failed: {e}")),
+        }
+    }
+
+    async fn handle_agent_command(&mut self, cmd: crate::subagent::AgentCommand) -> Option<String> {
+        use crate::subagent::AgentCommand;
+
+        match cmd {
+            AgentCommand::List => self.handle_agent_list(),
             AgentCommand::Background { name, prompt } => {
                 let provider = self.provider.clone();
                 let tool_executor = Arc::clone(&self.tool_executor);
@@ -2860,111 +3172,10 @@ impl<C: Channel> Agent<C> {
                     .channel
                     .send(&format!("Sub-agent '{name}' running... (id: {short})"))
                     .await;
-                // Poll until the sub-agent reaches a terminal state.
-                let result = loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                    // Bridge secret requests from sub-agent to channel.confirm().
-                    // Fetch the pending request first, then release the borrow before
-                    // calling channel.confirm() (which requires &mut self).
-                    #[allow(clippy::redundant_closure_for_method_calls)]
-                    let pending = self
-                        .orchestration
-                        .subagent_manager
-                        .as_mut()
-                        .and_then(|m| m.try_recv_secret_request());
-                    if let Some((req_task_id, req)) = pending {
-                        // req.secret_key is pre-validated to [a-zA-Z0-9_-] in manager.rs
-                        // (SEC-P1-02), so it is safe to embed in the prompt string.
-                        //
-                        // confirm() timeout (30s for Telegram) is a UX timeout — how long to
-                        // wait for operator input. The grant TTL (300s below) is a security
-                        // bound on how long an approved secret remains usable. Both values are
-                        // intentionally different: short confirm window, longer grant lifetime.
-                        let prompt = format!(
-                            "Sub-agent requests secret '{}'. Allow?",
-                            crate::text::truncate_to_chars(&req.secret_key, 100)
-                        );
-                        let approved = self.channel.confirm(&prompt).await.unwrap_or(false);
-                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
-                            if approved {
-                                let ttl = std::time::Duration::from_secs(300);
-                                let key = req.secret_key.clone();
-                                if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
-                                    let _ = mgr.deliver_secret(&req_task_id, key);
-                                }
-                            } else {
-                                let _ = mgr.deny_secret(&req_task_id);
-                            }
-                        }
-                    }
-
-                    let mgr = self.orchestration.subagent_manager.as_ref()?;
-                    let statuses = mgr.statuses();
-                    let Some((_, status)) = statuses.iter().find(|(id, _)| id == &task_id) else {
-                        break "Sub-agent completed (no status available).".to_owned();
-                    };
-                    match status.state {
-                        SubAgentState::Completed => {
-                            let msg = status.last_message.clone().unwrap_or_else(|| "done".into());
-                            break format!("Sub-agent '{name}' completed: {msg}");
-                        }
-                        SubAgentState::Failed => {
-                            let msg = status
-                                .last_message
-                                .clone()
-                                .unwrap_or_else(|| "unknown error".into());
-                            break format!("Sub-agent '{name}' failed: {msg}");
-                        }
-                        SubAgentState::Canceled => {
-                            break format!("Sub-agent '{name}' was cancelled.");
-                        }
-                        _ => {
-                            let _ = self
-                                .channel
-                                .send_status(&format!(
-                                    "sub-agent '{name}': turn {}/{}",
-                                    status.turns_used,
-                                    self.orchestration
-                                        .subagent_manager
-                                        .as_ref()
-                                        .and_then(|m| m.agents_def(&task_id))
-                                        .map_or(20, |d| d.permissions.max_turns)
-                                ))
-                                .await;
-                        }
-                    }
-                };
-                Some(result)
+                let label = format!("Sub-agent '{name}'");
+                self.poll_subagent_until_done(&task_id, &label).await
             }
-            AgentCommand::Status => {
-                let mgr = self.orchestration.subagent_manager.as_ref()?;
-                let statuses = mgr.statuses();
-                if statuses.is_empty() {
-                    return Some("No active sub-agents.".into());
-                }
-                let mut out = String::from("Active sub-agents:\n");
-                for (id, s) in &statuses {
-                    let state = format!("{:?}", s.state).to_lowercase();
-                    let elapsed = s.started_at.elapsed().as_secs();
-                    let _ = writeln!(
-                        out,
-                        "  [{short}] {state}  turns={t}  elapsed={elapsed}s  {msg}",
-                        short = &id[..8.min(id.len())],
-                        t = s.turns_used,
-                        msg = s.last_message.as_deref().unwrap_or(""),
-                    );
-                    // Show memory directory path for agents with memory enabled.
-                    if let Some(def) = mgr.agents_def(id)
-                        && let Some(scope) = def.memory
-                        && let Ok(dir) =
-                            crate::subagent::memory::resolve_memory_dir(scope, &def.name)
-                    {
-                        let _ = writeln!(out, "       memory: {}", dir.display());
-                    }
-                }
-                Some(out)
-            }
+            AgentCommand::Status => self.handle_agent_status(),
             AgentCommand::Cancel { id } => {
                 let mgr = self.orchestration.subagent_manager.as_mut()?;
                 // Accept prefix match on task_id.
@@ -2989,65 +3200,8 @@ impl<C: Channel> Agent<C> {
                     )),
                 }
             }
-            AgentCommand::Approve { id } => {
-                // Look up pending secret request for the given task_id prefix.
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
-                let full_ids: Vec<String> = mgr
-                    .statuses()
-                    .into_iter()
-                    .map(|(tid, _)| tid)
-                    .filter(|tid| tid.starts_with(&id))
-                    .collect();
-                let full_id = match full_ids.as_slice() {
-                    [] => return Some(format!("No sub-agent with id prefix '{id}'")),
-                    [fid] => fid.clone(),
-                    _ => {
-                        return Some(format!(
-                            "Ambiguous id prefix '{id}': matches {} agents",
-                            full_ids.len()
-                        ));
-                    }
-                };
-                if let Some((tid, req)) = mgr.try_recv_secret_request()
-                    && tid == full_id
-                {
-                    let key = req.secret_key.clone();
-                    let ttl = std::time::Duration::from_secs(300);
-                    if let Err(e) = mgr.approve_secret(&full_id, &key, ttl) {
-                        return Some(format!("Approve failed: {e}"));
-                    }
-                    if let Err(e) = mgr.deliver_secret(&full_id, key.clone()) {
-                        return Some(format!("Secret delivery failed: {e}"));
-                    }
-                    return Some(format!("Secret '{key}' approved for sub-agent {full_id}."));
-                }
-                Some(format!(
-                    "No pending secret request for sub-agent '{full_id}'."
-                ))
-            }
-            AgentCommand::Deny { id } => {
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
-                let full_ids: Vec<String> = mgr
-                    .statuses()
-                    .into_iter()
-                    .map(|(tid, _)| tid)
-                    .filter(|tid| tid.starts_with(&id))
-                    .collect();
-                let full_id = match full_ids.as_slice() {
-                    [] => return Some(format!("No sub-agent with id prefix '{id}'")),
-                    [fid] => fid.clone(),
-                    _ => {
-                        return Some(format!(
-                            "Ambiguous id prefix '{id}': matches {} agents",
-                            full_ids.len()
-                        ));
-                    }
-                };
-                match mgr.deny_secret(&full_id) {
-                    Ok(()) => Some(format!("Secret request denied for sub-agent '{full_id}'.")),
-                    Err(e) => Some(format!("Deny failed: {e}")),
-                }
-            }
+            AgentCommand::Approve { id } => self.handle_agent_approve(&id),
+            AgentCommand::Deny { id } => self.handle_agent_deny(&id),
             AgentCommand::Resume { id, prompt } => {
                 let cfg = self.orchestration.subagent_config.clone();
                 // Resolve definition name from transcript meta before spawning so we can
@@ -3073,72 +3227,8 @@ impl<C: Channel> Agent<C> {
                     .channel
                     .send(&format!("Resuming sub-agent '{id}'... (new id: {short})"))
                     .await;
-                // Poll until the sub-agent reaches a terminal state (same as Spawn).
-                let result = loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                    #[allow(clippy::redundant_closure_for_method_calls)]
-                    let pending = self
-                        .orchestration
-                        .subagent_manager
-                        .as_mut()
-                        .and_then(|m| m.try_recv_secret_request());
-                    if let Some((req_task_id, req)) = pending {
-                        let confirm_prompt = format!(
-                            "Sub-agent requests secret '{}'. Allow?",
-                            crate::text::truncate_to_chars(&req.secret_key, 100)
-                        );
-                        let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
-                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
-                            if approved {
-                                let ttl = std::time::Duration::from_secs(300);
-                                let key = req.secret_key.clone();
-                                if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
-                                    let _ = mgr.deliver_secret(&req_task_id, key);
-                                }
-                            } else {
-                                let _ = mgr.deny_secret(&req_task_id);
-                            }
-                        }
-                    }
-
-                    let mgr = self.orchestration.subagent_manager.as_ref()?;
-                    let statuses = mgr.statuses();
-                    let Some((_, status)) = statuses.iter().find(|(tid, _)| tid == &task_id) else {
-                        break "Sub-agent resume completed (no status available).".to_owned();
-                    };
-                    match status.state {
-                        SubAgentState::Completed => {
-                            let msg = status.last_message.clone().unwrap_or_else(|| "done".into());
-                            break format!("Resumed sub-agent completed: {msg}");
-                        }
-                        SubAgentState::Failed => {
-                            let msg = status
-                                .last_message
-                                .clone()
-                                .unwrap_or_else(|| "unknown error".into());
-                            break format!("Resumed sub-agent failed: {msg}");
-                        }
-                        SubAgentState::Canceled => {
-                            break "Resumed sub-agent was cancelled.".to_owned();
-                        }
-                        _ => {
-                            let _ = self
-                                .channel
-                                .send_status(&format!(
-                                    "resumed sub-agent: turn {}/{}",
-                                    status.turns_used,
-                                    self.orchestration
-                                        .subagent_manager
-                                        .as_ref()
-                                        .and_then(|m| m.agents_def(&task_id))
-                                        .map_or(20, |d| d.permissions.max_turns)
-                                ))
-                                .await;
-                        }
-                    }
-                };
-                Some(result)
+                self.poll_subagent_until_done(&task_id, "Resumed sub-agent")
+                    .await
             }
         }
     }
@@ -3167,7 +3257,103 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Update trust DB records for all reloaded skills.
+    async fn update_trust_for_reloaded_skills(&self, all_meta: &[zeph_skills::loader::SkillMeta]) {
+        let Some(ref memory) = self.memory_state.memory else {
+            return;
+        };
+        let trust_cfg = self.skill_state.trust_config.clone();
+        let managed_dir = self.skill_state.managed_dir.clone();
+        for meta in all_meta {
+            let source_kind = if managed_dir
+                .as_ref()
+                .is_some_and(|d| meta.skill_dir.starts_with(d))
+            {
+                zeph_memory::sqlite::SourceKind::Hub
+            } else {
+                zeph_memory::sqlite::SourceKind::Local
+            };
+            let initial_level = if matches!(source_kind, zeph_memory::sqlite::SourceKind::Hub) {
+                &trust_cfg.default_level
+            } else {
+                &trust_cfg.local_level
+            };
+            match zeph_skills::compute_skill_hash(&meta.skill_dir) {
+                Ok(current_hash) => {
+                    let existing = memory
+                        .sqlite()
+                        .load_skill_trust(&meta.name)
+                        .await
+                        .ok()
+                        .flatten();
+                    let trust_level_str = if let Some(ref row) = existing {
+                        if row.blake3_hash == current_hash {
+                            row.trust_level.clone()
+                        } else {
+                            trust_cfg.hash_mismatch_level.to_string()
+                        }
+                    } else {
+                        initial_level.to_string()
+                    };
+                    let source_path = meta.skill_dir.to_str();
+                    if let Err(e) = memory
+                        .sqlite()
+                        .upsert_skill_trust(
+                            &meta.name,
+                            &trust_level_str,
+                            source_kind,
+                            None,
+                            source_path,
+                            &current_hash,
+                        )
+                        .await
+                    {
+                        tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to compute hash for '{}': {e:#}", meta.name);
+                }
+            }
+        }
+    }
+
+    /// Rebuild or sync the in-memory skill matcher and BM25 index after a registry update.
+    async fn rebuild_skill_matcher(&mut self, all_meta: &[&zeph_skills::loader::SkillMeta]) {
+        let provider = self.provider.clone();
+        let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
+            let owned = text.to_owned();
+            let p = provider.clone();
+            Box::pin(async move { p.embed(&owned).await })
+        };
+
+        let needs_inmemory_rebuild = !self
+            .skill_state
+            .matcher
+            .as_ref()
+            .is_some_and(SkillMatcherBackend::is_qdrant);
+
+        if needs_inmemory_rebuild {
+            self.skill_state.matcher = SkillMatcher::new(all_meta, embed_fn)
+                .await
+                .map(SkillMatcherBackend::InMemory);
+        } else if let Some(ref mut backend) = self.skill_state.matcher {
+            let _ = self.channel.send_status("syncing skill index...").await;
+            if let Err(e) = backend
+                .sync(all_meta, &self.skill_state.embedding_model, embed_fn)
+                .await
+            {
+                tracing::warn!("failed to sync skill embeddings: {e:#}");
+            }
+        }
+
+        if self.skill_state.hybrid_search {
+            let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
+            let _ = self.channel.send_status("rebuilding search index...").await;
+            self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
+        }
+    }
+
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
         if new_registry.fingerprint()
@@ -3197,97 +3383,10 @@ impl<C: Channel> Agent<C> {
             .cloned()
             .collect::<Vec<_>>();
 
-        // Update trust DB records for reloaded skills.
-        if let Some(ref memory) = self.memory_state.memory {
-            let trust_cfg = self.skill_state.trust_config.clone();
-            let managed_dir = self.skill_state.managed_dir.clone();
-            for meta in &all_meta {
-                let source_kind = if managed_dir
-                    .as_ref()
-                    .is_some_and(|d| meta.skill_dir.starts_with(d))
-                {
-                    zeph_memory::sqlite::SourceKind::Hub
-                } else {
-                    zeph_memory::sqlite::SourceKind::Local
-                };
-                let initial_level = if matches!(source_kind, zeph_memory::sqlite::SourceKind::Hub) {
-                    &trust_cfg.default_level
-                } else {
-                    &trust_cfg.local_level
-                };
-                match zeph_skills::compute_skill_hash(&meta.skill_dir) {
-                    Ok(current_hash) => {
-                        let existing = memory
-                            .sqlite()
-                            .load_skill_trust(&meta.name)
-                            .await
-                            .ok()
-                            .flatten();
-                        let trust_level_str = if let Some(ref row) = existing {
-                            if row.blake3_hash == current_hash {
-                                row.trust_level.clone()
-                            } else {
-                                trust_cfg.hash_mismatch_level.to_string()
-                            }
-                        } else {
-                            initial_level.to_string()
-                        };
-                        let source_path = meta.skill_dir.to_str();
-                        if let Err(e) = memory
-                            .sqlite()
-                            .upsert_skill_trust(
-                                &meta.name,
-                                &trust_level_str,
-                                source_kind,
-                                None,
-                                source_path,
-                                &current_hash,
-                            )
-                            .await
-                        {
-                            tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to compute hash for '{}': {e:#}", meta.name);
-                    }
-                }
-            }
-        }
+        self.update_trust_for_reloaded_skills(&all_meta).await;
 
-        let all_meta = all_meta.iter().collect::<Vec<_>>();
-        let provider = self.provider.clone();
-        let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
-            let owned = text.to_owned();
-            let p = provider.clone();
-            Box::pin(async move { p.embed(&owned).await })
-        };
-
-        let needs_inmemory_rebuild = !self
-            .skill_state
-            .matcher
-            .as_ref()
-            .is_some_and(SkillMatcherBackend::is_qdrant);
-
-        if needs_inmemory_rebuild {
-            self.skill_state.matcher = SkillMatcher::new(&all_meta, embed_fn)
-                .await
-                .map(SkillMatcherBackend::InMemory);
-        } else if let Some(ref mut backend) = self.skill_state.matcher {
-            let _ = self.channel.send_status("syncing skill index...").await;
-            if let Err(e) = backend
-                .sync(&all_meta, &self.skill_state.embedding_model, embed_fn)
-                .await
-            {
-                tracing::warn!("failed to sync skill embeddings: {e:#}");
-            }
-        }
-
-        if self.skill_state.hybrid_search {
-            let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
-            let _ = self.channel.send_status("rebuilding search index...").await;
-            self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
-        }
+        let all_meta_refs = all_meta.iter().collect::<Vec<_>>();
+        self.rebuild_skill_matcher(&all_meta_refs).await;
 
         let all_skills: Vec<Skill> = {
             let reg = self

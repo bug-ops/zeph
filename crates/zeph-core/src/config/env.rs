@@ -9,8 +9,14 @@ impl Config {
         self.apply_env_overrides_security();
     }
 
-    #[allow(clippy::too_many_lines)]
     fn apply_env_overrides_core(&mut self) {
+        self.apply_env_overrides_core_1();
+        self.apply_env_overrides_core_1b();
+        self.apply_env_overrides_core_2();
+        self.apply_env_overrides_core_2b();
+    }
+
+    fn apply_env_overrides_core_1(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
             if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
                 self.llm.provider = kind;
@@ -89,6 +95,9 @@ impl Config {
                 _ => {}
             }
         }
+    }
+
+    fn apply_env_overrides_core_1b(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
             && let Ok(n) = v.parse::<usize>()
         {
@@ -164,6 +173,9 @@ impl Config {
         {
             self.tools.scrape.max_body_bytes = bytes;
         }
+    }
+
+    fn apply_env_overrides_core_2(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_INDEX_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {
@@ -225,6 +237,9 @@ impl Config {
             });
             stt.base_url = Some(v);
         }
+    }
+
+    fn apply_env_overrides_core_2b(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_AUTO_UPDATE_CHECK")
             && let Ok(enabled) = v.parse::<bool>()
         {

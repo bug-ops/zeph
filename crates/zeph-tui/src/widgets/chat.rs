@@ -22,7 +22,6 @@ pub struct MdLink {
 }
 
 /// Returns the maximum scroll offset for the rendered content.
-#[allow(clippy::too_many_lines)]
 pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCache) -> usize {
     if area.width == 0 || area.height == 0 {
         return 0;
@@ -33,93 +32,8 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     // 2 for block borders + 2 for accent prefix ("▎ ") added per line
     let wrap_width = area.width.saturating_sub(4) as usize;
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut all_md_links: Vec<MdLink> = Vec::new();
-
-    let tool_expanded = app.tool_expanded();
-    let compact_tools = app.compact_tools();
-    let show_labels = app.show_source_labels();
-    let terminal_width = area.width;
-    let throbber_len = BRAILLE_SIX.symbols.len();
-    let throbber_idx = usize::try_from(
-        app.throbber_state()
-            .index()
-            .rem_euclid(i8::try_from(throbber_len).unwrap_or(i8::MAX)),
-    )
-    .unwrap_or(0);
-    let messages: Vec<_> = app.messages().to_vec();
-
-    for (idx, msg) in messages.iter().enumerate() {
-        let accent = match msg.role {
-            MessageRole::User => theme.user_message,
-            MessageRole::Assistant => theme.assistant_accent,
-            MessageRole::Tool => theme.tool_accent,
-            MessageRole::System => theme.system_message,
-        };
-
-        if idx > 0 {
-            lines.push(Line::default());
-        }
-
-        let cache_key = RenderCacheKey {
-            content_hash: content_hash(&msg.content),
-            terminal_width,
-            tool_expanded,
-            compact_tools,
-            show_labels,
-        };
-
-        // Streaming messages are never cached.
-        let (msg_lines, msg_md_links) = if msg.streaming {
-            render_message_lines(
-                msg,
-                tool_expanded,
-                compact_tools,
-                throbber_idx,
-                &theme,
-                wrap_width,
-                show_labels,
-            )
-        } else if let Some((cached_lines, cached_links)) = cache.get(idx, &cache_key) {
-            (cached_lines.to_vec(), cached_links.to_vec())
-        } else {
-            let (rendered, extracted) = render_message_lines(
-                msg,
-                tool_expanded,
-                compact_tools,
-                throbber_idx,
-                &theme,
-                wrap_width,
-                show_labels,
-            );
-            cache.put(idx, cache_key, rendered.clone(), extracted.clone());
-            (rendered, extracted)
-        };
-
-        all_md_links.extend(msg_md_links);
-
-        let time_str = &msg.timestamp;
-        for (i, mut line) in msg_lines.into_iter().enumerate() {
-            if msg.role == MessageRole::User {
-                line.spans.insert(0, Span::styled("\u{258e} ", accent));
-            } else {
-                line.spans.insert(0, Span::raw("  "));
-            }
-            if i == 0 {
-                let content_width: usize =
-                    line.spans.iter().map(|s| s.content.chars().count()).sum();
-                let pad = wrap_width
-                    .saturating_sub(content_width)
-                    .saturating_sub(time_str.len());
-                if pad > 0 {
-                    line.spans.push(Span::raw(" ".repeat(pad)));
-                    line.spans
-                        .push(Span::styled(time_str.clone(), theme.system_message));
-                }
-            }
-            lines.push(line);
-        }
-    }
+    let (mut lines, all_md_links) =
+        collect_message_lines(app, cache, area.width, wrap_width, &theme);
 
     let total = lines.len();
 
@@ -165,6 +79,103 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     }
 
     max_scroll
+}
+
+fn collect_message_lines(
+    app: &mut App,
+    cache: &mut RenderCache,
+    terminal_width: u16,
+    wrap_width: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Vec<MdLink>) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut all_md_links: Vec<MdLink> = Vec::new();
+
+    let tool_expanded = app.tool_expanded();
+    let compact_tools = app.compact_tools();
+    let show_labels = app.show_source_labels();
+    let throbber_len = BRAILLE_SIX.symbols.len();
+    let throbber_idx = usize::try_from(
+        app.throbber_state()
+            .index()
+            .rem_euclid(i8::try_from(throbber_len).unwrap_or(i8::MAX)),
+    )
+    .unwrap_or(0);
+    let messages: Vec<_> = app.messages().to_vec();
+
+    for (idx, msg) in messages.iter().enumerate() {
+        let accent = match msg.role {
+            MessageRole::User => theme.user_message,
+            MessageRole::Assistant => theme.assistant_accent,
+            MessageRole::Tool => theme.tool_accent,
+            MessageRole::System => theme.system_message,
+        };
+
+        if idx > 0 {
+            lines.push(Line::default());
+        }
+
+        let cache_key = RenderCacheKey {
+            content_hash: content_hash(&msg.content),
+            terminal_width,
+            tool_expanded,
+            compact_tools,
+            show_labels,
+        };
+
+        // Streaming messages are never cached.
+        let (msg_lines, msg_md_links) = if msg.streaming {
+            render_message_lines(
+                msg,
+                tool_expanded,
+                compact_tools,
+                throbber_idx,
+                theme,
+                wrap_width,
+                show_labels,
+            )
+        } else if let Some((cached_lines, cached_links)) = cache.get(idx, &cache_key) {
+            (cached_lines.to_vec(), cached_links.to_vec())
+        } else {
+            let (rendered, extracted) = render_message_lines(
+                msg,
+                tool_expanded,
+                compact_tools,
+                throbber_idx,
+                theme,
+                wrap_width,
+                show_labels,
+            );
+            cache.put(idx, cache_key, rendered.clone(), extracted.clone());
+            (rendered, extracted)
+        };
+
+        all_md_links.extend(msg_md_links);
+
+        let time_str = &msg.timestamp;
+        for (i, mut line) in msg_lines.into_iter().enumerate() {
+            if msg.role == MessageRole::User {
+                line.spans.insert(0, Span::styled("\u{258e} ", accent));
+            } else {
+                line.spans.insert(0, Span::raw("  "));
+            }
+            if i == 0 {
+                let content_width: usize =
+                    line.spans.iter().map(|s| s.content.chars().count()).sum();
+                let pad = wrap_width
+                    .saturating_sub(content_width)
+                    .saturating_sub(time_str.len());
+                if pad > 0 {
+                    line.spans.push(Span::raw(" ".repeat(pad)));
+                    line.spans
+                        .push(Span::styled(time_str.clone(), theme.system_message));
+                }
+            }
+            lines.push(line);
+        }
+    }
+
+    (lines, all_md_links)
 }
 
 pub fn render_activity(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -543,7 +554,6 @@ impl<'t> MdRenderer<'t> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn push_event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::Heading { .. }) => {
@@ -594,26 +604,7 @@ impl<'t> MdRenderer<'t> {
                 self.current
                     .push(Span::styled(text.to_string(), self.theme.code_inline));
             }
-            Event::Text(text) => {
-                if self.in_table && !self.in_code_block {
-                    self.current_cell.push_str(&text);
-                } else if self.in_code_block {
-                    self.push_code_block_text(&text);
-                } else {
-                    if self.link_url.is_some() {
-                        self.link_text_buf.push_str(&text);
-                    }
-                    let style = self.current_style();
-                    for (i, segment) in text.split('\n').enumerate() {
-                        if i > 0 {
-                            self.newline();
-                        }
-                        if !segment.is_empty() {
-                            self.current.push(Span::styled(segment.to_string(), style));
-                        }
-                    }
-                }
-            }
+            Event::Text(text) => self.push_text_event(&text),
             Event::Start(Tag::Item) => {
                 self.current
                     .push(Span::styled("\u{2022} ".to_string(), self.theme.highlight));
@@ -633,17 +624,7 @@ impl<'t> MdRenderer<'t> {
                 self.link_text_buf.clear();
                 self.push_style(self.theme.link);
             }
-            Event::End(TagEnd::Link) => {
-                if let Some(url) = self.link_url.take() {
-                    let text = std::mem::take(&mut self.link_text_buf);
-                    if !text.is_empty() {
-                        self.md_links.push(MdLink { text, url });
-                    }
-                } else {
-                    self.link_text_buf.clear();
-                }
-                self.pop_style();
-            }
+            Event::End(TagEnd::Link) => self.end_link(),
             Event::Start(Tag::BlockQuote(_)) => {
                 self.current.push(Span::styled(
                     "\u{2502} ".to_string(),
@@ -660,17 +641,52 @@ impl<'t> MdRenderer<'t> {
             Event::Start(Tag::TableCell) => {
                 self.current_cell.clear();
             }
-            Event::End(TagEnd::TableCell) => {
-                let cell = self.current_cell.clone();
-                if let Some(row) = self.table_rows.last_mut() {
-                    row.push(cell);
-                }
-            }
+            Event::End(TagEnd::TableCell) => self.push_table_cell(),
             Event::End(TagEnd::Table) => {
                 self.emit_table();
                 self.in_table = false;
             }
             _ => {}
+        }
+    }
+
+    fn end_link(&mut self) {
+        if let Some(url) = self.link_url.take() {
+            let text = std::mem::take(&mut self.link_text_buf);
+            if !text.is_empty() {
+                self.md_links.push(MdLink { text, url });
+            }
+        } else {
+            self.link_text_buf.clear();
+        }
+        self.pop_style();
+    }
+
+    fn push_table_cell(&mut self) {
+        let cell = self.current_cell.clone();
+        if let Some(row) = self.table_rows.last_mut() {
+            row.push(cell);
+        }
+    }
+
+    fn push_text_event(&mut self, text: &str) {
+        if self.in_table && !self.in_code_block {
+            self.current_cell.push_str(text);
+        } else if self.in_code_block {
+            self.push_code_block_text(text);
+        } else {
+            if self.link_url.is_some() {
+                self.link_text_buf.push_str(text);
+            }
+            let style = self.current_style();
+            for (i, segment) in text.split('\n').enumerate() {
+                if i > 0 {
+                    self.newline();
+                }
+                if !segment.is_empty() {
+                    self.current.push(Span::styled(segment.to_string(), style));
+                }
+            }
         }
     }
 
