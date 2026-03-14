@@ -158,6 +158,8 @@ pub(super) struct McpState {
     pub(super) max_dynamic: usize,
     /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
     pub(super) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
+    /// Receives full flattened tool list after any `tools/list_changed` notification.
+    pub(super) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
 }
 
 pub(super) struct IndexState {
@@ -434,6 +436,7 @@ impl<C: Channel> Agent<C> {
                 allowed_commands: Vec::new(),
                 max_dynamic: 10,
                 shared_tools: None,
+                tool_rx: None,
             },
             index: IndexState {
                 retriever: None,
@@ -1699,6 +1702,9 @@ impl<C: Channel> Agent<C> {
                 tracing::debug!(provider = new_provider.name(), "ACP model override applied");
                 self.provider = new_provider;
             }
+
+            // Poll for MCP tool list updates from tools/list_changed notifications.
+            self.check_tool_refresh().await;
 
             // Refresh sub-agent status in metrics before polling.
             if let Some(ref mgr) = self.orchestration.subagent_manager {

@@ -2913,6 +2913,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_tool_response_with_compaction() {
+        let resp = ToolApiResponse {
+            content: vec![AnthropicContentBlock::Compaction {
+                summary: "Context was summarized for efficiency.".into(),
+            }],
+            stop_reason: None,
+            usage: None,
+        };
+        let (result, compaction) = parse_tool_response(resp);
+        assert!(matches!(result, ChatResponse::Text(ref s) if s.is_empty()));
+        assert_eq!(
+            compaction.as_deref(),
+            Some("Context was summarized for efficiency.")
+        );
+    }
+
+    #[test]
     fn split_messages_structured_with_tool_parts() {
         let messages = vec![
             Message::from_parts(
@@ -5076,6 +5093,61 @@ mod tests {
         assert!(
             clone.is_server_compaction_rejected(),
             "clone must share the rejection Arc"
+        );
+    }
+
+    #[test]
+    fn split_messages_structured_compaction_round_trip() {
+        // Compaction in an assistant message must be emitted verbatim as an
+        // AnthropicContentBlock::Compaction so the API can prune history correctly.
+        // A Compaction in a user message must be silently dropped.
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::Text {
+                        text: "Before compaction.".into(),
+                    },
+                    MessagePart::Compaction {
+                        summary: "History was compacted here.".into(),
+                    },
+                ],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![
+                    MessagePart::Text {
+                        text: "Continue.".into(),
+                    },
+                    MessagePart::Compaction {
+                        summary: "should be dropped".into(),
+                    },
+                ],
+            ),
+        ];
+        let (system, chat) = split_messages_structured(&messages, false);
+        assert!(system.is_none());
+        assert_eq!(chat.len(), 2);
+
+        // Assistant message: must contain a Compaction block with the original summary.
+        if let StructuredContent::Blocks(blocks) = &chat[0].content {
+            let has_compaction = blocks.iter().any(|b| {
+                matches!(b, AnthropicContentBlock::Compaction { summary }
+                    if summary == "History was compacted here.")
+            });
+            assert!(
+                has_compaction,
+                "assistant Compaction block must be preserved"
+            );
+        } else {
+            panic!("expected Blocks for assistant message");
+        }
+
+        // User message: Compaction must be silently dropped.
+        let user_json = serde_json::to_string(&chat[1]).unwrap();
+        assert!(
+            !user_json.contains("compaction"),
+            "Compaction in user message must be dropped"
         );
     }
 }

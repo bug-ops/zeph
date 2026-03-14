@@ -297,6 +297,45 @@ impl<C: Channel> Agent<C> {
         self.mcp.tools.len()
     }
 
+    /// Poll the watch receiver for tool list updates from `tools/list_changed` notifications.
+    ///
+    /// Called once per agent turn, before processing user input. When the tool list has changed,
+    /// updates `mcp.tools`, syncs the executor, and schedules a registry sync.
+    /// If no receiver is set (MCP disabled), or no change has occurred, this is a no-op.
+    pub(super) async fn check_tool_refresh(&mut self) {
+        let Some(ref mut rx) = self.mcp.tool_rx else {
+            return;
+        };
+        if !rx.has_changed().unwrap_or(false) {
+            return;
+        }
+        let new_tools = rx.borrow_and_update().clone();
+        if new_tools.is_empty() {
+            // Guard against replacing a non-empty initial tool list with the watch's empty
+            // initial value. The watch is only updated after a real tools/list_changed event.
+            return;
+        }
+        tracing::info!(
+            tools = new_tools.len(),
+            "tools/list_changed: agent tool list refreshed"
+        );
+        self.mcp.tools = new_tools;
+        self.sync_mcp_executor_tools();
+        self.sync_mcp_registry().await;
+        let mcp_total = self.mcp.tools.len();
+        let mcp_servers = self
+            .mcp
+            .tools
+            .iter()
+            .map(|t| &t.server_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        self.update_metrics(|m| {
+            m.mcp_tool_count = mcp_total;
+            m.mcp_server_count = mcp_servers;
+        });
+    }
+
     pub(super) fn sync_mcp_executor_tools(&self) {
         if let Some(ref shared) = self.mcp.shared_tools {
             let mut guard = shared
@@ -469,5 +508,78 @@ mod tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         assert_eq!(agent.mcp_tool_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_tool_refresh_no_rx_is_noop() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        // No tool_rx set; check_tool_refresh should be a no-op.
+        agent.check_tool_refresh().await;
+        assert_eq!(agent.mcp_tool_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_tool_refresh_no_change_is_noop() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let (tx, rx) = tokio::sync::watch::channel(Vec::new());
+        agent.mcp.tool_rx = Some(rx);
+        // No changes sent; has_changed() returns false.
+        agent.check_tool_refresh().await;
+        assert_eq!(agent.mcp_tool_count(), 0);
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn check_tool_refresh_with_empty_initial_value_does_not_replace_tools() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.mcp.tools = vec![zeph_mcp::McpTool {
+            server_id: "srv".into(),
+            name: "existing_tool".into(),
+            description: "".into(),
+            input_schema: serde_json::json!({}),
+        }];
+
+        let (_tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
+        agent.mcp.tool_rx = Some(rx);
+        // has_changed() is false for a fresh receiver; tools unchanged.
+        agent.check_tool_refresh().await;
+        assert_eq!(agent.mcp_tool_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_tool_refresh_applies_update() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let (tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
+        agent.mcp.tool_rx = Some(rx);
+
+        let new_tools = vec![zeph_mcp::McpTool {
+            server_id: "srv".into(),
+            name: "refreshed_tool".into(),
+            description: "".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        tx.send(new_tools).unwrap();
+
+        agent.check_tool_refresh().await;
+        assert_eq!(agent.mcp_tool_count(), 1);
+        assert_eq!(agent.mcp.tools[0].name, "refreshed_tool");
     }
 }
