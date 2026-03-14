@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
-use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tree_sitter::{Parser, QueryCursor, StreamingIterator};
@@ -56,31 +56,29 @@ pub struct SearchCodeHit {
     pub symbol_name: Option<String>,
 }
 
-#[async_trait]
 pub trait SemanticSearchBackend: Send + Sync {
-    async fn search(
-        &self,
-        query: &str,
-        file_pattern: Option<&str>,
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        file_pattern: Option<&'a str>,
         max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, ToolError>;
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<SearchCodeHit>, ToolError>> + Send + 'a>>;
 }
 
-#[async_trait]
 pub trait LspSearchBackend: Send + Sync {
-    async fn workspace_symbol(
-        &self,
-        symbol: &str,
-        file_pattern: Option<&str>,
+    fn workspace_symbol<'a>(
+        &'a self,
+        symbol: &'a str,
+        file_pattern: Option<&'a str>,
         max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, ToolError>;
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<SearchCodeHit>, ToolError>> + Send + 'a>>;
 
-    async fn references(
-        &self,
-        symbol: &str,
-        file_pattern: Option<&str>,
+    fn references<'a>(
+        &'a self,
+        symbol: &'a str,
+        file_pattern: Option<&'a str>,
         max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, ToolError>;
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<SearchCodeHit>, ToolError>> + Send + 'a>>;
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -564,15 +562,18 @@ mod tests {
 
     struct EmptySemantic;
 
-    #[async_trait]
     impl SemanticSearchBackend for EmptySemantic {
-        async fn search(
-            &self,
-            _query: &str,
-            _file_pattern: Option<&str>,
+        fn search<'a>(
+            &'a self,
+            _query: &'a str,
+            _file_pattern: Option<&'a str>,
             _max_results: usize,
-        ) -> Result<Vec<SearchCodeHit>, ToolError> {
-            Ok(vec![])
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<SearchCodeHit>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(async move { Ok(vec![]) })
         }
     }
 

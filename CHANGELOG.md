@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Box large `LoopbackEvent` variants (`ToolStart`, `ToolOutput`) to reduce enum size on the stack; extracted `ToolStartData` and `ToolOutputData` structs with public fields (#1737)
+- Replace `async-trait` with native async traits in `zeph-tools` search backends (`SemanticSearchBackend`, `LspSearchBackend`); removed `async-trait` dependency from `zeph-tools` (#1733)
+
 ### Fixed
 
 - fix(tui): skip ACP stdio/both autostart when `--tui` is active; stdio and TUI are mutually exclusive (both own stdin/stdout); HTTP transport is still allowed alongside TUI when `acp-http` feature is enabled (#1729)
