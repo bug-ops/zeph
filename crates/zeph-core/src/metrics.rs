@@ -170,6 +170,13 @@ pub struct MetricsSnapshot {
     pub model_name: String,
     pub summaries_count: u64,
     pub context_compactions: u64,
+    /// Number of times the agent entered the Hard compaction tier, including cooldown-skipped
+    /// turns. Not equal to the actual LLM summarization count — reflects pressure, not action.
+    pub compaction_hard_count: u64,
+    /// User-message turns elapsed after each hard compaction event.
+    /// Entry i = turns between hard compaction i and hard compaction i+1 (or session end).
+    /// Empty when no hard compaction occurred during the session.
+    pub compaction_turns_after_hard: Vec<u64>,
     pub compression_events: u64,
     pub compression_tokens_saved: u64,
     pub tool_output_prunes: u64,
