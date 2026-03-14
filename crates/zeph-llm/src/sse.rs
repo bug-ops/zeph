@@ -6,7 +6,7 @@ use serde::Deserialize;
 use tokio_stream::StreamExt;
 
 use crate::error::LlmError;
-use crate::provider::{ChatStream, StreamChunk};
+use crate::provider::{ChatStream, StreamChunk, ToolUseRequest};
 
 /// State machine for accumulating multi-event Claude SSE blocks (e.g. compaction).
 #[derive(Default)]
@@ -236,16 +236,24 @@ fn parse_gemini_sse_event(data: &str) -> Option<Result<StreamChunk, LlmError>> {
 
     let parts = resp.candidates.first()?.content.as_ref()?.parts.as_slice();
 
-    // Collect thinking and content text separately (HIGH-1 fix: handle multi-part events).
-    // TODO(gemini-phase4, #1659): `GeminiStreamPart` does not have a `function_call` field.
-    // When Gemini streams a tool call via SSE, `functionCall` chunks in `parts` are silently
-    // dropped here. `chat_with_tools()` currently uses the non-streaming endpoint, so this is
-    // safe. If SSE streaming tool use is added (Phase 4 of epic #1592), extend
-    // `GeminiStreamPart` with `function_call: Option<GeminiFunctionCall>` and handle it here.
+    // Collect thinking, content, and function call parts separately.
+    // NOTE: Gemini delivers functionCall as a complete object per SSE event (not streamed
+    // incrementally like OpenAI). If this behavior changes, an accumulator similar to
+    // ClaudeSseState would be needed.
     let mut thinking = String::new();
     let mut content = String::new();
+    let mut tool_calls: Vec<ToolUseRequest> = Vec::new();
     for part in parts {
-        if let Some(text) = part.text.as_deref()
+        if let Some(ref fc) = part.function_call {
+            tool_calls.push(ToolUseRequest {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: fc.name.clone(),
+                input: fc
+                    .args
+                    .clone()
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::default())),
+            });
+        } else if let Some(text) = part.text.as_deref()
             && !text.is_empty()
         {
             if part.thought == Some(true) {
@@ -254,6 +262,18 @@ fn parse_gemini_sse_event(data: &str) -> Option<Result<StreamChunk, LlmError>> {
                 content.push_str(text);
             }
         }
+    }
+
+    // Tool calls take priority. Text alongside tool calls is discarded (matches non-streaming
+    // behavior in gemini.rs where ChatResponse::ToolUse is returned instead of Text).
+    if !tool_calls.is_empty() {
+        if !content.is_empty() {
+            tracing::debug!(
+                dropped_text_len = content.len(),
+                "text dropped in favor of tool calls in Gemini SSE event"
+            );
+        }
+        return Some(Ok(StreamChunk::ToolUse(tool_calls)));
     }
 
     // Prioritize thinking over content (mirrors OpenAI reasoning_content handling).
@@ -283,12 +303,23 @@ struct GeminiStreamContent {
     parts: Vec<GeminiStreamPart>,
 }
 
+/// SSE-specific function call part. Mirrors `GeminiFunctionCall` in `gemini.rs` but kept
+/// separate to allow independent serde evolution for the streaming path.
+#[derive(Deserialize)]
+struct GeminiStreamFunctionCall {
+    name: String,
+    #[serde(default)]
+    args: Option<serde_json::Value>,
+}
+
 #[derive(Deserialize)]
 struct GeminiStreamPart {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
     thought: Option<bool>,
+    #[serde(default, rename = "functionCall")]
+    function_call: Option<GeminiStreamFunctionCall>,
 }
 
 #[cfg(test)]
@@ -536,5 +567,124 @@ mod tests {
         let result = parse_gemini_sse_event(data);
         let chunk = result.unwrap().unwrap();
         assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "reasoning"));
+    }
+
+    #[test]
+    fn gemini_parse_single_function_call() {
+        let data = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        match chunk {
+            StreamChunk::ToolUse(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "get_weather");
+                assert_eq!(calls[0].input["city"], "Paris");
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_parse_multiple_function_calls() {
+        let data = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool_a","args":{}}},{"functionCall":{"name":"tool_b","args":{"x":1}}}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        match chunk {
+            StreamChunk::ToolUse(calls) => {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].name, "tool_a");
+                assert_eq!(calls[1].name, "tool_b");
+                assert_eq!(calls[1].input["x"], 1);
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_parse_function_call_no_args() {
+        // Missing `args` field — should default to empty object.
+        let data = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"ping"}}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        match chunk {
+            StreamChunk::ToolUse(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "ping");
+                assert!(calls[0].input.is_object());
+                assert_eq!(calls[0].input.as_object().unwrap().len(), 0);
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_parse_function_call_null_args() {
+        // Explicit `null` args — should also default to empty object.
+        let data = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"ping","args":null}}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        match chunk {
+            StreamChunk::ToolUse(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert!(calls[0].input.is_object());
+                assert_eq!(calls[0].input.as_object().unwrap().len(), 0);
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_parse_mixed_text_and_function_call() {
+        // Text alongside functionCall — tool call takes priority, text is dropped.
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"Let me look that up"},{"functionCall":{"name":"search","args":{"q":"rust"}}}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        match chunk {
+            StreamChunk::ToolUse(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "search");
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_parse_function_call_with_thinking() {
+        // Thinking + functionCall — tool call takes priority.
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"reasoning","thought":true},{"functionCall":{"name":"calc","args":{}}}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        match chunk {
+            StreamChunk::ToolUse(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "calc");
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_parse_function_call_empty_name() {
+        // Empty name is passed through — caller is responsible for validation.
+        let data =
+            r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"","args":{}}}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        match chunk {
+            StreamChunk::ToolUse(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "");
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_parse_text_only_unaffected() {
+        // Regression: pure text events must still return Content.
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"Hello world"}]}}]}"#;
+        let result = parse_gemini_sse_event(data);
+        let chunk = result.unwrap().unwrap();
+        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello world"));
     }
 }

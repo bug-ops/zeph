@@ -1010,7 +1010,8 @@ async fn collect_stream(stream: ChatStream) -> Result<String, LlmError> {
                 buf.push_str(&c);
             }
             crate::provider::StreamChunk::Thinking(_)
-            | crate::provider::StreamChunk::Compaction(_) => {}
+            | crate::provider::StreamChunk::Compaction(_)
+            | crate::provider::StreamChunk::ToolUse(_) => {}
         }
     }
     Ok(buf)

@@ -629,11 +629,12 @@ impl<C: Channel> Agent<C> {
                 let call = &calls[idx];
 
                 // Check if this call has a failed/blocked prerequisite.
-                // We look up which tool_use_ids this call references.
-                let has_failed_dep = {
-                    let string_vals = super::tool_call_dag::extract_string_values(&tc.input);
-                    string_vals.iter().any(|v| failed_ids.contains(v))
-                };
+                // We look up which tool_use_ids this call references using values
+                // pre-extracted during DAG construction (no redundant JSON traversal).
+                let has_failed_dep = dag
+                    .string_values_for(idx)
+                    .iter()
+                    .any(|v| failed_ids.contains(v));
 
                 if has_failed_dep {
                     // IMP-02: inject synthetic error so the LLM learns the dependency chain broke.
