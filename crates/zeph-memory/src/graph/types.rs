@@ -171,7 +171,7 @@ impl GraphFact {
 /// Parse a `SQLite` `datetime('now')` string to Unix seconds.
 ///
 /// Accepts:
-/// - `"YYYY-MM-DD HH:MM:SS"` (19 chars, standard SQLite format)
+/// - `"YYYY-MM-DD HH:MM:SS"` (19 chars, standard `SQLite` format)
 /// - `"YYYY-MM-DD HH:MM:SS.fff"` (fractional seconds — truncated, not rounded)
 /// - `"YYYY-MM-DD HH:MM:SSZ"` or `"YYYY-MM-DD HH:MM:SS+HH:MM"` (timezone suffix — treated as UTC)
 ///
