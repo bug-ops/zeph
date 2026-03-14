@@ -13,7 +13,6 @@ use zeph_core::config::{
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
 
-#[derive(Default)]
 #[cfg_attr(test, derive(Clone))]
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct WizardState {
@@ -100,6 +99,7 @@ pub(crate) struct WizardState {
     // LSP context injection
     pub(crate) lsp_context_enabled: bool,
     pub(crate) soft_compaction_threshold: f32,
+    pub(crate) hard_compaction_threshold: f32,
     // Experiments
     pub(crate) experiments_enabled: bool,
     pub(crate) experiments_eval_model: Option<String>,
@@ -110,6 +110,93 @@ pub(crate) struct WizardState {
     pub(crate) log_level: String,
     pub(crate) log_rotation: String,
     pub(crate) log_max_files: usize,
+}
+
+impl Default for WizardState {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            base_url: None,
+            model: None,
+            embedding_model: None,
+            vision_model: None,
+            api_key: None,
+            compatible_name: None,
+            sqlite_path: None,
+            sessions_max_history: 0,
+            sessions_title_max_chars: 0,
+            qdrant_url: None,
+            semantic_enabled: false,
+            channel: ChannelChoice::default(),
+            telegram_token: None,
+            telegram_users: Vec::new(),
+            discord_token: None,
+            discord_app_id: None,
+            slack_bot_token: None,
+            slack_signing_secret: None,
+            vault_backend: String::new(),
+            orchestrator_primary_provider: None,
+            orchestrator_primary_model: None,
+            orchestrator_primary_base_url: None,
+            orchestrator_primary_api_key: None,
+            orchestrator_primary_compatible_name: None,
+            orchestrator_fallback_provider: None,
+            orchestrator_fallback_model: None,
+            orchestrator_fallback_base_url: None,
+            orchestrator_fallback_api_key: None,
+            orchestrator_fallback_compatible_name: None,
+            auto_update_check: false,
+            scheduler_enabled: false,
+            scheduler_tick_interval_secs: 0,
+            scheduler_max_tasks: 0,
+            daemon_enabled: false,
+            daemon_host: String::new(),
+            daemon_port: 0,
+            daemon_auth_token: None,
+            acp_enabled: false,
+            acp_agent_name: String::new(),
+            acp_agent_version: String::new(),
+            thinking: None,
+            enable_extended_context: false,
+            agents_default_permission_mode: None,
+            agents_default_disallowed_tools: Vec::new(),
+            agents_allow_bypass_permissions: false,
+            agents_user_dir: None,
+            agents_default_memory_scope: None,
+            detector_mode: None,
+            judge_model: None,
+            router_strategy: None,
+            router_thompson_state_path: None,
+            router_cascade_quality_threshold: None,
+            router_cascade_max_escalations: None,
+            orchestration_enabled: false,
+            orchestration_max_tasks: 0,
+            orchestration_max_parallel: 0,
+            orchestration_confirm_before_execute: false,
+            orchestration_failure_strategy: String::new(),
+            orchestration_planner_model: None,
+            debug_dump_enabled: false,
+            graph_memory_enabled: false,
+            graph_extract_model: None,
+            gemini_thinking_level: None,
+            server_compaction_enabled: false,
+            mcpls_enabled: false,
+            mcpls_workspace_roots: Vec::new(),
+            lsp_context_enabled: false,
+            // Valid sentinel values so WizardState is usable outside run() without
+            // out-of-range values; run() initialises these to the same values explicitly.
+            soft_compaction_threshold: 0.70,
+            hard_compaction_threshold: 0.90,
+            experiments_enabled: false,
+            experiments_eval_model: None,
+            experiments_schedule_enabled: false,
+            experiments_schedule_cron: String::new(),
+            log_file: String::new(),
+            log_level: String::new(),
+            log_rotation: String::new(),
+            log_max_files: 0,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -139,6 +226,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
         soft_compaction_threshold: 0.70,
+        hard_compaction_threshold: 0.90,
         log_file: zeph_core::config::default_log_file_path(),
         log_level: "info".into(),
         log_rotation: "daily".into(),
@@ -489,32 +577,44 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         );
     }
 
-    let hard_compaction_threshold = zeph_core::config::Config::default()
-        .memory
-        .hard_compaction_threshold;
+    state.soft_compaction_threshold = Input::new()
+        .with_prompt(
+            "Soft compaction threshold: prune tool outputs + apply deferred summaries \
+             when context usage exceeds this fraction \
+             (0.0-1.0, recommended: below 0.90 — the default hard threshold)",
+        )
+        .default(state.soft_compaction_threshold)
+        .validate_with(|v: &f32| {
+            if v.is_finite() && *v > 0.0 && *v < 1.0 {
+                Ok(())
+            } else {
+                Err("must be between 0.0 and 1.0 exclusive")
+            }
+        })
+        .interact_text()?;
+    // Loop required for cross-field validation (hard > soft): dialoguer's validate_with
+    // closure only sees the parsed value, not external state, so we handle the constraint here.
     loop {
+        let soft = state.soft_compaction_threshold;
         let val: f32 = Input::new()
             .with_prompt(format!(
-                "Soft compaction threshold: prune tool outputs + apply deferred summaries \
-                 when context usage exceeds this fraction \
-                 (0.0-1.0, must be below hard_compaction_threshold {hard_compaction_threshold})"
+                "Hard compaction threshold: full LLM summarization when context usage exceeds \
+                 this fraction (0.0-1.0, must be above soft threshold {soft})"
             ))
-            .default(state.soft_compaction_threshold)
+            .default(state.hard_compaction_threshold)
             .validate_with(|v: &f32| {
-                if *v > 0.0 && *v < 1.0 {
+                if v.is_finite() && *v > 0.0 && *v < 1.0 {
                     Ok(())
                 } else {
                     Err("must be between 0.0 and 1.0 exclusive")
                 }
             })
             .interact_text()?;
-        if val < hard_compaction_threshold {
-            state.soft_compaction_threshold = val;
+        if val > soft {
+            state.hard_compaction_threshold = val;
             break;
         }
-        eprintln!(
-            "error: value must be less than hard_compaction_threshold ({hard_compaction_threshold}), got {val}",
-        );
+        eprintln!("error: hard threshold must be greater than soft threshold ({soft}), got {val}",);
     }
 
     state.graph_memory_enabled = Confirm::new()
@@ -759,6 +859,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.memory.graph.extract_model.clone_from(m);
     }
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
+    config.memory.hard_compaction_threshold = state.hard_compaction_threshold;
     if state.server_compaction_enabled
         && let Some(cloud) = config.llm.cloud.as_mut()
     {
@@ -2011,5 +2112,61 @@ mod tests {
             config.logging.rotation,
             zeph_core::config::LogRotation::Never
         );
+    }
+
+    #[test]
+    fn build_config_hard_compaction_threshold_custom() {
+        let state = WizardState {
+            soft_compaction_threshold: 0.60,
+            hard_compaction_threshold: 0.85,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.memory.soft_compaction_threshold, 0.60);
+        assert_eq!(config.memory.hard_compaction_threshold, 0.85);
+    }
+
+    #[test]
+    fn build_config_hard_compaction_threshold_default() {
+        let state = WizardState {
+            soft_compaction_threshold: 0.70,
+            hard_compaction_threshold: 0.90,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.memory.soft_compaction_threshold, 0.70);
+        assert_eq!(config.memory.hard_compaction_threshold, 0.90);
+    }
+
+    // Documents that build_config() is a dumb mapper: cross-field validation (hard > soft)
+    // lives in Config::validate(), not here.
+    #[test]
+    fn build_config_hard_below_soft_maps_verbatim() {
+        let state = WizardState {
+            soft_compaction_threshold: 0.80,
+            hard_compaction_threshold: 0.60,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.memory.soft_compaction_threshold, 0.80);
+        assert_eq!(config.memory.hard_compaction_threshold, 0.60);
+    }
+
+    // Documents that boundary exclusion (hard < 1.0) lives in the wizard validator,
+    // not in build_config().
+    #[test]
+    fn build_config_hard_at_boundary() {
+        let state = WizardState {
+            soft_compaction_threshold: 0.70,
+            hard_compaction_threshold: 1.0,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.memory.soft_compaction_threshold, 0.70);
+        assert_eq!(config.memory.hard_compaction_threshold, 1.0);
     }
 }
