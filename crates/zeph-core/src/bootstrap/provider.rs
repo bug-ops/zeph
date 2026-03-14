@@ -183,6 +183,7 @@ pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
                     window_size,
                     max_cascade_tokens: cascade_cfg.max_cascade_tokens,
                     summary_provider,
+                    cost_tiers: cascade_cfg.cost_tiers.clone(),
                 };
                 RouterProvider::new(providers).with_cascade(router_cascade_cfg)
             } else if config.llm.router_ema_enabled {

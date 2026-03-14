@@ -33,6 +33,11 @@ pub(super) struct Tier {
 pub(super) struct ToolCallDag {
     /// `deps[i]` = list of indices that call `i` depends on.
     deps: Vec<Vec<usize>>,
+    /// `string_values[i]` = pre-extracted leaf string values from `tool_calls[i].input`.
+    ///
+    /// Cached here so that the tier dispatch loop in `native.rs` can reuse them for
+    /// prerequisite-failure propagation (IMP-02) without a redundant traversal.
+    string_values: Vec<Vec<String>>,
     len: usize,
 }
 
@@ -46,9 +51,12 @@ impl ToolCallDag {
     pub fn build(tool_calls: &[ToolUseRequest]) -> Self {
         let len = tool_calls.len();
         let mut deps: Vec<Vec<usize>> = vec![Vec::new(); len];
+        let string_values: Vec<Vec<String>> = tool_calls
+            .iter()
+            .map(|tc| extract_string_values(&tc.input))
+            .collect();
 
-        for (i, tc_i) in tool_calls.iter().enumerate() {
-            let values = extract_string_values(&tc_i.input);
+        for (i, values) in string_values.iter().enumerate() {
             for (j, tc_j) in tool_calls.iter().enumerate() {
                 if i == j {
                     continue;
@@ -61,7 +69,21 @@ impl ToolCallDag {
             }
         }
 
-        Self { deps, len }
+        Self {
+            deps,
+            string_values,
+            len,
+        }
+    }
+
+    /// Returns the pre-extracted leaf string values for the call at `idx`.
+    ///
+    /// These are the same values used during DAG construction. The tier dispatch loop
+    /// uses them to check for failed-prerequisite propagation without re-traversing the
+    /// input JSON.
+    #[must_use]
+    pub(super) fn string_values_for(&self, idx: usize) -> &[String] {
+        &self.string_values[idx]
     }
 
     /// Returns `true` when no call depends on any other call.

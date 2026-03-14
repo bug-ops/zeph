@@ -78,6 +78,8 @@ pub(crate) struct WizardState {
     pub(crate) router_cascade_quality_threshold: Option<f64>,
     /// Cascade: maximum number of quality-based escalations per request (default 2).
     pub(crate) router_cascade_max_escalations: Option<u8>,
+    /// Cascade: explicit cost ordering of provider names (cheapest first). None = chain order.
+    pub(crate) router_cascade_cost_tiers: Option<Vec<String>>,
     // Orchestration settings
     pub(crate) orchestration_enabled: bool,
     pub(crate) orchestration_max_tasks: u32,
@@ -169,6 +171,7 @@ impl Default for WizardState {
             router_thompson_state_path: None,
             router_cascade_quality_threshold: None,
             router_cascade_max_escalations: None,
+            router_cascade_cost_tiers: None,
             orchestration_enabled: false,
             orchestration_max_tasks: 0,
             orchestration_max_parallel: 0,
@@ -818,6 +821,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 if let Some(e) = state.router_cascade_max_escalations {
                     cfg.max_escalations = e;
                 }
+                cfg.cost_tiers.clone_from(&state.router_cascade_cost_tiers);
                 Some(cfg)
             } else {
                 None
@@ -1458,6 +1462,22 @@ fn step_router(state: &mut WizardState) -> anyhow::Result<()> {
                 .default(2_u8)
                 .interact_text()?;
             state.router_cascade_max_escalations = Some(max_esc);
+            let cost_tiers_input: String = Input::new()
+                .with_prompt(
+                    "Cost tiers: comma-separated provider names cheapest first \
+                     (empty = use chain order)",
+                )
+                .default(String::new())
+                .interact_text()?;
+            let tiers: Vec<String> = cost_tiers_input
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if !tiers.is_empty() {
+                state.router_cascade_cost_tiers = Some(tiers);
+            }
         }
         _ => unreachable!(),
     }
