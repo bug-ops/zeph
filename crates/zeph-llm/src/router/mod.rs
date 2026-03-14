@@ -606,6 +606,7 @@ impl RouterProvider {
     /// Cascade chat: try providers in order, escalate on degenerate output.
     ///
     /// Returns the best-seen response if all providers fail or budget is exhausted.
+    #[allow(clippy::too_many_lines)]
     async fn cascade_chat(
         &self,
         providers: &[AnyProvider],
@@ -693,14 +694,19 @@ impl RouterProvider {
                         || budget_exhausted
                     {
                         self.record_availability(p.name(), true, latency);
-                        // When budget is exhausted and we would have escalated, return the best
-                        // response seen so far rather than the current (possibly lower-quality) one.
-                        if budget_exhausted && verdict.should_escalate {
+                        // When escalation is blocked (budget exhausted or escalation count
+                        // at zero) and the current response would have triggered escalation,
+                        // return the best-seen response instead of the current (possibly
+                        // lower-quality) one.
+                        if verdict.should_escalate
+                            && (budget_exhausted || escalations_remaining == 0)
+                        {
                             let best_response = best.take().map_or(response, |(r, _)| r);
                             tracing::info!(
                                 tokens_used,
                                 budget = cfg.max_cascade_tokens,
-                                "cascade: token budget exhausted, returning best response"
+                                escalations_remaining,
+                                "cascade: escalation blocked, returning best response"
                             );
                             return Ok(best_response);
                         }
@@ -838,14 +844,18 @@ impl RouterProvider {
                     if !verdict.should_escalate || escalations_remaining == 0 || budget_exhausted {
                         self.record_availability(p.name(), true, latency);
 
-                        // When the budget is exhausted and the current response would
-                        // have triggered escalation, return the best-seen response
-                        // instead of the current (possibly lower-quality) one.
-                        let response_text = if budget_exhausted && verdict.should_escalate {
+                        // When escalation is blocked (budget exhausted or escalation count
+                        // at zero) and the current response would have triggered escalation,
+                        // return the best-seen response instead of the current (possibly
+                        // lower-quality) one.
+                        let response_text = if verdict.should_escalate
+                            && (budget_exhausted || escalations_remaining == 0)
+                        {
                             tracing::info!(
                                 tokens_used,
                                 budget = cfg.max_cascade_tokens,
-                                "cascade stream: token budget exhausted, returning best response"
+                                escalations_remaining,
+                                "cascade stream: escalation blocked, returning best response"
                             );
                             best_seen.take().map_or(text, |(r, _)| r)
                         } else {
@@ -1246,6 +1256,80 @@ mod tests {
         let result = r.chat(&msgs).await.unwrap();
         // The result must not be the degenerate "x" response.
         assert_ne!(result, bad_response, "should return best-seen, not current");
+    }
+
+    #[tokio::test]
+    async fn cascade_escalations_exhausted_returns_best_seen_not_current() {
+        use crate::mock::MockProvider;
+
+        // p1: decent response, fails quality at 0.95 → escalates (escalations_remaining: 1 → 0)
+        // p2: degenerate "x", fails quality → escalations_remaining == 0 → blocked → best_seen wins
+        let good_response = "This is a reasonable response with enough content to score well.";
+        let bad_response = "x";
+
+        let p1 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![good_response.to_owned()]).with_delay(0),
+        );
+        let p2 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![bad_response.to_owned()]).with_delay(0),
+        );
+        let p3 = AnyProvider::Mock(MockProvider::failing()); // should not be reached
+
+        let r = RouterProvider::new(vec![p1, p2, p3]).with_cascade(CascadeRouterConfig {
+            quality_threshold: 0.95, // both fail quality; p1 score > p2 score
+            max_escalations: 1,      // p1 escalates (budget: 1→0), p2 is blocked
+            ..CascadeRouterConfig::default()
+        });
+        let msgs = vec![Message::from_legacy(Role::User, "test")];
+        let result = r.chat(&msgs).await.unwrap();
+        assert_eq!(
+            result, good_response,
+            "should return best-seen (p1), not the degenerate current response (p2)"
+        );
+        assert_ne!(
+            result, bad_response,
+            "must not return degenerate p2 response"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_stream_escalations_exhausted_returns_best_seen_not_current() {
+        use crate::mock::MockProvider;
+
+        // Same scenario as above but for cascade_chat_stream.
+        // p1: decent response, fails quality at 0.95 → escalates (escalations_remaining: 1 → 0)
+        // p2: degenerate "x", fails quality → escalations_remaining == 0 → return best_seen
+        let good_response = "This is a reasonable response with enough content to score well.";
+        let bad_response = "x";
+
+        let p1 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![good_response.to_owned()])
+                .with_delay(0)
+                .with_streaming(),
+        );
+        let p2 = AnyProvider::Mock(
+            MockProvider::with_responses(vec![bad_response.to_owned()])
+                .with_delay(0)
+                .with_streaming(),
+        );
+        let p3 = AnyProvider::Mock(MockProvider::failing()); // last provider, should not be reached
+
+        let r = RouterProvider::new(vec![p1, p2, p3]).with_cascade(CascadeRouterConfig {
+            quality_threshold: 0.95, // both fail quality; p1 score > p2 score
+            max_escalations: 1,      // p1 escalates (budget: 1→0), p2 is blocked
+            ..CascadeRouterConfig::default()
+        });
+        let msgs = vec![Message::from_legacy(Role::User, "test")];
+        let stream = r.chat_stream(&msgs).await.unwrap();
+        let collected = collect_stream(stream).await.unwrap();
+        assert_eq!(
+            collected, good_response,
+            "should return best-seen (p1), not the degenerate current response (p2)"
+        );
+        assert_ne!(
+            collected, bad_response,
+            "must not return degenerate p2 response"
+        );
     }
 
     #[tokio::test]
