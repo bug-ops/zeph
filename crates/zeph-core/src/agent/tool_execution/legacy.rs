@@ -666,6 +666,13 @@ impl<C: Channel> Agent<C> {
                 zeph_llm::StreamChunk::Thinking(thinking) => {
                     self.channel.send_thinking_chunk(&thinking).await?;
                 }
+                zeph_llm::StreamChunk::ToolUse(calls) => {
+                    tracing::warn!(
+                        count = calls.len(),
+                        names = ?calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                        "tool calls received in streaming path (not handled; use chat_with_tools for tool execution)"
+                    );
+                }
                 zeph_llm::StreamChunk::Compaction(raw_summary) => {
                     let _ = self
                         .channel

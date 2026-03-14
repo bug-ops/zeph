@@ -54,6 +54,8 @@ pub enum StreamChunk {
     /// Server-side compaction summary (Claude compact-2026-01-12 beta).
     /// Delivered when the Claude API automatically summarizes conversation history.
     Compaction(String),
+    /// One or more tool calls from the model received during streaming.
+    ToolUse(Vec<ToolUseRequest>),
 }
 
 /// Boxed stream of typed chunks from an LLM provider.
