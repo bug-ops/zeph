@@ -352,6 +352,45 @@ async fn seed_entity_with_zero_embedding(
     id
 }
 
+/// Seed an entity with a zero embedding but WITHOUT writing qdrant_point_id back to SQLite.
+///
+/// Used to exercise the secondary `target_id == entity_id` guard — when `qdrant_point_id` is NULL
+/// in the DB the primary point-id comparison cannot exclude the self-result, so the secondary
+/// guard must catch it.
+async fn seed_entity_no_db_point_id(
+    store: &GraphStore,
+    embedding_store: &crate::embedding_store::EmbeddingStore,
+    name: &str,
+) -> i64 {
+    use serde_json::json;
+
+    let id = store
+        .upsert_entity(name, name, EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    let point_id = uuid::Uuid::new_v4().to_string();
+    let payload = json!({
+        "entity_id": id,
+        "entity_type": "concept",
+        "name": name,
+        "summary": "",
+    });
+    embedding_store
+        .upsert_to_collection(
+            "zeph_graph_entities",
+            &point_id,
+            payload,
+            vec![0.0_f32; 384],
+        )
+        .await
+        .unwrap();
+
+    // Intentionally NOT writing qdrant_point_id to graph_entities.
+    // The DB row keeps qdrant_point_id = NULL so the primary self-exclusion guard is inactive.
+    id
+}
+
 fn embedding_provider() -> AnyProvider {
     use zeph_llm::mock::MockProvider;
     let mut mock = MockProvider::default();
@@ -475,5 +514,139 @@ async fn link_memory_notes_unidirectional() {
     assert_eq!(
         count, 1,
         "must have exactly one unidirectional edge per pair"
+    );
+}
+
+// ── edges_created stat accuracy (fix #1792) ──────────────────────────────────
+//
+// When both A and B are in entity_ids, the A→B and B→A directions both produce
+// the same normalised (min, max) pair. Previously both calls to insert_edge
+// returned Ok (the second updated confidence on the existing row), inflating
+// edges_created to 2. After the fix, seen_pairs deduplication ensures only one
+// insert_edge call is made per pair, keeping edges_created == 1.
+
+#[tokio::test]
+async fn link_memory_notes_edges_created_not_inflated() {
+    let (memory, embedding_store) = memory_with_in_memory_vector_store().await;
+    let store = GraphStore::new(memory.sqlite.pool().clone());
+
+    let id_a = seed_entity_with_zero_embedding(&store, &embedding_store, "stat_entity_a").await;
+    let id_b = seed_entity_with_zero_embedding(&store, &embedding_store, "stat_entity_b").await;
+
+    let cfg = NoteLinkingConfig {
+        enabled: true,
+        similarity_threshold: 0.0,
+        top_k: 5,
+        timeout_secs: 10,
+    };
+    // Pass both A and B so each will find the other during search.
+    let stats = link_memory_notes(
+        &[id_a, id_b],
+        memory.sqlite.pool().clone(),
+        embedding_store,
+        embedding_provider(),
+        &cfg,
+    )
+    .await;
+
+    assert_eq!(
+        stats.edges_created, 1,
+        "edges_created must be 1 even when both endpoints are in entity_ids"
+    );
+}
+
+// ── secondary self-skip guard (test #1790) ────────────────────────────────────
+//
+// When qdrant_point_id is NULL in the DB the primary point-id guard cannot exclude
+// the self-result from the search. The secondary guard (`target_id == entity_id`)
+// must catch it so no self-edge is created.
+
+#[tokio::test]
+async fn link_memory_notes_secondary_self_skip_guard() {
+    let (memory, embedding_store) = memory_with_in_memory_vector_store().await;
+    let store = GraphStore::new(memory.sqlite.pool().clone());
+
+    // Entity A: qdrant_point_id NOT written to DB — primary guard is inactive.
+    let id_a = seed_entity_no_db_point_id(&store, &embedding_store, "secondary_guard_a").await;
+    // Entity B: normal seeding so that search returns at least one non-self result.
+    let id_b = seed_entity_with_zero_embedding(&store, &embedding_store, "secondary_guard_b").await;
+    let id_c = seed_entity_with_zero_embedding(&store, &embedding_store, "secondary_guard_c").await;
+
+    let cfg = NoteLinkingConfig {
+        enabled: true,
+        similarity_threshold: 0.0,
+        top_k: 10,
+        timeout_secs: 10,
+    };
+    link_memory_notes(
+        &[id_a],
+        memory.sqlite.pool().clone(),
+        embedding_store,
+        embedding_provider(),
+        &cfg,
+    )
+    .await;
+
+    // No self-edge A→A must exist.
+    let self_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM graph_edges
+         WHERE source_entity_id = ?1 AND target_entity_id = ?1",
+    )
+    .bind(id_a)
+    .fetch_one(memory.sqlite.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        self_count, 0,
+        "self-edge must not be created via secondary guard"
+    );
+
+    // At least one edge to B or C must exist (confirming A was processed successfully).
+    let other_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM graph_edges
+         WHERE (source_entity_id = ?1 OR target_entity_id = ?1)
+           AND source_entity_id != target_entity_id",
+    )
+    .bind(id_a)
+    .fetch_one(memory.sqlite.pool())
+    .await
+    .unwrap();
+    let _ = (id_b, id_c); // referenced for context
+    assert!(other_count > 0, "A must have at least one edge to B or C");
+}
+
+// ── threshold rejection (test #1791) ─────────────────────────────────────────
+//
+// MockProvider returns vec![0.0; 384]; InMemoryVectorStore scores identical zero
+// vectors as 1.0. Setting similarity_threshold = 2.0 (above the maximum possible
+// cosine similarity) must reject all candidates, producing zero edges.
+
+#[tokio::test]
+async fn link_memory_notes_threshold_rejection() {
+    let (memory, embedding_store) = memory_with_in_memory_vector_store().await;
+    let store = GraphStore::new(memory.sqlite.pool().clone());
+
+    let id_a = seed_entity_with_zero_embedding(&store, &embedding_store, "rej_entity_a").await;
+    let _id_b = seed_entity_with_zero_embedding(&store, &embedding_store, "rej_entity_b").await;
+
+    // threshold = 2.0 is above the maximum possible cosine similarity (1.0).
+    let cfg = NoteLinkingConfig {
+        enabled: true,
+        similarity_threshold: 2.0,
+        top_k: 5,
+        timeout_secs: 10,
+    };
+    let stats = link_memory_notes(
+        &[id_a],
+        memory.sqlite.pool().clone(),
+        embedding_store,
+        embedding_provider(),
+        &cfg,
+    )
+    .await;
+
+    assert_eq!(
+        stats.edges_created, 0,
+        "no edges must be created when all scores are below threshold"
     );
 }

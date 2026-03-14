@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- fix(memory): `edges_created` stat in `link_memory_notes` was inflated when both endpoints of a pair appeared in `entity_ids` — the second normalised `insert_edge(src, tgt)` call returned `Ok` (updating confidence on the existing row), incrementing the counter twice for one physical edge; a `HashSet` of seen `(src, tgt)` pairs now deduplicates within each pass, keeping the stat accurate (closes #1792)
+- perf(memory): `link_memory_notes` now embeds all entity texts in parallel via `futures::join_all` instead of N sequential HTTP round-trips, reducing embed latency from O(N) to O(1) round-trips (closes #1793)
+- perf(memory): `link_memory_notes` now runs all Qdrant `search_collection` calls in parallel via `futures::join_all`, reducing search latency from O(N) to O(1) round-trips (closes #1794)
+- test(memory): add `link_memory_notes_edges_created_not_inflated` — verifies `edges_created == 1` when both endpoints are in `entity_ids`, catching the bidirectional double-count regression (closes #1792)
+- test(memory): add `link_memory_notes_secondary_self_skip_guard` — seeds entity A without `qdrant_point_id` in SQLite (primary point-id guard inactive), verifies the secondary `target_id == entity_id` guard prevents self-edges when A appears in its own top-K search results (closes #1790)
+- test(memory): add `link_memory_notes_threshold_rejection` — sets `similarity_threshold = 2.0` (above maximum cosine similarity 1.0), verifies zero edges are created, covering the `score < threshold` filter path (closes #1791)
+
 - feat(memory): A-MEM dynamic note linking — fire-and-forget similarity edges on graph write; `NoteLinkingConfig` nested in `[memory.graph.note_linking]`; `link_memory_notes` runs after each successful extraction inside the spawned task, bounded by `timeout_secs`; unidirectional `similar_to` edges (source < target) avoid BFS double-counting; `similarity_threshold` deserialization rejects NaN, Inf, and values outside `[0.0, 1.0]`; disabled by default (closes #1694)
 
 - feat(memory,core): migrate tool overflow storage from filesystem to SQLite (`tool_overflow` table, migration 031); `maybe_summarize_tool_output` now writes to `SqliteStore.save_overflow` instead of disk files; overflow references use opaque `overflow:<uuid>` format (eliminates absolute-path leakage SEC-JIT-03); new `read_overflow` native tool allows LLM to retrieve full content; age-based cleanup via `SqliteStore.cleanup_overflow` on startup; `ON DELETE CASCADE` automatically removes overflow rows when conversation is deleted (closes #1774)
