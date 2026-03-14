@@ -33,11 +33,15 @@ impl<C: Channel> Agent<C> {
             let limit = parse_backfill_limit(args);
             return self.handle_graph_backfill(limit).await;
         }
+        if let Some(name) = args.strip_prefix("history ") {
+            return self.handle_graph_history(name.trim()).await;
+        }
 
         self.channel
             .send(
                 "Unknown /graph subcommand. Available: /graph, /graph entities, \
-                 /graph facts <name>, /graph communities, /graph backfill [--limit N]",
+                 /graph facts <name>, /graph history <name>, /graph communities, \
+                 /graph backfill [--limit N]",
             )
             .await?;
         Ok(())
@@ -188,6 +192,89 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    async fn handle_graph_history(&mut self, name: &str) -> Result<(), AgentError> {
+        let Some(memory) = self.memory_state.memory.as_ref() else {
+            self.channel.send("Graph memory is not enabled.").await?;
+            return Ok(());
+        };
+        let Some(store) = memory.graph_store.as_ref() else {
+            self.channel.send("Graph memory is not enabled.").await?;
+            return Ok(());
+        };
+
+        let matches = store.find_entity_by_name(name).await?;
+        if matches.is_empty() {
+            self.channel
+                .send(&format!("No entity found matching '{name}'."))
+                .await?;
+            return Ok(());
+        }
+
+        let entity = &matches[0];
+        let edges = store.edge_history_for_entity(entity.id, 50).await?;
+        if edges.is_empty() {
+            self.channel
+                .send(&format!("Entity '{}' has no edge history.", entity.name))
+                .await?;
+            return Ok(());
+        }
+
+        // Build entity id → name lookup for display
+        let mut entity_names: std::collections::HashMap<i64, String> =
+            std::collections::HashMap::new();
+        entity_names.insert(entity.id, entity.name.clone());
+        for edge in &edges {
+            for &id in &[edge.source_entity_id, edge.target_entity_id] {
+                entity_names.entry(id).or_default();
+            }
+        }
+        for (&id, name_val) in &mut entity_names {
+            if name_val.is_empty() {
+                if let Ok(Some(other)) = store.find_entity_by_id(id).await {
+                    *name_val = other.name;
+                } else {
+                    *name_val = format!("#{id}");
+                }
+            }
+        }
+
+        let n = edges.len();
+        let lines: Vec<String> = edges
+            .iter()
+            .map(|e| {
+                let status = if e.valid_to.is_some() {
+                    let date = e
+                        .valid_to
+                        .as_deref()
+                        .and_then(|s| s.split('T').next().or_else(|| s.split(' ').next()))
+                        .unwrap_or("?");
+                    format!("[expired {date}]")
+                } else {
+                    "[active]".to_string()
+                };
+                let src = entity_names
+                    .get(&e.source_entity_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("#{}", e.source_entity_id));
+                let tgt = entity_names
+                    .get(&e.target_entity_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("#{}", e.target_entity_id));
+                format!(
+                    "  {status} {} --[{}]--> {}: {} (confidence: {:.2})",
+                    src, e.relation, tgt, e.fact, e.confidence
+                )
+            })
+            .collect();
+        let msg = format!(
+            "Edge history for '{}' ({n} edges):\n{}",
+            entity.name,
+            lines.join("\n")
+        );
+        self.channel.send(&msg).await?;
+        Ok(())
+    }
+
     async fn handle_graph_communities(&mut self) -> Result<(), AgentError> {
         let Some(memory) = self.memory_state.memory.as_ref() else {
             self.channel.send("Graph memory is not enabled.").await?;
@@ -332,5 +419,20 @@ mod tests {
         assert_eq!(parse_backfill_limit("backfill"), None);
         assert_eq!(parse_backfill_limit("backfill --limit"), None);
         assert_eq!(parse_backfill_limit("backfill --limit 0"), Some(0));
+    }
+
+    #[test]
+    fn parse_graph_history_subcommand() {
+        let args = "history Rust";
+        let name = args.strip_prefix("history ").map(str::trim);
+        assert_eq!(name, Some("Rust"));
+
+        let args2 = "history  Alice ";
+        let name2 = args2.strip_prefix("history ").map(str::trim);
+        assert_eq!(name2, Some("Alice"));
+
+        let args3 = "entities";
+        let name3 = args3.strip_prefix("history ");
+        assert_eq!(name3, None);
     }
 }
