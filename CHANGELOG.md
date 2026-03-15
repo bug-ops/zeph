@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- test(memory): unit tests for `sanitize_guidelines` special-token (`<|system|>`) and role-prefix (`assistant:`, `user:`) patterns (#1807)
+
 ### Changed
 
 - refactor(acp): centralize ACP session config wiring via `AgentSessionConfig::from_config()` and `Agent::apply_session_config()` (#1812) — replaces ~25 individually-copied scalar fields in `SharedAgentDeps` and redundant builder call blocks in `spawn_acp_agent`, `runner.rs`, and `daemon.rs` with a single struct; eliminates hardcoded `0.20` literal (now `CONTEXT_BUDGET_RESERVE_RATIO`); fixes missing `with_orchestration_config` and `with_server_compaction` in daemon sessions
@@ -14,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Qdrant collection dimension mismatch when switching embedding models on collections with 0 points (#1815)
 - fix(debug): trace.json now written inside per-session subdir, preventing overwrites (#1814)
+- A-MEM note linking never created `similar_to` edges because `EntityResolver` in `extract_and_store` was constructed without `with_embedding_store()`, leaving `zeph_graph_entities` unpopulated; pass the Qdrant embedding store through to the resolver so entity embeddings are stored and note linking can find semantically similar entities across sessions (#1817)
+- fix(core): JIT tool reference injection now works after overflow migration to SQLite — `OVERFLOW_NOTICE_PREFIX` and `extract_overflow_ref()` updated to match the `overflow:{uuid}` format; pruned tool output notices now read `[tool output pruned; use read_overflow {uuid} to retrieve]` instead of a stale file-path reference (closes #1818)
 
 ## [0.15.1] - 2026-03-15
 
