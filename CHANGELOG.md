@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(policy): `/policy status` now reports the correct total rule count when rules are loaded from an external `policy_file` — previously `handle_policy_command()` used `policy_config.rules.len()` which only counted inline TOML rules; the handler now compiles the enforcer to get the merged count, falling back to the inline count on compile error (closes #1898)
 
 - fix(orchestration): scheduler deadlock no longer emits misleading "Plan failed. 0/N tasks failed" message — non-terminal tasks are now marked `Canceled` at deadlock time (mirrors `cancel_all()` semantics); the done message now distinguishes pure deadlock ("Plan canceled. N/M tasks did not run."), mixed failure+cancellation ("Plan failed. X/M tasks failed, Y canceled:"), and normal failure paths (closes #1879)
 - sec(policy): `load_policy_file()` now canonicalizes the path before reading and rejects policy files whose canonical path escapes the process working directory — mirrors the symlink boundary check already present in `load_instructions()`; adds `PolicyCompileError::FileEscapesRoot` variant (closes #1872)
