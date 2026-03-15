@@ -30,47 +30,73 @@ fn truncate_field(s: &str) -> &str {
 }
 
 impl SqliteStore {
-    /// Load the latest active compression guidelines (global scope).
+    /// Load the latest active compression guidelines.
+    ///
+    /// When `conversation_id` is `Some`, returns conversation-specific guidelines
+    /// preferred over global (NULL) ones. When `None`, returns only global guidelines.
     ///
     /// Returns `(version, guidelines_text)`. Returns `(0, "")` if no guidelines exist yet.
     ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    pub async fn load_compression_guidelines(&self) -> Result<(i64, String), MemoryError> {
+    pub async fn load_compression_guidelines(
+        &self,
+        conversation_id: Option<ConversationId>,
+    ) -> Result<(i64, String), MemoryError> {
         let row = sqlx::query_as::<_, (i64, String)>(
-            "SELECT version, guidelines FROM compression_guidelines ORDER BY version DESC LIMIT 1",
+            // When conversation_id is Some(cid): `conversation_id = cid` matches
+            // conversation-specific rows; `conversation_id IS NULL` matches global rows.
+            // The CASE ensures conversation-specific rows sort before global ones.
+            // When conversation_id is None: `conversation_id = NULL` is always false in SQL,
+            // so only `conversation_id IS NULL` rows match — correct global-only behavior.
+            "SELECT version, guidelines FROM compression_guidelines \
+             WHERE conversation_id = ? OR conversation_id IS NULL \
+             ORDER BY CASE WHEN conversation_id IS NOT NULL THEN 0 ELSE 1 END, \
+                      version DESC \
+             LIMIT 1",
         )
+        .bind(conversation_id.map(|c| c.0))
         .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.unwrap_or((0, String::new())))
     }
 
-    /// Save a new version of the compression guidelines (global scope).
+    /// Save a new version of the compression guidelines.
+    ///
+    /// When `conversation_id` is `Some`, the guidelines are scoped to that conversation.
+    /// When `None`, the guidelines are global (apply as fallback for all conversations).
     ///
     /// Inserts a new row; older versions are retained for audit.
     /// Returns the new version number.
     ///
+    /// Note: version numbers are globally sequential across all conversation scopes —
+    /// they are not per-conversation counters. The UNIQUE(version) constraint from
+    /// migration 033 is preserved.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the database insert fails.
+    /// Returns an error if the database insert fails (including FK violation if
+    /// `conversation_id` does not reference a valid conversation row).
     pub async fn save_compression_guidelines(
         &self,
         guidelines: &str,
         token_count: i64,
+        conversation_id: Option<ConversationId>,
     ) -> Result<i64, MemoryError> {
-        // The INSERT...SELECT computes MAX(version)+1 and inserts it in a single
-        // statement. SQLite's single-writer WAL guarantee makes this atomic —
-        // no concurrent writer can observe the same MAX and produce a duplicate version.
+        // The INSERT...SELECT computes MAX(version)+1 across all rows (global + per-conversation)
+        // and inserts it in a single statement. SQLite's single-writer WAL guarantee makes this
+        // atomic — no concurrent writer can observe the same MAX and produce a duplicate version.
         let new_version: i64 = sqlx::query_scalar(
-            "INSERT INTO compression_guidelines (version, guidelines, token_count) \
-             SELECT COALESCE(MAX(version), 0) + 1, ?, ? \
+            "INSERT INTO compression_guidelines (version, guidelines, token_count, conversation_id) \
+             SELECT COALESCE(MAX(version), 0) + 1, ?, ?, ? \
              FROM compression_guidelines \
              RETURNING version",
         )
         .bind(guidelines)
         .bind(token_count)
+        .bind(conversation_id.map(|c| c.0))
         .fetch_one(&self.pool)
         .await?;
         Ok(new_version)
@@ -225,7 +251,7 @@ mod tests {
     #[tokio::test]
     async fn load_guidelines_returns_defaults_when_empty() {
         let store = make_store().await;
-        let (version, text) = store.load_compression_guidelines().await.unwrap();
+        let (version, text) = store.load_compression_guidelines(None).await.unwrap();
         assert_eq!(version, 0);
         assert!(text.is_empty());
     }
@@ -234,19 +260,143 @@ mod tests {
     async fn save_and_load_guidelines() {
         let store = make_store().await;
         let v1 = store
-            .save_compression_guidelines("always preserve file paths", 4)
+            .save_compression_guidelines("always preserve file paths", 4, None)
             .await
             .unwrap();
         assert_eq!(v1, 1);
         let v2 = store
-            .save_compression_guidelines("always preserve file paths\nalways preserve errors", 8)
+            .save_compression_guidelines(
+                "always preserve file paths\nalways preserve errors",
+                8,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(v2, 2);
         // Loading should return the latest version.
-        let (v, text) = store.load_compression_guidelines().await.unwrap();
+        let (v, text) = store.load_compression_guidelines(None).await.unwrap();
         assert_eq!(v, 2);
         assert!(text.contains("errors"));
+    }
+
+    #[tokio::test]
+    async fn load_guidelines_prefers_conversation_specific() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .save_compression_guidelines("global rule", 2, None)
+            .await
+            .unwrap();
+        store
+            .save_compression_guidelines("conversation rule", 2, Some(cid))
+            .await
+            .unwrap();
+        let (_, text) = store.load_compression_guidelines(Some(cid)).await.unwrap();
+        assert_eq!(text, "conversation rule");
+    }
+
+    #[tokio::test]
+    async fn load_guidelines_falls_back_to_global() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .save_compression_guidelines("global rule", 2, None)
+            .await
+            .unwrap();
+        // No conversation-specific guidelines; should fall back to global.
+        let (_, text) = store.load_compression_guidelines(Some(cid)).await.unwrap();
+        assert_eq!(text, "global rule");
+    }
+
+    #[tokio::test]
+    async fn load_guidelines_none_returns_global_only() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .save_compression_guidelines("conversation rule", 2, Some(cid))
+            .await
+            .unwrap();
+        // None should not return conversation-scoped guidelines.
+        let (version, text) = store.load_compression_guidelines(None).await.unwrap();
+        assert_eq!(version, 0);
+        assert!(text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_guidelines_scope_isolation() {
+        let store = make_store().await;
+        let cid_a = ConversationId(store.create_conversation().await.unwrap().0);
+        let cid_b = ConversationId(store.create_conversation().await.unwrap().0);
+
+        // Global guideline (conversation_id = None) — visible to all conversations.
+        store
+            .save_compression_guidelines("Use bullet points", 1, None)
+            .await
+            .unwrap();
+        // Conversation-A-specific guideline — must NOT be visible to B.
+        store
+            .save_compression_guidelines("Be concise", 2, Some(cid_a))
+            .await
+            .unwrap();
+
+        // Conversation B: gets only the global guideline, not A's.
+        let (_, text_b) = store
+            .load_compression_guidelines(Some(cid_b))
+            .await
+            .unwrap();
+        assert_eq!(
+            text_b, "Use bullet points",
+            "conversation B must see global guideline"
+        );
+
+        // Conversation A: gets its own guideline (preferred over global).
+        let (_, text_a) = store
+            .load_compression_guidelines(Some(cid_a))
+            .await
+            .unwrap();
+        assert_eq!(
+            text_a, "Be concise",
+            "conversation A must prefer its own guideline over global"
+        );
+
+        // None scope: gets only the global guideline.
+        let (_, text_global) = store.load_compression_guidelines(None).await.unwrap();
+        assert_eq!(
+            text_global, "Use bullet points",
+            "None scope must see only the global guideline"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_with_nonexistent_conversation_id_fails() {
+        let store = make_store().await;
+        let nonexistent = ConversationId(99999);
+        let result = store
+            .save_compression_guidelines("rule", 1, Some(nonexistent))
+            .await;
+        assert!(
+            result.is_err(),
+            "FK violation expected for nonexistent conversation_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_delete_removes_conversation_guidelines() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .save_compression_guidelines("rule", 1, Some(cid))
+            .await
+            .unwrap();
+        // Delete the conversation row directly — should cascade-delete the guideline.
+        sqlx::query("DELETE FROM conversations WHERE id = ?")
+            .bind(cid.0)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let (version, text) = store.load_compression_guidelines(Some(cid)).await.unwrap();
+        assert_eq!(version, 0);
+        assert!(text.is_empty());
     }
 
     #[tokio::test]
@@ -327,7 +477,10 @@ mod tests {
     async fn unique_constraint_prevents_duplicate_version() {
         let store = make_store().await;
         // Insert version 1 via the public API.
-        store.save_compression_guidelines("first", 1).await.unwrap();
+        store
+            .save_compression_guidelines("first", 1, None)
+            .await
+            .unwrap();
         // store.pool() access is intentional: we need direct pool access to bypass
         // the public API and test the UNIQUE constraint at the SQL level.
         let result = sqlx::query(
@@ -363,7 +516,7 @@ mod tests {
             .map(|i| {
                 let s = Arc::clone(&store);
                 tokio::spawn(async move {
-                    s.save_compression_guidelines(&format!("guideline {i}"), i)
+                    s.save_compression_guidelines(&format!("guideline {i}"), i, None)
                         .await
                         .expect("concurrent save must succeed")
                 })
