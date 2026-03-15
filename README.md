@@ -84,6 +84,8 @@ zeph
 | **Config migration** | `zeph migrate-config [--config PATH] [--in-place] [--diff]` — upgrades an existing config file after a version bump. Missing sections are appended as commented-out blocks with documentation; existing values are never touched. Output is idempotent and can be previewed with `--diff` before applying. [→ Migrate Config](https://bug-ops.github.io/zeph/guides/migrate-config.html) |
 | **Single binary** | ~15 MB, no runtime dependencies, ~50 ms startup, ~20 MB idle memory. |
 
+Optional features are grouped into use-case bundles: `desktop` (TUI + scheduler), `ide` (ACP + LSP), `server` (gateway + A2A + otel), `chat` (Discord + Slack), `ml` (Candle + PDF + STT). Use `--features full` for everything except hardware-specific GPU flags. See [Feature Flags](https://bug-ops.github.io/zeph/reference/feature-flags.html).
+
 ```text
 ┌─ Skills (3/12) ────────────────────┐┌─ MCP Tools ─────────────────────────┐
 │  web-search  [████████░░] 82% (117)││  - filesystem/read_file             │
