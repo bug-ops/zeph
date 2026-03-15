@@ -89,6 +89,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) graph_memory: bool,
 
+    /// Scan skill content for injection patterns on load (overrides config `scan_on_load`).
+    /// Advisory only — results are logged as warnings; does not block tool calls.
+    #[arg(long)]
+    pub(crate) scan_skills_on_load: bool,
+
     /// Enable ACON failure-driven compression guidelines for this session.
     /// Overrides `memory.compression_guidelines.enabled` from config.
     /// Requires `compression-guidelines` feature at compile time; silently
@@ -420,6 +425,18 @@ mod tests {
     fn cli_compression_guidelines_defaults_to_false() {
         let cli = Cli::try_parse_from(["zeph"]).unwrap();
         assert!(!cli.compression_guidelines);
+    }
+
+    #[test]
+    fn cli_parses_scan_skills_on_load_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--scan-skills-on-load"]).unwrap();
+        assert!(cli.scan_skills_on_load);
+    }
+
+    #[test]
+    fn cli_scan_skills_on_load_defaults_to_false() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(!cli.scan_skills_on_load);
     }
 
     #[cfg(feature = "experiments")]

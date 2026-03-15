@@ -56,6 +56,15 @@ pub struct TrustConfig {
     pub local_level: TrustLevel,
     #[serde(default = "default_trust_hash_mismatch_level")]
     pub hash_mismatch_level: TrustLevel,
+    /// Scan skill body content for injection patterns at load time.
+    ///
+    /// When `true`, `SkillRegistry::scan_loaded()` is called at agent startup.
+    /// This is **advisory only** — scan results are logged as warnings and do not
+    /// automatically change trust levels or block tool calls.
+    ///
+    /// Defaults to `true` (secure by default).
+    #[serde(default = "default_true")]
+    pub scan_on_load: bool,
 }
 
 impl Default for TrustConfig {
@@ -64,6 +73,7 @@ impl Default for TrustConfig {
             default_level: default_trust_default_level(),
             local_level: default_trust_local_level(),
             hash_mismatch_level: default_trust_hash_mismatch_level(),
+            scan_on_load: true,
         }
     }
 }
@@ -144,5 +154,44 @@ impl Default for TimeoutConfig {
             a2a_seconds: default_a2a_timeout(),
             max_parallel_tools: default_max_parallel_tools(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trust_config_default_has_scan_on_load_true() {
+        let config = TrustConfig::default();
+        assert!(config.scan_on_load);
+    }
+
+    #[test]
+    fn trust_config_serde_roundtrip_with_scan_on_load() {
+        let config = TrustConfig {
+            default_level: TrustLevel::Quarantined,
+            local_level: TrustLevel::Trusted,
+            hash_mismatch_level: TrustLevel::Quarantined,
+            scan_on_load: false,
+        };
+        let toml = toml::to_string(&config).expect("serialize");
+        let deserialized: TrustConfig = toml::from_str(&toml).expect("deserialize");
+        assert!(!deserialized.scan_on_load);
+    }
+
+    #[test]
+    fn trust_config_missing_scan_on_load_defaults_to_true() {
+        // Simulate an old config that has no scan_on_load key
+        let toml = r#"
+default_level = "quarantined"
+local_level = "trusted"
+hash_mismatch_level = "quarantined"
+"#;
+        let config: TrustConfig = toml::from_str(toml).expect("deserialize");
+        assert!(
+            config.scan_on_load,
+            "missing scan_on_load must default to true"
+        );
     }
 }

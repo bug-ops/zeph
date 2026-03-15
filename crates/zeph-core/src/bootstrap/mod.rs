@@ -292,7 +292,22 @@ impl AppBuilder {
     pub fn build_registry(&self) -> SkillRegistry {
         let skill_paths: Vec<PathBuf> =
             self.config.skills.paths.iter().map(PathBuf::from).collect();
-        SkillRegistry::load(&skill_paths)
+        let registry = SkillRegistry::load(&skill_paths);
+
+        if self.config.skills.trust.scan_on_load {
+            let findings = registry.scan_loaded();
+            if findings.is_empty() {
+                tracing::debug!("skill content scan: no injection patterns found");
+            } else {
+                tracing::warn!(
+                    count = findings.len(),
+                    "skill content scan complete: {} skill(s) with potential injection patterns",
+                    findings.len()
+                );
+            }
+        }
+
+        registry
     }
 
     pub fn skill_paths(&self) -> Vec<PathBuf> {

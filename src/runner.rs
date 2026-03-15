@@ -380,6 +380,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.graph.enabled = true;
     }
 
+    if cli.scan_skills_on_load {
+        app.config_mut().skills.trust.scan_on_load = true;
+    }
+
     if cli.no_pre_execution_verify {
         app.config_mut().security.pre_execution_verify.enabled = false;
         tracing::warn!(

@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types/tests/mod.rs
-assertion_line: 55
 expression: toml_str
 ---
 [agent]
@@ -58,6 +57,7 @@ auto_demote_threshold = 0.4
 default_level = "quarantined"
 local_level = "trusted"
 hash_mismatch_level = "quarantined"
+scan_on_load = true
 
 [memory]
 sqlite_path = "<DEFAULT_SQLITE_PATH>"

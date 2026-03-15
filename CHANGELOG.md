@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(security): malicious skill trust tier enforcement (#1853) — fixed `QUARANTINE_DENIED` tool list: replaced dead rule `"file_write"` with actual `FileExecutor` IDs (`write`, `edit`, `delete_path`, `move_path`, `copy_path`, `create_directory`) and added `memory_save`; added `SkillContentScanner` in `zeph-skills::scanner` using shared `RAW_INJECTION_PATTERNS` (relocated from `zeph-mcp::sanitize` to `zeph-tools::patterns` as the single source of truth); `SkillRegistry::scan_loaded()` scans all skill bodies at startup when `[skills.trust] scan_on_load = true` (default); scanner is advisory only — results are `WARN` logged, do not downgrade trust or block tools; new `/skill scan` TUI command for on-demand scan; `--scan-skills-on-load` CLI flag to override config; `--init` wizard step in the security section; `--migrate-config` picks up `scan_on_load` automatically from `default.toml`
 - feat(security): pre-execution action verification plugin hook in the tool execution pipeline (TrustBench pattern, issue #1630)
   - `PreExecutionVerifier` trait and `VerificationResult` enum in `zeph-tools`
   - `DestructiveCommandVerifier`: blocks destructive shell commands (`rm -rf /`, `dd if=`, `mkfs`, `fdisk`, etc.) outside configured `allowed_paths`; empty `allowed_paths` = deny-all (safe default)

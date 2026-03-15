@@ -57,6 +57,7 @@ auto_demote_threshold = 0.4
 default_level = "quarantined"
 local_level = "trusted"
 hash_mismatch_level = "quarantined"
+scan_on_load = true
 
 [memory]
 sqlite_path = "<DEFAULT_SQLITE_PATH>"
@@ -283,13 +284,23 @@ mcp_calls_per_minute = 40
 other_calls_per_minute = 60
 circuit_breaker_cooldown_secs = 30
 
-[security.guardrail]
-enabled = false
-timeout_ms = 500
-action = "block"
-fail_strategy = "closed"
-scan_tool_output = false
-max_input_chars = 4096
+[security.pre_execution_verify]
+enabled = true
+
+[security.pre_execution_verify.destructive_commands]
+enabled = true
+allowed_paths = []
+extra_patterns = []
+shell_tools = [
+    "bash",
+    "shell",
+    "terminal",
+]
+
+[security.pre_execution_verify.injection_patterns]
+enabled = true
+extra_patterns = []
+allowlisted_urls = []
 
 [timeouts]
 llm_seconds = 120

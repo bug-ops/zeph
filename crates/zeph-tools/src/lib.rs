@@ -12,6 +12,7 @@ pub mod executor;
 pub mod file;
 pub mod filter;
 pub mod net;
+pub mod patterns;
 pub mod permissions;
 #[cfg(feature = "policy-enforcer")]
 pub mod policy;

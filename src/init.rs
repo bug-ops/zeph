@@ -113,6 +113,7 @@ pub(crate) struct WizardState {
     // Security
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
+    pub(crate) skill_scan_on_load: bool,
     #[cfg(feature = "guardrail")]
     pub(crate) guardrail_enabled: bool,
     #[cfg(feature = "guardrail")]
@@ -220,6 +221,7 @@ impl Default for WizardState {
             experiments_schedule_cron: String::new(),
             pii_filter_enabled: false,
             rate_limit_enabled: false,
+            skill_scan_on_load: true,
             #[cfg(feature = "guardrail")]
             guardrail_enabled: false,
             #[cfg(feature = "guardrail")]
@@ -1045,6 +1047,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.security.pii_filter.enabled = state.pii_filter_enabled;
     config.security.rate_limit.enabled = state.rate_limit_enabled;
+    config.skills.trust.scan_on_load = state.skill_scan_on_load;
 
     #[cfg(feature = "guardrail")]
     if state.guardrail_enabled {
@@ -1656,6 +1659,12 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(false)
         .interact()?;
+    state.skill_scan_on_load = Confirm::new()
+        .with_prompt(
+            "Scan skill content for injection patterns on load? (advisory — logs warnings, does not block; recommended)",
+        )
+        .default(true)
+        .interact()?;
 
     #[cfg(feature = "guardrail")]
     {
@@ -1700,7 +1709,6 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             state.guardrail_timeout_ms = timeout_str.parse().unwrap_or(500);
         }
     }
-
     println!();
     Ok(())
 }

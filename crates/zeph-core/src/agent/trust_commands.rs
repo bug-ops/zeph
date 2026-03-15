@@ -150,6 +150,48 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    /// Handle `/skill scan` — scan all loaded skills for injection patterns.
+    ///
+    /// Results are advisory only. Does not change trust levels or block tool calls.
+    pub(super) async fn handle_skill_scan(&mut self) -> Result<(), super::error::AgentError> {
+        // Scope the lock guard so it is dropped before the first await point.
+        let findings = {
+            let registry = self
+                .skill_state
+                .registry
+                .read()
+                .expect("registry read lock");
+            registry.scan_loaded()
+        };
+
+        if findings.is_empty() {
+            self.channel
+                .send("Skill scan complete: no injection patterns detected.")
+                .await?;
+        } else {
+            let mut output = format!(
+                "Skill scan complete: {} skill(s) with potential injection patterns (advisory):\n\n",
+                findings.len()
+            );
+            for (name, result) in &findings {
+                use std::fmt::Write as _;
+                let _ = writeln!(
+                    output,
+                    "- {} ({} pattern(s)): {}",
+                    name,
+                    result.pattern_count,
+                    result.matched_patterns.join(", ")
+                );
+            }
+            output.push_str(
+                "\nNote: scan results are advisory. Use `/skill trust` to adjust trust levels.",
+            );
+            self.channel.send(&output).await?;
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn build_skill_trust_map(&self) -> HashMap<String, TrustLevel> {
         let Some(memory) = &self.memory_state.memory else {
             return HashMap::new();

@@ -29,6 +29,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::tool::McpTool;
+use zeph_tools::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -49,59 +50,6 @@ struct CompiledPattern {
     regex: Regex,
 }
 
-/// Canonical injection-detection pattern set shared with `zeph-core::sanitizer`.
-///
-/// Both `zeph-mcp` (tool-definition sanitization) and `zeph-core` (content isolation
-/// pipeline) compile their own [`Regex`] instances from this slice at startup. Keeping
-/// the raw patterns here — in the crate that `zeph-core` depends on — ensures a single
-/// source of truth: any pattern added or changed here is automatically picked up by
-/// both sanitization layers.
-///
-/// # Pattern coverage
-/// Common English-language prompt-injection techniques (OWASP LLM Top 10), Unicode
-/// bypass vectors (handled upstream by [`strip_format_chars`]), exfiltration channels
-/// (markdown/HTML images), and delimiter-escape attempts against Zeph's own wrapper tags.
-pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
-    (
-        "ignore_instructions",
-        r"(?i)ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions",
-    ),
-    ("role_override", r"(?i)you\s+are\s+now"),
-    (
-        "new_directive",
-        r"(?i)new\s+(instructions?|directives?|roles?|personas?)",
-    ),
-    ("developer_mode", r"(?i)developer\s+mode"),
-    ("system_prompt_leak", r"(?i)system\s+prompt"),
-    (
-        "reveal_instructions",
-        r"(?i)(reveal|show|display|print)\s+your\s+(instructions?|prompts?|rules?)",
-    ),
-    ("jailbreak", r"(?i)\b(DAN|jailbreak)\b"),
-    ("base64_payload", r"(?i)(decode|eval|execute).*base64"),
-    (
-        "xml_tag_injection",
-        r"(?i)</?\s*(system|assistant|user|tool_result|function_call)\s*>",
-    ),
-    ("markdown_image_exfil", r"(?i)!\[.*?\]\(https?://[^)]+\)"),
-    ("forget_everything", r"(?i)forget\s+(everything|all)"),
-    (
-        "disregard_instructions",
-        r"(?i)disregard\s+(your|all|previous)",
-    ),
-    (
-        "override_directives",
-        r"(?i)override\s+(your|all)\s+(directives?|instructions?|rules?)",
-    ),
-    ("act_as_if", r"(?i)act\s+as\s+if"),
-    ("html_image_exfil", r"(?i)<img\s+[^>]*src\s*="),
-    ("delimiter_escape_tool_output", r"(?i)</?tool-output[\s>]"),
-    (
-        "delimiter_escape_external_data",
-        r"(?i)</?external-data[\s>]",
-    ),
-];
-
 static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
     RAW_INJECTION_PATTERNS
         .iter()
@@ -116,53 +64,6 @@ static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
         })
         .collect()
 });
-
-// ---------------------------------------------------------------------------
-// Unicode Cf-category strip
-// ---------------------------------------------------------------------------
-
-/// Strip Unicode format (Cf) characters and ASCII control characters (except tab/newline)
-/// from `text` before injection pattern matching.
-///
-/// These characters are invisible to humans but can break regex word boundaries,
-/// allowing attackers to smuggle injection keywords through zero-width joiners,
-/// soft hyphens, BOM, etc.
-fn strip_format_chars(text: &str) -> String {
-    text.chars()
-        .filter(|&c| {
-            // Keep printable ASCII, tab, newline
-            if c == '\t' || c == '\n' {
-                return true;
-            }
-            // Drop ASCII control characters
-            if c.is_ascii_control() {
-                return false;
-            }
-            // Drop known Unicode Cf (format) codepoints that are used as bypass vectors
-            !matches!(
-                c,
-                '\u{00AD}'  // Soft hyphen
-                | '\u{034F}'  // Combining grapheme joiner
-                | '\u{061C}'  // Arabic letter mark
-                | '\u{115F}'  // Hangul filler
-                | '\u{1160}'  // Hangul jungseong filler
-                | '\u{17B4}'  // Khmer vowel inherent aq
-                | '\u{17B5}'  // Khmer vowel inherent aa
-                | '\u{180B}'..='\u{180D}'  // Mongolian free variation selectors
-                | '\u{180F}'  // Mongolian free variation selector 4
-                | '\u{200B}'..='\u{200F}'  // Zero-width space/ZWNJ/ZWJ/LRM/RLM
-                | '\u{202A}'..='\u{202E}'  // Directional formatting
-                | '\u{2060}'..='\u{2064}'  // Word joiner / invisible separators
-                | '\u{2066}'..='\u{206F}'  // Bidi controls
-                | '\u{FEFF}'  // BOM / zero-width no-break space
-                | '\u{FFF9}'..='\u{FFFB}'  // Interlinear annotation
-                | '\u{1BCA0}'..='\u{1BCA3}'  // Shorthand format controls
-                | '\u{1D173}'..='\u{1D17A}'  // Musical symbol beam controls
-                | '\u{E0000}'..='\u{E007F}'  // Tags block
-            )
-        })
-        .collect()
-}
 
 // ---------------------------------------------------------------------------
 // Core sanitization
@@ -441,6 +342,7 @@ pub fn sanitize_tools(tools: &mut [McpTool], server_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_tools::patterns::strip_format_chars;
 
     fn make_tool(name: &str, desc: &str) -> McpTool {
         McpTool {
