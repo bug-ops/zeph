@@ -132,6 +132,14 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Memory,
         feature_gate: None,
     },
+    #[cfg(feature = "compression-guidelines")]
+    SlashCommandInfo {
+        name: "/guidelines",
+        args: "",
+        description: "Show current compression guidelines",
+        category: SlashCategory::Memory,
+        feature_gate: Some("compression-guidelines"),
+    },
     // --- Tools ---
     SlashCommandInfo {
         name: "/skill",

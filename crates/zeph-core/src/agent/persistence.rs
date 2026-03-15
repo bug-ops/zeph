@@ -469,6 +469,8 @@ impl<C: Channel> Agent<C> {
         self.sync_community_detection_failures();
         self.sync_graph_extraction_metrics();
         self.sync_graph_counts().await;
+        #[cfg(feature = "compression-guidelines")]
+        self.sync_guidelines_status().await;
     }
 
     pub(crate) async fn check_summarization(&mut self) {

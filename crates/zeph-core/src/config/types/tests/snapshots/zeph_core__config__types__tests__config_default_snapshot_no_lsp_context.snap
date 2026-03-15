@@ -78,6 +78,9 @@ autosave_assistant = false
 autosave_min_length = 20
 tool_call_cutoff = 6
 sqlite_pool_size = 5
+shutdown_summary = true
+shutdown_summary_min_messages = 4
+shutdown_summary_max_messages = 20
 
 [memory.compression_guidelines]
 enabled = false
