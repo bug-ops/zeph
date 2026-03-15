@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types/tests/mod.rs
+assertion_line: 55
 expression: toml_str
 ---
 [agent]
@@ -82,6 +83,7 @@ sqlite_pool_size = 5
 shutdown_summary = true
 shutdown_summary_min_messages = 4
 shutdown_summary_max_messages = 20
+shutdown_summary_timeout_secs = 10
 
 [memory.compression_guidelines]
 enabled = false
