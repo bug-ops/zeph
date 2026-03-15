@@ -20,6 +20,7 @@ cuda = ["zeph-llm/cuda"]
 experiments = ["dep:ordered-float", "zeph-memory/experiments"]
 metal = ["zeph-llm/metal"]
 lsp-context = []
+policy-enforcer = ["zeph-tools/policy-enforcer"]
 scheduler = []
 
 [dependencies]

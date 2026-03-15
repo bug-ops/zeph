@@ -24,6 +24,14 @@ use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
 impl<C: Channel> Agent<C> {
+    /// Store a snapshot of the policy config for `/policy` command inspection.
+    #[cfg(feature = "policy-enforcer")]
+    #[must_use]
+    pub fn with_policy_config(mut self, config: zeph_tools::PolicyConfig) -> Self {
+        self.policy_config = Some(config);
+        self
+    }
+
     #[must_use]
     pub fn with_autosave_config(mut self, autosave_assistant: bool, min_length: usize) -> Self {
         self.memory_state.autosave_assistant = autosave_assistant;

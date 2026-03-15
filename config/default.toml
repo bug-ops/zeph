@@ -440,6 +440,25 @@ enabled = false
 # Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
 destination = "stdout"
 
+[tools.policy]
+# Enable declarative policy compiler for tool call authorization (requires policy-enforcer feature)
+enabled = false
+# Fallback effect when no rule matches: "allow" or "deny"
+default_effect = "deny"
+# Optional external policy rules file (TOML). Overrides inline rules when set.
+# policy_file = "policy.toml"
+
+# Example policy rules:
+# [[tools.policy.rules]]
+# effect = "deny"
+# tool = "shell"
+# paths = ["/etc/*", "/root/*"]
+#
+# [[tools.policy.rules]]
+# effect = "allow"
+# tool = "shell"
+# paths = ["/tmp/*"]
+
 [tools.anomaly]
 # Enable sliding-window anomaly detection for tool execution errors
 enabled = false

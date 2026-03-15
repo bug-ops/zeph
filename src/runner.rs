@@ -407,6 +407,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().lsp.enabled = true;
     }
 
+    // CLI --policy-file overrides [tools.policy.policy_file] from config.
+    #[cfg(feature = "policy-enforcer")]
+    if let Some(ref path) = cli.policy_file {
+        app.config_mut().tools.policy.policy_file = Some(path.display().to_string());
+        app.config_mut().tools.policy.enabled = true;
+    }
+
     if let Some(ref thinking_str) = cli.thinking {
         let thinking = parse_thinking_arg(thinking_str)?;
         if let Some(cloud) = app.config_mut().llm.cloud.as_mut() {
@@ -647,6 +654,39 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 ),
             ),
         )));
+    // HIGH-04: PolicyGate is the outermost executor; TrustGate wraps the inner chain.
+    // Order: PolicyGateExecutor → TrustGateExecutor → CompositeExecutor → ...
+    #[cfg(feature = "policy-enforcer")]
+    let tool_executor = {
+        let trust_gated =
+            zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
+        if config.tools.policy.enabled {
+            match zeph_tools::PolicyEnforcer::compile(&config.tools.policy) {
+                Ok(enforcer) => {
+                    let policy_context =
+                        std::sync::Arc::new(std::sync::RwLock::new(zeph_tools::PolicyContext {
+                            trust_level: zeph_tools::TrustLevel::Trusted,
+                            env: std::env::vars().collect(),
+                        }));
+                    let gate = zeph_tools::PolicyGateExecutor::new(
+                        trust_gated,
+                        std::sync::Arc::new(enforcer),
+                        policy_context,
+                    );
+                    zeph_tools::DynExecutor(std::sync::Arc::new(gate))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "failed to compile policy rules, policy enforcement disabled: {e}"
+                    );
+                    zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated))
+                }
+            }
+        } else {
+            zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated))
+        }
+    };
+    #[cfg(not(feature = "policy-enforcer"))]
     let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
         zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone()),
     ));
@@ -732,6 +772,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone());
+
+    #[cfg(feature = "policy-enforcer")]
+    let agent = if config.tools.policy.enabled {
+        agent.with_policy_config(config.tools.policy.clone())
+    } else {
+        agent
+    };
 
     // Load provider-specific and explicit instruction files.
     // base_dir is the process CWD at startup — the most natural project root for local tools.

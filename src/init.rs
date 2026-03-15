@@ -120,6 +120,8 @@ pub(crate) struct WizardState {
     pub(crate) log_max_files: usize,
     // Shutdown summary
     pub(crate) shutdown_summary: bool,
+    // Policy enforcer
+    pub(crate) policy_enforcer_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -211,6 +213,7 @@ impl Default for WizardState {
             log_rotation: String::new(),
             log_max_files: 0,
             shutdown_summary: true,
+            policy_enforcer_enabled: false,
         }
     }
 }
@@ -268,6 +271,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_debug(&mut state)?;
     step_logging(&mut state)?;
     step_experiments(&mut state)?;
+    step_policy(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -983,6 +987,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.security.pii_filter.enabled = state.pii_filter_enabled;
     config.security.rate_limit.enabled = state.rate_limit_enabled;
 
+    #[cfg(feature = "policy-enforcer")]
+    {
+        config.tools.policy.enabled = state.policy_enforcer_enabled;
+    }
+
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);
     config.logging.rotation = match state.log_rotation.as_str() {
@@ -1687,6 +1696,21 @@ fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
                 .interact_text()?;
         }
     }
+
+    println!();
+    Ok(())
+}
+
+fn step_policy(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Policy Enforcer ==\n");
+    println!(
+        "Declarative tool call authorization via TOML rules (requires policy-enforcer feature).\n"
+    );
+
+    state.policy_enforcer_enabled = Confirm::new()
+        .with_prompt("Enable policy enforcer?")
+        .default(false)
+        .interact()?;
 
     println!();
     Ok(())

@@ -118,6 +118,11 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
     pub(crate) debug_dump: Option<PathBuf>,
 
+    /// Path to external policy rules file (TOML). Overrides `tools.policy.policy_file` from config.
+    #[cfg(feature = "policy-enforcer")]
+    #[arg(long, value_name = "PATH")]
+    pub(crate) policy_file: Option<PathBuf>,
+
     /// Override debug dump format: `json`, `raw`, or `trace` (`OTel` OTLP spans).
     #[arg(long = "dump-format", value_name = "FORMAT")]
     pub(crate) dump_format: Option<zeph_core::debug_dump::DumpFormat>,

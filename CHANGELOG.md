@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(security): declarative policy compiler for tool call authorization (#1695) — `PolicyEnforcer` evaluates TOML-based allow/deny rules before any tool executes; deny-wins semantics; path traversal normalization via `Path::components()` (CRIT-01); tool name normalization (lowercase, CRIT-02); generic LLM error messages (MED-03); `[tools.policy]` config section with `enabled`, `default_effect`, `rules`, `policy_file`; `--policy-file` CLI flag; `/policy status` and `/policy check` slash commands; `--init` wizard step; optional `policy-enforcer` feature flag (included in `full`)
+
 - feat(tui): compression guidelines status line in memory panel (version + last update) and `/guidelines` slash command to display current guidelines text (closes #1803)
 - feat(memory): add `load_compression_guidelines_meta()` query returning `(version, created_at)` without fetching full text
 - feat(memory): `conversation_id` column added to `compression_guidelines` table (migration 034); guidelines now prefer conversation-specific over global when a conversation is in scope, with global (NULL) guidelines as fallback (closes #1806)

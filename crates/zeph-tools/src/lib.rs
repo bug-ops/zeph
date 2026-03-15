@@ -13,6 +13,10 @@ pub mod file;
 pub mod filter;
 pub mod net;
 pub mod permissions;
+#[cfg(feature = "policy-enforcer")]
+pub mod policy;
+#[cfg(feature = "policy-enforcer")]
+pub mod policy_gate;
 pub mod registry;
 pub mod scrape;
 pub mod search_code;
@@ -42,6 +46,13 @@ pub use net::is_private_ip;
 pub use permissions::{
     AutonomyLevel, PermissionAction, PermissionPolicy, PermissionRule, PermissionsConfig,
 };
+#[cfg(feature = "policy-enforcer")]
+pub use policy::{
+    DefaultEffect, PolicyCompileError, PolicyConfig, PolicyContext, PolicyDecision, PolicyEffect,
+    PolicyEnforcer, PolicyRuleConfig,
+};
+#[cfg(feature = "policy-enforcer")]
+pub use policy_gate::PolicyGateExecutor;
 pub use registry::ToolRegistry;
 pub use scrape::WebScrapeExecutor;
 pub use search_code::{

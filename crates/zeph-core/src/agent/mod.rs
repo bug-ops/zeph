@@ -22,6 +22,8 @@ mod lsp_commands;
 mod mcp;
 mod message_queue;
 mod persistence;
+#[cfg(feature = "policy-enforcer")]
+mod policy_commands;
 pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
@@ -331,6 +333,9 @@ pub struct Agent<C: Channel> {
     pub(super) metrics: MetricsState,
     pub(super) orchestration: OrchestrationState,
     pub(super) rate_limiter: rate_limiter::ToolRateLimiter,
+    /// Snapshot of the policy config for `/policy` command inspection.
+    #[cfg(feature = "policy-enforcer")]
+    pub(super) policy_config: Option<zeph_tools::PolicyConfig>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -550,6 +555,8 @@ impl<C: Channel> Agent<C> {
             rate_limiter: rate_limiter::ToolRateLimiter::new(
                 crate::agent::rate_limiter::RateLimitConfig::default(),
             ),
+            #[cfg(feature = "policy-enforcer")]
+            policy_config: None,
         }
     }
 
@@ -2647,6 +2654,16 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "lsp-context")]
         if trimmed == "/lsp" {
             handled!(self.handle_lsp_status_command().await);
+        }
+
+        #[cfg(feature = "policy-enforcer")]
+        if trimmed == "/policy" || trimmed.starts_with("/policy ") {
+            let args = trimmed
+                .strip_prefix("/policy")
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            handled!(self.handle_policy_command(&args).await);
         }
 
         if trimmed == "/log" {

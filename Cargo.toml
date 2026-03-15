@@ -154,7 +154,7 @@ readme = "README.md"
 
 [features]
 default = []
-full = ["a2a", "acp", "acp-http", "acp-unstable", "compression-guidelines", "discord", "experiments", "gateway", "lsp-context", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
+full = ["a2a", "acp", "acp-http", "acp-unstable", "compression-guidelines", "discord", "experiments", "gateway", "lsp-context", "otel", "pdf", "policy-enforcer", "scheduler", "slack", "stt", "tui"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 compression-guidelines = ["zeph-core/compression-guidelines", "zeph-memory/compression-guidelines"]
 acp = ["dep:zeph-acp"]
@@ -173,6 +173,7 @@ pdf = ["zeph-memory/pdf"]
 experiments = ["zeph-core/experiments", "zeph-memory/experiments", "zeph-tui?/experiments"]
 lsp-context = ["zeph-core/lsp-context", "zeph-tui?/lsp-context"]
 stt = ["zeph-llm/stt", "dep:reqwest"]
+policy-enforcer = ["zeph-tools/policy-enforcer", "zeph-core/policy-enforcer"]
 
 [dependencies]
 anyhow.workspace = true

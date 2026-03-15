@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::permissions::{AutonomyLevel, PermissionPolicy, PermissionsConfig};
+#[cfg(feature = "policy-enforcer")]
+use crate::policy::PolicyConfig;
 
 fn default_true() -> bool {
     true
@@ -125,6 +127,10 @@ pub struct ToolsConfig {
     pub overflow: OverflowConfig,
     #[serde(default)]
     pub anomaly: AnomalyConfig,
+    /// Declarative policy compiler for tool call authorization.
+    #[cfg(feature = "policy-enforcer")]
+    #[serde(default)]
+    pub policy: PolicyConfig,
 }
 
 impl ToolsConfig {
@@ -181,6 +187,8 @@ impl Default for ToolsConfig {
             filters: crate::filter::FilterConfig::default(),
             overflow: OverflowConfig::default(),
             anomaly: AnomalyConfig::default(),
+            #[cfg(feature = "policy-enforcer")]
+            policy: PolicyConfig::default(),
         }
     }
 }
