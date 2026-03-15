@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Qdrant collection dimension mismatch when switching embedding models on collections with 0 points (#1815)
 - fix(debug): trace.json now written inside per-session subdir, preventing overwrites (#1814)
+- fix(core): JIT tool reference injection now works after overflow migration to SQLite — `OVERFLOW_NOTICE_PREFIX` and `extract_overflow_ref()` updated to match the `overflow:{uuid}` format; pruned tool output notices now read `[tool output pruned; use read_overflow {uuid} to retrieve]` instead of a stale file-path reference (closes #1818)
 
 ## [0.15.1] - 2026-03-15
 
