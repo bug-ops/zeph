@@ -17,7 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - TUI security panel shows "Verify blocks" and "Verify warnings" counters
   - New `MetricsSnapshot` fields: `pre_execution_blocks`, `pre_execution_warnings`
   - New `SecurityEventCategory` variants: `PreExecutionBlock`, `PreExecutionWarn`
-
+- feat(security): LLM-based guardrail pre-screener for prompt injection detection (closes #1651) — `GuardrailFilter` sends user input and (optionally) tool output through a configurable guard model before it enters the agent context; configurable action (block/warn), fail strategy (closed/open), timeout, and `max_input_chars` truncation; TUI status bar shows `GRD:on` (green) or `GRD:warn` (yellow) when active; enabled via `--guardrail` CLI flag or `[security.guardrail] enabled = true`; `--init` wizard step added; `/guardrail` slash command shows live stats; `scan_tool_output = false` by default to avoid latency on every tool call
+- feat(security): declarative policy compiler for tool call authorization (#1695) — `PolicyEnforcer` evaluates TOML-based allow/deny rules before any tool executes; deny-wins semantics; path traversal normalization via `Path::components()` (CRIT-01); tool name normalization (lowercase, CRIT-02); generic LLM error messages (MED-03); `[tools.policy]` config section with `enabled`, `default_effect`, `rules`, `policy_file`; `--policy-file` CLI flag; `/policy status` and `/policy check` slash commands; `--init` wizard step; optional `policy-enforcer` feature flag (included in `full`)
 - feat(tui): compression guidelines status line in memory panel (version + last update) and `/guidelines` slash command to display current guidelines text (closes #1803)
 - feat(memory): add `load_compression_guidelines_meta()` query returning `(version, created_at)` without fetching full text
 - feat(memory): `conversation_id` column added to `compression_guidelines` table (migration 034); guidelines now prefer conversation-specific over global when a conversation is in scope, with global (NULL) guidelines as fallback (closes #1806)
@@ -27,14 +28,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(features): replace flat feature list with named use-case bundles (#1831) — six bundles added: `desktop` (tui + scheduler + compression-guidelines), `ide` (acp + acp-http + lsp-context), `server` (gateway + a2a + scheduler + otel), `chat` (discord + slack), `ml` (candle + pdf + stt), `full` (all bundles except ml/hardware). All individual feature flags are unchanged and continue to work. `metal` and `cuda` now correctly imply `candle` (pre-existing bug fixed). Migration: no action required — existing `--features tui,scheduler` builds are fully backwards-compatible; use `--features desktop` as the idiomatic equivalent going forward.
 - deps: upgrade rmcp 0.17 → 1.2 (#1845) — migrated `CallToolRequestParams` struct literal to builder pattern (`::new().with_arguments()`); removed unused `std::borrow::Cow` import
-
 - observability(router): add tracing instrumentation to cascade router (#1825) — `cascade_chat` and `cascade_chat_stream` now emit `debug`/`info`/`warn` events for provider selection (attempt N of M, classifier mode, threshold), judge scoring (score + threshold + pass/fail decision), quality verdict (score, threshold, reason, should_escalate), best-seen updates, escalation (score, threshold, remaining budget), budget exhaustion and fallback returns; `cascade_chat_stream` log fields aligned with `cascade_chat` for consistency
 
 - refactor(acp): centralize ACP session config wiring via `AgentSessionConfig::from_config()` and `Agent::apply_session_config()` (#1812) — replaces ~25 individually-copied scalar fields in `SharedAgentDeps` and redundant builder call blocks in `spawn_acp_agent`, `runner.rs`, and `daemon.rs` with a single struct; eliminates hardcoded `0.20` literal (now `CONTEXT_BUDGET_RESERVE_RATIO`); fixes missing `with_orchestration_config` and `with_server_compaction` in daemon sessions
 
 ### Fixed
 
+- fix(security): redact JWT Bearer tokens in `redact_sensitive()` — `Authorization: Bearer <token>` headers and standalone JWT strings (`eyJ...`) are now replaced with `[REDACTED]`/`[REDACTED_JWT]` before `compression_failure_pairs` SQLite insert (closes #1847)
 - fix(memory): widen soft compaction window — lower `soft_compaction_threshold` default from `0.70` to `0.60`, widening the soft tier firing range from 20% to 30% of the context budget; prevents large tool outputs (10–30k tokens) from jumping directly past soft into hard compaction; add `maybe_soft_compact_mid_iteration()` called after per-tool summarization in native and legacy tool loops so context pressure is relieved without touching turn counters, cooldown, or triggering LLM calls; config validation that `soft < hard` was already enforced and remains in place (closes #1828)
 - fix(security): redact secrets and filesystem paths in compression_failure_pairs before SQLite storage (#1801)
 - fix(llm): strip URL path in `parse_host_port` — Ollama `base_url` with `/v1` suffix no longer produces 404 on embed calls (#1832)

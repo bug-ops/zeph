@@ -73,6 +73,14 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Info,
         feature_gate: None,
     },
+    #[cfg(feature = "guardrail")]
+    SlashCommandInfo {
+        name: "/guardrail",
+        args: "",
+        description: "Show guardrail status (provider, model, action, timeout, stats)",
+        category: SlashCategory::Info,
+        feature_gate: Some("guardrail"),
+    },
     SlashCommandInfo {
         name: "/log",
         args: "",
@@ -216,5 +224,13 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         description: "Show LSP context status",
         category: SlashCategory::Advanced,
         feature_gate: Some("lsp-context"),
+    },
+    #[cfg(feature = "policy-enforcer")]
+    SlashCommandInfo {
+        name: "/policy",
+        args: "[status|check <tool> [args_json]]",
+        description: "Inspect policy status or dry-run evaluation",
+        category: SlashCategory::Tools,
+        feature_gate: Some("policy-enforcer"),
     },
 ];

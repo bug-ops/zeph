@@ -665,4 +665,40 @@ name = "Test"
             "empty config must report added_count > 0"
         );
     }
+
+    // IMPL-04: verify that [security.guardrail] is injected as commented defaults
+    // for a pre-guardrail config that has [security] but no [security.guardrail].
+    #[test]
+    fn security_without_guardrail_gets_guardrail_commented() {
+        let user = r#"
+[security]
+redact_secrets = true
+"#;
+        let migrator = ConfigMigrator::new();
+        let result = migrator.migrate(user).expect("migrate");
+        // The generic diff mechanism must add guardrail keys as commented defaults.
+        assert!(
+            result.output.contains("guardrail"),
+            "migration must add guardrail keys for configs without [security.guardrail]: \
+             got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_reference_contains_tools_policy() {
+        // IMP-NO-MIGRATE-CONFIG: verify that the embedded default.toml (the canonical reference
+        // used by ConfigMigrator) contains a [tools.policy] section. This ensures that
+        // `zeph --migrate-config` will surface the section to users as a discoverable commented
+        // block, even if it cannot be injected as a live sub-table via toml_edit's round-trip.
+        let reference = include_str!("../../config/default.toml");
+        assert!(
+            reference.contains("[tools.policy]"),
+            "default.toml must contain [tools.policy] section so migrate-config can surface it"
+        );
+        assert!(
+            reference.contains("enabled = false"),
+            "tools.policy section must include enabled = false default"
+        );
+    }
 }

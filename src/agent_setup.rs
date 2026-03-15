@@ -465,6 +465,27 @@ pub(crate) fn apply_quarantine_provider<C: Channel>(
     }
 }
 
+#[cfg(feature = "guardrail")]
+pub(crate) fn apply_guardrail<C: Channel>(
+    agent: Agent<C>,
+    guardrail: Option<(
+        zeph_llm::any::AnyProvider,
+        zeph_core::sanitizer::guardrail::GuardrailConfig,
+    )>,
+) -> Agent<C> {
+    if let Some((provider, config)) = guardrail {
+        match zeph_core::sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
+            Ok(filter) => agent.with_guardrail(filter),
+            Err(e) => {
+                tracing::warn!(error = %e, "guardrail filter construction failed, guardrail disabled");
+                agent
+            }
+        }
+    } else {
+        agent
+    }
+}
+
 pub(crate) async fn apply_code_indexer(
     config: &IndexConfig,
     qdrant_ops: Option<QdrantOps>,

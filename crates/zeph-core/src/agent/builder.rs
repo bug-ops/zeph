@@ -24,6 +24,14 @@ use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
 impl<C: Channel> Agent<C> {
+    /// Store a snapshot of the policy config for `/policy` command inspection.
+    #[cfg(feature = "policy-enforcer")]
+    #[must_use]
+    pub fn with_policy_config(mut self, config: zeph_tools::PolicyConfig) -> Self {
+        self.policy_config = Some(config);
+        self
+    }
+
     #[must_use]
     pub fn with_autosave_config(mut self, autosave_assistant: bool, min_length: usize) -> Self {
         self.memory_state.autosave_assistant = autosave_assistant;
@@ -471,6 +479,19 @@ impl<C: Channel> Agent<C> {
         qs: crate::sanitizer::quarantine::QuarantinedSummarizer,
     ) -> Self {
         self.security.quarantine_summarizer = Some(qs);
+        self
+    }
+
+    #[cfg(feature = "guardrail")]
+    #[must_use]
+    pub fn with_guardrail(mut self, filter: crate::sanitizer::guardrail::GuardrailFilter) -> Self {
+        use crate::sanitizer::guardrail::GuardrailAction;
+        let warn_mode = filter.action() == GuardrailAction::Warn;
+        self.security.guardrail = Some(filter);
+        self.update_metrics(|m| {
+            m.guardrail_enabled = true;
+            m.guardrail_warn_mode = warn_mode;
+        });
         self
     }
 

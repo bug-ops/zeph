@@ -46,6 +46,7 @@
 - [Adaptive Inference](advanced/adaptive-inference.md)
 - [Self-Learning Skills](advanced/self-learning.md)
 - [Skill Trust & Security](advanced/skill-trust.md)
+- [Policy Enforcer](advanced/policy-enforcer.md)
 - [Sub-Agent Orchestration](advanced/sub-agents.md)
 - [ACP (Agent Client Protocol)](advanced/acp.md)
 - [A2A Protocol](advanced/a2a.md)

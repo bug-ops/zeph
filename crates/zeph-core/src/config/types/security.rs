@@ -9,6 +9,8 @@ use zeph_tools::PreExecutionVerifierConfig;
 use crate::agent::rate_limiter::RateLimitConfig;
 use crate::sanitizer::ContentIsolationConfig;
 use crate::sanitizer::exfiltration::ExfiltrationGuardConfig;
+#[cfg(feature = "guardrail")]
+use crate::sanitizer::guardrail::GuardrailConfig;
 use crate::sanitizer::memory_validation::MemoryWriteValidationConfig;
 use crate::sanitizer::pii::PiiFilterConfig;
 
@@ -96,6 +98,10 @@ pub struct SecurityConfig {
     /// to disable for trusted environments.
     #[serde(default)]
     pub pre_execution_verify: PreExecutionVerifierConfig,
+    /// LLM-based prompt injection pre-screener (opt-in, disabled by default).
+    #[cfg(feature = "guardrail")]
+    #[serde(default)]
+    pub guardrail: GuardrailConfig,
 }
 
 impl Default for SecurityConfig {
@@ -109,6 +115,8 @@ impl Default for SecurityConfig {
             pii_filter: PiiFilterConfig::default(),
             rate_limit: RateLimitConfig::default(),
             pre_execution_verify: PreExecutionVerifierConfig::default(),
+            #[cfg(feature = "guardrail")]
+            guardrail: GuardrailConfig::default(),
         }
     }
 }

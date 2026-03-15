@@ -98,6 +98,17 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         }
     }
 
+    #[cfg(feature = "guardrail")]
+    if metrics.guardrail_enabled {
+        spans.push(Span::styled(" | ", theme.status_bar));
+        let (label, color) = if metrics.guardrail_warn_mode {
+            ("GRD:warn", Color::Yellow)
+        } else {
+            ("GRD:on", Color::Green)
+        };
+        spans.push(Span::styled(label, Style::default().fg(color)));
+    }
+
     if metrics.server_compaction_events > 0 {
         spans.push(Span::styled(" | ", theme.status_bar));
         spans.push(Span::styled(

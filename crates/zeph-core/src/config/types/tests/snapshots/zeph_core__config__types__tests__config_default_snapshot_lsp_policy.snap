@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-core/src/config/types/tests/mod.rs
+assertion_line: 55
 expression: toml_str
 ---
 [agent]
@@ -200,6 +201,11 @@ enabled = false
 window_size = 10
 error_threshold = 0.5
 critical_threshold = 0.8
+
+[tools.policy]
+enabled = false
+default_effect = "deny"
+rules = []
 
 [a2a]
 enabled = false
@@ -417,3 +423,18 @@ file = "<DEFAULT_LOG_FILE>"
 level = "info"
 rotation = "daily"
 max_files = 7
+
+[lsp]
+enabled = false
+mcp_server_id = "mcpls"
+token_budget = 2000
+call_timeout_secs = 5
+
+[lsp.diagnostics]
+enabled = true
+max_per_file = 20
+min_severity = "error"
+
+[lsp.hover]
+enabled = false
+max_symbols = 10

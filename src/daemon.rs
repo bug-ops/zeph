@@ -332,6 +332,8 @@ pub(crate) async fn run_daemon(
         agent
     };
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
+    #[cfg(feature = "guardrail")]
+    let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
 
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {

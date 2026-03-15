@@ -201,6 +201,11 @@ window_size = 10
 error_threshold = 0.5
 critical_threshold = 0.8
 
+[tools.policy]
+enabled = false
+default_effect = "deny"
+rules = []
+
 [a2a]
 enabled = false
 host = "0.0.0.0"
@@ -277,24 +282,6 @@ memory_calls_per_minute = 60
 mcp_calls_per_minute = 40
 other_calls_per_minute = 60
 circuit_breaker_cooldown_secs = 30
-
-[security.pre_execution_verify]
-enabled = true
-
-[security.pre_execution_verify.destructive_commands]
-enabled = true
-allowed_paths = []
-extra_patterns = []
-shell_tools = [
-    "bash",
-    "shell",
-    "terminal",
-]
-
-[security.pre_execution_verify.injection_patterns]
-enabled = true
-extra_patterns = []
-allowlisted_urls = []
 
 [security.guardrail]
 enabled = false

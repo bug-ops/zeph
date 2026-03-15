@@ -108,6 +108,10 @@ Demonstrates that malicious MCP servers can embed injection instructions in tool
 Argues that embedding authorization rules in LLM system prompts is insecure; proposes a declarative policy DSL compiled into a deterministic pre-execution enforcement layer independent of prompt content. Background for Zeph's `PolicyEnforcer` design and `PermissionPolicy` hardening ([#1695](https://github.com/bug-ops/zeph/issues/1695)).\
 <https://arxiv.org/html/2602.16708v2>
 
+**Llama Guard: LLM-based Input-Output Safeguard for Human-AI Conversations** (Meta AI, 2023)\
+Binary safety classifier (SAFE / UNSAFE) trained on the MLCommons taxonomy. Inspired Zeph's `GuardrailFilter` classifier prompt design and strict prefix-matching output protocol ([#1651](https://github.com/bug-ops/zeph/issues/1651)).\
+<https://arxiv.org/abs/2312.06674>
+
 **Automated Adversarial Red-Teaming with DeepTeam** (2025)\
 Framework for black-box red-teaming of agents via external endpoints. Background for Zeph's red-teaming playbook targeting the daemon A2A endpoint ([#1610](https://github.com/bug-ops/zeph/issues/1610)).\
 <https://arxiv.org/abs/2503.16882> · <https://github.com/confident-ai/deepteam>

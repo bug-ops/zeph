@@ -113,6 +113,16 @@ pub(crate) struct WizardState {
     // Security
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_enabled: bool,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_provider: String,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_model: String,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_action: String,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_timeout_ms: u64,
     // Logging
     pub(crate) log_file: String,
     pub(crate) log_level: String,
@@ -120,6 +130,10 @@ pub(crate) struct WizardState {
     pub(crate) log_max_files: usize,
     // Shutdown summary
     pub(crate) shutdown_summary: bool,
+    // Policy enforcer
+    pub(crate) policy_enforcer_enabled: bool,
+    /// Deployment bundle selected in the mode step (e.g. "desktop", "ide", "server").
+    pub(crate) deployment_bundle: Option<String>,
 }
 
 impl Default for WizardState {
@@ -206,11 +220,23 @@ impl Default for WizardState {
             experiments_schedule_cron: String::new(),
             pii_filter_enabled: false,
             rate_limit_enabled: false,
+            #[cfg(feature = "guardrail")]
+            guardrail_enabled: false,
+            #[cfg(feature = "guardrail")]
+            guardrail_provider: "ollama".to_owned(),
+            #[cfg(feature = "guardrail")]
+            guardrail_model: "llama-guard-3:1b".to_owned(),
+            #[cfg(feature = "guardrail")]
+            guardrail_action: "block".to_owned(),
+            #[cfg(feature = "guardrail")]
+            guardrail_timeout_ms: 500,
             log_file: String::new(),
             log_level: String::new(),
             log_rotation: String::new(),
             log_max_files: 0,
             shutdown_summary: true,
+            policy_enforcer_enabled: false,
+            deployment_bundle: None,
         }
     }
 }
@@ -250,6 +276,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         ..WizardState::default()
     };
 
+    step_deployment_mode(&mut state)?;
     step_vault(&mut state)?;
     step_llm(&mut state)?;
     step_memory(&mut state)?;
@@ -268,6 +295,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_debug(&mut state)?;
     step_logging(&mut state)?;
     step_experiments(&mut state)?;
+    step_policy(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -746,6 +774,41 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_deployment_mode(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Deployment Mode ==\n");
+    println!("Select the primary mode you will use Zeph in.");
+    println!("This determines which --features flag to pass when building from source.");
+    println!("Pre-built binaries already include all features.\n");
+
+    let modes = [
+        "CLI (no extras — minimal build)",
+        "Desktop (TUI dashboard + scheduler + compression guidelines)",
+        "IDE (ACP integration for Zed / Helix / VS Code + LSP context)",
+        "Server (HTTP gateway + A2A protocol + scheduler + OpenTelemetry)",
+        "Chat (Discord + Slack bots)",
+        "ML (local Candle inference + PDF + speech-to-text)",
+        "Full (all optional features except hardware GPU flags)",
+    ];
+    let sel = Select::new()
+        .with_prompt("Deployment mode")
+        .items(modes)
+        .default(0)
+        .interact()?;
+
+    state.deployment_bundle = match sel {
+        1 => Some("desktop".into()),
+        2 => Some("ide".into()),
+        3 => Some("server".into()),
+        4 => Some("chat".into()),
+        5 => Some("ml".into()),
+        6 => Some("full".into()),
+        _ => None,
+    };
+
+    println!();
+    Ok(())
+}
+
 fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 1/10: Secrets Backend ==\n");
 
@@ -982,6 +1045,25 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.security.pii_filter.enabled = state.pii_filter_enabled;
     config.security.rate_limit.enabled = state.rate_limit_enabled;
+
+    #[cfg(feature = "guardrail")]
+    if state.guardrail_enabled {
+        config.security.guardrail.enabled = true;
+        config.security.guardrail.provider = Some(state.guardrail_provider.clone());
+        if !state.guardrail_model.is_empty() {
+            config.security.guardrail.model = Some(state.guardrail_model.clone());
+        }
+        config.security.guardrail.action = match state.guardrail_action.as_str() {
+            "warn" => zeph_core::sanitizer::guardrail::GuardrailAction::Warn,
+            _ => zeph_core::sanitizer::guardrail::GuardrailAction::Block,
+        };
+        config.security.guardrail.timeout_ms = state.guardrail_timeout_ms;
+    }
+
+    #[cfg(feature = "policy-enforcer")]
+    {
+        config.tools.policy.enabled = state.policy_enforcer_enabled;
+    }
 
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);
@@ -1574,6 +1656,51 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(false)
         .interact()?;
+
+    #[cfg(feature = "guardrail")]
+    {
+        state.guardrail_enabled = Confirm::new()
+            .with_prompt(
+                "Enable LLM-based guardrail? (prompt injection pre-screening via a dedicated safety model, e.g. llama-guard)",
+            )
+            .default(false)
+            .interact()?;
+
+        if state.guardrail_enabled {
+            let provider_options = &["ollama", "claude", "openai", "compatible"];
+            let provider_idx = dialoguer::Select::new()
+                .with_prompt("Guardrail provider")
+                .items(provider_options)
+                .default(0)
+                .interact()?;
+            provider_options[provider_idx].clone_into(&mut state.guardrail_provider);
+
+            state.guardrail_model = dialoguer::Input::new()
+                .with_prompt("Guardrail model")
+                .default(if state.guardrail_provider == "ollama" {
+                    "llama-guard-3:1b".to_owned()
+                } else {
+                    String::new()
+                })
+                .allow_empty(true)
+                .interact_text()?;
+
+            let action_options = &["block", "warn"];
+            let action_idx = dialoguer::Select::new()
+                .with_prompt("Action on flagged input")
+                .items(action_options)
+                .default(0)
+                .interact()?;
+            action_options[action_idx].clone_into(&mut state.guardrail_action);
+
+            let timeout_str: String = dialoguer::Input::new()
+                .with_prompt("Guardrail timeout (ms)")
+                .default("500".to_owned())
+                .interact_text()?;
+            state.guardrail_timeout_ms = timeout_str.parse().unwrap_or(500);
+        }
+    }
+
     println!();
     Ok(())
 }
@@ -1687,6 +1814,21 @@ fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
                 .interact_text()?;
         }
     }
+
+    println!();
+    Ok(())
+}
+
+fn step_policy(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Policy Enforcer ==\n");
+    println!(
+        "Declarative tool call authorization via TOML rules (requires policy-enforcer feature).\n"
+    );
+
+    state.policy_enforcer_enabled = Confirm::new()
+        .with_prompt("Enable policy enforcer?")
+        .default(false)
+        .interact()?;
 
     println!();
     Ok(())
@@ -1855,6 +1997,12 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
     println!("  2. Run: zeph --config {}", path.display());
     println!("  3. Or with TUI: zeph --tui --config {}", path.display());
     println!();
+    if let Some(bundle) = &state.deployment_bundle {
+        println!(
+            "Building from source? Use the `{bundle}` bundle:\n  cargo build --release --features {bundle}"
+        );
+        println!();
+    }
     println!("Tip: run `zeph migrate-config --diff` later to check for new config options.");
 }
 

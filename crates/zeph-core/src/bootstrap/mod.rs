@@ -409,6 +409,54 @@ impl AppBuilder {
         }
     }
 
+    /// Build the guardrail filter when `security.guardrail.enabled = true`.
+    ///
+    /// Returns `None` when guardrail is disabled or provider resolution fails.
+    /// Emits a `tracing::warn` on resolution failure (guardrail silently disabled).
+    #[cfg(feature = "guardrail")]
+    pub fn build_guardrail_filter(&self) -> Option<crate::sanitizer::guardrail::GuardrailFilter> {
+        let (provider, config) = self.build_guardrail_provider()?;
+        match crate::sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
+            Ok(filter) => Some(filter),
+            Err(e) => {
+                tracing::warn!(error = %e, "guardrail filter construction failed, guardrail disabled");
+                None
+            }
+        }
+    }
+
+    /// Build the guardrail provider and config pair for use in multi-session contexts.
+    ///
+    /// Returns `None` when guardrail is disabled or provider resolution fails.
+    #[cfg(feature = "guardrail")]
+    pub fn build_guardrail_provider(
+        &self,
+    ) -> Option<(AnyProvider, crate::sanitizer::guardrail::GuardrailConfig)> {
+        let gc = &self.config.security.guardrail;
+        if !gc.enabled {
+            return None;
+        }
+        let provider_name = gc.provider.as_deref().unwrap_or("ollama");
+        match create_named_provider(provider_name, &self.config) {
+            Ok(p) => {
+                tracing::info!(
+                    provider = %provider_name,
+                    model = ?gc.model,
+                    "guardrail provider configured"
+                );
+                Some((p, gc.clone()))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %provider_name,
+                    error = %e,
+                    "guardrail provider resolution failed, guardrail disabled"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for the judge detector when `detector_mode = judge`.
     ///
     /// Returns `None` when mode is `Regex` or `judge_model` is empty (primary provider used).
