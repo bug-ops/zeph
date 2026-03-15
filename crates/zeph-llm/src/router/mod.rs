@@ -398,9 +398,16 @@ impl RouterProvider {
             if let Some(judge) = summary_provider {
                 match cascade::judge_score(judge, response).await {
                     Some(score) => {
+                        let should_escalate = score < threshold;
+                        tracing::debug!(
+                            score,
+                            threshold,
+                            should_escalate,
+                            "cascade: judge scored response"
+                        );
                         return cascade::QualityVerdict {
                             score,
-                            should_escalate: score < threshold,
+                            should_escalate,
                             reason: format!("judge score: {score:.2}"),
                         };
                     }
@@ -686,6 +693,14 @@ impl RouterProvider {
         let mut tokens_used: u32 = 0;
 
         for (idx, p) in providers.iter().enumerate() {
+            tracing::debug!(
+                provider = %p.name(),
+                attempt = idx + 1,
+                total = providers.len(),
+                classifier_mode = ?cfg.classifier_mode,
+                quality_threshold = cfg.quality_threshold,
+                "cascade: trying provider"
+            );
             let start = std::time::Instant::now();
             match p.chat(messages).await {
                 Err(e) => {
@@ -740,6 +755,11 @@ impl RouterProvider {
                             .as_ref()
                             .is_none_or(|(_, best_score)| verdict.score > *best_score);
                     if is_better {
+                        tracing::debug!(
+                            provider = %p.name(),
+                            score = verdict.score,
+                            "cascade: best_seen updated"
+                        );
                         best = Some((response.clone(), verdict.score));
                     }
 
@@ -798,6 +818,14 @@ impl RouterProvider {
         }
 
         // All providers tried — return best-seen response, or NoProviders if none worked.
+        if let Some((_, score)) = &best {
+            tracing::info!(
+                score,
+                "cascade: all providers exhausted, returning best-seen response"
+            );
+        } else {
+            tracing::warn!("cascade: all providers failed, no response available");
+        }
         best.map(|(r, _)| r).ok_or(LlmError::NoProviders)
     }
 
@@ -836,7 +864,15 @@ impl RouterProvider {
         // for errors (only quality failures consume it).
         let (last, early) = providers.split_last().ok_or(LlmError::NoProviders)?;
 
-        for p in early {
+        for (idx, p) in early.iter().enumerate() {
+            tracing::debug!(
+                provider = %p.name(),
+                attempt = idx + 1,
+                total = providers.len(),
+                classifier_mode = ?cfg.classifier_mode,
+                quality_threshold = cfg.quality_threshold,
+                "cascade stream: trying provider (buffered)"
+            );
             // Buffer response to classify quality.
             let start = std::time::Instant::now();
             let stream = match p.chat_stream(messages).await {
@@ -885,7 +921,9 @@ impl RouterProvider {
                     tracing::debug!(
                         provider = %p.name(),
                         score = verdict.score,
+                        threshold = cfg.quality_threshold,
                         should_escalate = verdict.should_escalate,
+                        reason = %verdict.reason,
                         "cascade stream: quality verdict"
                     );
 
@@ -896,6 +934,11 @@ impl RouterProvider {
                             .as_ref()
                             .is_none_or(|(_, best_score)| verdict.score > *best_score);
                     if is_better {
+                        tracing::debug!(
+                            provider = %p.name(),
+                            score = verdict.score,
+                            "cascade stream: best_seen updated"
+                        );
                         best_seen = Some((text.clone(), verdict.score));
                     }
 
@@ -945,7 +988,9 @@ impl RouterProvider {
                     tracing::info!(
                         provider = %p.name(),
                         score = verdict.score,
-                        "cascade stream: escalating"
+                        threshold = cfg.quality_threshold,
+                        escalations_remaining,
+                        "cascade stream: escalating to next provider"
                     );
                 }
             }
@@ -955,6 +1000,12 @@ impl RouterProvider {
         // Note: if the stream itself fails mid-delivery (after Ok(stream) is returned),
         // there is no fallback to best_seen — the caller receives a partial response.
         // This is a pre-existing limitation; fixing it would require wrapping the stream.
+        tracing::debug!(
+            provider = %last.name(),
+            attempt = providers.len(),
+            total = providers.len(),
+            "cascade stream: trying last provider (streaming, no classification)"
+        );
         let start = std::time::Instant::now();
         match last.chat_stream(messages).await {
             Ok(stream) => {

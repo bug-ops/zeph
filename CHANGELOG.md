@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- observability(router): add tracing instrumentation to cascade router (#1825) — `cascade_chat` and `cascade_chat_stream` now emit `debug`/`info`/`warn` events for provider selection (attempt N of M, classifier mode, threshold), judge scoring (score + threshold + pass/fail decision), quality verdict (score, threshold, reason, should_escalate), best-seen updates, escalation (score, threshold, remaining budget), budget exhaustion and fallback returns; `cascade_chat_stream` log fields aligned with `cascade_chat` for consistency
+
 - refactor(acp): centralize ACP session config wiring via `AgentSessionConfig::from_config()` and `Agent::apply_session_config()` (#1812) — replaces ~25 individually-copied scalar fields in `SharedAgentDeps` and redundant builder call blocks in `spawn_acp_agent`, `runner.rs`, and `daemon.rs` with a single struct; eliminates hardcoded `0.20` literal (now `CONTEXT_BUDGET_RESERVE_RATIO`); fixes missing `with_orchestration_config` and `with_server_compaction` in daemon sessions
 
 ### Fixed
