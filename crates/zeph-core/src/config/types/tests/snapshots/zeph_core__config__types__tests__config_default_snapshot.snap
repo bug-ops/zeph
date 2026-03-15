@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-core/src/config/types/tests/mod.rs
-assertion_line: 44
 expression: toml_str
 ---
 [agent]
@@ -316,7 +315,7 @@ show_source_labels = false
 [acp]
 enabled = false
 agent_name = "zeph"
-agent_version = "0.15.0"
+agent_version = "0.15.1"
 max_sessions = 4
 session_idle_timeout_secs = 1800
 broadcast_capacity = 256

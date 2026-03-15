@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-03-15
+
 ### Added
 
 - feat(memory,core): ACON failure-driven compression guidelines (#1647) — after a hard compaction, the agent watches subsequent LLM responses for two-signal context-loss indicators (uncertainty phrase + prior-context reference); confirmed failure pairs are stored in SQLite (`compression_failure_pairs`); a background updater wakes periodically, calls the LLM to synthesise updated guidelines from accumulated pairs, sanitizes the output to strip prompt injection, and persists the result; guidelines are injected into every future compaction prompt via a `<compression-guidelines>` block; `CompressionGuidelinesConfig` in `[memory.compression_guidelines]` (disabled by default); addresses all critic findings including two-signal false-positive guard, `enabled` guard ordering, LLM timeout, prompt injection sanitization, field truncation, and cleanup policy
@@ -2216,7 +2218,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/bug-ops/zeph/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/bug-ops/zeph/compare/v0.14.3...v0.15.0
 [0.14.3]: https://github.com/bug-ops/zeph/compare/v0.14.2...v0.14.3
 [0.14.2]: https://github.com/bug-ops/zeph/compare/v0.14.1...v0.14.2

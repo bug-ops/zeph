@@ -546,7 +546,7 @@ fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
 /// seeded randomness — avoids predictable timing that an adversary could exploit
 /// to align retry windows.
 fn retry_backoff_ms(attempt: usize) -> u64 {
-    use rand::Rng as _;
+    use rand::RngExt as _;
     const BASE_MS: u64 = 500;
     const MAX_MS: u64 = 5000;
     let base = BASE_MS.saturating_mul(1_u64 << attempt.min(10));

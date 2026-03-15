@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use rand::SeedableRng;
+use rand::SeedableRng as _;
 use rand_distr::{Beta, Distribution};
 use serde::{Deserialize, Serialize};
 
@@ -86,7 +86,7 @@ impl ThompsonState {
         }
         let rng = self
             .rng
-            .get_or_insert_with(rand::rngs::SmallRng::from_os_rng);
+            .get_or_insert_with(|| rand::rngs::SmallRng::from_rng(&mut rand::rng()));
         let (best, _) = providers
             .iter()
             .map(|name| {
