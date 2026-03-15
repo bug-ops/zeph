@@ -3,6 +3,9 @@
 
 //! `/policy` command handler (requires `policy-enforcer` feature).
 
+use std::collections::HashMap;
+use std::str::FromStr;
+
 use zeph_tools::{DefaultEffect, PolicyContext, PolicyDecision, PolicyEnforcer, TrustLevel};
 
 use super::Agent;
@@ -47,68 +50,105 @@ impl<C: Channel> Agent<C> {
                     .map_err(Into::into)
             }
             "check" => {
-                let tool = parts.get(1).copied().unwrap_or("");
-                if tool.is_empty() {
-                    return self
-                        .channel
-                        .send("Usage: /policy check <tool> [args_json]")
-                        .await
-                        .map_err(Into::into);
-                }
-                let args_json = parts.get(2..).map(|s| s.join(" ")).unwrap_or_default();
-                let params: serde_json::Map<String, serde_json::Value> = if args_json.is_empty() {
-                    serde_json::Map::new()
-                } else {
-                    match serde_json::from_str(&args_json) {
-                        Ok(serde_json::Value::Object(m)) => m,
-                        Ok(_) => {
-                            return self
-                                .channel
-                                .send("args_json must be a JSON object")
-                                .await
-                                .map_err(Into::into);
-                        }
-                        Err(e) => {
-                            return self
-                                .channel
-                                .send(&format!("invalid args_json: {e}"))
-                                .await
-                                .map_err(Into::into);
-                        }
-                    }
-                };
-
-                match PolicyEnforcer::compile(policy_config) {
-                    Ok(enforcer) => {
-                        let ctx = PolicyContext {
-                            trust_level: TrustLevel::Trusted,
-                            env: std::env::vars().collect(),
-                        };
-                        match enforcer.evaluate(tool, &params, &ctx) {
-                            PolicyDecision::Allow { trace } => self
-                                .channel
-                                .send(&format!("Allow: {trace}"))
-                                .await
-                                .map_err(Into::into),
-                            PolicyDecision::Deny { trace } => self
-                                .channel
-                                .send(&format!("Deny: {trace}"))
-                                .await
-                                .map_err(Into::into),
-                        }
-                    }
-                    Err(e) => self
-                        .channel
-                        .send(&format!("policy compile error: {e}"))
-                        .await
-                        .map_err(Into::into),
-                }
+                self.handle_policy_check(parts.get(1..).unwrap_or(&[]))
+                    .await
             }
             other => self
                 .channel
                 .send(&format!(
                     "Unknown /policy subcommand: {other}. Use: status, check <tool> [args_json]"
                 ))
+                .await
+                .map_err(Into::into),
+        }
+    }
+
+    /// Handle `/policy check [--trust-level <level>] <tool> [args_json]`.
+    async fn handle_policy_check(&mut self, raw: &[&str]) -> Result<(), AgentError> {
+        let Some(ref policy_config) = self.policy_config else {
+            return Ok(());
+        };
+
+        // Parse optional --trust-level <level>.
+        let mut remaining = raw.to_vec();
+        let mut trust_level = TrustLevel::Trusted;
+        if let Some(pos) = remaining.iter().position(|&s| s == "--trust-level") {
+            remaining.remove(pos);
+            if pos < remaining.len() {
+                let level_str = remaining.remove(pos);
+                match TrustLevel::from_str(level_str) {
+                    Ok(level) => trust_level = level,
+                    Err(e) => {
+                        return self
+                            .channel
+                            .send(&format!("invalid --trust-level: {e}"))
+                            .await
+                            .map_err(Into::into);
+                    }
+                }
+            } else {
+                return self
+                    .channel
+                    .send("--trust-level requires a value: trusted, verified, quarantined, blocked")
+                    .await
+                    .map_err(Into::into);
+            }
+        }
+
+        let tool = remaining.first().copied().unwrap_or("");
+        if tool.is_empty() {
+            return self
+                .channel
+                .send("Usage: /policy check [--trust-level <level>] <tool> [args_json]")
+                .await
+                .map_err(Into::into);
+        }
+
+        let args_json = remaining.get(1..).map(|s| s.join(" ")).unwrap_or_default();
+        let params: serde_json::Map<String, serde_json::Value> = if args_json.is_empty() {
+            serde_json::Map::new()
+        } else {
+            match serde_json::from_str(&args_json) {
+                Ok(serde_json::Value::Object(m)) => m,
+                Ok(_) => {
+                    return self
+                        .channel
+                        .send("args_json must be a JSON object")
+                        .await
+                        .map_err(Into::into);
+                }
+                Err(e) => {
+                    return self
+                        .channel
+                        .send(&format!("invalid args_json: {e}"))
+                        .await
+                        .map_err(Into::into);
+                }
+            }
+        };
+
+        match PolicyEnforcer::compile(policy_config) {
+            Ok(enforcer) => {
+                let ctx = PolicyContext {
+                    trust_level,
+                    env: HashMap::new(),
+                };
+                match enforcer.evaluate(tool, &params, &ctx) {
+                    PolicyDecision::Allow { trace } => self
+                        .channel
+                        .send(&format!("Allow: {trace}"))
+                        .await
+                        .map_err(Into::into),
+                    PolicyDecision::Deny { trace } => self
+                        .channel
+                        .send(&format!("Deny: {trace}"))
+                        .await
+                        .map_err(Into::into),
+                }
+            }
+            Err(e) => self
+                .channel
+                .send(&format!("policy compile error: {e}"))
                 .await
                 .map_err(Into::into),
         }

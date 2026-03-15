@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(security): `/policy check` no longer leaks process environment variables into trace output — `PolicyContext.env` is now an empty `HashMap` for the diagnostic command (#1873); added optional `--trust-level <level>` argument to simulate non-default trust tiers (`trusted`, `verified`, `quarantined`, `blocked`); `TrustLevel` now implements `FromStr`
 - fix(security): redact JWT Bearer tokens in `redact_sensitive()` — `Authorization: Bearer <token>` headers and standalone JWT strings (`eyJ...`) are now replaced with `[REDACTED]`/`[REDACTED_JWT]` before `compression_failure_pairs` SQLite insert (closes #1847)
 - fix(memory): widen soft compaction window — lower `soft_compaction_threshold` default from `0.70` to `0.60`, widening the soft tier firing range from 20% to 30% of the context budget; prevents large tool outputs (10–30k tokens) from jumping directly past soft into hard compaction; add `maybe_soft_compact_mid_iteration()` called after per-tool summarization in native and legacy tool loops so context pressure is relieved without touching turn counters, cooldown, or triggering LLM calls; config validation that `soft < hard` was already enforced and remains in place (closes #1828)
 - fix(security): redact secrets and filesystem paths in compression_failure_pairs before SQLite storage (#1801)

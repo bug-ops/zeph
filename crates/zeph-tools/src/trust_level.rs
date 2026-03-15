@@ -4,6 +4,7 @@
 //! Trust tier enum for skill execution permissions.
 
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,22 @@ impl TrustLevel {
     #[must_use]
     pub fn is_active(self) -> bool {
         !matches!(self, Self::Blocked)
+    }
+}
+
+impl FromStr for TrustLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "trusted" => Ok(Self::Trusted),
+            "verified" => Ok(Self::Verified),
+            "quarantined" => Ok(Self::Quarantined),
+            "blocked" => Ok(Self::Blocked),
+            other => Err(format!(
+                "unknown trust level '{other}'; expected: trusted, verified, quarantined, blocked"
+            )),
+        }
     }
 }
 
