@@ -19,7 +19,7 @@ dashmap = { workspace = true }
 tiktoken-rs = { workspace = true }
 pdf-extract = { workspace = true, optional = true }
 petgraph.workspace = true
-regex = { workspace = true, optional = true }
+regex = { workspace = true }
 qdrant-client = { workspace = true, features = ["serde"] }
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -36,7 +36,7 @@ zeph-llm.workspace = true
 
 [features]
 default = []
-compression-guidelines = ["dep:regex"]
+compression-guidelines = []
 experiments = []
 pdf = ["dep:pdf-extract"]
 

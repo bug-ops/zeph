@@ -3,9 +3,37 @@
 
 //! SQLite-backed store for ACON compression guidelines and failure pairs.
 
+use std::borrow::Cow;
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use crate::error::MemoryError;
 use crate::sqlite::SqliteStore;
 use crate::types::ConversationId;
+
+static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:sk-|sk_live_|sk_test_|AKIA|ghp_|gho_|-----BEGIN|xoxb-|xoxp-|AIza|ya29\.|glpat-|hf_|npm_|dckr_pat_)[^\s"'`,;\{\}\[\]]*"#,
+    )
+    .expect("secret regex")
+});
+
+static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:/home/|/Users/|/root/|/tmp/|/var/)[^\s"'`,;\{\}\[\]]*"#).expect("path regex")
+});
+
+/// Redact secrets and filesystem paths from text before persistent storage.
+///
+/// Returns `Cow::Borrowed` when no sensitive content is found (zero-alloc fast path).
+fn redact_sensitive(text: &str) -> Cow<'_, str> {
+    let after_secrets = SECRET_RE.replace_all(text, "[REDACTED]");
+    let result = PATH_RE.replace_all(&after_secrets, "[PATH]");
+    match result {
+        Cow::Borrowed(_) => after_secrets,
+        Cow::Owned(s) => s.into(),
+    }
+}
 
 /// A recorded compression failure pair: the compressed context and the response
 /// that indicated context was lost.
@@ -90,8 +118,10 @@ impl SqliteStore {
         compressed_context: &str,
         failure_reason: &str,
     ) -> Result<i64, MemoryError> {
-        let ctx = truncate_field(compressed_context);
-        let reason = truncate_field(failure_reason);
+        let ctx = redact_sensitive(compressed_context);
+        let ctx = truncate_field(&ctx);
+        let reason = redact_sensitive(failure_reason);
+        let reason = truncate_field(&reason);
         let id = sqlx::query_scalar(
             "INSERT INTO compression_failure_pairs \
              (conversation_id, compressed_context, failure_reason) \
@@ -313,6 +343,104 @@ mod tests {
         store.cleanup_old_failure_pairs(1).await.unwrap();
         let count = store.count_unused_failure_pairs().await.unwrap();
         assert_eq!(count, 1, "only 1 unused pair should remain");
+    }
+
+    #[test]
+    fn redact_sensitive_api_key_is_redacted() {
+        let result = redact_sensitive("token sk-abc123def456 used for auth");
+        assert!(result.contains("[REDACTED]"), "API key must be redacted");
+        assert!(
+            !result.contains("sk-abc123"),
+            "original key must not appear"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_plain_text_borrows() {
+        let text = "safe text, no secrets here";
+        let result = redact_sensitive(text);
+        assert!(
+            matches!(result, Cow::Borrowed(_)),
+            "plain text must return Cow::Borrowed (zero-alloc)"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_filesystem_path_is_redacted() {
+        let result = redact_sensitive("config loaded from /Users/dev/project/config.toml");
+        assert!(
+            result.contains("[PATH]"),
+            "filesystem path must be redacted"
+        );
+        assert!(
+            !result.contains("/Users/dev/"),
+            "original path must not appear"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_combined_secret_and_path() {
+        let result = redact_sensitive("key sk-abc at /home/user/file");
+        assert!(result.contains("[REDACTED]"), "secret must be redacted");
+        assert!(result.contains("[PATH]"), "path must be redacted");
+    }
+
+    #[tokio::test]
+    async fn log_compression_failure_redacts_secrets() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .log_compression_failure(cid, "token sk-abc123def456 used for auth", "context lost")
+            .await
+            .unwrap();
+        let pairs = store.get_unused_failure_pairs(10).await.unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert!(
+            pairs[0].compressed_context.contains("[REDACTED]"),
+            "stored context must have redacted secret"
+        );
+        assert!(
+            !pairs[0].compressed_context.contains("sk-abc123"),
+            "stored context must not contain raw secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_compression_failure_redacts_paths() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .log_compression_failure(cid, "/Users/dev/project/config.toml was loaded", "lost")
+            .await
+            .unwrap();
+        let pairs = store.get_unused_failure_pairs(10).await.unwrap();
+        assert!(
+            pairs[0].compressed_context.contains("[PATH]"),
+            "stored context must have redacted path"
+        );
+        assert!(
+            !pairs[0].compressed_context.contains("/Users/dev/"),
+            "stored context must not contain raw path"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_compression_failure_reason_also_redacted() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .log_compression_failure(cid, "some context", "secret ghp_abc123xyz was leaked")
+            .await
+            .unwrap();
+        let pairs = store.get_unused_failure_pairs(10).await.unwrap();
+        assert!(
+            pairs[0].failure_reason.contains("[REDACTED]"),
+            "failure_reason must also be redacted"
+        );
+        assert!(
+            !pairs[0].failure_reason.contains("ghp_abc123xyz"),
+            "raw secret must not appear in failure_reason"
+        );
     }
 
     #[tokio::test]
