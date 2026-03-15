@@ -674,10 +674,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // HIGH-04: PolicyGate is the outermost executor; TrustGate wraps the inner chain.
     // Order: PolicyGateExecutor → TrustGateExecutor → CompositeExecutor → ...
     #[cfg(feature = "policy-enforcer")]
-    let tool_executor = {
+    let (tool_executor, mcp_ids_handle) = {
         let trust_gated =
             zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
-        if config.tools.policy.enabled {
+        let handle = trust_gated.mcp_tool_ids_handle();
+        let executor = if config.tools.policy.enabled {
             match zeph_tools::PolicyEnforcer::compile(&config.tools.policy) {
                 Ok(enforcer) => {
                     let policy_context =
@@ -701,13 +702,31 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         } else {
             zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated))
-        }
+        };
+        (executor, handle)
     };
     #[cfg(not(feature = "policy-enforcer"))]
-    let tool_executor = zeph_tools::DynExecutor(std::sync::Arc::new(
-        zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone()),
-    ));
+    let (tool_executor, mcp_ids_handle) = {
+        let trust_gated =
+            zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
+        let handle = trust_gated.mcp_tool_ids_handle();
+        (
+            zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated)),
+            handle,
+        )
+    };
     let mcp_tools = tool_setup.mcp_tools;
+    // Register MCP tool IDs so TrustGateExecutor can block ALL MCP tools for
+    // Quarantined skills — not just those matching QUARANTINE_DENIED suffixes.
+    {
+        let ids: std::collections::HashSet<String> = mcp_tools
+            .iter()
+            .map(zeph_mcp::McpTool::sanitized_id)
+            .collect();
+        *mcp_ids_handle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ids;
+    }
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
     let mcp_tool_rx = tool_setup.mcp_tool_rx;
