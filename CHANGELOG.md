@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(debug): trace.json now written inside per-session subdir, preventing overwrites (#1814)
+
 ## [0.15.1] - 2026-03-15
 
 ### Fixed

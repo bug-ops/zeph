@@ -1007,12 +1007,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                     .then(|| config.debug.output_dir.clone())
             });
         if let Some(ref dir) = dump_dir {
-            let agent =
+            let (agent, session_dir) =
                 match zeph_core::debug_dump::DebugDumper::new(dir.as_path(), effective_format) {
-                    Ok(dumper) => agent.with_debug_dumper(dumper),
+                    Ok(dumper) => {
+                        let session_dir = dumper.dir().to_owned();
+                        (agent.with_debug_dumper(dumper), session_dir)
+                    }
                     Err(e) => {
                         tracing::warn!(error = %e, "debug dump initialization failed");
-                        agent
+                        (agent, dir.clone())
                     }
                 };
             // Store trace config so runtime `/dump-format trace` can create a collector (CR-04).
@@ -1025,7 +1028,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             if effective_format == zeph_core::debug_dump::DumpFormat::Trace {
                 // OTLP channel is None here; wired in tracing_init.rs when otel feature enabled.
                 match zeph_core::debug_dump::trace::TracingCollector::new(
-                    dir.as_path(),
+                    &session_dir,
                     &config.debug.traces.service_name,
                     config.debug.traces.redact,
                     None,
