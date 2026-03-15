@@ -1858,7 +1858,7 @@ history_limit = 50
 #[test]
 fn compaction_config_defaults() {
     let config = Config::default();
-    assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+    assert!((config.memory.soft_compaction_threshold - 0.60).abs() < f32::EPSILON);
     assert!((config.memory.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
     assert_eq!(config.memory.compaction_preserve_tail, 6);
 }
@@ -1906,7 +1906,7 @@ compaction_preserve_tail = 6
 fn compaction_env_overrides() {
     clear_env();
     let mut config = Config::default();
-    assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+    assert!((config.memory.soft_compaction_threshold - 0.60).abs() < f32::EPSILON);
     assert!((config.memory.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
     assert_eq!(config.memory.compaction_preserve_tail, 6);
 

@@ -51,7 +51,7 @@ impl ContextManager {
     pub(crate) fn new() -> Self {
         Self {
             budget: None,
-            soft_compaction_threshold: 0.70,
+            soft_compaction_threshold: 0.60,
             hard_compaction_threshold: 0.90,
             compaction_preserve_tail: 6,
             prune_protect_tokens: 40_000,
@@ -156,7 +156,7 @@ mod tests {
     fn new_defaults() {
         let cm = ContextManager::new();
         assert!(cm.budget.is_none());
-        assert!((cm.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+        assert!((cm.soft_compaction_threshold - 0.60).abs() < f32::EPSILON);
         assert!((cm.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
         assert_eq!(cm.compaction_preserve_tail, 6);
         assert_eq!(cm.prune_protect_tokens, 40_000);
@@ -173,7 +173,7 @@ mod tests {
     fn compaction_tier_below_soft() {
         let mut cm = ContextManager::new();
         cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // soft=70_000, hard=90_000; 50_000 < 70_000 → None
+        // soft=60_000, hard=90_000; 50_000 < 60_000 → None
         assert_eq!(cm.compaction_tier(50_000), CompactionTier::None);
     }
 
@@ -181,7 +181,7 @@ mod tests {
     fn compaction_tier_between_soft_and_hard() {
         let mut cm = ContextManager::new();
         cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // soft=70_000, hard=90_000; 75_000 > 70_000 && < 90_000 → Soft
+        // soft=60_000, hard=90_000; 75_000 > 60_000 && < 90_000 → Soft
         assert_eq!(cm.compaction_tier(75_000), CompactionTier::Soft);
     }
 
@@ -189,7 +189,7 @@ mod tests {
     fn compaction_tier_above_hard() {
         let mut cm = ContextManager::new();
         cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // soft=70_000, hard=90_000; 95_000 > 90_000 → Hard
+        // soft=60_000, hard=90_000; 95_000 > 90_000 → Hard
         assert_eq!(cm.compaction_tier(95_000), CompactionTier::Hard);
     }
 
@@ -204,15 +204,15 @@ mod tests {
     fn compaction_tier_exact_soft_threshold() {
         let mut cm = ContextManager::new();
         cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // soft=70_000; 70_000 is NOT > 70_000 → None (must exceed, not equal)
-        assert_eq!(cm.compaction_tier(70_000), CompactionTier::None);
+        // soft=60_000; 60_000 is NOT > 60_000 → None (must exceed, not equal)
+        assert_eq!(cm.compaction_tier(60_000), CompactionTier::None);
     }
 
     #[test]
     fn compaction_tier_exact_hard_threshold() {
         let mut cm = ContextManager::new();
         cm.budget = Some(ContextBudget::new(100_000, 0.1));
-        // hard=90_000; 90_000 is NOT > 90_000 → Soft (not Hard)
+        // soft=60_000, hard=90_000; 90_000 is NOT > 90_000 → Soft (not Hard)
         assert_eq!(cm.compaction_tier(90_000), CompactionTier::Soft);
     }
 

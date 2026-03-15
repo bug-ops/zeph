@@ -62,7 +62,7 @@ fn default_context_budget_tokens() -> usize {
 }
 
 fn default_soft_compaction_threshold() -> f32 {
-    0.70
+    0.60
 }
 
 fn default_hard_compaction_threshold() -> f32 {

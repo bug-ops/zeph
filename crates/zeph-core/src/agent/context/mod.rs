@@ -3939,4 +3939,151 @@ mod tests {
             Some(1)
         );
     }
+
+    // maybe_soft_compact_mid_iteration tests (#1828)
+
+    #[test]
+    fn mid_iteration_skips_when_compacted_this_turn() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // budget=100_000, soft=0.60 → soft_threshold=60_000
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100_000, 0.20, 0.90, 4, 0)
+            .with_soft_compaction_threshold(0.60);
+
+        make_tool_pair_with_output(&mut agent, "a");
+        agent.messages[2].metadata.deferred_summary = Some("sum_a".into());
+        // Simulate token pressure above soft threshold
+        agent.providers.cached_prompt_tokens = 75_000;
+        // Mark hard compaction already ran this turn
+        agent.context_manager.compacted_this_turn = true;
+
+        agent.maybe_soft_compact_mid_iteration();
+
+        // Deferred summary must NOT have been applied (early return)
+        let applied = agent.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        });
+        assert!(
+            !applied,
+            "must not apply deferred summaries when compacted_this_turn is set"
+        );
+    }
+
+    #[test]
+    fn mid_iteration_skips_when_tier_is_none() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // budget=100_000, soft=0.60 → soft_threshold=60_000
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100_000, 0.20, 0.90, 4, 0)
+            .with_soft_compaction_threshold(0.60);
+
+        make_tool_pair_with_output(&mut agent, "a");
+        agent.messages[2].metadata.deferred_summary = Some("sum_a".into());
+        // Token count well below soft threshold (50_000 < 60_000) → None tier
+        agent.providers.cached_prompt_tokens = 50_000;
+
+        agent.maybe_soft_compact_mid_iteration();
+
+        // No deferred summary applied when tier is None
+        let applied = agent.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        });
+        assert!(!applied, "must not compact when tier is None");
+    }
+
+    #[test]
+    fn mid_iteration_applies_deferred_summaries_at_soft_tier() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // budget=100_000, soft=0.60 → soft_threshold=60_000; hard=0.90
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100_000, 0.20, 0.90, 4, 0)
+            .with_soft_compaction_threshold(0.60);
+
+        make_tool_pair_with_output(&mut agent, "a");
+        agent.messages[2].metadata.deferred_summary = Some("sum_a".into());
+        // Token pressure above soft (75_000 > 60_000) but below hard (90_000)
+        agent.providers.cached_prompt_tokens = 75_000;
+
+        agent.maybe_soft_compact_mid_iteration();
+
+        // Deferred summary must have been applied
+        let summary_inserted = agent.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        });
+        assert!(
+            summary_inserted,
+            "deferred summary must be applied at soft tier"
+        );
+    }
+
+    #[test]
+    fn mid_iteration_does_not_set_compacted_this_turn() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100_000, 0.20, 0.90, 4, 0)
+            .with_soft_compaction_threshold(0.60);
+
+        make_tool_pair_with_output(&mut agent, "a");
+        agent.providers.cached_prompt_tokens = 75_000;
+
+        assert!(!agent.context_manager.compacted_this_turn);
+        agent.maybe_soft_compact_mid_iteration();
+        assert!(
+            !agent.context_manager.compacted_this_turn,
+            "maybe_soft_compact_mid_iteration must not set compacted_this_turn"
+        );
+    }
+
+    #[test]
+    fn mid_iteration_fires_at_hard_tier() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        // budget=100_000, soft=0.60 → 60_000; hard=0.90 → 90_000
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_context_budget(100_000, 0.20, 0.90, 4, 0)
+            .with_soft_compaction_threshold(0.60);
+
+        make_tool_pair_with_output(&mut agent, "a");
+        agent.messages[2].metadata.deferred_summary = Some("sum_a".into());
+        // Token pressure above hard threshold (95_000 > 90_000) → Hard tier
+        agent.providers.cached_prompt_tokens = 95_000;
+
+        agent.maybe_soft_compact_mid_iteration();
+
+        // Soft actions (deferred summaries) must still be applied even at Hard tier
+        let summary_inserted = agent.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        });
+        assert!(
+            summary_inserted,
+            "deferred summaries must be applied even when tier is Hard"
+        );
+        // compacted_this_turn must remain false (no LLM call, no Hard compaction)
+        assert!(
+            !agent.context_manager.compacted_this_turn,
+            "mid-iteration must not set compacted_this_turn even at Hard tier"
+        );
+    }
 }
