@@ -60,15 +60,18 @@ impl SqliteStore {
         guidelines: &str,
         token_count: i64,
     ) -> Result<i64, MemoryError> {
-        let (current_version, _) = self.load_compression_guidelines().await?;
-        let new_version = current_version + 1;
-        sqlx::query(
-            "INSERT INTO compression_guidelines (version, guidelines, token_count) VALUES (?, ?, ?)",
+        // The INSERT...SELECT computes MAX(version)+1 and inserts it in a single
+        // statement. SQLite's single-writer WAL guarantee makes this atomic —
+        // no concurrent writer can observe the same MAX and produce a duplicate version.
+        let new_version: i64 = sqlx::query_scalar(
+            "INSERT INTO compression_guidelines (version, guidelines, token_count) \
+             SELECT COALESCE(MAX(version), 0) + 1, ?, ? \
+             FROM compression_guidelines \
+             RETURNING version",
         )
-        .bind(new_version)
         .bind(guidelines)
         .bind(token_count)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
         Ok(new_version)
     }
@@ -211,11 +214,12 @@ impl SqliteStore {
 mod tests {
     use super::*;
 
+    // pool_size=1 is required: SQLite :memory: creates an isolated database per
+    // connection, so multiple connections would each see an empty schema.
     async fn make_store() -> SqliteStore {
-        let store = SqliteStore::with_pool_size(":memory:", 1)
+        SqliteStore::with_pool_size(":memory:", 1)
             .await
-            .expect("in-memory SqliteStore");
-        store
+            .expect("in-memory SqliteStore")
     }
 
     #[tokio::test]
@@ -317,5 +321,64 @@ mod tests {
         let truncated = truncate_field(&s);
         assert!(truncated.len() <= MAX_FIELD_CHARS);
         assert!(s.is_char_boundary(truncated.len()));
+    }
+
+    #[tokio::test]
+    async fn unique_constraint_prevents_duplicate_version() {
+        let store = make_store().await;
+        // Insert version 1 via the public API.
+        store.save_compression_guidelines("first", 1).await.unwrap();
+        // store.pool() access is intentional: we need direct pool access to bypass
+        // the public API and test the UNIQUE constraint at the SQL level.
+        let result = sqlx::query(
+            "INSERT INTO compression_guidelines (version, guidelines, token_count) VALUES (1, 'dup', 0)",
+        )
+        .execute(store.pool())
+        .await;
+        assert!(
+            result.is_err(),
+            "duplicate version insert should violate UNIQUE constraint"
+        );
+    }
+
+    /// Concurrent saves must produce strictly unique versions with no collisions.
+    ///
+    /// Uses a file-backed database because SQLite `:memory:` creates an isolated
+    /// database per connection — a multi-connection pool over `:memory:` would give
+    /// each writer its own empty schema and cannot test shared-state atomicity.
+    #[tokio::test]
+    async fn concurrent_saves_produce_unique_versions() {
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("test.db");
+        let store = Arc::new(
+            SqliteStore::with_pool_size(db_path.to_str().expect("utf8 path"), 4)
+                .await
+                .expect("file-backed SqliteStore"),
+        );
+
+        let tasks: Vec<_> = (0..8_i64)
+            .map(|i| {
+                let s = Arc::clone(&store);
+                tokio::spawn(async move {
+                    s.save_compression_guidelines(&format!("guideline {i}"), i)
+                        .await
+                        .expect("concurrent save must succeed")
+                })
+            })
+            .collect();
+
+        let mut versions = HashSet::new();
+        for task in tasks {
+            let v = task.await.expect("task must not panic");
+            assert!(versions.insert(v), "version {v} appeared more than once");
+        }
+        assert_eq!(
+            versions.len(),
+            8,
+            "all 8 saves must produce distinct versions"
+        );
     }
 }
