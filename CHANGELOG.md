@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(policy): accept "shell"/"sh" as aliases for "bash" tool_id in policy rules — `ShellExecutor` registers as `tool_id="bash"` but users write `tool="shell"` in TOML rules; `resolve_tool_alias()` in `PolicyEnforcer` normalizes both sides (compile-time rule names and runtime tool_id) so `tool="shell"`, `tool="bash"`, and `tool="sh"` all match correctly (closes #1877)
 - fix(security): `/policy check` no longer leaks process environment variables into trace output — `PolicyContext.env` is now an empty `HashMap` for the diagnostic command (#1873); added optional `--trust-level <level>` argument to simulate non-default trust tiers (`trusted`, `verified`, `quarantined`, `blocked`); `TrustLevel` now implements `FromStr`
 - fix(policy): remove `PolicyEffect::AllowIf` variant — it was declared but evaluated identically to `Allow`, creating misleading TOML documentation; conditions are expressed via rule fields directly (closes #1871)
 - fix(core): overflow notice no longer embeds `overflow:` prefix — notice format changed from `[full output stored as overflow:{uuid} — ...]` to `[full output stored — ID: {uuid} — ...]` so the LLM does not pass `overflow:<uuid>` to `read_overflow`, which only accepts bare UUIDs; `read_overflow` now also accepts and strips the legacy `overflow:` prefix for backwards compatibility (closes #1868)
