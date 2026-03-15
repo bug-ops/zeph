@@ -371,6 +371,7 @@ impl<C: Channel> Agent<C> {
                     pool,
                     extraction_cfg,
                     None,
+                    None,
                 )
                 .await
                 {
