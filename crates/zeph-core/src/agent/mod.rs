@@ -23,6 +23,7 @@ mod persistence;
 pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
+pub mod session_config;
 mod skill_management;
 pub mod slash_commands;
 pub(crate) mod tool_execution;

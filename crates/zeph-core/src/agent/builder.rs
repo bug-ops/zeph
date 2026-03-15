@@ -10,6 +10,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 
 use super::Agent;
+use super::session_config::{AgentSessionConfig, CONTEXT_BUDGET_RESERVE_RATIO};
 use crate::channel::Channel;
 use crate::config::{
     CompressionConfig, LearningConfig, RoutingConfig, SecurityConfig, TimeoutConfig,
@@ -672,6 +673,91 @@ impl<C: Channel> Agent<C> {
         self.providers.provider_override = Some(slot);
         self
     }
+
+    /// Apply all config-derived settings from [`AgentSessionConfig`] in a single call.
+    ///
+    /// Takes `cfg` by value and destructures it so the compiler emits an unused-variable warning
+    /// for any field that is added to [`AgentSessionConfig`] but not consumed here (S4).
+    ///
+    /// Per-session wiring (`cancel_signal`, `provider_override`, `memory`, `debug_dumper`, etc.)
+    /// must still be applied separately after this call, since those depend on runtime state.
+    #[must_use]
+    pub fn apply_session_config(mut self, cfg: AgentSessionConfig) -> Self {
+        let AgentSessionConfig {
+            max_tool_iterations,
+            max_tool_retries,
+            max_retry_duration_secs,
+            tool_repeat_threshold,
+            tool_summarization,
+            tool_call_cutoff,
+            overflow_config,
+            permission_policy,
+            model_name,
+            embed_model,
+            budget_tokens,
+            soft_compaction_threshold,
+            hard_compaction_threshold,
+            compaction_preserve_tail,
+            compaction_cooldown_turns,
+            prune_protect_tokens,
+            redact_credentials,
+            security,
+            timeouts,
+            learning,
+            document_config,
+            graph_config,
+            anomaly_config,
+            orchestration_config,
+            // Not applied here: caller clones this before `apply_session_config` and applies
+            // it per-session (e.g. `spawn_acp_agent` passes it to `with_debug_config`).
+            debug_config: _debug_config,
+            server_compaction,
+            secrets,
+        } = cfg;
+
+        self = self
+            .with_max_tool_iterations(max_tool_iterations)
+            .with_max_tool_retries(max_tool_retries)
+            .with_max_retry_duration_secs(max_retry_duration_secs)
+            .with_tool_repeat_threshold(tool_repeat_threshold)
+            .with_model_name(model_name)
+            .with_embedding_model(embed_model)
+            .with_context_budget(
+                budget_tokens,
+                CONTEXT_BUDGET_RESERVE_RATIO,
+                hard_compaction_threshold,
+                compaction_preserve_tail,
+                prune_protect_tokens,
+            )
+            .with_soft_compaction_threshold(soft_compaction_threshold)
+            .with_compaction_cooldown(compaction_cooldown_turns)
+            .with_security(security, timeouts)
+            .with_redact_credentials(redact_credentials)
+            .with_tool_summarization(tool_summarization)
+            .with_overflow_config(overflow_config)
+            .with_permission_policy(permission_policy)
+            .with_learning(learning)
+            .with_tool_call_cutoff(tool_call_cutoff)
+            .with_available_secrets(
+                secrets
+                    .iter()
+                    .map(|(k, v)| (k.clone(), crate::vault::Secret::new(v.expose().to_owned()))),
+            )
+            .with_server_compaction(server_compaction)
+            .with_document_config(document_config)
+            .with_graph_config(graph_config)
+            .with_orchestration_config(orchestration_config);
+
+        if anomaly_config.enabled {
+            self = self.with_anomaly_detector(zeph_tools::AnomalyDetector::new(
+                anomaly_config.window_size,
+                anomaly_config.error_threshold,
+                anomaly_config.critical_threshold,
+            ));
+        }
+
+        self
+    }
 }
 
 #[cfg(test)]
@@ -841,6 +927,72 @@ mod tests {
         assert!(
             agent.memory_state.graph_config.enabled,
             "with_graph_config must set enabled flag"
+        );
+    }
+
+    /// Verify that `apply_session_config` wires graph memory, orchestration, and anomaly
+    /// detector configs into the agent in a single call — the acceptance criterion for issue #1812.
+    ///
+    /// This exercises the full path: AgentSessionConfig::from_config → apply_session_config →
+    /// agent internal state, confirming that all three feature configs are propagated correctly.
+    #[test]
+    fn apply_session_config_wires_graph_orchestration_anomaly() {
+        use crate::config::Config;
+
+        let mut config = Config::default();
+        config.memory.graph.enabled = true;
+        config.orchestration.enabled = true;
+        config.orchestration.max_tasks = 42;
+        config.tools.anomaly.enabled = true;
+        config.tools.anomaly.window_size = 7;
+
+        let session_cfg = AgentSessionConfig::from_config(&config, 100_000);
+
+        // Precondition: from_config captured the values.
+        assert!(session_cfg.graph_config.enabled);
+        assert!(session_cfg.orchestration_config.enabled);
+        assert_eq!(session_cfg.orchestration_config.max_tasks, 42);
+        assert!(session_cfg.anomaly_config.enabled);
+        assert_eq!(session_cfg.anomaly_config.window_size, 7);
+
+        let agent = make_agent().apply_session_config(session_cfg);
+
+        // Graph config must be set on memory_state.
+        assert!(
+            agent.memory_state.graph_config.enabled,
+            "apply_session_config must wire graph_config into agent"
+        );
+
+        // Orchestration config must be propagated.
+        assert!(
+            agent.orchestration.orchestration_config.enabled,
+            "apply_session_config must wire orchestration_config into agent"
+        );
+        assert_eq!(
+            agent.orchestration.orchestration_config.max_tasks, 42,
+            "orchestration max_tasks must match config"
+        );
+
+        // Anomaly detector must be created when anomaly_config.enabled = true.
+        assert!(
+            agent.debug_state.anomaly_detector.is_some(),
+            "apply_session_config must create anomaly_detector when enabled"
+        );
+    }
+
+    /// Verify that apply_session_config does NOT create an anomaly detector when disabled.
+    #[test]
+    fn apply_session_config_skips_anomaly_detector_when_disabled() {
+        use crate::config::Config;
+
+        let config = Config::default(); // anomaly.enabled defaults to false
+        let session_cfg = AgentSessionConfig::from_config(&config, 100_000);
+        assert!(!session_cfg.anomaly_config.enabled);
+
+        let agent = make_agent().apply_session_config(session_cfg);
+        assert!(
+            agent.debug_state.anomaly_detector.is_none(),
+            "apply_session_config must not create anomaly_detector when disabled"
         );
     }
 }

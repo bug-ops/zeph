@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- refactor(acp): centralize ACP session config wiring via `AgentSessionConfig::from_config()` and `Agent::apply_session_config()` (#1812) — replaces ~25 individually-copied scalar fields in `SharedAgentDeps` and redundant builder call blocks in `spawn_acp_agent`, `runner.rs`, and `daemon.rs` with a single struct; eliminates hardcoded `0.20` literal (now `CONTEXT_BUDGET_RESERVE_RATIO`); fixes missing `with_orchestration_config` and `with_server_compaction` in daemon sessions
+
 ### Fixed
 
 - Qdrant collection dimension mismatch when switching embedding models on collections with 0 points (#1815)

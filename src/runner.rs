@@ -23,7 +23,6 @@ use zeph_core::bootstrap::warmup_provider;
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(feature = "acp")]
 use zeph_core::config::AcpTransport;
-use zeph_core::vault::Secret;
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
 
 #[cfg(feature = "acp-http")]
@@ -688,6 +687,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             None
         };
 
+    let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
+
     let agent = Agent::new_with_registry_arc(
         provider.clone(),
         channel,
@@ -696,12 +697,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.skills.max_active_skills,
         tool_executor,
     )
-    .with_max_tool_iterations(config.agent.max_tool_iterations)
-    .with_max_tool_retries(config.agent.max_tool_retries)
-    .with_max_retry_duration_secs(config.agent.max_retry_duration_secs)
-    .with_tool_repeat_threshold(config.agent.tool_repeat_threshold)
-    .with_model_name(config.llm.model.clone())
-    .with_embedding_model(embed_model.clone())
+    .apply_session_config(session_config)
     .with_disambiguation_threshold(config.skills.disambiguation_threshold)
     .with_skill_reload(skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
@@ -713,45 +709,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.semantic.recall_limit,
         config.memory.summarization_threshold,
     )
-    .with_context_budget(
-        budget_tokens,
-        0.20,
-        config.memory.hard_compaction_threshold,
-        config.memory.compaction_preserve_tail,
-        config.memory.prune_protect_tokens,
-    )
-    .with_soft_compaction_threshold(config.memory.soft_compaction_threshold)
-    .with_compaction_cooldown(config.memory.compaction_cooldown_turns)
     .with_compression(config.memory.compression.clone())
     .with_routing(config.memory.routing.clone())
     .with_shutdown(shutdown_rx.clone())
-    .with_security(config.security.clone(), config.timeouts)
-    .with_redact_credentials(config.memory.redact_credentials)
-    .with_tool_summarization(config.tools.summarize_output)
-    .with_overflow_config(config.tools.overflow.clone())
-    .with_permission_policy(permission_policy.clone())
     .with_config_reload(config_path, config_reload_rx)
     .with_logging_config(logging_config.clone())
-    .with_available_secrets(
-        config
-            .secrets
-            .custom
-            .iter()
-            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
-    )
     .with_autosave_config(
         config.memory.autosave_assistant,
         config.memory.autosave_min_length,
     )
-    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
-    .with_server_compaction(
-        config
-            .llm
-            .cloud
-            .as_ref()
-            .is_some_and(|c| c.server_compaction),
-    )
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone());
 
     // Load provider-specific and explicit instruction files.

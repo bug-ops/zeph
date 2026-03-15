@@ -10,8 +10,6 @@ use crate::agent_setup;
 use zeph_core::agent::Agent;
 #[cfg(any(feature = "acp", feature = "acp-http"))]
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
-#[cfg(any(feature = "acp", feature = "acp-http"))]
-use zeph_core::vault::Secret;
 #[cfg(feature = "acp")]
 use zeph_tools::ErasedToolExecutor;
 
@@ -74,9 +72,23 @@ fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::
 ///
 /// Per-session state (`conversation_id`, reload receivers, cancel signals) is created fresh
 /// in `spawn_acp_agent` for each session.
+///
+/// ## Field categories
+///
+/// - **Shared runtime objects** (`provider`, `registry`, `memory`, `mcp_manager`, etc.) —
+///   expensive to create, safe to share via `Arc` / `Clone`.
+/// - **Config snapshot** (`session_config`) — single source of truth for all config-derived
+///   agent settings; see [`zeph_core::AgentSessionConfig`].
+/// - **Optional runtime providers** (`summary_provider`, `judge_provider`,
+///   `quarantine_provider`) — contain HTTP client pools (`AnyProvider`) with runtime state;
+///   excluded from `session_config` because they are not purely config-derived.
+/// - **MCP objects** (`mcp_tools`, `mcp_registry`, `mcp_manager`, `mcp_shared_tools`,
+///   `mcp_config`) — runtime + config mixture; passed together to `with_mcp()`.
+/// - **ACP-specific** (`acp_*`) — transport-level config; not agent-level.
+/// - **Scheduler runtime** (`scheduler_*`) — runtime broadcast senders; not config-derived.
 #[cfg(feature = "acp")]
-#[allow(clippy::struct_excessive_bools)]
 struct SharedAgentDeps {
+    // Shared runtime objects
     provider: zeph_llm::any::AnyProvider,
     registry: std::sync::Arc<std::sync::RwLock<zeph_skills::registry::SkillRegistry>>,
     /// Shared skill matcher: `Clone` is cheap for Qdrant (connection-pool sharing), and
@@ -84,50 +96,38 @@ struct SharedAgentDeps {
     matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     max_active_skills: usize,
     tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor>,
-    max_tool_iterations: usize,
-    max_tool_retries: usize,
-    max_retry_duration_secs: u64,
-    tool_repeat_threshold: usize,
-    model_name: String,
-    embed_model: String,
     skill_paths: Vec<PathBuf>,
     memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     history_limit: u32,
     recall_limit: usize,
     summarization_threshold: usize,
-    budget_tokens: usize,
-    soft_compaction_threshold: f32,
-    hard_compaction_threshold: f32,
-    compaction_preserve_tail: usize,
-    compaction_cooldown_turns: u8,
-    prune_protect_tokens: usize,
     /// Broadcast sender for skill reload events. Each session subscribes independently.
     skill_reload_tx: tokio::sync::broadcast::Sender<zeph_skills::watcher::SkillEvent>,
     /// Broadcast sender for config reload events. Each session subscribes independently.
     config_reload_tx: tokio::sync::broadcast::Sender<zeph_core::config_watcher::ConfigEvent>,
     /// Shared shutdown signal (`watch::Receiver` is `Clone`).
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    security: zeph_core::config::SecurityConfig,
-    timeouts: zeph_core::config::TimeoutConfig,
-    redact_credentials: bool,
-    tool_summarization: bool,
-    overflow_config: zeph_tools::OverflowConfig,
-    permission_policy: zeph_tools::PermissionPolicy,
     config_path: PathBuf,
+
+    // MCP — runtime objects + config passed together to `with_mcp()`
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
     mcp_shared_tools: std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
     mcp_config: zeph_core::config::McpConfig,
-    learning: zeph_core::config::LearningConfig,
-    tool_call_cutoff: usize,
-    secrets: std::collections::HashMap<String, zeph_core::vault::Secret>,
+
+    // Optional runtime providers (contain HTTP client pools; excluded from session_config)
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     judge_provider: Option<zeph_llm::any::AnyProvider>,
     quarantine_provider: Option<(
         zeph_llm::any::AnyProvider,
         zeph_core::sanitizer::QuarantineConfig,
     )>,
+
+    // Config snapshot — single source of truth for all config-derived agent settings
+    session_config: zeph_core::AgentSessionConfig,
+
+    // ACP-specific fields (transport-level; not agent-level)
     acp_agent_name: String,
     acp_agent_version: String,
     acp_max_sessions: usize,
@@ -149,18 +149,8 @@ struct SharedAgentDeps {
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
     /// Project rule file paths to advertise in session `_meta`.
     acp_project_rules: Vec<PathBuf>,
-    /// Document RAG configuration from `[memory.documents]` config section.
-    document_config: zeph_core::config::DocumentConfig,
-    /// Graph memory configuration from `[memory.graph]` config section.
-    graph_config: zeph_core::config::GraphConfig,
-    /// Anomaly detector configuration from `[tools.anomaly]` config section.
-    anomaly_config: zeph_tools::AnomalyConfig,
-    /// Orchestration configuration from `[orchestration]` config section.
-    orchestration_config: zeph_core::config::OrchestrationConfig,
-    /// Debug dump configuration from `[debug]` config section.
-    debug_config: zeph_core::config::DebugConfig,
-    /// Whether Claude server-side context compaction is enabled.
-    server_compaction: bool,
+
+    // Scheduler runtime objects (broadcast senders; not config-derived values)
     /// Scheduler executor shared across sessions. Initialized once at startup.
     #[cfg(feature = "scheduler")]
     scheduler_executor: Option<std::sync::Arc<crate::scheduler_executor::SchedulerExecutor>>,
@@ -414,18 +404,14 @@ async fn build_acp_deps(
         }
     };
 
+    let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
+
     let deps = SharedAgentDeps {
         provider,
         registry,
         matcher,
         max_active_skills: config.skills.max_active_skills,
         tool_executor,
-        max_tool_iterations: config.agent.max_tool_iterations,
-        max_tool_retries: config.agent.max_tool_retries,
-        max_retry_duration_secs: config.agent.max_retry_duration_secs,
-        tool_repeat_threshold: config.agent.tool_repeat_threshold,
-        model_name: config.llm.model.clone(),
-        embed_model,
         skill_paths,
         skill_reload_tx,
         config_reload_tx,
@@ -433,38 +419,17 @@ async fn build_acp_deps(
         history_limit: config.memory.history_limit,
         recall_limit: config.memory.semantic.recall_limit,
         summarization_threshold: config.memory.summarization_threshold,
-        budget_tokens,
-        soft_compaction_threshold: config.memory.soft_compaction_threshold,
-        hard_compaction_threshold: config.memory.hard_compaction_threshold,
-        compaction_preserve_tail: config.memory.compaction_preserve_tail,
-        compaction_cooldown_turns: config.memory.compaction_cooldown_turns,
-        prune_protect_tokens: config.memory.prune_protect_tokens,
         shutdown_rx,
-        security: config.security.clone(),
-        timeouts: config.timeouts,
-        redact_credentials: config.memory.redact_credentials,
-        tool_summarization: config.tools.summarize_output,
-        overflow_config: config.tools.overflow.clone(),
-        permission_policy: config
-            .tools
-            .permission_policy(config.security.autonomy_level),
         config_path: config_path_owned,
         mcp_tools,
         mcp_registry,
         mcp_manager,
         mcp_shared_tools,
         mcp_config: config.mcp.clone(),
-        learning: config.skills.learning.clone(),
-        tool_call_cutoff: config.memory.tool_call_cutoff,
-        secrets: config
-            .secrets
-            .custom
-            .iter()
-            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned())))
-            .collect(),
         summary_provider,
         judge_provider: app.build_judge_provider(),
         quarantine_provider: app.build_quarantine_provider(),
+        session_config,
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
         acp_max_sessions: config.acp.max_sessions,
@@ -494,16 +459,6 @@ async fn build_acp_deps(
         sqlite_path: config.memory.sqlite_path.clone(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
-        document_config: config.memory.documents.clone(),
-        graph_config: config.memory.graph.clone(),
-        anomaly_config: config.tools.anomaly.clone(),
-        orchestration_config: config.orchestration.clone(),
-        debug_config: config.debug.clone(),
-        server_compaction: config
-            .llm
-            .cloud
-            .as_ref()
-            .is_some_and(|c| c.server_compaction),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
         #[cfg(feature = "scheduler")]
@@ -540,53 +495,23 @@ async fn spawn_acp_agent(
     let matcher = d.matcher.clone();
     let max_active_skills = d.max_active_skills;
     let tool_executor = Arc::clone(&d.tool_executor);
-    let max_tool_iterations = d.max_tool_iterations;
-    let max_tool_retries = d.max_tool_retries;
-    let max_retry_duration_secs = d.max_retry_duration_secs;
-    let tool_repeat_threshold = d.tool_repeat_threshold;
-    let model_name = d.model_name.clone();
-    let embed_model = d.embed_model.clone();
     let skill_paths = d.skill_paths.clone();
     let memory = Arc::clone(&d.memory);
     let history_limit = d.history_limit;
     let recall_limit = d.recall_limit;
     let summarization_threshold = d.summarization_threshold;
-    let budget_tokens = d.budget_tokens;
-    let soft_compaction_threshold = d.soft_compaction_threshold;
-    let hard_compaction_threshold = d.hard_compaction_threshold;
-    let compaction_preserve_tail = d.compaction_preserve_tail;
-    let compaction_cooldown_turns = d.compaction_cooldown_turns;
-    let prune_protect_tokens = d.prune_protect_tokens;
     let shutdown_rx = d.shutdown_rx.clone();
-    let security = d.security.clone();
-    let timeouts = d.timeouts;
-    let redact_credentials = d.redact_credentials;
-    let tool_summarization = d.tool_summarization;
-    let overflow_config = d.overflow_config.clone();
-    let permission_policy = d.permission_policy.clone();
     let config_path = d.config_path.clone();
     let mcp_tools = d.mcp_tools.clone();
     let mcp_registry = d.mcp_registry.clone();
     let mcp_manager = Arc::clone(&d.mcp_manager);
     let mcp_shared_tools = Arc::clone(&d.mcp_shared_tools);
     let mcp_config = d.mcp_config.clone();
-    let learning = d.learning.clone();
-    let tool_call_cutoff = d.tool_call_cutoff;
     let summary_provider = d.summary_provider.clone();
     let judge_provider = d.judge_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
-    let document_config = d.document_config.clone();
-    let graph_config = d.graph_config.clone();
-    let anomaly_config = d.anomaly_config.clone();
-    let orchestration_config = d.orchestration_config.clone();
-    let debug_config = d.debug_config.clone();
-    let server_compaction = d.server_compaction;
+    let session_config = d.session_config.clone();
     let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
-    let available_secrets: Vec<(String, Secret)> = d
-        .secrets
-        .iter()
-        .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned())))
-        .collect();
     let skill_reload_tx = d.skill_reload_tx.clone();
     let config_reload_tx = d.config_reload_tx.clone();
     #[cfg(feature = "scheduler")]
@@ -612,6 +537,10 @@ async fn spawn_acp_agent(
         .as_ref()
         .map(|tx| broadcast_to_mpsc(tx.subscribe(), adapter_cancel.clone()));
 
+    // Capture per-session fields before session_config is consumed by apply_session_config.
+    let debug_config = session_config.debug_config.clone();
+    let memory_validation_config = session_config.security.memory_validation.clone();
+
     // Build tool executor: ACP executors take priority via CompositeExecutor (first-match-wins).
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
     // When conversation_id is None (store unavailable), memory_tools use id=0 which maps to no
@@ -622,7 +551,7 @@ async fn spawn_acp_agent(
             .conversation_id
             .unwrap_or(zeph_memory::ConversationId(0)),
         zeph_core::sanitizer::memory_validation::MemoryWriteValidator::new(
-            d.security.memory_validation.clone(),
+            memory_validation_config,
         ),
     );
     let overflow_executor = {
@@ -704,30 +633,11 @@ async fn spawn_acp_agent(
         max_active_skills,
         tool_executor,
     )
-    .with_max_tool_iterations(max_tool_iterations)
-    .with_max_tool_retries(max_tool_retries)
-    .with_max_retry_duration_secs(max_retry_duration_secs)
-    .with_tool_repeat_threshold(tool_repeat_threshold)
-    .with_model_name(model_name)
+    .apply_session_config(session_config)
     .with_working_dir(session_ctx.working_dir.clone())
-    .with_embedding_model(embed_model)
     .with_skill_reload(skill_paths, reload_rx)
     .with_managed_skills_dir(managed_skills_dir)
-    .with_context_budget(
-        budget_tokens,
-        0.20,
-        hard_compaction_threshold,
-        compaction_preserve_tail,
-        prune_protect_tokens,
-    )
-    .with_soft_compaction_threshold(soft_compaction_threshold)
-    .with_compaction_cooldown(compaction_cooldown_turns)
     .with_shutdown(shutdown_rx)
-    .with_security(security, timeouts)
-    .with_redact_credentials(redact_credentials)
-    .with_tool_summarization(tool_summarization)
-    .with_overflow_config(overflow_config)
-    .with_permission_policy(permission_policy)
     .with_config_reload(config_path, config_reload_rx)
     .with_mcp(
         mcp_tools,
@@ -735,11 +645,7 @@ async fn spawn_acp_agent(
         Some(Arc::clone(&mcp_manager)),
         &mcp_config,
     )
-    .with_mcp_shared_tools(mcp_shared_tools)
-    .with_learning(learning)
-    .with_tool_call_cutoff(tool_call_cutoff)
-    .with_available_secrets(available_secrets)
-    .with_server_compaction(server_compaction);
+    .with_mcp_shared_tools(mcp_shared_tools);
 
     // Wire scheduler per session: apply update/custom receivers and add executor.
     #[cfg(feature = "scheduler")]
@@ -768,8 +674,6 @@ async fn spawn_acp_agent(
         );
     }
 
-    agent = agent.with_graph_config(graph_config);
-
     if let Some(signal) = cancel_signal {
         agent = agent.with_cancel_signal(signal);
     }
@@ -789,18 +693,6 @@ async fn spawn_acp_agent(
     if let Some(jp) = judge_provider {
         agent = agent.with_judge_provider(jp);
     }
-
-    agent = agent.with_document_config(document_config);
-
-    if anomaly_config.enabled {
-        agent = agent.with_anomaly_detector(zeph_tools::AnomalyDetector::new(
-            anomaly_config.window_size,
-            anomaly_config.error_threshold,
-            anomaly_config.critical_threshold,
-        ));
-    }
-
-    agent = agent.with_orchestration_config(orchestration_config);
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);
 
