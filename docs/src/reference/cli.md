@@ -308,6 +308,7 @@ See [Debug Dump](../advanced/debug-dump.md) for the file layout and how to read 
 | `--vault-key <PATH>` | Path to age identity (private key) file (default: `~/.config/zeph/vault-key.txt`, overrides `ZEPH_VAULT_KEY` env var) |
 | `--vault-path <PATH>` | Path to age-encrypted secrets file (default: `~/.config/zeph/secrets.age`, overrides `ZEPH_VAULT_PATH` env var) |
 | `--graph-memory` | Enable graph-based knowledge memory for this session, overriding `memory.graph.enabled`. See [Graph Memory](../concepts/graph-memory.md) |
+| `--compression-guidelines` | Enable ACON failure-driven compression guidelines for this session, overriding `memory.compression_guidelines.enabled`. Requires `compression-guidelines` feature at compile time; silently ignored otherwise. See [Memory](../concepts/memory.md) |
 | `--lsp-context` | Enable automatic LSP context injection for this session, overriding `agent.lsp.enabled`. Injects diagnostics after file writes and hover info on reads. Requires mcpls MCP server and `lsp-context` feature. See [LSP Code Intelligence](../guides/lsp.md#lsp-context-injection) |
 | `--experiment-run` | Run a single experiment session and exit (requires `experiments` feature). See [Experiments](../concepts/experiments.md) |
 | `--experiment-report` | Print past experiment results summary and exit (requires `experiments` feature). See [Experiments](../concepts/experiments.md) |

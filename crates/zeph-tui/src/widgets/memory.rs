@@ -49,6 +49,12 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
             metrics.graph_extraction_count, metrics.graph_extraction_failures,
         )));
     }
+    if metrics.guidelines_version > 0 {
+        mem_lines.push(Line::from(format!(
+            "  Guidelines: v{} ({})",
+            metrics.guidelines_version, metrics.guidelines_updated_at,
+        )));
+    }
     let memory = Paragraph::new(mem_lines).block(
         Block::default()
             .borders(Borders::ALL)
@@ -76,6 +82,22 @@ mod tests {
         };
 
         let output = render_to_string(30, 8, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn memory_with_guidelines() {
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 10,
+            embeddings_generated: 0,
+            guidelines_version: 3,
+            guidelines_updated_at: "2026-03-15T17:00:00.000Z".into(),
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(50, 10, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert_snapshot!(output);

@@ -11,6 +11,8 @@ pub mod error;
 mod experiment_cmd;
 pub(super) mod feedback_detector;
 mod graph_commands;
+#[cfg(feature = "compression-guidelines")]
+mod guidelines_commands;
 mod index;
 mod learning;
 pub(crate) mod learning_engine;
@@ -2625,6 +2627,11 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
             handled!(self.handle_graph_command(trimmed).await);
+        }
+
+        #[cfg(feature = "compression-guidelines")]
+        if trimmed == "/guidelines" {
+            handled!(self.handle_guidelines_command().await);
         }
 
         #[cfg(feature = "scheduler")]

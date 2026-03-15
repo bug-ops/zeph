@@ -380,6 +380,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.graph.enabled = true;
     }
 
+    if cli.compression_guidelines {
+        // Config field and builder are unconditional; only the background
+        // task spawn is feature-gated (compression-guidelines feature).
+        app.config_mut().memory.compression_guidelines.enabled = true;
+    }
+
     if cli.server_compaction
         && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
     {

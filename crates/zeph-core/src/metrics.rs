@@ -228,6 +228,10 @@ pub struct MetricsSnapshot {
     /// `true` when `config.llm.cloud.enable_extended_context = true`.
     /// Never set for other providers to avoid false positives.
     pub extended_context: bool,
+    /// Latest compression-guidelines version (0 = no guidelines yet).
+    pub guidelines_version: u32,
+    /// ISO 8601 timestamp of the latest guidelines update (empty if none).
+    pub guidelines_updated_at: String,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.
