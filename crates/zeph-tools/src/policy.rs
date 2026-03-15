@@ -224,8 +224,9 @@ impl PolicyEnforcer {
 
         let mut rules = Vec::with_capacity(rule_configs.len());
         for (i, rule) in rule_configs.iter().enumerate() {
-            // Normalize tool name: lowercase, strip whitespace.
-            let normalized_tool = rule.tool.trim().to_lowercase();
+            // Normalize tool name: lowercase, strip whitespace, then resolve aliases.
+            let normalized_tool =
+                resolve_tool_alias(rule.tool.trim().to_lowercase().as_str()).to_owned();
 
             let tool_matcher = glob::Pattern::new(&normalized_tool)
                 .map_err(|source| PolicyCompileError::InvalidGlob { index: i, source })?;
@@ -282,7 +283,7 @@ impl PolicyEnforcer {
         params: &serde_json::Map<String, serde_json::Value>,
         context: &PolicyContext,
     ) -> PolicyDecision {
-        let normalized = tool_name.trim().to_lowercase();
+        let normalized = resolve_tool_alias(tool_name.trim().to_lowercase().as_str()).to_owned();
 
         // Deny-wins: check all deny rules first.
         for rule in &self.rules {
@@ -315,6 +316,17 @@ impl PolicyEnforcer {
                 trace: "default: deny (no matching rules)".to_owned(),
             },
         }
+    }
+}
+
+/// Resolve tool name aliases so policy rules are tool-id-agnostic.
+///
+/// `ShellExecutor` registers as `tool_id="bash"` but users naturally write `tool="shell"`.
+/// Both forms (and `"sh"`) are normalized to `"shell"` before matching.
+fn resolve_tool_alias(name: &str) -> &str {
+    match name {
+        "bash" | "sh" => "shell",
+        other => other,
     }
 }
 
@@ -884,5 +896,116 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.default_effect, DefaultEffect::Deny);
         assert!(config.rules.is_empty());
+    }
+
+    // ── Tool alias resolution (#1877) ─────────────────────────────────────────
+
+    // Rule uses "shell", runtime tool_id is "bash" — the core bug case.
+    #[test]
+    fn alias_shell_rule_matches_bash_tool_id() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![PolicyRuleConfig {
+                effect: PolicyEffect::Deny,
+                tool: "shell".to_owned(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+            }],
+            policy_file: None,
+        };
+        let enforcer = PolicyEnforcer::compile(&config).unwrap();
+        let ctx = make_context(TrustLevel::Trusted);
+        assert!(
+            matches!(
+                enforcer.evaluate("bash", &empty_params(), &ctx),
+                PolicyDecision::Deny { .. }
+            ),
+            "rule tool='shell' must match runtime tool_id='bash' via alias"
+        );
+    }
+
+    // Rule uses "bash" — must still work (no regression).
+    #[test]
+    fn alias_bash_rule_matches_bash_tool_id() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![PolicyRuleConfig {
+                effect: PolicyEffect::Deny,
+                tool: "bash".to_owned(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+            }],
+            policy_file: None,
+        };
+        let enforcer = PolicyEnforcer::compile(&config).unwrap();
+        let ctx = make_context(TrustLevel::Trusted);
+        assert!(
+            matches!(
+                enforcer.evaluate("bash", &empty_params(), &ctx),
+                PolicyDecision::Deny { .. }
+            ),
+            "rule tool='bash' must still match runtime tool_id='bash'"
+        );
+    }
+
+    // Rule uses "sh" — must also match "bash" via alias.
+    #[test]
+    fn alias_sh_rule_matches_bash_tool_id() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![PolicyRuleConfig {
+                effect: PolicyEffect::Deny,
+                tool: "sh".to_owned(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+            }],
+            policy_file: None,
+        };
+        let enforcer = PolicyEnforcer::compile(&config).unwrap();
+        let ctx = make_context(TrustLevel::Trusted);
+        assert!(
+            matches!(
+                enforcer.evaluate("bash", &empty_params(), &ctx),
+                PolicyDecision::Deny { .. }
+            ),
+            "rule tool='sh' must match runtime tool_id='bash' via alias"
+        );
+    }
+
+    // Unknown tool names are not aliased.
+    #[test]
+    fn alias_unknown_tool_unaffected() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![PolicyRuleConfig {
+                effect: PolicyEffect::Deny,
+                tool: "shell".to_owned(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+            }],
+            policy_file: None,
+        };
+        let enforcer = PolicyEnforcer::compile(&config).unwrap();
+        let ctx = make_context(TrustLevel::Trusted);
+        // "web_scrape" is not an alias for anything — must not be denied by shell rule.
+        assert!(
+            matches!(
+                enforcer.evaluate("web_scrape", &empty_params(), &ctx),
+                PolicyDecision::Allow { .. }
+            ),
+            "unknown tool names must not be affected by alias resolution"
+        );
     }
 }
