@@ -278,7 +278,7 @@ pub async fn extract_and_store(
 ) -> Result<ExtractionResult, MemoryError> {
     use crate::graph::{EntityResolver, GraphExtractor, GraphStore};
 
-    let extractor = GraphExtractor::new(provider, config.max_entities, config.max_edges);
+    let extractor = GraphExtractor::new(provider.clone(), config.max_entities, config.max_edges);
     let ctx_refs: Vec<&str> = context_messages.iter().map(String::as_str).collect();
 
     let store = GraphStore::new(pool);
@@ -315,7 +315,9 @@ pub async fn extract_and_store(
     }
 
     let resolver = if let Some(ref emb) = embedding_store {
-        EntityResolver::new(&store).with_embedding_store(emb)
+        EntityResolver::new(&store)
+            .with_embedding_store(emb)
+            .with_provider(&provider)
     } else {
         EntityResolver::new(&store)
     };
@@ -373,6 +375,126 @@ pub async fn extract_and_store(
         },
         entity_ids: new_entity_ids,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zeph_llm::any::AnyProvider;
+
+    use super::extract_and_store;
+    use crate::embedding_store::EmbeddingStore;
+    use crate::graph::GraphStore;
+    use crate::in_memory_store::InMemoryVectorStore;
+    use crate::sqlite::SqliteStore;
+
+    use super::GraphExtractionConfig;
+
+    async fn setup() -> (GraphStore, Arc<EmbeddingStore>) {
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let mem_store = Box::new(InMemoryVectorStore::new());
+        let emb = Arc::new(EmbeddingStore::with_store(mem_store, pool.clone()));
+        let gs = GraphStore::new(pool);
+        (gs, emb)
+    }
+
+    /// Regression test for #1829: extract_and_store() must pass the provider to EntityResolver
+    /// so that store_entity_embedding() is called and qdrant_point_id is set in SQLite.
+    #[tokio::test]
+    async fn extract_and_store_sets_qdrant_point_id_when_embedding_store_provided() {
+        let (gs, emb) = setup().await;
+
+        // MockProvider: supports embeddings, returns a valid extraction JSON for chat
+        let extraction_json = r#"{"entities":[{"name":"Rust","type":"language","summary":"systems language"}],"edges":[]}"#;
+        let mut mock =
+            zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Rust is a systems programming language.".to_owned(),
+            vec![],
+            provider,
+            gs.pool().clone(),
+            config,
+            None,
+            Some(emb.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result.stats.entities_upserted, 1,
+            "one entity should be upserted"
+        );
+
+        // The entity must have a qdrant_point_id — this proves store_entity_embedding() was called.
+        // Before the fix, EntityResolver was built without a provider, so embed() was never called
+        // and qdrant_point_id remained NULL.
+        let entity = gs
+            .find_entity("rust", crate::graph::EntityType::Language)
+            .await
+            .unwrap()
+            .expect("entity 'rust' must exist in SQLite");
+
+        assert!(
+            entity.qdrant_point_id.is_some(),
+            "qdrant_point_id must be set when embedding_store + provider are both provided (regression for #1829)"
+        );
+    }
+
+    /// When no embedding_store is provided, extract_and_store() must still work correctly
+    /// (no embeddings stored, but entities are still upserted).
+    #[tokio::test]
+    async fn extract_and_store_without_embedding_store_still_upserts_entities() {
+        let (gs, _emb) = setup().await;
+
+        let extraction_json = r#"{"entities":[{"name":"Python","type":"language","summary":"scripting"}],"edges":[]}"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Python is a scripting language.".to_owned(),
+            vec![],
+            provider,
+            gs.pool().clone(),
+            config,
+            None,
+            None, // no embedding_store
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.entities_upserted, 1);
+
+        let entity = gs
+            .find_entity("python", crate::graph::EntityType::Language)
+            .await
+            .unwrap()
+            .expect("entity 'python' must exist");
+
+        assert!(
+            entity.qdrant_point_id.is_none(),
+            "qdrant_point_id must remain None when no embedding_store is provided"
+        );
+    }
 }
 
 impl SemanticMemory {
