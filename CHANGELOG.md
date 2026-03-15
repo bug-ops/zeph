@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(memory): `save_compression_guidelines` now uses a single atomic `INSERT ... SELECT COALESCE(MAX(version), 0) + 1` statement instead of a read-then-write pattern, eliminating the TOCTOU race where two concurrent callers could insert duplicate version numbers; migration 033 adds a `UNIQUE(version)` constraint to the `compression_guidelines` table with row-level deduplication for pre-existing corrupt data (closes #1799)
+
 ### Added
 
 - feat(memory,core): ACON failure-driven compression guidelines (#1647) — after a hard compaction, the agent watches subsequent LLM responses for two-signal context-loss indicators (uncertainty phrase + prior-context reference); confirmed failure pairs are stored in SQLite (`compression_failure_pairs`); a background updater wakes periodically, calls the LLM to synthesise updated guidelines from accumulated pairs, sanitizes the output to strip prompt injection, and persists the result; guidelines are injected into every future compaction prompt via a `<compression-guidelines>` block; `CompressionGuidelinesConfig` in `[memory.compression_guidelines]` (disabled by default); addresses all critic findings including two-signal false-positive guard, `enabled` guard ordering, LLM timeout, prompt injection sanitization, field truncation, and cleanup policy
