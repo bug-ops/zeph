@@ -1448,6 +1448,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Aggregate results or report failure after the tick loop completes.
+    #[allow(clippy::too_many_lines)]
     async fn finalize_plan_execution(
         &mut self,
         completed_graph: crate::orchestration::TaskGraph,
@@ -1493,27 +1494,59 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Failed)
                     .collect();
+                let cancelled_tasks: Vec<_> = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Canceled)
+                    .collect();
                 self.update_metrics(|m| {
                     m.orchestration.tasks_failed += failed_tasks.len() as u64;
                 });
-                let mut msg = format!(
-                    "Plan failed. {}/{} tasks failed:\n",
-                    failed_tasks.len(),
-                    completed_graph.tasks.len()
-                );
-                for t in &failed_tasks {
-                    // SEC-M34-002: truncate raw task output before displaying to user.
-                    let err: std::borrow::Cow<str> =
-                        t.result.as_ref().map_or("unknown error".into(), |r| {
-                            if r.output.len() > 500 {
-                                r.output.chars().take(500).collect::<String>().into()
-                            } else {
-                                r.output.as_str().into()
-                            }
-                        });
-                    let _ = writeln!(msg, "  - {}: {err}", t.title);
-                }
-                msg.push_str("\nUse `/plan retry` to retry failed tasks.");
+                let total = completed_graph.tasks.len();
+                let msg = if failed_tasks.is_empty() && !cancelled_tasks.is_empty() {
+                    // Pure scheduler deadlock: no tasks actually failed, some were canceled.
+                    format!(
+                        "Plan canceled. {}/{} tasks did not run.\n\
+                         Use `/plan retry` to retry or check logs for details.",
+                        cancelled_tasks.len(),
+                        total
+                    )
+                } else if failed_tasks.is_empty() && cancelled_tasks.is_empty() {
+                    // Should not occur through normal scheduler paths; make it visible.
+                    tracing::warn!(
+                        "plan finished with GraphStatus::Failed but no failed or canceled tasks"
+                    );
+                    "Plan failed. No task errors recorded; check logs for details.".to_string()
+                } else {
+                    let mut m = if cancelled_tasks.is_empty() {
+                        format!(
+                            "Plan failed. {}/{} tasks failed:\n",
+                            failed_tasks.len(),
+                            total
+                        )
+                    } else {
+                        format!(
+                            "Plan failed. {}/{} tasks failed, {} canceled:\n",
+                            failed_tasks.len(),
+                            total,
+                            cancelled_tasks.len()
+                        )
+                    };
+                    for t in &failed_tasks {
+                        // SEC-M34-002: truncate raw task output before displaying to user.
+                        let err: std::borrow::Cow<str> =
+                            t.result.as_ref().map_or("unknown error".into(), |r| {
+                                if r.output.len() > 500 {
+                                    r.output.chars().take(500).collect::<String>().into()
+                                } else {
+                                    r.output.as_str().into()
+                                }
+                            });
+                        let _ = writeln!(m, "  - {}: {err}", t.title);
+                    }
+                    m.push_str("\nUse `/plan retry` to retry failed tasks.");
+                    m
+                };
                 self.channel.send(&msg).await?;
                 // Store graph back so /plan retry and /plan resume work.
                 self.orchestration.pending_graph = Some(completed_graph);

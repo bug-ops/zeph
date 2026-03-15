@@ -3195,6 +3195,107 @@ mod compaction_e2e {
             "Completed graph → completed message; got: {msgs:?}"
         );
     }
+
+    /// Regression for #1879: `finalize_plan_execution` with `GraphStatus::Failed` where no
+    /// tasks actually failed (all canceled due to scheduler deadlock) must emit
+    /// "Plan canceled. N/M tasks did not run." and NOT "Plan failed. 0/N tasks failed".
+    #[tokio::test]
+    async fn finalize_plan_execution_deadlock_emits_cancelled_message() {
+        use crate::subagent::SubAgentManager;
+
+        let channel = MockChannel::new(vec![]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Simulate deadlock: graph Failed, one task Blocked → Canceled, one task Pending → Canceled.
+        let mut graph = TaskGraph::new("deadlock goal");
+        let mut task0 = TaskNode::new(0, "upstream", "will be blocked");
+        task0.status = TaskStatus::Canceled;
+        let mut task1 = TaskNode::new(1, "downstream", "never ran");
+        task1.status = TaskStatus::Canceled;
+        graph.tasks.push(task0);
+        graph.tasks.push(task1);
+        graph.status = GraphStatus::Failed;
+
+        agent
+            .finalize_plan_execution(graph, GraphStatus::Failed)
+            .await
+            .unwrap();
+
+        let msgs = agent.channel.sent_messages();
+        // Must NOT say "0/2 tasks failed".
+        assert!(
+            !msgs.iter().any(|m| m.contains("0/2 tasks failed")),
+            "misleading '0/2 tasks failed' message must not appear; got: {msgs:?}"
+        );
+        // Must say "Plan canceled".
+        assert!(
+            msgs.iter().any(|m| m.contains("Plan canceled")),
+            "must contain 'Plan canceled' for pure deadlock; got: {msgs:?}"
+        );
+        // Must mention the count of tasks that did not run.
+        assert!(
+            msgs.iter().any(|m| m.contains("2/2")),
+            "must report 2/2 canceled; got: {msgs:?}"
+        );
+    }
+
+    /// Regression for #1879: mixed failure — some tasks failed, some canceled.
+    /// Message must say "Plan failed. X/M tasks failed, Y canceled:" (not misleading).
+    #[tokio::test]
+    async fn finalize_plan_execution_mixed_failed_and_cancelled() {
+        use crate::subagent::SubAgentManager;
+
+        let channel = MockChannel::new(vec![]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        let mut graph = TaskGraph::new("mixed goal");
+        let mut failed = TaskNode::new(0, "failed-task", "really failed");
+        failed.status = TaskStatus::Failed;
+        failed.result = Some(TaskResult {
+            output: "error: something went wrong".into(),
+            artifacts: vec![],
+            duration_ms: 100,
+            agent_id: None,
+            agent_def: None,
+        });
+        let mut cancelled = TaskNode::new(1, "cancelled-task", "never ran");
+        cancelled.status = TaskStatus::Canceled;
+        graph.tasks.push(failed);
+        graph.tasks.push(cancelled);
+        graph.status = GraphStatus::Failed;
+
+        agent
+            .finalize_plan_execution(graph, GraphStatus::Failed)
+            .await
+            .unwrap();
+
+        let msgs = agent.channel.sent_messages();
+        // Must say "Plan failed." (not "Plan canceled.").
+        assert!(
+            msgs.iter().any(|m| m.contains("Plan failed")),
+            "mixed state must say 'Plan failed'; got: {msgs:?}"
+        );
+        // Must mention canceled count.
+        assert!(
+            msgs.iter().any(|m| m.contains("canceled")),
+            "must mention canceled tasks in mixed state; got: {msgs:?}"
+        );
+        // Must list failed task.
+        assert!(
+            msgs.iter().any(|m| m.contains("failed-task")),
+            "must list the failed task; got: {msgs:?}"
+        );
+    }
 }
 
 #[cfg(test)]
