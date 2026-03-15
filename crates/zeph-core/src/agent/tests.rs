@@ -3997,4 +3997,60 @@ mod shutdown_summary_tests {
             "default timeout_secs must be 10"
         );
     }
+
+    // --- Doom-loop integration tests ---
+
+    /// The real doom-loop detection lives in the agent's native tool loop. This test
+    /// verifies that when the MockProvider (with tool_use=true) returns identical tool
+    /// outputs DOOM_LOOP_WINDOW times in a row, the agent breaks the loop and sends
+    /// the expected stopping message instead of running forever.
+    ///
+    /// Each iteration uses different tool input args to bypass the repeat-detection
+    /// mechanism (which operates on args_hash), ensuring only the doom-loop detector
+    /// (which operates on output content) is exercised.
+    #[tokio::test]
+    async fn doom_loop_agent_breaks_on_identical_native_tool_outputs() {
+        use super::super::DOOM_LOOP_WINDOW;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+
+        // Each ChatResponse has a unique id and different input args (to avoid
+        // repeat-detection which fires on identical (name, args_hash) pairs),
+        // but the tool executor always returns Ok(None) → "(no output)" each time.
+        // After DOOM_LOOP_WINDOW identical last-message contents, doom-loop fires.
+        let tool_responses: Vec<ChatResponse> = (0..DOOM_LOOP_WINDOW + 1)
+            .map(|i| ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![ToolUseRequest {
+                    id: format!("toolu_{i:06}"),
+                    name: "stub_tool".to_owned(),
+                    // Vary the input so args_hash differs each iteration → no repeat-detect
+                    input: serde_json::json!({ "iteration": i }),
+                }],
+                thinking_blocks: vec![],
+            })
+            .collect();
+
+        let (mock, _counter) = MockProvider::default().with_tool_use(tool_responses);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec!["trigger doom loop".to_owned()]);
+        let registry = create_test_registry();
+        // Default MockToolExecutor::execute_tool_call returns Ok(None) → "(no output)"
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+
+        assert!(
+            result.is_ok(),
+            "agent must not return an error on doom loop"
+        );
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter()
+                .any(|m| m.contains("Stopping: detected repeated identical tool outputs.")),
+            "agent must send the doom-loop stopping message; got: {sent:?}"
+        );
+    }
 }
