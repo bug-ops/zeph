@@ -20,6 +20,7 @@ pub mod shell;
 pub mod tool_filter;
 pub mod trust_gate;
 pub mod trust_level;
+pub mod verifier;
 
 pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
@@ -54,3 +55,7 @@ pub use shell::{
 pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;
 pub use trust_level::TrustLevel;
+pub use verifier::{
+    DestructiveCommandVerifier, DestructiveVerifierConfig, InjectionPatternVerifier,
+    InjectionVerifierConfig, PreExecutionVerifier, PreExecutionVerifierConfig, VerificationResult,
+};

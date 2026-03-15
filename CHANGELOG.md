@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(security): pre-execution action verification plugin hook in the tool execution pipeline (TrustBench pattern, issue #1630)
+  - `PreExecutionVerifier` trait and `VerificationResult` enum in `zeph-tools`
+  - `DestructiveCommandVerifier`: blocks destructive shell commands (`rm -rf /`, `dd if=`, `mkfs`, `fdisk`, etc.) outside configured `allowed_paths`; empty `allowed_paths` = deny-all (safe default)
+  - `InjectionPatternVerifier`: blocks SQL injection (`' OR '1'='1`, `UNION SELECT`, `DROP TABLE`), command injection (`; rm`, `| curl`), and path traversal (`../../../etc/passwd`) in any tool's arguments; SSRF patterns (localhost, private IPs) produce a `Warn` (not `Block`)
+  - Configurable via `[security.pre_execution_verify]` TOML section with per-verifier `enabled`, `allowed_paths`, and `extra_patterns`
+  - `--no-pre-execution-verify` CLI escape hatch for trusted environments
+  - TUI security panel shows "Verify blocks" and "Verify warnings" counters
+  - New `MetricsSnapshot` fields: `pre_execution_blocks`, `pre_execution_warnings`
+  - New `SecurityEventCategory` variants: `PreExecutionBlock`, `PreExecutionWarn`
+
 - feat(tui): compression guidelines status line in memory panel (version + last update) and `/guidelines` slash command to display current guidelines text (closes #1803)
 - feat(memory): add `load_compression_guidelines_meta()` query returning `(version, created_at)` without fetching full text
 - feat(memory): `conversation_id` column added to `compression_guidelines` table (migration 034); guidelines now prefer conversation-specific over global when a conversation is in scope, with global (NULL) guidelines as fallback (closes #1806)

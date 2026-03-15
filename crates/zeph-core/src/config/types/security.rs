@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use zeph_skills::TrustLevel;
 use zeph_tools::AutonomyLevel;
+use zeph_tools::PreExecutionVerifierConfig;
 
 use crate::agent::rate_limiter::RateLimitConfig;
 use crate::sanitizer::ContentIsolationConfig;
@@ -88,6 +89,13 @@ pub struct SecurityConfig {
     /// rate-limited. See architecture decision S2.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// Pre-execution verifiers (enabled by default).
+    ///
+    /// When `enabled = true` (default), destructive command and injection pattern
+    /// checks run before every native tool call. Use `--no-pre-execution-verify`
+    /// to disable for trusted environments.
+    #[serde(default)]
+    pub pre_execution_verify: PreExecutionVerifierConfig,
 }
 
 impl Default for SecurityConfig {
@@ -100,6 +108,7 @@ impl Default for SecurityConfig {
             memory_validation: MemoryWriteValidationConfig::default(),
             pii_filter: PiiFilterConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            pre_execution_verify: PreExecutionVerifierConfig::default(),
         }
     }
 }

@@ -142,6 +142,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) experiment_report: bool,
 
+    /// Disable pre-execution verifiers for tool calls.
+    /// Use in trusted environments or when verifiers produce false positives.
+    #[arg(long)]
+    pub(crate) no_pre_execution_verify: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }

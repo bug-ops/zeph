@@ -32,6 +32,8 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         && metrics.exfiltration_images_blocked == 0
         && metrics.exfiltration_tool_urls_flagged == 0
         && metrics.exfiltration_memory_guards == 0
+        && metrics.pre_execution_blocks == 0
+        && metrics.pre_execution_warnings == 0
         && metrics.security_events.is_empty();
 
     if all_zero {
@@ -113,6 +115,28 @@ fn build_metric_items<'a>(
             format!("Memory guards:     {}", metrics.exfiltration_memory_guards),
             base,
         ))),
+        ListItem::new(Line::from(vec![
+            Span::styled("Verify blocks:     ", base),
+            Span::styled(
+                metrics.pre_execution_blocks.to_string(),
+                if metrics.pre_execution_blocks > 0 {
+                    block_style
+                } else {
+                    base
+                },
+            ),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("Verify warnings:   ", base),
+            Span::styled(
+                metrics.pre_execution_warnings.to_string(),
+                if metrics.pre_execution_warnings > 0 {
+                    flag_style
+                } else {
+                    base
+                },
+            ),
+        ])),
     ]
 }
 
@@ -145,6 +169,8 @@ fn append_event_items<'a>(
             SecurityEventCategory::MemoryValidation => {
                 ("[mval] ", Style::default().fg(Color::Magenta))
             }
+            SecurityEventCategory::PreExecutionBlock => ("[pexb] ", block_style),
+            SecurityEventCategory::PreExecutionWarn => ("[pexw] ", flag_style),
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![

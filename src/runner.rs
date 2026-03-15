@@ -380,6 +380,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.graph.enabled = true;
     }
 
+    if cli.no_pre_execution_verify {
+        app.config_mut().security.pre_execution_verify.enabled = false;
+        tracing::warn!(
+            "Pre-execution verifiers disabled via --no-pre-execution-verify. \
+             Tool calls will not be checked for destructive or injection patterns."
+        );
+    }
+
     if cli.compression_guidelines {
         // Config field and builder are unconditional; only the background
         // task spawn is feature-gated (compression-guidelines feature).
