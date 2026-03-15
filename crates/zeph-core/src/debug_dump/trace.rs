@@ -314,14 +314,31 @@ impl TracingCollector {
 
     // ── Tool call spans ───────────────────────────────────────────────────────
 
-    /// Open a tool call span.
+    /// Open a tool call span, recording the start time as now.
     #[must_use]
     pub fn begin_tool_call(&self, tool_name: &str, iteration_span_id: [u8; 8]) -> SpanGuard {
+        self.begin_tool_call_at(tool_name, iteration_span_id, &std::time::Instant::now())
+    }
+
+    /// Open a tool call span with a pre-recorded start time.
+    ///
+    /// Use this variant when the tool has already executed (post-hoc assembly pattern) and
+    /// `started_at` was captured *before* the call. The Unix start timestamp is back-computed
+    /// from `started_at.elapsed()` so the span is correctly positioned on the timeline.
+    #[must_use]
+    pub fn begin_tool_call_at(
+        &self,
+        tool_name: &str,
+        iteration_span_id: [u8; 8],
+        started_at: &std::time::Instant,
+    ) -> SpanGuard {
+        let elapsed_nanos = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let start_time_unix_nanos = now_unix_nanos().saturating_sub(elapsed_nanos);
         SpanGuard {
             span_id: new_span_id(),
             parent_span_id: iteration_span_id,
             name: format!("tool.{}", sanitize_name(tool_name)),
-            start_time_unix_nanos: now_unix_nanos(),
+            start_time_unix_nanos,
         }
     }
 
@@ -909,6 +926,61 @@ mod tests {
         assert_eq!(
             tool_span["status"]["code"], 2_u64,
             "error span must have status code 2"
+        );
+    }
+
+    #[test]
+    fn begin_tool_call_at_timestamps_precede_end_time() {
+        let tmp = tempdir().unwrap();
+        let mut c = make_collector(tmp.path());
+        c.begin_iteration(0, "test");
+        let iter_id = c.current_iteration_span_id(0).unwrap();
+
+        // Simulate post-hoc assembly: capture start before "execution", then call begin_tool_call_at.
+        let started_at = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let guard = c.begin_tool_call_at("shell", iter_id, &started_at);
+        let span_start = guard.start_time_unix_nanos;
+        c.end_tool_call(
+            guard,
+            "shell",
+            ToolAttributes {
+                latency_ms: 2,
+                is_error: false,
+                error_kind: None,
+            },
+        );
+        c.end_iteration(0, SpanStatus::Ok);
+        c.finish();
+
+        let content = std::fs::read_to_string(c.trace_json_path()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let spans = v["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            .as_array()
+            .unwrap();
+        let tool_span = spans
+            .iter()
+            .find(|s| s["name"] == "tool.shell")
+            .expect("tool.shell span missing");
+        let recorded_start: u64 = tool_span["startTimeUnixNano"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let recorded_end: u64 = tool_span["endTimeUnixNano"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        // The span start must be earlier than the end.
+        assert!(
+            recorded_start < recorded_end,
+            "start ({recorded_start}) must precede end ({recorded_end})"
+        );
+        // The guard's start_time matches what was serialized.
+        assert_eq!(
+            span_start, recorded_start,
+            "guard start must match serialized start"
         );
     }
 
