@@ -302,6 +302,14 @@ enabled = true
 extra_patterns = []
 allowlisted_urls = []
 
+[security.guardrail]
+enabled = false
+timeout_ms = 500
+action = "block"
+fail_strategy = "closed"
+scan_tool_output = false
+max_input_chars = 4096
+
 [timeouts]
 llm_seconds = 120
 llm_request_timeout_secs = 600
