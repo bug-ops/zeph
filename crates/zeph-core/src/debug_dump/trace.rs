@@ -606,9 +606,9 @@ pub fn serialize_otlp_json(spans: &[SpanData], service_name: &str) -> String {
 /// Write `data` to `path` with mode 0o600 on Unix (SEC-01).
 /// Falls back to `std::fs::write` on non-Unix platforms.
 fn write_trace_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
     #[cfg(unix)]
     {
+        use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
         let mut f = std::fs::OpenOptions::new()
             .write(true)
