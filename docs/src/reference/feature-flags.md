@@ -1,6 +1,37 @@
 # Feature Flags
 
-Zeph uses Cargo feature flags to control optional functionality. Twelve previously optional features are now always-on and compiled into every build. The remaining optional features are explicitly opt-in.
+Zeph uses Cargo feature flags to control optional functionality. Twelve previously optional features are now always-on and compiled into every build. The remaining optional features are organized into **use-case bundles** for common deployment scenarios, with individual flags available for fine-grained control.
+
+## Use-Case Bundles
+
+Bundles are named Cargo features that group individual flags by deployment scenario. Use a bundle to get a sensible default for your use case without listing individual flags.
+
+| Bundle | Included Features | Description |
+|--------|-------------------|-------------|
+| `desktop` | `tui`, `scheduler`, `compression-guidelines` | Interactive desktop agent with TUI dashboard, cron scheduler, and failure-driven compression |
+| `ide` | `acp`, `acp-http`, `lsp-context` | IDE integration via ACP (Zed, Helix, VS Code) with LSP context injection |
+| `server` | `gateway`, `a2a`, `scheduler`, `otel` | Headless server deployment: HTTP webhook gateway, A2A agent protocol, cron scheduler, OpenTelemetry tracing |
+| `chat` | `discord`, `slack` | Chat platform adapters |
+| `ml` | `candle`, `pdf`, `stt` | Local ML inference (HuggingFace GGUF), PDF document loading, and Whisper speech-to-text |
+| `full` | `desktop` + `ide` + `server` + `chat` + `pdf` + `stt` + `acp-unstable` + `experiments` | All optional features except `candle`, `metal`, and `cuda` (hardware-specific) |
+
+### Bundle build examples
+
+```bash
+cargo build --release --features desktop          # TUI agent for daily use
+cargo build --release --features ide              # IDE assistant (ACP)
+cargo build --release --features server           # headless server/daemon
+cargo build --release --features desktop,server   # combined: TUI + server
+cargo build --release --features ml               # local model inference
+cargo build --release --features ml,metal         # local inference with Metal GPU (macOS)
+cargo build --release --features ml,cuda          # local inference with CUDA GPU (Linux)
+cargo build --release --features full             # all optional features (CI / release builds)
+cargo build --release --features full,ml          # everything including local inference
+```
+
+> Bundles are purely additive. All existing `--features tui,scheduler` style builds continue to work unchanged.
+
+> **No `cli` bundle**: the default build (`cargo build --release`, no features) already represents the minimal CLI use case. A separate `cli` bundle would be a no-op alias.
 
 ## Always-On (compiled unconditionally)
 
@@ -25,8 +56,8 @@ Zeph uses Cargo feature flags to control optional functionality. Twelve previous
 |---------|-------------|
 | `tui` | ratatui-based TUI dashboard with real-time agent metrics |
 | `candle` | Local HuggingFace model inference via [candle](https://github.com/huggingface/candle) (GGUF quantized models) and local Whisper STT ([guide](../advanced/multimodal.md#local-whisper-candle)) |
-| `metal` | Metal GPU acceleration for candle on macOS (implies `candle`) |
-| `cuda` | CUDA GPU acceleration for candle on Linux (implies `candle`) |
+| `metal` | Metal GPU acceleration for candle on macOS — implies `candle` |
+| `cuda` | CUDA GPU acceleration for candle on Linux — implies `candle` |
 | `discord` | Discord channel adapter with Gateway v10 WebSocket and slash commands ([guide](../advanced/channels.md#discord-channel)) |
 | `slack` | Slack channel adapter with Events API webhook and HMAC-SHA256 verification ([guide](../advanced/channels.md#slack-channel)) |
 | `a2a` | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
@@ -77,20 +108,19 @@ cargo build -p zeph-llm --no-default-features
 ## Build Examples
 
 ```bash
-cargo build --release                                      # default build (always-on features included)
-cargo build --release --features metal                     # macOS with Metal GPU
-cargo build --release --features cuda                      # Linux with NVIDIA GPU
-cargo build --release --features tui                       # with TUI dashboard
-cargo build --release --features discord                   # with Discord bot
-cargo build --release --features slack                     # with Slack bot
-cargo build --release --features a2a                       # headless daemon with A2A endpoint
-cargo build --release --features tui,a2a                   # TUI with remote daemon support
-cargo build --release --features gateway,scheduler         # with infrastructure components
-cargo build --release --features lsp-context               # with LSP context injection
-cargo build --release --features full                      # all optional features
+cargo build --release                                      # default build (always-on features only)
+cargo build --release --features desktop                   # TUI + scheduler + compression-guidelines
+cargo build --release --features ide                       # ACP + LSP context injection
+cargo build --release --features server                    # gateway + a2a + scheduler + otel
+cargo build --release --features desktop,server            # combined desktop and server
+cargo build --release --features ml,metal                  # local inference with Metal GPU (macOS)
+cargo build --release --features ml,cuda                   # local inference with CUDA GPU (Linux)
+cargo build --release --features full                      # all optional features (except candle/metal/cuda)
+cargo build --release --features tui                       # individual flag still works
+cargo build --release --features tui,a2a                   # combine individual flags freely
 ```
 
-The `full` feature enables every optional feature except `candle`, `metal`, and `cuda`.
+The `full` feature enables every optional feature except `candle`, `metal`, and `cuda` (hardware-specific, opt-in).
 
 ## Build Profiles
 

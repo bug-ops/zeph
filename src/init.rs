@@ -122,6 +122,8 @@ pub(crate) struct WizardState {
     pub(crate) shutdown_summary: bool,
     // Policy enforcer
     pub(crate) policy_enforcer_enabled: bool,
+    /// Deployment bundle selected in the mode step (e.g. "desktop", "ide", "server").
+    pub(crate) deployment_bundle: Option<String>,
 }
 
 impl Default for WizardState {
@@ -214,6 +216,7 @@ impl Default for WizardState {
             log_max_files: 0,
             shutdown_summary: true,
             policy_enforcer_enabled: false,
+            deployment_bundle: None,
         }
     }
 }
@@ -253,6 +256,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         ..WizardState::default()
     };
 
+    step_deployment_mode(&mut state)?;
     step_vault(&mut state)?;
     step_llm(&mut state)?;
     step_memory(&mut state)?;
@@ -745,6 +749,41 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
         }
         _ => unreachable!(),
     }
+
+    println!();
+    Ok(())
+}
+
+fn step_deployment_mode(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Deployment Mode ==\n");
+    println!("Select the primary mode you will use Zeph in.");
+    println!("This determines which --features flag to pass when building from source.");
+    println!("Pre-built binaries already include all features.\n");
+
+    let modes = [
+        "CLI (no extras — minimal build)",
+        "Desktop (TUI dashboard + scheduler + compression guidelines)",
+        "IDE (ACP integration for Zed / Helix / VS Code + LSP context)",
+        "Server (HTTP gateway + A2A protocol + scheduler + OpenTelemetry)",
+        "Chat (Discord + Slack bots)",
+        "ML (local Candle inference + PDF + speech-to-text)",
+        "Full (all optional features except hardware GPU flags)",
+    ];
+    let sel = Select::new()
+        .with_prompt("Deployment mode")
+        .items(modes)
+        .default(0)
+        .interact()?;
+
+    state.deployment_bundle = match sel {
+        1 => Some("desktop".into()),
+        2 => Some("ide".into()),
+        3 => Some("server".into()),
+        4 => Some("chat".into()),
+        5 => Some("ml".into()),
+        6 => Some("full".into()),
+        _ => None,
+    };
 
     println!();
     Ok(())
@@ -1879,6 +1918,12 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
     println!("  2. Run: zeph --config {}", path.display());
     println!("  3. Or with TUI: zeph --tui --config {}", path.display());
     println!();
+    if let Some(bundle) = &state.deployment_bundle {
+        println!(
+            "Building from source? Use the `{bundle}` bundle:\n  cargo build --release --features {bundle}"
+        );
+        println!();
+    }
     println!("Tip: run `zeph migrate-config --diff` later to check for new config options.");
 }
 
