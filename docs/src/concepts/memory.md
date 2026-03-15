@@ -228,6 +228,27 @@ Proactive compression emits two metrics: `compression_events` (count) and `compr
 
 > **Note:** Validation rejects `threshold_tokens < 1000` and `max_summary_tokens < 128` at startup.
 
+## Failure-Driven Compression Guidelines
+
+When `[memory.compression_guidelines]` is enabled, the agent learns from its own compaction mistakes. After each hard compaction, it watches the next several LLM responses for a two-signal context-loss indicator: an uncertainty phrase (e.g. "I don't recall", "I'm not sure if") combined with a prior-context reference (e.g. "earlier you mentioned", "we discussed before"). When both signals appear together in the same response, the pair is recorded as a compression failure in SQLite.
+
+A background updater wakes on a configurable interval, and when the number of unprocessed failure pairs exceeds `update_threshold`, it calls the LLM to synthesize updated compression guidelines. The resulting guidelines are sanitized to strip prompt-injection attempts and stored in SQLite. Every subsequent compaction prompt includes the active guidelines inside a `<compression-guidelines>` block, steering the summarizer to preserve categories of information that were lost before.
+
+The feature is disabled by default:
+
+```toml
+[memory.compression_guidelines]
+enabled = true
+update_threshold = 5             # Minimum failure pairs before triggering an update (default: 5)
+max_guidelines_tokens = 500      # Token budget for the guidelines document (default: 500)
+max_pairs_per_update = 10        # Failure pairs consumed per update cycle (default: 10)
+detection_window_turns = 10      # Turns after hard compaction to watch for context loss (default: 10)
+update_interval_secs = 300       # Seconds between background updater checks (default: 300)
+max_stored_pairs = 100           # Maximum unused failure pairs retained (default: 100)
+```
+
+> **Note:** Guidelines are injected only when `enabled = true` and at least one guidelines version exists in SQLite. The guidelines document grows incrementally as the agent accumulates failure experience.
+
 ## Graph Memory
 
 With the `graph-memory` feature enabled, Zeph extracts entities and relationships from conversations and stores them as a knowledge graph in SQLite. This enables multi-hop reasoning ("how is X related to Y?"), temporal fact tracking ("user switched from vim to neovim"), and cross-session entity linking.

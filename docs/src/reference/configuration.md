@@ -249,6 +249,15 @@ strategy = "reactive"         # "reactive" (default) or "proactive"
 # max_summary_tokens = 4000  # Cap for the compressed summary (>= 128)
 # model = ""                 # Reserved — currently unused
 
+[memory.compression_guidelines]
+enabled = false                # Enable failure-driven compression guidelines (default: false)
+# update_threshold = 5        # Minimum unused failure pairs before triggering a guidelines update (default: 5)
+# max_guidelines_tokens = 500 # Token budget for the guidelines document (default: 500)
+# max_pairs_per_update = 10   # Failure pairs consumed per update cycle (default: 10)
+# detection_window_turns = 10 # Turns after hard compaction to watch for context loss (default: 10)
+# update_interval_secs = 300  # Interval in seconds between background updater checks (default: 300)
+# max_stored_pairs = 100      # Maximum unused failure pairs retained before cleanup (default: 100)
+
 [memory.graph]
 enabled = false                        # Enable graph memory (default: false, requires graph-memory feature)
 extract_model = ""                     # LLM model for entity extraction; empty = agent's model

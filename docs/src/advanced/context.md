@@ -239,6 +239,32 @@ Proactive compression runs at the start of the context management phase, before 
 
 Metrics: `compression_events` (count), `compression_tokens_saved` (cumulative tokens freed).
 
+## Failure-Driven Compression Guidelines
+
+Zeph can learn from its own compaction mistakes using the ACON (Adaptive COmpaction with Notes) mechanism. When `[memory.compression_guidelines]` is enabled:
+
+1. After each hard compaction event, the agent opens a detection window spanning `detection_window_turns` turns.
+2. Within that window, every LLM response is scanned for a two-signal pattern: an uncertainty phrase (e.g. "I don't recall", "I'm not sure") **and** a prior-context reference (e.g. "earlier you mentioned", "we discussed"). Both signals must appear together — this two-signal requirement reduces false positives.
+3. Confirmed failure pairs (compressed context snapshot + failure reason) are stored in `compression_failure_pairs` in SQLite.
+4. A background task wakes every `update_interval_secs` seconds. When the count of unprocessed pairs reaches `update_threshold`, it calls the LLM with a synthesis prompt that includes the current guidelines and the new failure pairs.
+5. The LLM produces an updated numbered list of preservation rules. The output is sanitized (prompt injection patterns stripped, length bounded by `max_guidelines_tokens`), then stored atomically using a single `INSERT ... SELECT COALESCE(MAX(version), 0) + 1` statement that eliminates TOCTOU version conflicts.
+6. Every subsequent compaction injects the active guidelines inside a `<compression-guidelines>` block, steering the summarizer to preserve previously-lost information categories.
+
+Configuration:
+
+```toml
+[memory.compression_guidelines]
+enabled = true
+update_threshold = 5             # Failure pairs needed to trigger a guidelines update (default: 5)
+max_guidelines_tokens = 500      # Token budget for the synthesized guidelines (default: 500)
+max_pairs_per_update = 10        # Pairs consumed per update cycle (default: 10)
+detection_window_turns = 10      # Turns to watch for context loss after hard compaction (default: 10)
+update_interval_secs = 300       # Background updater interval in seconds (default: 300)
+max_stored_pairs = 100           # Cleanup threshold for stored failure pairs (default: 100)
+```
+
+The feature is opt-in (`enabled = false` by default). When disabled, compression prompts are unchanged and no failure pairs are recorded. Guidelines accumulate incrementally across sessions — the agent improves its compression behavior over time.
+
 ## Two-Tier Reactive Compaction
 
 When context usage crosses predefined thresholds, a two-tier compaction strategy activates. Each tier is cheaper than the next. Tier 0 (eager deferred summaries) runs continuously during tool loops independently of these tiers.

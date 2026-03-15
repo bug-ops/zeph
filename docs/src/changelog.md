@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-03-15
+
+### Fixed
+
+- **`save_compression_guidelines` atomic write** — the version-number assignment now uses a single `INSERT ... SELECT COALESCE(MAX(version), 0) + 1` statement, eliminating the read-then-write TOCTOU race where two concurrent callers could insert duplicate version numbers. Migration 033 adds a `UNIQUE(version)` constraint to the `compression_guidelines` table with row-level deduplication for pre-existing corrupt data (closes #1799).
+
+### Added
+
+- **Failure-driven compression guidelines (ACON)** — after hard compaction, the agent watches subsequent LLM responses for two-signal context-loss indicators (uncertainty phrase + prior-context reference). Confirmed failure pairs are stored in SQLite (`compression_failure_pairs`). A background updater wakes periodically, calls the LLM to synthesize updated guidelines from accumulated pairs, sanitizes the output to strip prompt injection, and persists the result. Guidelines are injected into every future compaction prompt via a `<compression-guidelines>` block. Configure via `[memory.compression_guidelines]`; disabled by default. See [Context Engineering](advanced/context.md#failure-driven-compression-guidelines).
+
 ## [0.15.0] - 2026-03-14
 
 ### Added
