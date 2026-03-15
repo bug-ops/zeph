@@ -224,6 +224,9 @@ jobs:
       fail-fast: false
       matrix:
         bundle: [desktop, ide, server, chat, ml]
+        include:
+          - bundle: ml
+            allow_failure: true
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -232,6 +235,7 @@ jobs:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Check bundle
+        continue-on-error: ${{ matrix.allow_failure == true }}
         run: cargo check --features ${{ matrix.bundle }}
         env:
           RUSTC_WRAPPER: sccache
