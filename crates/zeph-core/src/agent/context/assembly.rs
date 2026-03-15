@@ -457,10 +457,9 @@ impl<C: Channel> Agent<C> {
         let mut tokens_used = tc.count_tokens(&summary_text);
 
         for summary in summaries.iter().rev() {
-            let entry = format!(
-                "- Messages {}-{}: {}\n",
-                summary.first_message_id, summary.last_message_id, summary.content
-            );
+            let first = summary.first_message_id.map_or(0, |m| m.0);
+            let last = summary.last_message_id.map_or(0, |m| m.0);
+            let entry = format!("- Messages {first}-{last}: {}\n", summary.content);
             let cost = tc.count_tokens(&entry);
             if tokens_used + cost > token_budget {
                 break;

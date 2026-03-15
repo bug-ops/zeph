@@ -3707,3 +3707,216 @@ mod confirmation_propagation_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod shutdown_summary_tests {
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{Message, MessageMetadata, Role};
+    use zeph_memory::semantic::SemanticMemory;
+
+    use super::super::Agent;
+    use super::agent_tests::{MockChannel, MockToolExecutor, create_test_registry, mock_provider};
+
+    #[tokio::test]
+    async fn shutdown_summary_disabled_skips_llm() {
+        let (mock, recorded) = MockProvider::default().with_recording();
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_shutdown_summary_config(false, 4, 20);
+
+        // Add enough user messages to exceed the threshold.
+        for i in 0..5 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("user message {i}"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.maybe_store_shutdown_summary().await;
+
+        // LLM must not be called when feature is disabled.
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "LLM must not be called when shutdown_summary is disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_summary_no_memory_skips_llm() {
+        let (mock, recorded) = MockProvider::default().with_recording();
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        // No .with_memory() call — memory_state.memory is None.
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_shutdown_summary_config(true, 4, 20);
+
+        for i in 0..5 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("user message {i}"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.maybe_store_shutdown_summary().await;
+
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "LLM must not be called when no memory backend is attached"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_summary_too_few_user_messages_skips_llm() {
+        use std::sync::Arc;
+
+        let (mock, recorded) = MockProvider::default().with_recording();
+        let provider = AnyProvider::Mock(mock.clone());
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            AnyProvider::Mock(MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // min_messages=4 but we will only add 2 user messages.
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(Arc::new(memory), cid, 100, 5, 1000)
+            .with_shutdown_summary_config(true, 4, 20);
+
+        // System prompt is messages[0] — skip(1) counts from index 1.
+        // Add 2 user messages: below the threshold of 4.
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "first user message".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        agent.messages.push(Message {
+            role: Role::Assistant,
+            content: "assistant reply".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "second user message".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+
+        agent.maybe_store_shutdown_summary().await;
+
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "LLM must not be called when user message count is below min_messages"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_summary_only_counts_user_role_messages() {
+        use std::sync::Arc;
+
+        let (mock, recorded) = MockProvider::default().with_recording();
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            AnyProvider::Mock(MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // min_messages=4: need at least 4 user messages.
+        // We add 8 assistant messages but only 3 user messages — should still skip.
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(Arc::new(memory), cid, 100, 5, 1000)
+            .with_shutdown_summary_config(true, 4, 20);
+
+        for _ in 0..8 {
+            agent.messages.push(Message {
+                role: Role::Assistant,
+                content: "assistant reply".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+        for i in 0..3 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("user message {i}"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.maybe_store_shutdown_summary().await;
+
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "assistant messages must not count toward min_messages threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_shutdown_summary_config_builder_sets_fields() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_shutdown_summary_config(false, 7, 15);
+
+        assert!(!agent.memory_state.shutdown_summary);
+        assert_eq!(agent.memory_state.shutdown_summary_min_messages, 7);
+        assert_eq!(agent.memory_state.shutdown_summary_max_messages, 15);
+    }
+
+    #[tokio::test]
+    async fn shutdown_summary_default_config_values() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        assert!(
+            agent.memory_state.shutdown_summary,
+            "shutdown_summary must be enabled by default"
+        );
+        assert_eq!(
+            agent.memory_state.shutdown_summary_min_messages, 4,
+            "default min_messages must be 4"
+        );
+        assert_eq!(
+            agent.memory_state.shutdown_summary_max_messages, 20,
+            "default max_messages must be 20"
+        );
+    }
+}

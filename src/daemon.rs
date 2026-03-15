@@ -12,7 +12,6 @@ use tokio::sync::watch;
 use zeph_core::agent::Agent;
 use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 use zeph_core::config::Config;
-use zeph_core::vault::Secret;
 
 fn spawn_a2a_server(
     config: &Config,
@@ -296,10 +295,8 @@ pub(crate) async fn run_daemon(
     let _config_watcher = watchers.config_watcher;
     let config_reload_rx = watchers.config_reload_rx;
     let skill_paths = app.skill_paths();
-    let permission_policy = config
-        .tools
-        .permission_policy(config.security.autonomy_level);
     let config_path_owned = app.config_path().to_owned();
+    let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
 
     let (loopback_channel, loopback_handle) = zeph_core::LoopbackChannel::pair(64);
 
@@ -311,12 +308,7 @@ pub(crate) async fn run_daemon(
         config.skills.max_active_skills,
         tool_executor,
     )
-    .with_max_tool_iterations(config.agent.max_tool_iterations)
-    .with_max_tool_retries(config.agent.max_tool_retries)
-    .with_max_retry_duration_secs(config.agent.max_retry_duration_secs)
-    .with_tool_repeat_threshold(config.agent.tool_repeat_threshold)
-    .with_model_name(config.llm.model.clone())
-    .with_embedding_model(embed_model)
+    .apply_session_config(session_config)
     .with_disambiguation_threshold(config.skills.disambiguation_threshold)
     .with_skill_reload(skill_paths, reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
@@ -327,34 +319,11 @@ pub(crate) async fn run_daemon(
         config.memory.semantic.recall_limit,
         config.memory.summarization_threshold,
     )
-    .with_context_budget(
-        budget_tokens,
-        0.20,
-        config.memory.hard_compaction_threshold,
-        config.memory.compaction_preserve_tail,
-        config.memory.prune_protect_tokens,
-    )
-    .with_soft_compaction_threshold(config.memory.soft_compaction_threshold)
-    .with_compaction_cooldown(config.memory.compaction_cooldown_turns)
     .with_shutdown(shutdown_rx.clone())
-    .with_security(config.security.clone(), config.timeouts)
-    .with_redact_credentials(config.memory.redact_credentials)
-    .with_tool_summarization(config.tools.summarize_output)
-    .with_overflow_config(config.tools.overflow.clone())
-    .with_permission_policy(permission_policy)
     .with_config_reload(config_path_owned, config_reload_rx)
     .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
     .with_mcp_shared_tools(mcp_shared_tools)
-    .with_learning(config.skills.learning.clone())
-    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
-    .with_hybrid_search(config.skills.hybrid_search)
-    .with_available_secrets(
-        config
-            .secrets
-            .custom
-            .iter()
-            .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned()))),
-    );
+    .with_hybrid_search(config.skills.hybrid_search);
 
     let summary_provider = app.build_summary_provider();
     let agent = if let Some(sp) = summary_provider {

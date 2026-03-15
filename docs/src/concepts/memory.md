@@ -264,6 +264,30 @@ recall_limit = 10
 
 See [Graph Memory](graph-memory.md) for the full concept guide.
 
+## Session Summary on Shutdown
+
+When a session ends (graceful shutdown), Zeph checks whether a session summary already exists
+for the conversation. If none does — which is typical for short or interrupted sessions that
+never triggered hard compaction — it generates a lightweight LLM summary of the recent messages
+and stores it in the `zeph_session_summaries` vector collection. This makes the session
+retrievable by `search_session_summaries` in future conversations, enabling cross-session recall
+even for brief interactions.
+
+The guard is SQLite-authoritative: if a summary record exists in SQLite (written by either the
+shutdown path or a previous hard compaction), the shutdown path is skipped. This handles the edge
+case where a Qdrant write failed but the SQLite record succeeded.
+
+```toml
+[memory]
+shutdown_summary = true              # default: true
+shutdown_summary_min_messages = 4   # skip sessions with fewer user turns
+shutdown_summary_max_messages = 20  # cap LLM input to the last N messages
+```
+
+The LLM call is bounded by a 5-second timeout (10 seconds worst-case if the structured output
+call times out and falls back to plain text). Errors are logged as warnings and never propagate
+to the caller — shutdown completes regardless.
+
 ## Deep Dives
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

@@ -181,6 +181,18 @@ fn default_note_linking_timeout_secs() -> u64 {
     5
 }
 
+fn default_shutdown_summary() -> bool {
+    true
+}
+
+fn default_shutdown_summary_min_messages() -> usize {
+    4
+}
+
+fn default_shutdown_summary_max_messages() -> usize {
+    20
+}
+
 fn validate_temporal_decay_rate<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -267,6 +279,7 @@ impl VectorBackend {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MemoryConfig {
     #[serde(default)]
     pub compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
@@ -324,6 +337,20 @@ pub struct MemoryConfig {
     pub routing: RoutingConfig,
     #[serde(default)]
     pub graph: GraphConfig,
+    /// Store a lightweight session summary to the vector store on shutdown when no session
+    /// summary exists yet for this conversation. Enables cross-session recall for short or
+    /// interrupted sessions that never triggered hard compaction. Default: `true`.
+    #[serde(default = "default_shutdown_summary")]
+    pub shutdown_summary: bool,
+    /// Minimum number of user-turn messages required before a shutdown summary is generated.
+    /// Sessions below this threshold are considered trivial and skipped. Default: `4`.
+    #[serde(default = "default_shutdown_summary_min_messages")]
+    pub shutdown_summary_min_messages: usize,
+    /// Maximum number of recent messages (user + assistant) sent to the LLM for shutdown
+    /// summarization. Caps token cost for long sessions that never triggered hard compaction.
+    /// Default: `20`.
+    #[serde(default = "default_shutdown_summary_max_messages")]
+    pub shutdown_summary_max_messages: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

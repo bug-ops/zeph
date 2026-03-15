@@ -8,6 +8,9 @@ use crate::types::{ConversationId, MessageId};
 impl SqliteStore {
     /// Save a summary and return its ID.
     ///
+    /// `first_message_id` and `last_message_id` are `None` for session-level summaries
+    /// (e.g. shutdown summaries) that do not correspond to a specific message range.
+    ///
     /// # Errors
     ///
     /// Returns an error if the insert fails.
@@ -15,8 +18,8 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
         content: &str,
-        first_message_id: MessageId,
-        last_message_id: MessageId,
+        first_message_id: Option<MessageId>,
+        last_message_id: Option<MessageId>,
         token_estimate: i64,
     ) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
@@ -36,26 +39,48 @@ impl SqliteStore {
 
     /// Load all summaries for a conversation.
     ///
+    /// `first_message_id` and `last_message_id` are `None` for session-level summaries.
+    ///
     /// # Errors
     ///
     /// Returns an error if the query fails.
     pub async fn load_summaries(
         &self,
         conversation_id: ConversationId,
-    ) -> Result<Vec<(i64, ConversationId, String, MessageId, MessageId, i64)>, MemoryError> {
-        let rows: Vec<(i64, ConversationId, String, MessageId, MessageId, i64)> = sqlx::query_as(
-            "SELECT id, conversation_id, content, first_message_id, last_message_id, token_estimate \
-             FROM summaries WHERE conversation_id = ? ORDER BY id ASC",
+    ) -> Result<
+        Vec<(
+            i64,
+            ConversationId,
+            String,
+            Option<MessageId>,
+            Option<MessageId>,
+            i64,
+        )>,
+        MemoryError,
+    > {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            i64,
+            ConversationId,
+            String,
+            Option<MessageId>,
+            Option<MessageId>,
+            i64,
+        )> = sqlx::query_as(
+            "SELECT id, conversation_id, content, first_message_id, last_message_id, \
+                 token_estimate FROM summaries WHERE conversation_id = ? ORDER BY id ASC",
         )
         .bind(conversation_id)
         .fetch_all(&self.pool)
-        .await
-        ?;
+        .await?;
 
         Ok(rows)
     }
 
     /// Get the last message ID covered by the most recent summary.
+    ///
+    /// Returns `None` if no summaries exist or the most recent is a session-level summary
+    /// (shutdown summary) with no tracked message range.
     ///
     /// # Errors
     ///
@@ -64,7 +89,7 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Option<MessageId>, MemoryError> {
-        let row: Option<(MessageId,)> = sqlx::query_as(
+        let row: Option<(Option<MessageId>,)> = sqlx::query_as(
             "SELECT last_message_id FROM summaries \
              WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
         )
@@ -72,7 +97,7 @@ impl SqliteStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| r.0))
+        Ok(row.and_then(|r| r.0))
     }
 }
 
@@ -93,7 +118,13 @@ mod tests {
         let msg_id2 = store.save_message(cid, "assistant", "hi").await.unwrap();
 
         let summary_id = store
-            .save_summary(cid, "User greeted assistant", msg_id1, msg_id2, 5)
+            .save_summary(
+                cid,
+                "User greeted assistant",
+                Some(msg_id1),
+                Some(msg_id2),
+                5,
+            )
             .await
             .unwrap();
 
@@ -101,8 +132,8 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].0, summary_id);
         assert_eq!(summaries[0].2, "User greeted assistant");
-        assert_eq!(summaries[0].3, msg_id1);
-        assert_eq!(summaries[0].4, msg_id2);
+        assert_eq!(summaries[0].3, Some(msg_id1));
+        assert_eq!(summaries[0].4, Some(msg_id2));
         assert_eq!(summaries[0].5, 5);
     }
 
@@ -125,11 +156,11 @@ mod tests {
         let msg_id3 = store.save_message(cid, "user", "m3").await.unwrap();
 
         let s1 = store
-            .save_summary(cid, "summary1", msg_id1, msg_id2, 3)
+            .save_summary(cid, "summary1", Some(msg_id1), Some(msg_id2), 3)
             .await
             .unwrap();
         let s2 = store
-            .save_summary(cid, "summary2", msg_id2, msg_id3, 3)
+            .save_summary(cid, "summary2", Some(msg_id2), Some(msg_id3), 3)
             .await
             .unwrap();
 
@@ -158,11 +189,11 @@ mod tests {
         let msg_id3 = store.save_message(cid, "user", "m3").await.unwrap();
 
         store
-            .save_summary(cid, "summary1", msg_id1, msg_id2, 3)
+            .save_summary(cid, "summary1", Some(msg_id1), Some(msg_id2), 3)
             .await
             .unwrap();
         store
-            .save_summary(cid, "summary2", msg_id2, msg_id3, 3)
+            .save_summary(cid, "summary2", Some(msg_id2), Some(msg_id3), 3)
             .await
             .unwrap();
 
@@ -180,7 +211,7 @@ mod tests {
         let msg_id2 = store.save_message(cid, "assistant", "m2").await.unwrap();
 
         store
-            .save_summary(cid, "summary", msg_id1, msg_id2, 3)
+            .save_summary(cid, "summary", Some(msg_id1), Some(msg_id2), 3)
             .await
             .unwrap();
 
