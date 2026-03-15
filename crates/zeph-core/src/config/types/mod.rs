@@ -191,7 +191,7 @@ impl Default for Config {
                 semantic: SemanticConfig::default(),
                 summarization_threshold: 50,
                 context_budget_tokens: 0,
-                soft_compaction_threshold: 0.70,
+                soft_compaction_threshold: 0.60,
                 hard_compaction_threshold: 0.90,
                 compaction_preserve_tail: 6,
                 compaction_cooldown_turns: 2,

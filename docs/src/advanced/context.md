@@ -9,7 +9,7 @@ All context engineering features are **disabled by default** (`context_budget_to
 ```toml
 [memory]
 context_budget_tokens = 128000    # Set to your model's context window size (0 = unlimited)
-soft_compaction_threshold = 0.70  # Soft tier: prune tool outputs + apply deferred summaries (no LLM)
+soft_compaction_threshold = 0.60  # Soft tier: prune tool outputs + apply deferred summaries (no LLM)
 hard_compaction_threshold = 0.90  # Hard tier: full LLM summarization when usage exceeds this fraction
 compaction_preserve_tail = 4      # Keep last N messages during compaction
 prune_protect_tokens = 40000      # Protect recent N tokens from Tier 1 tool output pruning
@@ -116,7 +116,7 @@ Every system prompt rebuild injects an `<environment>` block with:
 
 ## Tool-Pair Summarization
 
-After each tool execution, `maybe_summarize_tool_pair()` checks whether the number of unsummarized tool call/response pairs exceeds `tool_call_cutoff` (default: 6). When the threshold is exceeded, the oldest eligible pair is summarized via LLM and the result is stored as a deferred summary. Summaries are applied lazily when context usage exceeds `soft_compaction_threshold` (default: 0.70), preserving the message prefix for API cache hits.
+After each tool execution, `maybe_summarize_tool_pair()` checks whether the number of unsummarized tool call/response pairs exceeds `tool_call_cutoff` (default: 6). When the threshold is exceeded, the oldest eligible pair is summarized via LLM and the result is stored as a deferred summary. Summaries are applied lazily when context usage exceeds `soft_compaction_threshold` (default: 0.60), preserving the message prefix for API cache hits.
 
 ### How It Works
 
@@ -271,9 +271,11 @@ When context usage crosses predefined thresholds, a two-tier compaction strategy
 
 ### Soft Tier: Apply Deferred Summaries + Prune Tool Outputs (at `soft_compaction_threshold`)
 
-When context usage exceeds `soft_compaction_threshold` (default: 0.70), Zeph first batch-applies all pending deferred summaries (in-memory, no LLM call), then prunes tool outputs outside the protected tail. This tier does **not** prevent the hard tier from firing in the same turn.
+When context usage exceeds `soft_compaction_threshold` (default: 0.60), Zeph first batch-applies all pending deferred summaries (in-memory, no LLM call), then prunes tool outputs outside the protected tail. This tier does **not** prevent the hard tier from firing in the same turn.
 
-**Why lazy application?** Tool pair summaries are computed eagerly (right after each tool call) but their application to the message array is deferred. As long as context usage stays below 0.70, the original tool call/response messages remain in the array unchanged. This keeps the message prefix stable across consecutive turns, which is the key requirement for the Claude API prompt cache to produce hits.
+The soft tier also fires mid-iteration inside tool execution loops (via `maybe_soft_compact_mid_iteration()`), after summarization and stale pruning. This prevents large tool outputs from pushing context past the hard threshold within a single LLM turn without touching turn counters or cooldown.
+
+**Why lazy application?** Tool pair summaries are computed eagerly (right after each tool call) but their application to the message array is deferred. As long as context usage stays below 0.60, the original tool call/response messages remain in the array unchanged. This keeps the message prefix stable across consecutive turns, which is the key requirement for the Claude API prompt cache to produce hits.
 
 ### Hard Tier: Selective Tool Output Pruning + LLM Compaction (at `hard_compaction_threshold`)
 
@@ -449,7 +451,7 @@ Found configs are concatenated (global first, then ancestors from root to cwd) a
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget in tokens | `0` (unlimited) |
-| `ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD` | Soft compaction threshold: prune tool outputs + apply deferred summaries (no LLM) | `0.70` |
+| `ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD` | Soft compaction threshold: prune tool outputs + apply deferred summaries (no LLM) | `0.60` |
 | `ZEPH_MEMORY_COMPACTION_THRESHOLD` | Hard compaction threshold (backward compat alias for `hard_compaction_threshold`) | `0.90` |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction | `4` |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning | `40000` |

@@ -212,7 +212,7 @@ context_budget_tokens = 0
 # Auto-detect context budget from model's context window size
 auto_budget = true
 # Soft compaction threshold (0.0-1.0): prune tool outputs + apply deferred summaries (no LLM).
-soft_compaction_threshold = 0.70
+soft_compaction_threshold = 0.60
 # Hard compaction threshold (0.0-1.0): full LLM summarization when context usage exceeds this.
 hard_compaction_threshold = 0.90
 # Number of recent messages to preserve during compaction
