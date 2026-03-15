@@ -24,7 +24,6 @@ const MAX_REGEX_LEN: usize = 1024;
 pub enum PolicyEffect {
     Allow,
     Deny,
-    AllowIf,
 }
 
 /// Default effect when no rule matches.
@@ -296,7 +295,7 @@ impl PolicyEnforcer {
             }
         }
 
-        // Then check allow/allow_if rules.
+        // Then check allow rules.
         for rule in &self.rules {
             if rule.effect != PolicyEffect::Deny && rule.matches(&normalized, params, context) {
                 let trace = format!(
