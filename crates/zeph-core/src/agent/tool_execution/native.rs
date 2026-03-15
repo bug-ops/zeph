@@ -219,6 +219,10 @@ impl<C: Channel> Agent<C> {
         let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
         self.prune_stale_tool_outputs(keep_recent);
         self.maybe_apply_deferred_summaries();
+        // Mid-iteration soft compaction: fires after summarization so fresh results are
+        // either summarized or protected before pruning. Does not touch turn counters,
+        // cooldown, or trigger Hard tier (no LLM call during tool loop).
+        self.maybe_soft_compact_mid_iteration();
 
         Ok(None)
     }

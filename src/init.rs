@@ -198,7 +198,7 @@ impl Default for WizardState {
             lsp_context_enabled: false,
             // Valid sentinel values so WizardState is usable outside run() without
             // out-of-range values; run() initialises these to the same values explicitly.
-            soft_compaction_threshold: 0.70,
+            soft_compaction_threshold: 0.60,
             hard_compaction_threshold: 0.90,
             experiments_enabled: false,
             experiments_eval_model: None,
@@ -241,7 +241,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_max_parallel: 4,
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
-        soft_compaction_threshold: 0.70,
+        soft_compaction_threshold: 0.60,
         hard_compaction_threshold: 0.90,
         log_file: zeph_core::config::default_log_file_path(),
         log_level: "info".into(),

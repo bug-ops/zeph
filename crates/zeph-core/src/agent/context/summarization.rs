@@ -1161,6 +1161,50 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Soft-only compaction for mid-iteration use inside tool execution loops.
+    ///
+    /// Applies deferred tool summaries and prunes tool outputs down to the soft threshold.
+    /// Never triggers Hard tier (no LLM call), never increments
+    /// `turns_since_last_hard_compaction`, and never decrements the cooldown counter.
+    /// Returns immediately when `compacted_this_turn` is set (hard compaction ran earlier
+    /// in this turn) or when context usage is below the soft threshold.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub(in crate::agent) fn maybe_soft_compact_mid_iteration(&mut self) {
+        if self.context_manager.compacted_this_turn {
+            return;
+        }
+        if !matches!(
+            self.compaction_tier(),
+            CompactionTier::Soft | CompactionTier::Hard
+        ) {
+            return;
+        }
+        let budget = self
+            .context_manager
+            .budget
+            .as_ref()
+            .map_or(0, ContextBudget::max_tokens);
+        let soft_threshold =
+            (budget as f32 * self.context_manager.soft_compaction_threshold) as usize;
+        let cached = usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+        // Step 1: apply deferred summaries.
+        self.apply_deferred_summaries();
+        // Step 2: prune tool outputs down to soft threshold.
+        let min_to_free = cached.saturating_sub(soft_threshold);
+        if min_to_free > 0 {
+            self.prune_tool_outputs(min_to_free);
+        }
+        tracing::debug!(
+            cached_tokens = self.providers.cached_prompt_tokens,
+            soft_threshold,
+            "mid-iteration soft compaction complete"
+        );
+    }
+
     /// Proactive context compression: fires before reactive compaction when context exceeds
     /// the configured `threshold_tokens`. Mutually exclusive with reactive compaction per turn
     /// (guarded by `compacted_this_turn`).

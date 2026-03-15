@@ -217,7 +217,7 @@ judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses jud
 history_limit = 50
 summarization_threshold = 100  # Trigger summarization after N messages
 context_budget_tokens = 0      # 0 = unlimited (proportional split: 15% summaries, 25% recall, 60% recent)
-soft_compaction_threshold = 0.70  # Soft tier: prune tool outputs + apply deferred summaries (no LLM); default: 0.70
+soft_compaction_threshold = 0.60  # Soft tier: prune tool outputs + apply deferred summaries (no LLM); default: 0.60
 hard_compaction_threshold = 0.90  # Hard tier: full LLM summarization when usage exceeds this fraction; default: 0.90
 compaction_preserve_tail = 4   # Keep last N messages during compaction
 prune_protect_tokens = 40000   # Protect recent N tokens from tool output pruning
@@ -510,7 +510,7 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_QDRANT_URL` | Qdrant server URL (default: `http://localhost:6334`) |
 | `ZEPH_MEMORY_SUMMARIZATION_THRESHOLD` | Trigger summarization after N messages (default: 100) |
 | `ZEPH_MEMORY_CONTEXT_BUDGET_TOKENS` | Context budget for proportional token allocation (default: 0 = unlimited) |
-| `ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD` | Soft compaction tier: prune tool outputs + apply deferred summaries (no LLM) when context usage exceeds this fraction (default: 0.70, must be < hard threshold) |
+| `ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD` | Soft compaction tier: prune tool outputs + apply deferred summaries (no LLM) when context usage exceeds this fraction (default: 0.60, must be < hard threshold) |
 | `ZEPH_MEMORY_HARD_COMPACTION_THRESHOLD` | Hard compaction tier: full LLM summarization when context usage exceeds this fraction (default: 0.90). Also accepted as `ZEPH_MEMORY_COMPACTION_THRESHOLD` for backward compatibility. |
 | `ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL` | Messages preserved during compaction (default: 4) |
 | `ZEPH_MEMORY_PRUNE_PROTECT_TOKENS` | Tokens protected from Tier 1 tool output pruning (default: 40000) |
