@@ -411,10 +411,9 @@ mod tests {
             "claude-sonnet-4-5-20250929".into(),
             1024,
         ));
-        // Claude provider returns true for vision-capable models
-        assert_eq!(sub.supports_vision(), sub.supports_vision());
         // SubProvider must not hard-code false — delegate to inner provider
         let inner = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+        assert!(sub.supports_vision());
         assert_eq!(sub.supports_vision(), inner.supports_vision());
     }
 

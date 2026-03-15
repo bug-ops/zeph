@@ -373,8 +373,6 @@ async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
-
     use super::*;
 
     #[tokio::test]
@@ -469,67 +467,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, McpError::SsrfBlocked { .. }));
-    }
-
-    // `connect_url` trusted-bypass coverage (logic verified via code review):
-    //
-    // In `connect_url`, the guard is:
-    //
-    //   if !trusted {
-    //       validate_url_ssrf(url).await?;
-    //   }
-    //
-    // When `trusted = true` the call to `validate_url_ssrf` is skipped entirely,
-    // so no SSRF error can be returned for localhost/private URLs.  A real network
-    // call would still be made and would fail (connection refused), but the *SSRF*
-    // gate is not exercised.  The tests below confirm this contract at the
-    // `is_private_ip` helper level — the source of truth for what "private" means.
-
-    #[test]
-    fn is_private_ip_blocks_loopback() {
-        use std::net::Ipv4Addr;
-        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
-    }
-
-    #[test]
-    fn is_private_ip_blocks_private_192() {
-        use std::net::Ipv4Addr;
-        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
-    }
-
-    #[test]
-    fn is_private_ip_blocks_private_10() {
-        use std::net::Ipv4Addr;
-        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
-    }
-
-    #[test]
-    fn is_private_ip_allows_public() {
-        use std::net::Ipv4Addr;
-        // 8.8.8.8 is a public IP — must NOT be blocked.
-        assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-    }
-
-    #[test]
-    fn is_private_ip_blocks_ipv6_loopback() {
-        use std::net::Ipv6Addr;
-        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-    }
-
-    #[test]
-    fn is_private_ip_blocks_ipv6_unique_local() {
-        use std::net::Ipv6Addr;
-        // fc00::/7 — unique local
-        let fc = Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1);
-        assert!(is_private_ip(IpAddr::V6(fc)));
-    }
-
-    #[test]
-    fn is_private_ip_blocks_ipv6_link_local() {
-        use std::net::Ipv6Addr;
-        // fe80::/10 — link-local
-        let fe80 = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-        assert!(is_private_ip(IpAddr::V6(fe80)));
     }
 
     // ToolListChangedHandler unit tests

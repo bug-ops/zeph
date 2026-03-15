@@ -13,8 +13,8 @@ pub mod agent_tests {
     use super::super::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
     #[allow(unused_imports)]
     pub(crate) use super::super::{
-        Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, DOOM_LOOP_WINDOW, RECALL_PREFIX,
-        SUMMARY_PREFIX, TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
+        Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX,
+        TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
     };
     pub(crate) use crate::channel::Channel;
     use crate::channel::{Attachment, AttachmentKind, ChannelMessage};
@@ -785,18 +785,6 @@ pub mod agent_tests {
         assert!(assistant_count <= 10);
     }
 
-    #[test]
-    fn security_config_default() {
-        let config = SecurityConfig::default();
-        let _ = format!("{config:?}");
-    }
-
-    #[test]
-    fn timeout_config_default() {
-        let config = TimeoutConfig::default();
-        let _ = format!("{config:?}");
-    }
-
     #[tokio::test]
     async fn agent_with_metrics_sets_initial_values() {
         let provider = mock_provider(vec![]);
@@ -1133,22 +1121,6 @@ pub mod agent_tests {
         let agent2 = Agent::new(provider2, channel2, registry2, None, 5, executor2)
             .with_tool_summarization(false);
         assert!(!agent2.tool_orchestrator.summarize_tool_output_enabled);
-    }
-
-    #[test]
-    fn doom_loop_detection_triggers_on_identical_outputs() {
-        // doom_loop_history stores u64 hashes — identical content produces equal hashes
-        let h = 42u64;
-        let history: Vec<u64> = vec![h, h, h];
-        let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
-        assert!(recent.windows(2).all(|w| w[0] == w[1]));
-    }
-
-    #[test]
-    fn doom_loop_detection_no_trigger_on_different_outputs() {
-        let history: Vec<u64> = vec![1, 2, 3];
-        let recent = &history[history.len() - DOOM_LOOP_WINDOW..];
-        assert!(!recent.windows(2).all(|w| w[0] == w[1]));
     }
 
     #[test]
