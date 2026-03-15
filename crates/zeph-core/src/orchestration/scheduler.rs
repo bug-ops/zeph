@@ -399,6 +399,16 @@ impl DagScheduler {
                 );
                 self.graph.status = GraphStatus::Failed;
                 self.graph.finished_at = Some(super::graph::chrono_now());
+                // Invariant: deadlock fires only when self.running is empty (checked above).
+                debug_assert!(
+                    self.running.is_empty(),
+                    "deadlock branch reached with non-empty running map"
+                );
+                for task in &mut self.graph.tasks {
+                    if !task.status.is_terminal() {
+                        task.status = TaskStatus::Canceled;
+                    }
+                }
                 actions.push(SchedulerAction::Done {
                     status: GraphStatus::Failed,
                 });
@@ -2231,5 +2241,95 @@ mod tests {
             scheduler.consecutive_spawn_failures, 1,
             "batch with only ConcurrencyLimit must increment counter"
         );
+    }
+
+    /// Regression for #1879: when the scheduler detects a deadlock (no running or ready tasks,
+    /// but the graph is not complete), all non-terminal tasks must be marked Canceled, not left
+    /// in their previous status (e.g. Pending).
+    #[test]
+    fn test_deadlock_marks_non_terminal_tasks_canceled() {
+        // Build a graph in Failed status (as if a prior retry pass left task 0 failed and
+        // task 1/2 still Pending). resume_from() transitions it to Running without resetting
+        // task statuses, so tick() immediately sees no running, no ready, not all terminal —
+        // triggering the deadlock branch.
+        let mut nodes = vec![make_node(0, &[]), make_node(1, &[0]), make_node(2, &[0])];
+        nodes[0].status = TaskStatus::Failed;
+        nodes[1].status = TaskStatus::Pending;
+        nodes[2].status = TaskStatus::Pending;
+
+        let mut graph = graph_from_nodes(nodes);
+        graph.status = GraphStatus::Failed;
+
+        let mut scheduler = DagScheduler::resume_from(
+            graph,
+            &make_config(),
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        // After resume_from, graph is Running but no tasks are Ready/Running — deadlock.
+        let actions = scheduler.tick();
+
+        // Must emit Done(Failed).
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                SchedulerAction::Done {
+                    status: GraphStatus::Failed
+                }
+            )),
+            "deadlock must emit Done(Failed); got: {actions:?}"
+        );
+        assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+
+        // task 0 was already Failed (terminal) — must remain unchanged.
+        assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+        // task 1 was Pending (non-terminal) — must be Canceled.
+        assert_eq!(
+            scheduler.graph.tasks[1].status,
+            TaskStatus::Canceled,
+            "Pending task must be Canceled on deadlock"
+        );
+        // task 2 was Pending (non-terminal) — must be Canceled.
+        assert_eq!(
+            scheduler.graph.tasks[2].status,
+            TaskStatus::Canceled,
+            "Pending task must be Canceled on deadlock"
+        );
+    }
+
+    /// Regression for #1879: deadlock with one task Running should NOT trigger the deadlock
+    /// branch (running_in_graph_now > 0 suppresses the check).
+    #[test]
+    fn test_deadlock_not_triggered_when_task_running() {
+        // Graph in Failed with one task still marked Running — resume_from reconstructs
+        // the running map. tick() sees running_in_graph_now > 0 and skips deadlock check.
+        let mut nodes = vec![make_node(0, &[]), make_node(1, &[0])];
+        nodes[0].status = TaskStatus::Running;
+        nodes[0].assigned_agent = Some("handle-1".into());
+        nodes[1].status = TaskStatus::Pending;
+
+        let mut graph = graph_from_nodes(nodes);
+        graph.status = GraphStatus::Failed;
+
+        let mut scheduler = DagScheduler::resume_from(
+            graph,
+            &make_config(),
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        let actions = scheduler.tick();
+
+        // Running task in graph — no deadlock triggered.
+        assert!(
+            actions
+                .iter()
+                .all(|a| !matches!(a, SchedulerAction::Done { .. })),
+            "no Done action expected when a task is running; got: {actions:?}"
+        );
+        assert_eq!(scheduler.graph.status, GraphStatus::Running);
     }
 }
