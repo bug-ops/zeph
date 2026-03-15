@@ -23,15 +23,36 @@ static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?:/home/|/Users/|/root/|/tmp/|/var/)[^\s"'`,;\{\}\[\]]*"#).expect("path regex")
 });
 
+/// Matches `Authorization: Bearer <token>` headers; captures the token value for redaction.
+static BEARER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(Authorization:\s*Bearer\s+)\S+").expect("bearer regex"));
+
+/// Matches standalone JWT tokens (three Base64url-encoded parts separated by dots).
+/// The signature segment uses `*` to handle `alg=none` JWTs with an empty signature.
+static JWT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*").expect("jwt regex")
+});
+
 /// Redact secrets and filesystem paths from text before persistent storage.
 ///
 /// Returns `Cow::Borrowed` when no sensitive content is found (zero-alloc fast path).
 fn redact_sensitive(text: &str) -> Cow<'_, str> {
-    let after_secrets = SECRET_RE.replace_all(text, "[REDACTED]");
-    let result = PATH_RE.replace_all(&after_secrets, "[PATH]");
-    match result {
-        Cow::Borrowed(_) => after_secrets,
-        Cow::Owned(s) => s.into(),
+    // Each replace_all may return Cow::Borrowed (no match) or Cow::Owned (replaced).
+    // We materialise intermediate Owned values into String so that subsequent steps
+    // do not hold a borrow of a local.
+    let s0: Cow<'_, str> = SECRET_RE.replace_all(text, "[REDACTED]");
+    let s1: Cow<'_, str> = match PATH_RE.replace_all(s0.as_ref(), "[PATH]") {
+        Cow::Borrowed(_) => s0,
+        Cow::Owned(o) => Cow::Owned(o),
+    };
+    // Replace only the token value in Bearer headers, keeping the header name intact.
+    let s2: Cow<'_, str> = match BEARER_RE.replace_all(s1.as_ref(), "${1}[REDACTED]") {
+        Cow::Borrowed(_) => s1,
+        Cow::Owned(o) => Cow::Owned(o),
+    };
+    match JWT_RE.replace_all(s2.as_ref(), "[REDACTED_JWT]") {
+        Cow::Borrowed(_) => s2,
+        Cow::Owned(o) => Cow::Owned(o),
     }
 }
 
@@ -670,9 +691,96 @@ mod tests {
         );
     }
 
+    #[test]
+    fn redact_sensitive_bearer_token_is_redacted() {
+        let result =
+            redact_sensitive("Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
+        assert!(
+            result.contains("[REDACTED]"),
+            "Bearer token must be redacted: {result}"
+        );
+        assert!(
+            !result.contains("eyJhbGciOiJSUzI1NiJ9"),
+            "raw JWT header must not appear: {result}"
+        );
+        assert!(
+            result.contains("Authorization:"),
+            "header name must be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_bearer_token_case_insensitive() {
+        let result =
+            redact_sensitive("authorization: bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
+        assert!(
+            result.contains("[REDACTED]"),
+            "Bearer header match must be case-insensitive: {result}"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_standalone_jwt_is_redacted() {
+        let jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIn0.SflKxwRJSMeKKF2";
+        let input = format!("token value: {jwt} was found in logs");
+        let result = redact_sensitive(&input);
+        assert!(
+            result.contains("[REDACTED_JWT]"),
+            "standalone JWT must be replaced with [REDACTED_JWT]: {result}"
+        );
+        assert!(
+            !result.contains("eyJhbGci"),
+            "raw JWT must not appear: {result}"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_mixed_content_all_redacted() {
+        let input =
+            "key sk-abc123 at /home/user/f with Authorization: Bearer eyJhbG.pay.sig and eyJx.b.c";
+        let result = redact_sensitive(input);
+        assert!(result.contains("[REDACTED]"), "API key must be redacted");
+        assert!(result.contains("[PATH]"), "path must be redacted");
+        assert!(!result.contains("sk-abc123"), "raw API key must not appear");
+        assert!(!result.contains("eyJhbG"), "raw JWT must not appear");
+    }
+
+    #[test]
+    fn redact_sensitive_partial_jwt_not_redacted() {
+        // A string starting with eyJ but missing the third segment is not a valid JWT.
+        let input = "eyJhbGciOiJSUzI1NiJ9.onlytwoparts";
+        let result = redact_sensitive(input);
+        // Should not be replaced by the JWT regex (only two dot-separated parts).
+        assert!(
+            !result.contains("[REDACTED_JWT]"),
+            "two-part eyJ string must not be treated as JWT: {result}"
+        );
+        // No substitution occurred — must be zero-alloc Cow::Borrowed.
+        assert!(
+            matches!(result, Cow::Borrowed(_)),
+            "no-match input must return Cow::Borrowed: {result}"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_alg_none_jwt_empty_signature_redacted() {
+        // alg=none JWTs have an empty third segment: <header>.<payload>.
+        let input =
+            "token: eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyIn0. was submitted without signature";
+        let result = redact_sensitive(input);
+        assert!(
+            result.contains("[REDACTED_JWT]"),
+            "alg=none JWT with empty signature must be redacted: {result}"
+        );
+        assert!(
+            !result.contains("eyJhbGciOiJub25lIn0"),
+            "raw alg=none JWT header must not appear: {result}"
+        );
+    }
+
     /// Concurrent saves must produce strictly unique versions with no collisions.
     ///
-    /// Uses a file-backed database because SQLite `:memory:` creates an isolated
+    /// Uses a file-backed database because `SQLite` `:memory:` creates an isolated
     /// database per connection — a multi-connection pool over `:memory:` would give
     /// each writer its own empty schema and cannot test shared-state atomicity.
     #[tokio::test]
