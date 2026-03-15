@@ -1110,7 +1110,7 @@ impl<C: Channel> Agent<C> {
                 && let Some(iter_span_id) = self.debug_state.current_iteration_span_id
             {
                 let latency = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let guard = trace_coll.begin_tool_call(&tc.name, iter_span_id);
+                let guard = trace_coll.begin_tool_call_at(&tc.name, iter_span_id, started_at);
                 let error_kind = if is_error {
                     Some(output.chars().take(200).collect::<String>())
                 } else {
