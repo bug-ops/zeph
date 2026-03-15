@@ -9,7 +9,7 @@ use zeph_tools::registry::{InvocationHint, ToolDef};
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 struct ReadOverflowParams {
-    /// The overflow UUID from the overflow notice (e.g. overflow:<uuid>).
+    /// The bare UUID from the overflow notice. The `overflow:` prefix is accepted but stripped automatically.
     id: String,
 }
 
@@ -41,9 +41,10 @@ impl ToolExecutor for OverflowToolExecutor {
         vec![ToolDef {
             id: Self::TOOL_NAME.into(),
             description: "Retrieve the full content of a tool output that was truncated due to \
-                size. Use when a previous tool result contains an overflow notice like \
-                'overflow:<uuid>'. Parameters: id (string, required) — the overflow UUID from \
-                the notice. Returns: full original tool output text. Errors: NotFound if the \
+                size. Use when a previous tool result contains an overflow notice. \
+                Parameters: id (string, required) — the bare UUID from the notice \
+                (e.g. '550e8400-e29b-41d4-a716-446655440000'). \
+                Returns: full original tool output text. Errors: NotFound if the \
                 overflow entry has expired or does not exist."
                 .into(),
             schema: schemars::schema_for!(ReadOverflowParams),
@@ -61,7 +62,9 @@ impl ToolExecutor for OverflowToolExecutor {
         }
         let params: ReadOverflowParams = deserialize_params(&call.params)?;
 
-        if uuid::Uuid::parse_str(&params.id).is_err() {
+        let id = params.id.strip_prefix("overflow:").unwrap_or(&params.id);
+
+        if uuid::Uuid::parse_str(id).is_err() {
             return Err(ToolError::InvalidParams {
                 message: "id must be a valid UUID".to_owned(),
             });
@@ -73,7 +76,7 @@ impl ToolExecutor for OverflowToolExecutor {
             )));
         };
 
-        match self.sqlite.load_overflow(&params.id, conv_id).await {
+        match self.sqlite.load_overflow(id, conv_id).await {
             Ok(Some(bytes)) => {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 Ok(Some(ToolOutput {
@@ -157,6 +160,45 @@ mod tests {
         let (store, cid) = make_store_with_conv().await;
         let exec = OverflowToolExecutor::new(store).with_conversation(cid);
         let call = make_call("not-a-uuid");
+        let err = exec.execute_tool_call(&call).await.unwrap_err();
+        assert!(matches!(err, ToolError::InvalidParams { .. }));
+    }
+
+    #[tokio::test]
+    async fn overflow_prefix_accepted_and_stripped() {
+        let (store, cid) = make_store_with_conv().await;
+        let content = b"prefixed overflow content";
+        let uuid = store
+            .save_overflow(cid, content)
+            .await
+            .expect("save_overflow");
+
+        let exec = OverflowToolExecutor::new(Arc::clone(&store)).with_conversation(cid);
+        let call = make_call(&format!("overflow:{uuid}"));
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert_eq!(result.summary.as_bytes(), content);
+    }
+
+    #[tokio::test]
+    async fn bare_uuid_still_accepted() {
+        let (store, cid) = make_store_with_conv().await;
+        let content = b"bare uuid content";
+        let uuid = store
+            .save_overflow(cid, content)
+            .await
+            .expect("save_overflow");
+
+        let exec = OverflowToolExecutor::new(Arc::clone(&store)).with_conversation(cid);
+        let call = make_call(&uuid);
+        let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert_eq!(result.summary.as_bytes(), content);
+    }
+
+    #[tokio::test]
+    async fn invalid_uuid_with_overflow_prefix_returns_error() {
+        let (store, cid) = make_store_with_conv().await;
+        let exec = OverflowToolExecutor::new(store).with_conversation(cid);
+        let call = make_call("overflow:not-a-uuid");
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
     }

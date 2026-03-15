@@ -16,8 +16,8 @@ use zeph_skills::loader::Skill;
 /// Prefix used in the overflow notice appended to tool outputs that exceed the size threshold.
 /// Shared with the pruning logic so both sides stay in sync if the format changes.
 ///
-/// Current format: `[full output stored as overflow:{uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
-pub(crate) const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored as overflow:";
+/// Current format: `[full output stored — ID: {uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
+pub(crate) const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored — ID: ";
 
 enum AnomalyOutcome {
     Success,
@@ -214,7 +214,7 @@ impl<C: Channel> Agent<C> {
                 .await
             {
                 Ok(uuid) => format!(
-                    "\n[full output stored as overflow:{uuid} — {} bytes, use read_overflow \
+                    "\n[full output stored — ID: {uuid} — {} bytes, use read_overflow \
                          tool to retrieve]",
                     output.len()
                 ),

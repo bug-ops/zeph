@@ -1006,8 +1006,8 @@ pub mod agent_tests {
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
         assert!(
-            result.contains("overflow:"),
-            "notice must use overflow:<uuid> format, got: {result}"
+            result.contains("full output stored"),
+            "notice must contain overflow storage notice, got: {result}"
         );
         assert!(
             result.contains("bytes"),
