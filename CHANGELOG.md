@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Qdrant collection dimension mismatch when switching embedding models on collections with 0 points (#1815)
 - fix(debug): trace.json now written inside per-session subdir, preventing overwrites (#1814)
+- A-MEM note linking never created `similar_to` edges because `EntityResolver` in `extract_and_store` was constructed without `with_embedding_store()`, leaving `zeph_graph_entities` unpopulated; pass the Qdrant embedding store through to the resolver so entity embeddings are stored and note linking can find semantically similar entities across sessions (#1817)
 
 ## [0.15.1] - 2026-03-15
 

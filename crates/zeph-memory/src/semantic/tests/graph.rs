@@ -109,6 +109,7 @@ async fn extract_and_store_returns_zero_stats_for_empty_content() {
             ..Default::default()
         },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -134,6 +135,7 @@ async fn extraction_count_increments_atomically() {
                 extraction_timeout_secs: 5,
                 ..Default::default()
             },
+            None,
             None,
         )
         .await;
