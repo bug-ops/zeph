@@ -234,6 +234,12 @@ cross_session_score_threshold = 0.35
 # autosave_assistant = false
 # Minimum character length for autosave (shorter responses skip embedding)
 # autosave_min_length = 20
+# Store a lightweight session summary on shutdown when no hard compaction fired
+# shutdown_summary = true
+# Minimum user-turn message count to trigger shutdown summarization (trivial sessions skipped)
+# shutdown_summary_min_messages = 4
+# Maximum recent messages to include in the shutdown summary LLM prompt
+# shutdown_summary_max_messages = 20
 
 [memory.sessions]
 # Maximum number of sessions returned by list operations (0 = unlimited)

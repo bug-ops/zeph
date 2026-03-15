@@ -36,8 +36,8 @@ pub struct SummarySnapshot {
     pub id: i64,
     pub conversation_id: i64,
     pub content: String,
-    pub first_message_id: i64,
-    pub last_message_id: i64,
+    pub first_message_id: Option<i64>,
+    pub last_message_id: Option<i64>,
     pub token_estimate: i64,
 }
 
@@ -104,8 +104,8 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
                         id,
                         conversation_id: conversation_id.0,
                         content,
-                        first_message_id: first_message_id.0,
-                        last_message_id: last_message_id.0,
+                        first_message_id: first_message_id.map(|m| m.0),
+                        last_message_id: last_message_id.map(|m| m.0),
                         token_estimate,
                     }
                 },
@@ -330,7 +330,10 @@ mod tests {
         let cid = store.create_conversation().await.unwrap();
         let m1 = store.save_message(cid, "user", "a").await.unwrap();
         let m2 = store.save_message(cid, "assistant", "b").await.unwrap();
-        store.save_summary(cid, "summary", m1, m2, 5).await.unwrap();
+        store
+            .save_summary(cid, "summary", Some(m1), Some(m2), 5)
+            .await
+            .unwrap();
 
         let snapshot = export_snapshot(&store).await.unwrap();
         assert_eq!(snapshot.conversations[0].summaries.len(), 1);

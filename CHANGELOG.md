@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(memory,core): session summary on shutdown (#1816) — when no hard compaction fired during a session, `Agent::shutdown()` now generates a lightweight LLM summary and stores it to the vector store for cross-session recall; the LLM call is wrapped in a 5-second timeout so shutdown never hangs; `SemanticMemory::has_session_summary()` is the primary guard (resilient to failed Qdrant writes); `SemanticMemory::store_shutdown_summary()` persists to both SQLite and the vector store with real FK-linked key facts; new config params `memory.shutdown_summary` (default `true`), `memory.shutdown_summary_min_messages` (default `4`, user turns only), `memory.shutdown_summary_max_messages` (default `20`); `--init` wizard prompts for the feature toggle; TUI status indicator shown during summarization
+
 ## [0.15.1] - 2026-03-15
 
 ### Fixed

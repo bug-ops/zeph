@@ -53,12 +53,12 @@ async fn load_summaries_ordered() {
 
     let s1 = memory
         .sqlite()
-        .save_summary(cid, "summary1", msg_id1, msg_id2, 3)
+        .save_summary(cid, "summary1", Some(msg_id1), Some(msg_id2), 3)
         .await
         .unwrap();
     let s2 = memory
         .sqlite()
-        .save_summary(cid, "summary2", msg_id2, msg_id3, 3)
+        .save_summary(cid, "summary2", Some(msg_id2), Some(msg_id3), 3)
         .await
         .unwrap();
 
@@ -174,7 +174,7 @@ async fn summary_fields_populated() {
     let s = &summaries[0];
 
     assert_eq!(s.conversation_id, cid);
-    assert!(s.first_message_id > MessageId(0));
+    assert!(s.first_message_id > Some(MessageId(0)));
     assert!(s.last_message_id >= s.first_message_id);
     assert!(s.token_estimate >= 0);
     assert!(!s.content.is_empty());
@@ -271,7 +271,7 @@ async fn summarize_message_range_bounds() {
     let summaries = memory.load_summaries(cid).await.unwrap();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].id, summary_id);
-    assert!(summaries[0].first_message_id >= MessageId(1));
+    assert!(summaries[0].first_message_id >= Some(MessageId(1)));
     assert!(summaries[0].last_message_id >= summaries[0].first_message_id);
 }
 
@@ -372,8 +372,8 @@ fn summary_clone() {
         id: 1,
         conversation_id: ConversationId(2),
         content: "test summary".into(),
-        first_message_id: MessageId(1),
-        last_message_id: MessageId(5),
+        first_message_id: Some(MessageId(1)),
+        last_message_id: Some(MessageId(5)),
         token_estimate: 10,
     };
     let cloned = summary.clone();
@@ -387,8 +387,8 @@ fn summary_debug() {
         id: 1,
         conversation_id: ConversationId(2),
         content: "test".into(),
-        first_message_id: MessageId(1),
-        last_message_id: MessageId(5),
+        first_message_id: Some(MessageId(1)),
+        last_message_id: Some(MessageId(5)),
         token_estimate: 10,
     };
     let dbg = format!("{summary:?}");

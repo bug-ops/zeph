@@ -118,6 +118,8 @@ pub(crate) struct WizardState {
     pub(crate) log_level: String,
     pub(crate) log_rotation: String,
     pub(crate) log_max_files: usize,
+    // Shutdown summary
+    pub(crate) shutdown_summary: bool,
 }
 
 impl Default for WizardState {
@@ -208,6 +210,7 @@ impl Default for WizardState {
             log_level: String::new(),
             log_rotation: String::new(),
             log_max_files: 0,
+            shutdown_summary: true,
         }
     }
 }
@@ -557,6 +560,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 3/10: Memory ==\n");
 
@@ -660,6 +664,15 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
             "Enable Claude server-side context compaction? (compact-2026-01-12 beta, Claude only)",
         )
         .default(false)
+        .interact()?;
+
+    state.shutdown_summary = Confirm::new()
+        .with_prompt(
+            "Store a session summary on shutdown? (enables cross-session recall for short sessions, \
+             advanced params shutdown_summary_min_messages and shutdown_summary_max_messages \
+             are config-file-only)",
+        )
+        .default(true)
         .interact()?;
 
     println!();
@@ -885,6 +898,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.compression_guidelines.enabled = state.compression_guidelines_enabled;
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
     config.memory.hard_compaction_threshold = state.hard_compaction_threshold;
+    config.memory.shutdown_summary = state.shutdown_summary;
     if state.server_compaction_enabled
         && let Some(cloud) = config.llm.cloud.as_mut()
     {

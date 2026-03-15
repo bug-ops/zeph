@@ -52,7 +52,7 @@ pub use router::{
 };
 pub use semantic::{
     ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
-    extract_and_store, link_memory_notes,
+    StructuredSummary, build_summarization_prompt, extract_and_store, link_memory_notes,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 #[cfg(feature = "compression-guidelines")]

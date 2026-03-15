@@ -630,8 +630,8 @@ mod tests {
                 .save_summary(
                     cid,
                     content,
-                    m1,
-                    m2,
+                    Some(m1),
+                    Some(m2),
                     i64::try_from(zeph_memory::TokenCounter::new().count_tokens(content)).unwrap(),
                 )
                 .await
@@ -3152,6 +3152,9 @@ mod tests {
                 ..Default::default()
             },
             compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
+            shutdown_summary: true,
+            shutdown_summary_min_messages: 4,
+            shutdown_summary_max_messages: 20,
         }
     }
 
