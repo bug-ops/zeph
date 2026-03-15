@@ -17,6 +17,70 @@ pub struct SessionSummaryResult {
 }
 
 impl SemanticMemory {
+    /// Check whether a session summary already exists for the given conversation.
+    ///
+    /// Returns `true` if at least one session summary is stored in `SQLite` for this conversation.
+    /// Used as the primary guard in the shutdown summary path to handle cases where hard
+    /// compaction fired but its Qdrant write failed (the `SQLite` record is the authoritative source).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn has_session_summary(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<bool, MemoryError> {
+        let summaries = self.sqlite.load_summaries(conversation_id).await?;
+        Ok(!summaries.is_empty())
+    }
+
+    /// Store a shutdown session summary: persists to `SQLite`, embeds into the
+    /// `zeph_session_summaries` Qdrant collection (so cross-session search can find it),
+    /// and stores key facts into the key-facts collection.
+    ///
+    /// Unlike the hard-compaction path, `first_message_id` and `last_message_id` are `None`
+    /// because the shutdown hook does not track exact message boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` insert fails. Qdrant errors are logged as warnings
+    /// and do not propagate — the `SQLite` record is the authoritative summary store.
+    pub async fn store_shutdown_summary(
+        &self,
+        conversation_id: ConversationId,
+        summary_text: &str,
+        key_facts: &[String],
+    ) -> Result<(), MemoryError> {
+        let token_estimate =
+            i64::try_from(self.token_counter.count_tokens(summary_text)).unwrap_or(0);
+        // Persist to SQLite first — this is the authoritative record and the source of truth
+        // for has_session_summary(). NULL message range = session-level summary.
+        let summary_id = self
+            .sqlite
+            .save_summary(conversation_id, summary_text, None, None, token_estimate)
+            .await?;
+
+        // Embed into SESSION_SUMMARIES_COLLECTION so search_session_summaries() can find it.
+        if let Err(e) = self
+            .store_session_summary(conversation_id, summary_text)
+            .await
+        {
+            tracing::warn!("shutdown summary: failed to embed into session summaries: {e:#}");
+        }
+
+        if !key_facts.is_empty() {
+            self.store_key_facts(conversation_id, summary_id, key_facts)
+                .await;
+        }
+
+        tracing::debug!(
+            conversation_id = conversation_id.0,
+            summary_id,
+            "stored shutdown session summary"
+        );
+        Ok(())
+    }
+
     /// Store a session summary into the dedicated `zeph_session_summaries` Qdrant collection.
     ///
     /// # Errors
@@ -116,5 +180,117 @@ impl SemanticMemory {
             .collect();
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+
+    use crate::types::MessageId;
+
+    use super::*;
+
+    async fn make_memory() -> SemanticMemory {
+        SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            AnyProvider::Mock(MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Insert a real message into the conversation and return its MessageId.
+    /// Required because the `summaries` table has FK constraints on `messages.id`.
+    async fn insert_message(memory: &SemanticMemory, cid: ConversationId) -> MessageId {
+        let id = memory
+            .sqlite()
+            .save_message(cid, "user", "test message")
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn has_session_summary_returns_false_when_no_summaries() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let result = memory.has_session_summary(cid).await.unwrap();
+        assert!(!result, "new conversation must have no summaries");
+    }
+
+    #[tokio::test]
+    async fn has_session_summary_returns_true_after_summary_stored_via_sqlite() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let msg_id = insert_message(&memory, cid).await;
+
+        // Use sqlite directly to insert a valid summary with real FK references.
+        memory
+            .sqlite()
+            .save_summary(
+                cid,
+                "session about Rust and async",
+                Some(msg_id),
+                Some(msg_id),
+                10,
+            )
+            .await
+            .unwrap();
+
+        let result = memory.has_session_summary(cid).await.unwrap();
+        assert!(result, "must return true after a summary is persisted");
+    }
+
+    #[tokio::test]
+    async fn has_session_summary_is_isolated_per_conversation() {
+        let memory = make_memory().await;
+        let cid_a = memory.sqlite().create_conversation().await.unwrap();
+        let cid_b = memory.sqlite().create_conversation().await.unwrap();
+        let msg_id = insert_message(&memory, cid_a).await;
+
+        memory
+            .sqlite()
+            .save_summary(
+                cid_a,
+                "summary for conversation A",
+                Some(msg_id),
+                Some(msg_id),
+                5,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            memory.has_session_summary(cid_a).await.unwrap(),
+            "cid_a must have a summary"
+        );
+        assert!(
+            !memory.has_session_summary(cid_b).await.unwrap(),
+            "cid_b must not be affected by cid_a summary"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_shutdown_summary_succeeds_with_null_message_ids() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let result = memory
+            .store_shutdown_summary(cid, "summary text", &[])
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "shutdown summary must succeed without messages"
+        );
+        assert!(
+            memory.has_session_summary(cid).await.unwrap(),
+            "SQLite must record the shutdown summary"
+        );
     }
 }

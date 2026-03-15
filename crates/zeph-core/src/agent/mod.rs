@@ -133,6 +133,9 @@ pub(super) struct MemoryState {
     pub(super) document_config: crate::config::DocumentConfig,
     pub(super) graph_config: crate::config::GraphConfig,
     pub(super) compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig,
+    pub(super) shutdown_summary: bool,
+    pub(super) shutdown_summary_min_messages: usize,
+    pub(super) shutdown_summary_max_messages: usize,
 }
 
 pub(super) struct SkillState {
@@ -413,6 +416,9 @@ impl<C: Channel> Agent<C> {
                 document_config: crate::config::DocumentConfig::default(),
                 graph_config: crate::config::GraphConfig::default(),
                 compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
+                shutdown_summary: true,
+                shutdown_summary_min_messages: 4,
+                shutdown_summary_max_messages: 20,
             },
             skill_state: SkillState {
                 registry,
@@ -1750,6 +1756,164 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    /// Call the LLM to generate a structured session summary with a 5-second timeout.
+    ///
+    /// Falls back to plain-text chat if structured output fails. Returns `None` on any failure,
+    /// logging a warning — callers must treat `None` as "skip storage".
+    ///
+    /// Each LLM attempt is bounded by a 5-second timeout; in the worst case (structured call
+    /// times out and plain-text fallback also times out) this adds up to 10 seconds of shutdown
+    /// latency.
+    async fn call_llm_for_session_summary(
+        &self,
+        chat_messages: &[Message],
+    ) -> Option<zeph_memory::StructuredSummary> {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.provider
+                .chat_typed_erased::<zeph_memory::StructuredSummary>(chat_messages),
+        )
+        .await
+        {
+            Ok(Ok(s)) => Some(s),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "shutdown summary: structured LLM call failed, falling back to plain: {e:#}"
+                );
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    self.provider.chat(chat_messages),
+                )
+                .await
+                {
+                    Ok(Ok(plain)) => Some(zeph_memory::StructuredSummary {
+                        summary: plain,
+                        key_facts: vec![],
+                        entities: vec![],
+                    }),
+                    Ok(Err(e)) => {
+                        tracing::warn!("shutdown summary: plain LLM fallback failed: {e:#}");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!("shutdown summary: plain LLM fallback timed out");
+                        None
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!("shutdown summary: LLM call timed out after 5s");
+                None
+            }
+        }
+    }
+
+    /// Generate and store a lightweight session summary at shutdown when no hard compaction fired.
+    ///
+    /// Guards:
+    /// - `shutdown_summary` config must be enabled
+    /// - `conversation_id` must be set (memory must be attached)
+    /// - no existing session summary in the store (primary guard — resilient to failed Qdrant writes)
+    /// - at least `shutdown_summary_min_messages` user-turn messages in history
+    ///
+    /// All errors are logged as warnings and swallowed — shutdown must never fail.
+    async fn maybe_store_shutdown_summary(&mut self) {
+        if !self.memory_state.shutdown_summary {
+            return;
+        }
+        let Some(memory) = self.memory_state.memory.clone() else {
+            return;
+        };
+        let Some(conversation_id) = self.memory_state.conversation_id else {
+            return;
+        };
+
+        // Primary guard: check if a summary already exists (handles failed Qdrant writes too).
+        match memory.has_session_summary(conversation_id).await {
+            Ok(true) => {
+                tracing::debug!("shutdown summary: session already has a summary, skipping");
+                return;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("shutdown summary: failed to check existing summary: {e:#}");
+                return;
+            }
+        }
+
+        // Count user-turn messages only (skip system prompt at index 0).
+        let user_count = self
+            .messages
+            .iter()
+            .skip(1)
+            .filter(|m| m.role == Role::User)
+            .count();
+        if user_count < self.memory_state.shutdown_summary_min_messages {
+            tracing::debug!(
+                user_count,
+                min = self.memory_state.shutdown_summary_min_messages,
+                "shutdown summary: too few user messages, skipping"
+            );
+            return;
+        }
+
+        // TUI status — send errors silently ignored (TUI may already be gone at shutdown).
+        let _ = self.channel.send_status("Saving session summary...").await;
+
+        // Collect last N messages (skip system prompt at index 0).
+        let max = self.memory_state.shutdown_summary_max_messages;
+        if max == 0 {
+            tracing::debug!("shutdown summary: max_messages=0, skipping");
+            return;
+        }
+        let non_system: Vec<_> = self.messages.iter().skip(1).collect();
+        let slice = if non_system.len() > max {
+            &non_system[non_system.len() - max..]
+        } else {
+            &non_system[..]
+        };
+
+        let msgs_for_prompt: Vec<(zeph_memory::MessageId, String, String)> = slice
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    Role::User => "user".to_owned(),
+                    Role::Assistant => "assistant".to_owned(),
+                    Role::System => "system".to_owned(),
+                };
+                (zeph_memory::MessageId(0), role, m.content.clone())
+            })
+            .collect();
+
+        let prompt = zeph_memory::build_summarization_prompt(&msgs_for_prompt);
+        let chat_messages = vec![Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let Some(structured) = self.call_llm_for_session_summary(&chat_messages).await else {
+            let _ = self.channel.send_status("").await;
+            return;
+        };
+
+        if let Err(e) = memory
+            .store_shutdown_summary(conversation_id, &structured.summary, &structured.key_facts)
+            .await
+        {
+            tracing::warn!("shutdown summary: storage failed: {e:#}");
+        } else {
+            tracing::info!(
+                conversation_id = conversation_id.0,
+                "shutdown summary stored"
+            );
+        }
+
+        // Clear TUI status.
+        let _ = self.channel.send_status("").await;
+    }
+
     pub async fn shutdown(&mut self) {
         self.channel.send("Shutting down...").await.ok();
 
@@ -1799,6 +1963,9 @@ impl<C: Channel> Agent<C> {
                 );
             }
         }
+
+        self.maybe_store_shutdown_summary().await;
+
         tracing::info!("agent shutdown complete");
     }
 

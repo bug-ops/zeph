@@ -718,6 +718,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.autosave_assistant,
         config.memory.autosave_min_length,
     )
+    .with_shutdown_summary_config(
+        config.memory.shutdown_summary,
+        config.memory.shutdown_summary_min_messages,
+        config.memory.shutdown_summary_max_messages,
+    )
+    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone());
 

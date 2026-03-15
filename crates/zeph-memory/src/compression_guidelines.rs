@@ -208,7 +208,8 @@ mod updater {
             return Ok(());
         }
 
-        let (current_version, current_guidelines) = sqlite.load_compression_guidelines().await?;
+        let (current_version, current_guidelines) =
+            sqlite.load_compression_guidelines(None).await?;
 
         let prompt = build_guidelines_update_prompt(
             &current_guidelines,
@@ -249,7 +250,7 @@ mod updater {
         }
 
         sqlite
-            .save_compression_guidelines(&final_text, token_count)
+            .save_compression_guidelines(&final_text, token_count, None)
             .await?;
 
         let ids: Vec<i64> = pairs.iter().map(|p| p.id).collect();

@@ -20,8 +20,10 @@ pub struct Summary {
     pub id: i64,
     pub conversation_id: ConversationId,
     pub content: String,
-    pub first_message_id: MessageId,
-    pub last_message_id: MessageId,
+    /// `None` for session-level summaries (e.g. shutdown summaries) with no tracked message range.
+    pub first_message_id: Option<MessageId>,
+    /// `None` for session-level summaries (e.g. shutdown summaries) with no tracked message range.
+    pub last_message_id: Option<MessageId>,
     pub token_estimate: i64,
 }
 
@@ -150,8 +152,8 @@ impl SemanticMemory {
             .save_summary(
                 conversation_id,
                 summary_text,
-                first_message_id,
-                last_message_id,
+                Some(first_message_id),
+                Some(last_message_id),
                 token_estimate,
             )
             .await?;
@@ -192,7 +194,7 @@ impl SemanticMemory {
         Ok(Some(summary_id))
     }
 
-    async fn store_key_facts(
+    pub(super) async fn store_key_facts(
         &self,
         conversation_id: ConversationId,
         source_summary_id: i64,

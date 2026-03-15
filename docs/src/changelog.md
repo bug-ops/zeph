@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Per-conversation compression guidelines** — the `compression_guidelines` table gains a `conversation_id` column (migration 034). Guidelines can now be scoped to a specific conversation: when a conversation is in scope, its own guideline is preferred; if none exists, the global (`NULL`) guideline is used as a fallback. The `None` scope continues to access only global guidelines.
+
 ## [0.15.1] - 2026-03-15
 
 ### Fixed
