@@ -427,7 +427,11 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = &self.memory_state.memory else {
             return String::new();
         };
-        match memory.sqlite().load_compression_guidelines().await {
+        match memory
+            .sqlite()
+            .load_compression_guidelines(self.memory_state.conversation_id)
+            .await
+        {
             Ok((_, text)) => text,
             Err(e) => {
                 tracing::warn!("failed to load compression guidelines: {e:#}");

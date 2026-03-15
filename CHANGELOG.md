@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory): `conversation_id` column added to `compression_guidelines` table (migration 034); guidelines now prefer conversation-specific over global when a conversation is in scope, with global (NULL) guidelines as fallback (closes #1806)
 - feat(memory,core): session summary on shutdown (#1816) — when no hard compaction fired during a session, `Agent::shutdown()` now generates a lightweight LLM summary and stores it to the vector store for cross-session recall; the LLM call is wrapped in a 5-second timeout so shutdown never hangs; `SemanticMemory::has_session_summary()` is the primary guard (resilient to failed Qdrant writes); `SemanticMemory::store_shutdown_summary()` persists to both SQLite and the vector store with real FK-linked key facts; new config params `memory.shutdown_summary` (default `true`), `memory.shutdown_summary_min_messages` (default `4`, user turns only), `memory.shutdown_summary_max_messages` (default `20`); `--init` wizard prompts for the feature toggle; TUI status indicator shown during summarization
 - test(memory): unit tests for `sanitize_guidelines` special-token (`<|system|>`) and role-prefix (`assistant:`, `user:`) patterns (#1807)
 
@@ -18,9 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(security): redact secrets and filesystem paths in compression_failure_pairs before SQLite storage (#1801)
+- fix(llm): strip URL path in `parse_host_port` — Ollama `base_url` with `/v1` suffix no longer produces 404 on embed calls (#1832)
 - Qdrant collection dimension mismatch when switching embedding models on collections with 0 points (#1815)
 - fix(debug): trace.json now written inside per-session subdir, preventing overwrites (#1814)
 - A-MEM note linking never created `similar_to` edges because `EntityResolver` in `extract_and_store` was constructed without `with_embedding_store()`, leaving `zeph_graph_entities` unpopulated; pass the Qdrant embedding store through to the resolver so entity embeddings are stored and note linking can find semantically similar entities across sessions (#1817)
+- graph-memory: entity embeddings now correctly stored in Qdrant — `EntityResolver` was built without a provider in `extract_and_store()`, causing `store_entity_embedding()` to never be called and `zeph_graph_entities` collection to remain empty (fixes #1829)
 - fix(core): JIT tool reference injection now works after overflow migration to SQLite — `OVERFLOW_NOTICE_PREFIX` and `extract_overflow_ref()` updated to match the `overflow:{uuid}` format; pruned tool output notices now read `[tool output pruned; use read_overflow {uuid} to retrieve]` instead of a stale file-path reference (closes #1818)
 
 ## [0.15.1] - 2026-03-15

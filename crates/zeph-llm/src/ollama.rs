@@ -491,16 +491,29 @@ fn parse_num_ctx(parameters: &str) -> Option<usize> {
     None
 }
 
-fn parse_host_port(url: &str) -> (String, u16) {
-    let url = url.trim_end_matches('/');
-    if let Some(colon_pos) = url.rfind(':') {
-        let port_str = &url[colon_pos + 1..];
+fn parse_host_port(base_url: &str) -> (String, u16) {
+    // Only use the URL parser for strings that start with a proper scheme
+    let has_scheme = base_url.starts_with("http://") || base_url.starts_with("https://");
+    if has_scheme && let Ok(parsed) = url::Url::parse(base_url) {
+        let port = parsed.port().unwrap_or(11434);
+        let scheme = parsed.scheme();
+        let host_part = match parsed.host() {
+            Some(url::Host::Ipv6(addr)) => format!("[{addr}]"),
+            _ => parsed.host_str().unwrap_or("localhost").to_string(),
+        };
+        return (format!("{scheme}://{host_part}"), port);
+    }
+    // Fallback for bare "host:port" strings that have no scheme (e.g. "localhost:11434").
+    // url::Url::parse() treats the part before the first ':' as a scheme in that case,
+    // so the scheme-gated branch above is intentionally skipped for such inputs.
+    let trimmed = base_url.trim_end_matches('/');
+    if let Some(colon_pos) = trimmed.rfind(':') {
+        let port_str = &trimmed[colon_pos + 1..];
         if let Ok(port) = port_str.parse::<u16>() {
-            let host = url[..colon_pos].to_string();
-            return (host, port);
+            return (trimmed[..colon_pos].to_string(), port);
         }
     }
-    (url.to_string(), 11434)
+    (trimmed.to_string(), 11434)
 }
 
 #[cfg(test)]
@@ -546,6 +559,55 @@ mod tests {
     fn parse_host_port_without_port() {
         let (host, port) = parse_host_port("http://localhost");
         assert_eq!(host, "http://localhost");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_strips_v1_path() {
+        let (host, port) = parse_host_port("http://localhost:11434/v1");
+        assert_eq!(host, "http://localhost");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_strips_v1_trailing_slash() {
+        let (host, port) = parse_host_port("http://localhost:11434/v1/");
+        assert_eq!(host, "http://localhost");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_ipv4_with_path() {
+        let (host, port) = parse_host_port("http://192.168.1.100:11434/v1");
+        assert_eq!(host, "http://192.168.1.100");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_ipv6_with_path() {
+        let (host, port) = parse_host_port("http://[::1]:11434/v1");
+        assert_eq!(host, "http://[::1]");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_https_with_path() {
+        let (host, port) = parse_host_port("https://host:11434/v1");
+        assert_eq!(host, "https://host");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_ipv6_no_port() {
+        let (host, port) = parse_host_port("http://[::1]/v1");
+        assert_eq!(host, "http://[::1]");
+        assert_eq!(port, 11434);
+    }
+
+    #[test]
+    fn parse_host_port_bare_host_colon_port() {
+        let (host, port) = parse_host_port("localhost:11434");
+        assert_eq!(host, "localhost");
         assert_eq!(port, 11434);
     }
 
