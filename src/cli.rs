@@ -83,6 +83,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) graph_memory: bool,
 
+    /// Enable ACON failure-driven compression guidelines for this session.
+    /// Overrides `memory.compression_guidelines.enabled` from config.
+    /// Requires `compression-guidelines` feature at compile time; silently
+    /// ignored if the feature is not enabled.
+    #[arg(long)]
+    pub(crate) compression_guidelines: bool,
+
     /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
     /// Requires a Claude provider. Overrides `llm.cloud.server_compaction` from config.
     #[arg(long)]
@@ -385,6 +392,18 @@ mod tests {
     fn cli_graph_memory_flag_defaults_to_false() {
         let cli = Cli::try_parse_from(["zeph"]).unwrap();
         assert!(!cli.graph_memory);
+    }
+
+    #[test]
+    fn cli_parses_compression_guidelines_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--compression-guidelines"]).unwrap();
+        assert!(cli.compression_guidelines);
+    }
+
+    #[test]
+    fn cli_compression_guidelines_defaults_to_false() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(!cli.compression_guidelines);
     }
 
     #[cfg(feature = "experiments")]

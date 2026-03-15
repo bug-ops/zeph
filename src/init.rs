@@ -2065,6 +2065,28 @@ mod tests {
     }
 
     #[test]
+    fn build_config_compression_guidelines_enabled() {
+        let state = WizardState {
+            compression_guidelines_enabled: true,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.memory.compression_guidelines.enabled);
+    }
+
+    #[test]
+    fn build_config_compression_guidelines_disabled() {
+        let state = WizardState {
+            compression_guidelines_enabled: false,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.memory.compression_guidelines.enabled);
+    }
+
+    #[test]
     fn build_config_mcpls_enabled_produces_mcp_server() {
         let state = WizardState {
             mcpls_enabled: true,
