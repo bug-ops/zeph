@@ -313,6 +313,45 @@ pub struct ScheduledTaskConfig {
     pub config: serde_json::Value,
 }
 
+fn default_trace_service_name() -> String {
+    "zeph".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Configuration for OTel-compatible trace dumps (`format = "trace"`).
+///
+/// When `format = "trace"`, the `TracingCollector` writes a `trace.json` file in OTLP JSON
+/// format at session end. Legacy numbered dump files are NOT written by default (C-03).
+/// When the `otel` feature is enabled and `otlp_endpoint` is set, spans are also exported
+/// via OTLP gRPC.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TraceConfig {
+    /// OTLP gRPC endpoint (only used when `otel` feature is enabled).
+    /// Defaults to `observability.endpoint` if unset (I-01).
+    #[serde(default = "default_otlp_endpoint")]
+    pub otlp_endpoint: String,
+    /// Service name reported to the `OTel` collector.
+    #[serde(default = "default_trace_service_name")]
+    pub service_name: String,
+    /// Redact sensitive data in span attributes (default: `true`) (C-01).
+    #[serde(default = "default_true")]
+    pub redact: bool,
+}
+
+impl Default for TraceConfig {
+    fn default() -> Self {
+        Self {
+            otlp_endpoint: default_otlp_endpoint(),
+            service_name: default_trace_service_name(),
+            redact: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DebugConfig {
@@ -321,8 +360,10 @@ pub struct DebugConfig {
     /// Directory where per-session debug dump subdirectories are created.
     #[serde(default = "super::defaults::default_debug_output_dir")]
     pub output_dir: std::path::PathBuf,
-    /// Output format for LLM request files: `"json"` (default) or `"raw"` (API payload).
+    /// Output format: `"json"` (default), `"raw"` (API payload), or `"trace"` (OTLP spans).
     pub format: crate::debug_dump::DumpFormat,
+    /// `OTel` trace configuration (only used when `format = "trace"`).
+    pub traces: TraceConfig,
 }
 
 impl Default for DebugConfig {
@@ -331,6 +372,7 @@ impl Default for DebugConfig {
             enabled: false,
             output_dir: super::defaults::default_debug_output_dir(),
             format: crate::debug_dump::DumpFormat::default(),
+            traces: TraceConfig::default(),
         }
     }
 }

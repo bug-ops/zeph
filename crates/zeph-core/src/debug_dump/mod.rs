@@ -7,6 +7,8 @@
 //! numbered files in a timestamped subdirectory of the configured output directory.
 //! Intended for context debugging only — do not use in production.
 
+pub mod trace;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -24,6 +26,24 @@ pub enum DumpFormat {
     /// Write LLM requests as the actual API payload sent to the provider (`{id}-request.json`):
     /// system extracted, `agent_invisible` messages filtered, parts rendered as content blocks.
     Raw,
+    /// Emit OpenTelemetry-compatible OTLP JSON trace spans (`trace.json` at session end).
+    /// Legacy numbered dump files are NOT written unless `[debug.traces] legacy_files = true`.
+    Trace,
+}
+
+impl std::str::FromStr for DumpFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "json" => Ok(Self::Json),
+            "raw" => Ok(Self::Raw),
+            "trace" => Ok(Self::Trace),
+            other => Err(format!(
+                "unknown dump format `{other}`, expected json|raw|trace"
+            )),
+        }
+    }
 }
 
 pub struct DebugDumper {
@@ -79,30 +99,48 @@ impl DebugDumper {
     /// Dump the messages about to be sent to the LLM.
     ///
     /// Returns an ID that must be passed to [`dump_response`] to correlate request and response.
+    /// When `format = Trace`, no file is written (spans are collected by [`trace::TracingCollector`]).
     pub fn dump_request(&self, request: &RequestDebugDump<'_>) -> u32 {
         let id = self.next_id();
+        // In Trace format, skip legacy numbered files — span data lives in TracingCollector.
+        if self.format == DumpFormat::Trace {
+            return id;
+        }
         let json = match self.format {
             DumpFormat::Json => json_dump(request),
             DumpFormat::Raw => raw_dump(request),
+            DumpFormat::Trace => unreachable!("handled above"),
         };
         self.write(&format!("{id:04}-request.json"), json.as_bytes());
         id
     }
 
     /// Dump the LLM response corresponding to a prior [`dump_request`] call.
+    /// When `format = Trace`, this is a no-op.
     pub fn dump_response(&self, id: u32, response: &str) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
         self.write(&format!("{id:04}-response.txt"), response.as_bytes());
     }
 
     /// Dump raw tool output before any truncation or summarization.
+    /// When `format = Trace`, this is a no-op (tool output is recorded via `TracingCollector`).
     pub fn dump_tool_output(&self, tool_name: &str, output: &str) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
         let id = self.next_id();
         let safe_name = sanitize_dump_name(tool_name);
         self.write(&format!("{id:04}-tool-{safe_name}.txt"), output.as_bytes());
     }
 
     /// Dump a tool error with error classification for debugging transient/permanent failures.
+    /// When `format = Trace`, this is a no-op.
     pub fn dump_tool_error(&self, tool_name: &str, error: &zeph_tools::ToolError) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
         let id = self.next_id();
         let safe_name = sanitize_dump_name(tool_name);
         let payload = serde_json::json!({
@@ -357,6 +395,22 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn dump_format_from_str_valid() {
+        assert_eq!("json".parse::<DumpFormat>().unwrap(), DumpFormat::Json);
+        assert_eq!("raw".parse::<DumpFormat>().unwrap(), DumpFormat::Raw);
+        assert_eq!("trace".parse::<DumpFormat>().unwrap(), DumpFormat::Trace);
+    }
+
+    #[test]
+    fn dump_format_from_str_invalid_returns_error() {
+        let err = "binary".parse::<DumpFormat>().unwrap_err();
+        assert!(
+            err.contains("unknown dump format"),
+            "error must mention unknown dump format: {err}"
+        );
+    }
 
     fn sample_messages() -> Vec<Message> {
         vec![

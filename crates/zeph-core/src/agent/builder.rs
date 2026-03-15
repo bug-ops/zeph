@@ -69,6 +69,30 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Enable `OTel` trace collection. The collector writes `trace.json` at session end.
+    #[must_use]
+    pub fn with_trace_collector(
+        mut self,
+        collector: crate::debug_dump::trace::TracingCollector,
+    ) -> Self {
+        self.debug_state.trace_collector = Some(collector);
+        self
+    }
+
+    /// Store trace config so `/dump-format trace` can create a `TracingCollector` at runtime (CR-04).
+    #[must_use]
+    pub fn with_trace_config(
+        mut self,
+        dump_dir: std::path::PathBuf,
+        service_name: impl Into<String>,
+        redact: bool,
+    ) -> Self {
+        self.debug_state.dump_dir = Some(dump_dir);
+        self.debug_state.trace_service_name = service_name.into();
+        self.debug_state.trace_redact = redact;
+        self
+    }
+
     /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
     #[cfg(feature = "lsp-context")]
     #[must_use]
@@ -372,6 +396,14 @@ impl<C: Channel> Agent<C> {
         self.security.exfiltration_guard = crate::sanitizer::exfiltration::ExfiltrationGuard::new(
             security.exfiltration_guard.clone(),
         );
+        self.security.pii_filter =
+            crate::sanitizer::pii::PiiFilter::new(security.pii_filter.clone());
+        self.security.memory_validator =
+            crate::sanitizer::memory_validation::MemoryWriteValidator::new(
+                security.memory_validation.clone(),
+            );
+        self.rate_limiter =
+            crate::agent::rate_limiter::ToolRateLimiter::new(security.rate_limit.clone());
         self.runtime.security = security;
         self.runtime.timeouts = timeouts;
         self

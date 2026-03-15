@@ -261,6 +261,13 @@ impl<C: Channel> Agent<C> {
                     })
                 });
 
+        // CR-01: open LLM span before the call.
+        let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
+            self.debug_state
+                .current_iteration_span_id
+                .map(|id| tc.begin_llm_request(id))
+        });
+
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         let chat_fut = tokio::time::timeout(
             llm_timeout,
@@ -288,23 +295,51 @@ impl<C: Channel> Agent<C> {
 
         self.record_chat_metrics_and_compact(start, &result).await?;
 
-        if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
-            let dump_text = match &result {
-                ChatResponse::Text(t) => t.clone(),
-                ChatResponse::ToolUse {
-                    text, tool_calls, ..
-                } => {
-                    let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
-                    format!(
-                        "{}\n\n---TOOL_CALLS---\n{calls}",
-                        text.as_deref().unwrap_or("")
-                    )
-                }
-            };
-            d.dump_response(id, &dump_text);
+        // CR-01: close LLM span after the call completes.
+        if let Some(guard) = trace_guard
+            && let Some(ref mut tc) = self.debug_state.trace_collector
+        {
+            let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let (prompt_tokens, completion_tokens) = self.provider.last_usage().unwrap_or((0, 0));
+            tc.end_llm_request(
+                guard,
+                &crate::debug_dump::trace::LlmAttributes {
+                    model: self.runtime.model_name.clone(),
+                    prompt_tokens,
+                    completion_tokens,
+                    latency_ms: latency,
+                    streaming: false,
+                    cache_hit: false,
+                },
+            );
         }
 
+        self.write_chat_debug_dump(dump_id, &result);
         Ok(Some(result))
+    }
+
+    fn write_chat_debug_dump(&self, dump_id: Option<u32>, result: &ChatResponse) {
+        let Some((d, id)) = self.debug_state.debug_dumper.as_ref().zip(dump_id) else {
+            return;
+        };
+        let raw = match result {
+            ChatResponse::Text(t) => t.clone(),
+            ChatResponse::ToolUse {
+                text, tool_calls, ..
+            } => {
+                let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
+                format!(
+                    "{}\n\n---TOOL_CALLS---\n{calls}",
+                    text.as_deref().unwrap_or("")
+                )
+            }
+        };
+        let text = if self.security.pii_filter.is_enabled() {
+            self.security.pii_filter.scrub(&raw).into_owned()
+        } else {
+            raw
+        };
+        d.dump_response(id, &text);
     }
 
     async fn record_chat_metrics_and_compact(
@@ -636,7 +671,17 @@ impl<C: Channel> Agent<C> {
             // error result immediately (IMP-02: includes ConfirmationRequired dependencies).
             let mut tier_futs: Vec<(usize, ToolExecFut)> = Vec::with_capacity(tier.indices.len());
 
-            for &idx in &tier.indices {
+            // Rate limiter: atomic batch-reserve for this tier (S5 fix).
+            // check_batch() reserves slots before any future is dispatched, preventing
+            // parallel calls from all passing the check before any records the use.
+            let tier_tool_names: Vec<&str> = tier
+                .indices
+                .iter()
+                .map(|&i| tool_calls[i].name.as_str())
+                .collect();
+            let rate_results = self.rate_limiter.check_batch(&tier_tool_names);
+
+            for (tier_local_idx, &idx) in tier.indices.iter().enumerate() {
                 let tc = &tool_calls[idx];
                 let call = &calls[idx];
 
@@ -677,6 +722,39 @@ impl<C: Channel> Agent<C> {
                     let out = zeph_tools::ToolOutput {
                         tool_name: tc.name.clone(),
                         summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                // Rate limiter: check the pre-computed batch result for this call.
+                if let Some(ref exceeded) = rate_results[tier_local_idx] {
+                    tracing::warn!(
+                        tool = %tc.name,
+                        category = exceeded.category.as_str(),
+                        limit = exceeded.limit,
+                        "tool rate limiter: blocking call"
+                    );
+                    self.update_metrics(|m| m.rate_limit_trips += 1);
+                    self.push_security_event(
+                        crate::metrics::SecurityEventCategory::RateLimit,
+                        &tc.name,
+                        format!(
+                            "{} calls exceeded {}/min",
+                            exceeded.category.as_str(),
+                            exceeded.limit
+                        ),
+                    );
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: exceeded.to_error_message(),
                         blocks_executed: 0,
                         filter_stats: None,
                         diff: None,
@@ -1011,9 +1089,43 @@ impl<C: Channel> Agent<C> {
                     if let Some(ref d) = self.debug_state.debug_dumper {
                         d.dump_tool_error(&tc.name, e);
                     }
+                    // Count memory write validation rejections.
+                    if tc.name == "memory_save"
+                        && matches!(e, zeph_tools::ToolError::InvalidParams { .. })
+                        && e.to_string().contains("memory write rejected")
+                    {
+                        self.update_metrics(|m| m.memory_validation_failures += 1);
+                        self.push_security_event(
+                            crate::metrics::SecurityEventCategory::MemoryValidation,
+                            "memory_save",
+                            e.to_string(),
+                        );
+                    }
                     (format!("[error] {e}"), true, None, None, false, None, None)
                 }
             };
+
+            // CR-01: emit a tool span for each completed tool call.
+            if let Some(ref mut trace_coll) = self.debug_state.trace_collector
+                && let Some(iter_span_id) = self.debug_state.current_iteration_span_id
+            {
+                let latency = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let guard = trace_coll.begin_tool_call(&tc.name, iter_span_id);
+                let error_kind = if is_error {
+                    Some(output.chars().take(200).collect::<String>())
+                } else {
+                    None
+                };
+                trace_coll.end_tool_call(
+                    guard,
+                    &tc.name,
+                    crate::debug_dump::trace::ToolAttributes {
+                        latency_ms: latency,
+                        is_error,
+                        error_kind,
+                    },
+                );
+            }
 
             // Record skill learning outcomes for the native tool path (mirrors legacy path in
             // handle_tool_result). Must happen before processing so self_reflection can inject

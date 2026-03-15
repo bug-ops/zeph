@@ -30,7 +30,7 @@ pub use experiment::{ExperimentConfig, ExperimentSchedule, OrchestrationConfig};
 pub use features::{
     CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
     ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SkillPromptMode, SkillsConfig,
-    VaultConfig,
+    TraceConfig, VaultConfig,
 };
 pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};

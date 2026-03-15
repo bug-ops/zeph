@@ -12,6 +12,8 @@ pub enum SecurityEventCategory {
     ExfiltrationBlock,
     Quarantine,
     Truncation,
+    RateLimit,
+    MemoryValidation,
 }
 
 impl SecurityEventCategory {
@@ -22,6 +24,8 @@ impl SecurityEventCategory {
             Self::ExfiltrationBlock => "exfil",
             Self::Quarantine => "quarantine",
             Self::Truncation => "truncation",
+            Self::RateLimit => "rate_limit",
+            Self::MemoryValidation => "memory_validation",
         }
     }
 }
@@ -201,6 +205,9 @@ pub struct MetricsSnapshot {
     pub exfiltration_images_blocked: u64,
     pub exfiltration_tool_urls_flagged: u64,
     pub exfiltration_memory_guards: u64,
+    pub pii_scrub_count: u64,
+    pub memory_validation_failures: u64,
+    pub rate_limit_trips: u64,
     pub sub_agents: Vec<SubAgentMetrics>,
     pub skill_confidence: Vec<SkillConfidence>,
     /// Scheduled task summaries: `[name, kind, mode, next_run]`.

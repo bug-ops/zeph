@@ -108,6 +108,7 @@ async fn extract_and_store_returns_zero_stats_for_empty_content() {
             extraction_timeout_secs: 5,
             ..Default::default()
         },
+        None,
     )
     .await
     .unwrap();
@@ -133,6 +134,7 @@ async fn extraction_count_increments_atomically() {
                 extraction_timeout_secs: 5,
                 ..Default::default()
             },
+            None,
         )
         .await;
     }
@@ -235,7 +237,12 @@ async fn spawn_graph_extraction_zero_timeout_returns_without_panic() {
         extraction_timeout_secs: 0,
         ..Default::default()
     };
-    memory.spawn_graph_extraction("I use Rust for systems programming".to_owned(), vec![], cfg);
+    memory.spawn_graph_extraction(
+        "I use Rust for systems programming".to_owned(),
+        vec![],
+        cfg,
+        None,
+    );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
 

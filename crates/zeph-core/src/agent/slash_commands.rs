@@ -177,6 +177,13 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Debug,
         feature_gate: None,
     },
+    SlashCommandInfo {
+        name: "/dump-format",
+        args: "<json|raw|trace>",
+        description: "Switch debug dump format at runtime",
+        category: SlashCategory::Debug,
+        feature_gate: None,
+    },
     // --- Advanced (feature-gated) ---
     #[cfg(feature = "scheduler")]
     SlashCommandInfo {

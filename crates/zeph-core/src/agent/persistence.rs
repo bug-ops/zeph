@@ -447,7 +447,24 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("extracting graph...").await;
 
         if let Some(memory) = &self.memory_state.memory {
-            memory.spawn_graph_extraction(content.to_owned(), context_messages, extraction_cfg);
+            // Build optional validation callback from MemoryWriteValidator (S3 fix).
+            // zeph-memory receives a generic Fn predicate — it does not depend on security types.
+            let validator: zeph_memory::semantic::PostExtractValidator =
+                if self.security.memory_validator.is_enabled() {
+                    let v = self.security.memory_validator.clone();
+                    Some(Box::new(move |result| {
+                        v.validate_graph_extraction(result)
+                            .map_err(|e| e.to_string())
+                    }))
+                } else {
+                    None
+                };
+            memory.spawn_graph_extraction(
+                content.to_owned(),
+                context_messages,
+                extraction_cfg,
+                validator,
+            );
         }
         self.sync_community_detection_failures();
         self.sync_graph_extraction_metrics();
