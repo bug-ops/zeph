@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- test(memory): unit tests for `sanitize_guidelines` special-token (`<|system|>`) and role-prefix (`assistant:`, `user:`) patterns (#1807)
+
 ### Fixed
 
 - Qdrant collection dimension mismatch when switching embedding models on collections with 0 points (#1815)
