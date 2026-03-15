@@ -426,6 +426,24 @@ impl<C: Channel> Agent<C> {
             );
         self.rate_limiter =
             crate::agent::rate_limiter::ToolRateLimiter::new(security.rate_limit.clone());
+
+        // Build pre-execution verifiers from config.
+        // Stored on ToolOrchestrator (not SecurityState) — verifiers inspect tool arguments
+        // at dispatch time, consistent with repeat-detection and rate-limiting which also
+        // live on ToolOrchestrator. SecurityState hosts zeph-core::sanitizer types only.
+        let mut verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>> = Vec::new();
+        if security.pre_execution_verify.enabled {
+            let dcfg = &security.pre_execution_verify.destructive_commands;
+            if dcfg.enabled {
+                verifiers.push(Box::new(zeph_tools::DestructiveCommandVerifier::new(dcfg)));
+            }
+            let icfg = &security.pre_execution_verify.injection_patterns;
+            if icfg.enabled {
+                verifiers.push(Box::new(zeph_tools::InjectionPatternVerifier::new(icfg)));
+            }
+        }
+        self.tool_orchestrator.pre_execution_verifiers = verifiers;
+
         self.runtime.security = security;
         self.runtime.timeouts = timeouts;
         self

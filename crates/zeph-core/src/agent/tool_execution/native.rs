@@ -563,6 +563,52 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Pre-execution verification (TrustBench pattern, issue #1630).
+        // Runs after exfiltration guard (flag-only) and before repeat-detection.
+        // Block: return synthetic error result for this call without executing.
+        // Warn: log + emit security event + continue execution.
+        let mut pre_exec_blocked: Vec<bool> = vec![false; calls.len()];
+        if !self.tool_orchestrator.pre_execution_verifiers.is_empty() {
+            for (idx, call) in calls.iter().enumerate() {
+                let args_value = serde_json::Value::Object(call.params.clone());
+                for verifier in &self.tool_orchestrator.pre_execution_verifiers {
+                    match verifier.verify(&call.tool_id, &args_value) {
+                        zeph_tools::VerificationResult::Allow => {}
+                        zeph_tools::VerificationResult::Block { reason } => {
+                            tracing::warn!(
+                                tool = %call.tool_id,
+                                verifier = verifier.name(),
+                                %reason,
+                                "pre-execution verifier blocked tool call"
+                            );
+                            self.update_metrics(|m| m.pre_execution_blocks += 1);
+                            self.push_security_event(
+                                crate::metrics::SecurityEventCategory::PreExecutionBlock,
+                                &call.tool_id,
+                                format!("{}: {}", verifier.name(), reason),
+                            );
+                            pre_exec_blocked[idx] = true;
+                            break;
+                        }
+                        zeph_tools::VerificationResult::Warn { message } => {
+                            tracing::warn!(
+                                tool = %call.tool_id,
+                                verifier = verifier.name(),
+                                %message,
+                                "pre-execution verifier warning (not blocked)"
+                            );
+                            self.update_metrics(|m| m.pre_execution_warnings += 1);
+                            self.push_security_event(
+                                crate::metrics::SecurityEventCategory::PreExecutionWarn,
+                                &call.tool_id,
+                                format!("{}: {}", verifier.name(), message),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Repeat-detection (CRIT-3): record LLM-initiated calls BEFORE execution.
         // Retry re-executions must NOT be pushed here — they are handled inside the retry loop.
         // Build args hashes and check for repeats. Blocked calls get a pre-built error result.
@@ -702,6 +748,27 @@ impl<C: Channel> Agent<C> {
                     let msg =
                         "[error] Skipped: a prerequisite tool failed or requires confirmation"
                             .to_string();
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                if pre_exec_blocked[idx] {
+                    let msg = format!(
+                        "[error] Tool call to {} was blocked by pre-execution verifier. \
+                         The requested operation is not permitted.",
+                        tc.name
+                    );
                     let out = zeph_tools::ToolOutput {
                         tool_name: tc.name.clone(),
                         summary: msg,

@@ -24,6 +24,11 @@ pub(crate) struct ToolOrchestrator {
     /// Maximum wall-clock time (seconds) to spend on retries for a single tool call.
     /// 0 = no wall-clock budget (only `max_tool_retries` applies).
     pub(super) max_retry_duration_secs: u64,
+    /// Pre-execution verifiers run before every native tool call (`TrustBench` pattern,
+    /// issue #1630). Stored here rather than on `SecurityState` because they are tool-layer
+    /// concerns: they inspect tool arguments at dispatch time, consistent with
+    /// repeat-detection, rate-limiting, and overflow controls which also live here.
+    pub(super) pre_execution_verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>>,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -55,6 +60,7 @@ impl ToolOrchestrator {
             repeat_threshold,
             max_tool_retries: 2,
             max_retry_duration_secs: 30,
+            pre_execution_verifiers: Vec::new(),
         }
     }
 

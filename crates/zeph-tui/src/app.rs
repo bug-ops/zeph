@@ -1468,6 +1468,8 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
             SecurityEventCategory::Truncation => "TRUNCATION     ",
             SecurityEventCategory::RateLimit => "RATE_LIMIT     ",
             SecurityEventCategory::MemoryValidation => "MEM_VALIDATION ",
+            SecurityEventCategory::PreExecutionBlock => "PRE_EXEC_BLOCK ",
+            SecurityEventCategory::PreExecutionWarn => "PRE_EXEC_WARN  ",
         };
         lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
     }

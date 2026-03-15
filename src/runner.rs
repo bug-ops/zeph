@@ -384,6 +384,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().skills.trust.scan_on_load = true;
     }
 
+    if cli.no_pre_execution_verify {
+        app.config_mut().security.pre_execution_verify.enabled = false;
+        tracing::warn!(
+            "Pre-execution verifiers disabled via --no-pre-execution-verify. \
+             Tool calls will not be checked for destructive or injection patterns."
+        );
+    }
+
     #[cfg(feature = "guardrail")]
     if cli.guardrail {
         app.config_mut().security.guardrail.enabled = true;

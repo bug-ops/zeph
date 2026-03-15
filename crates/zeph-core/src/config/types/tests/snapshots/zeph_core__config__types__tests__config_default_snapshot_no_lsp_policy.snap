@@ -284,6 +284,24 @@ mcp_calls_per_minute = 40
 other_calls_per_minute = 60
 circuit_breaker_cooldown_secs = 30
 
+[security.pre_execution_verify]
+enabled = true
+
+[security.pre_execution_verify.destructive_commands]
+enabled = true
+allowed_paths = []
+extra_patterns = []
+shell_tools = [
+    "bash",
+    "shell",
+    "terminal",
+]
+
+[security.pre_execution_verify.injection_patterns]
+enabled = true
+extra_patterns = []
+allowlisted_urls = []
+
 [timeouts]
 llm_seconds = 120
 llm_request_timeout_secs = 600

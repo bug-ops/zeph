@@ -14,6 +14,8 @@ pub enum SecurityEventCategory {
     Truncation,
     RateLimit,
     MemoryValidation,
+    PreExecutionBlock,
+    PreExecutionWarn,
 }
 
 impl SecurityEventCategory {
@@ -26,6 +28,8 @@ impl SecurityEventCategory {
             Self::Truncation => "truncation",
             Self::RateLimit => "rate_limit",
             Self::MemoryValidation => "memory_validation",
+            Self::PreExecutionBlock => "pre_exec_block",
+            Self::PreExecutionWarn => "pre_exec_warn",
         }
     }
 }
@@ -209,6 +213,8 @@ pub struct MetricsSnapshot {
     pub pii_scrub_count: u64,
     pub memory_validation_failures: u64,
     pub rate_limit_trips: u64,
+    pub pre_execution_blocks: u64,
+    pub pre_execution_warnings: u64,
     /// `true` when a guardrail filter is active for this session.
     #[cfg(feature = "guardrail")]
     pub guardrail_enabled: bool,
