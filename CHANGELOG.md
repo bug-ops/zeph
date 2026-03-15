@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(memory): add `--compression-guidelines` CLI flag to override `memory.compression_guidelines.enabled` at startup (#1802)
 - feat(memory,core): session summary on shutdown (#1816) — when no hard compaction fired during a session, `Agent::shutdown()` now generates a lightweight LLM summary and stores it to the vector store for cross-session recall; the LLM call is wrapped in a 5-second timeout so shutdown never hangs; `SemanticMemory::has_session_summary()` is the primary guard (resilient to failed Qdrant writes); `SemanticMemory::store_shutdown_summary()` persists to both SQLite and the vector store with real FK-linked key facts; new config params `memory.shutdown_summary` (default `true`), `memory.shutdown_summary_min_messages` (default `4`, user turns only), `memory.shutdown_summary_max_messages` (default `20`); `--init` wizard prompts for the feature toggle; TUI status indicator shown during summarization
 - test(memory): unit tests for `sanitize_guidelines` special-token (`<|system|>`) and role-prefix (`assistant:`, `user:`) patterns (#1807)
+- test(policy): additional coverage for `policy_file` external TOML loading (happy-path, FileTooLarge, FileLoad, FileParse), MAX_RULES exact-boundary (256 rules compile), and `execute_tool_call_confirmed` allow path delegation (#1874)
 
 ### Changed
 

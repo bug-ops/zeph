@@ -347,6 +347,31 @@ mod tests {
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
 
+    // GAP-05: execute_tool_call_confirmed allow path must delegate to inner executor.
+    #[tokio::test]
+    async fn confirmed_allow_delegates_to_inner() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: None,
+        };
+        let gate = make_gate(config);
+        let call = make_call("shell");
+        let result = gate.execute_tool_call_confirmed(&call).await;
+        assert!(result.is_ok(), "allow path must not return an error");
+        let output = result.unwrap();
+        assert!(
+            output.is_some(),
+            "inner executor must be invoked and return output on allow"
+        );
+        assert_eq!(
+            output.unwrap().tool_name,
+            "shell",
+            "output tool_name must match the confirmed call"
+        );
+    }
+
     #[tokio::test]
     async fn legacy_execute_bypasses_policy() {
         // CRIT-03: legacy dispatch cannot be policy-checked (no tool_id).

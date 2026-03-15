@@ -440,6 +440,7 @@ fn normalize_path(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::io::Write as _;
 
     use super::*;
 
@@ -978,6 +979,126 @@ mod tests {
                 PolicyDecision::Deny { .. }
             ),
             "rule tool='sh' must match runtime tool_id='bash' via alias"
+        );
+    }
+
+    // ── MAX_RULES boundary ────────────────────────────────────────────────────
+
+    // GAP-04: exactly MAX_RULES (256) rules must compile without error.
+    #[test]
+    fn max_rules_exactly_256_compiles() {
+        let rules: Vec<PolicyRuleConfig> = (0..MAX_RULES)
+            .map(|i| PolicyRuleConfig {
+                effect: PolicyEffect::Allow,
+                tool: format!("tool_{i}"),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+            })
+            .collect();
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Deny,
+            rules,
+            policy_file: None,
+        };
+        assert!(
+            PolicyEnforcer::compile(&config).is_ok(),
+            "exactly {MAX_RULES} rules must compile successfully"
+        );
+    }
+
+    // ── policy_file external TOML loading ─────────────────────────────────────
+
+    // GAP-03a: happy path — file with a deny rule is loaded and evaluated correctly.
+    #[test]
+    fn policy_file_happy_path() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+[[rules]]
+effect = "deny"
+tool = "shell"
+paths = ["/etc/*"]
+"#
+        )
+        .unwrap();
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: Some(tmp.path().to_str().unwrap().to_owned()),
+        };
+        let enforcer = PolicyEnforcer::compile(&config).unwrap();
+        let params = make_params("file_path", "/etc/passwd");
+        let ctx = make_context(TrustLevel::Trusted);
+        assert!(
+            matches!(
+                enforcer.evaluate("shell", &params, &ctx),
+                PolicyDecision::Deny { .. }
+            ),
+            "deny rule loaded from file must block the matching call"
+        );
+    }
+
+    // GAP-03b: FileTooLarge — file exceeding 256 KiB must be rejected.
+    #[test]
+    fn policy_file_too_large() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = vec![b'x'; 256 * 1024 + 1];
+        tmp.write_all(&data).unwrap();
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: Some(tmp.path().to_str().unwrap().to_owned()),
+        };
+        assert!(
+            matches!(
+                PolicyEnforcer::compile(&config),
+                Err(PolicyCompileError::FileTooLarge { .. })
+            ),
+            "file exceeding 256 KiB must return FileTooLarge"
+        );
+    }
+
+    // GAP-03c: FileLoad — nonexistent path must return FileLoad error.
+    #[test]
+    fn policy_file_load_error() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: Some("/tmp/__zeph_no_such_policy_file__.toml".to_owned()),
+        };
+        assert!(
+            matches!(
+                PolicyEnforcer::compile(&config),
+                Err(PolicyCompileError::FileLoad { .. })
+            ),
+            "nonexistent policy file must return FileLoad"
+        );
+    }
+
+    // GAP-03d: FileParse — malformed TOML must return FileParse error.
+    #[test]
+    fn policy_file_parse_error() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "not valid toml = = =\n[[[\n").unwrap();
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: Some(tmp.path().to_str().unwrap().to_owned()),
+        };
+        assert!(
+            matches!(
+                PolicyEnforcer::compile(&config),
+                Err(PolicyCompileError::FileParse { .. })
+            ),
+            "malformed TOML must return FileParse"
         );
     }
 
