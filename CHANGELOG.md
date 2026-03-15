@@ -17,8 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(features): replace flat feature list with named use-case bundles (#1831) — six bundles added: `desktop` (tui + scheduler + compression-guidelines), `ide` (acp + acp-http + lsp-context), `server` (gateway + a2a + scheduler + otel), `chat` (discord + slack), `ml` (candle + pdf + stt), `full` (all bundles except ml/hardware). All individual feature flags are unchanged and continue to work. `metal` and `cuda` now correctly imply `candle` (pre-existing bug fixed). Migration: no action required — existing `--features tui,scheduler` builds are fully backwards-compatible; use `--features desktop` as the idiomatic equivalent going forward.
 - deps: upgrade rmcp 0.17 → 1.2 (#1845) — migrated `CallToolRequestParams` struct literal to builder pattern (`::new().with_arguments()`); removed unused `std::borrow::Cow` import
-
 - observability(router): add tracing instrumentation to cascade router (#1825) — `cascade_chat` and `cascade_chat_stream` now emit `debug`/`info`/`warn` events for provider selection (attempt N of M, classifier mode, threshold), judge scoring (score + threshold + pass/fail decision), quality verdict (score, threshold, reason, should_escalate), best-seen updates, escalation (score, threshold, remaining budget), budget exhaustion and fallback returns; `cascade_chat_stream` log fields aligned with `cascade_chat` for consistency
 
 - refactor(acp): centralize ACP session config wiring via `AgentSessionConfig::from_config()` and `Agent::apply_session_config()` (#1812) — replaces ~25 individually-copied scalar fields in `SharedAgentDeps` and redundant builder call blocks in `spawn_acp_agent`, `runner.rs`, and `daemon.rs` with a single struct; eliminates hardcoded `0.20` literal (now `CONTEXT_BUDGET_RESERVE_RATIO`); fixes missing `with_orchestration_config` and `with_server_compaction` in daemon sessions

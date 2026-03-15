@@ -168,6 +168,7 @@ impl SchedulerExecutor {
     }
 
     /// Attach a watch sender used to trigger immediate TUI metrics refresh.
+    #[cfg(feature = "tui")]
     #[must_use]
     pub fn with_refresh_tx(mut self, tx: tokio::sync::watch::Sender<()>) -> Self {
         self.refresh_tx = Some(tx);
@@ -175,6 +176,7 @@ impl SchedulerExecutor {
     }
 
     /// Return a cloned reference to the backing `JobStore` for external inspection (e.g. TUI).
+    #[cfg(feature = "tui")]
     #[must_use]
     pub fn store(&self) -> Arc<JobStore> {
         Arc::clone(&self.store)
@@ -502,8 +504,10 @@ impl ToolExecutor for SchedulerExecutor {
 }
 
 /// `Arc`-wrapper so `SchedulerExecutor` can be shared across ACP sessions without `Clone`.
+#[cfg(feature = "acp")]
 pub(crate) struct DynSchedulerExecutor(pub(crate) std::sync::Arc<SchedulerExecutor>);
 
+#[cfg(feature = "acp")]
 impl ToolExecutor for DynSchedulerExecutor {
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         self.0.execute(response).await
