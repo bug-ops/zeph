@@ -3,7 +3,11 @@
 
 //! Trust-level enforcement layer for tool execution.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::collections::HashSet;
+use std::sync::{
+    Arc, RwLock,
+    atomic::{AtomicU8, Ordering},
+};
 
 use crate::TrustLevel;
 
@@ -15,6 +19,12 @@ use crate::registry::ToolDef;
 ///
 /// Uses the actual tool IDs registered by `FileExecutor` and other executors.
 /// Previously contained `"file_write"` which matched nothing (dead rule).
+///
+/// MCP tools use a server-prefixed ID (e.g. `filesystem_write_file`). The
+/// `is_quarantine_denied` predicate checks both exact matches and `_{entry}`
+/// suffix matches to cover MCP-wrapped versions of these native tool IDs.
+/// False positives (a safe tool whose name ends with a denied suffix) are
+/// acceptable at the Quarantined trust level.
 const QUARANTINE_DENIED: &[&str] = &[
     // Shell execution
     "bash",
@@ -31,6 +41,12 @@ const QUARANTINE_DENIED: &[&str] = &[
     // Memory persistence
     "memory_save",
 ];
+
+fn is_quarantine_denied(tool_id: &str) -> bool {
+    QUARANTINE_DENIED
+        .iter()
+        .any(|denied| tool_id == *denied || tool_id.ends_with(&format!("_{denied}")))
+}
 
 fn trust_to_u8(level: TrustLevel) -> u8 {
     match level {
@@ -55,6 +71,11 @@ pub struct TrustGateExecutor<T: ToolExecutor> {
     inner: T,
     policy: PermissionPolicy,
     effective_trust: AtomicU8,
+    /// Sanitized IDs of all registered MCP tools. When a Quarantined skill is
+    /// active, any tool whose ID appears in this set is denied — regardless of
+    /// whether its name matches `QUARANTINE_DENIED`. Populated at startup by
+    /// calling `set_mcp_tool_ids` after MCP servers connect.
+    mcp_tool_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 impl<T: ToolExecutor + std::fmt::Debug> std::fmt::Debug for TrustGateExecutor<T> {
@@ -63,6 +84,7 @@ impl<T: ToolExecutor + std::fmt::Debug> std::fmt::Debug for TrustGateExecutor<T>
             .field("inner", &self.inner)
             .field("policy", &self.policy)
             .field("effective_trust", &self.effective_trust())
+            .field("mcp_tool_ids", &self.mcp_tool_ids)
             .finish()
     }
 }
@@ -74,7 +96,16 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
             inner,
             policy,
             effective_trust: AtomicU8::new(trust_to_u8(TrustLevel::Trusted)),
+            mcp_tool_ids: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Returns the shared MCP tool ID set so the caller can populate it after
+    /// MCP servers have connected (and after `TrustGateExecutor` has been wrapped
+    /// in a `DynExecutor`).
+    #[must_use]
+    pub fn mcp_tool_ids_handle(&self) -> Arc<RwLock<HashSet<String>>> {
+        Arc::clone(&self.mcp_tool_ids)
     }
 
     pub fn set_effective_trust(&self, level: TrustLevel) {
@@ -87,6 +118,13 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         u8_to_trust(self.effective_trust.load(Ordering::Relaxed))
     }
 
+    fn is_mcp_tool(&self, tool_id: &str) -> bool {
+        self.mcp_tool_ids
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(tool_id)
+    }
+
     fn check_trust(&self, tool_id: &str, input: &str) -> Result<(), ToolError> {
         match self.effective_trust() {
             TrustLevel::Blocked => {
@@ -95,7 +133,7 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
                 });
             }
             TrustLevel::Quarantined => {
-                if QUARANTINE_DENIED.contains(&tool_id) {
+                if is_quarantine_denied(tool_id) || self.is_mcp_tool(tool_id) {
                     return Err(ToolError::Blocked {
                         command: format!("{tool_id} denied (trust=quarantined)"),
                     });
@@ -192,7 +230,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                 });
             }
             TrustLevel::Quarantined => {
-                if QUARANTINE_DENIED.contains(&call.tool_id.as_str()) {
+                if is_quarantine_denied(&call.tool_id) || self.is_mcp_tool(&call.tool_id) {
                     return Err(ToolError::Blocked {
                         command: format!("{} denied (trust=quarantined)", call.tool_id),
                     });
@@ -534,5 +572,194 @@ mod tests {
 
         gate.set_effective_trust(TrustLevel::Trusted);
         assert_eq!(gate.effective_trust(), TrustLevel::Trusted);
+    }
+
+    // is_quarantine_denied unit tests
+
+    #[test]
+    fn is_quarantine_denied_exact_match() {
+        assert!(is_quarantine_denied("bash"));
+        assert!(is_quarantine_denied("write"));
+        assert!(is_quarantine_denied("fetch"));
+        assert!(is_quarantine_denied("memory_save"));
+        assert!(is_quarantine_denied("delete_path"));
+        assert!(is_quarantine_denied("create_directory"));
+    }
+
+    #[test]
+    fn is_quarantine_denied_suffix_match_mcp_write() {
+        // "filesystem_write" ends with "_write" -> denied
+        assert!(is_quarantine_denied("filesystem_write"));
+        // "filesystem_write_file" ends with "_file", not "_write" -> NOT denied
+        assert!(!is_quarantine_denied("filesystem_write_file"));
+    }
+
+    #[test]
+    fn is_quarantine_denied_suffix_mcp_bash() {
+        assert!(is_quarantine_denied("shell_bash"));
+        assert!(is_quarantine_denied("mcp_shell_bash"));
+    }
+
+    #[test]
+    fn is_quarantine_denied_suffix_mcp_fetch() {
+        assert!(is_quarantine_denied("http_fetch"));
+        // "server_prefetch" ends with "_prefetch", not "_fetch"
+        assert!(!is_quarantine_denied("server_prefetch"));
+    }
+
+    #[test]
+    fn is_quarantine_denied_suffix_mcp_memory_save() {
+        assert!(is_quarantine_denied("server_memory_save"));
+        // "_save" alone does NOT match the multi-word entry "memory_save"
+        assert!(!is_quarantine_denied("server_save"));
+    }
+
+    #[test]
+    fn is_quarantine_denied_suffix_mcp_delete_path() {
+        assert!(is_quarantine_denied("fs_delete_path"));
+        // "fs_not_delete_path" ends with "_delete_path" as well — suffix check is correct
+        assert!(is_quarantine_denied("fs_not_delete_path"));
+    }
+
+    #[test]
+    fn is_quarantine_denied_substring_not_suffix() {
+        // "write_log" ends with "_log", NOT "_write" — must NOT be denied
+        assert!(!is_quarantine_denied("write_log"));
+    }
+
+    #[test]
+    fn is_quarantine_denied_read_only_tools_allowed() {
+        assert!(!is_quarantine_denied("filesystem_read_file"));
+        assert!(!is_quarantine_denied("filesystem_list_dir"));
+        assert!(!is_quarantine_denied("read"));
+        assert!(!is_quarantine_denied("file_read"));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_mcp_write_tool() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("filesystem_write")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_allows_mcp_read_file() {
+        let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate
+            .execute_tool_call(&make_call("filesystem_read_file"))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_mcp_bash_tool() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("shell_bash")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_mcp_memory_save() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate
+            .execute_tool_call(&make_call("server_memory_save"))
+            .await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_mcp_confirmed_path() {
+        // execute_tool_call_confirmed also enforces quarantine via is_quarantine_denied
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate
+            .execute_tool_call_confirmed(&make_call("filesystem_write"))
+            .await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    // mcp_tool_ids registry tests
+
+    fn gate_with_mcp_ids(ids: &[&str]) -> TrustGateExecutor<MockExecutor> {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let handle = gate.mcp_tool_ids_handle();
+        let set: std::collections::HashSet<String> = ids.iter().map(|s| s.to_string()).collect();
+        *handle.write().unwrap() = set;
+        gate
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_registered_mcp_tool_novel_name() {
+        // "github_run_command" has no QUARANTINE_DENIED suffix match, but is registered as MCP.
+        let gate = gate_with_mcp_ids(&["github_run_command"]);
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate
+            .execute_tool_call(&make_call("github_run_command"))
+            .await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_registered_mcp_tool_execute() {
+        // "shell_execute" — no suffix match on "execute", but registered as MCP.
+        let gate = gate_with_mcp_ids(&["shell_execute"]);
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("shell_execute")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_allows_unregistered_tool_not_in_denied_list() {
+        // Tool not in MCP set and not in QUARANTINE_DENIED — allowed.
+        let gate = gate_with_mcp_ids(&["other_tool"]);
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("read")).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn trusted_allows_registered_mcp_tool() {
+        // At Trusted level, MCP registry check must NOT fire.
+        let gate = gate_with_mcp_ids(&["github_run_command"]);
+        gate.set_effective_trust(TrustLevel::Trusted);
+
+        let result = gate
+            .execute_tool_call(&make_call("github_run_command"))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_mcp_tool_via_confirmed_path() {
+        // execute_tool_call_confirmed must also check the MCP registry.
+        let gate = gate_with_mcp_ids(&["docker_container_exec"]);
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate
+            .execute_tool_call_confirmed(&make_call("docker_container_exec"))
+            .await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[test]
+    fn mcp_tool_ids_handle_shared_arc() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let handle = gate.mcp_tool_ids_handle();
+        handle.write().unwrap().insert("test_tool".to_owned());
+        assert!(gate.is_mcp_tool("test_tool"));
+        assert!(!gate.is_mcp_tool("other_tool"));
     }
 }
