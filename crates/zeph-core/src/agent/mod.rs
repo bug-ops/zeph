@@ -140,6 +140,7 @@ pub(super) struct MemoryState {
     pub(super) shutdown_summary: bool,
     pub(super) shutdown_summary_min_messages: usize,
     pub(super) shutdown_summary_max_messages: usize,
+    pub(super) shutdown_summary_timeout_secs: u64,
 }
 
 pub(super) struct SkillState {
@@ -429,6 +430,7 @@ impl<C: Channel> Agent<C> {
                 shutdown_summary: true,
                 shutdown_summary_min_messages: 4,
                 shutdown_summary_max_messages: 20,
+                shutdown_summary_timeout_secs: 10,
             },
             skill_state: SkillState {
                 registry,
@@ -1770,20 +1772,22 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    /// Call the LLM to generate a structured session summary with a 5-second timeout.
+    /// Call the LLM to generate a structured session summary with a configurable timeout.
     ///
-    /// Falls back to plain-text chat if structured output fails. Returns `None` on any failure,
-    /// logging a warning — callers must treat `None` as "skip storage".
+    /// Falls back to plain-text chat if structured output fails or times out. Returns `None` on
+    /// any failure, logging a warning — callers must treat `None` as "skip storage".
     ///
-    /// Each LLM attempt is bounded by a 5-second timeout; in the worst case (structured call
-    /// times out and plain-text fallback also times out) this adds up to 10 seconds of shutdown
-    /// latency.
+    /// Each LLM attempt is bounded by `shutdown_summary_timeout_secs`; in the worst case
+    /// (structured call times out and plain-text fallback also times out) this adds up to
+    /// `2 * shutdown_summary_timeout_secs` of shutdown latency.
     async fn call_llm_for_session_summary(
         &self,
         chat_messages: &[Message],
     ) -> Option<zeph_memory::StructuredSummary> {
+        let timeout_dur =
+            std::time::Duration::from_secs(self.memory_state.shutdown_summary_timeout_secs);
         match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            timeout_dur,
             self.provider
                 .chat_typed_erased::<zeph_memory::StructuredSummary>(chat_messages),
         )
@@ -1794,29 +1798,37 @@ impl<C: Channel> Agent<C> {
                 tracing::warn!(
                     "shutdown summary: structured LLM call failed, falling back to plain: {e:#}"
                 );
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    self.provider.chat(chat_messages),
-                )
-                .await
-                {
-                    Ok(Ok(plain)) => Some(zeph_memory::StructuredSummary {
-                        summary: plain,
-                        key_facts: vec![],
-                        entities: vec![],
-                    }),
-                    Ok(Err(e)) => {
-                        tracing::warn!("shutdown summary: plain LLM fallback failed: {e:#}");
-                        None
-                    }
-                    Err(_) => {
-                        tracing::warn!("shutdown summary: plain LLM fallback timed out");
-                        None
-                    }
-                }
+                self.plain_text_summary_fallback(chat_messages, timeout_dur)
+                    .await
             }
             Err(_) => {
-                tracing::warn!("shutdown summary: LLM call timed out after 5s");
+                tracing::warn!(
+                    "shutdown summary: structured LLM call timed out after {}s, falling back to plain",
+                    self.memory_state.shutdown_summary_timeout_secs
+                );
+                self.plain_text_summary_fallback(chat_messages, timeout_dur)
+                    .await
+            }
+        }
+    }
+
+    async fn plain_text_summary_fallback(
+        &self,
+        chat_messages: &[Message],
+        timeout_dur: std::time::Duration,
+    ) -> Option<zeph_memory::StructuredSummary> {
+        match tokio::time::timeout(timeout_dur, self.provider.chat(chat_messages)).await {
+            Ok(Ok(plain)) => Some(zeph_memory::StructuredSummary {
+                summary: plain,
+                key_facts: vec![],
+                entities: vec![],
+            }),
+            Ok(Err(e)) => {
+                tracing::warn!("shutdown summary: plain LLM fallback failed: {e:#}");
+                None
+            }
+            Err(_) => {
+                tracing::warn!("shutdown summary: plain LLM fallback timed out");
                 None
             }
         }

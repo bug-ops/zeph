@@ -193,6 +193,10 @@ fn default_shutdown_summary_max_messages() -> usize {
     20
 }
 
+fn default_shutdown_summary_timeout_secs() -> u64 {
+    10
+}
+
 fn validate_temporal_decay_rate<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -351,6 +355,11 @@ pub struct MemoryConfig {
     /// Default: `20`.
     #[serde(default = "default_shutdown_summary_max_messages")]
     pub shutdown_summary_max_messages: usize,
+    /// Per-attempt timeout in seconds for each LLM call during shutdown summarization.
+    /// Applies independently to the structured call and to the plain-text fallback.
+    /// Default: `10`.
+    #[serde(default = "default_shutdown_summary_timeout_secs")]
+    pub shutdown_summary_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

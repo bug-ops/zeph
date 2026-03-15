@@ -3727,7 +3727,7 @@ mod shutdown_summary_tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_shutdown_summary_config(false, 4, 20);
+            .with_shutdown_summary_config(false, 4, 20, 10);
 
         // Add enough user messages to exceed the threshold.
         for i in 0..5 {
@@ -3758,7 +3758,7 @@ mod shutdown_summary_tests {
 
         // No .with_memory() call — memory_state.memory is None.
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_shutdown_summary_config(true, 4, 20);
+            .with_shutdown_summary_config(true, 4, 20, 10);
 
         for i in 0..5 {
             agent.messages.push(Message {
@@ -3800,7 +3800,7 @@ mod shutdown_summary_tests {
         // min_messages=4 but we will only add 2 user messages.
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_memory(Arc::new(memory), cid, 100, 5, 1000)
-            .with_shutdown_summary_config(true, 4, 20);
+            .with_shutdown_summary_config(true, 4, 20, 10);
 
         // System prompt is messages[0] — skip(1) counts from index 1.
         // Add 2 user messages: below the threshold of 4.
@@ -3855,7 +3855,7 @@ mod shutdown_summary_tests {
         // We add 8 assistant messages but only 3 user messages — should still skip.
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_memory(Arc::new(memory), cid, 100, 5, 1000)
-            .with_shutdown_summary_config(true, 4, 20);
+            .with_shutdown_summary_config(true, 4, 20, 10);
 
         for _ in 0..8 {
             agent.messages.push(Message {
@@ -3890,11 +3890,12 @@ mod shutdown_summary_tests {
         let executor = MockToolExecutor::no_tools();
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_shutdown_summary_config(false, 7, 15);
+            .with_shutdown_summary_config(false, 7, 15, 10);
 
         assert!(!agent.memory_state.shutdown_summary);
         assert_eq!(agent.memory_state.shutdown_summary_min_messages, 7);
         assert_eq!(agent.memory_state.shutdown_summary_max_messages, 15);
+        assert_eq!(agent.memory_state.shutdown_summary_timeout_secs, 10);
     }
 
     #[tokio::test]
@@ -3917,6 +3918,10 @@ mod shutdown_summary_tests {
         assert_eq!(
             agent.memory_state.shutdown_summary_max_messages, 20,
             "default max_messages must be 20"
+        );
+        assert_eq!(
+            agent.memory_state.shutdown_summary_timeout_secs, 10,
+            "default timeout_secs must be 10"
         );
     }
 }
