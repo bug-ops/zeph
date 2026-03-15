@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -302,11 +301,9 @@ impl McpClient {
             .as_object()
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
-        let params = CallToolRequestParams {
-            name: Cow::Owned(name.to_owned()),
-            arguments,
-            task: None,
-            meta: None,
+        let params = match arguments {
+            Some(args) => CallToolRequestParams::new(name.to_owned()).with_arguments(args),
+            None => CallToolRequestParams::new(name.to_owned()),
         };
 
         let result = tokio::time::timeout(self.timeout, self.service.call_tool(params))
