@@ -16,6 +16,9 @@ fn normalize_runtime_paths_for_snapshot(mut toml: String) -> String {
         ),
         (default_log_file_path(), "<DEFAULT_LOG_FILE>".to_owned()),
     ] {
+        // TOML serializes Windows backslashes as `\\`; replace the escaped
+        // form first so both platforms produce identical snapshots.
+        toml = toml.replace(&actual.replace('\\', "\\\\"), &placeholder);
         toml = toml.replace(&actual, &placeholder);
     }
     toml
