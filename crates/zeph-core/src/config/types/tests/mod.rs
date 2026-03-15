@@ -43,9 +43,14 @@ fn config_default_snapshot() {
     let config = Config::default();
     let toml_str =
         normalize_runtime_paths_for_snapshot(toml::to_string_pretty(&config).expect("serialize"));
-    if cfg!(feature = "lsp-context") {
-        insta::assert_snapshot!("config_default_snapshot", toml_str);
-    } else {
-        insta::assert_snapshot!("config_default_snapshot_no_lsp_context", toml_str);
-    }
+    let snapshot_name = match (
+        cfg!(feature = "lsp-context"),
+        cfg!(feature = "policy-enforcer"),
+    ) {
+        (true, true) => "config_default_snapshot_lsp_policy",
+        (true, false) => "config_default_snapshot",
+        (false, true) => "config_default_snapshot_no_lsp_policy",
+        (false, false) => "config_default_snapshot_no_lsp_context",
+    };
+    insta::assert_snapshot!(snapshot_name, toml_str);
 }

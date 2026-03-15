@@ -161,7 +161,7 @@ ide     = ["acp", "acp-http", "lsp-context"]
 server  = ["gateway", "a2a", "scheduler", "otel"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf", "stt"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "policy-enforcer"]
 
 # === Individual feature flags ===
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
@@ -182,6 +182,7 @@ pdf = ["zeph-memory/pdf"]
 experiments = ["zeph-core/experiments", "zeph-memory/experiments", "zeph-tui?/experiments"]
 lsp-context = ["zeph-core/lsp-context", "zeph-tui?/lsp-context"]
 stt = ["zeph-llm/stt", "dep:reqwest"]
+policy-enforcer = ["zeph-tools/policy-enforcer", "zeph-core/policy-enforcer"]
 
 [dependencies]
 anyhow.workspace = true

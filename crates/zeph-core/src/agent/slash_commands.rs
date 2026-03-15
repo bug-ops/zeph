@@ -217,4 +217,12 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Advanced,
         feature_gate: Some("lsp-context"),
     },
+    #[cfg(feature = "policy-enforcer")]
+    SlashCommandInfo {
+        name: "/policy",
+        args: "[status|check <tool> [args_json]]",
+        description: "Inspect policy status or dry-run evaluation",
+        category: SlashCategory::Tools,
+        feature_gate: Some("policy-enforcer"),
+    },
 ];

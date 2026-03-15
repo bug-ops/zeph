@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - feat(security): malicious skill trust tier enforcement (#1853) — fixed `QUARANTINE_DENIED` tool list: replaced dead rule `"file_write"` with actual `FileExecutor` IDs (`write`, `edit`, `delete_path`, `move_path`, `copy_path`, `create_directory`) and added `memory_save`; added `SkillContentScanner` in `zeph-skills::scanner` using shared `RAW_INJECTION_PATTERNS` (relocated from `zeph-mcp::sanitize` to `zeph-tools::patterns` as the single source of truth); `SkillRegistry::scan_loaded()` scans all skill bodies at startup when `[skills.trust] scan_on_load = true` (default); scanner is advisory only — results are `WARN` logged, do not downgrade trust or block tools; new `/skill scan` TUI command for on-demand scan; `--scan-skills-on-load` CLI flag to override config; `--init` wizard step in the security section; `--migrate-config` picks up `scan_on_load` automatically from `default.toml`
+- feat(security): declarative policy compiler for tool call authorization (#1695) — `PolicyEnforcer` evaluates TOML-based allow/deny rules before any tool executes; deny-wins semantics; path traversal normalization via `Path::components()` (CRIT-01); tool name normalization (lowercase, CRIT-02); generic LLM error messages (MED-03); `[tools.policy]` config section with `enabled`, `default_effect`, `rules`, `policy_file`; `--policy-file` CLI flag; `/policy status` and `/policy check` slash commands; `--init` wizard step; optional `policy-enforcer` feature flag (included in `full`)
+
 - feat(tui): compression guidelines status line in memory panel (version + last update) and `/guidelines` slash command to display current guidelines text (closes #1803)
 - feat(memory): add `load_compression_guidelines_meta()` query returning `(version, created_at)` without fetching full text
 - feat(memory): `conversation_id` column added to `compression_guidelines` table (migration 034); guidelines now prefer conversation-specific over global when a conversation is in scope, with global (NULL) guidelines as fallback (closes #1806)
@@ -26,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(security): redact JWT Bearer tokens in `redact_sensitive()` — `Authorization: Bearer <token>` headers and standalone JWT strings (`eyJ...`) are now replaced with `[REDACTED]`/`[REDACTED_JWT]` before `compression_failure_pairs` SQLite insert (closes #1847)
 - fix(memory): widen soft compaction window — lower `soft_compaction_threshold` default from `0.70` to `0.60`, widening the soft tier firing range from 20% to 30% of the context budget; prevents large tool outputs (10–30k tokens) from jumping directly past soft into hard compaction; add `maybe_soft_compact_mid_iteration()` called after per-tool summarization in native and legacy tool loops so context pressure is relieved without touching turn counters, cooldown, or triggering LLM calls; config validation that `soft < hard` was already enforced and remains in place (closes #1828)
 - fix(security): redact secrets and filesystem paths in compression_failure_pairs before SQLite storage (#1801)
 - fix(llm): strip URL path in `parse_host_port` — Ollama `base_url` with `/v1` suffix no longer produces 404 on embed calls (#1832)

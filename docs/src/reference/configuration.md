@@ -332,6 +332,26 @@ enabled = true              # Enable smart output filtering for tool results
 #   { pattern = "*", action = "ask" },
 # ]
 
+# Declarative policy compiler for tool call authorization (requires policy-enforcer feature).
+# See docs/src/advanced/policy-enforcer.md for the full guide.
+# [tools.policy]
+# enabled = false           # Enable policy enforcement (default: false)
+# default_effect = "deny"   # Fallback when no rule matches: "allow" or "deny" (default: "deny")
+# policy_file = "policy.toml"  # Optional external rules file; overrides inline rules when set
+#
+# Inline rules (can also be loaded from policy_file):
+# [[tools.policy.rules]]
+# effect = "deny"           # "allow" or "deny"
+# tool = "shell"            # Glob pattern for tool name (case-insensitive)
+# paths = ["/etc/*", "/root/*"]  # Path globs matched against file_path param (CRIT-01: normalized)
+# trust_level = "verified"  # Optional: rule only applies when context trust <= this level
+# args_match = ".*sudo.*"   # Optional: regex matched against individual string param values
+#
+# [[tools.policy.rules]]
+# effect = "allow"
+# tool = "shell"
+# paths = ["/tmp/*"]
+
 [tools.overflow]
 threshold = 50000           # Offload output larger than N chars to SQLite overflow table (default: 50000)
 retention_days = 7          # Days to retain overflow entries before age-based cleanup (default: 7)
