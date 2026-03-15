@@ -13,6 +13,7 @@ pub mod prompt;
 pub mod qdrant_matcher;
 pub mod registry;
 pub mod resource;
+pub mod scanner;
 pub mod trust;
 pub mod trust_score;
 pub mod watcher;

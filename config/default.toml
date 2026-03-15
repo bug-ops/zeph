@@ -194,6 +194,8 @@ default_level = "quarantined"
 local_level = "trusted"
 # Trust level after blake3 hash mismatch on hot-reload
 hash_mismatch_level = "quarantined"
+# Scan skill body content for injection patterns at load time (advisory, secure by default)
+scan_on_load = true
 
 [memory]
 # SQLite database path for conversation history

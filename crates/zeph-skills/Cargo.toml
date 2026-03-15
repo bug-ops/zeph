@@ -17,6 +17,7 @@ default = []
 
 [dependencies]
 blake3.workspace = true
+regex.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }

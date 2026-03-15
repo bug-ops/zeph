@@ -12,7 +12,25 @@ use crate::permissions::{AutonomyLevel, PermissionAction, PermissionPolicy};
 use crate::registry::ToolDef;
 
 /// Tools denied when a Quarantined skill is active.
-const QUARANTINE_DENIED: &[&str] = &["bash", "file_write", "web_scrape"];
+///
+/// Uses the actual tool IDs registered by `FileExecutor` and other executors.
+/// Previously contained `"file_write"` which matched nothing (dead rule).
+const QUARANTINE_DENIED: &[&str] = &[
+    // Shell execution
+    "bash",
+    // File write/mutation tools (FileExecutor IDs)
+    "write",
+    "edit",
+    "delete_path",
+    "move_path",
+    "copy_path",
+    "create_directory",
+    // Web access
+    "web_scrape",
+    "fetch",
+    // Memory persistence
+    "memory_save",
+];
 
 fn trust_to_u8(level: TrustLevel) -> u8 {
     match level {
@@ -110,6 +128,9 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
 
 impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        // The legacy fenced-block path does not provide a tool_id, so QUARANTINE_DENIED
+        // cannot be applied selectively. Block entirely for Quarantined to match the
+        // conservative posture: unknown tool identity = deny.
         match self.effective_trust() {
             TrustLevel::Blocked | TrustLevel::Quarantined => {
                 return Err(ToolError::Blocked {
@@ -125,6 +146,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
     }
 
     async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        // Same rationale as execute(): no tool_id available for QUARANTINE_DENIED check.
         match self.effective_trust() {
             TrustLevel::Blocked | TrustLevel::Quarantined => {
                 return Err(ToolError::Blocked {
@@ -178,7 +200,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
             }
             TrustLevel::Trusted | TrustLevel::Verified => {}
         }
-        self.inner.execute_tool_call(call).await
+        self.inner.execute_tool_call_confirmed(call).await
     }
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
@@ -255,12 +277,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quarantined_denies_file_write() {
+    async fn quarantined_denies_write() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(TrustLevel::Quarantined);
 
-        let result = gate.execute_tool_call(&make_call("file_write")).await;
+        let result = gate.execute_tool_call(&make_call("write")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_edit() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("edit")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_delete_path() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("delete_path")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_fetch() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("fetch")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_denies_memory_save() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("memory_save")).await;
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    }
+
+    #[tokio::test]
+    async fn quarantined_allows_read() {
+        let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
+        let gate = TrustGateExecutor::new(MockExecutor, policy);
+        gate.set_effective_trust(TrustLevel::Quarantined);
+
+        // "read" (file read) is not in QUARANTINE_DENIED — should be allowed
+        let result = gate.execute_tool_call(&make_call("read")).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

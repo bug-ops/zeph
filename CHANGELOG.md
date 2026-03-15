@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(security): malicious skill trust tier enforcement (#1853) — fixed `QUARANTINE_DENIED` tool list: replaced dead rule `"file_write"` with actual `FileExecutor` IDs (`write`, `edit`, `delete_path`, `move_path`, `copy_path`, `create_directory`) and added `memory_save`; added `SkillContentScanner` in `zeph-skills::scanner` using shared `RAW_INJECTION_PATTERNS` (relocated from `zeph-mcp::sanitize` to `zeph-tools::patterns` as the single source of truth); `SkillRegistry::scan_loaded()` scans all skill bodies at startup when `[skills.trust] scan_on_load = true` (default); scanner is advisory only — results are `WARN` logged, do not downgrade trust or block tools; new `/skill scan` TUI command for on-demand scan; `--scan-skills-on-load` CLI flag to override config; `--init` wizard step in the security section; `--migrate-config` picks up `scan_on_load` automatically from `default.toml`
 - feat(tui): compression guidelines status line in memory panel (version + last update) and `/guidelines` slash command to display current guidelines text (closes #1803)
 - feat(memory): add `load_compression_guidelines_meta()` query returning `(version, created_at)` without fetching full text
 - feat(memory): `conversation_id` column added to `compression_guidelines` table (migration 034); guidelines now prefer conversation-specific over global when a conversation is in scope, with global (NULL) guidelines as fallback (closes #1806)

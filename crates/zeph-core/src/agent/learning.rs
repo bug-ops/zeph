@@ -584,13 +584,14 @@ impl<C: Channel> Agent<C> {
             Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
             Some("install") => self.handle_skill_install(parts.get(1).copied()).await,
             Some("remove") => self.handle_skill_remove(parts.get(1).copied()).await,
+            Some("scan") => self.handle_skill_scan().await,
             Some("reject") => {
                 let tail = if parts.len() > 2 { &parts[2..] } else { &[] };
                 self.handle_skill_reject(parts.get(1).copied(), tail).await
             }
             _ => {
                 self.channel
-                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove, reject")
+                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove, reject, scan")
                     .await?;
                 Ok(())
             }

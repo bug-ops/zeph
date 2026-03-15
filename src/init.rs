@@ -113,6 +113,7 @@ pub(crate) struct WizardState {
     // Security
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
+    pub(crate) skill_scan_on_load: bool,
     // Logging
     pub(crate) log_file: String,
     pub(crate) log_level: String,
@@ -208,6 +209,7 @@ impl Default for WizardState {
             experiments_schedule_cron: String::new(),
             pii_filter_enabled: false,
             rate_limit_enabled: false,
+            skill_scan_on_load: true,
             log_file: String::new(),
             log_level: String::new(),
             log_rotation: String::new(),
@@ -1021,6 +1023,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.security.pii_filter.enabled = state.pii_filter_enabled;
     config.security.rate_limit.enabled = state.rate_limit_enabled;
+    config.skills.trust.scan_on_load = state.skill_scan_on_load;
 
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);
@@ -1612,6 +1615,12 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             "Enable tool rate limiter? (sliding-window per-category limits: shell 30/min, web 20/min, memory 60/min)",
         )
         .default(false)
+        .interact()?;
+    state.skill_scan_on_load = Confirm::new()
+        .with_prompt(
+            "Scan skill content for injection patterns on load? (advisory — logs warnings, does not block; recommended)",
+        )
+        .default(true)
         .interact()?;
     println!();
     Ok(())
