@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(security): LLM-based guardrail pre-screener for prompt injection detection (closes #1651) — `GuardrailFilter` sends user input and (optionally) tool output through a configurable guard model before it enters the agent context; configurable action (block/warn), fail strategy (closed/open), timeout, and `max_input_chars` truncation; TUI status bar shows `GRD:on` (green) or `GRD:warn` (yellow) when active; enabled via `--guardrail` CLI flag or `[security.guardrail] enabled = true`; `--init` wizard step added; `/guardrail` slash command shows live stats; `scan_tool_output = false` by default to avoid latency on every tool call
 - feat(tui): compression guidelines status line in memory panel (version + last update) and `/guidelines` slash command to display current guidelines text (closes #1803)
 - feat(memory): add `load_compression_guidelines_meta()` query returning `(version, created_at)` without fetching full text
 - feat(memory): `conversation_id` column added to `compression_guidelines` table (migration 034); guidelines now prefer conversation-specific over global when a conversation is in scope, with global (NULL) guidelines as fallback (closes #1806)

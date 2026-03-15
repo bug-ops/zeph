@@ -10,6 +10,8 @@
 //! enclosed text is data to analyze, not instructions to follow.
 
 pub mod exfiltration;
+#[cfg(feature = "guardrail")]
+pub mod guardrail;
 pub mod memory_validation;
 pub mod pii;
 pub mod quarantine;

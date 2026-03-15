@@ -380,6 +380,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.graph.enabled = true;
     }
 
+    #[cfg(feature = "guardrail")]
+    if cli.guardrail {
+        app.config_mut().security.guardrail.enabled = true;
+    }
+
     if cli.compression_guidelines {
         // Config field and builder are unconditional; only the background
         // task spawn is feature-gated (compression-guidelines feature).
@@ -844,6 +849,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
+    #[cfg(feature = "guardrail")]
+    let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
 
     let (code_retriever, _index_watcher) = agent_setup::apply_code_indexer(
         &config.index,

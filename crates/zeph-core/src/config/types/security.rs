@@ -8,6 +8,8 @@ use zeph_tools::AutonomyLevel;
 use crate::agent::rate_limiter::RateLimitConfig;
 use crate::sanitizer::ContentIsolationConfig;
 use crate::sanitizer::exfiltration::ExfiltrationGuardConfig;
+#[cfg(feature = "guardrail")]
+use crate::sanitizer::guardrail::GuardrailConfig;
 use crate::sanitizer::memory_validation::MemoryWriteValidationConfig;
 use crate::sanitizer::pii::PiiFilterConfig;
 
@@ -88,6 +90,10 @@ pub struct SecurityConfig {
     /// rate-limited. See architecture decision S2.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// LLM-based prompt injection pre-screener (opt-in, disabled by default).
+    #[cfg(feature = "guardrail")]
+    #[serde(default)]
+    pub guardrail: GuardrailConfig,
 }
 
 impl Default for SecurityConfig {
@@ -100,6 +106,8 @@ impl Default for SecurityConfig {
             memory_validation: MemoryWriteValidationConfig::default(),
             pii_filter: PiiFilterConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            #[cfg(feature = "guardrail")]
+            guardrail: GuardrailConfig::default(),
         }
     }
 }

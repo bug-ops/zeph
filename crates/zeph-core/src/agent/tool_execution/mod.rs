@@ -372,7 +372,53 @@ impl<C: Channel> Agent<C> {
             sanitized.body
         };
 
+        // Guardrail: opt-in tool output scanning for indirect prompt injection (scan_tool_output=true).
+        #[cfg(feature = "guardrail")]
+        let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
+
         (body, has_injection_flags)
+    }
+
+    #[cfg(feature = "guardrail")]
+    async fn apply_guardrail_to_tool_output(&self, mut body: String, tool_name: &str) -> String {
+        use crate::sanitizer::guardrail::GuardrailVerdict;
+        let Some(ref guardrail) = self.security.guardrail else {
+            return body;
+        };
+        if !guardrail.scan_tool_output() {
+            return body;
+        }
+        let verdict = guardrail.check(&body).await;
+        if let GuardrailVerdict::Flagged { reason, .. } = &verdict {
+            tracing::warn!(
+                tool = %tool_name,
+                reason = %reason,
+                should_block = verdict.should_block(),
+                "guardrail flagged tool output"
+            );
+            if verdict.should_block() {
+                body = format!("[guardrail blocked] Tool output flagged: {reason}");
+            }
+            // Warn mode: log only, no user-channel notification. Tool output warn is intentionally
+            // silent to avoid flooding the user with warnings for every suspicious tool result —
+            // unlike user-input warn mode which notifies the user because it is interactive.
+        } else if let GuardrailVerdict::Error { error } = &verdict {
+            if guardrail.error_should_block() {
+                tracing::warn!(
+                    tool = %tool_name,
+                    %error,
+                    "guardrail check failed (fail_strategy=closed), blocking tool output"
+                );
+                "[guardrail blocked] Tool output check failed (see logs)".clone_into(&mut body);
+            } else {
+                tracing::warn!(
+                    tool = %tool_name,
+                    %error,
+                    "guardrail check failed (fail_strategy=open), allowing tool output"
+                );
+            }
+        }
+        body
     }
 
     fn scan_output_and_warn(&mut self, text: &str) -> String {

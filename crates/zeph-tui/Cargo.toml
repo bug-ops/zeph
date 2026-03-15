@@ -46,6 +46,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 experiments = ["zeph-core/experiments"]
+guardrail = ["zeph-core/guardrail"]
 lsp-context = []
 
 [lints]
