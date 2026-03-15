@@ -310,7 +310,7 @@ impl EmbeddingRegistry {
         &self,
         embed_fn: &impl Fn(&str) -> EmbedFuture,
     ) -> Result<(), EmbeddingRegistryError> {
-        if self
+        if !self
             .ops
             .collection_exists(&self.collection)
             .await
@@ -318,21 +318,66 @@ impl EmbeddingRegistry {
                 EmbeddingRegistryError::VectorStore(VectorStoreError::Collection(e.to_string()))
             })?
         {
+            // Collection does not exist — probe once and create.
+            let vector_size = self.probe_vector_size(embed_fn).await?;
+            self.ops
+                .ensure_collection(&self.collection, vector_size)
+                .await
+                .map_err(|e| {
+                    EmbeddingRegistryError::VectorStore(VectorStoreError::Collection(e.to_string()))
+                })?;
+            tracing::info!(
+                collection = &self.collection,
+                dimensions = vector_size,
+                "created Qdrant collection"
+            );
             return Ok(());
         }
 
-        let probe = embed_fn("dimension probe")
+        let existing_size = self
+            .ops
+            .client()
+            .collection_info(&self.collection)
             .await
-            .map_err(|e| EmbeddingRegistryError::DimensionProbe(e.to_string()))?;
-        let vector_size = u64::try_from(probe.len())?;
+            .map_err(|e| {
+                EmbeddingRegistryError::VectorStore(VectorStoreError::Collection(e.to_string()))
+            })?
+            .result
+            .and_then(|info| info.config)
+            .and_then(|cfg| cfg.params)
+            .and_then(|params| params.vectors_config)
+            .and_then(|vc| vc.config)
+            .and_then(|cfg| match cfg {
+                qdrant_client::qdrant::vectors_config::Config::Params(vp) => Some(vp.size),
+                // Named-vector collections (ParamsMap) are not supported by this registry;
+                // treat size as unknown and recreate to ensure a compatible single-vector layout.
+                qdrant_client::qdrant::vectors_config::Config::ParamsMap(_) => None,
+            });
 
+        let vector_size = self.probe_vector_size(embed_fn).await?;
+
+        if existing_size == Some(vector_size) {
+            return Ok(());
+        }
+
+        tracing::warn!(
+            collection = &self.collection,
+            existing = ?existing_size,
+            required = vector_size,
+            "vector dimension mismatch, recreating collection"
+        );
+        self.ops
+            .delete_collection(&self.collection)
+            .await
+            .map_err(|e| {
+                EmbeddingRegistryError::VectorStore(VectorStoreError::Collection(e.to_string()))
+            })?;
         self.ops
             .ensure_collection(&self.collection, vector_size)
             .await
             .map_err(|e| {
                 EmbeddingRegistryError::VectorStore(VectorStoreError::Collection(e.to_string()))
             })?;
-
         tracing::info!(
             collection = &self.collection,
             dimensions = vector_size,
@@ -340,6 +385,16 @@ impl EmbeddingRegistry {
         );
 
         Ok(())
+    }
+
+    async fn probe_vector_size(
+        &self,
+        embed_fn: &impl Fn(&str) -> EmbedFuture,
+    ) -> Result<u64, EmbeddingRegistryError> {
+        let probe = embed_fn("dimension probe")
+            .await
+            .map_err(|e| EmbeddingRegistryError::DimensionProbe(e.to_string()))?;
+        Ok(u64::try_from(probe.len())?)
     }
 
     async fn recreate_collection(

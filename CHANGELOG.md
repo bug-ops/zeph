@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Qdrant collection dimension mismatch when switching embedding models on collections with 0 points (#1815)
+
 ## [0.15.1] - 2026-03-15
 
 ### Fixed
