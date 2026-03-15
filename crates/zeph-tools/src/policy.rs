@@ -114,6 +114,9 @@ pub enum PolicyCompileError {
     #[error("policy file too large: {path}")]
     FileTooLarge { path: PathBuf },
 
+    #[error("policy file escapes project root: {path}")]
+    FileEscapesRoot { path: PathBuf },
+
     #[error("failed to parse policy file {path}: {source}")]
     FileParse {
         path: PathBuf,
@@ -331,6 +334,11 @@ fn resolve_tool_alias(name: &str) -> &str {
 }
 
 /// Load and parse a `PolicyConfig::rules` from an external TOML file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, parsed, or if its canonical path
+/// escapes the process working directory (symlink boundary check).
 fn load_policy_file(path: &Path) -> Result<Vec<PolicyRuleConfig>, PolicyCompileError> {
     // 256 KiB limit, same as instruction files.
     const MAX_POLICY_FILE_BYTES: u64 = 256 * 1024;
@@ -341,7 +349,32 @@ fn load_policy_file(path: &Path) -> Result<Vec<PolicyRuleConfig>, PolicyCompileE
         rules: Vec<PolicyRuleConfig>,
     }
 
-    let meta = std::fs::metadata(path).map_err(|source| PolicyCompileError::FileLoad {
+    // Canonicalize first to resolve symlinks before opening — eliminates TOCTOU race.
+    let canonical = std::fs::canonicalize(path).map_err(|source| PolicyCompileError::FileLoad {
+        path: path.to_owned(),
+        source,
+    })?;
+
+    // Symlink boundary check: canonical path must stay within the process working directory.
+    let canonical_base = std::env::current_dir()
+        .and_then(std::fs::canonicalize)
+        .map_err(|source| PolicyCompileError::FileLoad {
+            path: path.to_owned(),
+            source,
+        })?;
+
+    if !canonical.starts_with(&canonical_base) {
+        tracing::warn!(
+            path = %canonical.display(),
+            "policy file escapes project root, rejecting"
+        );
+        return Err(PolicyCompileError::FileEscapesRoot {
+            path: path.to_owned(),
+        });
+    }
+
+    // Use the canonical path for all subsequent I/O — no TOCTOU window for symlink swap.
+    let meta = std::fs::metadata(&canonical).map_err(|source| PolicyCompileError::FileLoad {
         path: path.to_owned(),
         source,
     })?;
@@ -351,10 +384,11 @@ fn load_policy_file(path: &Path) -> Result<Vec<PolicyRuleConfig>, PolicyCompileE
         });
     }
 
-    let content = std::fs::read_to_string(path).map_err(|source| PolicyCompileError::FileLoad {
-        path: path.to_owned(),
-        source,
-    })?;
+    let content =
+        std::fs::read_to_string(&canonical).map_err(|source| PolicyCompileError::FileLoad {
+            path: path.to_owned(),
+            source,
+        })?;
 
     let parsed: PolicyFile =
         toml::from_str(&content).map_err(|source| PolicyCompileError::FileParse {
@@ -896,6 +930,72 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.default_effect, DefaultEffect::Deny);
         assert!(config.rules.is_empty());
+    }
+
+    // ── load_policy_file security ─────────────────────────────────────────────
+
+    #[test]
+    fn policy_file_loaded_from_cwd_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        // Change into the temp dir so the boundary check passes.
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let policy_path = dir.path().join("policy.toml");
+        std::fs::write(
+            &policy_path,
+            r#"[[rules]]
+effect = "deny"
+tool = "shell"
+"#,
+        )
+        .unwrap();
+
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: Some(policy_path.to_string_lossy().into_owned()),
+        };
+        let result = PolicyEnforcer::compile(&config);
+        std::env::set_current_dir(&original_cwd).unwrap();
+        assert!(result.is_ok(), "policy file within cwd must be accepted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn policy_file_symlink_escaping_project_root_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().unwrap();
+        let inside = tempfile::tempdir().unwrap();
+
+        std::fs::write(
+            outside.path().join("outside.toml"),
+            "[[rules]]\neffect = \"deny\"\ntool = \"*\"\n",
+        )
+        .unwrap();
+
+        // Symlink inside the project dir pointing to a file outside.
+        let link = inside.path().join("evil.toml");
+        symlink(outside.path().join("outside.toml"), &link).unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(inside.path()).unwrap();
+
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: Some(link.to_string_lossy().into_owned()),
+        };
+        let result = PolicyEnforcer::compile(&config);
+        std::env::set_current_dir(&original_cwd).unwrap();
+
+        assert!(
+            matches!(result, Err(PolicyCompileError::FileEscapesRoot { .. })),
+            "symlink escaping project root must be rejected"
+        );
     }
 
     // ── Tool alias resolution (#1877) ─────────────────────────────────────────
