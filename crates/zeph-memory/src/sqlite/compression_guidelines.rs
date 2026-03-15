@@ -91,6 +91,34 @@ impl SqliteStore {
         Ok(row.unwrap_or((0, String::new())))
     }
 
+    /// Load only the version and creation timestamp of the latest active compression guidelines.
+    ///
+    /// Same scoping rules as [`load_compression_guidelines`]: conversation-specific rows are
+    /// preferred over global ones.  Returns `(0, "")` if no guidelines exist yet.
+    ///
+    /// Use this in hot paths where the full text is not needed (e.g. metrics sync).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn load_compression_guidelines_meta(
+        &self,
+        conversation_id: Option<ConversationId>,
+    ) -> Result<(i64, String), MemoryError> {
+        let row = sqlx::query_as::<_, (i64, String)>(
+            "SELECT version, created_at FROM compression_guidelines \
+             WHERE conversation_id = ? OR conversation_id IS NULL \
+             ORDER BY CASE WHEN conversation_id IS NOT NULL THEN 0 ELSE 1 END, \
+                      version DESC \
+             LIMIT 1",
+        )
+        .bind(conversation_id.map(|c| c.0))
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.unwrap_or((0, String::new())))
+    }
+
     /// Save a new version of the compression guidelines.
     ///
     /// When `conversation_id` is `Some`, the guidelines are scoped to that conversation.
@@ -276,6 +304,26 @@ mod tests {
         SqliteStore::with_pool_size(":memory:", 1)
             .await
             .expect("in-memory SqliteStore")
+    }
+
+    #[tokio::test]
+    async fn load_guidelines_meta_returns_defaults_when_empty() {
+        let store = make_store().await;
+        let (version, created_at) = store.load_compression_guidelines_meta(None).await.unwrap();
+        assert_eq!(version, 0);
+        assert!(created_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_guidelines_meta_returns_version_and_created_at() {
+        let store = make_store().await;
+        store
+            .save_compression_guidelines("keep file paths", 4, None)
+            .await
+            .unwrap();
+        let (version, created_at) = store.load_compression_guidelines_meta(None).await.unwrap();
+        assert_eq!(version, 1);
+        assert!(!created_at.is_empty(), "created_at should be populated");
     }
 
     #[tokio::test]

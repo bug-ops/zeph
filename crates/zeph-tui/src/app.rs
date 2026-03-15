@@ -928,6 +928,9 @@ impl App {
             TuiCommand::ServerCompactionStatus => {
                 let _ = self.user_input_tx.try_send("/server-compaction".to_owned());
             }
+            TuiCommand::ViewGuidelines => {
+                let _ = self.user_input_tx.try_send("/guidelines".to_owned());
+            }
             _ => {}
         }
     }

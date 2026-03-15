@@ -72,6 +72,8 @@ pub enum TuiCommand {
     MigrateConfig,
     // Server-side compaction
     ServerCompactionStatus,
+    // Compression guidelines
+    ViewGuidelines,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -447,6 +449,13 @@ fn build_graph_experiment_commands() -> Vec<CommandEntry> {
             shortcut: None,
             command: TuiCommand::ExperimentBest,
         },
+        CommandEntry {
+            id: "guidelines:view",
+            label: "Show compression guidelines (/guidelines)",
+            category: "memory",
+            shortcut: None,
+            command: TuiCommand::ViewGuidelines,
+        },
     ]
 }
 
@@ -538,12 +547,12 @@ mod tests {
     #[test]
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
-        // + 1 compaction:status = 32
+        // + 1 compaction:status + 1 guidelines:view = 33
         // + 1 lsp:status command (when lsp-context feature enabled)
         #[cfg(feature = "lsp-context")]
-        assert_eq!(extra_command_registry().len(), 33);
+        assert_eq!(extra_command_registry().len(), 34);
         #[cfg(not(feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 32);
+        assert_eq!(extra_command_registry().len(), 33);
     }
 
     #[test]

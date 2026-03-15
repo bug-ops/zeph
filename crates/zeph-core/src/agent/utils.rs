@@ -63,6 +63,31 @@ impl<C: Channel> Agent<C> {
         });
     }
 
+    /// Fetch compression-guidelines metadata from `SQLite` and write to metrics.
+    ///
+    /// Only fetches version and `created_at`; does not load the full guidelines text.
+    /// Feature-gated: compiled only when `compression-guidelines` is enabled.
+    #[cfg(feature = "compression-guidelines")]
+    pub async fn sync_guidelines_status(&self) {
+        let Some(memory) = self.memory_state.memory.as_ref() else {
+            return;
+        };
+        let cid = self.memory_state.conversation_id;
+        match memory.sqlite().load_compression_guidelines_meta(cid).await {
+            Ok((version, created_at)) => {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let version_u32 = u32::try_from(version).unwrap_or(0);
+                self.update_metrics(|m| {
+                    m.guidelines_version = version_u32;
+                    m.guidelines_updated_at = created_at;
+                });
+            }
+            Err(e) => {
+                tracing::warn!("failed to sync guidelines status: {e:#}");
+            }
+        }
+    }
+
     pub(super) fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         if let Some(ref tx) = self.metrics.metrics_tx {
             let elapsed = self.lifecycle.start_time.elapsed().as_secs();
