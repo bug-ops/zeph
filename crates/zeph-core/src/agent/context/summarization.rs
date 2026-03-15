@@ -12,12 +12,12 @@ use super::super::tool_execution::OVERFLOW_NOTICE_PREFIX;
 use crate::channel::Channel;
 use crate::context::ContextBudget;
 
-/// Extract the overflow file path from a tool output body, if present.
+/// Extract the overflow UUID from a tool output body, if present.
 ///
 /// The overflow notice has the format:
-/// `\n[full output saved to {path} — {bytes} bytes, use read tool to access]`
+/// `\n[full output stored as overflow:{uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
 ///
-/// Returns the path substring on success, or `None` if the notice is absent.
+/// Returns the UUID substring on success, or `None` if the notice is absent.
 fn extract_overflow_ref(body: &str) -> Option<&str> {
     let start = body.find(OVERFLOW_NOTICE_PREFIX)?;
     let rest = &body[start + OVERFLOW_NOTICE_PREFIX.len()..];
@@ -30,9 +30,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_overflow_ref_returns_path_when_present() {
-        let body = "some output\n[full output saved to /tmp/overflow/abc.txt \u{2014} 12345 bytes, use read tool to access]";
-        assert_eq!(extract_overflow_ref(body), Some("/tmp/overflow/abc.txt"));
+    fn extract_overflow_ref_returns_uuid_when_present() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let body = format!(
+            "some output\n[full output stored as overflow:{uuid} \u{2014} 12345 bytes, use read_overflow tool to retrieve]"
+        );
+        assert_eq!(extract_overflow_ref(&body), Some(uuid));
     }
 
     #[test]
@@ -47,10 +50,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_overflow_ref_handles_prefix_at_start() {
-        let body =
-            "[full output saved to /var/tmp/out.txt \u{2014} 9999 bytes, use read tool to access]";
-        assert_eq!(extract_overflow_ref(body), Some("/var/tmp/out.txt"));
+    fn extract_overflow_ref_handles_notice_at_start() {
+        let uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let body = format!(
+            "[full output stored as overflow:{uuid} \u{2014} 9999 bytes, use read_overflow tool to retrieve]"
+        );
+        assert_eq!(extract_overflow_ref(&body), Some(uuid));
     }
 }
 
@@ -329,7 +334,11 @@ impl<C: Channel> Agent<C> {
                     MessagePart::ToolResult { content, .. } => {
                         let ref_notice = extract_overflow_ref(content).map_or_else(
                             || String::from("[compacted]"),
-                            |p| format!("[tool output pruned; full content at {p}]"),
+                            |uuid| {
+                                format!(
+                                    "[tool output pruned; use read_overflow {uuid} to retrieve]"
+                                )
+                            },
                         );
                         *content = ref_notice;
                     }
@@ -338,7 +347,11 @@ impl<C: Channel> Agent<C> {
                     } => {
                         if compacted_at.is_none() {
                             let ref_notice = extract_overflow_ref(body)
-                                .map(|p| format!("[tool output pruned; full content at {p}]"))
+                                .map(|uuid| {
+                                    format!(
+                                        "[tool output pruned; use read_overflow {uuid} to retrieve]"
+                                    )
+                                })
                                 .unwrap_or_default();
                             *body = ref_notice;
                             *compacted_at = Some(
@@ -560,7 +573,7 @@ impl<C: Channel> Agent<C> {
                 {
                     freed += self.metrics.token_counter.count_tokens(body);
                     let ref_notice = extract_overflow_ref(body)
-                        .map(|p| format!("[tool output pruned; full content at {p}]"))
+                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
                         .unwrap_or_default();
                     freed -= self.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
@@ -613,7 +626,9 @@ impl<C: Channel> Agent<C> {
                     } if compacted_at.is_none() && !body.is_empty() => {
                         freed += self.metrics.token_counter.count_tokens(body);
                         let ref_notice = extract_overflow_ref(body)
-                            .map(|p| format!("[tool output pruned; full content at {p}]"))
+                            .map(|p| {
+                                format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                            })
                             .unwrap_or_default();
                         freed -= self.metrics.token_counter.count_tokens(&ref_notice);
                         *compacted_at = Some(now);
@@ -626,7 +641,11 @@ impl<C: Channel> Agent<C> {
                             freed += tokens;
                             let ref_notice = extract_overflow_ref(content).map_or_else(
                                 || String::from("[pruned]"),
-                                |p| format!("[tool output pruned; full content at {p}]"),
+                                |p| {
+                                    format!(
+                                        "[tool output pruned; use read_overflow {p} to retrieve]"
+                                    )
+                                },
                             );
                             freed -= self.metrics.token_counter.count_tokens(&ref_notice);
                             *content = ref_notice;

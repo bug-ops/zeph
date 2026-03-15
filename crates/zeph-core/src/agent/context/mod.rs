@@ -945,9 +945,9 @@ mod tests {
             .with_context_budget(1000, 0.20, 0.75, 4, 0)
             .with_metrics(tx);
 
-        let path = "/tmp/overflow/big.txt";
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let body = format!(
-            "truncated output\n[full output saved to {path} \u{2014} 99999 bytes, use read tool to access]"
+            "truncated output\n[full output stored as overflow:{uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]"
         );
         agent.messages.push(Message::from_parts(
             Role::User,
@@ -968,7 +968,7 @@ mod tests {
             assert!(compacted_at.is_some());
             assert_eq!(
                 body,
-                &format!("[tool output pruned; full content at {path}]")
+                &format!("[tool output pruned; use read_overflow {uuid} to retrieve]")
             );
         } else {
             panic!("expected ToolOutput");
@@ -984,9 +984,9 @@ mod tests {
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let path = "/tmp/overflow/big.txt";
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let body = format!(
-            "truncated output\n[full output saved to {path} \u{2014} 99999 bytes, use read tool to access]"
+            "truncated output\n[full output stored as overflow:{uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]"
         );
         agent.messages.push(Message::from_parts(
             Role::User,
@@ -1015,7 +1015,7 @@ mod tests {
             assert!(compacted_at.is_some());
             assert_eq!(
                 body,
-                &format!("[tool output pruned; full content at {path}]")
+                &format!("[tool output pruned; use read_overflow {uuid} to retrieve]")
             );
         } else {
             panic!("expected ToolOutput");
@@ -1031,10 +1031,10 @@ mod tests {
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let path = "/tmp/overflow/big.txt";
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
         // Content large enough to exceed the 20-token threshold
         let content = format!(
-            "{}\n[full output saved to {path} \u{2014} 99999 bytes, use read tool to access]",
+            "{}\n[full output stored as overflow:{uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]",
             "x".repeat(200)
         );
         agent.messages.push(Message::from_parts(
@@ -1060,7 +1060,7 @@ mod tests {
         if let MessagePart::ToolResult { content, .. } = &agent.messages[1].parts[0] {
             assert_eq!(
                 content,
-                &format!("[tool output pruned; full content at {path}]")
+                &format!("[tool output pruned; use read_overflow {uuid} to retrieve]")
             );
         } else {
             panic!("expected ToolResult");

@@ -261,6 +261,9 @@ pub async fn link_memory_notes(
 ///
 /// This function runs inside a spawned task — it receives owned data only.
 ///
+/// The optional `embedding_store` enables entity embedding storage in Qdrant, which is
+/// required for A-MEM note linking to find semantically similar entities across sessions.
+///
 /// # Errors
 ///
 /// Returns an error if the database query fails or LLM extraction fails.
@@ -271,6 +274,7 @@ pub async fn extract_and_store(
     pool: sqlx::SqlitePool,
     config: GraphExtractionConfig,
     post_extract_validator: PostExtractValidator,
+    embedding_store: Option<Arc<EmbeddingStore>>,
 ) -> Result<ExtractionResult, MemoryError> {
     use crate::graph::{EntityResolver, GraphExtractor, GraphStore};
 
@@ -310,7 +314,11 @@ pub async fn extract_and_store(
         return Ok(ExtractionResult::default());
     }
 
-    let resolver = EntityResolver::new(&store);
+    let resolver = if let Some(ref emb) = embedding_store {
+        EntityResolver::new(&store).with_embedding_store(emb)
+    } else {
+        EntityResolver::new(&store)
+    };
 
     let mut entities_upserted = 0usize;
     let mut entity_name_to_id: std::collections::HashMap<String, i64> =
@@ -406,6 +414,7 @@ impl SemanticMemory {
                     pool.clone(),
                     config.clone(),
                     post_extract_validator,
+                    embedding_store.clone(),
                 ),
             )
             .await;

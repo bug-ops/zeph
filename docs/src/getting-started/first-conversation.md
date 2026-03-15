@@ -63,5 +63,6 @@ Type `exit`, `quit`, or press Ctrl-D to stop the agent.
 ## Next Steps
 
 - [Configuration Wizard](wizard.md) — customize providers, memory, and channels
+- [Configuration Recipes](../guides/config-recipes.md) — copy-paste configs for common setups (local, cloud, hybrid, coding assistant, Telegram bot)
 - [Skills](../concepts/skills.md) — understand how skill matching works
 - [Tools](../concepts/tools.md) — what the agent can do with shell, files, and web

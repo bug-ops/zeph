@@ -40,6 +40,10 @@ Introduces temporal edge validity (`valid_from` / `valid_until`) on knowledge gr
 Open-source implementation of temporal knowledge graphs for agents. Studied as a reference architecture for Zeph's `zeph-memory` graph storage layer.\
 <https://github.com/getzep/graphiti>
 
+**TA-Mem: Adaptive Retrieval Dispatch by Query Type** (Mar 2026)\
+Shows that routing memory queries to different retrieval strategies by type (episodic vs. semantic) outperforms a fixed hybrid pipeline. Episodic queries ("what did I say yesterday?") benefit from FTS5 + timestamp lookup; semantic queries benefit from vector similarity. Directly implemented in Zeph's `HeuristicRouter` in `zeph-memory` ([#1629](https://github.com/bug-ops/zeph/issues/1629), [PR #1789](https://github.com/bug-ops/zeph/pull/1789)).\
+<https://arxiv.org/abs/2603.09297>
+
 **Episodic-to-Semantic Memory Promotion** (Jan 2025)\
 Two papers on consolidating episodic memories into stable semantic facts via background clustering and LLM-driven merging. Influenced Zeph's memory tier design (episodic / working / semantic) ([#1608](https://github.com/bug-ops/zeph/issues/1608)).\
 <https://arxiv.org/pdf/2501.11739> · <https://arxiv.org/abs/2512.13564>

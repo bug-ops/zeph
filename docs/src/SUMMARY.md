@@ -28,6 +28,7 @@
 # Guides
 
 - [Use a Cloud Provider](guides/cloud-provider.md)
+- [Configuration Recipes](guides/config-recipes.md)
 - [Run via Telegram](guides/telegram.md)
 - [Add Custom Skills](guides/custom-skills.md)
 - [Connect MCP Servers](guides/mcp.md)
