@@ -215,6 +215,7 @@ impl Default for Config {
                 shutdown_summary: true,
                 shutdown_summary_min_messages: 4,
                 shutdown_summary_max_messages: 20,
+                shutdown_summary_timeout_secs: 10,
             },
             telegram: None,
             discord: None,

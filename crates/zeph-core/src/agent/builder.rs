@@ -51,10 +51,12 @@ impl<C: Channel> Agent<C> {
         enabled: bool,
         min_messages: usize,
         max_messages: usize,
+        timeout_secs: u64,
     ) -> Self {
         self.memory_state.shutdown_summary = enabled;
         self.memory_state.shutdown_summary_min_messages = min_messages;
         self.memory_state.shutdown_summary_max_messages = max_messages;
+        self.memory_state.shutdown_summary_timeout_secs = timeout_secs;
         self
     }
 
