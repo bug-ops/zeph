@@ -947,7 +947,7 @@ mod tests {
 
         let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let body = format!(
-            "truncated output\n[full output stored as overflow:{uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]"
+            "truncated output\n[full output stored \u{2014} ID: {uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]"
         );
         agent.messages.push(Message::from_parts(
             Role::User,
@@ -986,7 +986,7 @@ mod tests {
 
         let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let body = format!(
-            "truncated output\n[full output stored as overflow:{uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]"
+            "truncated output\n[full output stored \u{2014} ID: {uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]"
         );
         agent.messages.push(Message::from_parts(
             Role::User,
@@ -1034,7 +1034,7 @@ mod tests {
         let uuid = "550e8400-e29b-41d4-a716-446655440000";
         // Content large enough to exceed the 20-token threshold
         let content = format!(
-            "{}\n[full output stored as overflow:{uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]",
+            "{}\n[full output stored \u{2014} ID: {uuid} \u{2014} 99999 bytes, use read_overflow tool to retrieve]",
             "x".repeat(200)
         );
         agent.messages.push(Message::from_parts(

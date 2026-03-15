@@ -15,7 +15,7 @@ use crate::context::ContextBudget;
 /// Extract the overflow UUID from a tool output body, if present.
 ///
 /// The overflow notice has the format:
-/// `\n[full output stored as overflow:{uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
+/// `\n[full output stored — ID: {uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
 ///
 /// Returns the UUID substring on success, or `None` if the notice is absent.
 fn extract_overflow_ref(body: &str) -> Option<&str> {
@@ -33,7 +33,7 @@ mod tests {
     fn extract_overflow_ref_returns_uuid_when_present() {
         let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let body = format!(
-            "some output\n[full output stored as overflow:{uuid} \u{2014} 12345 bytes, use read_overflow tool to retrieve]"
+            "some output\n[full output stored \u{2014} ID: {uuid} \u{2014} 12345 bytes, use read_overflow tool to retrieve]"
         );
         assert_eq!(extract_overflow_ref(&body), Some(uuid));
     }
@@ -53,7 +53,7 @@ mod tests {
     fn extract_overflow_ref_handles_notice_at_start() {
         let uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
         let body = format!(
-            "[full output stored as overflow:{uuid} \u{2014} 9999 bytes, use read_overflow tool to retrieve]"
+            "[full output stored \u{2014} ID: {uuid} \u{2014} 9999 bytes, use read_overflow tool to retrieve]"
         );
         assert_eq!(extract_overflow_ref(&body), Some(uuid));
     }
