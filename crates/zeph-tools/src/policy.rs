@@ -474,7 +474,6 @@ fn normalize_path(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::io::Write as _;
 
     use super::*;
 
@@ -1112,24 +1111,25 @@ tool = "shell"
     // ── policy_file external TOML loading ─────────────────────────────────────
 
     // GAP-03a: happy path — file with a deny rule is loaded and evaluated correctly.
+    //
+    // The file must reside within the process cwd (boundary check in load_policy_file).
+    // We create a tempdir inside the cwd so canonicalization passes without changing
+    // global process state.
     #[test]
     fn policy_file_happy_path() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(
-            tmp,
-            r#"
-[[rules]]
-effect = "deny"
-tool = "shell"
-paths = ["/etc/*"]
-"#
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let policy_path = dir.path().join("policy.toml");
+        std::fs::write(
+            &policy_path,
+            "[[rules]]\neffect = \"deny\"\ntool = \"shell\"\npaths = [\"/etc/*\"]\n",
         )
         .unwrap();
         let config = PolicyConfig {
             enabled: true,
             default_effect: DefaultEffect::Allow,
             rules: vec![],
-            policy_file: Some(tmp.path().to_str().unwrap().to_owned()),
+            policy_file: Some(policy_path.to_string_lossy().into_owned()),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
@@ -1146,14 +1146,15 @@ paths = ["/etc/*"]
     // GAP-03b: FileTooLarge — file exceeding 256 KiB must be rejected.
     #[test]
     fn policy_file_too_large() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        let data = vec![b'x'; 256 * 1024 + 1];
-        tmp.write_all(&data).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let policy_path = dir.path().join("big.toml");
+        std::fs::write(&policy_path, vec![b'x'; 256 * 1024 + 1]).unwrap();
         let config = PolicyConfig {
             enabled: true,
             default_effect: DefaultEffect::Allow,
             rules: vec![],
-            policy_file: Some(tmp.path().to_str().unwrap().to_owned()),
+            policy_file: Some(policy_path.to_string_lossy().into_owned()),
         };
         assert!(
             matches!(
@@ -1165,6 +1166,7 @@ paths = ["/etc/*"]
     }
 
     // GAP-03c: FileLoad — nonexistent path must return FileLoad error.
+    // A nonexistent path fails at the canonicalize() call → FileLoad.
     #[test]
     fn policy_file_load_error() {
         let config = PolicyConfig {
@@ -1185,13 +1187,15 @@ paths = ["/etc/*"]
     // GAP-03d: FileParse — malformed TOML must return FileParse error.
     #[test]
     fn policy_file_parse_error() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, "not valid toml = = =\n[[[\n").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let policy_path = dir.path().join("bad.toml");
+        std::fs::write(&policy_path, "not valid toml = = =\n[[[\n").unwrap();
         let config = PolicyConfig {
             enabled: true,
             default_effect: DefaultEffect::Allow,
             rules: vec![],
-            policy_file: Some(tmp.path().to_str().unwrap().to_owned()),
+            policy_file: Some(policy_path.to_string_lossy().into_owned()),
         };
         assert!(
             matches!(
