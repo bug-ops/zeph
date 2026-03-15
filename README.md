@@ -31,6 +31,35 @@ zeph                                                 # start the agent
 
 ---
 
+## Quick Start
+
+**Local (Ollama)** — no cloud accounts required:
+
+```bash
+ollama pull qwen3:8b && ollama pull qwen3-embedding
+zeph init && zeph
+```
+
+**Cloud (Claude or OpenAI)**:
+
+```bash
+export ZEPH_CLAUDE_API_KEY=sk-ant-...   # or ZEPH_OPENAI_API_KEY
+zeph init && zeph
+```
+
+**Hybrid** — Ollama by default, cloud as fallback:
+
+```bash
+export ZEPH_CLAUDE_API_KEY=sk-ant-...
+# select "router" in `zeph init`, or copy the hybrid recipe below
+zeph
+```
+
+> [!TIP]
+> Copy-paste configs for all common setups — local, cloud, hybrid, coding assistant, Telegram bot — are in the **[Configuration Recipes](https://bug-ops.github.io/zeph/guides/config-recipes.html)** guide.
+
+---
+
 ## What's inside
 
 | Feature | Description |

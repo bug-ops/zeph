@@ -840,6 +840,7 @@ mod tests {
 
         let tmp = tempdir().unwrap();
         let d = DebugDumper::new(tmp.path(), DumpFormat::Trace).unwrap();
+        let session_dir = d.dir().to_owned();
         let id = d.dump_request(&RequestDebugDump {
             model_name: "test",
             messages: &[],
@@ -849,20 +850,26 @@ mod tests {
         d.dump_response(id, "resp");
         d.dump_tool_output("shell", "output");
 
-        let session_dirs: Vec<_> = std::fs::read_dir(tmp.path())
+        // No legacy numbered files should be written in Trace format.
+        let files: Vec<_> = std::fs::read_dir(&session_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .collect();
-        assert_eq!(session_dirs.len(), 1);
-        let files: Vec<_> = std::fs::read_dir(session_dirs[0].path())
-            .unwrap()
-            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .chars()
+                    .next()
+                    .map_or(false, |c| c.is_ascii_digit())
+            })
             .collect();
         assert!(
             files.is_empty(),
             "no legacy numbered files in Trace format session dir"
         );
+
+        // trace.json is written into the session subdir by TracingCollector when wired.
+        // Here we only verify the session dir itself exists (TracingCollector is not wired in this test).
+        assert!(session_dir.is_dir(), "session subdir must exist");
     }
 
     #[test]
