@@ -79,6 +79,12 @@ pub(crate) struct Cli {
     #[arg(long = "agents", value_name = "PATH")]
     pub(crate) agents: Vec<PathBuf>,
 
+    /// Enable LLM-based guardrail (prompt injection pre-screening).
+    /// Overrides `security.guardrail.enabled` from config.
+    #[cfg(feature = "guardrail")]
+    #[arg(long)]
+    pub(crate) guardrail: bool,
+
     /// Enable graph-based knowledge memory (experimental)
     #[arg(long)]
     pub(crate) graph_memory: bool,

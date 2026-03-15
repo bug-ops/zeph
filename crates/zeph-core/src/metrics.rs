@@ -152,6 +152,7 @@ pub struct SubAgentMetrics {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MetricsSnapshot {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -208,6 +209,12 @@ pub struct MetricsSnapshot {
     pub pii_scrub_count: u64,
     pub memory_validation_failures: u64,
     pub rate_limit_trips: u64,
+    /// `true` when a guardrail filter is active for this session.
+    #[cfg(feature = "guardrail")]
+    pub guardrail_enabled: bool,
+    /// `true` when guardrail is in warn-only mode (action = warn).
+    #[cfg(feature = "guardrail")]
+    pub guardrail_warn_mode: bool,
     pub sub_agents: Vec<SubAgentMetrics>,
     pub skill_confidence: Vec<SkillConfidence>,
     /// Scheduled task summaries: `[name, kind, mode, next_run]`.

@@ -666,6 +666,25 @@ name = "Test"
         );
     }
 
+    // IMPL-04: verify that [security.guardrail] is injected as commented defaults
+    // for a pre-guardrail config that has [security] but no [security.guardrail].
+    #[test]
+    fn security_without_guardrail_gets_guardrail_commented() {
+        let user = r#"
+[security]
+redact_secrets = true
+"#;
+        let migrator = ConfigMigrator::new();
+        let result = migrator.migrate(user).expect("migrate");
+        // The generic diff mechanism must add guardrail keys as commented defaults.
+        assert!(
+            result.output.contains("guardrail"),
+            "migration must add guardrail keys for configs without [security.guardrail]: \
+             got:\n{}",
+            result.output
+        );
+    }
+
     #[test]
     fn migrate_reference_contains_tools_policy() {
         // IMP-NO-MIGRATE-CONFIG: verify that the embedded default.toml (the canonical reference

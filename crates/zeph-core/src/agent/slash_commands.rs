@@ -73,6 +73,14 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Info,
         feature_gate: None,
     },
+    #[cfg(feature = "guardrail")]
+    SlashCommandInfo {
+        name: "/guardrail",
+        args: "",
+        description: "Show guardrail status (provider, model, action, timeout, stats)",
+        category: SlashCategory::Info,
+        feature_gate: Some("guardrail"),
+    },
     SlashCommandInfo {
         name: "/log",
         args: "",

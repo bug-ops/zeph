@@ -197,6 +197,9 @@ pub(super) struct SecurityState {
     pub(super) flagged_urls: std::collections::HashSet<String>,
     pub(super) pii_filter: crate::sanitizer::pii::PiiFilter,
     pub(super) memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator,
+    /// LLM-based prompt injection pre-screener (opt-in).
+    #[cfg(feature = "guardrail")]
+    pub(super) guardrail: Option<crate::sanitizer::guardrail::GuardrailFilter>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).
@@ -506,6 +509,8 @@ impl<C: Channel> Agent<C> {
                 memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator::new(
                     crate::sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
                 ),
+                #[cfg(feature = "guardrail")]
+                guardrail: None,
             },
             pending_image_parts: Vec::new(),
             #[cfg(feature = "experiments")]
@@ -2584,6 +2589,11 @@ impl<C: Channel> Agent<C> {
             handled!(self.handle_status_command().await);
         }
 
+        #[cfg(feature = "guardrail")]
+        if trimmed == "/guardrail" {
+            handled!(self.handle_guardrail_command().await);
+        }
+
         if trimmed == "/skills" {
             handled!(self.handle_skills_command().await);
         }
@@ -2990,6 +3000,45 @@ impl<C: Channel> Agent<C> {
         }
 
         self.check_pending_rollbacks().await;
+
+        // Guardrail: LLM-based prompt injection pre-screening at the user input boundary.
+        #[cfg(feature = "guardrail")]
+        if let Some(ref guardrail) = self.security.guardrail {
+            use crate::sanitizer::guardrail::GuardrailVerdict;
+            let verdict = guardrail.check(trimmed).await;
+            match &verdict {
+                GuardrailVerdict::Flagged { reason, .. } => {
+                    tracing::warn!(
+                        reason = %reason,
+                        should_block = verdict.should_block(),
+                        "guardrail flagged user input"
+                    );
+                    if verdict.should_block() {
+                        let msg = format!("[guardrail] Input blocked: {reason}");
+                        let _ = self.channel.send(&msg).await;
+                        let _ = self.channel.flush_chunks().await;
+                        return Ok(());
+                    }
+                    // Warn mode: notify but continue.
+                    let _ = self
+                        .channel
+                        .send(&format!("[guardrail] Warning: {reason}"))
+                        .await;
+                }
+                GuardrailVerdict::Error { error } => {
+                    if guardrail.error_should_block() {
+                        tracing::warn!(%error, "guardrail check failed (fail_strategy=closed), blocking input");
+                        let msg = "[guardrail] Input blocked: check failed (see logs for details)";
+                        let _ = self.channel.send(msg).await;
+                        let _ = self.channel.flush_chunks().await;
+                        return Ok(());
+                    }
+                    tracing::warn!(%error, "guardrail check failed (fail_strategy=open), allowing input");
+                }
+                GuardrailVerdict::Safe => {}
+            }
+        }
+
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).
         let conv_id = self.memory_state.conversation_id;
@@ -3194,6 +3243,42 @@ impl<C: Channel> Agent<C> {
         let _ = writeln!(out, "MCP:       {mcp_servers} server(s)");
         if cost_cents > 0.0 {
             let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
+        }
+
+        self.channel.send(out.trim_end()).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "guardrail")]
+    async fn handle_guardrail_command(&mut self) -> Result<(), error::AgentError> {
+        use std::fmt::Write;
+
+        let mut out = String::new();
+        if let Some(ref guardrail) = self.security.guardrail {
+            let stats = guardrail.stats();
+            let _ = writeln!(out, "Guardrail: enabled");
+            let _ = writeln!(out, "Action:    {:?}", guardrail.action());
+            let _ = writeln!(out, "Fail strategy: {:?}", guardrail.fail_strategy());
+            let _ = writeln!(out, "Timeout:   {}ms", guardrail.timeout_ms());
+            let _ = writeln!(
+                out,
+                "Tool scan: {}",
+                if guardrail.scan_tool_output() {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            let _ = writeln!(out, "\nStats:");
+            let _ = writeln!(out, "  Total checks:  {}", stats.total_checks);
+            let _ = writeln!(out, "  Flagged:       {}", stats.flagged_count);
+            let _ = writeln!(out, "  Errors:        {}", stats.error_count);
+            let _ = writeln!(out, "  Avg latency:   {}ms", stats.avg_latency_ms());
+        } else {
+            out.push_str("Guardrail: disabled\n");
+            out.push_str(
+                "Enable with: --guardrail flag or [security.guardrail] enabled = true in config",
+            );
         }
 
         self.channel.send(out.trim_end()).await?;

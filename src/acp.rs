@@ -123,6 +123,11 @@ struct SharedAgentDeps {
         zeph_llm::any::AnyProvider,
         zeph_core::sanitizer::QuarantineConfig,
     )>,
+    #[cfg(feature = "guardrail")]
+    guardrail_provider: Option<(
+        zeph_llm::any::AnyProvider,
+        zeph_core::sanitizer::guardrail::GuardrailConfig,
+    )>,
 
     // Config snapshot — single source of truth for all config-derived agent settings
     session_config: zeph_core::AgentSessionConfig,
@@ -429,6 +434,8 @@ async fn build_acp_deps(
         summary_provider,
         judge_provider: app.build_judge_provider(),
         quarantine_provider: app.build_quarantine_provider(),
+        #[cfg(feature = "guardrail")]
+        guardrail_provider: app.build_guardrail_provider(),
         session_config,
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
@@ -510,6 +517,8 @@ async fn spawn_acp_agent(
     let summary_provider = d.summary_provider.clone();
     let judge_provider = d.judge_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
+    #[cfg(feature = "guardrail")]
+    let guardrail_provider = d.guardrail_provider.clone();
     let session_config = d.session_config.clone();
     let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
     let skill_reload_tx = d.skill_reload_tx.clone();
@@ -695,6 +704,10 @@ async fn spawn_acp_agent(
     }
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);
+    #[cfg(feature = "guardrail")]
+    {
+        agent = agent_setup::apply_guardrail(agent, guardrail_provider);
+    }
 
     if debug_config.enabled {
         // Use session_id as a subdirectory prefix so concurrent sessions never share the same

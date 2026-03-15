@@ -464,6 +464,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    #[cfg(feature = "guardrail")]
+    #[must_use]
+    pub fn with_guardrail(mut self, filter: crate::sanitizer::guardrail::GuardrailFilter) -> Self {
+        use crate::sanitizer::guardrail::GuardrailAction;
+        let warn_mode = filter.action() == GuardrailAction::Warn;
+        self.security.guardrail = Some(filter);
+        self.update_metrics(|m| {
+            m.guardrail_enabled = true;
+            m.guardrail_warn_mode = warn_mode;
+        });
+        self
+    }
+
     pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
         self.providers
             .summary_provider

@@ -114,6 +114,16 @@ pub(crate) struct WizardState {
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
     pub(crate) skill_scan_on_load: bool,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_enabled: bool,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_provider: String,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_model: String,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_action: String,
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail_timeout_ms: u64,
     // Logging
     pub(crate) log_file: String,
     pub(crate) log_level: String,
@@ -212,6 +222,16 @@ impl Default for WizardState {
             pii_filter_enabled: false,
             rate_limit_enabled: false,
             skill_scan_on_load: true,
+            #[cfg(feature = "guardrail")]
+            guardrail_enabled: false,
+            #[cfg(feature = "guardrail")]
+            guardrail_provider: "ollama".to_owned(),
+            #[cfg(feature = "guardrail")]
+            guardrail_model: "llama-guard-3:1b".to_owned(),
+            #[cfg(feature = "guardrail")]
+            guardrail_action: "block".to_owned(),
+            #[cfg(feature = "guardrail")]
+            guardrail_timeout_ms: 500,
             log_file: String::new(),
             log_level: String::new(),
             log_rotation: String::new(),
@@ -1029,6 +1049,20 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.security.rate_limit.enabled = state.rate_limit_enabled;
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
 
+    #[cfg(feature = "guardrail")]
+    if state.guardrail_enabled {
+        config.security.guardrail.enabled = true;
+        config.security.guardrail.provider = Some(state.guardrail_provider.clone());
+        if !state.guardrail_model.is_empty() {
+            config.security.guardrail.model = Some(state.guardrail_model.clone());
+        }
+        config.security.guardrail.action = match state.guardrail_action.as_str() {
+            "warn" => zeph_core::sanitizer::guardrail::GuardrailAction::Warn,
+            _ => zeph_core::sanitizer::guardrail::GuardrailAction::Block,
+        };
+        config.security.guardrail.timeout_ms = state.guardrail_timeout_ms;
+    }
+
     #[cfg(feature = "policy-enforcer")]
     {
         config.tools.policy.enabled = state.policy_enforcer_enabled;
@@ -1631,6 +1665,50 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(true)
         .interact()?;
+
+    #[cfg(feature = "guardrail")]
+    {
+        state.guardrail_enabled = Confirm::new()
+            .with_prompt(
+                "Enable LLM-based guardrail? (prompt injection pre-screening via a dedicated safety model, e.g. llama-guard)",
+            )
+            .default(false)
+            .interact()?;
+
+        if state.guardrail_enabled {
+            let provider_options = &["ollama", "claude", "openai", "compatible"];
+            let provider_idx = dialoguer::Select::new()
+                .with_prompt("Guardrail provider")
+                .items(provider_options)
+                .default(0)
+                .interact()?;
+            provider_options[provider_idx].clone_into(&mut state.guardrail_provider);
+
+            state.guardrail_model = dialoguer::Input::new()
+                .with_prompt("Guardrail model")
+                .default(if state.guardrail_provider == "ollama" {
+                    "llama-guard-3:1b".to_owned()
+                } else {
+                    String::new()
+                })
+                .allow_empty(true)
+                .interact_text()?;
+
+            let action_options = &["block", "warn"];
+            let action_idx = dialoguer::Select::new()
+                .with_prompt("Action on flagged input")
+                .items(action_options)
+                .default(0)
+                .interact()?;
+            action_options[action_idx].clone_into(&mut state.guardrail_action);
+
+            let timeout_str: String = dialoguer::Input::new()
+                .with_prompt("Guardrail timeout (ms)")
+                .default("500".to_owned())
+                .interact_text()?;
+            state.guardrail_timeout_ms = timeout_str.parse().unwrap_or(500);
+        }
+    }
     println!();
     Ok(())
 }
