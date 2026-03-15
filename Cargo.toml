@@ -154,8 +154,9 @@ readme = "README.md"
 
 [features]
 default = []
-full = ["a2a", "acp", "acp-http", "acp-unstable", "discord", "experiments", "gateway", "lsp-context", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
+full = ["a2a", "acp", "acp-http", "acp-unstable", "compression-guidelines", "discord", "experiments", "gateway", "lsp-context", "otel", "pdf", "scheduler", "slack", "stt", "tui"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
+compression-guidelines = ["zeph-core/compression-guidelines", "zeph-memory/compression-guidelines"]
 acp = ["dep:zeph-acp"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
 acp-unstable = ["acp", "zeph-acp/unstable-session-list", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume"]

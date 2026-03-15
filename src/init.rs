@@ -92,6 +92,8 @@ pub(crate) struct WizardState {
     // Graph memory settings
     pub(crate) graph_memory_enabled: bool,
     pub(crate) graph_extract_model: Option<String>,
+    // ACON failure-driven compression guidelines
+    pub(crate) compression_guidelines_enabled: bool,
     // Server-side compaction
     pub(crate) gemini_thinking_level: Option<GeminiThinkingLevel>,
     pub(crate) server_compaction_enabled: bool,
@@ -181,6 +183,7 @@ impl Default for WizardState {
             debug_dump_enabled: false,
             graph_memory_enabled: false,
             graph_extract_model: None,
+            compression_guidelines_enabled: false,
             gemini_thinking_level: None,
             server_compaction_enabled: false,
             mcpls_enabled: false,
@@ -635,6 +638,15 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         }
     }
 
+    state.compression_guidelines_enabled = Confirm::new()
+        .with_prompt(
+            "Enable ACON failure-driven compression guidelines? \
+             (learns compression rules from detected context-loss events, \
+             requires compression-guidelines feature)",
+        )
+        .default(false)
+        .interact()?;
+
     state.server_compaction_enabled = Confirm::new()
         .with_prompt(
             "Enable Claude server-side context compaction? (compact-2026-01-12 beta, Claude only)",
@@ -862,6 +874,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     if let Some(ref m) = state.graph_extract_model {
         config.memory.graph.extract_model.clone_from(m);
     }
+    config.memory.compression_guidelines.enabled = state.compression_guidelines_enabled;
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
     config.memory.hard_compaction_threshold = state.hard_compaction_threshold;
     if state.server_compaction_enabled

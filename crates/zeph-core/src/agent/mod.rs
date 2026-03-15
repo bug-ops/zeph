@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod builder;
+#[cfg(feature = "compression-guidelines")]
+pub(super) mod compression_feedback;
 mod context;
 pub(crate) mod context_manager;
 pub mod error;
@@ -128,6 +130,7 @@ pub(super) struct MemoryState {
     pub(super) unsummarized_count: usize,
     pub(super) document_config: crate::config::DocumentConfig,
     pub(super) graph_config: crate::config::GraphConfig,
+    pub(super) compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig,
 }
 
 pub(super) struct SkillState {
@@ -391,6 +394,7 @@ impl<C: Channel> Agent<C> {
                 unsummarized_count: 0,
                 document_config: crate::config::DocumentConfig::default(),
                 graph_config: crate::config::GraphConfig::default(),
+                compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
             },
             skill_state: SkillState {
                 registry,

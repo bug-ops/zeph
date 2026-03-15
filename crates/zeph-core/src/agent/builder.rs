@@ -176,6 +176,15 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_compression_guidelines_config(
+        mut self,
+        config: zeph_memory::CompressionGuidelinesConfig,
+    ) -> Self {
+        self.memory_state.compression_guidelines_config = config;
+        self
+    }
+
+    #[must_use]
     pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
         // R-IMP-03: graph extraction writes raw entity names/relations extracted by the LLM.
         // No PII redaction is applied on the graph write path (pre-1.0 MVP limitation).

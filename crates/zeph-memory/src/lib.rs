@@ -3,7 +3,9 @@
 
 //! SQLite-backed conversation persistence with Qdrant vector search.
 
+pub mod compression_guidelines;
 pub mod document;
+
 pub mod embedding_registry;
 pub mod embedding_store;
 pub mod error;
@@ -23,6 +25,12 @@ pub mod token_counter;
 pub mod types;
 pub mod vector_store;
 
+pub use compression_guidelines::CompressionGuidelinesConfig;
+#[cfg(feature = "compression-guidelines")]
+pub use compression_guidelines::{
+    build_guidelines_update_prompt, sanitize_guidelines, start_guidelines_updater,
+    truncate_to_token_budget, update_guidelines_once,
+};
 #[cfg(feature = "pdf")]
 pub use document::PdfLoader;
 pub use document::{
@@ -47,6 +55,8 @@ pub use semantic::{
     extract_and_store, link_memory_notes,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
+#[cfg(feature = "compression-guidelines")]
+pub use sqlite::compression_guidelines::CompressionFailurePair;
 pub use sqlite::corrections::UserCorrectionRow;
 #[cfg(feature = "experiments")]
 pub use sqlite::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};

@@ -80,6 +80,15 @@ autosave_min_length = 20
 tool_call_cutoff = 6
 sqlite_pool_size = 5
 
+[memory.compression_guidelines]
+enabled = false
+update_threshold = 5
+max_guidelines_tokens = 500
+max_pairs_per_update = 10
+detection_window_turns = 10
+update_interval_secs = 300
+max_stored_pairs = 100
+
 [memory.semantic]
 enabled = true
 recall_limit = 5
@@ -131,6 +140,13 @@ community_summary_max_prompt_bytes = 8192
 community_summary_concurrency = 4
 lpa_edge_chunk_size = 10000
 temporal_decay_rate = 0.0
+edge_history_limit = 100
+
+[memory.graph.note_linking]
+enabled = false
+similarity_threshold = 0.85
+top_k = 10
+timeout_secs = 5
 
 [tools]
 enabled = true
@@ -175,6 +191,7 @@ extra_patterns = []
 [tools.overflow]
 threshold = 50000
 retention_days = 7
+max_overflow_bytes = 10485760
 
 [tools.anomaly]
 enabled = false

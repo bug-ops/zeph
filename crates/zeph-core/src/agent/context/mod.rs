@@ -2171,7 +2171,7 @@ mod tests {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }];
-        let prompt = Agent::<MockChannel>::build_chunk_prompt(&messages);
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(&messages, "");
 
         let sections = [
             "User Intent",
@@ -2195,10 +2195,39 @@ mod tests {
     #[test]
     fn build_chunk_prompt_empty_messages() {
         let messages: &[Message] = &[];
-        let prompt = Agent::<MockChannel>::build_chunk_prompt(messages);
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(messages, "");
         // Even with no messages the prompt structure must be valid (not panic, contains sections)
         assert!(prompt.contains("User Intent"));
         assert!(prompt.contains("Next Step"));
+    }
+
+    #[test]
+    fn build_chunk_prompt_injects_guidelines_block_when_non_empty() {
+        let messages: &[Message] = &[];
+        let guidelines = "1. Preserve file paths\n2. Preserve error codes";
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(messages, guidelines);
+        assert!(
+            prompt.contains("<compression-guidelines>"),
+            "guidelines block must be present when guidelines non-empty"
+        );
+        assert!(
+            prompt.contains("Preserve file paths"),
+            "guideline content must appear in prompt"
+        );
+        assert!(
+            prompt.contains("</compression-guidelines>"),
+            "guidelines closing tag must be present"
+        );
+    }
+
+    #[test]
+    fn build_chunk_prompt_no_guidelines_block_when_empty() {
+        let messages: &[Message] = &[];
+        let prompt = Agent::<MockChannel>::build_chunk_prompt(messages, "");
+        assert!(
+            !prompt.contains("<compression-guidelines>"),
+            "no guidelines block when guidelines is empty"
+        );
     }
 
     // --- rebuild_system_prompt block order ---
@@ -3122,6 +3151,7 @@ mod tests {
                 enabled: graph_enabled,
                 ..Default::default()
             },
+            compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
         }
     }
 

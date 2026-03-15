@@ -680,3 +680,21 @@ max_files = 7
 # expired_edge_retention_days = 90
 # # Maximum total entities in the graph (0 = unlimited)
 # max_entities = 0
+
+# ACON failure-driven compression guidelines
+# Learns compression rules from detected context-loss events after hard compaction.
+# Requires the `compression-guidelines` feature flag to be enabled at compile time.
+# [memory.compression_guidelines]
+# enabled = false
+# # Minimum unused failure pairs before triggering a guidelines update
+# update_threshold = 5
+# # Maximum token budget for the guidelines document
+# max_guidelines_tokens = 500
+# # Maximum failure pairs consumed per update cycle
+# max_pairs_per_update = 10
+# # Number of turns after hard compaction to watch for context loss
+# detection_window_turns = 10
+# # Interval in seconds between background updater checks
+# update_interval_secs = 300
+# # Maximum unused failure pairs to retain (cleanup policy)
+# max_stored_pairs = 100

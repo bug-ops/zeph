@@ -192,6 +192,9 @@ impl<C: Channel> Agent<C> {
                 .await;
             self.messages
                 .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
+            // Detect context loss after compaction and log failure pair if found.
+            #[cfg(feature = "compression-guidelines")]
+            self.maybe_log_compression_failure(&cleaned).await;
             if cleaned.contains(MAX_TOKENS_TRUNCATION_MARKER) {
                 let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
             }

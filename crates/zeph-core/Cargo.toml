@@ -15,6 +15,7 @@ readme = "README.md"
 [features]
 default = []
 candle = ["zeph-llm/candle"]
+compression-guidelines = ["zeph-memory/compression-guidelines"]
 cuda = ["zeph-llm/cuda"]
 experiments = ["dep:ordered-float", "zeph-memory/experiments"]
 metal = ["zeph-llm/metal"]

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory,core): ACON failure-driven compression guidelines (#1647) — after a hard compaction, the agent watches subsequent LLM responses for two-signal context-loss indicators (uncertainty phrase + prior-context reference); confirmed failure pairs are stored in SQLite (`compression_failure_pairs`); a background updater wakes periodically, calls the LLM to synthesise updated guidelines from accumulated pairs, sanitizes the output to strip prompt injection, and persists the result; guidelines are injected into every future compaction prompt via a `<compression-guidelines>` block; `CompressionGuidelinesConfig` in `[memory.compression_guidelines]` (disabled by default); addresses all critic findings including two-signal false-positive guard, `enabled` guard ordering, LLM timeout, prompt injection sanitization, field truncation, and cleanup policy
+
 - fix(memory): `edges_created` stat in `link_memory_notes` was inflated when both endpoints of a pair appeared in `entity_ids` — the second normalised `insert_edge(src, tgt)` call returned `Ok` (updating confidence on the existing row), incrementing the counter twice for one physical edge; a `HashSet` of seen `(src, tgt)` pairs now deduplicates within each pass, keeping the stat accurate (closes #1792)
 - perf(memory): `link_memory_notes` now embeds all entity texts in parallel via `futures::join_all` instead of N sequential HTTP round-trips, reducing embed latency from O(N) to O(1) round-trips (closes #1793)
 - perf(memory): `link_memory_notes` now runs all Qdrant `search_collection` calls in parallel via `futures::join_all`, reducing search latency from O(N) to O(1) round-trips (closes #1794)

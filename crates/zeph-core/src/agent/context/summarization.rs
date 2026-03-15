@@ -55,7 +55,7 @@ mod tests {
 }
 
 impl<C: Channel> Agent<C> {
-    pub(super) fn build_chunk_prompt(messages: &[Message]) -> String {
+    pub(super) fn build_chunk_prompt(messages: &[Message], guidelines: &str) -> String {
         let estimated_len: usize = messages
             .iter()
             .map(|m| "[assistant]: ".len() + m.content.len() + 2)
@@ -73,13 +73,19 @@ impl<C: Channel> Agent<C> {
             let _ = write!(history_text, "[{role}]: {}", m.content);
         }
 
+        let guidelines_section = if guidelines.is_empty() {
+            String::new()
+        } else {
+            format!("\n<compression-guidelines>\n{guidelines}\n</compression-guidelines>\n")
+        };
+
         format!(
             "<analysis>\n\
              Analyze this conversation and produce a structured compaction note for self-consumption.\n\
              This note replaces the original messages in your context window — be thorough.\n\
              Longer is better if it preserves actionable detail.\n\
              </analysis>\n\
-             \n\
+             {guidelines_section}\n\
              Produce exactly these 9 sections:\n\
              1. User Intent — what the user is ultimately trying to accomplish\n\
              2. Technical Concepts — key technologies, patterns, constraints discussed\n\
@@ -140,9 +146,10 @@ impl<C: Channel> Agent<C> {
     async fn single_pass_summary(
         &self,
         messages: &[Message],
+        guidelines: &str,
         timeout: std::time::Duration,
     ) -> Result<String, zeph_llm::LlmError> {
-        let prompt = Self::build_chunk_prompt(messages);
+        let prompt = Self::build_chunk_prompt(messages, guidelines);
         let msgs = [Message {
             role: Role::User,
             content: prompt,
@@ -157,6 +164,7 @@ impl<C: Channel> Agent<C> {
     async fn try_summarize_with_llm(
         &self,
         messages: &[Message],
+        guidelines: &str,
     ) -> Result<String, zeph_llm::LlmError> {
         const CHUNK_TOKEN_BUDGET: usize = 4096;
         const OVERSIZED_THRESHOLD: usize = CHUNK_TOKEN_BUDGET / 2;
@@ -171,13 +179,16 @@ impl<C: Channel> Agent<C> {
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
 
         if chunks.len() <= 1 {
-            return self.single_pass_summary(messages, llm_timeout).await;
+            return self
+                .single_pass_summary(messages, guidelines, llm_timeout)
+                .await;
         }
 
         // Summarize chunks with bounded concurrency to prevent runaway API calls
         let provider = self.summary_or_primary_provider();
+        let guidelines_owned = guidelines.to_string();
         let results: Vec<_> = futures::stream::iter(chunks.iter().map(|chunk| {
-            let prompt = Self::build_chunk_prompt(chunk);
+            let prompt = Self::build_chunk_prompt(chunk, &guidelines_owned);
             let p = provider.clone();
             async move {
                 tokio::time::timeout(
@@ -207,7 +218,9 @@ impl<C: Channel> Agent<C> {
 
         if partial_summaries.is_empty() {
             // Fallback: single-pass on full messages
-            return self.single_pass_summary(messages, llm_timeout).await;
+            return self
+                .single_pass_summary(messages, guidelines, llm_timeout)
+                .await;
         }
 
         // Consolidate partial summaries
@@ -348,9 +361,10 @@ impl<C: Channel> Agent<C> {
     async fn summarize_messages(
         &self,
         messages: &[Message],
+        guidelines: &str,
     ) -> Result<String, super::super::error::AgentError> {
         // Try direct summarization first
-        match self.try_summarize_with_llm(messages).await {
+        match self.try_summarize_with_llm(messages, guidelines).await {
             Ok(summary) => return Ok(summary),
             Err(e) if !e.is_context_length_error() => return Err(e.into()),
             Err(e) => {
@@ -367,7 +381,7 @@ impl<C: Channel> Agent<C> {
                 fraction,
                 "retrying summarization with reduced tool responses"
             );
-            match self.try_summarize_with_llm(&reduced).await {
+            match self.try_summarize_with_llm(&reduced, guidelines).await {
                 Ok(summary) => {
                     tracing::info!(
                         fraction,
@@ -385,6 +399,28 @@ impl<C: Channel> Agent<C> {
         // Final fallback: metadata-only summary without LLM
         tracing::warn!("all LLM summarization attempts failed, using metadata fallback");
         Ok(Self::build_metadata_summary(messages))
+    }
+
+    /// Load the current compression guidelines from `SQLite` if the feature is enabled.
+    ///
+    /// Returns an empty string when the feature is disabled, memory is not initialized,
+    /// or the database query fails (non-fatal).
+    #[cfg(feature = "compression-guidelines")]
+    async fn load_compression_guidelines_if_enabled(&self) -> String {
+        let config = &self.memory_state.compression_guidelines_config;
+        if !config.enabled {
+            return String::new();
+        }
+        let Some(memory) = &self.memory_state.memory else {
+            return String::new();
+        };
+        match memory.sqlite().load_compression_guidelines().await {
+            Ok((_, text)) => text,
+            Err(e) => {
+                tracing::warn!("failed to load compression guidelines: {e:#}");
+                String::new()
+            }
+        }
     }
 
     pub(in crate::agent) async fn compact_context(
@@ -405,7 +441,13 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let summary = self.summarize_messages(to_compact).await?;
+        // Load compression guidelines if the feature is enabled and configured.
+        #[cfg(feature = "compression-guidelines")]
+        let guidelines = self.load_compression_guidelines_if_enabled().await;
+        #[cfg(not(feature = "compression-guidelines"))]
+        let guidelines = String::new();
+
+        let summary = self.summarize_messages(to_compact, &guidelines).await?;
 
         let compacted_count = to_compact.len();
         let summary_content =
@@ -1257,6 +1299,11 @@ impl<C: Channel> Agent<C> {
         let chunk_token_budget = chunk_budget.unwrap_or(4096);
         let oversized_threshold = chunk_token_budget / 2;
 
+        #[cfg(feature = "compression-guidelines")]
+        let guidelines = self.load_compression_guidelines_if_enabled().await;
+        #[cfg(not(feature = "compression-guidelines"))]
+        let guidelines = String::new();
+
         let chunks = super::chunk_messages(
             messages,
             chunk_token_budget,
@@ -1267,7 +1314,7 @@ impl<C: Channel> Agent<C> {
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
 
         let try_llm = |msgs: &[Message]| {
-            let prompt = Self::build_chunk_prompt(msgs);
+            let prompt = Self::build_chunk_prompt(msgs, &guidelines);
             let provider = self.summary_or_primary_provider().clone();
             async move {
                 tokio::time::timeout(
@@ -1305,6 +1352,6 @@ impl<C: Channel> Agent<C> {
 
         // Multi-chunk: use the existing summarize_messages logic (chunk_budget only applied to
         // chunk splitting above; consolidated summary uses the default path)
-        self.summarize_messages(messages).await
+        self.summarize_messages(messages, &guidelines).await
     }
 }

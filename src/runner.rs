@@ -594,6 +594,26 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         )
     };
 
+    #[cfg(feature = "compression-guidelines")]
+    let _guidelines_handle = if config.memory.compression_guidelines.enabled {
+        let guidelines_cancel = zeph_memory::CancellationToken::new();
+        let guidelines_cancel_clone = guidelines_cancel.clone();
+        let mut shutdown_for_guidelines = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = shutdown_for_guidelines.changed().await;
+            guidelines_cancel_clone.cancel();
+        });
+        Some(zeph_memory::start_guidelines_updater(
+            std::sync::Arc::new(memory.sqlite().clone()),
+            provider.clone(),
+            std::sync::Arc::clone(&memory.token_counter),
+            config.memory.compression_guidelines.clone(),
+            guidelines_cancel,
+        ))
+    } else {
+        None
+    };
+
     let skill_paths = app.skill_paths();
 
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::new(
@@ -728,7 +748,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .cloud
             .as_ref()
             .is_some_and(|c| c.server_compaction),
-    );
+    )
+    .with_compression_guidelines_config(config.memory.compression_guidelines.clone());
 
     // Load provider-specific and explicit instruction files.
     // base_dir is the process CWD at startup — the most natural project root for local tools.

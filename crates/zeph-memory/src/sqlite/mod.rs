@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod acp_sessions;
+pub mod compression_guidelines;
 pub mod corrections;
 #[cfg(feature = "experiments")]
 pub mod experiments;

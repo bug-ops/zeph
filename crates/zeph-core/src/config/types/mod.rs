@@ -211,6 +211,7 @@ impl Default for Config {
                 compression: CompressionConfig::default(),
                 routing: RoutingConfig::default(),
                 graph: GraphConfig::default(),
+                compression_guidelines: zeph_memory::CompressionGuidelinesConfig::default(),
             },
             telegram: None,
             discord: None,

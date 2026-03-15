@@ -268,6 +268,8 @@ impl VectorBackend {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MemoryConfig {
+    #[serde(default)]
+    pub compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
     #[serde(default = "default_sqlite_path_field")]
     pub sqlite_path: String,
     pub history_limit: u32,
