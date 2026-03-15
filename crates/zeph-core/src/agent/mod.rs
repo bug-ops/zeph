@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod builder;
+pub(crate) mod compaction_strategy;
 #[cfg(feature = "compression-guidelines")]
 pub(super) mod compression_feedback;
 mod context;
@@ -10,6 +11,7 @@ pub mod error;
 #[cfg(feature = "experiments")]
 mod experiment_cmd;
 pub(super) mod feedback_detector;
+pub(crate) mod focus;
 mod graph_commands;
 #[cfg(feature = "compression-guidelines")]
 mod guidelines_commands;
@@ -28,6 +30,7 @@ pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
 pub mod session_config;
+pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;
 pub(crate) mod tool_execution;
@@ -340,6 +343,18 @@ pub struct Agent<C: Channel> {
     /// Snapshot of the policy config for `/policy` command inspection.
     #[cfg(feature = "policy-enforcer")]
     pub(super) policy_config: Option<zeph_tools::PolicyConfig>,
+    /// Focus agent state: active session tracking, knowledge block, reminder counters (#1850).
+    pub(super) focus: focus::FocusState,
+    /// `SideQuest` state: cursor tracking, turn counter, eviction stats (#1885).
+    pub(super) sidequest: sidequest::SidequestState,
+    /// Cached task goal for TaskAware/MIG pruning. Set by `maybe_compact()`,
+    /// invalidated when the last user message hash changes.
+    #[cfg(feature = "context-compression")]
+    pub(super) current_task_goal: Option<String>,
+    /// Hash of the last user message when `current_task_goal` was populated.
+    /// Used to detect when the user's direction has changed.
+    #[cfg(feature = "context-compression")]
+    pub(super) task_goal_user_msg_hash: Option<u64>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -564,6 +579,12 @@ impl<C: Channel> Agent<C> {
             ),
             #[cfg(feature = "policy-enforcer")]
             policy_config: None,
+            focus: focus::FocusState::default(),
+            sidequest: sidequest::SidequestState::default(),
+            #[cfg(feature = "context-compression")]
+            current_task_goal: None,
+            #[cfg(feature = "context-compression")]
+            task_goal_user_msg_hash: None,
         }
     }
 
@@ -2612,6 +2633,7 @@ impl<C: Channel> Agent<C> {
 
     /// Dispatch slash commands. Returns `Some(Ok(()))` when handled,
     /// `Some(Err(_))` on I/O error, `None` to fall through to LLM processing.
+    #[allow(clippy::too_many_lines)]
     async fn dispatch_slash_command(
         &mut self,
         trimmed: &str,
@@ -2727,6 +2749,16 @@ impl<C: Channel> Agent<C> {
 
         if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
             return self.dispatch_agent_command(trimmed).await;
+        }
+
+        #[cfg(feature = "context-compression")]
+        if trimmed == "/focus" {
+            handled!(self.handle_focus_status_command().await);
+        }
+
+        #[cfg(feature = "context-compression")]
+        if trimmed == "/sidequest" {
+            handled!(self.handle_sidequest_status_command().await);
         }
 
         None
@@ -3024,6 +3056,7 @@ impl<C: Channel> Agent<C> {
         result
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_user_message_inner(
         &mut self,
         text: String,
@@ -3090,6 +3123,23 @@ impl<C: Channel> Agent<C> {
         self.rebuild_system_prompt(&text).await;
 
         self.detect_and_record_corrections(trimmed, conv_id).await;
+
+        // Tick Focus Agent and SideQuest turn counters (#1850, #1885).
+        #[cfg(feature = "context-compression")]
+        {
+            self.focus.tick();
+
+            // SideQuest eviction: runs every N user turns when enabled.
+            // Skipped when a hard compaction already ran this turn (compacted_this_turn is reset
+            // below, so we check it before the reset).
+            let sidequest_should_fire = self.sidequest.tick();
+            if sidequest_should_fire
+                && !self.context_manager.compacted_this_turn
+                && let Err(e) = self.maybe_sidequest_eviction().await
+            {
+                tracing::warn!("sidequest eviction failed: {e:#}");
+            }
+        }
 
         // Reset per-turn compaction guard at the start of context management phase.
         self.context_manager.compacted_this_turn = false;
@@ -3992,6 +4042,125 @@ impl<C: Channel> Agent<C> {
         self.index.repo_map_ttl = std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
 
         tracing::info!("config reloaded");
+    }
+
+    /// `/focus` slash command: display Focus Agent status.
+    #[cfg(feature = "context-compression")]
+    async fn handle_focus_status_command(&mut self) -> Result<(), error::AgentError> {
+        use std::fmt::Write;
+        let mut out = String::from("Focus Agent status\n\n");
+        let _ = writeln!(out, "Enabled:          {}", self.focus.config.enabled);
+        let _ = writeln!(out, "Active session:   {}", self.focus.is_active());
+        if let Some(ref scope) = self.focus.active_scope {
+            let _ = writeln!(out, "Active scope:     {scope}");
+        }
+        let _ = writeln!(
+            out,
+            "Knowledge blocks: {}",
+            self.focus.knowledge_blocks.len()
+        );
+        let _ = writeln!(out, "Turns since focus: {}", self.focus.turns_since_focus);
+        self.channel.send(&out).await?;
+        Ok(())
+    }
+
+    /// `/sidequest` slash command: display `SideQuest` eviction stats.
+    #[cfg(feature = "context-compression")]
+    async fn handle_sidequest_status_command(&mut self) -> Result<(), error::AgentError> {
+        use std::fmt::Write;
+        let mut out = String::from("SideQuest status\n\n");
+        let _ = writeln!(out, "Enabled:        {}", self.sidequest.config.enabled);
+        let _ = writeln!(
+            out,
+            "Interval turns: {}",
+            self.sidequest.config.interval_turns
+        );
+        let _ = writeln!(out, "Turn counter:   {}", self.sidequest.turn_counter);
+        let _ = writeln!(out, "Passes run:     {}", self.sidequest.passes_run);
+        let _ = writeln!(
+            out,
+            "Total evicted:  {} tool outputs",
+            self.sidequest.total_evicted
+        );
+        self.channel.send(&out).await?;
+        Ok(())
+    }
+
+    /// Run `SideQuest` tool output eviction pass (#1885).
+    ///
+    /// Calls the summary provider with the current cursor list to identify stale tool outputs,
+    /// then applies eviction for validated cursor indices. The active focus guard (S3) and the
+    /// `compacted_this_turn` guard prevent double compression.
+    #[cfg(feature = "context-compression")]
+    async fn maybe_sidequest_eviction(&mut self) -> Result<(), error::AgentError> {
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        // Guard: do not evict while a focus session is active.
+        if self.focus.is_active() {
+            tracing::debug!("sidequest: skipping — focus session active");
+            return Ok(());
+        }
+
+        // Rebuild cursor list from current messages.
+        self.sidequest
+            .rebuild_cursors(&self.messages, &self.metrics.token_counter);
+
+        if self.sidequest.tool_output_cursors.is_empty() {
+            tracing::debug!("sidequest: no eligible cursors");
+            return Ok(());
+        }
+
+        let prompt = self.sidequest.build_eviction_prompt();
+        let msgs = [Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let provider = self.summary_or_primary_provider();
+        let response =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), provider.chat(&msgs))
+                .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::debug!("sidequest: LLM eviction call failed: {e:#}");
+                    return Ok(());
+                }
+                Err(_) => {
+                    tracing::debug!("sidequest: LLM eviction call timed out");
+                    return Ok(());
+                }
+            };
+
+        let Some(cursors) = self.sidequest.parse_eviction_response(&response) else {
+            tracing::debug!("sidequest: invalid JSON response, skipping eviction");
+            return Ok(());
+        };
+
+        if cursors.is_empty() {
+            tracing::debug!("sidequest: no cursors to evict");
+            return Ok(());
+        }
+
+        let freed = self.sidequest.apply_eviction(
+            &mut self.messages,
+            &cursors,
+            &self.metrics.token_counter,
+        );
+
+        if freed > 0 {
+            self.recompute_prompt_tokens();
+            tracing::info!(
+                freed_tokens = freed,
+                evicted_cursors = cursors.len(),
+                pass = self.sidequest.passes_run,
+                "sidequest eviction complete"
+            );
+        }
+
+        Ok(())
     }
 }
 pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {

@@ -23,6 +23,7 @@ metal = ["zeph-llm/metal"]
 lsp-context = []
 policy-enforcer = ["zeph-tools/policy-enforcer"]
 scheduler = []
+context-compression = []
 
 [dependencies]
 age.workspace = true

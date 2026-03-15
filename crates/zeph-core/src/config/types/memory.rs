@@ -338,6 +338,8 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub compression: CompressionConfig,
     #[serde(default)]
+    pub sidequest: SidequestConfig,
+    #[serde(default)]
     pub routing: RoutingConfig,
     #[serde(default)]
     pub graph: GraphConfig,
@@ -479,6 +481,27 @@ pub enum CompressionStrategy {
     },
 }
 
+/// Pruning strategy for tool-output eviction inside the compaction pipeline (#1851).
+///
+/// When `context-compression` feature is enabled, this replaces the default oldest-first
+/// heuristic with scored eviction.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PruningStrategy {
+    /// Oldest-first eviction — current default behavior.
+    #[default]
+    Reactive,
+    /// Short LLM call extracts a task goal; blocks are scored by keyword overlap and pruned
+    /// lowest-first. Requires `context-compression` feature.
+    TaskAware,
+    /// Coarse-to-fine MIG scoring: relevance − redundancy with temporal partitioning.
+    /// Requires `context-compression` feature.
+    Mig,
+    /// Combined `TaskAware` goal extraction + MIG scoring.
+    /// Requires `context-compression` feature.
+    TaskAwareMig,
+}
+
 /// Configuration for active context compression (#1161).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -486,11 +509,62 @@ pub struct CompressionConfig {
     /// Compression strategy.
     #[serde(flatten)]
     pub strategy: CompressionStrategy,
+    /// Tool-output pruning strategy (requires `context-compression` feature).
+    pub pruning_strategy: PruningStrategy,
     /// Model to use for compression summaries.
     ///
     /// Currently unused — the primary summary provider is used regardless of this value.
     /// Reserved for future per-compression model selection. Setting this field has no effect.
     pub model: String,
+}
+
+fn default_sidequest_interval_turns() -> u32 {
+    4
+}
+
+fn default_sidequest_max_eviction_ratio() -> f32 {
+    0.5
+}
+
+fn default_sidequest_max_cursors() -> usize {
+    30
+}
+
+fn default_sidequest_min_cursor_tokens() -> usize {
+    100
+}
+
+/// Configuration for LLM-driven side-thread tool output eviction (#1885).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SidequestConfig {
+    /// Enable `SideQuest` eviction. Default: `false`.
+    pub enabled: bool,
+    /// Run eviction every N user turns. Default: `4`.
+    #[serde(default = "default_sidequest_interval_turns")]
+    pub interval_turns: u32,
+    /// Maximum fraction of tool outputs to evict per pass. Default: `0.5`.
+    #[serde(default = "default_sidequest_max_eviction_ratio")]
+    pub max_eviction_ratio: f32,
+    /// Maximum cursor entries in eviction prompt (largest outputs first). Default: `30`.
+    #[serde(default = "default_sidequest_max_cursors")]
+    pub max_cursors: usize,
+    /// Exclude tool outputs smaller than this token count from eviction candidates.
+    /// Default: `100`.
+    #[serde(default = "default_sidequest_min_cursor_tokens")]
+    pub min_cursor_tokens: usize,
+}
+
+impl Default for SidequestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_turns: default_sidequest_interval_turns(),
+            max_eviction_ratio: default_sidequest_max_eviction_ratio(),
+            max_cursors: default_sidequest_max_cursors(),
+            min_cursor_tokens: default_sidequest_min_cursor_tokens(),
+        }
+    }
 }
 
 /// Configuration for the knowledge graph memory subsystem (`[memory.graph]` TOML section).

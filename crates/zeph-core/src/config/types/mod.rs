@@ -16,7 +16,7 @@ mod ui;
 #[cfg(test)]
 mod tests;
 
-pub use agent::{AgentConfig, SubAgentConfig, SubAgentLifecycleHooks};
+pub use agent::{AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks};
 pub use channels::{
     A2aServerConfig, DiscordConfig, McpConfig, McpServerConfig, SlackConfig, TelegramConfig,
 };
@@ -36,8 +36,8 @@ pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{
     CompressionConfig, CompressionStrategy, DocumentConfig, GraphConfig, MemoryConfig,
-    NoteLinkingConfig, RoutingConfig, RoutingStrategy, SemanticConfig, SessionsConfig,
-    VectorBackend,
+    NoteLinkingConfig, PruningStrategy, RoutingConfig, RoutingStrategy, SemanticConfig,
+    SessionsConfig, SidequestConfig, VectorBackend,
 };
 pub use providers::{
     CandleConfig, CascadeClassifierMode, CascadeConfig, CloudLlmConfig, CompatibleConfig,
@@ -149,6 +149,7 @@ impl Default for Config {
                 max_tool_retries: 2,
                 tool_repeat_threshold: 2,
                 max_retry_duration_secs: 30,
+                focus: FocusConfig::default(),
             },
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,
@@ -209,6 +210,7 @@ impl Default for Config {
                 documents: DocumentConfig::default(),
                 eviction: zeph_memory::EvictionConfig::default(),
                 compression: CompressionConfig::default(),
+                sidequest: SidequestConfig::default(),
                 routing: RoutingConfig::default(),
                 graph: GraphConfig::default(),
                 compression_guidelines: zeph_memory::CompressionGuidelinesConfig::default(),

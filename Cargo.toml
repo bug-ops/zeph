@@ -157,12 +157,12 @@ readme = "README.md"
 default = []
 
 # === Use-case bundles ===
-desktop = ["tui", "scheduler", "compression-guidelines"]
+desktop = ["tui", "scheduler", "compression-guidelines", "context-compression"]
 ide     = ["acp", "acp-http", "lsp-context"]
 server  = ["gateway", "a2a", "scheduler", "otel"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf", "stt"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "guardrail", "policy-enforcer"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "guardrail", "policy-enforcer", "context-compression"]
 
 # === Individual feature flags ===
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
@@ -185,6 +185,7 @@ experiments = ["zeph-core/experiments", "zeph-memory/experiments", "zeph-tui?/ex
 lsp-context = ["zeph-core/lsp-context", "zeph-tui?/lsp-context"]
 stt = ["zeph-llm/stt", "dep:reqwest"]
 policy-enforcer = ["zeph-tools/policy-enforcer", "zeph-core/policy-enforcer"]
+context-compression = ["zeph-core/context-compression"]
 
 [dependencies]
 anyhow.workspace = true

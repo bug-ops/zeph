@@ -453,7 +453,21 @@ impl<C: Channel> Agent<C> {
         }
 
         let compact_end = self.messages.len() - preserve_tail;
-        let to_compact = &self.messages[1..compact_end];
+
+        // S1 fix: extract focus-pinned messages before draining so they survive compaction.
+        // These are Knowledge block messages created by the Focus Agent (#1850).
+        let pinned_messages: Vec<Message> = self.messages[1..compact_end]
+            .iter()
+            .filter(|m| m.metadata.focus_pinned)
+            .cloned()
+            .collect();
+
+        // Summarize only the non-pinned messages in the compaction range.
+        let to_compact: Vec<Message> = self.messages[1..compact_end]
+            .iter()
+            .filter(|m| !m.metadata.focus_pinned)
+            .cloned()
+            .collect();
         if to_compact.is_empty() {
             return Ok(());
         }
@@ -464,12 +478,14 @@ impl<C: Channel> Agent<C> {
         #[cfg(not(feature = "compression-guidelines"))]
         let guidelines = String::new();
 
-        let summary = self.summarize_messages(to_compact, &guidelines).await?;
+        let summary = self.summarize_messages(&to_compact, &guidelines).await?;
 
         let compacted_count = to_compact.len();
         let summary_content =
             format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
+        // Drain the original range (includes both pinned and non-pinned messages).
         self.messages.drain(1..compact_end);
+        // Insert the compaction summary at position 1.
         self.messages.insert(
             1,
             Message {
@@ -479,6 +495,11 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::agent_only(),
             },
         );
+        // Re-insert pinned messages right after the summary (position 2+).
+        // They are placed before the preserved tail so the LLM always sees them.
+        for (i, pinned) in pinned_messages.into_iter().enumerate() {
+            self.messages.insert(2 + i, pinned);
+        }
 
         tracing::info!(
             compacted_count,
@@ -535,10 +556,28 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    /// Prune tool output bodies outside the protection zone, oldest first.
+    /// Prune tool output bodies.
+    ///
+    /// Dispatches to scored pruning when `context-compression` is enabled and the configured
+    /// pruning strategy is not `Reactive`. Falls back to oldest-first when the feature is
+    /// disabled or the strategy is `Reactive`.
+    ///
     /// Returns the number of tokens freed.
     #[allow(clippy::cast_precision_loss)]
     pub(in crate::agent) fn prune_tool_outputs(&mut self, min_to_free: usize) -> usize {
+        #[cfg(feature = "context-compression")]
+        {
+            use crate::config::PruningStrategy;
+            match &self.context_manager.compression.pruning_strategy {
+                PruningStrategy::TaskAware | PruningStrategy::TaskAwareMig => {
+                    return self.prune_tool_outputs_scored(min_to_free);
+                }
+                PruningStrategy::Mig => {
+                    return self.prune_tool_outputs_mig(min_to_free);
+                }
+                PruningStrategy::Reactive => {} // fall through to oldest-first
+            }
+        }
         let protect = self.context_manager.prune_protect_tokens;
         let mut tail_tokens = 0usize;
         let mut protection_boundary = self.messages.len();
@@ -564,6 +603,10 @@ impl<C: Channel> Agent<C> {
         for msg in &mut self.messages[..protection_boundary] {
             if freed >= min_to_free {
                 break;
+            }
+            // S1 fix: never prune pinned Knowledge block messages (#1850).
+            if msg.metadata.focus_pinned {
+                continue;
             }
             let mut modified = false;
             for part in &mut msg.parts {
@@ -597,6 +640,171 @@ impl<C: Channel> Agent<C> {
         freed
     }
 
+    /// Task-aware / MIG pruning: score tool outputs by relevance to the current task goal,
+    /// then evict lowest-scoring blocks until `min_to_free` tokens are freed.
+    ///
+    /// Requires `context-compression` feature. Falls back to `prune_tool_outputs()` otherwise.
+    ///
+    /// ## `SideQuest` interaction contract (S3 from critic review)
+    ///
+    /// When both `TaskAware` pruning and `SideQuest` are enabled, `SideQuest` is expected to be
+    /// disabled by the caller (set `sidequest.enabled = false` when `pruning_strategy` != Reactive).
+    /// This is the "Option A" documented in the critic review: the two systems do not share state
+    /// at the pruning level. `SideQuest` uses the same `focus_pinned` protection to avoid evicting
+    /// Knowledge block content.
+    #[cfg(feature = "context-compression")]
+    pub(in crate::agent) fn prune_tool_outputs_scored(&mut self, min_to_free: usize) -> usize {
+        use crate::agent::compaction_strategy::score_blocks_task_aware;
+        use crate::config::PruningStrategy;
+
+        let goal = match &self.context_manager.compression.pruning_strategy {
+            PruningStrategy::TaskAware | PruningStrategy::TaskAwareMig => {
+                self.current_task_goal.clone()
+            }
+            _ => None,
+        };
+
+        let scores = if let Some(ref goal) = goal {
+            score_blocks_task_aware(&self.messages, goal, &self.metrics.token_counter)
+        } else {
+            // No goal available: fall back to oldest-first
+            return self.prune_tool_outputs(min_to_free);
+        };
+
+        // Sort ascending by score: lowest relevance first (best eviction candidates)
+        let mut sorted_scores = scores;
+        sorted_scores.sort_unstable_by(|a, b| {
+            a.relevance
+                .partial_cmp(&b.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut freed = 0usize;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+
+        let mut pruned_indices = Vec::new();
+        for block in &sorted_scores {
+            if freed >= min_to_free {
+                break;
+            }
+            let msg = &mut self.messages[block.msg_index];
+            if msg.metadata.focus_pinned {
+                continue;
+            }
+            let mut modified = false;
+            for part in &mut msg.parts {
+                if let MessagePart::ToolOutput {
+                    body, compacted_at, ..
+                } = part
+                    && compacted_at.is_none()
+                    && !body.is_empty()
+                {
+                    freed += self.metrics.token_counter.count_tokens(body);
+                    let ref_notice = extract_overflow_ref(body)
+                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
+                        .unwrap_or_default();
+                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                    *compacted_at = Some(now);
+                    *body = ref_notice;
+                    modified = true;
+                }
+            }
+            if modified {
+                pruned_indices.push(block.msg_index);
+            }
+        }
+
+        for &idx in &pruned_indices {
+            self.messages[idx].rebuild_content();
+        }
+
+        if freed > 0 {
+            tracing::info!(
+                freed,
+                pruned = pruned_indices.len(),
+                strategy = "task_aware",
+                "task-aware pruned tool outputs"
+            );
+            self.update_metrics(|m| m.tool_output_prunes += 1);
+        }
+        freed
+    }
+
+    /// MIG-scored pruning. Uses relevance − redundancy scoring to identify the best eviction
+    /// candidates. Requires `context-compression` feature.
+    #[cfg(feature = "context-compression")]
+    pub(in crate::agent) fn prune_tool_outputs_mig(&mut self, min_to_free: usize) -> usize {
+        use crate::agent::compaction_strategy::score_blocks_mig;
+
+        let goal = self.current_task_goal.as_deref();
+        let mut scores = score_blocks_mig(&self.messages, goal, &self.metrics.token_counter);
+
+        // Sort ascending by MIG: most negative MIG = highest eviction priority
+        scores.sort_unstable_by(|a, b| {
+            a.mig
+                .partial_cmp(&b.mig)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut freed = 0usize;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+
+        let mut pruned_indices = Vec::new();
+        for block in &scores {
+            if freed >= min_to_free {
+                break;
+            }
+            let msg = &mut self.messages[block.msg_index];
+            if msg.metadata.focus_pinned {
+                continue;
+            }
+            let mut modified = false;
+            for part in &mut msg.parts {
+                if let MessagePart::ToolOutput {
+                    body, compacted_at, ..
+                } = part
+                    && compacted_at.is_none()
+                    && !body.is_empty()
+                {
+                    freed += self.metrics.token_counter.count_tokens(body);
+                    let ref_notice = extract_overflow_ref(body)
+                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
+                        .unwrap_or_default();
+                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                    *compacted_at = Some(now);
+                    *body = ref_notice;
+                    modified = true;
+                }
+            }
+            if modified {
+                pruned_indices.push(block.msg_index);
+            }
+        }
+
+        for &idx in &pruned_indices {
+            self.messages[idx].rebuild_content();
+        }
+
+        if freed > 0 {
+            tracing::info!(
+                freed,
+                pruned = pruned_indices.len(),
+                strategy = "mig",
+                "MIG-pruned tool outputs"
+            );
+            self.update_metrics(|m| m.tool_output_prunes += 1);
+        }
+        freed
+    }
+
     /// Inline pruning for tool loops: clear tool output bodies from messages
     /// older than the last `keep_recent` messages. Called after each tool iteration
     /// to prevent context growth during long tool loops.
@@ -620,8 +828,12 @@ impl<C: Channel> Agent<C> {
             .unwrap_or_default()
             .as_secs()
             .cast_signed();
-        // Skip system prompt (index 0), prune from 1..boundary
+        // Skip system prompt (index 0), prune from 1..boundary.
+        // Also skip focus-pinned Knowledge block messages (#1850 S1 fix).
         for msg in &mut self.messages[1..boundary] {
+            if msg.metadata.focus_pinned {
+                continue;
+            }
             let mut modified = false;
             for part in &mut msg.parts {
                 match part {
@@ -1024,6 +1236,10 @@ impl<C: Channel> Agent<C> {
             CompactionTier::Soft => {
                 let _ = self.channel.send_status("soft compacting context...").await;
 
+                // Step 0 (context-compression): extract task goal for scored pruning if needed.
+                #[cfg(feature = "context-compression")]
+                self.maybe_refresh_task_goal().await;
+
                 // Step 1: apply deferred tool summaries (free tokens without LLM).
                 self.apply_deferred_summaries();
 
@@ -1420,5 +1636,134 @@ impl<C: Channel> Agent<C> {
         // Multi-chunk: use the existing summarize_messages logic (chunk_budget only applied to
         // chunk splitting above; consolidated summary uses the default path)
         self.summarize_messages(messages, &guidelines).await
+    }
+
+    /// Refresh the cached task goal when the last user message has changed (S5 fix, #1850).
+    ///
+    /// Uses a hash of the last user message as a cache key — the goal is only re-extracted
+    /// when the user sends a new message. This avoids invalidating the goal after compaction,
+    /// which was the original design flaw flagged in critic gap S5.
+    ///
+    /// The LLM call uses the summary provider with a 5-second timeout and only fires when
+    /// the pruning strategy requires a task goal (`TaskAware`, `Mig`, or `TaskAwareMig`).
+    #[cfg(feature = "context-compression")]
+    pub(in crate::agent) async fn maybe_refresh_task_goal(&mut self) {
+        use std::hash::Hash as _;
+
+        use crate::config::PruningStrategy;
+
+        // Only needed when a task-aware or MIG strategy is active.
+        match &self.context_manager.compression.pruning_strategy {
+            PruningStrategy::Reactive => return,
+            PruningStrategy::TaskAware | PruningStrategy::Mig | PruningStrategy::TaskAwareMig => {}
+        }
+
+        // Find the last user message content.
+        let last_user_content = self
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == zeph_llm::provider::Role::User)
+            .map(|m| m.content.as_str())
+            .unwrap_or_default();
+
+        if last_user_content.is_empty() {
+            return;
+        }
+
+        // Compute a hash of the last user message to detect changes (S5).
+        let hash = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            last_user_content.hash(&mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+
+        // Cache hit: goal is still valid for this user message.
+        if self.task_goal_user_msg_hash == Some(hash) {
+            return;
+        }
+
+        // Cache miss: extract the task goal from recent context.
+        let goal = self.extract_task_goal().await;
+        self.current_task_goal = goal;
+        self.task_goal_user_msg_hash = Some(hash);
+    }
+
+    /// Ask the summary provider to extract the current task goal from recent messages.
+    ///
+    /// Uses only the last 10 user/assistant messages and a 5-second timeout to keep this cheap.
+    /// Returns `None` on timeout or LLM error (caller keeps the previous goal in that case).
+    #[cfg(feature = "context-compression")]
+    async fn extract_task_goal(&self) -> Option<String> {
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        // Collect the last 10 user/assistant messages for the goal extraction prompt.
+        let recent: Vec<&Message> = self
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, Role::User | Role::Assistant))
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        if recent.is_empty() {
+            return None;
+        }
+
+        let mut context_text = String::new();
+        for msg in &recent {
+            let role = match msg.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+            let preview = if msg.content.len() > 300 {
+                &msg.content[..300]
+            } else {
+                &msg.content
+            };
+            let _ = std::fmt::write(&mut context_text, format_args!("[{role}]: {preview}\n"));
+        }
+
+        let prompt = format!(
+            "Extract the current task goal from this conversation excerpt in one concise sentence.\n\
+             Focus on what the user is trying to accomplish right now.\n\
+             Respond with only the goal sentence, no preamble.\n\n\
+             <conversation>\n{context_text}</conversation>"
+        );
+
+        let msgs = [Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.summary_or_primary_provider().chat(&msgs),
+        )
+        .await
+        {
+            Ok(Ok(goal)) => {
+                let trimmed = goal.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("extract_task_goal: LLM error: {e:#}");
+                None
+            }
+            Err(_) => {
+                tracing::debug!("extract_task_goal: timed out");
+                None
+            }
+        }
     }
 }

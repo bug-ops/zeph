@@ -16,6 +16,22 @@ fn default_auto_update_check() -> bool {
     true
 }
 
+fn default_focus_compression_interval() -> usize {
+    12
+}
+
+fn default_focus_reminder_interval() -> usize {
+    15
+}
+
+fn default_focus_min_messages_per_focus() -> usize {
+    8
+}
+
+fn default_focus_max_knowledge_tokens() -> usize {
+    4096
+}
+
 fn default_max_tool_retries() -> usize {
     2
 }
@@ -42,6 +58,39 @@ fn default_transcript_enabled() -> bool {
 
 fn default_transcript_max_files() -> usize {
     50
+}
+
+/// Configuration for focus-based active context compression (#1850).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct FocusConfig {
+    /// Enable focus tools (`start_focus` / `complete_focus`). Default: `false`.
+    pub enabled: bool,
+    /// Suggest focus after this many turns without one. Default: `12`.
+    #[serde(default = "default_focus_compression_interval")]
+    pub compression_interval: usize,
+    /// Remind the agent every N turns when focus is overdue. Default: `15`.
+    #[serde(default = "default_focus_reminder_interval")]
+    pub reminder_interval: usize,
+    /// Minimum messages required before suggesting a focus. Default: `8`.
+    #[serde(default = "default_focus_min_messages_per_focus")]
+    pub min_messages_per_focus: usize,
+    /// Maximum tokens the Knowledge block may grow to before old entries are trimmed.
+    /// Default: `4096`.
+    #[serde(default = "default_focus_max_knowledge_tokens")]
+    pub max_knowledge_tokens: usize,
+}
+
+impl Default for FocusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            compression_interval: default_focus_compression_interval(),
+            reminder_interval: default_focus_reminder_interval(),
+            min_messages_per_focus: default_focus_min_messages_per_focus(),
+            max_knowledge_tokens: default_focus_max_knowledge_tokens(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -71,6 +120,9 @@ pub struct AgentConfig {
     /// 0 = no wall-clock budget (only `max_tool_retries` applies).
     #[serde(default = "default_max_retry_duration_secs")]
     pub max_retry_duration_secs: u64,
+    /// Focus-based active context compression configuration (#1850).
+    #[serde(default)]
+    pub focus: FocusConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

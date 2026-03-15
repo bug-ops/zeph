@@ -53,6 +53,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if any value is out of range.
+    #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.memory.history_limit > 10_000 {
             return Err(ConfigError::Validation(format!(
@@ -146,6 +147,35 @@ impl Config {
             )));
         }
         self.experiments.validate()?;
+
+        // Focus config validation
+        if self.agent.focus.compression_interval == 0 {
+            return Err(ConfigError::Validation(
+                "agent.focus.compression_interval must be >= 1".into(),
+            ));
+        }
+        if self.agent.focus.min_messages_per_focus == 0 {
+            return Err(ConfigError::Validation(
+                "agent.focus.min_messages_per_focus must be >= 1".into(),
+            ));
+        }
+
+        // SideQuest config validation
+        if self.memory.sidequest.interval_turns == 0 {
+            return Err(ConfigError::Validation(
+                "memory.sidequest.interval_turns must be >= 1".into(),
+            ));
+        }
+        if !self.memory.sidequest.max_eviction_ratio.is_finite()
+            || self.memory.sidequest.max_eviction_ratio <= 0.0
+            || self.memory.sidequest.max_eviction_ratio > 1.0
+        {
+            return Err(ConfigError::Validation(format!(
+                "memory.sidequest.max_eviction_ratio must be in (0.0, 1.0], got {}",
+                self.memory.sidequest.max_eviction_ratio
+            )));
+        }
+
         Ok(())
     }
 

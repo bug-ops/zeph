@@ -175,6 +175,8 @@ impl SqliteStore {
                             user_visible: user_visible != 0,
                             compacted_at: None,
                             deferred_summary: None,
+                            focus_pinned: false,
+                            focus_marker_id: None,
                         },
                     }
                 },
@@ -234,6 +236,8 @@ impl SqliteStore {
                             user_visible: user_visible != 0,
                             compacted_at: None,
                             deferred_summary: None,
+                            focus_pinned: false,
+                            focus_marker_id: None,
                         },
                     }
                 },
@@ -360,6 +364,8 @@ impl SqliteStore {
                         user_visible: user_visible != 0,
                         compacted_at: None,
                         deferred_summary: None,
+                        focus_pinned: false,
+                        focus_marker_id: None,
                     },
                 }
             },

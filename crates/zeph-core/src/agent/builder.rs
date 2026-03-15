@@ -560,6 +560,20 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure Focus-based active context compression (#1850).
+    #[must_use]
+    pub fn with_focus_config(mut self, config: crate::config::FocusConfig) -> Self {
+        self.focus = super::focus::FocusState::new(config);
+        self
+    }
+
+    /// Configure `SideQuest` LLM-driven tool output eviction (#1885).
+    #[must_use]
+    pub fn with_sidequest_config(mut self, config: crate::config::SidequestConfig) -> Self {
+        self.sidequest = super::sidequest::SidequestState::new(config);
+        self
+    }
+
     #[must_use]
     pub fn with_routing(mut self, routing: RoutingConfig) -> Self {
         self.context_manager.routing = routing;
@@ -841,6 +855,7 @@ mod tests {
                 max_summary_tokens: 2_000,
             },
             model: String::new(),
+            pruning_strategy: crate::config::PruningStrategy::default(),
         };
         let agent = make_agent().with_compression(compression);
         assert!(

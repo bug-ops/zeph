@@ -233,4 +233,20 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Tools,
         feature_gate: Some("policy-enforcer"),
     },
+    #[cfg(feature = "context-compression")]
+    SlashCommandInfo {
+        name: "/focus",
+        args: "",
+        description: "Show Focus Agent status (active session, knowledge block size)",
+        category: SlashCategory::Advanced,
+        feature_gate: Some("context-compression"),
+    },
+    #[cfg(feature = "context-compression")]
+    SlashCommandInfo {
+        name: "/sidequest",
+        args: "",
+        description: "Show SideQuest eviction stats (passes run, tokens freed)",
+        category: SlashCategory::Advanced,
+        feature_gate: Some("context-compression"),
+    },
 ];

@@ -244,6 +244,14 @@ pub struct MessageMetadata {
     /// Stored on the tool response message; cleared after application.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_summary: Option<String>,
+    /// When true, this message is excluded from all compaction passes (soft pruning,
+    /// hard summarization, sidequest eviction). Used for the Focus Knowledge block (#1850).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub focus_pinned: bool,
+    /// Unique marker UUID set when `start_focus` begins a session. Used by `complete_focus`
+    /// to locate the checkpoint without relying on a fragile raw index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_marker_id: Option<uuid::Uuid>,
 }
 
 impl Default for MessageMetadata {
@@ -253,6 +261,8 @@ impl Default for MessageMetadata {
             user_visible: true,
             compacted_at: None,
             deferred_summary: None,
+            focus_pinned: false,
+            focus_marker_id: None,
         }
     }
 }
@@ -266,6 +276,8 @@ impl MessageMetadata {
             user_visible: false,
             compacted_at: None,
             deferred_summary: None,
+            focus_pinned: false,
+            focus_marker_id: None,
         }
     }
 
@@ -277,6 +289,21 @@ impl MessageMetadata {
             user_visible: true,
             compacted_at: None,
             deferred_summary: None,
+            focus_pinned: false,
+            focus_marker_id: None,
+        }
+    }
+
+    /// Pinned Knowledge block — excluded from all compaction passes.
+    #[must_use]
+    pub fn focus_pinned() -> Self {
+        Self {
+            agent_visible: true,
+            user_visible: false,
+            compacted_at: None,
+            deferred_summary: None,
+            focus_pinned: true,
+            focus_marker_id: None,
         }
     }
 }

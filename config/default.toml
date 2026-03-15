@@ -736,3 +736,36 @@ max_files = 7
 # update_interval_secs = 300
 # # Maximum unused failure pairs to retain (cleanup policy)
 # max_stored_pairs = 100
+# Context-compression feature: Focus Agent (#1850)
+# Requires the `context-compression` feature flag to be enabled at compile time.
+# [agent.focus]
+# # Enable start_focus / complete_focus native tools
+# enabled = false
+# # Minimum turns between focus completions before hinting the LLM
+# compression_interval = 5
+# # Minimum turns between reminder injections
+# reminder_interval = 3
+# # Minimum bracketed messages before complete_focus is useful
+# min_messages_per_focus = 3
+# # Maximum tokens the Knowledge block may grow to before trimming old entries
+# max_knowledge_tokens = 2000
+
+# Context-compression feature: SideQuest LLM-driven eviction (#1885)
+# Requires the `context-compression` feature flag to be enabled at compile time.
+# [memory.sidequest]
+# # Enable SideQuest tool output eviction
+# enabled = false
+# # Run eviction every N user turns (0 = disabled)
+# interval_turns = 10
+# # Maximum fraction of tool outputs to evict per pass (0.0-1.0)
+# max_eviction_ratio = 0.5
+# # Maximum tool outputs sent to the LLM for eviction scoring
+# max_cursors = 30
+# # Minimum token size for a tool output to be eviction-eligible
+# min_cursor_tokens = 50
+
+# Context-compression feature: task-aware pruning strategy (#1851)
+# Requires the `context-compression` feature flag to be enabled at compile time.
+# [memory.compression]
+# # Pruning strategy: "reactive" (default), "task_aware", "mig", "task_aware_mig"
+# pruning_strategy = "reactive"
