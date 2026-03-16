@@ -260,6 +260,7 @@ pub(crate) fn score_blocks_mig(
 #[cfg(all(test, feature = "context-compression"))]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn tokenize_filters_stop_words() {

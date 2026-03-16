@@ -66,6 +66,8 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+// Used by build_knowledge_message (context-compression feature).
+#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) const KNOWLEDGE_BLOCK_PREFIX: &str = "[knowledge]\n";
 
 /// The name emitted in the system prompt to identify the Knowledge block.
@@ -74,6 +76,8 @@ pub(crate) const KNOWLEDGE_BLOCK_PREFIX: &str = "[knowledge]\n";
 pub(crate) const FOCUS_REMINDER_PREFIX: &str = "[focus reminder] ";
 
 /// Tracks the state of the active focus session.
+// Fields and methods below are consumed by context-compression feature paths.
+#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) struct FocusState {
     pub(crate) config: FocusConfig,
     /// Accumulated knowledge entries from all completed focus sessions.
@@ -90,6 +94,7 @@ pub(crate) struct FocusState {
     pub(crate) turns_since_reminder: usize,
 }
 
+#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 impl FocusState {
     pub(crate) fn new(config: FocusConfig) -> Self {
         Self {
@@ -104,6 +109,7 @@ impl FocusState {
     }
 
     /// Returns `true` if a focus session is currently active.
+    #[cfg_attr(not(feature = "context-compression"), allow(clippy::unused_self))]
     pub(crate) fn is_active(&self) -> bool {
         #[cfg(feature = "context-compression")]
         {

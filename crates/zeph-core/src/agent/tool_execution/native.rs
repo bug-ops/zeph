@@ -72,6 +72,8 @@ impl<C: Channel> Agent<C> {
         self.tool_orchestrator.clear_doom_history();
         self.tool_orchestrator.clear_recent_tool_calls();
 
+        // `mut` required when context-compression is enabled to inject focus tool definitions.
+        #[cfg_attr(not(feature = "context-compression"), allow(unused_mut))]
         let mut tool_defs: Vec<ToolDefinition> = self
             .tool_executor
             .tool_definitions_erased()

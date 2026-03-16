@@ -28,6 +28,8 @@ use crate::config::SidequestConfig;
 
 /// A tracked tool output entry with its position in the message list.
 #[derive(Debug, Clone)]
+// Fields consumed by context-compression feature paths.
+#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) struct ToolOutputCursor {
     /// Index in `self.messages`.
     pub(crate) msg_index: usize,
@@ -48,6 +50,8 @@ pub(crate) struct EvictionResponse {
 }
 
 /// Manages cursor tracking and eviction logic for the `SideQuest` subsystem.
+// Fields and methods consumed by context-compression feature paths.
+#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) struct SidequestState {
     pub(crate) config: SidequestConfig,
     /// Monotonic user-turn counter.
@@ -60,6 +64,7 @@ pub(crate) struct SidequestState {
     pub(crate) passes_run: usize,
 }
 
+#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 impl SidequestState {
     pub(crate) fn new(config: SidequestConfig) -> Self {
         Self {
