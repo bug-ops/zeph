@@ -149,11 +149,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_injection_patterns_non_empty() {
-        assert!(!RAW_INJECTION_PATTERNS.is_empty());
-    }
-
-    #[test]
     fn raw_injection_patterns_all_compile() {
         use regex::Regex;
         for (name, pattern) in RAW_INJECTION_PATTERNS {

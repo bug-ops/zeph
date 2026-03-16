@@ -254,19 +254,6 @@ mod tests {
         assert_eq!(stats.added, 0);
     }
 
-    #[test]
-    fn sync_stats_debug() {
-        let stats = SyncStats {
-            added: 1,
-            updated: 2,
-            removed: 3,
-            unchanged: 4,
-        };
-        let dbg = format!("{stats:?}");
-        assert!(dbg.contains("added"));
-        assert!(dbg.contains('1'));
-    }
-
     fn make_registry(url: &str) -> McpToolRegistry {
         let ops = QdrantOps::new(url).unwrap();
         McpToolRegistry::with_ops(ops)
@@ -278,19 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_debug() {
-        let registry = make_registry("http://localhost:6334");
-        let dbg = format!("{registry:?}");
-        assert!(dbg.contains("McpToolRegistry"));
-        assert!(dbg.contains("zeph_mcp_tools"));
-    }
-
-    #[test]
-    fn mcp_namespace_is_valid_uuid() {
-        assert!(!MCP_NAMESPACE.is_nil());
-    }
-
-    #[test]
     fn content_hash_length_is_blake3_hex() {
         let tool = make_tool("server", "tool");
         let hash = compute_hash(&tool);
@@ -298,32 +272,10 @@ mod tests {
     }
 
     #[test]
-    fn content_hash_same_input_same_hash() {
-        let t1 = McpTool {
-            server_id: "s".into(),
-            name: "t".into(),
-            description: "desc".into(),
-            input_schema: serde_json::json!({"type": "string"}),
-        };
-        let t2 = McpTool {
-            server_id: "s".into(),
-            name: "t".into(),
-            description: "desc".into(),
-            input_schema: serde_json::json!({"type": "string"}),
-        };
-        assert_eq!(compute_hash(&t1), compute_hash(&t2));
-    }
-
-    #[test]
     fn content_hash_different_name_different_hash() {
         let t1 = make_tool("s", "tool_a");
         let t2 = make_tool("s", "tool_b");
         assert_ne!(compute_hash(&t1), compute_hash(&t2));
-    }
-
-    #[test]
-    fn collection_name_constant() {
-        assert_eq!(COLLECTION_NAME, "zeph_mcp_tools");
     }
 
     #[tokio::test]

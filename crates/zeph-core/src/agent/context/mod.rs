@@ -4087,4 +4087,133 @@ mod tests {
             "mid-iteration must not set compacted_this_turn even at Hard tier"
         );
     }
+
+    // --- assembly.rs: clear_history ---
+
+    /// `clear_history` must retain the system prompt (message[0]) and discard all
+    /// subsequent messages so the agent can restart a conversation cleanly.
+    #[tokio::test]
+    async fn clear_history_retains_system_prompt() {
+        use zeph_skills::registry::SkillRegistry;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        // Add some history beyond the initial system prompt.
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        agent.messages.push(Message {
+            role: Role::Assistant,
+            content: "world".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        assert_eq!(agent.messages.len(), 3);
+
+        agent.clear_history();
+
+        assert_eq!(
+            agent.messages.len(),
+            1,
+            "clear_history must leave exactly the system prompt"
+        );
+        assert_eq!(
+            agent.messages[0].role,
+            Role::System,
+            "retained message must be the system prompt"
+        );
+    }
+
+    /// `clear_history` on an agent with only the system prompt must leave it unchanged.
+    #[tokio::test]
+    async fn clear_history_with_only_system_prompt_is_idempotent() {
+        use zeph_skills::registry::SkillRegistry;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let system_content = agent.messages[0].content.clone();
+
+        agent.clear_history();
+
+        assert_eq!(agent.messages.len(), 1);
+        assert_eq!(
+            agent.messages[0].content, system_content,
+            "system prompt content must be unchanged after clear_history"
+        );
+    }
+
+    // --- assembly.rs: rebuild_system_prompt with empty skill list ---
+
+    /// `rebuild_system_prompt` must not panic and must produce a non-empty prompt
+    /// even when the skill registry is empty (no skills loaded).
+    #[tokio::test]
+    async fn rebuild_system_prompt_empty_skill_list_does_not_crash() {
+        use zeph_skills::registry::SkillRegistry;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        // Explicitly empty registry — no skills at all.
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        // Must not panic.
+        agent
+            .rebuild_system_prompt("test query with no skills")
+            .await;
+
+        let prompt = &agent.messages[0];
+        assert_eq!(
+            prompt.role,
+            Role::System,
+            "first message must still be the system prompt"
+        );
+        assert!(
+            !prompt.content.is_empty(),
+            "system prompt must be non-empty even with no skills"
+        );
+    }
+
+    /// The system prompt produced by `rebuild_system_prompt` must contain exactly
+    /// the two cache marker comments required by the Claude caching implementation
+    /// (cache:stable and cache:volatile). More than 4 markers would exceed the API
+    /// limit; the prompt format is expected to use exactly these two.
+    #[tokio::test]
+    async fn rebuild_system_prompt_cache_markers_count() {
+        use zeph_skills::registry::SkillRegistry;
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = SkillRegistry::default();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.rebuild_system_prompt("test query").await;
+
+        let prompt = &agent.messages[0].content;
+        let stable_count = prompt.matches("<!-- cache:stable -->").count();
+        let volatile_count = prompt.matches("<!-- cache:volatile -->").count();
+
+        assert_eq!(
+            stable_count, 1,
+            "exactly one cache:stable marker must be present"
+        );
+        assert_eq!(
+            volatile_count, 1,
+            "exactly one cache:volatile marker must be present"
+        );
+        // Total cache markers must not exceed 4 (Claude API limit).
+        let total = stable_count + volatile_count + prompt.matches("<!-- cache:tools -->").count();
+        assert!(
+            total <= 4,
+            "total cache markers must not exceed 4 (Claude API limit); got {total}"
+        );
+    }
 }
