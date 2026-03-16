@@ -3285,6 +3285,109 @@ mod compaction_e2e {
         );
     }
 
+    /// COV-METRICS-01: `handle_plan_goal` increments `api_calls` and `plans_total` after
+    /// a successful LlmPlanner call. This test covers the production metrics path in
+    /// `handle_plan_goal` that was not exercised by the `status_command_shows_orchestration_*`
+    /// tests (which set metrics directly via `update_metrics`).
+    #[tokio::test]
+    async fn plan_goal_increments_api_calls_and_plans_total() {
+        let valid_plan_json = r#"{"tasks": [
+            {"task_id": "step-one", "title": "Step one", "description": "Do step one", "depends_on": []}
+        ]}"#
+        .to_string();
+
+        let provider = mock_provider(vec![valid_plan_json]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(MetricsSnapshot::default());
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent
+            .orchestration
+            .orchestration_config
+            .confirm_before_execute = true;
+
+        agent
+            .handle_plan_command(PlanCommand::Goal("build something".to_owned()))
+            .await
+            .unwrap();
+
+        let snapshot = rx.borrow().clone();
+        assert_eq!(
+            snapshot.api_calls, 1,
+            "api_calls must be incremented by 1 after a successful plan() call; got: {}",
+            snapshot.api_calls
+        );
+        assert_eq!(
+            snapshot.orchestration.plans_total, 1,
+            "plans_total must be incremented by 1 after plan() succeeds; got: {}",
+            snapshot.orchestration.plans_total
+        );
+        assert_eq!(
+            snapshot.orchestration.tasks_total, 1,
+            "tasks_total must match the number of tasks in the plan; got: {}",
+            snapshot.orchestration.tasks_total
+        );
+    }
+
+    /// COV-METRICS-02: `finalize_plan_execution` with `GraphStatus::Completed` increments
+    /// `api_calls` for the aggregator call and updates `tasks_completed` / `tasks_skipped`.
+    /// This covers the aggregator metrics path that was not tested end-to-end.
+    #[tokio::test]
+    async fn finalize_plan_execution_completed_increments_aggregator_metrics() {
+        use crate::subagent::SubAgentManager;
+
+        // Provider returns the aggregation synthesis.
+        let provider = mock_provider(vec!["synthesis".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(MetricsSnapshot::default());
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Graph with one completed and one skipped task.
+        let mut graph = TaskGraph::new("metrics finalize test");
+        let mut completed = TaskNode::new(0, "task-done", "desc");
+        completed.status = TaskStatus::Completed;
+        completed.result = Some(TaskResult {
+            output: "ok".into(),
+            artifacts: vec![],
+            duration_ms: 5,
+            agent_id: None,
+            agent_def: None,
+        });
+        let mut skipped = TaskNode::new(1, "task-skip", "desc");
+        skipped.status = TaskStatus::Skipped;
+        graph.tasks.push(completed);
+        graph.tasks.push(skipped);
+        graph.status = GraphStatus::Completed;
+
+        agent
+            .finalize_plan_execution(graph, GraphStatus::Completed)
+            .await
+            .unwrap();
+
+        let snapshot = rx.borrow().clone();
+        assert_eq!(
+            snapshot.api_calls, 1,
+            "api_calls must be incremented by 1 for the aggregator LLM call; got: {}",
+            snapshot.api_calls
+        );
+        assert_eq!(
+            snapshot.orchestration.tasks_completed, 1,
+            "tasks_completed must be 1; got: {}",
+            snapshot.orchestration.tasks_completed
+        );
+        assert_eq!(
+            snapshot.orchestration.tasks_skipped, 1,
+            "tasks_skipped must be 1; got: {}",
+            snapshot.orchestration.tasks_skipped
+        );
+    }
+
     /// Regression for #1879: mixed failure — some tasks failed, some canceled.
     /// Message must say "Plan failed. X/M tasks failed, Y canceled:" (not misleading).
     #[tokio::test]
