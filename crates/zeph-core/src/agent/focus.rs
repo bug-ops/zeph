@@ -133,12 +133,27 @@ impl FocusState {
     }
 
     /// Append a completed focus summary to the accumulated knowledge.
+    ///
+    /// Enforces `max_knowledge_tokens` by evicting the oldest entry (FIFO) when the
+    /// serialized block would exceed the cap (SEC-CC-01 fix).
+    ///
     /// Returns `true` if the Knowledge block was actually updated.
     pub(crate) fn append_knowledge(&mut self, summary: String) -> bool {
         if summary.is_empty() {
             return false;
         }
         self.knowledge_blocks.push(summary);
+        // Enforce the token cap by evicting from the front (oldest-first) until within budget.
+        // Each block is approximated at 4 chars/token (fast, no external dep needed here).
+        while self.knowledge_blocks.len() > 1 {
+            let total_chars: usize = self.knowledge_blocks.iter().map(String::len).sum();
+            #[allow(clippy::integer_division)]
+            let approx_tokens = total_chars / 4;
+            if approx_tokens <= self.config.max_knowledge_tokens {
+                break;
+            }
+            self.knowledge_blocks.remove(0);
+        }
         true
     }
 
@@ -277,5 +292,80 @@ mod tests {
         assert!(msg.content.starts_with(KNOWLEDGE_BLOCK_PREFIX));
         assert!(msg.content.contains("my summary"));
         assert!(msg.metadata.focus_pinned);
+    }
+
+    // SEC-CC-01: append_knowledge must enforce max_knowledge_tokens cap (FIFO eviction).
+    #[test]
+    fn append_knowledge_evicts_oldest_when_over_token_cap() {
+        let mut config = FocusConfig::default();
+        config.max_knowledge_tokens = 10; // 10 tokens ≈ 40 chars
+        let mut state = FocusState::new(config);
+
+        // Add entries that will exceed the cap
+        state.append_knowledge("a".repeat(100)); // ~25 tokens (400 chars / 4)
+        state.append_knowledge("b".repeat(100));
+        state.append_knowledge("c".repeat(100));
+
+        // Should have evicted oldest entries to stay within cap
+        // At least one entry must remain (we never evict the last one)
+        assert!(
+            !state.knowledge_blocks.is_empty(),
+            "at least one block must remain"
+        );
+        // The oldest ('a' block) should have been evicted if we have multiple blocks
+        if state.knowledge_blocks.len() > 1 {
+            assert!(
+                !state.knowledge_blocks[0].starts_with('a'),
+                "oldest block must be evicted first"
+            );
+        }
+    }
+
+    #[test]
+    fn append_knowledge_preserves_single_entry_regardless_of_size() {
+        let mut config = FocusConfig::default();
+        config.max_knowledge_tokens = 1; // impossibly small cap
+        let mut state = FocusState::new(config);
+        state.append_knowledge("very long summary that exceeds any token cap".to_string());
+        // Must keep at least 1 block — never evict all
+        assert_eq!(
+            state.knowledge_blocks.len(),
+            1,
+            "must never evict the last entry"
+        );
+    }
+
+    // T-HIGH-01: focus is_active correctly reflects session state.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn is_active_returns_false_before_start() {
+        let state = FocusState::new(FocusConfig::default());
+        assert!(!state.is_active());
+    }
+
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn is_active_returns_true_during_session() {
+        let mut state = FocusState::new(FocusConfig::default());
+        state.start("scope".to_string());
+        assert!(state.is_active());
+    }
+
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn is_active_returns_false_after_complete() {
+        let mut state = FocusState::new(FocusConfig::default());
+        state.start("scope".to_string());
+        state.complete();
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn tick_increments_counters() {
+        let mut state = FocusState::new(FocusConfig::default());
+        state.tick();
+        state.tick();
+        assert_eq!(state.turns_since_focus, 2);
+        assert_eq!(state.turns_since_reminder, 2);
     }
 }

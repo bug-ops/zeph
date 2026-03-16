@@ -57,6 +57,205 @@ mod tests {
         );
         assert_eq!(extract_overflow_ref(&body), Some(uuid));
     }
+
+    // T-CRIT-01: prune_tool_outputs must skip focus_pinned messages.
+    #[test]
+    fn prune_tool_outputs_skips_focus_pinned_messages() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+        // Agent::new prepopulates messages[0] with a system prompt.
+
+        // Pinned knowledge block with a large tool output part
+        let mut pinned_meta = MessageMetadata::focus_pinned();
+        pinned_meta.focus_pinned = true;
+        let big_body = "x".repeat(5000);
+        let mut pinned_msg = Message {
+            role: Role::System,
+            content: big_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: big_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: pinned_meta,
+        };
+        pinned_msg.rebuild_content();
+        agent.messages.push(pinned_msg);
+
+        // Non-pinned message with a large tool output
+        let big_body2 = "y".repeat(5000);
+        let mut normal_msg = Message {
+            role: Role::User,
+            content: big_body2.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "shell".into(),
+                body: big_body2.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        normal_msg.rebuild_content();
+        agent.messages.push(normal_msg);
+
+        let freed = agent.prune_tool_outputs(1);
+
+        // messages[0] = agent system prompt, messages[1] = pinned, messages[2] = normal.
+        let pinned = &agent.messages[1];
+        if let MessagePart::ToolOutput {
+            body, compacted_at, ..
+        } = &pinned.parts[0]
+        {
+            assert_eq!(*body, "x".repeat(5000), "pinned body must not be evicted");
+            assert!(
+                compacted_at.is_none(),
+                "pinned compacted_at must remain None"
+            );
+        }
+
+        // Non-pinned body must be evicted
+        let normal = &agent.messages[2];
+        if let MessagePart::ToolOutput { compacted_at, .. } = &normal.parts[0] {
+            assert!(compacted_at.is_some(), "non-pinned body must be evicted");
+        }
+
+        assert!(freed > 0, "must free tokens from non-pinned message");
+    }
+
+    // T-CRIT-03: prune_tool_outputs_oldest_first basic ordering.
+    #[test]
+    fn prune_tool_outputs_oldest_first_evicts_from_front() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+        // Agent::new puts system prompt at messages[0]; tool outputs go to indices 1..=3.
+
+        for i in 0..3 {
+            let body = format!("tool output {i} {}", "z".repeat(500));
+            let mut msg = Message {
+                role: Role::User,
+                content: body.clone(),
+                parts: vec![MessagePart::ToolOutput {
+                    tool_name: "shell".into(),
+                    body: body.clone(),
+                    compacted_at: None,
+                }],
+                metadata: Default::default(),
+            };
+            msg.rebuild_content();
+            agent.messages.push(msg);
+        }
+
+        // Evict just enough for the first message; the last two should be intact.
+        agent.prune_tool_outputs_oldest_first(1);
+
+        // messages[0] = agent system prompt, messages[1..=3] = ToolOutput messages.
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_some(),
+                "oldest tool output must be evicted first"
+            );
+        }
+        // Second should be intact (we only freed enough for 1)
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[2].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "second tool output must still be intact"
+            );
+        }
+    }
+
+    // T-CRIT-03: prune_tool_outputs_scored basic — lowest-relevance block evicted first.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_scored_evicts_lowest_relevance_first() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
+        agent.current_task_goal = Some("authentication middleware session token".to_string());
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+        // Agent::new puts system prompt at messages[0]; rel_msg goes to index 1, irrel_msg to 2.
+
+        // High-relevance: contains goal keywords
+        let rel_body = "authentication middleware session token implementation ".repeat(50);
+        let mut rel_msg = Message {
+            role: Role::User,
+            content: rel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: rel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: Default::default(),
+        };
+        rel_msg.rebuild_content();
+        agent.messages.push(rel_msg);
+
+        // Low-relevance: unrelated content
+        let irrel_body = "database migration schema table column index ".repeat(50);
+        let mut irrel_msg = Message {
+            role: Role::User,
+            content: irrel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: irrel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: Default::default(),
+        };
+        irrel_msg.rebuild_content();
+        agent.messages.push(irrel_msg);
+
+        agent.prune_tool_outputs_scored(1);
+
+        // messages[0] = agent system prompt, messages[1] = rel_msg, messages[2] = irrel_msg.
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[2].parts[0] {
+            assert!(
+                compacted_at.is_some(),
+                "low-relevance block must be evicted"
+            );
+        }
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[1].parts[0] {
+            assert!(compacted_at.is_none(), "high-relevance block must survive");
+        }
+    }
 }
 
 impl<C: Channel> Agent<C> {
@@ -563,7 +762,6 @@ impl<C: Channel> Agent<C> {
     /// disabled or the strategy is `Reactive`.
     ///
     /// Returns the number of tokens freed.
-    #[allow(clippy::cast_precision_loss)]
     pub(in crate::agent) fn prune_tool_outputs(&mut self, min_to_free: usize) -> usize {
         #[cfg(feature = "context-compression")]
         {
@@ -578,6 +776,16 @@ impl<C: Channel> Agent<C> {
                 PruningStrategy::Reactive => {} // fall through to oldest-first
             }
         }
+        self.prune_tool_outputs_oldest_first(min_to_free)
+    }
+
+    /// Oldest-first (Reactive) tool output pruning.
+    ///
+    /// This is the non-dispatching inner implementation. Called directly by the dispatcher
+    /// when strategy is `Reactive` and by scored strategies as their fallback — the latter
+    /// avoids the infinite recursion that would occur if they called `prune_tool_outputs`.
+    #[allow(clippy::cast_precision_loss)]
+    fn prune_tool_outputs_oldest_first(&mut self, min_to_free: usize) -> usize {
         let protect = self.context_manager.prune_protect_tokens;
         let mut tail_tokens = 0usize;
         let mut protection_boundary = self.messages.len();
@@ -667,8 +875,9 @@ impl<C: Channel> Agent<C> {
         let scores = if let Some(ref goal) = goal {
             score_blocks_task_aware(&self.messages, goal, &self.metrics.token_counter)
         } else {
-            // No goal available: fall back to oldest-first
-            return self.prune_tool_outputs(min_to_free);
+            // No goal available: fall back to oldest-first directly (not through the
+            // dispatcher, which would recurse back here — S4 fix).
+            return self.prune_tool_outputs_oldest_first(min_to_free);
         };
 
         // Sort ascending by score: lowest relevance first (best eviction candidates)

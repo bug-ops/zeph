@@ -741,14 +741,14 @@ max_files = 7
 # [agent.focus]
 # # Enable start_focus / complete_focus native tools
 # enabled = false
-# # Minimum turns between focus completions before hinting the LLM
-# compression_interval = 5
-# # Minimum turns between reminder injections
-# reminder_interval = 3
-# # Minimum bracketed messages before complete_focus is useful
-# min_messages_per_focus = 3
-# # Maximum tokens the Knowledge block may grow to before trimming old entries
-# max_knowledge_tokens = 2000
+# # Minimum turns between focus completions before hinting the LLM (default: 12)
+# compression_interval = 12
+# # Minimum turns between reminder injections (default: 15)
+# reminder_interval = 15
+# # Minimum bracketed messages before complete_focus is useful (default: 8)
+# min_messages_per_focus = 8
+# # Maximum tokens the Knowledge block may grow to before trimming old entries (default: 4096)
+# max_knowledge_tokens = 4096
 
 # Context-compression feature: SideQuest LLM-driven eviction (#1885)
 # Requires the `context-compression` feature flag to be enabled at compile time.

@@ -280,3 +280,94 @@ fn graph_config_note_linking_toml_round_trip() {
         original.note_linking.timeout_secs
     );
 }
+
+// T-MED-01: Config validation for SidequestConfig and FocusConfig new fields.
+
+#[test]
+fn sidequest_config_defaults_are_sane() {
+    let cfg = SidequestConfig::default();
+    assert!(!cfg.enabled, "sidequest defaults to disabled");
+    assert!(
+        cfg.interval_turns > 0,
+        "interval_turns must be > 0 by default"
+    );
+    assert!(
+        cfg.max_eviction_ratio > 0.0 && cfg.max_eviction_ratio <= 1.0,
+        "max_eviction_ratio must be in (0.0, 1.0]"
+    );
+    assert!(cfg.max_cursors > 0, "max_cursors must be > 0 by default");
+}
+
+#[test]
+fn sidequest_config_validates_zero_interval_turns() {
+    let mut config = Config::default();
+    config.memory.sidequest.interval_turns = 0;
+    assert!(
+        config.validate().is_err(),
+        "interval_turns=0 must fail validation"
+    );
+}
+
+#[test]
+fn sidequest_config_validates_max_eviction_ratio_zero() {
+    let mut config = Config::default();
+    config.memory.sidequest.max_eviction_ratio = 0.0;
+    assert!(
+        config.validate().is_err(),
+        "max_eviction_ratio=0.0 must fail validation"
+    );
+}
+
+#[test]
+fn sidequest_config_validates_max_eviction_ratio_above_one() {
+    let mut config = Config::default();
+    config.memory.sidequest.max_eviction_ratio = 1.1;
+    assert!(
+        config.validate().is_err(),
+        "max_eviction_ratio=1.1 must fail validation"
+    );
+}
+
+#[test]
+fn sidequest_config_validates_max_eviction_ratio_one_is_valid() {
+    let mut config = Config::default();
+    config.memory.sidequest.max_eviction_ratio = 1.0;
+    // Other fields must be valid for this test to isolate the ratio
+    assert!(
+        config.validate().is_ok(),
+        "max_eviction_ratio=1.0 must pass validation"
+    );
+}
+
+#[test]
+fn focus_config_defaults_are_sane() {
+    let cfg = FocusConfig::default();
+    assert!(!cfg.enabled, "focus defaults to disabled");
+    assert!(
+        cfg.compression_interval > 0,
+        "compression_interval must be > 0"
+    );
+    assert!(
+        cfg.min_messages_per_focus > 0,
+        "min_messages_per_focus must be > 0"
+    );
+    assert!(
+        cfg.max_knowledge_tokens > 0,
+        "max_knowledge_tokens must be > 0"
+    );
+}
+
+#[test]
+fn focus_compression_interval_default_matches_doc() {
+    let cfg = FocusConfig::default();
+    assert_eq!(
+        cfg.compression_interval, 12,
+        "default compression_interval must be 12 (matches default.toml comment)"
+    );
+}
+
+#[test]
+fn focus_max_knowledge_tokens_default_is_4096() {
+    let cfg = FocusConfig::default();
+    assert_eq!(cfg.max_knowledge_tokens, 4096);
+}

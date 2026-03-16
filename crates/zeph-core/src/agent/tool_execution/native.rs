@@ -1499,11 +1499,13 @@ impl<C: Channel> Agent<C> {
 
                 // Insert a checkpoint message carrying the marker UUID so complete_focus can
                 // locate the boundary even after intervening compaction.
+                // S5 fix: focus_pinned=true ensures compaction never evicts this message.
                 let checkpoint_msg = zeph_llm::provider::Message {
                     role: zeph_llm::provider::Role::System,
                     content: format!("[focus checkpoint: {scope}]"),
                     parts: vec![],
                     metadata: zeph_llm::provider::MessageMetadata {
+                        focus_pinned: true,
                         focus_marker_id: Some(marker),
                         ..zeph_llm::provider::MessageMetadata::agent_only()
                     },
@@ -1546,14 +1548,17 @@ impl<C: Channel> Agent<C> {
                 // The checkpoint itself and the bracketed messages are removed from history.
                 let messages_to_summarize = self.messages[checkpoint_pos + 1..].to_vec();
 
-                // Sanitize the user-supplied summary before storing it (injection protection).
+                // Sanitize the LLM-supplied summary before storing it to the pinned Knowledge
+                // block. The summary may summarize transitive external content (web scrapes,
+                // MCP responses), so use WebScrape (ExternalUntrusted trust level) for stricter
+                // spotlighting than ToolResult (SEC-CC-03).
                 let sanitized_summary = self
                     .security
                     .sanitizer
                     .sanitize(
                         &summary,
                         crate::sanitizer::ContentSource::new(
-                            crate::sanitizer::ContentSourceKind::ToolResult,
+                            crate::sanitizer::ContentSourceKind::WebScrape,
                         ),
                     )
                     .body;
@@ -1567,6 +1572,8 @@ impl<C: Channel> Agent<C> {
                 // Remove the checkpoint and all messages after it (bracketed phase cleanup).
                 self.messages.truncate(checkpoint_pos);
                 self.recompute_prompt_tokens();
+                // C1 fix: mark compacted so maybe_compact() does not double-fire this turn.
+                self.context_manager.compacted_this_turn = true;
 
                 // Rebuild/insert the pinned Knowledge block message.
                 // Remove any existing Knowledge block (focus_pinned=true, no marker_id).
@@ -1612,5 +1619,159 @@ impl<C: Channel> Agent<C> {
         self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
             .await;
         self.push_message(user_msg);
+    }
+}
+
+// T-CRIT-02: handle_focus_tool tests — happy path, error paths, checkpoint pinning (S5 fix).
+#[cfg(all(test, feature = "context-compression"))]
+mod tests {
+    use crate::agent::Agent;
+    use crate::agent::tests::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::{Message, Role};
+
+    fn make_agent() -> Agent<MockChannel> {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.focus.config.enabled = true;
+        // System prompt at index 0 (required by complete_focus insert logic)
+        agent
+            .messages
+            .push(Message::from_legacy(Role::System, "system"));
+        agent
+    }
+
+    #[test]
+    fn start_focus_happy_path_inserts_pinned_checkpoint() {
+        let mut agent = make_agent();
+        let input = serde_json::json!({"scope": "reading auth files"});
+        let result = agent.handle_focus_tool("start_focus", &input);
+
+        assert!(
+            !result.starts_with("[error]"),
+            "start_focus must not return error: {result}"
+        );
+        assert!(
+            agent.focus.is_active(),
+            "focus session must be active after start_focus"
+        );
+
+        // Checkpoint message must exist and be pinned (S5 fix)
+        let checkpoint = agent
+            .messages
+            .iter()
+            .find(|m| m.metadata.focus_marker_id.is_some());
+        assert!(checkpoint.is_some(), "checkpoint message must be inserted");
+        let checkpoint = checkpoint.unwrap();
+        assert!(
+            checkpoint.metadata.focus_pinned,
+            "checkpoint message must have focus_pinned=true (S5 fix)"
+        );
+    }
+
+    #[test]
+    fn start_focus_errors_when_already_active() {
+        let mut agent = make_agent();
+        let input = serde_json::json!({"scope": "first"});
+        agent.handle_focus_tool("start_focus", &input);
+        let result =
+            agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "second"}));
+        assert!(
+            result.starts_with("[error]"),
+            "second start_focus must return error: {result}"
+        );
+    }
+
+    #[test]
+    fn complete_focus_errors_when_no_active_session() {
+        let mut agent = make_agent();
+        let result =
+            agent.handle_focus_tool("complete_focus", &serde_json::json!({"summary": "done"}));
+        assert!(
+            result.starts_with("[error]"),
+            "complete_focus without active session must error: {result}"
+        );
+    }
+
+    #[test]
+    fn complete_focus_happy_path_clears_session_and_appends_knowledge() {
+        let mut agent = make_agent();
+        agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "test"}));
+        // Add some messages in the focus window
+        agent
+            .messages
+            .push(Message::from_legacy(Role::User, "some work"));
+        let result = agent.handle_focus_tool(
+            "complete_focus",
+            &serde_json::json!({"summary": "learned stuff"}),
+        );
+        assert!(
+            !result.starts_with("[error]"),
+            "complete_focus must not error: {result}"
+        );
+        assert!(
+            !agent.focus.is_active(),
+            "focus session must be cleared after complete_focus"
+        );
+        assert!(
+            !agent.focus.knowledge_blocks.is_empty(),
+            "knowledge must be appended"
+        );
+    }
+
+    #[test]
+    fn complete_focus_marker_not_found_returns_error() {
+        let mut agent = make_agent();
+        agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "test"}));
+        // Remove checkpoint by hand to simulate marker eviction
+        agent
+            .messages
+            .retain(|m| m.metadata.focus_marker_id.is_none());
+        let result =
+            agent.handle_focus_tool("complete_focus", &serde_json::json!({"summary": "done"}));
+        assert!(
+            result.starts_with("[error]"),
+            "must return error when checkpoint not found (S4): {result}"
+        );
+    }
+
+    #[test]
+    fn complete_focus_truncates_bracketed_messages() {
+        let mut agent = make_agent();
+        agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "test"}));
+        let before_len = agent.messages.len();
+        // Add 3 messages in the focus window
+        for i in 0..3 {
+            agent
+                .messages
+                .push(Message::from_legacy(Role::User, &format!("msg {i}")));
+        }
+        agent.handle_focus_tool("complete_focus", &serde_json::json!({"summary": "done"}));
+        // Messages after complete_focus: [system prompt, knowledge block] at minimum
+        // Checkpoint + bracketed messages must be gone
+        assert!(
+            agent.messages.len() < before_len + 3,
+            "bracketed messages must be truncated after complete_focus"
+        );
+    }
+
+    #[test]
+    fn min_messages_per_focus_guard_not_enforced_in_tool() {
+        // The guard for min_messages_per_focus is advisory (reminder injection path).
+        // handle_focus_tool itself does not enforce it — the LLM decides when to call.
+        let mut agent = make_agent();
+        agent.focus.config.min_messages_per_focus = 100; // very high, but tool doesn't check
+        let result = agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "x"}));
+        assert!(
+            !result.starts_with("[error]"),
+            "tool must not enforce min_messages_per_focus: {result}"
+        );
     }
 }

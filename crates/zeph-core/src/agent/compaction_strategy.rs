@@ -8,10 +8,11 @@
 //!
 //! ## Scoring approach (MVP)
 //!
-//! The MVP uses TF-IDF–weighted keyword overlap (improved Jaccard) rather than full
-//! embeddings. This avoids requiring a running embedding model while still producing
-//! better scores than plain Jaccard (which is dominated by common programming tokens
-//! such as `fn`, `pub`, `struct`).
+//! The MVP uses TF-weighted Jaccard similarity rather than full embeddings. This avoids
+//! requiring a running embedding model while still producing better scores than plain
+//! Jaccard (which is dominated by common programming tokens such as `fn`, `pub`, `struct`).
+//! Note: this is TF-only (term frequency), not TF-IDF — there is no inverse-document-frequency
+//! component because we do not have a static corpus to compute IDF over at runtime.
 //!
 //! The MIG (COMI) score is: `relevance − redundancy`.
 //! Blocks with negative MIG are the best candidates for eviction.
@@ -20,7 +21,7 @@
 //!
 //! Keyword overlap is a noisy proxy for semantic relevance in code-heavy contexts.
 //! A future improvement should use cosine similarity over Qdrant embeddings. The
-//! TF-IDF weighting mitigates the worst cases by down-weighting common tokens.
+//! TF weighting mitigates the worst cases by down-weighting common tokens.
 
 #[cfg(feature = "context-compression")]
 use std::collections::{HashMap, HashSet};
@@ -87,10 +88,10 @@ fn term_frequencies(tokens: &[String]) -> HashMap<String, f32> {
         .collect()
 }
 
-/// TF-IDF–weighted Jaccard similarity between two token sets with term frequencies.
+/// TF-weighted Jaccard similarity between two token sets with term frequencies.
 /// Returns a value in [0.0, 1.0].
 #[cfg(feature = "context-compression")]
-fn weighted_similarity(tf_a: &HashMap<String, f32>, tf_b: &HashMap<String, f32>) -> f32 {
+fn tf_weighted_similarity(tf_a: &HashMap<String, f32>, tf_b: &HashMap<String, f32>) -> f32 {
     let mut intersection = 0.0_f32;
     let mut union = 0.0_f32;
 
@@ -173,7 +174,7 @@ pub(crate) fn score_blocks_task_aware(
         let text = extract_scorable_text(msg);
         let tokens = tokenize(&text);
         let tf = term_frequencies(&tokens);
-        let relevance = weighted_similarity(&goal_tf, &tf);
+        let relevance = tf_weighted_similarity(&goal_tf, &tf);
 
         scores.push(BlockScore {
             msg_index: i,
@@ -245,7 +246,7 @@ pub(crate) fn score_blocks_mig(
             }
             // Only count redundancy against blocks with higher relevance
             if scores[j].relevance > scores[i].relevance {
-                let sim = weighted_similarity(&texts[i], &texts[j]);
+                let sim = tf_weighted_similarity(&texts[i], &texts[j]);
                 max_redundancy = max_redundancy.max(sim);
             }
         }
@@ -256,7 +257,7 @@ pub(crate) fn score_blocks_mig(
     scores
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "context-compression"))]
 mod tests {
     use super::*;
 
@@ -276,27 +277,161 @@ mod tests {
     }
 
     #[test]
-    fn weighted_similarity_identical_is_one() {
+    fn tf_weighted_similarity_identical_is_one() {
         let tokens = tokenize("authentication session token");
         let tf = term_frequencies(&tokens);
-        let sim = weighted_similarity(&tf, &tf);
+        let sim = tf_weighted_similarity(&tf, &tf);
         assert!((sim - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn weighted_similarity_disjoint_is_zero() {
+    fn tf_weighted_similarity_disjoint_is_zero() {
         let tokens_a = tokenize("authentication session");
         let tokens_b = tokenize("database migration schema");
         let tf_a = term_frequencies(&tokens_a);
         let tf_b = term_frequencies(&tokens_b);
-        assert_eq!(weighted_similarity(&tf_a, &tf_b), 0.0);
+        assert_eq!(tf_weighted_similarity(&tf_a, &tf_b), 0.0);
     }
 
     #[test]
-    fn weighted_similarity_empty_is_zero() {
+    fn tf_weighted_similarity_empty_is_zero() {
         let tf_empty: HashMap<String, f32> = HashMap::new();
         let tokens = tokenize("authentication session");
         let tf = term_frequencies(&tokens);
-        assert_eq!(weighted_similarity(&tf_empty, &tf), 0.0);
+        assert_eq!(tf_weighted_similarity(&tf_empty, &tf), 0.0);
+    }
+
+    // T-HIGH-03: score_blocks_task_aware tests.
+
+    fn make_tool_output_msg(body: &str) -> zeph_llm::provider::Message {
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+        let mut msg = Message {
+            role: Role::User,
+            content: body.to_string(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: body.to_string(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        msg.rebuild_content();
+        msg
+    }
+
+    #[test]
+    fn score_blocks_task_aware_skips_system_prompt() {
+        use zeph_llm::provider::{Message, Role};
+        use zeph_memory::TokenCounter;
+
+        let tc = TokenCounter::default();
+        let messages = vec![
+            Message::from_legacy(Role::System, "system prompt"),
+            make_tool_output_msg("authentication session middleware"),
+        ];
+        let scores = score_blocks_task_aware(&messages, "authentication session", &tc);
+        // index 0 is skipped; exactly 1 score for index 1
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].msg_index, 1);
+    }
+
+    #[test]
+    fn score_blocks_task_aware_skips_pinned_messages() {
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::TokenCounter;
+
+        let tc = TokenCounter::default();
+        let mut pinned_meta = MessageMetadata::focus_pinned();
+        pinned_meta.focus_pinned = true;
+        let pinned = Message {
+            role: Role::System,
+            content: "authentication session knowledge".to_string(),
+            parts: vec![],
+            metadata: pinned_meta,
+        };
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            pinned,
+            make_tool_output_msg("authentication session"),
+        ];
+        let scores = score_blocks_task_aware(&messages, "authentication session", &tc);
+        // Pinned message at index 1 must be excluded
+        assert!(
+            scores.iter().all(|s| s.msg_index != 1),
+            "pinned message must not be scored"
+        );
+    }
+
+    #[test]
+    fn score_blocks_task_aware_relevant_block_scores_higher() {
+        use zeph_llm::provider::{Message, Role};
+        use zeph_memory::TokenCounter;
+
+        let tc = TokenCounter::default();
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            make_tool_output_msg("authentication middleware session token implementation"),
+            make_tool_output_msg("database schema migration foreign key index"),
+        ];
+        let scores = score_blocks_task_aware(&messages, "authentication session token", &tc);
+        assert_eq!(scores.len(), 2);
+        let auth_score = scores.iter().find(|s| s.msg_index == 1).unwrap();
+        let db_score = scores.iter().find(|s| s.msg_index == 2).unwrap();
+        assert!(
+            auth_score.relevance > db_score.relevance,
+            "auth block (relevance={}) must score higher than db block (relevance={})",
+            auth_score.relevance,
+            db_score.relevance
+        );
+    }
+
+    #[test]
+    fn score_blocks_mig_redundancy_decreases_mig() {
+        use zeph_llm::provider::{Message, Role};
+        use zeph_memory::TokenCounter;
+
+        let tc = TokenCounter::default();
+        // Two very similar blocks about authentication — the lower-relevance one gets
+        // high redundancy (it's similar to the higher-relevance one) → negative MIG.
+        let auth_body =
+            "authentication session token middleware implementation login logout ".repeat(10);
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            make_tool_output_msg(
+                &(auth_body.clone() + " extra unique content for higher relevance boost"),
+            ),
+            make_tool_output_msg(&auth_body),
+        ];
+        let scores = score_blocks_mig(&messages, Some("authentication session token"), &tc);
+        assert_eq!(scores.len(), 2);
+        // Both should have some redundancy since bodies are very similar
+        let total_redundancy: f32 = scores.iter().map(|s| s.redundancy).sum();
+        assert!(
+            total_redundancy > 0.0,
+            "similar blocks must have non-zero redundancy"
+        );
+    }
+
+    #[test]
+    fn score_blocks_mig_without_goal_uses_recency() {
+        use zeph_llm::provider::{Message, Role};
+        use zeph_memory::TokenCounter;
+
+        let tc = TokenCounter::default();
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            make_tool_output_msg("old output from early in conversation"),
+            make_tool_output_msg("recent output from later in conversation"),
+        ];
+        let scores = score_blocks_mig(&messages, None, &tc);
+        assert_eq!(scores.len(), 2);
+        let old_score = scores.iter().find(|s| s.msg_index == 1).unwrap();
+        let new_score = scores.iter().find(|s| s.msg_index == 2).unwrap();
+        assert!(
+            new_score.relevance > old_score.relevance,
+            "recency: later message must have higher relevance (new={}, old={})",
+            new_score.relevance,
+            old_score.relevance
+        );
     }
 }
