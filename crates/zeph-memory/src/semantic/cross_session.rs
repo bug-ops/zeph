@@ -104,13 +104,17 @@ impl SemanticMemory {
             .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
             .await?;
 
+        let point_id = {
+            const NS: uuid::Uuid = uuid::Uuid::NAMESPACE_OID;
+            uuid::Uuid::new_v5(&NS, conversation_id.0.to_string().as_bytes()).to_string()
+        };
         let payload = serde_json::json!({
             "conversation_id": conversation_id.0,
             "summary_text": summary_text,
         });
 
         qdrant
-            .store_to_collection(SESSION_SUMMARIES_COLLECTION, payload, vector)
+            .upsert_to_collection(SESSION_SUMMARIES_COLLECTION, &point_id, payload, vector)
             .await?;
 
         tracing::debug!(
@@ -272,6 +276,51 @@ mod tests {
         assert!(
             !memory.has_session_summary(cid_b).await.unwrap(),
             "cid_b must not be affected by cid_a summary"
+        );
+    }
+
+    #[test]
+    fn store_session_summary_point_id_is_deterministic() {
+        // Same conversation_id must always produce the same UUID v5 point ID,
+        // ensuring that repeated compaction calls upsert rather than insert a new point.
+        const NS: uuid::Uuid = uuid::Uuid::NAMESPACE_OID;
+        let cid = ConversationId(42);
+        let id1 = uuid::Uuid::new_v5(&NS, cid.0.to_string().as_bytes()).to_string();
+        let id2 = uuid::Uuid::new_v5(&NS, cid.0.to_string().as_bytes()).to_string();
+        assert_eq!(
+            id1, id2,
+            "point_id must be deterministic for the same conversation_id"
+        );
+
+        let cid2 = ConversationId(43);
+        let id3 = uuid::Uuid::new_v5(&NS, cid2.0.to_string().as_bytes()).to_string();
+        assert_ne!(
+            id1, id3,
+            "different conversation_ids must produce different point_ids"
+        );
+    }
+
+    #[test]
+    fn store_session_summary_point_id_boundary_ids() {
+        // conversation_id = 0 and negative values are valid i64 variants — confirm they produce
+        // valid, distinct, and stable UUIDs.
+        const NS: uuid::Uuid = uuid::Uuid::NAMESPACE_OID;
+
+        let id_zero_a = uuid::Uuid::new_v5(&NS, ConversationId(0).0.to_string().as_bytes());
+        let id_zero_b = uuid::Uuid::new_v5(&NS, ConversationId(0).0.to_string().as_bytes());
+        assert_eq!(id_zero_a, id_zero_b, "zero conversation_id must be stable");
+
+        let id_neg = uuid::Uuid::new_v5(&NS, ConversationId(-1).0.to_string().as_bytes());
+        assert_ne!(
+            id_zero_a, id_neg,
+            "zero and -1 conversation_ids must produce different point_ids"
+        );
+
+        // Confirm the UUID version is 5 (deterministic SHA-1 name-based).
+        assert_eq!(
+            id_zero_a.get_version_num(),
+            5,
+            "generated UUID must be version 5"
         );
     }
 

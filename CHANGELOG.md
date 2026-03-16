@@ -31,11 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(tui): implement `send_tool_start` in `TuiChannel` — native tool calls now emit a `ToolStart` event so the TUI shows a spinner and `$ command` header before tool output arrives (closes #1931); `handle_tool_output_event` now appends output content when finalizing a streaming tool message
+- fix(tui): graph memory metrics (entities/edges/communities) now update every turn instead of only when graph extraction fires — `sync_graph_counts()` is now called per-turn in `process_user_message_inner` in addition to at startup (closes #1932)
 - fix(context-compression): `extract_task_goal` is now fire-and-forget — spawns a background tokio task and returns immediately; result is applied at the start of the next Soft compaction (#1909). Eliminates the 5-second blocking LLM call on every compaction that made `task_aware`/`mig`/`task_aware_mig` strategies non-functional for cloud LLM providers. Timeout raised from 5s to 30s in the background task. Current compaction uses the cached goal from the previous turn with no latency impact.
 - fix(llm): `/model` list no longer returns 404 for standard OpenAI config — `list_models_remote` was constructing `{base_url}/v1/models` when `base_url` already contains `/v1`; corrected to `{base_url}/models` (closes #1903)
 - fix(core): corrections now stored even when `LearningConfig::enabled = false` (closes #1910)
 - fix(memory): sync session summaries to Qdrant on compact_context happy path (#1911) — `store_session_summary()` was only called in fallback branches; now also called after a successful `replace_conversation()` in both `compact_context` variants
 - Wire `[agent.focus]` and `[memory.sidequest]` config to `AgentBuilder` in all bootstrap paths (`runner.rs`, `daemon.rs`, `acp.rs`); previously both configs were parsed but never applied, causing focus and sidequest to always use defaults (`enabled = false`) (closes #1907)
+- fix(memory): use deterministic UUID v5 for session summary Qdrant point to prevent duplicates on repeated compaction (#1917)
 - fix(tui): clear "saving to graph..." spinner immediately after `spawn_graph_extraction` — spinner was never cleared since the spawn is fire-and-forget; status is now reset to `""` right after scheduling the background task (closes #1924)
 - fix(graph-memory): prevent structural noise from polluting `zeph_graph_entities` graph (closes #1912)
   - Skip graph extraction entirely for `Role::User` messages containing `ToolResult` parts — tool outputs (TOML, JSON, command output) are structural data, not conversational content (FIX-1)
