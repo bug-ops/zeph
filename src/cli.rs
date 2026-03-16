@@ -101,6 +101,27 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) compression_guidelines: bool,
 
+    /// Enable Focus Agent for this session. Overrides `agent.focus.enabled` from config.
+    #[arg(long)]
+    pub(crate) focus: bool,
+
+    /// Disable Focus Agent for this session.
+    #[arg(long, conflicts_with = "focus")]
+    pub(crate) no_focus: bool,
+
+    /// Enable `SideQuest` eviction for this session. Overrides `memory.sidequest.enabled` from config.
+    #[arg(long)]
+    pub(crate) sidequest: bool,
+
+    /// Disable `SideQuest` eviction for this session.
+    #[arg(long, conflicts_with = "sidequest")]
+    pub(crate) no_sidequest: bool,
+
+    /// Override pruning strategy: reactive, `task_aware`, mig, `task_aware_mig`.
+    /// Overrides `memory.compression.pruning_strategy` from config.
+    #[arg(long, value_name = "STRATEGY")]
+    pub(crate) pruning_strategy: Option<zeph_core::config::PruningStrategy>,
+
     /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
     /// Requires a Claude provider. Overrides `llm.cloud.server_compaction` from config.
     #[arg(long)]
@@ -500,6 +521,86 @@ mod tests {
         assert_eq!(
             cli.dump_format,
             Some(zeph_core::debug_dump::DumpFormat::Raw)
+        );
+    }
+
+    #[test]
+    fn cli_parses_focus_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--focus"]).unwrap();
+        assert!(cli.focus);
+    }
+
+    #[test]
+    fn cli_parses_no_focus_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--no-focus"]).unwrap();
+        assert!(cli.no_focus);
+    }
+
+    #[test]
+    fn cli_parses_sidequest_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--sidequest"]).unwrap();
+        assert!(cli.sidequest);
+    }
+
+    #[test]
+    fn cli_parses_no_sidequest_flag() {
+        let cli = Cli::try_parse_from(["zeph", "--no-sidequest"]).unwrap();
+        assert!(cli.no_sidequest);
+    }
+
+    #[test]
+    fn cli_parses_pruning_strategy_task_aware() {
+        let cli = Cli::try_parse_from(["zeph", "--pruning-strategy", "task_aware"]).unwrap();
+        assert_eq!(
+            cli.pruning_strategy,
+            Some(zeph_core::config::PruningStrategy::TaskAware)
+        );
+    }
+
+    #[test]
+    fn cli_parses_pruning_strategy_mig() {
+        let cli = Cli::try_parse_from(["zeph", "--pruning-strategy", "mig"]).unwrap();
+        assert_eq!(
+            cli.pruning_strategy,
+            Some(zeph_core::config::PruningStrategy::Mig)
+        );
+    }
+
+    #[test]
+    fn cli_parses_pruning_strategy_task_aware_mig() {
+        let cli = Cli::try_parse_from(["zeph", "--pruning-strategy", "task_aware_mig"]).unwrap();
+        assert_eq!(
+            cli.pruning_strategy,
+            Some(zeph_core::config::PruningStrategy::TaskAwareMig)
+        );
+    }
+
+    #[test]
+    fn cli_focus_and_no_focus_conflict() {
+        assert!(Cli::try_parse_from(["zeph", "--focus", "--no-focus"]).is_err());
+    }
+
+    #[test]
+    fn cli_sidequest_and_no_sidequest_conflict() {
+        assert!(Cli::try_parse_from(["zeph", "--sidequest", "--no-sidequest"]).is_err());
+    }
+
+    #[test]
+    fn cli_defaults_compression_flags_to_false() {
+        let cli = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(!cli.focus);
+        assert!(!cli.no_focus);
+        assert!(!cli.sidequest);
+        assert!(!cli.no_sidequest);
+        assert!(cli.pruning_strategy.is_none());
+    }
+
+    #[test]
+    fn cli_parses_pruning_strategy_task_aware_kebab() {
+        let cli = Cli::try_parse_from(["zeph", "--pruning-strategy", "task-aware"]).unwrap();
+        assert_eq!(
+            cli.pruning_strategy,
+            Some(zeph_core::config::PruningStrategy::TaskAware)
         );
     }
 }

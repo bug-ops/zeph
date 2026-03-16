@@ -1205,6 +1205,10 @@ impl<C: Channel> Agent<C> {
         // BLOCK 3: volatile — dynamic per-turn content, never cached
         system_prompt.push_str("\n<!-- cache:volatile -->");
 
+        // Inject learned user preferences after the volatile marker so they
+        // do not invalidate the stable/semi-stable cache blocks (S2 fix).
+        self.inject_learned_preferences(&mut system_prompt).await;
+
         tracing::debug!(
             len = system_prompt.len(),
             skills = ?self.skill_state.active_skill_names,

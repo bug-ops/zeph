@@ -135,6 +135,85 @@ impl DebugDumper {
         self.write(&format!("{id:04}-tool-{safe_name}.txt"), output.as_bytes());
     }
 
+    /// Dump pruning scores computed by task-aware or MIG scoring.
+    /// When `format = Trace`, this is a no-op.
+    #[cfg(feature = "context-compression")]
+    pub(crate) fn dump_pruning_scores(
+        &self,
+        scores: &[crate::agent::compaction_strategy::BlockScore],
+    ) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
+        let id = self.next_id();
+        let payload: Vec<serde_json::Value> = scores
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "msg_index": s.msg_index,
+                    "relevance": s.relevance,
+                    "redundancy": s.redundancy,
+                    "mig": s.mig,
+                })
+            })
+            .collect();
+        match serde_json::to_string_pretty(&serde_json::json!({ "scores": payload })) {
+            Ok(json) => self.write(&format!("{id:04}-pruning-scores.json"), json.as_bytes()),
+            Err(e) => tracing::warn!("dump_pruning_scores: serialize failed: {e}"),
+        }
+    }
+
+    /// Dump the accumulated Focus Agent knowledge blocks.
+    /// When `format = Trace`, this is a no-op.
+    pub fn dump_focus_knowledge(&self, knowledge: &str) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
+        let id = self.next_id();
+        self.write(
+            &format!("{id:04}-focus-knowledge.txt"),
+            knowledge.as_bytes(),
+        );
+    }
+
+    /// Dump `SideQuest` eviction state: cursor list with eviction flags and freed token count.
+    /// When `format = Trace`, this is a no-op.
+    #[cfg(feature = "context-compression")]
+    pub(crate) fn dump_sidequest_eviction(
+        &self,
+        cursors: &[crate::agent::sidequest::ToolOutputCursor],
+        evicted_indices: &[usize],
+        freed_tokens: usize,
+    ) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
+        let id = self.next_id();
+        let cursor_info: Vec<serde_json::Value> = cursors
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                serde_json::json!({
+                    "cursor_id": i,
+                    "msg_index": c.msg_index,
+                    "part_index": c.part_index,
+                    "tool_name": c.tool_name,
+                    "token_count": c.token_count,
+                    "evicted": evicted_indices.contains(&i),
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "cursors": cursor_info,
+            "evicted_indices": evicted_indices,
+            "freed_tokens": freed_tokens,
+        });
+        match serde_json::to_string_pretty(&payload) {
+            Ok(json) => self.write(&format!("{id:04}-sidequest-eviction.json"), json.as_bytes()),
+            Err(e) => tracing::warn!("dump_sidequest_eviction: serialize failed: {e}"),
+        }
+    }
+
     /// Dump a tool error with error classification for debugging transient/permanent failures.
     /// When `format = Trace`, this is a no-op.
     pub fn dump_tool_error(&self, tool_name: &str, error: &zeph_tools::ToolError) {

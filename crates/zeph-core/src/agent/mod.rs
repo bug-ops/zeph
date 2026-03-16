@@ -334,6 +334,9 @@ pub struct Agent<C: Channel> {
     /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
     #[cfg(feature = "lsp-context")]
     pub(super) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
+    /// Optional status channel for sending spinner/status messages to TUI or stderr.
+    /// Cloned from the provider's `StatusTx` before the provider consumes it.
+    pub(super) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     // --- New sub-structs ---
     pub(super) lifecycle: LifecycleState,
     pub(super) providers: ProviderState,
@@ -597,6 +600,7 @@ impl<C: Channel> Agent<C> {
             pending_task_goal: None,
             #[cfg(feature = "context-compression")]
             pending_sidequest_result: None,
+            status_tx: None,
         }
     }
 
@@ -694,7 +698,7 @@ impl<C: Channel> Agent<C> {
             .orchestration
             .orchestration_config
             .confirm_before_execute;
-        let graph = LlmPlanner::new(
+        let (graph, planner_usage) = LlmPlanner::new(
             self.provider.clone(),
             &self.orchestration.orchestration_config,
         )
@@ -704,11 +708,18 @@ impl<C: Channel> Agent<C> {
 
         let task_count = graph.tasks.len() as u64;
         let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
+        let (planner_prompt, planner_completion) = planner_usage.unwrap_or((0, 0));
         self.update_metrics(|m| {
+            m.api_calls += 1;
+            m.prompt_tokens += planner_prompt;
+            m.completion_tokens += planner_completion;
+            m.total_tokens = m.prompt_tokens + m.completion_tokens;
             m.orchestration.plans_total += 1;
             m.orchestration.tasks_total += task_count;
             m.orchestration_graph = Some(snapshot);
         });
+        self.record_cost(planner_prompt, planner_completion);
+        self.record_cache_usage();
 
         if confirm_before_execute {
             let summary = format_plan_summary(&graph);
@@ -1499,14 +1510,31 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
                     .count() as u64;
-                self.update_metrics(|m| m.orchestration.tasks_completed += completed_count);
+                let skipped_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .count() as u64;
+                self.update_metrics(|m| {
+                    m.orchestration.tasks_completed += completed_count;
+                    m.orchestration.tasks_skipped += skipped_count;
+                });
 
                 let aggregator = LlmAggregator::new(
                     self.provider.clone(),
                     &self.orchestration.orchestration_config,
                 );
                 match aggregator.aggregate(&completed_graph).await {
-                    Ok(synthesis) => {
+                    Ok((synthesis, aggregator_usage)) => {
+                        let (aggr_prompt, aggr_completion) = aggregator_usage.unwrap_or((0, 0));
+                        self.update_metrics(|m| {
+                            m.api_calls += 1;
+                            m.prompt_tokens += aggr_prompt;
+                            m.completion_tokens += aggr_completion;
+                            m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                        });
+                        self.record_cost(aggr_prompt, aggr_completion);
+                        self.record_cache_usage();
                         self.channel.send(&synthesis).await?;
                     }
                     Err(e) => {
@@ -1532,8 +1560,20 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Canceled)
                     .collect();
+                let completed_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count() as u64;
+                let skipped_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .count() as u64;
                 self.update_metrics(|m| {
                     m.orchestration.tasks_failed += failed_tasks.len() as u64;
+                    m.orchestration.tasks_completed += completed_count;
+                    m.orchestration.tasks_skipped += skipped_count;
                 });
                 let total = completed_graph.tasks.len();
                 let msg = if failed_tasks.is_empty() && !cancelled_tasks.is_empty() {
@@ -3137,6 +3177,8 @@ impl<C: Channel> Agent<C> {
         self.rebuild_system_prompt(&text).await;
 
         self.detect_and_record_corrections(trimmed, conv_id).await;
+        self.learning_engine.tick();
+        self.analyze_and_learn().await;
 
         // Reset per-turn compaction guard FIRST so SideQuest sees a clean slate (C2 fix).
         // complete_focus and maybe_sidequest_eviction set this flag when they run (C1 fix).
@@ -3314,19 +3356,34 @@ impl<C: Channel> Agent<C> {
             .filter(|m| m.role == Role::User)
             .count();
 
-        let (api_calls, prompt_tokens, completion_tokens, cost_cents, mcp_servers) =
-            if let Some(ref tx) = self.metrics.metrics_tx {
-                let m = tx.borrow();
-                (
-                    m.api_calls,
-                    m.prompt_tokens,
-                    m.completion_tokens,
-                    m.cost_spent_cents,
-                    m.mcp_server_count,
-                )
-            } else {
-                (0, 0, 0, 0.0, 0)
-            };
+        let (
+            api_calls,
+            prompt_tokens,
+            completion_tokens,
+            cost_cents,
+            mcp_servers,
+            orch_plans,
+            orch_tasks,
+            orch_completed,
+            orch_failed,
+            orch_skipped,
+        ) = if let Some(ref tx) = self.metrics.metrics_tx {
+            let m = tx.borrow();
+            (
+                m.api_calls,
+                m.prompt_tokens,
+                m.completion_tokens,
+                m.cost_spent_cents,
+                m.mcp_server_count,
+                m.orchestration.plans_total,
+                m.orchestration.tasks_total,
+                m.orchestration.tasks_completed,
+                m.orchestration.tasks_failed,
+                m.orchestration.tasks_skipped,
+            )
+        } else {
+            (0, 0, 0, 0.0, 0, 0, 0, 0, 0, 0)
+        };
 
         let skill_count = self
             .skill_state
@@ -3349,6 +3406,18 @@ impl<C: Channel> Agent<C> {
         let _ = writeln!(out, "MCP:       {mcp_servers} server(s)");
         if cost_cents > 0.0 {
             let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
+        }
+        if orch_plans > 0 {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Orchestration:");
+            let _ = writeln!(out, "  Plans:     {orch_plans}");
+            let _ = writeln!(out, "  Tasks:     {orch_completed}/{orch_tasks} completed");
+            if orch_failed > 0 {
+                let _ = writeln!(out, "  Failed:    {orch_failed}");
+            }
+            if orch_skipped > 0 {
+                let _ = writeln!(out, "  Skipped:   {orch_skipped}");
+            }
         }
 
         self.channel.send(out.trim_end()).await?;
@@ -4142,10 +4211,11 @@ impl<C: Channel> Agent<C> {
             // `now_or_never` avoids blocking — if the task isn't done yet, skip this turn.
             use futures::FutureExt as _;
             match handle.now_or_never() {
-                Some(Ok(Some(cursors))) if !cursors.is_empty() => {
+                Some(Ok(Some(evicted_indices))) if !evicted_indices.is_empty() => {
+                    let cursors_snapshot = self.sidequest.tool_output_cursors.clone();
                     let freed = self.sidequest.apply_eviction(
                         &mut self.messages,
-                        &cursors,
+                        &evicted_indices,
                         &self.metrics.token_counter,
                     );
                     if freed > 0 {
@@ -4154,17 +4224,34 @@ impl<C: Channel> Agent<C> {
                         self.context_manager.compacted_this_turn = true;
                         tracing::info!(
                             freed_tokens = freed,
-                            evicted_cursors = cursors.len(),
+                            evicted_cursors = evicted_indices.len(),
                             pass = self.sidequest.passes_run,
                             "sidequest eviction complete"
                         );
+                        if let Some(ref d) = self.debug_state.debug_dumper {
+                            d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
+                        }
+                        if let Some(ref tx) = self.status_tx {
+                            let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
+                        }
+                    } else {
+                        // apply_eviction returned 0 — clear spinner so it doesn't dangle.
+                        if let Some(ref tx) = self.status_tx {
+                            let _ = tx.send(String::new());
+                        }
                     }
                 }
                 Some(Ok(None | Some(_))) => {
                     tracing::debug!("sidequest: pending result: no cursors to evict");
+                    if let Some(ref tx) = self.status_tx {
+                        let _ = tx.send(String::new());
+                    }
                 }
                 Some(Err(e)) => {
                     tracing::debug!("sidequest: background task panicked: {e}");
+                    if let Some(ref tx) = self.status_tx {
+                        let _ = tx.send(String::new());
+                    }
                 }
                 None => {
                     // Task still running — re-store and wait another turn.
@@ -4242,6 +4329,9 @@ impl<C: Channel> Agent<C> {
 
         self.pending_sidequest_result = Some(handle);
         tracing::debug!("sidequest: background LLM eviction task spawned");
+        if let Some(ref tx) = self.status_tx {
+            let _ = tx.send("SideQuest: scoring tool outputs...".into());
+        }
     }
 }
 pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {

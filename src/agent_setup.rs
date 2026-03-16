@@ -375,7 +375,11 @@ use zeph_index::{
 };
 use zeph_memory::QdrantOps;
 
-pub(crate) type CodeIndexerSetup = (Option<Arc<CodeRetriever>>, Option<IndexWatcher>);
+pub(crate) type CodeIndexerSetup = (
+    Option<Arc<CodeRetriever>>,
+    Option<IndexWatcher>,
+    Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
+);
 
 pub(crate) fn spawn_ctrl_c_handler(
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
@@ -491,9 +495,10 @@ pub(crate) async fn apply_code_indexer(
     qdrant_ops: Option<QdrantOps>,
     provider: zeph_llm::any::AnyProvider,
     pool: sqlx::SqlitePool,
+    cli_mode: bool,
 ) -> CodeIndexerSetup {
     if !config.enabled {
-        return (None, None);
+        return (None, None, None);
     }
 
     let init = async {
@@ -519,15 +524,43 @@ pub(crate) async fn apply_code_indexer(
     match init.await {
         Ok((retriever, indexer)) => {
             let indexer_clone = indexer.clone();
+            let (progress_tx, progress_rx) =
+                tokio::sync::watch::channel(zeph_index::IndexProgress::default());
+            if cli_mode {
+                let mut cli_progress_rx = progress_tx.subscribe();
+                tokio::spawn(async move {
+                    // Print start message once we know the file count from the first progress tick.
+                    while cli_progress_rx.changed().await.is_ok() {
+                        let p = cli_progress_rx.borrow_and_update().clone();
+                        if p.files_total > 0 {
+                            eprintln!(
+                                "Indexing codebase in the background ({} files) — you can start chatting now.",
+                                p.files_total
+                            );
+                            break;
+                        }
+                    }
+                });
+            }
             tokio::spawn(async move {
                 let root = std::env::current_dir().unwrap_or_default();
-                match indexer_clone.index_project(&root).await {
-                    Ok(report) => tracing::info!(
-                        files = report.files_indexed,
-                        chunks = report.chunks_created,
-                        ms = report.duration_ms,
-                        "project indexed"
-                    ),
+                match indexer_clone.index_project(&root, Some(&progress_tx)).await {
+                    Ok(report) => {
+                        tracing::info!(
+                            files = report.files_indexed,
+                            chunks = report.chunks_created,
+                            ms = report.duration_ms,
+                            "project indexed"
+                        );
+                        if cli_mode {
+                            eprintln!(
+                                "Codebase indexed: {} files, {} chunks ({}s) — code search is ready.",
+                                report.files_indexed,
+                                report.chunks_created,
+                                report.duration_ms / 1000,
+                            );
+                        }
+                    }
                     Err(e) => tracing::warn!("background indexing failed: {e:#}"),
                 }
             });
@@ -547,11 +580,15 @@ pub(crate) async fn apply_code_indexer(
             } else {
                 None
             };
-            (Some(std::sync::Arc::new(retriever)), watcher)
+            (
+                Some(std::sync::Arc::new(retriever)),
+                watcher,
+                Some(progress_rx),
+            )
         }
         Err(e) => {
             tracing::warn!("code indexer initialization failed: {e:#}");
-            (None, None)
+            (None, None, None)
         }
     }
 }
@@ -794,10 +831,11 @@ mod tests {
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
 
-        let (retriever, watcher) =
-            apply_code_indexer(&config, None, offline_provider(), pool).await;
+        let (retriever, watcher, progress_rx) =
+            apply_code_indexer(&config, None, offline_provider(), pool, false).await;
         assert!(retriever.is_none());
         assert!(watcher.is_none());
+        assert!(progress_rx.is_none());
     }
 
     #[tokio::test]
@@ -812,8 +850,8 @@ mod tests {
         let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
 
-        let (retriever, watcher) =
-            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool).await;
+        let (retriever, watcher, _progress_rx) =
+            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false).await;
         assert!(retriever.is_some());
         assert!(watcher.is_none());
     }

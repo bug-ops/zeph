@@ -219,7 +219,7 @@ async fn build_acp_deps(
 ) -> anyhow::Result<(SharedAgentDeps, Box<dyn std::any::Any>)> {
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     log_acp_runtime_paths(app.config(), app.config_path());
-    let (provider, _status_rx) = app.build_provider().await?;
+    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
     let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
