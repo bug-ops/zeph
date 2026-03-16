@@ -52,6 +52,10 @@ Two papers on consolidating episodic memories into stable semantic facts via bac
 Research on tracking fact evolution over time in agent knowledge graphs. Background for Zeph's planned temporal edge columns on the SQLite `edges` table ([#1341](https://github.com/bug-ops/zeph/issues/1341)).\
 <https://arxiv.org/abs/2504.19413>
 
+**MAGMA: Multi-Graph Agentic Memory Architecture** (Jan 2026)\
+Represents each memory item across four orthogonal relation graphs (semantic, temporal, causal, entity) and frames retrieval as policy-guided graph traversal. Dual-stream write handles fast synchronous ingestion and async background consolidation. Outperforms A-MEM (0.58) and MemoryOS (0.55) on LoCoMo with 0.70. Research target for Zeph's multi-edge-type graph memory upgrade ([#1821](https://github.com/bug-ops/zeph/issues/1821)).\
+<https://arxiv.org/abs/2601.03236>
+
 ---
 
 ## Context Management & Compression

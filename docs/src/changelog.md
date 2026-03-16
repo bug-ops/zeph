@@ -6,9 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-03-16
+
 ### Added
 
-- **Per-conversation compression guidelines** — the `compression_guidelines` table gains a `conversation_id` column (migration 034). Guidelines can now be scoped to a specific conversation: when a conversation is in scope, its own guideline is preferred; if none exists, the global (`NULL`) guideline is used as a fallback. The `None` scope continues to access only global guidelines.
+- **Per-conversation compression guidelines** — the `compression_guidelines` table gains a `conversation_id` column (migration 034). Guidelines are now scoped to a specific conversation when one is in scope; the global (`NULL`) guideline is used as fallback. Configure via `[memory.compression_guidelines]`; toggle with `--compression-guidelines`. See [Context Engineering](advanced/context.md#failure-driven-compression-guidelines).
+- **Session summary on shutdown** (#1816) — when no hard compaction fired during a session, the agent generates a lightweight LLM summary at shutdown and stores it in the vector store for cross-session recall. Configurable via `memory.shutdown_summary`, `shutdown_summary_min_messages` (default 4), and `shutdown_summary_max_messages` (default 20). The `--init` wizard prompts for the toggle; a TUI spinner appears during summarization.
+- **Declarative policy compiler** (#1695) — `PolicyEnforcer` evaluates TOML-based allow/deny rules before any tool executes. Deny-wins semantics; path traversal normalization; tool name normalization. Configure via `[tools.policy]` with `enabled`, `default_effect`, `rules`, and `policy_file`. CLI: `--policy-file`. Slash commands: `/policy status`, `/policy check [--trust-level <level>]`. Feature flag: `policy-enforcer` (included in `full`). See [Policy Enforcer](advanced/policy-enforcer.md).
+- **Pre-execution action verification** (#1630) — pluggable `PreExecutionVerifier` pipeline runs before any tool executes. Two built-in verifiers: `DestructiveCommandVerifier` (blocks `rm -rf /`, `dd if=`, `mkfs`, etc. outside configured `allowed_paths`) and `InjectionPatternVerifier` (blocks SQL injection, command injection, path traversal; warns on SSRF). Configure via `[security.pre_execution_verify]`. CLI escape hatch: `--no-pre-execution-verify`. TUI security panel shows block/warn counters.
+- **LLM guardrail pre-screener** (#1651) — `GuardrailFilter` screens user input (and optionally tool output) through a guard model before it enters agent context. Configurable action (block/warn), fail strategy (closed/open), timeout, and `max_input_chars`. Enable with `--guardrail` or `[security.guardrail] enabled = true`. TUI status bar: `GRD:on` (green) or `GRD:warn` (yellow). Slash command: `/guardrail` for live stats.
+- **Skill content scanner** (#1853) — `SkillContentScanner` scans all loaded skill bodies for injection patterns at startup when `[skills.trust] scan_on_load = true` (default). Scanner is advisory: findings are `WARN`-logged and do not downgrade trust or block tools. On-demand: `/skill scan` TUI command, `--scan-skills-on-load` CLI flag.
+- **OTLP-compatible debug traces** (#1343) — `--dump-format trace` emits OpenTelemetry-compatible JSON traces with span hierarchy: session → iteration → LLM request / tool call / memory search. Configure endpoint and service name via `[debug.traces]`. Switch at runtime: `/dump-format <json|raw|trace>`. `--init` wizard prompts for format when debug dump is enabled.
+- **TUI: compression guidelines status** (#1803) — memory panel shows guidelines version and last update timestamp. `/guidelines` slash command displays current guidelines text.
+- **Feature use-case bundles** (#1831) — six named bundles group related features: `desktop` (tui + scheduler + compression-guidelines), `ide` (acp + acp-http + lsp-context), `server` (gateway + a2a + scheduler + otel), `chat` (discord + slack), `ml` (candle + pdf + stt), `full` (all except ml/hardware). Individual feature flags are unchanged. See [Feature Flags](reference/feature-flags.md).
+
+### Changed
+
+- **Cascade router observability** (#1825) — `cascade_chat` and `cascade_chat_stream` now emit structured tracing events for provider selection, judge scoring, quality verdict, escalation, and budget exhaustion.
+- **ACP session config centralization** (#1812) — `AgentSessionConfig::from_config()` and `Agent::apply_session_config()` replace ~25 individually-copied fields in daemon/runner/ACP session bootstrap. Fixes missing orchestration config and server compaction in daemon sessions.
+- **rmcp 0.17 → 1.2** (#1845) — migrated `CallToolRequestParams` to builder pattern.
+
+### Fixed
+
+- Scheduler deadlock no longer emits misleading "Plan failed. 0/N tasks failed" — non-terminal tasks are marked `Canceled` at deadlock time; done message distinguishes deadlock, mixed failure, and normal failure paths (#1879).
+- MCP tools are now denied for quarantined skills — `TrustGateExecutor` tracks registered MCP tool IDs and blocks any call in the set (#1876).
+- Policy `tool="shell"` / `"sh"` / `"bash"` aliases now all match `ShellExecutor` at rule compile time (#1877).
+- `/policy check` no longer leaks process environment variables into trace output (#1873).
+- `PolicyEffect::AllowIf` variant removed — it was identical to `Allow` and generated misleading TOML docs (#1871).
+- Overflow notice format changed to `[full output stored — ID: {uuid} — ...]`; `read_overflow` accepts bare UUIDs and strips the legacy `overflow:` prefix (#1868).
+- Session summary timeout attempts plain-text fallback instead of silently returning `None`; `shutdown_summary_timeout_secs` (default 10) replaces hardcoded 5 s limit (#1869).
+- JWT Bearer tokens (`Authorization: Bearer <token>`, `eyJ...`) are now redacted before `compression_failure_pairs` SQLite insert (#1847).
+- Soft compaction threshold lowered from 0.70 to 0.60; `maybe_soft_compact_mid_iteration()` fires after per-tool summarization to relieve context pressure without triggering LLM calls (#1828).
+- Ollama `base_url` with `/v1` suffix no longer causes 404 on embed calls (#1832).
+- Graph memory: entity embeddings now correctly stored in Qdrant — `EntityResolver` was built without a provider in `extract_and_store()` (#1817, #1829).
+- Debug trace.json written inside per-session subdir, preventing overwrites (#1814).
+- JIT tool reference injection works after overflow migration to SQLite (#1818).
+- Policy symlink boundary check: `load_policy_file()` canonicalizes the path and rejects files outside the process working directory (#1872).
 
 ## [0.15.1] - 2026-03-15
 

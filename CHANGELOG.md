@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-03-16
+
 ### Added
 
 - feat(core): context compression subsystem — Focus Agent, SWE-Pruner/COMI, and SideQuest eviction behind `context-compression` feature flag (closes #1850, #1851, #1885)
@@ -2280,7 +2282,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/bug-ops/zeph/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/bug-ops/zeph/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/bug-ops/zeph/compare/v0.14.3...v0.15.0
 [0.14.3]: https://github.com/bug-ops/zeph/compare/v0.14.2...v0.14.3
