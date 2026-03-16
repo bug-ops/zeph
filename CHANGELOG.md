@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tui): graph memory metrics (entities/edges/communities) now update every turn instead of only when graph extraction fires — `sync_graph_counts()` is now called per-turn in `process_user_message_inner` in addition to at startup (closes #1932)
+
 - fix(context-compression): `extract_task_goal` is now fire-and-forget — spawns a background tokio task and returns immediately; result is applied at the start of the next Soft compaction (#1909). Eliminates the 5-second blocking LLM call on every compaction that made `task_aware`/`mig`/`task_aware_mig` strategies non-functional for cloud LLM providers. Timeout raised from 5s to 30s in the background task. Current compaction uses the cached goal from the previous turn with no latency impact.
 - fix(llm): `/model` list no longer returns 404 for standard OpenAI config — `list_models_remote` was constructing `{base_url}/v1/models` when `base_url` already contains `/v1`; corrected to `{base_url}/models` (closes #1903)
 - fix(core): corrections now stored even when `LearningConfig::enabled = false` (closes #1910)
