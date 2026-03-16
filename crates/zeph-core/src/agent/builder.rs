@@ -1049,6 +1049,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn with_focus_config_propagates_to_focus_state() {
+        let cfg = crate::config::FocusConfig {
+            enabled: true,
+            compression_interval: 7,
+            ..Default::default()
+        };
+        let agent = make_agent().with_focus_config(cfg.clone());
+        assert!(
+            agent.focus.config.enabled,
+            "with_focus_config must set enabled"
+        );
+        assert_eq!(
+            agent.focus.config.compression_interval, 7,
+            "with_focus_config must propagate compression_interval"
+        );
+    }
+
+    #[test]
+    fn with_sidequest_config_propagates_to_sidequest_state() {
+        let cfg = crate::config::SidequestConfig {
+            enabled: true,
+            interval_turns: 3,
+            ..Default::default()
+        };
+        let agent = make_agent().with_sidequest_config(cfg.clone());
+        assert!(
+            agent.sidequest.config.enabled,
+            "with_sidequest_config must set enabled"
+        );
+        assert_eq!(
+            agent.sidequest.config.interval_turns, 3,
+            "with_sidequest_config must propagate interval_turns"
+        );
+    }
+
     /// Verify that apply_session_config does NOT create an anomaly detector when disabled.
     #[test]
     fn apply_session_config_skips_anomaly_detector_when_disabled() {
