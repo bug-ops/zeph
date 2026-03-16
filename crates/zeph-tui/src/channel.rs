@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use tokio::sync::mpsc;
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage, ToolOutputEvent};
+use zeph_core::channel::{Channel, ChannelError, ChannelMessage, ToolOutputEvent, ToolStartEvent};
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
@@ -116,6 +116,28 @@ impl Channel for TuiChannel {
     async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
         self.agent_event_tx
             .send(AgentEvent::DiffReady(diff))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)?;
+        Ok(())
+    }
+
+    async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
+        let command = event
+            .params
+            .as_ref()
+            .and_then(|p| {
+                p.get("command")
+                    .or_else(|| p.get("path"))
+                    .or_else(|| p.get("url"))
+            })
+            .and_then(|v| v.as_str())
+            .unwrap_or(event.tool_name)
+            .to_owned();
+        self.agent_event_tx
+            .send(AgentEvent::ToolStart {
+                tool_name: event.tool_name.to_owned(),
+                command,
+            })
             .await
             .map_err(|_| ChannelError::ChannelClosed)?;
         Ok(())
@@ -340,6 +362,46 @@ mod tests {
         let cmd = ch.try_recv_command().expect("should receive command");
         assert_eq!(cmd, TuiCommand::SkillList);
         assert!(ch.try_recv_command().is_none(), "second call returns None");
+    }
+
+    #[tokio::test]
+    async fn send_tool_start_forwards_event_with_command_from_params() {
+        use zeph_core::channel::ToolStartEvent;
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.send_tool_start(ToolStartEvent {
+            tool_name: "bash",
+            tool_call_id: "id1",
+            params: Some(serde_json::json!({"command": "ls -la"})),
+            parent_tool_use_id: None,
+        })
+        .await
+        .unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(
+            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command }
+                if tool_name == "bash" && command == "ls -la"),
+            "expected ToolStart with command from params"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_tool_start_falls_back_to_tool_name() {
+        use zeph_core::channel::ToolStartEvent;
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.send_tool_start(ToolStartEvent {
+            tool_name: "memory_search",
+            tool_call_id: "id2",
+            params: None,
+            parent_tool_use_id: None,
+        })
+        .await
+        .unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(
+            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command }
+                if tool_name == "memory_search" && command == "memory_search"),
+            "expected ToolStart with tool_name as fallback command"
+        );
     }
 
     #[tokio::test]
