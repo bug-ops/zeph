@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- enhancement(core): `LearningEngine` now performs real behavioral learning from interaction history (closes #1913)
+  - New SQLite table `learned_preferences` (migration 036) persists inferred user preferences across sessions
+  - Scans `user_corrections` incrementally via watermark (no repeated re-scanning); analyzes every 5 turns when `correction_detection` is enabled
+  - Regex-based preference inference with word-boundary anchors: verbosity (concise/detailed), response format (plain/markdown/bullets/headers), language preference
+  - Persists preferences above a Wilson-score confidence threshold; up to 3 highest-confidence facts injected into the volatile system prompt block (after `<!-- cache:volatile -->` to preserve prompt caching)
+  - Sanitizes injected preference values (strips `\n`/`\r`) and enforces length caps (key ≤ 128 B, value ≤ 256 B)
+  - Gated on `LearningConfig::correction_detection` (independent of `LearningConfig::enabled` which controls skill auto-improvement)
+
 ### Fixed
 
 - fix(context-compression): `extract_task_goal` is now fire-and-forget — spawns a background tokio task and returns immediately; result is applied at the start of the next Soft compaction (#1909). Eliminates the 5-second blocking LLM call on every compaction that made `task_aware`/`mig`/`task_aware_mig` strategies non-functional for cloud LLM providers. Timeout raised from 5s to 30s in the background task. Current compaction uses the cached goal from the previous turn with no latency impact.
