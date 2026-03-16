@@ -735,6 +735,8 @@ impl<C: Channel> Agent<C> {
                         .await
                     {
                         tracing::warn!("failed to persist compaction in sqlite: {e:#}");
+                    } else if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary in Qdrant: {e:#}");
                     }
                 }
                 Ok(_) => {
@@ -1758,6 +1760,8 @@ impl<C: Channel> Agent<C> {
                         .await
                     {
                         tracing::warn!("failed to persist compaction in sqlite: {e:#}");
+                    } else if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                        tracing::warn!("failed to store session summary in Qdrant: {e:#}");
                     }
                 }
                 Ok(_) => {
