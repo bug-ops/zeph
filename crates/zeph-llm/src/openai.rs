@@ -138,7 +138,7 @@ impl OpenAiProvider {
         }
     }
 
-    /// Fetch the list of available models from GET `{base_url}/v1/models` and cache them.
+    /// Fetch the list of available models from GET `{base_url}/models` and cache them.
     ///
     /// # Errors
     ///
@@ -146,7 +146,7 @@ impl OpenAiProvider {
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
-        let url = format!("{}/v1/models", self.base_url);
+        let url = format!("{}/models", self.base_url);
         let resp = self
             .client
             .get(&url)
@@ -2413,7 +2413,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/models"))
+            .and(path("/models"))
             .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
             .mount(&server)
             .await;
