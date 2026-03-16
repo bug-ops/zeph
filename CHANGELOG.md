@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `index_project()` now accepts `progress_tx: Option<&watch::Sender<IndexProgress>>` and sends progress after each file
   - CLI mode: prints "Indexing codebase in the background (N files)..." and "Codebase indexed: N files, M chunks (Xs) — code search is ready." to stderr
   - TUI mode: shows "Indexing codebase... N/M files (X%)" in the status bar, then "Index ready (N files, M chunks)" for 3s after completion
+- feat(context-compression): CLI flags `--focus`/`--no-focus`, `--sidequest`/`--no-sidequest`, and `--pruning-strategy <reactive|task_aware|mig|task_aware_mig>` for per-session context compression overrides (#1904)
+- feat(context-compression): `--init` wizard step for Focus Agent and SideQuest configuration with validated interval inputs
+- feat(context-compression): debug dump files for pruning scores (`{n}-pruning-scores.json`), focus knowledge (`{n}-focus-knowledge.txt`), and SideQuest eviction (`{n}-sidequest-eviction.json`) when `--debug-dump` is active
+- feat(context-compression): TUI status spinners for `extract_task_goal` background task ("Extracting task goal...") and SideQuest eviction scoring ("SideQuest: scoring tool outputs...")
 - obs(orchestration): `LlmPlanner::plan()` and `LlmAggregator::aggregate()` now return token usage data; call sites in `agent/mod.rs` increment `api_calls`, `prompt_tokens`, `completion_tokens`, `total_tokens`, cost, and cache stats in the shared `MetricsCollector` (closes #1899)
 - obs(orchestration): `tasks_skipped` counter now correctly incremented in both `GraphStatus::Completed` and `GraphStatus::Failed` arms of `finalize_plan_execution`
 - obs(orchestration): `/status` command shows an `Orchestration:` block (plans, tasks completed/failed/skipped) when `orchestration.enabled = true` and at least one plan has been executed

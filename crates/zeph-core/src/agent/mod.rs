@@ -334,6 +334,9 @@ pub struct Agent<C: Channel> {
     /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
     #[cfg(feature = "lsp-context")]
     pub(super) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
+    /// Optional status channel for sending spinner/status messages to TUI or stderr.
+    /// Cloned from the provider's `StatusTx` before the provider consumes it.
+    pub(super) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     // --- New sub-structs ---
     pub(super) lifecycle: LifecycleState,
     pub(super) providers: ProviderState,
@@ -597,6 +600,7 @@ impl<C: Channel> Agent<C> {
             pending_task_goal: None,
             #[cfg(feature = "context-compression")]
             pending_sidequest_result: None,
+            status_tx: None,
         }
     }
 
@@ -4205,10 +4209,11 @@ impl<C: Channel> Agent<C> {
             // `now_or_never` avoids blocking — if the task isn't done yet, skip this turn.
             use futures::FutureExt as _;
             match handle.now_or_never() {
-                Some(Ok(Some(cursors))) if !cursors.is_empty() => {
+                Some(Ok(Some(evicted_indices))) if !evicted_indices.is_empty() => {
+                    let cursors_snapshot = self.sidequest.tool_output_cursors.clone();
                     let freed = self.sidequest.apply_eviction(
                         &mut self.messages,
-                        &cursors,
+                        &evicted_indices,
                         &self.metrics.token_counter,
                     );
                     if freed > 0 {
@@ -4217,17 +4222,34 @@ impl<C: Channel> Agent<C> {
                         self.context_manager.compacted_this_turn = true;
                         tracing::info!(
                             freed_tokens = freed,
-                            evicted_cursors = cursors.len(),
+                            evicted_cursors = evicted_indices.len(),
                             pass = self.sidequest.passes_run,
                             "sidequest eviction complete"
                         );
+                        if let Some(ref d) = self.debug_state.debug_dumper {
+                            d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
+                        }
+                        if let Some(ref tx) = self.status_tx {
+                            let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
+                        }
+                    } else {
+                        // apply_eviction returned 0 — clear spinner so it doesn't dangle.
+                        if let Some(ref tx) = self.status_tx {
+                            let _ = tx.send(String::new());
+                        }
                     }
                 }
                 Some(Ok(None | Some(_))) => {
                     tracing::debug!("sidequest: pending result: no cursors to evict");
+                    if let Some(ref tx) = self.status_tx {
+                        let _ = tx.send(String::new());
+                    }
                 }
                 Some(Err(e)) => {
                     tracing::debug!("sidequest: background task panicked: {e}");
+                    if let Some(ref tx) = self.status_tx {
+                        let _ = tx.send(String::new());
+                    }
                 }
                 None => {
                     // Task still running — re-store and wait another turn.
@@ -4305,6 +4327,9 @@ impl<C: Channel> Agent<C> {
 
         self.pending_sidequest_result = Some(handle);
         tracing::debug!("sidequest: background LLM eviction task spawned");
+        if let Some(ref tx) = self.status_tx {
+            let _ = tx.send("SideQuest: scoring tool outputs...".into());
+        }
     }
 }
 pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {

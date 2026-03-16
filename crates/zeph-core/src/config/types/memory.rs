@@ -485,7 +485,7 @@ pub enum CompressionStrategy {
 ///
 /// When `context-compression` feature is enabled, this replaces the default oldest-first
 /// heuristic with scored eviction.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PruningStrategy {
     /// Oldest-first eviction — current default behavior.
@@ -500,6 +500,22 @@ pub enum PruningStrategy {
     /// Combined `TaskAware` goal extraction + MIG scoring.
     /// Requires `context-compression` feature.
     TaskAwareMig,
+}
+
+impl std::str::FromStr for PruningStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "reactive" => Ok(Self::Reactive),
+            "task_aware" | "task-aware" => Ok(Self::TaskAware),
+            "mig" => Ok(Self::Mig),
+            "task_aware_mig" | "task-aware-mig" => Ok(Self::TaskAwareMig),
+            other => Err(format!(
+                "unknown pruning strategy `{other}`, expected reactive|task_aware|mig|task_aware_mig"
+            )),
+        }
+    }
 }
 
 /// Configuration for active context compression (#1161).

@@ -21,7 +21,7 @@ pub(crate) async fn handle_ingest(
     let qdrant = QdrantOps::new(&config.memory.qdrant_url)
         .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?;
 
-    let (provider, _status_rx) = app.build_provider().await?;
+    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let provider = std::sync::Arc::new(provider);
     let embed_fn = {
         let p = std::sync::Arc::clone(&provider);

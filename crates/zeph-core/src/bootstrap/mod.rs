@@ -157,10 +157,18 @@ impl AppBuilder {
     /// Returns [`BootstrapError`] if provider creation or health check fails.
     pub async fn build_provider(
         &self,
-    ) -> Result<(AnyProvider, tokio::sync::mpsc::UnboundedReceiver<String>), BootstrapError> {
+    ) -> Result<
+        (
+            AnyProvider,
+            tokio::sync::mpsc::UnboundedSender<String>,
+            tokio::sync::mpsc::UnboundedReceiver<String>,
+        ),
+        BootstrapError,
+    > {
         let mut provider = create_provider(&self.config)?;
 
         let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let status_tx_clone = status_tx.clone();
         provider.set_status_tx(status_tx);
 
         health_check(&provider).await;
@@ -182,7 +190,7 @@ impl AppBuilder {
             tracing::info!(context_window = ctx, "detected orchestrator context window");
         }
 
-        Ok((provider, status_rx))
+        Ok((provider, status_tx_clone, status_rx))
     }
 
     pub fn auto_budget_tokens(&self, provider: &AnyProvider) -> usize {
