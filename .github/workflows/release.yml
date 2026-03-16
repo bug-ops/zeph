@@ -46,13 +46,14 @@ jobs:
           # Re-enable when GitHub provides hosted Windows ARM64 runners.
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
-      - uses: taiki-e/install-action@cross
+      - uses: taiki-e/install-action@56720d582cf58295f40f53e94c01dfddeab22f1d # cross
       - name: Build binary (cross)
         if: matrix.use_cross
         run: cross build --release --features full --target ${{ matrix.target }}
