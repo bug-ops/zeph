@@ -24,11 +24,18 @@ pub trait Aggregator: Send + Sync {
     /// absent output is noted. On LLM call failure the implementation must
     /// fall back to raw concatenation rather than propagating the error.
     ///
+    /// Returns the synthesized string and the LLM token usage `(prompt, completion)` from
+    /// the underlying API call, or `None` when the provider does not report usage or when
+    /// the LLM call failed and the fallback path was used.
+    ///
     /// # Errors
     ///
     /// Returns `OrchestrationError::AggregationFailed` if neither synthesis
     /// nor fallback concatenation can produce output (e.g., no tasks at all).
-    async fn aggregate(&self, graph: &TaskGraph) -> Result<String, OrchestrationError>;
+    async fn aggregate(
+        &self,
+        graph: &TaskGraph,
+    ) -> Result<(String, Option<(u64, u64)>), OrchestrationError>;
 }
 
 /// LLM-backed [`Aggregator`] that synthesizes task outputs into a coherent response.
@@ -55,7 +62,10 @@ impl<P: LlmProvider> LlmAggregator<P> {
 }
 
 impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
-    async fn aggregate(&self, graph: &TaskGraph) -> Result<String, OrchestrationError> {
+    async fn aggregate(
+        &self,
+        graph: &TaskGraph,
+    ) -> Result<(String, Option<(u64, u64)>), OrchestrationError> {
         let completed: Vec<_> = graph
             .tasks
             .iter()
@@ -124,15 +134,20 @@ impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
         ];
 
         match self.provider.chat(&messages).await {
-            Ok(synthesis) => Ok(synthesis),
+            Ok(synthesis) => {
+                // Capture usage right after the successful API call.
+                let usage = self.provider.last_usage();
+                Ok((synthesis, usage))
+            }
             Err(e) => {
-                // I3: on LLM failure, fall back to raw concatenation.
+                // I3: on LLM failure, fall back to raw concatenation. Usage is not tracked
+                // for the fallback path because no tokens were successfully consumed.
                 tracing::error!(
                     graph_id = %graph.id,
                     error = %e,
                     "aggregation LLM call failed; falling back to raw concatenation"
                 );
-                Ok(build_fallback(graph, &self.sanitizer, per_task))
+                Ok((build_fallback(graph, &self.sanitizer, per_task), None))
             }
         }
     }
@@ -276,7 +291,7 @@ mod tests {
             let agg = LlmAggregator::new(provider, &make_config());
 
             let graph = make_graph_with_tasks(&[(TaskStatus::Completed, Some("task output"))]);
-            let result = agg.aggregate(&graph).await.unwrap();
+            let (result, _usage) = agg.aggregate(&graph).await.unwrap();
             assert_eq!(result, "synthesized result");
         }
 
@@ -286,11 +301,12 @@ mod tests {
             let agg = LlmAggregator::new(provider, &make_config());
 
             let graph = make_graph_with_tasks(&[(TaskStatus::Completed, Some("raw output"))]);
-            let result = agg.aggregate(&graph).await.unwrap();
+            let (result, usage) = agg.aggregate(&graph).await.unwrap();
             assert!(
                 result.contains("raw output"),
                 "fallback should have raw output"
             );
+            assert!(usage.is_none(), "fallback path must not report usage");
         }
 
         #[tokio::test]
@@ -316,7 +332,7 @@ mod tests {
             ]);
             // Set a recognizable description for the skipped task.
             graph.tasks[1].description = "unique-skipped-description".to_string();
-            let result = agg.aggregate(&graph).await.unwrap();
+            let (result, _usage) = agg.aggregate(&graph).await.unwrap();
             assert!(
                 result.contains("task-1") || result.contains("skipped"),
                 "fallback must include skipped task info; got: {result}"
@@ -340,7 +356,7 @@ mod tests {
             let agg = LlmAggregator::new(provider, &config);
             let long_output = "a".repeat(1000);
             let graph = make_graph_with_tasks(&[(TaskStatus::Completed, Some(&long_output))]);
-            let result = agg.aggregate(&graph).await.unwrap();
+            let (result, _usage) = agg.aggregate(&graph).await.unwrap();
             // With 4-char truncation, the 1000-char run of 'a' must not appear verbatim.
             // Even with spotlight wrapping the raw 'aaaa...' sequence is trimmed to at most 4 'a's.
             assert!(
