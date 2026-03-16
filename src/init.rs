@@ -7,8 +7,8 @@ use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, CascadeConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig,
     McpServerConfig, MemoryConfig, OrchestrationConfig, OrchestratorConfig,
-    OrchestratorProviderConfig, ProviderKind, RouterConfig, RouterStrategyConfig, SemanticConfig,
-    SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
+    OrchestratorProviderConfig, ProviderKind, PruningStrategy, RouterConfig, RouterStrategyConfig,
+    SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -95,6 +95,12 @@ pub(crate) struct WizardState {
     pub(crate) graph_extract_model: Option<String>,
     // ACON failure-driven compression guidelines
     pub(crate) compression_guidelines_enabled: bool,
+    // Context compression: Focus Agent + SideQuest + pruning strategy
+    pub(crate) focus_enabled: bool,
+    pub(crate) focus_compression_interval: usize,
+    pub(crate) sidequest_enabled: bool,
+    pub(crate) sidequest_interval_turns: u32,
+    pub(crate) pruning_strategy: String,
     // Server-side compaction
     pub(crate) gemini_thinking_level: Option<GeminiThinkingLevel>,
     pub(crate) server_compaction_enabled: bool,
@@ -209,6 +215,11 @@ impl Default for WizardState {
             graph_memory_enabled: false,
             graph_extract_model: None,
             compression_guidelines_enabled: false,
+            focus_enabled: false,
+            focus_compression_interval: 12,
+            sidequest_enabled: false,
+            sidequest_interval_turns: 4,
+            pruning_strategy: "reactive".into(),
             gemini_thinking_level: None,
             server_compaction_enabled: false,
             mcpls_enabled: false,
@@ -287,6 +298,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_vault(&mut state)?;
     step_llm(&mut state)?;
     step_memory(&mut state)?;
+    step_context_compression(&mut state)?;
     step_channel(&mut state)?;
     step_update_check(&mut state)?;
     step_scheduler(&mut state)?;
@@ -714,6 +726,71 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Context Compression ==\n");
+    println!(
+        "Active context compression reduces token usage by pruning stale tool outputs \
+         and compressing exploration phases.\n"
+    );
+
+    state.focus_enabled = Confirm::new()
+        .with_prompt("Enable Focus Agent? (LLM-driven exploration bracketing)")
+        .default(false)
+        .interact()?;
+
+    if state.focus_enabled {
+        state.focus_compression_interval = Input::new()
+            .with_prompt("Focus compression interval (turns between suggestions)")
+            .default(state.focus_compression_interval)
+            .validate_with(
+                |v: &usize| {
+                    if *v >= 1 { Ok(()) } else { Err("must be >= 1") }
+                },
+            )
+            .interact_text()?;
+    }
+
+    state.sidequest_enabled = Confirm::new()
+        .with_prompt("Enable SideQuest eviction? (LLM-driven tool output eviction)")
+        .default(false)
+        .interact()?;
+
+    if state.sidequest_enabled {
+        state.sidequest_interval_turns = Input::new()
+            .with_prompt("SideQuest eviction interval (user turns)")
+            .default(state.sidequest_interval_turns)
+            .validate_with(|v: &u32| if *v >= 1 { Ok(()) } else { Err("must be >= 1") })
+            .interact_text()?;
+    }
+
+    let strategy_options = &[
+        "reactive (oldest-first, default)",
+        "task_aware (keyword relevance scoring)",
+        "mig (relevance minus redundancy)",
+        "task_aware_mig (combined goal + MIG)",
+    ];
+    let default_idx = match state.pruning_strategy.as_str() {
+        "task_aware" => 1,
+        "mig" => 2,
+        "task_aware_mig" => 3,
+        _ => 0,
+    };
+    let idx = Select::new()
+        .with_prompt("Pruning strategy")
+        .items(strategy_options)
+        .default(default_idx)
+        .interact()?;
+    state.pruning_strategy = match idx {
+        1 => "task_aware".into(),
+        2 => "mig".into(),
+        3 => "task_aware_mig".into(),
+        _ => "reactive".into(),
+    };
+
+    println!();
+    Ok(())
+}
+
 fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 4/10: Channel ==\n");
 
@@ -966,6 +1043,20 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.memory.graph.extract_model.clone_from(m);
     }
     config.memory.compression_guidelines.enabled = state.compression_guidelines_enabled;
+    config.agent.focus.enabled = state.focus_enabled;
+    if state.focus_enabled {
+        config.agent.focus.compression_interval = state.focus_compression_interval;
+    }
+    config.memory.sidequest.enabled = state.sidequest_enabled;
+    if state.sidequest_enabled {
+        config.memory.sidequest.interval_turns = state.sidequest_interval_turns;
+    }
+    config.memory.compression.pruning_strategy = match state.pruning_strategy.as_str() {
+        "task_aware" => PruningStrategy::TaskAware,
+        "mig" => PruningStrategy::Mig,
+        "task_aware_mig" => PruningStrategy::TaskAwareMig,
+        _ => PruningStrategy::Reactive,
+    };
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
     config.memory.hard_compaction_threshold = state.hard_compaction_threshold;
     config.memory.shutdown_summary = state.shutdown_summary;
@@ -2537,6 +2628,100 @@ mod tests {
                 .destructive_commands
                 .allowed_paths
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn build_config_focus_enabled() {
+        let state = WizardState {
+            focus_enabled: true,
+            focus_compression_interval: 7,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.agent.focus.enabled);
+        assert_eq!(config.agent.focus.compression_interval, 7);
+    }
+
+    #[test]
+    fn build_config_focus_disabled_does_not_set_interval() {
+        let state = WizardState {
+            focus_enabled: false,
+            focus_compression_interval: 7,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.agent.focus.enabled);
+    }
+
+    #[test]
+    fn build_config_sidequest_enabled() {
+        let state = WizardState {
+            sidequest_enabled: true,
+            sidequest_interval_turns: 3,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.memory.sidequest.enabled);
+        assert_eq!(config.memory.sidequest.interval_turns, 3);
+    }
+
+    #[test]
+    fn build_config_pruning_strategy_task_aware() {
+        let state = WizardState {
+            pruning_strategy: "task_aware".into(),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.memory.compression.pruning_strategy,
+            PruningStrategy::TaskAware
+        );
+    }
+
+    #[test]
+    fn build_config_pruning_strategy_mig() {
+        let state = WizardState {
+            pruning_strategy: "mig".into(),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.memory.compression.pruning_strategy,
+            PruningStrategy::Mig
+        );
+    }
+
+    #[test]
+    fn build_config_pruning_strategy_task_aware_mig() {
+        let state = WizardState {
+            pruning_strategy: "task_aware_mig".into(),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.memory.compression.pruning_strategy,
+            PruningStrategy::TaskAwareMig
+        );
+    }
+
+    #[test]
+    fn build_config_pruning_strategy_defaults_to_reactive() {
+        let state = WizardState {
+            pruning_strategy: "reactive".into(),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.memory.compression.pruning_strategy,
+            PruningStrategy::Reactive
         );
     }
 }

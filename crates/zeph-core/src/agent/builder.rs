@@ -24,6 +24,15 @@ use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
 impl<C: Channel> Agent<C> {
+    /// Attach a status channel for spinner/status messages sent to TUI or stderr.
+    /// The sender must be cloned from the provider's `StatusTx` before
+    /// `provider.set_status_tx()` consumes it.
+    #[must_use]
+    pub fn with_status_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        self.status_tx = Some(tx);
+        self
+    }
+
     /// Store a snapshot of the policy config for `/policy` command inspection.
     #[cfg(feature = "policy-enforcer")]
     #[must_use]

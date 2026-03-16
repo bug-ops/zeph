@@ -882,6 +882,10 @@ impl<C: Channel> Agent<C> {
             return self.prune_tool_outputs_oldest_first(min_to_free);
         };
 
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_pruning_scores(&scores);
+        }
+
         // Sort ascending by score: lowest relevance first (best eviction candidates)
         let mut sorted_scores = scores;
         sorted_scores.sort_unstable_by(|a, b| {
@@ -953,6 +957,10 @@ impl<C: Channel> Agent<C> {
 
         let goal = self.current_task_goal.as_deref();
         let mut scores = score_blocks_mig(&self.messages, goal, &self.metrics.token_counter);
+
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_pruning_scores(&scores);
+        }
 
         // Sort ascending by MIG: most negative MIG = highest eviction priority
         scores.sort_unstable_by(|a, b| {
@@ -1884,11 +1892,15 @@ impl<C: Channel> Agent<C> {
             .is_some_and(tokio::task::JoinHandle::is_finished)
         {
             use futures::FutureExt as _;
-            if let Some(handle) = self.pending_task_goal.take()
-                && let Some(Ok(Some(goal))) = handle.now_or_never()
-            {
-                tracing::debug!("extract_task_goal: background result applied");
-                self.current_task_goal = Some(goal);
+            if let Some(handle) = self.pending_task_goal.take() {
+                if let Some(Ok(Some(goal))) = handle.now_or_never() {
+                    tracing::debug!("extract_task_goal: background result applied");
+                    self.current_task_goal = Some(goal);
+                }
+                // Clear spinner on ALL completion paths (success, None result, or task panic).
+                if let Some(ref tx) = self.status_tx {
+                    let _ = tx.send(String::new());
+                }
             }
         }
 
@@ -1960,7 +1972,8 @@ impl<C: Channel> Agent<C> {
                     Role::System => "system",
                 };
                 let preview = if content.len() > 300 {
-                    &content[..300]
+                    let end = content.floor_char_boundary(300);
+                    &content[..end]
                 } else {
                     content.as_str()
                 };
@@ -2006,5 +2019,8 @@ impl<C: Channel> Agent<C> {
 
         self.pending_task_goal = Some(handle);
         tracing::debug!("extract_task_goal: background task spawned");
+        if let Some(ref tx) = self.status_tx {
+            let _ = tx.send("Extracting task goal...".into());
+        }
     }
 }
