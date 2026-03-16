@@ -1230,7 +1230,10 @@ mod tests {
         let sqlite = memory.sqlite();
 
         // Persist a system prompt and several user messages so oldest_message_ids returns >= 2 rows.
-        sqlite.save_message(cid, "system", "system prompt").await.unwrap();
+        sqlite
+            .save_message(cid, "system", "system prompt")
+            .await
+            .unwrap();
         for i in 0..5 {
             sqlite
                 .save_message(cid, "user", &format!("message {i}"))
@@ -1274,7 +1277,9 @@ mod tests {
             "replace_conversation must have inserted a summary row in SQLite"
         );
         assert!(
-            agent_visible.iter().any(|m| m.content.contains("compacted summary")),
+            agent_visible
+                .iter()
+                .any(|m| m.content.contains("compacted summary")),
             "SQLite must contain the summary inserted by replace_conversation"
         );
     }
