@@ -1216,6 +1216,74 @@ mod tests {
         assert!(agent.messages[1].content.contains("compacted summary"));
     }
 
+    // Verify that compact_context() calls replace_conversation() when SQLite has enough rows.
+    // This exercises the happy-path branch (ids.len() >= 2) which is the precondition for
+    // store_session_summary() in the fix for issue #1911.
+    #[tokio::test]
+    async fn test_compact_context_calls_replace_conversation() {
+        let provider = mock_provider(vec!["compacted summary".to_string()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (memory, cid) = create_memory_with_summaries(provider.clone(), &[]).await;
+        let sqlite = memory.sqlite();
+
+        // Persist a system prompt and several user messages so oldest_message_ids returns >= 2 rows.
+        sqlite
+            .save_message(cid, "system", "system prompt")
+            .await
+            .unwrap();
+        for i in 0..5 {
+            sqlite
+                .save_message(cid, "user", &format!("message {i}"))
+                .await
+                .unwrap();
+        }
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50)
+            .with_context_budget(10000, 0.20, 0.80, 2, 0);
+
+        // Mirror the same messages in the in-memory list so compaction has content to process.
+        agent.messages.push(Message {
+            role: Role::User,
+            content: "system prompt".to_string(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        for i in 0..10 {
+            agent.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i}"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.compact_context().await.unwrap();
+
+        // After compaction, replace_conversation() must have been called:
+        // original messages become agent_visible=0, summary row is inserted with agent_visible=1.
+        let memory_ref = agent.memory_state.memory.as_ref().unwrap();
+        let agent_visible = memory_ref
+            .sqlite()
+            .load_history_filtered(cid, 50, Some(true), None)
+            .await
+            .unwrap();
+        // At least one agent-visible summary row must exist in SQLite.
+        assert!(
+            !agent_visible.is_empty(),
+            "replace_conversation must have inserted a summary row in SQLite"
+        );
+        assert!(
+            agent_visible
+                .iter()
+                .any(|m| m.content.contains("compacted summary")),
+            "SQLite must contain the summary inserted by replace_conversation"
+        );
+    }
+
     #[test]
     fn test_budget_allocation_cross_session() {
         let budget = crate::context::ContextBudget::new(1000, 0.20);
