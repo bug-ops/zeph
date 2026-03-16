@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(core): corrections now stored even when `LearningConfig::enabled = false` (closes #1910)
+
 ### Security
 
 - Suppress CodeQL `rust/cleartext-logging` false positives on intentional debug/trace log sites (closes #1905)

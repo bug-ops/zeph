@@ -2933,7 +2933,7 @@ impl<C: Channel> Agent<C> {
             .config
             .as_ref()
             .is_none_or(|c| c.correction_detection);
-        if !self.is_learning_enabled() || !correction_detection_enabled {
+        if !correction_detection_enabled {
             return;
         }
 
@@ -2987,7 +2987,9 @@ impl<C: Channel> Agent<C> {
         let feedback_text = context::truncate_chars(&signal.feedback_text, 500);
         // Self-corrections (user corrects their own statement) must not penalize skills —
         // the agent did nothing wrong. Store for analytics but skip skill outcome recording.
-        if signal.kind != feedback_detector::CorrectionKind::SelfCorrection {
+        if self.is_learning_enabled()
+            && signal.kind != feedback_detector::CorrectionKind::SelfCorrection
+        {
             self.record_skill_outcomes(
                 "user_rejection",
                 Some(&feedback_text),

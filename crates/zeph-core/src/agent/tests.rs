@@ -4053,4 +4053,52 @@ mod shutdown_summary_tests {
             "agent must send the doom-loop stopping message; got: {sent:?}"
         );
     }
+
+    // Regression test for issue #1910: corrections must be stored in user_corrections even when
+    // LearningConfig::enabled = false (skill auto-improvement is disabled).
+    #[tokio::test]
+    async fn correction_stored_when_learning_disabled() {
+        use crate::config::LearningConfig;
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::semantic::SemanticMemory;
+
+        let mock = MockProvider::default();
+        let provider = AnyProvider::Mock(mock);
+        let memory: SemanticMemory =
+            SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model")
+                .await
+                .expect("in-memory SQLite must init");
+        let memory = Arc::new(memory);
+
+        let agent_provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let conv_id = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(agent_provider, channel, registry, None, 5, executor)
+            .with_learning(LearningConfig {
+                enabled: false,
+                correction_detection: true,
+                ..LearningConfig::default()
+            })
+            .with_memory(Arc::clone(&memory), conv_id, 20, 5, 10);
+
+        // "no that's wrong" triggers ExplicitRejection (confidence 0.85 > default threshold 0.6)
+        agent
+            .detect_and_record_corrections("no that's wrong", Some(conv_id))
+            .await;
+
+        let rows = memory.sqlite().load_recent_corrections(10).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "correction must be stored even when learning is disabled"
+        );
+        assert_eq!(rows[0].correction_kind, "explicit_rejection");
+        assert_eq!(rows[0].correction_text, "no that's wrong");
+    }
 }
