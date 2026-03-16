@@ -694,7 +694,7 @@ impl<C: Channel> Agent<C> {
             .orchestration
             .orchestration_config
             .confirm_before_execute;
-        let graph = LlmPlanner::new(
+        let (graph, planner_usage) = LlmPlanner::new(
             self.provider.clone(),
             &self.orchestration.orchestration_config,
         )
@@ -704,11 +704,18 @@ impl<C: Channel> Agent<C> {
 
         let task_count = graph.tasks.len() as u64;
         let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
+        let (planner_prompt, planner_completion) = planner_usage.unwrap_or((0, 0));
         self.update_metrics(|m| {
+            m.api_calls += 1;
+            m.prompt_tokens += planner_prompt;
+            m.completion_tokens += planner_completion;
+            m.total_tokens = m.prompt_tokens + m.completion_tokens;
             m.orchestration.plans_total += 1;
             m.orchestration.tasks_total += task_count;
             m.orchestration_graph = Some(snapshot);
         });
+        self.record_cost(planner_prompt, planner_completion);
+        self.record_cache_usage();
 
         if confirm_before_execute {
             let summary = format_plan_summary(&graph);
@@ -1499,14 +1506,31 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
                     .count() as u64;
-                self.update_metrics(|m| m.orchestration.tasks_completed += completed_count);
+                let skipped_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .count() as u64;
+                self.update_metrics(|m| {
+                    m.orchestration.tasks_completed += completed_count;
+                    m.orchestration.tasks_skipped += skipped_count;
+                });
 
                 let aggregator = LlmAggregator::new(
                     self.provider.clone(),
                     &self.orchestration.orchestration_config,
                 );
                 match aggregator.aggregate(&completed_graph).await {
-                    Ok(synthesis) => {
+                    Ok((synthesis, aggregator_usage)) => {
+                        let (aggr_prompt, aggr_completion) = aggregator_usage.unwrap_or((0, 0));
+                        self.update_metrics(|m| {
+                            m.api_calls += 1;
+                            m.prompt_tokens += aggr_prompt;
+                            m.completion_tokens += aggr_completion;
+                            m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                        });
+                        self.record_cost(aggr_prompt, aggr_completion);
+                        self.record_cache_usage();
                         self.channel.send(&synthesis).await?;
                     }
                     Err(e) => {
@@ -1532,8 +1556,20 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Canceled)
                     .collect();
+                let completed_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count() as u64;
+                let skipped_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .count() as u64;
                 self.update_metrics(|m| {
                     m.orchestration.tasks_failed += failed_tasks.len() as u64;
+                    m.orchestration.tasks_completed += completed_count;
+                    m.orchestration.tasks_skipped += skipped_count;
                 });
                 let total = completed_graph.tasks.len();
                 let msg = if failed_tasks.is_empty() && !cancelled_tasks.is_empty() {
@@ -3314,19 +3350,34 @@ impl<C: Channel> Agent<C> {
             .filter(|m| m.role == Role::User)
             .count();
 
-        let (api_calls, prompt_tokens, completion_tokens, cost_cents, mcp_servers) =
-            if let Some(ref tx) = self.metrics.metrics_tx {
-                let m = tx.borrow();
-                (
-                    m.api_calls,
-                    m.prompt_tokens,
-                    m.completion_tokens,
-                    m.cost_spent_cents,
-                    m.mcp_server_count,
-                )
-            } else {
-                (0, 0, 0, 0.0, 0)
-            };
+        let (
+            api_calls,
+            prompt_tokens,
+            completion_tokens,
+            cost_cents,
+            mcp_servers,
+            orch_plans,
+            orch_tasks,
+            orch_completed,
+            orch_failed,
+            orch_skipped,
+        ) = if let Some(ref tx) = self.metrics.metrics_tx {
+            let m = tx.borrow();
+            (
+                m.api_calls,
+                m.prompt_tokens,
+                m.completion_tokens,
+                m.cost_spent_cents,
+                m.mcp_server_count,
+                m.orchestration.plans_total,
+                m.orchestration.tasks_total,
+                m.orchestration.tasks_completed,
+                m.orchestration.tasks_failed,
+                m.orchestration.tasks_skipped,
+            )
+        } else {
+            (0, 0, 0, 0.0, 0, 0, 0, 0, 0, 0)
+        };
 
         let skill_count = self
             .skill_state
@@ -3349,6 +3400,18 @@ impl<C: Channel> Agent<C> {
         let _ = writeln!(out, "MCP:       {mcp_servers} server(s)");
         if cost_cents > 0.0 {
             let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
+        }
+        if orch_plans > 0 {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Orchestration:");
+            let _ = writeln!(out, "  Plans:     {orch_plans}");
+            let _ = writeln!(out, "  Tasks:     {orch_completed}/{orch_tasks} completed");
+            if orch_failed > 0 {
+                let _ = writeln!(out, "  Failed:    {orch_failed}");
+            }
+            if orch_skipped > 0 {
+                let _ = writeln!(out, "  Skipped:   {orch_skipped}");
+            }
         }
 
         self.channel.send(out.trim_end()).await?;
