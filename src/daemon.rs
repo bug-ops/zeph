@@ -323,7 +323,9 @@ pub(crate) async fn run_daemon(
     .with_config_reload(config_path_owned, config_reload_rx)
     .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
     .with_mcp_shared_tools(mcp_shared_tools)
-    .with_hybrid_search(config.skills.hybrid_search);
+    .with_hybrid_search(config.skills.hybrid_search)
+    .with_focus_config(config.agent.focus.clone())
+    .with_sidequest_config(config.memory.sidequest.clone());
 
     let summary_provider = app.build_summary_provider();
     let agent = if let Some(sp) = summary_provider {
