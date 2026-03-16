@@ -1556,8 +1556,20 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|t| t.status == crate::orchestration::TaskStatus::Canceled)
                     .collect();
+                let completed_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count() as u64;
+                let skipped_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .count() as u64;
                 self.update_metrics(|m| {
                     m.orchestration.tasks_failed += failed_tasks.len() as u64;
+                    m.orchestration.tasks_completed += completed_count;
+                    m.orchestration.tasks_skipped += skipped_count;
                 });
                 let total = completed_graph.tasks.len();
                 let msg = if failed_tasks.is_empty() && !cancelled_tasks.is_empty() {
