@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- obs(orchestration): `LlmPlanner::plan()` and `LlmAggregator::aggregate()` now return token usage data; call sites in `agent/mod.rs` increment `api_calls`, `prompt_tokens`, `completion_tokens`, `total_tokens`, cost, and cache stats in the shared `MetricsCollector` (closes #1899)
+- obs(orchestration): `tasks_skipped` counter now correctly incremented in both `GraphStatus::Completed` and `GraphStatus::Failed` arms of `finalize_plan_execution`
+- obs(orchestration): `/status` command shows an `Orchestration:` block (plans, tasks completed/failed/skipped) when `orchestration.enabled = true` and at least one plan has been executed
+
 ### Fixed
 
 - fix(context-compression): `extract_task_goal` is now fire-and-forget — spawns a background tokio task and returns immediately; result is applied at the start of the next Soft compaction (#1909). Eliminates the 5-second blocking LLM call on every compaction that made `task_aware`/`mig`/`task_aware_mig` strategies non-functional for cloud LLM providers. Timeout raised from 5s to 30s in the background task. Current compaction uses the cached goal from the previous turn with no latency impact.
