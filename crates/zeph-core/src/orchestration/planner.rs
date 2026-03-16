@@ -23,6 +23,9 @@ pub trait Planner: Send + Sync {
     /// can reference in `agent_hint` fields. Unknown hints produce a warning
     /// but do not fail planning.
     ///
+    /// Returns the task graph and the LLM token usage `(prompt, completion)` from the
+    /// underlying API call, or `None` when the provider does not report usage.
+    ///
     /// # Errors
     ///
     /// Returns `OrchestrationError::PlanningFailed` if the LLM response cannot
@@ -31,7 +34,7 @@ pub trait Planner: Send + Sync {
         &self,
         goal: &str,
         available_agents: &[SubAgentDef],
-    ) -> Result<TaskGraph, OrchestrationError>;
+    ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError>;
 }
 
 /// LLM-backed `Planner` using `chat_typed` for structured JSON output.
@@ -79,7 +82,7 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
         &self,
         goal: &str,
         available_agents: &[SubAgentDef],
-    ) -> Result<TaskGraph, OrchestrationError> {
+    ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError> {
         if goal.trim().is_empty() {
             return Err(OrchestrationError::PlanningFailed(
                 "goal cannot be empty".into(),
@@ -94,11 +97,14 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
             .await
             .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
 
+        // Capture usage right after the API call, before any fallible post-processing.
+        let usage = self.provider.last_usage();
+
         let graph = convert_response(response, goal, available_agents, self.max_tasks)?;
 
         dag::validate(&graph.tasks, self.max_tasks as usize)?;
 
-        Ok(graph)
+        Ok((graph, usage))
     }
 }
 
@@ -586,7 +592,7 @@ mod tests {
         async fn test_plan_valid_response() {
             let provider = MockProvider::with_responses(vec![valid_json_response()]);
             let planner = LlmPlanner::new(provider, &make_config());
-            let graph = planner.plan("build and deploy", &agents()).await.unwrap();
+            let (graph, _usage) = planner.plan("build and deploy", &agents()).await.unwrap();
             assert_eq!(graph.tasks.len(), 2);
             assert_eq!(graph.goal, "build and deploy");
         }
@@ -627,7 +633,7 @@ mod tests {
             .to_string();
             let provider = MockProvider::with_responses(vec![json]);
             let planner = LlmPlanner::new(provider, &make_config());
-            let graph = planner.plan("goal", &agents()).await.unwrap();
+            let (graph, _usage) = planner.plan("goal", &agents()).await.unwrap();
             assert!(graph.tasks[0].failure_strategy.is_none());
         }
 
@@ -635,7 +641,7 @@ mod tests {
         async fn test_plan_single_task_goal() {
             let provider = MockProvider::with_responses(vec![single_task_json()]);
             let planner = LlmPlanner::new(provider, &make_config());
-            let graph = planner.plan("simple task", &agents()).await.unwrap();
+            let (graph, _usage) = planner.plan("simple task", &agents()).await.unwrap();
             assert_eq!(graph.tasks.len(), 1);
             assert!(graph.tasks[0].depends_on.is_empty());
         }
