@@ -1972,8 +1972,7 @@ pub mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let (tx, _rx) = watch::channel(MetricsSnapshot::default());
-        let mut agent =
-            Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
         // No orchestration metrics set — plans_total stays 0.
 
         let result = agent.run().await;
