@@ -178,6 +178,7 @@ impl DebugDumper {
 
     /// Dump `SideQuest` eviction state: cursor list with eviction flags and freed token count.
     /// When `format = Trace`, this is a no-op.
+    #[cfg(feature = "context-compression")]
     pub(crate) fn dump_sidequest_eviction(
         &self,
         cursors: &[crate::agent::sidequest::ToolOutputCursor],
