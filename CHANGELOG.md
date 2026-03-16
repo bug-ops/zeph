@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(core): corrections now stored even when `LearningConfig::enabled = false` (closes #1910)
 - fix(memory): sync session summaries to Qdrant on compact_context happy path (#1911) — `store_session_summary()` was only called in fallback branches; now also called after a successful `replace_conversation()` in both `compact_context` variants
 - Wire `[agent.focus]` and `[memory.sidequest]` config to `AgentBuilder` in all bootstrap paths (`runner.rs`, `daemon.rs`, `acp.rs`); previously both configs were parsed but never applied, causing focus and sidequest to always use defaults (`enabled = false`) (closes #1907)
+- fix(graph-memory): prevent structural noise from polluting `zeph_graph_entities` graph (closes #1912)
+  - Skip graph extraction entirely for `Role::User` messages containing `ToolResult` parts — tool outputs (TOML, JSON, command output) are structural data, not conversational content (FIX-1)
+  - Exclude `ToolResult` user messages from the context window passed to the extraction LLM call (FIX-2)
+  - Add `min_entity_name_bytes = 3` to `MemoryWriteValidationConfig` and enforce it in `validate_graph_extraction`; also added a matching guard in `EntityResolver::resolve()` via `MIN_ENTITY_NAME_BYTES` constant (FIX-3)
+  - Revise extraction prompt: restrict entity types to `person`, `project`, `technology`, `organization`, `concept`; add explicit rules against extracting structural data (config keys, file paths, tool names, TOML/JSON keys), short tokens, and raw command output (FIX-4)
 
 ### Security
 

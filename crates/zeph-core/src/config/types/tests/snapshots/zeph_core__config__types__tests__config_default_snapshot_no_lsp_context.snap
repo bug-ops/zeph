@@ -12,6 +12,13 @@ max_tool_retries = 2
 tool_repeat_threshold = 2
 max_retry_duration_secs = 30
 
+[agent.focus]
+enabled = false
+compression_interval = 12
+reminder_interval = 15
+min_messages_per_focus = 8
+max_knowledge_tokens = 4096
+
 [llm]
 provider = "ollama"
 base_url = "http://localhost:11434"
@@ -121,7 +128,15 @@ sweep_interval_secs = 3600
 
 [memory.compression]
 strategy = "reactive"
+pruning_strategy = "reactive"
 model = ""
+
+[memory.sidequest]
+enabled = false
+interval_turns = 4
+max_eviction_ratio = 0.5
+max_cursors = 30
+min_cursor_tokens = 100
 
 [memory.routing]
 strategy = "heuristic"
@@ -257,6 +272,7 @@ guard_memory_writes = true
 [security.memory_validation]
 enabled = true
 max_content_bytes = 4096
+min_entity_name_bytes = 3
 max_entity_name_bytes = 256
 max_fact_bytes = 1024
 max_entities_per_extraction = 50
