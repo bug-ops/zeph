@@ -277,6 +277,7 @@ guard_memory_writes = true
 [security.memory_validation]
 enabled = true
 max_content_bytes = 4096
+min_entity_name_bytes = 3
 max_entity_name_bytes = 256
 max_fact_bytes = 1024
 max_entities_per_extraction = 50

@@ -39,6 +39,9 @@ pub enum MemoryValidationError {
     #[error("content too large: {size} bytes exceeds max {max}")]
     ContentTooLarge { size: usize, max: usize },
 
+    #[error("entity name too short: '{name}' is below min {min} bytes")]
+    EntityNameTooShort { name: String, min: usize },
+
     #[error("entity name too long: '{name}' exceeds max {max} bytes")]
     EntityNameTooLong { name: String, max: usize },
 
@@ -74,6 +77,10 @@ fn default_max_entity_name_bytes() -> usize {
     256
 }
 
+fn default_min_entity_name_bytes() -> usize {
+    3
+}
+
 fn default_max_fact_bytes() -> usize {
     1024
 }
@@ -99,6 +106,10 @@ pub struct MemoryWriteValidationConfig {
     /// Maximum byte length of content passed to `memory_save`.
     #[serde(default = "default_max_content_bytes")]
     pub max_content_bytes: usize,
+    /// Minimum byte length of an entity name in graph extraction.
+    /// Names shorter than this are rejected as noise (e.g. "go", "cd").
+    #[serde(default = "default_min_entity_name_bytes")]
+    pub min_entity_name_bytes: usize,
     /// Maximum byte length of a single entity name in graph extraction.
     #[serde(default = "default_max_entity_name_bytes")]
     pub max_entity_name_bytes: usize,
@@ -122,6 +133,7 @@ impl Default for MemoryWriteValidationConfig {
         Self {
             enabled: true,
             max_content_bytes: default_max_content_bytes(),
+            min_entity_name_bytes: default_min_entity_name_bytes(),
             max_entity_name_bytes: default_max_entity_name_bytes(),
             max_fact_bytes: default_max_fact_bytes(),
             max_entities_per_extraction: default_max_entities(),
@@ -212,7 +224,15 @@ impl MemoryWriteValidator {
         }
 
         for entity in &result.entities {
-            let name_len = entity.name.len();
+            // Trim before length checks: both min and max apply to the trimmed form
+            // to avoid rejecting names with leading/trailing whitespace.
+            let name_len = entity.name.trim().len();
+            if name_len < self.config.min_entity_name_bytes {
+                return Err(MemoryValidationError::EntityNameTooShort {
+                    name: entity.name.clone(),
+                    min: self.config.min_entity_name_bytes,
+                });
+            }
             if name_len > self.config.max_entity_name_bytes {
                 return Err(MemoryValidationError::EntityNameTooLong {
                     name: entity.name.clone(),
@@ -338,7 +358,7 @@ mod tests {
             max_entities_per_extraction: 2,
             ..MemoryWriteValidationConfig::default()
         });
-        let r = result_with(vec![entity("A"), entity("B"), entity("C")], vec![]);
+        let r = result_with(vec![entity("Abc"), entity("Def"), entity("Ghi")], vec![]);
         let err = v.validate_graph_extraction(&r).unwrap_err();
         assert!(matches!(err, MemoryValidationError::TooManyEntities { .. }));
     }
@@ -500,6 +520,24 @@ mod tests {
         ));
     }
 
+    // --- min entity name length (FIX-3) ---
+
+    #[test]
+    fn entity_name_below_min_rejected() {
+        let r = result_with(vec![entity("go")], vec![]);
+        let err = validator().validate_graph_extraction(&r).unwrap_err();
+        assert!(matches!(
+            err,
+            MemoryValidationError::EntityNameTooShort { .. }
+        ));
+    }
+
+    #[test]
+    fn entity_name_at_min_passes() {
+        let r = result_with(vec![entity("git")], vec![]);
+        assert!(validator().validate_graph_extraction(&r).is_ok());
+    }
+
     // --- exact boundary: entities count ---
 
     #[test]
@@ -508,7 +546,7 @@ mod tests {
             max_entities_per_extraction: 3,
             ..MemoryWriteValidationConfig::default()
         });
-        let r = result_with(vec![entity("A"), entity("B"), entity("C")], vec![]);
+        let r = result_with(vec![entity("Abc"), entity("Def"), entity("Ghi")], vec![]);
         assert!(v.validate_graph_extraction(&r).is_ok());
     }
 

@@ -19,6 +19,8 @@ use crate::graph::extractor::ExtractedEntity;
 use crate::types::MessageId;
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
 
+/// Minimum byte length for entity names — rejects noise tokens like "go", "cd".
+const MIN_ENTITY_NAME_BYTES: usize = 3;
 /// Maximum byte length for entity names stored in the graph.
 const MAX_ENTITY_NAME_BYTES: usize = 512;
 /// Maximum byte length for relation strings.
@@ -197,6 +199,13 @@ impl<'a> EntityResolver<'a> {
 
         if normalized.is_empty() {
             return Err(MemoryError::GraphStore("empty entity name".into()));
+        }
+
+        if normalized.len() < MIN_ENTITY_NAME_BYTES {
+            return Err(MemoryError::GraphStore(format!(
+                "entity name too short: {normalized:?} ({} bytes, min {MIN_ENTITY_NAME_BYTES})",
+                normalized.len()
+            )));
         }
 
         let et = Self::parse_entity_type(entity_type);
@@ -983,6 +992,37 @@ mod tests {
 
         let result_whitespace = resolver.resolve("   ", "concept", None).await;
         assert!(result_whitespace.is_err());
+    }
+
+    // FIX-3 defense-in-depth: short entity names must be rejected at the resolver level.
+    #[tokio::test]
+    async fn resolve_short_name_below_min_returns_error() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // "go" and "cd" are 2-byte tokens that represent common noise from tool output.
+        let err_go = resolver.resolve("go", "technology", None).await;
+        assert!(err_go.is_err(), "\"go\" (2 bytes) must be rejected");
+        assert!(
+            matches!(err_go.unwrap_err(), MemoryError::GraphStore(_)),
+            "expected GraphStore error for short name"
+        );
+
+        let err_cd = resolver.resolve("cd", "concept", None).await;
+        assert!(err_cd.is_err(), "\"cd\" (2 bytes) must be rejected");
+    }
+
+    #[tokio::test]
+    async fn resolve_name_at_min_length_passes() {
+        let gs = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // "git" is exactly 3 bytes — must be accepted.
+        let result = resolver.resolve("git", "technology", None).await;
+        assert!(
+            result.is_ok(),
+            "\"git\" (3 bytes) must pass min-length check"
+        );
     }
 
     #[tokio::test]
