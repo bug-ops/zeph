@@ -114,6 +114,8 @@ pub(crate) struct WizardState {
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
     pub(crate) skill_scan_on_load: bool,
+    pub(crate) pre_execution_verify_enabled: bool,
+    pub(crate) pre_execution_verify_allowed_paths: Vec<String>,
     #[cfg(feature = "guardrail")]
     pub(crate) guardrail_enabled: bool,
     #[cfg(feature = "guardrail")]
@@ -138,6 +140,7 @@ pub(crate) struct WizardState {
 }
 
 impl Default for WizardState {
+    #[allow(clippy::too_many_lines)]
     fn default() -> Self {
         Self {
             provider: None,
@@ -222,6 +225,8 @@ impl Default for WizardState {
             pii_filter_enabled: false,
             rate_limit_enabled: false,
             skill_scan_on_load: true,
+            pre_execution_verify_enabled: true,
+            pre_execution_verify_allowed_paths: Vec::new(),
             #[cfg(feature = "guardrail")]
             guardrail_enabled: false,
             #[cfg(feature = "guardrail")]
@@ -1047,6 +1052,15 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.security.pii_filter.enabled = state.pii_filter_enabled;
     config.security.rate_limit.enabled = state.rate_limit_enabled;
+    config.security.pre_execution_verify.enabled = state.pre_execution_verify_enabled;
+    if !state.pre_execution_verify_allowed_paths.is_empty() {
+        config
+            .security
+            .pre_execution_verify
+            .destructive_commands
+            .allowed_paths
+            .clone_from(&state.pre_execution_verify_allowed_paths);
+    }
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
 
     #[cfg(feature = "guardrail")]
@@ -1665,6 +1679,26 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(true)
         .interact()?;
+    state.pre_execution_verify_enabled = Confirm::new()
+        .with_prompt(
+            "Enable pre-execution verification? (blocks destructive commands like rm -rf / and injection patterns before tool execution; recommended)",
+        )
+        .default(true)
+        .interact()?;
+    if state.pre_execution_verify_enabled {
+        println!("  Shell tools checked: bash, shell, terminal (configurable in config.toml)");
+        let paths_input: String = Input::new()
+            .with_prompt(
+                "Allowed paths for destructive commands (comma-separated, empty = deny all)",
+            )
+            .allow_empty(true)
+            .interact_text()?;
+        state.pre_execution_verify_allowed_paths = paths_input
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
 
     #[cfg(feature = "guardrail")]
     {
@@ -2445,5 +2479,64 @@ mod tests {
         let config = build_config(&state);
         assert_eq!(config.memory.soft_compaction_threshold, 0.70);
         assert_eq!(config.memory.hard_compaction_threshold, 1.0);
+    }
+
+    #[test]
+    fn build_config_pre_execution_verify_enabled_default() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.security.pre_execution_verify.enabled);
+    }
+
+    #[test]
+    fn build_config_pre_execution_verify_disabled() {
+        let state = WizardState {
+            pre_execution_verify_enabled: false,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.security.pre_execution_verify.enabled);
+    }
+
+    #[test]
+    fn build_config_pre_execution_verify_allowed_paths() {
+        let state = WizardState {
+            pre_execution_verify_enabled: true,
+            pre_execution_verify_allowed_paths: vec!["/tmp".into(), "/home/user".into()],
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config
+                .security
+                .pre_execution_verify
+                .destructive_commands
+                .allowed_paths,
+            vec!["/tmp", "/home/user"]
+        );
+    }
+
+    #[test]
+    fn build_config_pre_execution_verify_empty_paths() {
+        let state = WizardState {
+            pre_execution_verify_enabled: true,
+            pre_execution_verify_allowed_paths: vec![],
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(
+            config
+                .security
+                .pre_execution_verify
+                .destructive_commands
+                .allowed_paths
+                .is_empty()
+        );
     }
 }

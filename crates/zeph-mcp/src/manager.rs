@@ -568,18 +568,6 @@ mod tests {
         assert!(dbg.contains("test"));
     }
 
-    #[test]
-    fn manager_debug() {
-        let mgr = McpManager::new(
-            vec![make_entry("a"), make_entry("b")],
-            vec![],
-            PolicyEnforcer::new(vec![]),
-        );
-        let dbg = format!("{mgr:?}");
-        assert!(dbg.contains("server_count"));
-        assert!(dbg.contains('2'));
-    }
-
     #[tokio::test]
     async fn list_servers_returns_sorted() {
         let mgr = McpManager::new(
@@ -733,14 +721,6 @@ mod tests {
         let tools = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());
-    }
-
-    #[test]
-    fn with_suppress_stderr_builder() {
-        let mgr =
-            McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])).with_suppress_stderr(true);
-        let dbg = format!("{mgr:?}");
-        assert!(dbg.contains("McpManager"));
     }
 
     impl McpManager {

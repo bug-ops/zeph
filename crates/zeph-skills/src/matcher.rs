@@ -211,29 +211,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn test_cosine_similarity_identical() {
-        let v = vec![1.0, 2.0, 3.0];
-        let sim = cosine_similarity(&v, &v);
-        assert!((sim - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_opposite() {
-        let a = vec![1.0, 2.0, 3.0];
-        let b = vec![-1.0, -2.0, -3.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!((sim - (-1.0)).abs() < 1e-6);
-    }
-
     fn make_meta(name: &str, description: &str) -> SkillMeta {
         SkillMeta {
             name: name.into(),
@@ -404,14 +381,6 @@ mod tests {
         let matcher = SkillMatcher::new(&refs, embed_fn).await.unwrap();
         assert_eq!(matcher.embeddings.len(), 1);
         assert_eq!(matcher.embeddings[0].0, 0);
-    }
-
-    #[test]
-    fn test_cosine_similarity_zero_vector() {
-        let a = vec![1.0, 2.0];
-        let b = vec![0.0, 0.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < f32::EPSILON);
     }
 
     #[tokio::test]

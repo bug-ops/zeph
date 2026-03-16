@@ -272,6 +272,12 @@ impl PolicyEnforcer {
         })
     }
 
+    /// Return the total number of compiled rules (inline + file-loaded).
+    #[must_use]
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+
     /// Evaluate a tool call against the compiled policy rules.
     ///
     /// Returns `PolicyDecision::Deny` when any deny rule matches.

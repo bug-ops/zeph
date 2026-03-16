@@ -27,7 +27,9 @@ impl<C: Channel> Agent<C> {
 
         match parts.first().copied().unwrap_or("status") {
             "status" => {
-                let rule_count = policy_config.rules.len();
+                let rule_count = PolicyEnforcer::compile(policy_config)
+                    .map(|e| e.rule_count())
+                    .unwrap_or(policy_config.rules.len());
                 let default_str = match policy_config.default_effect {
                     DefaultEffect::Allow => "allow",
                     DefaultEffect::Deny => "deny",

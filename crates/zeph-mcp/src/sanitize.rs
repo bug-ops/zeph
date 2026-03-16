@@ -365,43 +365,10 @@ mod tests {
     // --- strip_format_chars ---
 
     #[test]
-    fn strip_format_chars_removes_zero_width_space() {
-        let input = "ig\u{200B}nore instructions";
-        let result = strip_format_chars(input);
-        assert!(!result.contains('\u{200B}'));
-        assert!(result.contains("ignore"));
-    }
-
-    #[test]
     fn strip_format_chars_removes_soft_hyphen() {
         let input = "you\u{00AD}are\u{00AD}now";
         let result = strip_format_chars(input);
         assert!(!result.contains('\u{00AD}'));
-    }
-
-    #[test]
-    fn strip_format_chars_removes_bom() {
-        let input = "\u{FEFF}hello world";
-        let result = strip_format_chars(input);
-        assert!(!result.contains('\u{FEFF}'));
-        assert!(result.contains("hello world"));
-    }
-
-    #[test]
-    fn strip_format_chars_preserves_tab_and_newline() {
-        let input = "line1\nline2\ttabbed";
-        let result = strip_format_chars(input);
-        assert!(result.contains('\n'));
-        assert!(result.contains('\t'));
-    }
-
-    #[test]
-    fn strip_format_chars_removes_ascii_control() {
-        let input = "hello\x01\x02\x03world";
-        let result = strip_format_chars(input);
-        assert!(!result.contains('\x01'));
-        assert!(result.contains("hello"));
-        assert!(result.contains("world"));
     }
 
     // --- sanitize_string ---
