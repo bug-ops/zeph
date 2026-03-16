@@ -3,9 +3,21 @@
 
 use crate::config::LearningConfig;
 
+/// Default number of user turns between preference analysis runs.
+const DEFAULT_ANALYSIS_INTERVAL: u64 = 5;
+
 pub(crate) struct LearningEngine {
     pub(super) config: Option<LearningConfig>,
     pub(super) reflection_used: bool,
+    /// Monotonically increasing counter incremented on each user turn.
+    turn_counter: u64,
+    /// Value of `turn_counter` when the last analysis completed.
+    last_analysis_turn: u64,
+    /// How many turns to wait between analysis runs.
+    analysis_interval: u64,
+    /// Highest correction id processed in the last analysis run (watermark).
+    /// Stored as `i64` to match `SQLite` row ids; `0` means no analysis has run yet.
+    pub(super) last_analyzed_correction_id: i64,
 }
 
 impl LearningEngine {
@@ -14,11 +26,37 @@ impl LearningEngine {
         Self {
             config: None,
             reflection_used: false,
+            turn_counter: 0,
+            last_analysis_turn: 0,
+            analysis_interval: DEFAULT_ANALYSIS_INTERVAL,
+            last_analyzed_correction_id: 0,
         }
     }
 
     pub(super) fn is_enabled(&self) -> bool {
         self.config.as_ref().is_some_and(|c| c.enabled)
+    }
+
+    /// Returns true when correction analysis should run this turn.
+    ///
+    /// Gated on `correction_detection` (not `enabled`) so that preference
+    /// analysis is independent of skill auto-improvement (S1 from critic).
+    pub(super) fn should_analyze(&self) -> bool {
+        let Some(cfg) = self.config.as_ref() else {
+            return false;
+        };
+        cfg.correction_detection
+            && self.turn_counter >= self.last_analysis_turn + self.analysis_interval
+    }
+
+    /// Increment the turn counter. Call once per user message.
+    pub(super) fn tick(&mut self) {
+        self.turn_counter += 1;
+    }
+
+    /// Record that analysis completed at the current turn.
+    pub(super) fn mark_analyzed(&mut self) {
+        self.last_analysis_turn = self.turn_counter;
     }
 
     pub(super) fn mark_reflection_used(&mut self) {
@@ -44,6 +82,8 @@ mod tests {
         assert!(e.config.is_none());
         assert!(!e.reflection_used);
         assert!(!e.is_enabled());
+        assert!(!e.should_analyze());
+        assert_eq!(e.last_analyzed_correction_id, 0);
     }
 
     #[test]
@@ -90,5 +130,59 @@ mod tests {
         assert!(e.was_reflection_used());
         e.reset_reflection();
         assert!(!e.was_reflection_used());
+    }
+
+    // S1: should_analyze uses correction_detection, not enabled
+    #[test]
+    fn should_analyze_uses_correction_detection_not_enabled() {
+        let mut e = LearningEngine::new();
+        // enabled=false, correction_detection=true (default)
+        e.config = Some(LearningConfig {
+            enabled: false,
+            correction_detection: true,
+            ..Default::default()
+        });
+        // Advance enough turns
+        for _ in 0..DEFAULT_ANALYSIS_INTERVAL {
+            e.tick();
+        }
+        // Should analyze even though enabled=false
+        assert!(e.should_analyze());
+    }
+
+    #[test]
+    fn should_analyze_false_when_correction_detection_disabled() {
+        let mut e = LearningEngine::new();
+        e.config = Some(LearningConfig {
+            enabled: true,
+            correction_detection: false,
+            ..Default::default()
+        });
+        for _ in 0..100 {
+            e.tick();
+        }
+        assert!(!e.should_analyze());
+    }
+
+    #[test]
+    fn tick_and_analyze_cycle() {
+        let mut e = LearningEngine::new();
+        e.config = Some(LearningConfig {
+            correction_detection: true,
+            ..Default::default()
+        });
+        // Not ready until interval ticks pass
+        for i in 0..DEFAULT_ANALYSIS_INTERVAL {
+            assert!(!e.should_analyze(), "should not analyze at turn {i}");
+            e.tick();
+        }
+        assert!(e.should_analyze());
+        e.mark_analyzed();
+        // After marking, should not fire until next interval
+        assert!(!e.should_analyze());
+        for _ in 0..DEFAULT_ANALYSIS_INTERVAL {
+            e.tick();
+        }
+        assert!(e.should_analyze());
     }
 }

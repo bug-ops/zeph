@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `index_project()` now accepts `progress_tx: Option<&watch::Sender<IndexProgress>>` and sends progress after each file
   - CLI mode: prints "Indexing codebase in the background (N files)..." and "Codebase indexed: N files, M chunks (Xs) — code search is ready." to stderr
   - TUI mode: shows "Indexing codebase... N/M files (X%)" in the status bar, then "Index ready (N files, M chunks)" for 3s after completion
+- enhancement(core): `LearningEngine` now performs real behavioral learning from interaction history (closes #1913)
+  - New SQLite table `learned_preferences` (migration 036) persists inferred user preferences across sessions
+  - Scans `user_corrections` incrementally via watermark (no repeated re-scanning); analyzes every 5 turns when `correction_detection` is enabled
+  - Regex-based preference inference with word-boundary anchors: verbosity (concise/detailed), response format (plain/markdown/bullets/headers), language preference
+  - Persists preferences above a Wilson-score confidence threshold; up to 3 highest-confidence facts injected into the volatile system prompt block (after `<!-- cache:volatile -->` to preserve prompt caching)
+  - Sanitizes injected preference values (strips `\n`/`\r`) and enforces length caps (key ≤ 128 B, value ≤ 256 B)
+  - Gated on `LearningConfig::correction_detection` (independent of `LearningConfig::enabled` which controls skill auto-improvement)
 - feat(context-compression): CLI flags `--focus`/`--no-focus`, `--sidequest`/`--no-sidequest`, and `--pruning-strategy <reactive|task_aware|mig|task_aware_mig>` for per-session context compression overrides (#1904)
 - feat(context-compression): `--init` wizard step for Focus Agent and SideQuest configuration with validated interval inputs
 - feat(context-compression): debug dump files for pruning scores (`{n}-pruning-scores.json`), focus knowledge (`{n}-focus-knowledge.txt`), and SideQuest eviction (`{n}-sidequest-eviction.json`) when `--debug-dump` is active

@@ -3177,6 +3177,8 @@ impl<C: Channel> Agent<C> {
         self.rebuild_system_prompt(&text).await;
 
         self.detect_and_record_corrections(trimmed, conv_id).await;
+        self.learning_engine.tick();
+        self.analyze_and_learn().await;
 
         // Reset per-turn compaction guard FIRST so SideQuest sees a clean slate (C2 fix).
         // complete_focus and maybe_sidequest_eviction set this flag when they run (C1 fix).
