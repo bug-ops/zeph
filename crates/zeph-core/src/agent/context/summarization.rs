@@ -1447,9 +1447,10 @@ impl<C: Channel> Agent<C> {
             CompactionTier::Soft => {
                 let _ = self.channel.send_status("soft compacting context...").await;
 
-                // Step 0 (context-compression): extract task goal for scored pruning if needed.
+                // Step 0 (context-compression): apply any completed background goal extraction
+                // and schedule a new one if the user message has changed (#1909).
                 #[cfg(feature = "context-compression")]
-                self.maybe_refresh_task_goal().await;
+                self.maybe_refresh_task_goal();
 
                 // Step 1: apply deferred tool summaries (free tokens without LLM).
                 self.apply_deferred_summaries();
@@ -1851,16 +1852,21 @@ impl<C: Channel> Agent<C> {
         self.summarize_messages(messages, &guidelines).await
     }
 
-    /// Refresh the cached task goal when the last user message has changed (S5 fix, #1850).
+    /// Refresh the cached task goal when the last user message has changed (#1850, #1909).
     ///
-    /// Uses a hash of the last user message as a cache key — the goal is only re-extracted
-    /// when the user sends a new message. This avoids invalidating the goal after compaction,
-    /// which was the original design flaw flagged in critic gap S5.
+    /// Two-phase non-blocking design (mirrors `maybe_sidequest_eviction`):
     ///
-    /// The LLM call uses the summary provider with a 5-second timeout and only fires when
-    /// the pruning strategy requires a task goal (`TaskAware`, `Mig`, or `TaskAwareMig`).
+    /// - Phase 1 (apply): if a background extraction task spawned last compaction has finished,
+    ///   apply its result to `current_task_goal`.
+    /// - Phase 2 (schedule): if the user message hash has changed and no task is in-flight,
+    ///   spawn a new background `tokio::spawn` for goal extraction. The current compaction uses
+    ///   whatever goal was cached from the previous extraction — never blocks.
+    ///
+    /// This eliminates the 5-second latency spike on every Soft tier compaction that made
+    /// `task_aware`/`mig` strategies non-functional for cloud LLM providers.
     #[cfg(feature = "context-compression")]
-    pub(in crate::agent) async fn maybe_refresh_task_goal(&mut self) {
+    #[allow(clippy::too_many_lines)]
+    pub(in crate::agent) fn maybe_refresh_task_goal(&mut self) {
         use std::hash::Hash as _;
 
         use crate::config::PruningStrategy;
@@ -1869,6 +1875,26 @@ impl<C: Channel> Agent<C> {
         match &self.context_manager.compression.pruning_strategy {
             PruningStrategy::Reactive => return,
             PruningStrategy::TaskAware | PruningStrategy::Mig | PruningStrategy::TaskAwareMig => {}
+        }
+
+        // Phase 1: apply background result if the task has completed.
+        if self
+            .pending_task_goal
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            use futures::FutureExt as _;
+            if let Some(handle) = self.pending_task_goal.take()
+                && let Some(Ok(Some(goal))) = handle.now_or_never()
+            {
+                tracing::debug!("extract_task_goal: background result applied");
+                self.current_task_goal = Some(goal);
+            }
+        }
+
+        // Phase 2: do not spawn a second task while one is already in-flight.
+        if self.pending_task_goal.is_some() {
+            return;
         }
 
         // Find the last user message content.
@@ -1891,92 +1917,94 @@ impl<C: Channel> Agent<C> {
             std::hash::Hasher::finish(&hasher)
         };
 
-        // Cache hit: goal is still valid for this user message.
+        // Cache hit: extraction already scheduled or completed for this user message.
         if self.task_goal_user_msg_hash == Some(hash) {
             return;
         }
 
-        // Cache miss: extract the task goal from recent context.
-        let goal = self.extract_task_goal().await;
-        self.current_task_goal = goal;
+        // Cache miss: update hash and spawn background extraction.
         self.task_goal_user_msg_hash = Some(hash);
-    }
 
-    /// Ask the summary provider to extract the current task goal from recent messages.
-    ///
-    /// Uses only the last 10 user/assistant messages and a 5-second timeout to keep this cheap.
-    /// Returns `None` on timeout or LLM error (caller keeps the previous goal in that case).
-    #[cfg(feature = "context-compression")]
-    async fn extract_task_goal(&self) -> Option<String> {
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-        // Collect the last 10 user/assistant messages for the goal extraction prompt.
-        let recent: Vec<&Message> = self
+        // Clone only the data needed by the background task (avoids borrowing self).
+        let recent: Vec<(zeph_llm::provider::Role, String)> = self
             .messages
             .iter()
-            .filter(|m| matches!(m.role, Role::User | Role::Assistant))
+            .filter(|m| {
+                matches!(
+                    m.role,
+                    zeph_llm::provider::Role::User | zeph_llm::provider::Role::Assistant
+                )
+            })
             .rev()
             .take(10)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
+            .map(|m| (m.role, m.content.clone()))
             .collect();
 
-        if recent.is_empty() {
-            return None;
-        }
+        let provider = self.summary_or_primary_provider().clone();
 
-        let mut context_text = String::new();
-        for msg in &recent {
-            let role = match msg.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-            };
-            let preview = if msg.content.len() > 300 {
-                &msg.content[..300]
-            } else {
-                &msg.content
-            };
-            let _ = std::fmt::write(&mut context_text, format_args!("[{role}]: {preview}\n"));
-        }
+        let handle = tokio::spawn(async move {
+            use zeph_llm::provider::{Message, MessageMetadata, Role};
 
-        let prompt = format!(
-            "Extract the current task goal from this conversation excerpt in one concise sentence.\n\
-             Focus on what the user is trying to accomplish right now.\n\
-             Respond with only the goal sentence, no preamble.\n\n\
-             <conversation>\n{context_text}</conversation>"
-        );
+            if recent.is_empty() {
+                return None;
+            }
 
-        let msgs = [Message {
-            role: Role::User,
-            content: prompt,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.summary_or_primary_provider().chat(&msgs),
-        )
-        .await
-        {
-            Ok(Ok(goal)) => {
-                let trimmed = goal.trim();
-                if trimmed.is_empty() {
-                    None
+            let mut context_text = String::new();
+            for (role, content) in &recent {
+                let role_str = match role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::System => "system",
+                };
+                let preview = if content.len() > 300 {
+                    &content[..300]
                 } else {
-                    Some(trimmed.to_string())
+                    content.as_str()
+                };
+                let _ =
+                    std::fmt::write(&mut context_text, format_args!("[{role_str}]: {preview}\n"));
+            }
+
+            let prompt = format!(
+                "Extract the current task goal from this conversation excerpt in one concise \
+                 sentence.\nFocus on what the user is trying to accomplish right now.\n\
+                 Respond with only the goal sentence, no preamble.\n\n\
+                 <conversation>\n{context_text}</conversation>"
+            );
+
+            let msgs = [Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+
+            match tokio::time::timeout(std::time::Duration::from_secs(30), provider.chat(&msgs))
+                .await
+            {
+                Ok(Ok(goal)) => {
+                    let trimmed = goal.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("extract_task_goal: LLM error: {e:#}");
+                    None
+                }
+                Err(_) => {
+                    tracing::debug!("extract_task_goal: timed out");
+                    None
                 }
             }
-            Ok(Err(e)) => {
-                tracing::debug!("extract_task_goal: LLM error: {e:#}");
-                None
-            }
-            Err(_) => {
-                tracing::debug!("extract_task_goal: timed out");
-                None
-            }
-        }
+        });
+
+        self.pending_task_goal = Some(handle);
+        tracing::debug!("extract_task_goal: background task spawned");
     }
 }

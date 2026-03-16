@@ -355,6 +355,10 @@ pub struct Agent<C: Channel> {
     /// Used to detect when the user's direction has changed.
     #[cfg(feature = "context-compression")]
     pub(super) task_goal_user_msg_hash: Option<u64>,
+    /// Pending background task for goal extraction. Spawned fire-and-forget when the user message
+    /// hash changes; result applied at the start of the next Soft compaction (#1909).
+    #[cfg(feature = "context-compression")]
+    pub(super) pending_task_goal: Option<tokio::task::JoinHandle<Option<String>>>,
     /// Pending `SideQuest` eviction result from the background LLM call spawned last turn.
     /// Applied at the START of the next turn before compaction (PERF-1 fix).
     #[cfg(feature = "context-compression")]
@@ -589,6 +593,8 @@ impl<C: Channel> Agent<C> {
             current_task_goal: None,
             #[cfg(feature = "context-compression")]
             task_goal_user_msg_hash: None,
+            #[cfg(feature = "context-compression")]
+            pending_task_goal: None,
             #[cfg(feature = "context-compression")]
             pending_sidequest_result: None,
         }
