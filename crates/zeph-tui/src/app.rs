@@ -586,16 +586,17 @@ impl App {
             .iter()
             .rposition(|m| m.role == MessageRole::Tool && m.streaming)
         {
-            // Shell streaming path: finalize existing streaming tool message.
-            debug!("attaching diff to existing streaming Tool message");
+            // Finalize existing streaming tool message (shell or native path with ToolStart).
+            debug!("finalizing existing streaming Tool message");
+            self.messages[pos].content.push_str(&output);
             self.messages[pos].streaming = false;
             self.messages[pos].diff_data = diff;
             self.messages[pos].filter_stats = filter_stats;
             self.messages[pos].kept_lines = kept_lines;
             self.render_cache.invalidate(pos);
         } else if diff.is_some() || filter_stats.is_some() || kept_lines.is_some() {
-            // Native tool_use path: no prior ToolStart, create the message now.
-            debug!("creating new Tool message with diff (native path)");
+            // No prior ToolStart: create the message now (legacy fallback).
+            debug!("creating new Tool message with diff (no prior ToolStart)");
             let mut msg = ChatMessage::new(MessageRole::Tool, output).with_tool(tool_name);
             msg.diff_data = diff;
             msg.filter_stats = filter_stats;
