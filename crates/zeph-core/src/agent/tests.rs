@@ -1918,6 +1918,76 @@ pub mod agent_tests {
     }
 
     #[tokio::test]
+    async fn status_command_shows_orchestration_stats_when_plans_nonzero() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/status".to_string()]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, _rx) = watch::channel(MetricsSnapshot::default());
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        agent.update_metrics(|m| {
+            m.orchestration.plans_total = 2;
+            m.orchestration.tasks_total = 10;
+            m.orchestration.tasks_completed = 8;
+            m.orchestration.tasks_failed = 1;
+            m.orchestration.tasks_skipped = 1;
+        });
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let messages = sent.lock().unwrap();
+        let output = messages.join("\n");
+        assert!(
+            output.contains("Orchestration:"),
+            "expected Orchestration: section; got: {output}"
+        );
+        assert!(
+            output.contains("Plans:     2"),
+            "expected Plans: 2; got: {output}"
+        );
+        assert!(
+            output.contains("8/10 completed"),
+            "expected 8/10 completed; got: {output}"
+        );
+        assert!(
+            output.contains("Failed:    1"),
+            "expected Failed: 1; got: {output}"
+        );
+        assert!(
+            output.contains("Skipped:   1"),
+            "expected Skipped: 1; got: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_command_hides_orchestration_when_no_plans() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/status".to_string()]);
+        let sent = channel.sent.clone();
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, _rx) = watch::channel(MetricsSnapshot::default());
+        let mut agent =
+            Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+        // No orchestration metrics set — plans_total stays 0.
+
+        let result = agent.run().await;
+        assert!(result.is_ok());
+
+        let messages = sent.lock().unwrap();
+        let output = messages.join("\n");
+        assert!(
+            !output.contains("Orchestration:"),
+            "Orchestration: section must be absent when no plans ran; got: {output}"
+        );
+    }
+
+    #[tokio::test]
     async fn exit_command_breaks_run_loop() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec!["/exit".to_string()]);
