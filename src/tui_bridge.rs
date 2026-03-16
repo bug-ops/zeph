@@ -22,6 +22,7 @@ pub(crate) struct TuiRunParams<'a> {
     pub(crate) metrics_rx:
         Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
     pub(crate) warmup_provider: AnyProvider,
+    pub(crate) index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
 }
 
 #[cfg(feature = "tui")]
@@ -93,6 +94,10 @@ pub(crate) async fn run_tui_agent<C: Channel>(
             .send(zeph_tui::AgentEvent::Status(String::new()))
             .await;
     });
+
+    if let Some(rx) = params.index_progress_rx {
+        tokio::spawn(forward_index_progress_to_tui(rx, agent_tx.clone()));
+    }
 
     let mut agent = agent.with_warmup_ready(warmup_rx);
 
@@ -226,4 +231,34 @@ pub(crate) async fn forward_tool_events_to_tui(
             break;
         }
     }
+}
+
+#[cfg(feature = "tui")]
+async fn forward_index_progress_to_tui(
+    mut rx: tokio::sync::watch::Receiver<zeph_index::IndexProgress>,
+    tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+) {
+    while rx.changed().await.is_ok() {
+        let p = rx.borrow_and_update().clone();
+        if p.files_total == 0 {
+            continue;
+        }
+        let msg = if p.files_done >= p.files_total {
+            format!(
+                "Index ready ({} files, {} chunks)",
+                p.files_total, p.chunks_created
+            )
+        } else {
+            let pct = p.files_done * 100 / p.files_total;
+            format!(
+                "Indexing codebase... {}/{} files ({}%)",
+                p.files_done, p.files_total, pct
+            )
+        };
+        if tx.send(zeph_tui::AgentEvent::Status(msg)).await.is_err() {
+            break;
+        }
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
 }

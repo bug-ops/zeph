@@ -18,3 +18,4 @@ pub mod store;
 pub mod watcher;
 
 pub use error::{IndexError, Result};
+pub use indexer::IndexProgress;

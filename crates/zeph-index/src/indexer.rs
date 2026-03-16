@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use tokio::sync::watch;
+
 use crate::chunker::{ChunkerConfig, CodeChunk, chunk_file};
 use crate::context::contextualize_for_embedding;
 use crate::error::{IndexError, Result};
@@ -19,6 +21,17 @@ use zeph_llm::provider::LlmProvider;
 #[derive(Debug, Clone, Default)]
 pub struct IndexerConfig {
     pub chunker: ChunkerConfig,
+}
+
+/// Snapshot of indexing progress, sent via watch channel.
+#[derive(Debug, Clone, Default)]
+pub struct IndexProgress {
+    /// Number of files processed so far.
+    pub files_done: usize,
+    /// Total number of indexable files discovered.
+    pub files_total: usize,
+    /// Cumulative chunks created across all files.
+    pub chunks_created: usize,
 }
 
 /// Summary of an indexing run.
@@ -55,7 +68,11 @@ impl CodeIndexer {
     /// # Errors
     ///
     /// Returns an error if the embedding probe or collection setup fails.
-    pub async fn index_project(&self, root: &Path) -> Result<IndexReport> {
+    pub async fn index_project(
+        &self,
+        root: &Path,
+        progress_tx: Option<&watch::Sender<IndexProgress>>,
+    ) -> Result<IndexReport> {
         let start = std::time::Instant::now();
         let mut report = IndexReport::default();
 
@@ -103,6 +120,13 @@ impl CodeIndexer {
                 Err(e) => {
                     report.errors.push(format!("{rel_path}: {e:#}"));
                 }
+            }
+            if let Some(tx) = progress_tx {
+                let _ = tx.send(IndexProgress {
+                    files_done: i + 1,
+                    files_total: total,
+                    chunks_created: report.chunks_created,
+                });
             }
         }
 
@@ -185,6 +209,60 @@ fn chunk_to_insert(chunk: &CodeChunk) -> ChunkInsert<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_progress_default() {
+        let p = IndexProgress::default();
+        assert_eq!(p.files_done, 0);
+        assert_eq!(p.files_total, 0);
+        assert_eq!(p.chunks_created, 0);
+    }
+
+    #[test]
+    fn progress_send_no_receivers_is_ignored() {
+        let (tx, rx) = tokio::sync::watch::channel(IndexProgress::default());
+        drop(rx);
+        // send with no receivers must not panic
+        let _ = tx.send(IndexProgress {
+            files_done: 1,
+            files_total: 5,
+            chunks_created: 3,
+        });
+    }
+
+    #[test]
+    fn progress_send_multiple_times_accumulates() {
+        let (tx, rx) = tokio::sync::watch::channel(IndexProgress::default());
+        for i in 1..=3usize {
+            let _ = tx.send(IndexProgress {
+                files_done: i,
+                files_total: 3,
+                chunks_created: i * 2,
+            });
+        }
+        let p = rx.borrow();
+        assert_eq!(p.files_done, 3);
+        assert_eq!(p.files_total, 3);
+        assert_eq!(p.chunks_created, 6);
+    }
+
+    #[test]
+    fn progress_none_tx_skips_send() {
+        // When progress_tx is None the loop body must not panic — verified by
+        // constructing the same conditional used in index_project.
+        let progress_tx: Option<&tokio::sync::watch::Sender<IndexProgress>> = None;
+        let entries = vec![1usize, 2, 3];
+        for (i, _) in entries.iter().enumerate() {
+            if let Some(tx) = progress_tx {
+                let _ = tx.send(IndexProgress {
+                    files_done: i + 1,
+                    files_total: entries.len(),
+                    chunks_created: 0,
+                });
+            }
+        }
+        // reaching here means no panic when tx is None
+    }
 
     #[test]
     fn chunk_to_insert_maps_fields() {

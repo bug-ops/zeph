@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(index): show indexing progress during background code indexing (#1923)
+  - Added `IndexProgress` struct to `zeph-index` with `files_done`, `files_total`, `chunks_created` fields
+  - `index_project()` now accepts `progress_tx: Option<&watch::Sender<IndexProgress>>` and sends progress after each file
+  - CLI mode: prints "Indexing codebase in the background (N files)..." and "Codebase indexed: N files, M chunks (Xs) — code search is ready." to stderr
+  - TUI mode: shows "Indexing codebase... N/M files (X%)" in the status bar, then "Index ready (N files, M chunks)" for 3s after completion
+
 ### Fixed
 
 - fix(context-compression): `extract_task_goal` is now fire-and-forget — spawns a background tokio task and returns immediately; result is applied at the start of the next Soft compaction (#1909). Eliminates the 5-second blocking LLM call on every compaction that made `task_aware`/`mig`/`task_aware_mig` strategies non-functional for cloud LLM providers. Timeout raised from 5s to 30s in the background task. Current compaction uses the cached goal from the previous turn with no latency impact.
