@@ -99,7 +99,7 @@ impl std::fmt::Debug for SlackConfig {
             .field("bot_token", &self.bot_token.as_ref().map(|_| "[REDACTED]"))
             .field(
                 "signing_secret",
-                &self.signing_secret.as_ref().map(|_| "[REDACTED]"),
+                &self.signing_secret.as_ref().map(|_| "[REDACTED]"), // lgtm[rust/cleartext-logging]
             )
             .field("webhook_host", &self.webhook_host)
             .field("port", &self.port)

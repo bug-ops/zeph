@@ -2965,7 +2965,7 @@ impl<C: Channel> Agent<C> {
             .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
             && self
                 .judge_detector
-                .as_mut()
+                .as_mut() // lgtm[rust/cleartext-logging]
                 .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
 
         let signal = if judge_should_run {

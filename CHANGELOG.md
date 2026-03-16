@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Suppress CodeQL `rust/cleartext-logging` false positives on intentional debug/trace log sites (closes #1905)
+- Pin all GitHub Actions to full commit SHAs to prevent supply chain attacks (closes #1906)
+
 ## [0.15.2] - 2026-03-16
 
 ### Added

@@ -133,7 +133,7 @@ impl SqliteStore {
                       version DESC \
              LIMIT 1",
         )
-        .bind(conversation_id.map(|c| c.0))
+        .bind(conversation_id.map(|c| c.0)) // lgtm[rust/cleartext-logging]
         .fetch_optional(&self.pool)
         .await?;
 

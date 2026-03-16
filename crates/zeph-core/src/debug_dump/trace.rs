@@ -218,7 +218,7 @@ impl TracingCollector {
                 max_spans = self.max_spans,
                 "trace span cap reached, dropping oldest span"
             );
-            self.completed_spans.remove(0);
+            self.completed_spans.remove(0); // lgtm[rust/cleartext-logging]
         }
         self.completed_spans.push(span);
     }

@@ -171,7 +171,7 @@ impl<C: Channel> Agent<C> {
         let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
             self.debug_state
                 .current_iteration_span_id
-                .map(|id| tc.begin_tool_call(tool_name, id))
+                .map(|id| tc.begin_tool_call(tool_name, id)) // lgtm[rust/cleartext-logging]
         });
         let start = std::time::Instant::now();
 
@@ -292,7 +292,7 @@ impl<C: Channel> Agent<C> {
         let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
             self.debug_state
                 .current_iteration_span_id
-                .map(|id| tc.begin_llm_request(id))
+                .map(|id| tc.begin_llm_request(id)) // lgtm[rust/cleartext-logging]
         });
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);

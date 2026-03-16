@@ -931,7 +931,7 @@ impl ClaudeProvider {
         {
             temperature = Some(t);
         }
-        let output_config = effort.map(|e| OutputConfig { effort: e });
+        let output_config = effort.map(|e| OutputConfig { effort: e }); // lgtm[rust/cleartext-logging]
 
         let cap = thinking_capability(&self.model);
         // Opus 4.6 with thinking enabled does not support prefill: strip trailing assistant

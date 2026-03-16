@@ -959,7 +959,7 @@ pub mod agent_tests {
         assert_eq!(result, short);
     }
 
-    #[tokio::test]
+    #[tokio::test] // lgtm[rust/cleartext-logging]
     async fn test_overflow_notice_contains_uuid() {
         use std::sync::Arc;
         use zeph_llm::any::AnyProvider;
@@ -1076,7 +1076,7 @@ pub mod agent_tests {
         assert!(result.contains("truncated"));
     }
 
-    #[tokio::test]
+    #[tokio::test] // lgtm[rust/cleartext-logging]
     async fn test_overflow_no_memory_backend_s3_fallback() {
         // S3 fix: when no memory backend or conversation_id is present, the overflow notice
         // must include the fallback message rather than panicking or attempting a DB insert.

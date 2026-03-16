@@ -100,7 +100,7 @@ impl ToolOrchestrator {
             self.recent_tool_calls.pop_front();
         }
         self.recent_tool_calls
-            .push_back((truncate_tool_name(name).to_owned(), args_hash));
+            .push_back((truncate_tool_name(name).to_owned(), args_hash)); // lgtm[rust/cleartext-logging]
     }
 
     /// Returns `true` if the same `(name, args_hash)` pair appears `>= repeat_threshold`

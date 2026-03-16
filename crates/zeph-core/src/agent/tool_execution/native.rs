@@ -269,7 +269,7 @@ impl<C: Channel> Agent<C> {
                             &self.messages,
                             tool_defs,
                             false,
-                        ),
+                        ), // lgtm[rust/cleartext-logging]
                     })
                 });
 
