@@ -470,7 +470,7 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.content.clone())
             .collect();
 
-        let _ = self.channel.send_status("extracting graph...").await;
+        let _ = self.channel.send_status("saving to graph...").await;
 
         if let Some(memory) = &self.memory_state.memory {
             // Build optional validation callback from MemoryWriteValidator (S3 fix).
@@ -492,6 +492,7 @@ impl<C: Channel> Agent<C> {
                 validator,
             );
         }
+        let _ = self.channel.send_status("").await;
         self.sync_community_detection_failures();
         self.sync_graph_extraction_metrics();
         self.sync_graph_counts().await;
