@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(memory): sync session summaries to Qdrant on compact_context happy path (#1911) — `store_session_summary()` was only called in fallback branches; now also called after a successful `replace_conversation()` in both `compact_context` variants
 - Wire `[agent.focus]` and `[memory.sidequest]` config to `AgentBuilder` in all bootstrap paths (`runner.rs`, `daemon.rs`, `acp.rs`); previously both configs were parsed but never applied, causing focus and sidequest to always use defaults (`enabled = false`) (closes #1907)
 
 ### Security
