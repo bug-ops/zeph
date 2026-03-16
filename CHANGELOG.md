@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- test(memory): add integration tests for `store_session_summary` → Qdrant upsert roundtrip (closes #1916) — four `#[ignore]` tests in `crates/zeph-memory/tests/qdrant_integration.rs` using testcontainers: `store_session_summary_roundtrip`, `store_session_summary_multiple_conversations`, `store_shutdown_summary_full_roundtrip`, `search_session_summaries_returns_empty_when_no_data`; each test guards against silent Qdrant disconnection and verifies both the Qdrant vector path and (where applicable) the SQLite content path
+
 ### Fixed
 
 - fix(context-compression): `extract_task_goal` is now fire-and-forget — spawns a background tokio task and returns immediately; result is applied at the start of the next Soft compaction (#1909). Eliminates the 5-second blocking LLM call on every compaction that made `task_aware`/`mig`/`task_aware_mig` strategies non-functional for cloud LLM providers. Timeout raised from 5s to 30s in the background task. Current compaction uses the cached goal from the previous turn with no latency impact.
