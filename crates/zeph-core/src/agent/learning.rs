@@ -898,6 +898,313 @@ pub(super) async fn write_skill_file(
     )))
 }
 
+// ── Preference inference ──────────────────────────────────────────────────────
+
+/// Minimum evidence count required before a preference is emitted.
+const MIN_EVIDENCE: i64 = 3;
+/// Minimum confidence threshold for persisting a preference.
+const PERSIST_THRESHOLD: f64 = 0.7;
+/// Maximum number of new corrections to process per analysis run.
+const CORRECTIONS_BATCH: u32 = 50;
+/// Maximum number of preferences injected into the system prompt.
+const MAX_INJECTED_PREFS: usize = 3;
+
+/// A preference inferred from user corrections.
+#[derive(Debug, PartialEq)]
+pub(super) struct InferredPreference {
+    pub key: String,
+    pub value: String,
+    pub confidence: f64,
+    pub evidence_count: i64,
+}
+
+impl<C: Channel> Agent<C> {
+    /// Run one preference analysis cycle.
+    ///
+    /// Loads corrections stored since the last watermark, infers preferences,
+    /// and persists high-confidence ones to the `learned_preferences` table.
+    /// The watermark (`last_analyzed_correction_id`) is advanced so the same
+    /// corrections are never processed twice.
+    pub(super) async fn analyze_and_learn(&mut self) {
+        if !self.learning_engine.should_analyze() {
+            return;
+        }
+        let Some(memory) = &self.memory_state.memory else {
+            self.learning_engine.mark_analyzed();
+            return;
+        };
+        let after_id = self.learning_engine.last_analyzed_correction_id;
+        let corrections = match memory
+            .sqlite()
+            .load_corrections_after(after_id, CORRECTIONS_BATCH)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("learning engine: failed to load corrections: {e:#}");
+                self.learning_engine.mark_analyzed();
+                return;
+            }
+        };
+
+        if corrections.is_empty() {
+            self.learning_engine.mark_analyzed();
+            return;
+        }
+
+        // Advance watermark to the highest id in this batch.
+        if let Some(max_id) = corrections.iter().map(|r| r.id).max() {
+            self.learning_engine.last_analyzed_correction_id = max_id;
+        }
+
+        let preferences = infer_preferences(&corrections);
+
+        for pref in preferences
+            .iter()
+            .filter(|p| p.confidence >= PERSIST_THRESHOLD)
+        {
+            if let Err(e) = memory
+                .sqlite()
+                .upsert_learned_preference(
+                    &pref.key,
+                    &pref.value,
+                    pref.confidence,
+                    pref.evidence_count,
+                )
+                .await
+            {
+                tracing::warn!(key = %pref.key, "learning engine: failed to persist preference: {e:#}");
+            }
+        }
+
+        if !preferences.is_empty() {
+            tracing::info!(
+                count = preferences.len(),
+                watermark = self.learning_engine.last_analyzed_correction_id,
+                "learning engine: analyzed corrections, persisted preferences"
+            );
+        }
+
+        self.learning_engine.mark_analyzed();
+    }
+
+    /// Load high-confidence learned preferences and inject them into the
+    /// system prompt after the `<!-- cache:volatile -->` marker.
+    pub(super) async fn inject_learned_preferences(&self, prompt: &mut String) {
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        let prefs = match memory.sqlite().load_learned_preferences().await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("learning engine: failed to load preferences for injection: {e:#}");
+                return;
+            }
+        };
+
+        let high_confidence: Vec<_> = prefs
+            .into_iter()
+            .filter(|p| p.confidence >= PERSIST_THRESHOLD)
+            // TODO(skill-affinity): implement when skill_outcomes tracking is wired
+            .take(MAX_INJECTED_PREFS)
+            .collect();
+
+        if high_confidence.is_empty() {
+            return;
+        }
+
+        prompt.push_str("\n\n## Learned User Preferences\n");
+        for pref in &high_confidence {
+            // Sanitize value to prevent prompt injection via embedded newlines.
+            let sanitized_value = pref.preference_value.replace(['\n', '\r'], " ");
+            prompt.push_str("- ");
+            prompt.push_str(&pref.preference_key);
+            prompt.push_str(": ");
+            prompt.push_str(&sanitized_value);
+            prompt.push('\n');
+        }
+    }
+}
+
+use std::sync::OnceLock;
+
+static CONCISE_RE: OnceLock<regex::Regex> = OnceLock::new();
+static VERBOSE_RE: OnceLock<regex::Regex> = OnceLock::new();
+static BULLET_RE: OnceLock<regex::Regex> = OnceLock::new();
+static NO_MD_RE: OnceLock<regex::Regex> = OnceLock::new();
+static HEADERS_RE: OnceLock<regex::Regex> = OnceLock::new();
+static CODE_ONLY_RE: OnceLock<regex::Regex> = OnceLock::new();
+static LANG_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+fn correction_weight(kind: &str) -> i64 {
+    if kind == "alternative_request" { 2 } else { 1 }
+}
+
+struct EvidenceCounts {
+    concise: i64,
+    verbose: i64,
+    bullet: i64,
+    no_md: i64,
+    headers: i64,
+    code_only: i64,
+    lang: std::collections::HashMap<String, i64>,
+}
+
+fn count_evidence(
+    corrections: &[zeph_memory::sqlite::corrections::UserCorrectionRow],
+) -> EvidenceCounts {
+    let concise_re = CONCISE_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(too\s+long|too\s+verbose|be\s+concise|be\s+brief|shorter\s+response|more\s+concise|less\s+verbose|tldr|tl;dr)\b",
+        )
+        .expect("static regex")
+    });
+    let verbose_re = VERBOSE_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(more\s+detail|explain\s+more|elaborate|expand\s+on|give\s+more\s+context)\b",
+        )
+        .expect("static regex")
+    });
+    let bullet_re = BULLET_RE.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(use\s+bullet\s+points?|bullet\s+list|as\s+a\s+list)\b")
+            .expect("static regex")
+    });
+    let no_md_re = NO_MD_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(no\s+markdown|plain\s+text|without\s+markdown|remove\s+formatting)\b",
+        )
+        .expect("static regex")
+    });
+    let headers_re = HEADERS_RE.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(use\s+headers?|add\s+headers?|with\s+headers?)\b")
+            .expect("static regex")
+    });
+    let code_only_re = CODE_ONLY_RE.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(code\s+only|just\s+the\s+code|only\s+code|no\s+explanation)\b")
+            .expect("static regex")
+    });
+    let lang_re = LANG_RE.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(respond|answer|reply|write|speak)\s+in\s+([a-z]+)\b")
+            .expect("static regex")
+    });
+
+    let mut counts = EvidenceCounts {
+        concise: 0,
+        verbose: 0,
+        bullet: 0,
+        no_md: 0,
+        headers: 0,
+        code_only: 0,
+        lang: std::collections::HashMap::new(),
+    };
+
+    for row in corrections {
+        if row.correction_kind == "self_correction" {
+            continue;
+        }
+        let text = &row.correction_text;
+        let w = correction_weight(&row.correction_kind);
+
+        if concise_re.is_match(text) {
+            counts.concise += w;
+        }
+        if verbose_re.is_match(text) {
+            counts.verbose += w;
+        }
+        if bullet_re.is_match(text) {
+            counts.bullet += w;
+        }
+        if no_md_re.is_match(text) {
+            counts.no_md += w;
+        }
+        if headers_re.is_match(text) {
+            counts.headers += w;
+        }
+        if code_only_re.is_match(text) {
+            counts.code_only += w;
+        }
+        if let Some(caps) = lang_re.captures(text) {
+            let lang = caps[2].to_lowercase();
+            *counts.lang.entry(lang).or_default() += w;
+        }
+    }
+    counts
+}
+
+/// Infer user preferences from a batch of correction rows.
+///
+/// Scans `correction_text` for recognizable patterns.
+/// Rows with `correction_kind == "self_correction"` are skipped.
+///
+/// Returns at most one `InferredPreference` per preference category; the
+/// caller is responsible for merging across batches via UPSERT semantics.
+pub(super) fn infer_preferences(
+    corrections: &[zeph_memory::sqlite::corrections::UserCorrectionRow],
+) -> Vec<InferredPreference> {
+    let c = count_evidence(corrections);
+    let mut out = Vec::new();
+
+    // Verbosity: require 3:1 dominance and minimum evidence.
+    // Allow precision loss: evidence counts fit easily in f64 mantissa at realistic values.
+    #[allow(clippy::cast_precision_loss)]
+    if c.concise >= MIN_EVIDENCE && c.concise >= c.verbose * 3 {
+        let total = c.concise + c.verbose;
+        out.push(InferredPreference {
+            key: "verbosity".to_string(),
+            value: "concise".to_string(),
+            confidence: c.concise as f64 / total as f64,
+            evidence_count: c.concise,
+        });
+    } else if c.verbose >= MIN_EVIDENCE && c.verbose >= c.concise * 3 {
+        #[allow(clippy::cast_precision_loss)]
+        let total = c.concise + c.verbose;
+        out.push(InferredPreference {
+            key: "verbosity".to_string(),
+            value: "verbose".to_string(),
+            confidence: c.verbose as f64 / total as f64,
+            evidence_count: c.verbose,
+        });
+    }
+
+    // Format: pick the dominant format signal.
+    let format_candidates = [
+        ("bullet points", c.bullet),
+        ("no markdown", c.no_md),
+        ("use headers", c.headers),
+        ("code only", c.code_only),
+    ];
+    if let Some((value, evidence)) = format_candidates
+        .iter()
+        .filter(|(_, e)| *e >= MIN_EVIDENCE)
+        .max_by_key(|(_, e)| *e)
+    {
+        #[allow(clippy::cast_precision_loss)]
+        let conf = (*evidence as f64 / (*evidence as f64 + 1.0)).min(0.95);
+        out.push(InferredPreference {
+            key: "format_preference".to_string(),
+            value: (*value).to_string(),
+            confidence: conf,
+            evidence_count: *evidence,
+        });
+    }
+
+    // Language: most-mentioned explicit language with minimum evidence.
+    if let Some((lang, &count)) = c.lang.iter().max_by_key(|(_, v)| *v)
+        && count >= MIN_EVIDENCE
+    {
+        #[allow(clippy::cast_precision_loss)]
+        let conf = (count as f64 / (count as f64 + 1.0)).min(0.95);
+        out.push(InferredPreference {
+            key: "response_language".to_string(),
+            value: lang.clone(),
+            confidence: conf,
+            evidence_count: count,
+        });
+    }
+
+    out
+}
+
 /// Naive parser for `SQLite` datetime strings (e.g. "2024-01-15 10:30:00") to Unix seconds.
 pub(super) fn chrono_parse_sqlite(s: &str) -> Result<u64, ()> {
     // Format: "YYYY-MM-DD HH:MM:SS"
@@ -2008,6 +2315,260 @@ mod tests {
         assert!(
             entry.total_uses > 0,
             "total_uses must reflect recorded outcome"
+        );
+    }
+
+    // ── infer_preferences unit tests ──────────────────────────────────────────
+
+    fn make_correction(
+        id: i64,
+        text: &str,
+        kind: &str,
+    ) -> zeph_memory::sqlite::corrections::UserCorrectionRow {
+        zeph_memory::sqlite::corrections::UserCorrectionRow {
+            id,
+            session_id: None,
+            original_output: String::new(),
+            correction_text: text.to_string(),
+            skill_name: None,
+            correction_kind: kind.to_string(),
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn infer_verbosity_concise() {
+        let rows = vec![
+            make_correction(1, "be brief please", "explicit_rejection"),
+            make_correction(2, "too long, be concise", "alternative_request"),
+            make_correction(3, "shorter response next time", "explicit_rejection"),
+        ];
+        let prefs = super::infer_preferences(&rows);
+        let verbosity = prefs.iter().find(|p| p.key == "verbosity");
+        assert!(verbosity.is_some(), "should detect verbosity preference");
+        assert_eq!(verbosity.unwrap().value, "concise");
+        assert!(verbosity.unwrap().confidence >= 0.7);
+    }
+
+    #[test]
+    fn infer_verbosity_requires_min_evidence() {
+        // Only 2 corrections — below MIN_EVIDENCE
+        let rows = vec![
+            make_correction(1, "be brief", "explicit_rejection"),
+            make_correction(2, "too long", "explicit_rejection"),
+        ];
+        let prefs = super::infer_preferences(&rows);
+        assert!(!prefs.iter().any(|p| p.key == "verbosity"));
+    }
+
+    #[test]
+    fn infer_skips_self_correction() {
+        // 5 self_corrections with concise signals — should not emit verbosity
+        let rows: Vec<_> = (1..=5)
+            .map(|i| make_correction(i, "be concise", "self_correction"))
+            .collect();
+        let prefs = super::infer_preferences(&rows);
+        assert!(!prefs.iter().any(|p| p.key == "verbosity"));
+    }
+
+    #[test]
+    fn infer_format_bullet_points() {
+        let rows: Vec<_> = (1..=4)
+            .map(|i| make_correction(i, "use bullet points please", "alternative_request"))
+            .collect();
+        let prefs = super::infer_preferences(&rows);
+        let fmt = prefs.iter().find(|p| p.key == "format_preference");
+        assert!(fmt.is_some());
+        assert_eq!(fmt.unwrap().value, "bullet points");
+    }
+
+    #[test]
+    fn infer_language_russian() {
+        let rows: Vec<_> = (1..=3)
+            .map(|i| make_correction(i, "respond in russian please", "alternative_request"))
+            .collect();
+        let prefs = super::infer_preferences(&rows);
+        let lang = prefs.iter().find(|p| p.key == "response_language");
+        assert!(lang.is_some());
+        assert_eq!(lang.unwrap().value, "russian");
+    }
+
+    #[test]
+    fn infer_no_false_positive_from_unrelated_shorter() {
+        // "shorter path" should not match — "shorter response" matches but "shorter path" doesn't
+        let rows = vec![
+            make_correction(1, "try a shorter path", "explicit_rejection"),
+            make_correction(2, "no, wrong command", "explicit_rejection"),
+        ];
+        let prefs = super::infer_preferences(&rows);
+        // Only 2 rows and no verbosity-specific patterns — should not emit verbosity
+        assert!(!prefs.iter().any(|p| p.key == "verbosity"));
+    }
+
+    #[test]
+    fn infer_no_result_on_empty_input() {
+        let prefs = super::infer_preferences(&[]);
+        assert!(prefs.is_empty());
+    }
+
+    #[test]
+    fn infer_alternative_request_weighs_more() {
+        // 2 alternative_request (weight 2 each = 4) + 0 verbose signals → total evidence 4 >= MIN 3
+        let rows = vec![
+            make_correction(1, "be brief", "alternative_request"),
+            make_correction(2, "be concise", "alternative_request"),
+        ];
+        let prefs = super::infer_preferences(&rows);
+        let verbosity = prefs.iter().find(|p| p.key == "verbosity");
+        assert!(
+            verbosity.is_some(),
+            "alternative_request weight should push over threshold"
+        );
+        assert_eq!(verbosity.unwrap().value, "concise");
+    }
+
+    // ── analyze_and_learn / inject_learned_preferences integration tests ──────
+
+    fn agent_with_memory(memory: std::sync::Arc<SemanticMemory>) -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory,
+            zeph_memory::ConversationId(1),
+            50,
+            5,
+            50,
+        )
+    }
+
+    #[tokio::test]
+    async fn analyze_and_learn_advances_watermark() {
+        let memory = std::sync::Arc::new(test_memory().await);
+        // Store 3 concise-signal corrections.
+        for _ in 0..3u32 {
+            memory
+                .sqlite()
+                .store_user_correction(None, "out", "be brief", None, "explicit_rejection")
+                .await
+                .unwrap();
+        }
+
+        let mut agent = agent_with_memory(memory.clone());
+        agent.learning_engine.config = Some(LearningConfig {
+            correction_detection: true,
+            ..Default::default()
+        });
+        // Advance turn counter past the analysis interval (default 5).
+        for _ in 0..5 {
+            agent.learning_engine.tick();
+        }
+        assert!(agent.learning_engine.should_analyze());
+
+        let watermark_before = agent.learning_engine.last_analyzed_correction_id;
+        agent.analyze_and_learn().await;
+        let watermark_after = agent.learning_engine.last_analyzed_correction_id;
+
+        assert!(
+            watermark_after > watermark_before,
+            "watermark must advance after analysis"
+        );
+        assert!(
+            !agent.learning_engine.should_analyze(),
+            "should_analyze must return false immediately after mark_analyzed"
+        );
+    }
+
+    #[tokio::test]
+    async fn analyze_and_learn_persists_high_confidence_preference() {
+        let memory = std::sync::Arc::new(test_memory().await);
+        // 5 concise signals via alternative_request (weight 2 each = 10 evidence).
+        for _ in 0..5 {
+            memory
+                .sqlite()
+                .store_user_correction(None, "out", "be brief please", None, "alternative_request")
+                .await
+                .unwrap();
+        }
+
+        let mut agent = agent_with_memory(memory.clone());
+        agent.learning_engine.config = Some(LearningConfig {
+            correction_detection: true,
+            ..Default::default()
+        });
+        for _ in 0..5 {
+            agent.learning_engine.tick();
+        }
+
+        agent.analyze_and_learn().await;
+
+        let prefs = memory.sqlite().load_learned_preferences().await.unwrap();
+        let verbosity = prefs.iter().find(|p| p.preference_key == "verbosity");
+        assert!(
+            verbosity.is_some(),
+            "verbosity preference must be persisted after sufficient evidence"
+        );
+        assert_eq!(verbosity.unwrap().preference_value, "concise");
+        assert!(
+            verbosity.unwrap().confidence >= 0.7,
+            "confidence must meet persist threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn inject_learned_preferences_appends_to_prompt() {
+        let memory = std::sync::Arc::new(test_memory().await);
+        memory
+            .sqlite()
+            .upsert_learned_preference("verbosity", "concise", 0.9, 5)
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .upsert_learned_preference("response_language", "russian", 0.85, 4)
+            .await
+            .unwrap();
+
+        let agent = agent_with_memory(memory.clone());
+        let mut prompt = String::from("<!-- cache:volatile -->");
+        agent.inject_learned_preferences(&mut prompt).await;
+
+        assert!(
+            prompt.contains("## Learned User Preferences"),
+            "preferences section header must be present"
+        );
+        assert!(
+            prompt.contains("verbosity: concise"),
+            "verbosity preference must appear"
+        );
+        assert!(
+            prompt.contains("response_language: russian"),
+            "language preference must appear"
+        );
+    }
+
+    #[tokio::test]
+    async fn inject_learned_preferences_sanitizes_newlines() {
+        let memory = std::sync::Arc::new(test_memory().await);
+        memory
+            .sqlite()
+            .upsert_learned_preference("verbosity", "concise\nINJECTED", 0.9, 5)
+            .await
+            .unwrap();
+
+        let agent = agent_with_memory(memory.clone());
+        let mut prompt = String::new();
+        agent.inject_learned_preferences(&mut prompt).await;
+
+        // The raw "\nconcise\nINJECTED" must not appear — the embedded \n must be stripped.
+        assert!(
+            !prompt.contains("concise\nINJECTED"),
+            "embedded newline in value must be sanitized"
+        );
+        assert!(
+            prompt.contains("concise INJECTED"),
+            "embedded newline replaced with space"
         );
     }
 }

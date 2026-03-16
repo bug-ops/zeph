@@ -175,7 +175,7 @@ pub(crate) async fn run_daemon(
     }
     tracing::info!(pid_file = %config.daemon.pid_file, "daemon started");
 
-    let (provider, _status_rx) = app.build_provider().await?;
+    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
 

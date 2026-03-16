@@ -9,6 +9,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - test(memory): add integration tests for `store_session_summary` → Qdrant upsert roundtrip (closes #1916) — four `#[ignore]` tests in `crates/zeph-memory/tests/qdrant_integration.rs` using testcontainers: `store_session_summary_roundtrip`, `store_session_summary_multiple_conversations`, `store_shutdown_summary_full_roundtrip`, `search_session_summaries_returns_empty_when_no_data`; each test guards against silent Qdrant disconnection and verifies both the Qdrant vector path and (where applicable) the SQLite content path
+- feat(index): show indexing progress during background code indexing (#1923)
+  - Added `IndexProgress` struct to `zeph-index` with `files_done`, `files_total`, `chunks_created` fields
+  - `index_project()` now accepts `progress_tx: Option<&watch::Sender<IndexProgress>>` and sends progress after each file
+  - CLI mode: prints "Indexing codebase in the background (N files)..." and "Codebase indexed: N files, M chunks (Xs) — code search is ready." to stderr
+  - TUI mode: shows "Indexing codebase... N/M files (X%)" in the status bar, then "Index ready (N files, M chunks)" for 3s after completion
+- enhancement(core): `LearningEngine` now performs real behavioral learning from interaction history (closes #1913)
+  - New SQLite table `learned_preferences` (migration 036) persists inferred user preferences across sessions
+  - Scans `user_corrections` incrementally via watermark (no repeated re-scanning); analyzes every 5 turns when `correction_detection` is enabled
+  - Regex-based preference inference with word-boundary anchors: verbosity (concise/detailed), response format (plain/markdown/bullets/headers), language preference
+  - Persists preferences above a Wilson-score confidence threshold; up to 3 highest-confidence facts injected into the volatile system prompt block (after `<!-- cache:volatile -->` to preserve prompt caching)
+  - Sanitizes injected preference values (strips `\n`/`\r`) and enforces length caps (key ≤ 128 B, value ≤ 256 B)
+  - Gated on `LearningConfig::correction_detection` (independent of `LearningConfig::enabled` which controls skill auto-improvement)
+- feat(context-compression): CLI flags `--focus`/`--no-focus`, `--sidequest`/`--no-sidequest`, and `--pruning-strategy <reactive|task_aware|mig|task_aware_mig>` for per-session context compression overrides (#1904)
+- feat(context-compression): `--init` wizard step for Focus Agent and SideQuest configuration with validated interval inputs
+- feat(context-compression): debug dump files for pruning scores (`{n}-pruning-scores.json`), focus knowledge (`{n}-focus-knowledge.txt`), and SideQuest eviction (`{n}-sidequest-eviction.json`) when `--debug-dump` is active
+- feat(context-compression): TUI status spinners for `extract_task_goal` background task ("Extracting task goal...") and SideQuest eviction scoring ("SideQuest: scoring tool outputs...")
+- obs(orchestration): `LlmPlanner::plan()` and `LlmAggregator::aggregate()` now return token usage data; call sites in `agent/mod.rs` increment `api_calls`, `prompt_tokens`, `completion_tokens`, `total_tokens`, cost, and cache stats in the shared `MetricsCollector` (closes #1899)
+- obs(orchestration): `tasks_skipped` counter now correctly incremented in both `GraphStatus::Completed` and `GraphStatus::Failed` arms of `finalize_plan_execution`
+- obs(orchestration): `/status` command shows an `Orchestration:` block (plans, tasks completed/failed/skipped) when `orchestration.enabled = true` and at least one plan has been executed
 
 ### Fixed
 
@@ -17,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(core): corrections now stored even when `LearningConfig::enabled = false` (closes #1910)
 - fix(memory): sync session summaries to Qdrant on compact_context happy path (#1911) — `store_session_summary()` was only called in fallback branches; now also called after a successful `replace_conversation()` in both `compact_context` variants
 - Wire `[agent.focus]` and `[memory.sidequest]` config to `AgentBuilder` in all bootstrap paths (`runner.rs`, `daemon.rs`, `acp.rs`); previously both configs were parsed but never applied, causing focus and sidequest to always use defaults (`enabled = false`) (closes #1907)
+- fix(tui): clear "saving to graph..." spinner immediately after `spawn_graph_extraction` — spinner was never cleared since the spawn is fire-and-forget; status is now reset to `""` right after scheduling the background task (closes #1924)
 - fix(graph-memory): prevent structural noise from polluting `zeph_graph_entities` graph (closes #1912)
   - Skip graph extraction entirely for `Role::User` messages containing `ToolResult` parts — tool outputs (TOML, JSON, command output) are structural data, not conversational content (FIX-1)
   - Exclude `ToolResult` user messages from the context window passed to the extraction LLM call (FIX-2)

@@ -1569,6 +1569,10 @@ impl<C: Channel> Agent<C> {
                 // are removed to free context (not re-summarized here to avoid LLM overhead).
                 let _ = messages_to_summarize; // messages available for future semantic use
                 self.focus.append_knowledge(sanitized_summary.clone());
+                if let Some(ref d) = self.debug_state.debug_dumper {
+                    let kb = self.focus.knowledge_blocks.join("\n---\n");
+                    d.dump_focus_knowledge(&kb);
+                }
                 self.focus.complete();
 
                 // Remove the checkpoint and all messages after it (bracketed phase cleanup).

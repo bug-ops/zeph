@@ -162,7 +162,7 @@ mod orchestration_integration {
         // MockProvider.chat() does not retry, so a single response is sufficient (I1).
         let provider = MockProvider::with_responses(vec!["synthesis result".to_string()]);
         let aggregator = LlmAggregator::new(provider, &config);
-        let result = aggregator.aggregate(&graph).await.unwrap();
+        let (result, _usage) = aggregator.aggregate(&graph).await.unwrap();
         assert!(
             !result.is_empty(),
             "aggregator must produce non-empty output"

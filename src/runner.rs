@@ -403,6 +403,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.compression_guidelines.enabled = true;
     }
 
+    if cli.focus {
+        app.config_mut().agent.focus.enabled = true;
+    }
+    if cli.no_focus {
+        app.config_mut().agent.focus.enabled = false;
+    }
+    if cli.sidequest {
+        app.config_mut().memory.sidequest.enabled = true;
+    }
+    if cli.no_sidequest {
+        app.config_mut().memory.sidequest.enabled = false;
+    }
+    if let Some(strategy) = cli.pruning_strategy {
+        app.config_mut().memory.compression.pruning_strategy = strategy;
+    }
+
     if cli.server_compaction
         && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
     {
@@ -447,11 +463,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Early-exit: run a single experiment session and exit.
     #[cfg(feature = "experiments")]
     if cli.experiment_run {
-        let (provider, _status_rx) = app.build_provider().await?;
+        let (provider, _status_tx, _status_rx) = app.build_provider().await?;
         return run_experiment_session(app, provider).await;
     }
 
-    let (provider, status_rx) = app.build_provider().await?;
+    let (provider, agent_status_tx, status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
 
@@ -933,13 +949,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "guardrail")]
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
 
-    let (code_retriever, _index_watcher) = agent_setup::apply_code_indexer(
+    let (code_retriever, _index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
         &config.index,
         index_qdrant_ops,
         index_provider,
         index_pool,
+        is_cli,
     )
     .await;
+    #[cfg(not(feature = "tui"))]
+    let _ = index_progress_rx;
     let agent =
         agent_setup::apply_code_retrieval(agent, &config.index, code_retriever, provider_has_tools);
     let agent = if let Some(search_executor) = agent_setup::build_search_code_executor(
@@ -1152,7 +1171,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .is_some_and(|c| c.enable_extended_context);
     let agent = agent
         .with_extended_context(extended_context)
-        .with_metrics(metrics_tx);
+        .with_metrics(metrics_tx)
+        .with_status_tx(agent_status_tx);
     #[cfg(not(feature = "tui"))]
     drop(metrics_rx);
 
@@ -1228,6 +1248,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 tool_rx: shell_executor_for_tui,
                 metrics_rx: tui_metrics_rx,
                 warmup_provider: warmup_provider_clone,
+                index_progress_rx,
             },
         ))
         .await;

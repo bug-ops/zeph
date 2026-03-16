@@ -10,6 +10,7 @@ pub mod graph_store;
 mod history;
 pub(crate) mod messages;
 pub mod overflow;
+pub mod preferences;
 mod skills;
 mod summaries;
 mod trust;
