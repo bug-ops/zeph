@@ -131,6 +131,8 @@ struct SharedAgentDeps {
 
     // Config snapshot — single source of truth for all config-derived agent settings
     session_config: zeph_core::AgentSessionConfig,
+    focus_config: zeph_core::config::FocusConfig,
+    sidequest_config: zeph_core::config::SidequestConfig,
 
     // ACP-specific fields (transport-level; not agent-level)
     acp_agent_name: String,
@@ -437,6 +439,8 @@ async fn build_acp_deps(
         #[cfg(feature = "guardrail")]
         guardrail_provider: app.build_guardrail_provider(),
         session_config,
+        focus_config: config.agent.focus.clone(),
+        sidequest_config: config.memory.sidequest.clone(),
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
         acp_max_sessions: config.acp.max_sessions,
@@ -654,7 +658,9 @@ async fn spawn_acp_agent(
         Some(Arc::clone(&mcp_manager)),
         &mcp_config,
     )
-    .with_mcp_shared_tools(mcp_shared_tools);
+    .with_mcp_shared_tools(mcp_shared_tools)
+    .with_focus_config(d.focus_config.clone())
+    .with_sidequest_config(d.sidequest_config.clone());
 
     // Wire scheduler per session: apply update/custom receivers and add executor.
     #[cfg(feature = "scheduler")]

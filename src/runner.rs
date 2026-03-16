@@ -808,7 +808,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     )
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
-    .with_compression_guidelines_config(config.memory.compression_guidelines.clone());
+    .with_compression_guidelines_config(config.memory.compression_guidelines.clone())
+    .with_focus_config(config.agent.focus.clone())
+    .with_sidequest_config(config.memory.sidequest.clone());
 
     #[cfg(feature = "policy-enforcer")]
     let agent = if config.tools.policy.enabled {
