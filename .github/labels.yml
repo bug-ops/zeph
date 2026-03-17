@@ -65,6 +65,58 @@
   color: "2563eb"
   description: "zeph-channels crate (Telegram)"
 
+- name: tools
+  color: "b5b4dd"
+  description: "Tool execution and MCP integration"
+
+- name: tui
+  color: "5319e7"
+  description: "TUI dashboard"
+
+- name: mcp
+  color: "1d76db"
+  description: "MCP client/server"
+
+- name: a2a
+  color: "d4c5f9"
+  description: "A2A protocol integration"
+
+- name: acp
+  color: "6f42c1"
+  description: "Agent Client Protocol integration"
+
+- name: context
+  color: "d4c5f9"
+  description: "Context management and message handling"
+
+- name: pipeline
+  color: "c5def5"
+  description: "Pipeline and workflow composition"
+
+- name: orchestration
+  color: "5319e7"
+  description: "Task orchestration / DAG scheduling"
+
+- name: graph-memory
+  color: "7057ff"
+  description: "Knowledge graph memory feature"
+
+- name: self-learning
+  color: "ff6347"
+  description: "Automatic skill improvement system"
+
+- name: sub-agents
+  color: "7c4dff"
+  description: "Sub-agent orchestration"
+
+- name: streaming
+  color: "5cdbd3"
+  description: "LLM response streaming"
+
+- name: qdrant
+  color: "7b68ee"
+  description: "Qdrant vector database integration"
+
 # Category labels
 - name: tests
   color: "22c55e"
@@ -81,6 +133,50 @@
 - name: config
   color: "475569"
   description: "Configuration file changes"
+
+- name: architecture
+  color: "0075ca"
+  description: "Architecture and design"
+
+- name: security
+  color: "dc2626"
+  description: "Security-related issue"
+
+- name: infra
+  color: "d4bbdd"
+  description: "Project infrastructure and tooling"
+
+- name: ux
+  color: "0075ca"
+  description: "User experience"
+
+- name: arch
+  color: "6a0dad"
+  description: "Architecture and design"
+
+- name: research
+  color: "0e8a16"
+  description: "Research-driven improvement"
+
+- name: experiments
+  color: "6f42c1"
+  description: "Autonomous self-experimentation"
+
+- name: tech-debt
+  color: "ffa500"
+  description: "Technical debt"
+
+- name: token-savings
+  color: "ff8c00"
+  description: "Token economy improvements"
+
+- name: context-engineering
+  color: "1d76db"
+  description: "Context pipeline improvements"
+
+- name: github_actions
+  color: "000000"
+  description: "Pull requests that update GitHub Actions code"
 
 # Size labels
 - name: size/XS
@@ -103,6 +199,39 @@
   color: "f87171"
   description: "Extra large PR (500+ lines)"
 
+# Priority labels
+- name: priority/critical
+  color: "b60205"
+  description: "Critical priority"
+
+- name: priority/high
+  color: "b60205"
+  description: "High priority"
+
+- name: priority/medium
+  color: "e4e669"
+  description: "Medium priority"
+
+- name: priority/low
+  color: "c2e0c6"
+  description: "Low priority"
+
+- name: P0
+  color: "b60205"
+  description: "Critical priority"
+
+- name: P1
+  color: "d93f0b"
+  description: "Important priority"
+
+- name: P2
+  color: "fbca04"
+  description: "Nice-to-have priority"
+
+- name: P3
+  color: "0e8a16"
+  description: "Priority 3 — low"
+
 # Issue labels
 - name: triage
   color: "e879f9"
@@ -120,6 +249,135 @@
   color: "7c3aed"
   description: "Good for newcomers"
 
-- name: security
-  color: "dc2626"
-  description: "Security-related issue"
+- name: duplicate
+  color: "cccccc"
+  description: "This issue or pull request already exists"
+
+- name: invalid
+  color: "e4e669"
+  description: "This doesn't seem right"
+
+- name: wontfix
+  color: "808080"
+  description: "This will not be worked on"
+
+- name: epic
+  color: "0052cc"
+  description: "Milestone-level tracking issue"
+
+- name: feature
+  color: "0e8a16"
+  description: "New functionality"
+
+# Milestone labels
+- name: M0
+  color: "e6f0ff"
+  description: "Milestone 0: Bootstrap"
+
+- name: M1
+  color: "cce0ff"
+  description: "Milestone 1: Ollama Chat"
+
+- name: M2
+  color: "b3d1ff"
+  description: "Milestone 2: Skills"
+
+- name: M3
+  color: "99c1ff"
+  description: "Milestone 3: Memory + Claude"
+
+- name: M4
+  color: "80b2ff"
+  description: "Milestone 4: Telegram"
+
+- name: M5
+  color: "66a3ff"
+  description: "Milestone 5: Release"
+
+- name: M6
+  color: "4d94ff"
+  description: "Milestone 6: Streaming + Response Quality"
+
+- name: M7
+  color: "3385ff"
+  description: "Milestone 7: Tool Execution Framework"
+
+- name: M9
+  color: "0e8a16"
+  description: "Milestone 9: Semantic Memory"
+
+- name: M10
+  color: "1a75ff"
+  description: "Milestone 10: Advanced Skills"
+
+- name: M11
+  color: "0066ff"
+  description: "Milestone 11: A2A Types + Client"
+
+- name: M12
+  color: "0057e6"
+  description: "Milestone 12: A2A Server"
+
+- name: M13
+  color: "0047cc"
+  description: "Milestone 13: A2A Orchestration"
+
+- name: M14
+  color: "0038b3"
+  description: "Milestone 14: Security Hardening"
+
+- name: M15
+  color: "002999"
+  description: "Milestone 15: v1.0.0 Release"
+
+- name: M16
+  color: "001f80"
+  description: "Milestone 16: Self-Learning Skills"
+
+- name: M18
+  color: "006b3f"
+  description: "Milestone 18: Tool Orchestration Evolution"
+
+- name: M19
+  color: "1d76db"
+  description: "Milestone 19: Hybrid memory search"
+
+- name: M20
+  color: "d93f0b"
+  description: "Milestone 20: Provider flexibility"
+
+- name: M21
+  color: "fbca04"
+  description: "Milestone 21: Observability & cost"
+
+- name: M22
+  color: "5319e7"
+  description: "Milestone 22: Infrastructure"
+
+- name: M23
+  color: "006b75"
+  description: "Milestone 23: Channels expansion"
+
+- name: M26
+  color: "004d40"
+  description: "Milestone 26: Smart tool output filtering"
+
+- name: M27
+  color: "1d76db"
+  description: "Milestone 27: Structured Output + Typed Tools"
+
+- name: M28
+  color: "0e8a16"
+  description: "Milestone 28: VectorStore Abstraction"
+
+- name: M29
+  color: "d93f0b"
+  description: "Milestone 29: Pipeline API"
+
+- name: M30
+  color: "5319e7"
+  description: "Milestone 30: Document Loaders"
+
+- name: M35
+  color: "5319e7"
+  description: "Milestone 35: context integrity"
