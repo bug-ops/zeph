@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(core): `resolve_config_path()` now falls back to `~/.config/zeph/config.toml` when `config/default.toml` is absent relative to CWD (closes #1945) — resolves ACP stdio/HTTP startup failure when launched from an IDE workspace directory; CWD-relative default is still preferred when the file exists (no behavior change for CLI/TUI); each resolution step emits a `tracing::debug!` message with the resolved path and source
+
 ### Added
 
 - test(memory): add integration tests for `store_session_summary` → Qdrant upsert roundtrip (closes #1916) — four `#[ignore]` tests in `crates/zeph-memory/tests/qdrant_integration.rs` using testcontainers: `store_session_summary_roundtrip`, `store_session_summary_multiple_conversations`, `store_shutdown_summary_full_roundtrip`, `search_session_summaries_returns_empty_when_no_data`; each test guards against silent Qdrant disconnection and verifies both the Qdrant vector path and (where applicable) the SQLite content path
