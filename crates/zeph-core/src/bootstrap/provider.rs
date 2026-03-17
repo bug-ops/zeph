@@ -910,13 +910,19 @@ pub fn build_orchestrator(
         routes.insert(task, chain.clone());
     }
 
-    ModelOrchestrator::new(
+    let mut orch = ModelOrchestrator::new(
         routes,
         providers,
         orch_cfg.default.clone(),
         orch_cfg.embed.clone(),
     )
-    .map_err(|e| BootstrapError::Provider(e.to_string()))
+    .map_err(|e| BootstrapError::Provider(e.to_string()))?;
+
+    if let Some(ttl) = orch_cfg.failure_ttl_secs {
+        orch = orch.with_failure_ttl(ttl);
+    }
+
+    Ok(orch)
 }
 
 /// Returns `true` if `base_url` points to a local or private-network endpoint

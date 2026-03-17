@@ -4226,6 +4226,214 @@ mod shutdown_summary_tests {
         );
     }
 
+    // Tests for filter_stats metric propagation (issue #1939).
+    // The normal native tool path (single tool call) must increment filter_* metrics when the
+    // tool returns FilterStats.
+
+    #[tokio::test]
+    async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
+        use crate::metrics::MetricsSnapshot;
+        use tokio::sync::watch;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_tools::executor::{FilterStats, ToolCall, ToolError, ToolExecutor, ToolOutput};
+
+        struct FilteredToolExecutor;
+
+        impl ToolExecutor for FilteredToolExecutor {
+            async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+
+            async fn execute_tool_call(
+                &self,
+                _call: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(Some(ToolOutput {
+                    tool_name: "shell".to_owned(),
+                    summary: "filtered output".to_owned(),
+                    blocks_executed: 1,
+                    filter_stats: Some(FilterStats {
+                        raw_chars: 400,
+                        filtered_chars: 200,
+                        raw_lines: 20,
+                        filtered_lines: 10,
+                        confidence: None,
+                        command: None,
+                        kept_lines: vec![],
+                    }),
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                }))
+            }
+        }
+
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![ToolUseRequest {
+                    id: "call-1".to_owned(),
+                    name: "shell".to_owned(),
+                    input: serde_json::json!({"cmd": "ls"}),
+                }],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".to_owned()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec!["run a tool".to_owned()]);
+        let registry = create_test_registry();
+        let executor = FilteredToolExecutor;
+        let (tx, rx) = watch::channel(MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+        agent.run().await.expect("agent run must succeed");
+
+        let snap: MetricsSnapshot = rx.borrow().clone();
+        assert!(
+            snap.filter_applications > 0,
+            "filter_applications must be > 0"
+        );
+        assert!(snap.filter_raw_tokens > 0, "filter_raw_tokens must be > 0");
+        assert!(
+            snap.filter_saved_tokens > 0,
+            "filter_saved_tokens must be > 0"
+        );
+        assert_eq!(snap.filter_total_commands, 1);
+        assert_eq!(snap.filter_filtered_commands, 1);
+    }
+
+    // Self-reflection remaining-tools path: when the first of two parallel tool calls returns
+    // [error] and self-reflection fires (Ok(true)), the second call's FilterStats must still
+    // be recorded in filter_* metrics (regression for #1939).
+    //
+    // Setup: two concurrent tool calls via native path (ToolUse response).
+    // tool_a returns [error], triggering self-reflection which calls chat() → Text.
+    // tool_b returns success with FilterStats. The remaining-tools loop processes tool_b.
+    #[tokio::test]
+    async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop() {
+        use crate::config::LearningConfig;
+        use crate::metrics::MetricsSnapshot;
+        use std::sync::Mutex;
+        use tokio::sync::watch;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_tools::executor::{FilterStats, ToolCall, ToolError, ToolExecutor, ToolOutput};
+
+        // Executor: tool_a returns error, tool_b returns filtered success.
+        struct TwoToolExecutor {
+            call_count: Mutex<u32>,
+        }
+
+        impl ToolExecutor for TwoToolExecutor {
+            async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+
+            async fn execute_tool_call(
+                &self,
+                call: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                let n = {
+                    let mut g = self.call_count.lock().unwrap();
+                    *g += 1;
+                    *g
+                };
+                if n == 1 || call.tool_id == "tool_a_id" {
+                    Ok(Some(ToolOutput {
+                        tool_name: "tool_a".to_owned(),
+                        summary: "[error] command failed [exit code 1]".to_owned(),
+                        blocks_executed: 1,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    }))
+                } else {
+                    Ok(Some(ToolOutput {
+                        tool_name: "tool_b".to_owned(),
+                        summary: "filtered output".to_owned(),
+                        blocks_executed: 1,
+                        filter_stats: Some(FilterStats {
+                            raw_chars: 400,
+                            filtered_chars: 200,
+                            raw_lines: 20,
+                            filtered_lines: 10,
+                            confidence: None,
+                            command: None,
+                            kept_lines: vec![],
+                        }),
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    }))
+                }
+            }
+        }
+
+        // Provider: one ToolUse response (two parallel tools), then Text for self-reflection.
+        // When chat_with_tools queue is exhausted, fallback to chat() which returns "ok".
+        let (mock, _counter) = MockProvider::with_responses(vec!["reflection ok".to_owned()])
+            .with_tool_use(vec![ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![
+                    ToolUseRequest {
+                        id: "tool_a_id".to_owned(),
+                        name: "tool_a".to_owned(),
+                        input: serde_json::json!({}),
+                    },
+                    ToolUseRequest {
+                        id: "tool_b_id".to_owned(),
+                        name: "tool_b".to_owned(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+                thinking_blocks: vec![],
+            }]);
+
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec!["run tools".to_owned()]);
+        let registry = create_test_registry();
+        let executor = TwoToolExecutor {
+            call_count: Mutex::new(0),
+        };
+        let (tx, rx) = watch::channel(MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_learning(LearningConfig {
+                enabled: true,
+                ..LearningConfig::default()
+            });
+        // Activate the "test-skill" created by create_test_registry() so self-reflection fires.
+        agent
+            .skill_state
+            .active_skill_names
+            .push("test-skill".to_owned());
+        agent.run().await.expect("agent run must succeed");
+
+        let snap: MetricsSnapshot = rx.borrow().clone();
+        assert!(
+            snap.filter_applications > 0,
+            "filter_applications must be > 0 after remaining-tools loop processes tool_b"
+        );
+        assert!(
+            snap.filter_raw_tokens > 0,
+            "filter_raw_tokens must be > 0 after remaining-tools loop processes tool_b"
+        );
+        assert!(
+            snap.filter_saved_tokens > 0,
+            "filter_saved_tokens must be > 0 after remaining-tools loop processes tool_b"
+        );
+    }
+
     // Regression test for issue #1910: corrections must be stored in user_corrections even when
     // LearningConfig::enabled = false (skill auto-improvement is disabled).
     #[tokio::test]

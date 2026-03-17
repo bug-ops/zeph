@@ -340,6 +340,7 @@ fn build_orchestrator_with_unknown_provider_errors() {
         routes: HashMap::new(),
         default: "test".to_string(),
         embed: "test".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -380,6 +381,7 @@ fn build_orchestrator_claude_without_cloud_config_errors() {
         routes: HashMap::new(),
         default: "claude_sub".to_string(),
         embed: "claude_sub".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -427,6 +429,7 @@ fn build_orchestrator_claude_sub_without_api_key_errors() {
         routes: HashMap::new(),
         default: "claude_sub".to_string(),
         embed: "claude_sub".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -468,6 +471,7 @@ fn build_orchestrator_candle_without_config_errors() {
         routes: HashMap::new(),
         default: "candle_sub".to_string(),
         embed: "candle_sub".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -507,6 +511,7 @@ fn build_orchestrator_with_ollama_sub_provider() {
         routes: HashMap::new(),
         default: "ollama_sub".to_string(),
         embed: "ollama_sub".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -541,6 +546,7 @@ fn build_orchestrator_ollama_per_provider_base_url() {
         routes: HashMap::new(),
         default: "ollama_custom".to_string(),
         embed: "ollama_custom".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -574,6 +580,7 @@ fn build_orchestrator_ollama_per_provider_embedding_model() {
         routes: HashMap::new(),
         default: "ollama_embed".to_string(),
         embed: "ollama_embed".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -608,6 +615,7 @@ fn effective_embedding_model_reads_orchestrator_sub_provider() {
         routes: HashMap::new(),
         default: "ollama_embed".to_string(),
         embed: "ollama_embed".to_string(),
+        failure_ttl_secs: None,
     });
 
     assert_eq!(effective_embedding_model(&config), "custom-embed");
@@ -644,6 +652,7 @@ fn build_orchestrator_routes_parsing() {
         routes,
         default: "ollama_sub".to_string(),
         embed: "ollama_sub".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);
@@ -694,6 +703,7 @@ fn build_orchestrator_with_candle_local_source() {
         routes: HashMap::new(),
         default: "candle_local".to_string(),
         embed: "candle_local".to_string(),
+        failure_ttl_secs: None,
     });
 
     let result = build_orchestrator(&config);

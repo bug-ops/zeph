@@ -1131,32 +1131,7 @@ impl<C: Channel> Agent<C> {
                             AnomalyOutcome::Success
                         };
                     if let Some(ref fs) = out.filter_stats {
-                        let saved = fs.estimated_tokens_saved() as u64;
-                        let raw = (fs.raw_chars / 4) as u64;
-                        let confidence = fs.confidence;
-                        let was_filtered = fs.filtered_chars < fs.raw_chars;
-                        self.update_metrics(|m| {
-                            m.filter_raw_tokens += raw;
-                            m.filter_saved_tokens += saved;
-                            m.filter_applications += 1;
-                            m.filter_total_commands += 1;
-                            if was_filtered {
-                                m.filter_filtered_commands += 1;
-                            }
-                            if let Some(c) = confidence {
-                                match c {
-                                    zeph_tools::FilterConfidence::Full => {
-                                        m.filter_confidence_full += 1;
-                                    }
-                                    zeph_tools::FilterConfidence::Partial => {
-                                        m.filter_confidence_partial += 1;
-                                    }
-                                    zeph_tools::FilterConfidence::Fallback => {
-                                        m.filter_confidence_fallback += 1;
-                                    }
-                                }
-                            }
-                        });
+                        self.record_filter_metrics(fs);
                     }
                     let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
                         (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
@@ -1271,24 +1246,34 @@ impl<C: Channel> Agent<C> {
                                 let remaining_tc = &tool_calls[remaining_idx];
                                 let remaining_result =
                                     std::mem::replace(&mut tool_results[remaining_idx], Ok(None));
-                                let (remaining_content, remaining_is_error) = match remaining_result
-                                {
-                                    Ok(Some(ref out)) => {
-                                        let (sanitized, _) = self
-                                            .sanitize_tool_output(&out.summary, &remaining_tc.name)
-                                            .await;
-                                        (sanitized, false)
-                                    }
-                                    Ok(None) => ("(no output)".to_owned(), false),
-                                    Err(ref e) => (format!("[error] {e}"), true),
-                                };
+                                let (remaining_content, remaining_is_error, remaining_inline_stats) =
+                                    match remaining_result {
+                                        Ok(Some(ref out)) => {
+                                            let (sanitized, _) = self
+                                                .sanitize_tool_output(
+                                                    &out.summary,
+                                                    &remaining_tc.name,
+                                                )
+                                                .await;
+                                            if let Some(ref fs) = out.filter_stats {
+                                                self.record_filter_metrics(fs);
+                                            }
+                                            let inline = out.filter_stats.as_ref().and_then(|fs| {
+                                                (fs.filtered_chars < fs.raw_chars)
+                                                    .then(|| fs.format_inline(&remaining_tc.name))
+                                            });
+                                            (sanitized, false, inline)
+                                        }
+                                        Ok(None) => ("(no output)".to_owned(), false, None),
+                                        Err(ref e) => (format!("[error] {e}"), true, None),
+                                    };
                                 let body_display = self.maybe_redact(&remaining_content);
                                 self.channel
                                     .send_tool_output(ToolOutputEvent {
                                         tool_name: &remaining_tc.name,
                                         body: &body_display,
                                         diff: None,
-                                        filter_stats: None,
+                                        filter_stats: remaining_inline_stats,
                                         kept_lines: None,
                                         locations: None,
                                         tool_call_id: &tool_call_ids[remaining_idx],
@@ -1332,24 +1317,34 @@ impl<C: Channel> Agent<C> {
                                 let remaining_tc = &tool_calls[remaining_idx];
                                 let remaining_result =
                                     std::mem::replace(&mut tool_results[remaining_idx], Ok(None));
-                                let (remaining_content, remaining_is_error) = match remaining_result
-                                {
-                                    Ok(Some(ref out)) => {
-                                        let (sanitized, _) = self
-                                            .sanitize_tool_output(&out.summary, &remaining_tc.name)
-                                            .await;
-                                        (sanitized, false)
-                                    }
-                                    Ok(None) => ("(no output)".to_owned(), false),
-                                    Err(ref re) => (format!("[error] {re}"), true),
-                                };
+                                let (remaining_content, remaining_is_error, remaining_inline_stats) =
+                                    match remaining_result {
+                                        Ok(Some(ref out)) => {
+                                            let (sanitized, _) = self
+                                                .sanitize_tool_output(
+                                                    &out.summary,
+                                                    &remaining_tc.name,
+                                                )
+                                                .await;
+                                            if let Some(ref fs) = out.filter_stats {
+                                                self.record_filter_metrics(fs);
+                                            }
+                                            let inline = out.filter_stats.as_ref().and_then(|fs| {
+                                                (fs.filtered_chars < fs.raw_chars)
+                                                    .then(|| fs.format_inline(&remaining_tc.name))
+                                            });
+                                            (sanitized, false, inline)
+                                        }
+                                        Ok(None) => ("(no output)".to_owned(), false, None),
+                                        Err(ref re) => (format!("[error] {re}"), true, None),
+                                    };
                                 let body_display = self.maybe_redact(&remaining_content);
                                 self.channel
                                     .send_tool_output(ToolOutputEvent {
                                         tool_name: &remaining_tc.name,
                                         body: &body_display,
                                         diff: None,
-                                        filter_stats: None,
+                                        filter_stats: remaining_inline_stats,
                                         kept_lines: None,
                                         locations: None,
                                         tool_call_id: &tool_call_ids[remaining_idx],
