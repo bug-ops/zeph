@@ -19,7 +19,7 @@ notify.workspace = true
 notify-debouncer-mini.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "rt"] }
 tracing.workspace = true
@@ -27,6 +27,7 @@ tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 tree-sitter-bash.workspace = true
 tree-sitter-go.workspace = true

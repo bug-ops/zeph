@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["net", "sync", "time"] }
 tower.workspace = true
 tower-http = { workspace = true, features = ["limit", "trace"] }
 tracing.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
 http-body-util.workspace = true

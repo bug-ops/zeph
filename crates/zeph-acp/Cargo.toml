@@ -30,36 +30,44 @@ unstable-session-model = ["agent-client-protocol/unstable_session_model"]
 unstable-session-info-update = ["agent-client-protocol/unstable_session_info_update"]
 
 [dependencies]
-agent-client-protocol = { workspace = true }
+agent-client-protocol = { workspace = true, features = [
+    "unstable_session_list",
+    "unstable_session_fork",
+    "unstable_session_resume",
+    "unstable_session_usage",
+    "unstable_session_model",
+    "unstable_session_info_update",
+] }
+async-stream = { version = "0.3", optional = true }
 async-trait.workspace = true
+axum = { workspace = true, features = ["ws"], optional = true }
 base64.workspace = true
-chrono = { workspace = true }
+blake3 = { workspace = true, optional = true }
+chrono = { workspace = true, features = ["std", "clock"] }
+dashmap = { workspace = true, optional = true }
 dirs.workspace = true
 futures.workspace = true
 glob.workspace = true
-schemars.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-toml.workspace = true
 reqwest = { workspace = true, features = ["rustls", "stream"] }
+rmcp.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+subtle = { workspace = true, optional = true }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "sync", "macros", "rt", "test-util"] }
 tokio-util = { workspace = true, features = ["compat", "rt"] }
+toml.workspace = true
+tower = { workspace = true, features = ["util"], optional = true }
+tower-http = { workspace = true, features = ["cors", "limit"], optional = true }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-rmcp.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-mcp.workspace = true
 zeph-tools.workspace = true
-axum = { workspace = true, features = ["ws"], optional = true }
-async-stream = { version = "0.3", optional = true }
-dashmap = { workspace = true, optional = true }
-blake3 = { workspace = true, optional = true }
-subtle = { workspace = true, optional = true }
-tower = { workspace = true, features = ["util"], optional = true }
-tower-http = { workspace = true, features = ["cors", "limit"], optional = true }
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -17,14 +17,14 @@ default = []
 
 [dependencies]
 blake3.workspace = true
-regex.workspace = true
+futures.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
+regex.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-futures.workspace = true
-schemars.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true
@@ -32,6 +32,7 @@ uuid = { workspace = true, features = ["v5"] }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-tools.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [[bench]]
 name = "matcher"

@@ -17,15 +17,15 @@ default = []
 mock = []
 
 [dependencies]
-blake3.workspace = true
-glob.workspace = true
-regex.workspace = true
-dashmap.workspace = true
-qdrant-client = { workspace = true, features = ["serde"] }
 async-trait.workspace = true
-rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
+blake3.workspace = true
+dashmap.workspace = true
+glob.workspace = true
 http.workspace = true
+qdrant-client = { workspace = true, features = ["serde"] }
+regex.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -37,6 +37,7 @@ uuid = { workspace = true, features = ["v5"] }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-tools.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -21,14 +21,15 @@ scrape-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 toml.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
-unicode-normalization.workspace = true
 tree-sitter.workspace = true
+unicode-normalization.workspace = true
 url.workspace = true
 zeph-index.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
 insta.workspace = true

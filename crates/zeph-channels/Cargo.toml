@@ -18,22 +18,23 @@ slack = ["dep:axum", "dep:hmac", "dep:sha2", "dep:subtle"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
+crossterm.workspace = true
 futures = { workspace = true, optional = true }
 hmac = { version = "0.12", optional = true }
 pulldown-cmark.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
-crossterm.workspace = true
-unicode-width.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2 = { version = "0.10", optional = true }
 subtle = { workspace = true, optional = true }
-teloxide.workspace = true
+teloxide = { workspace = true, features = ["rustls", "ctrlc_handler", "macros"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tokio-tungstenite = { workspace = true, optional = true, features = ["connect", "rustls-tls-native-roots"] }
 tracing.workspace = true
+unicode-width.workspace = true
 zeph-core.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [[bench]]
 name = "markdown_performance"

@@ -13,16 +13,17 @@ description = "Cron-based periodic task scheduler with SQLite persistence for Ze
 readme = "README.md"
 
 [dependencies]
-chrono.workspace = true
-cron = "0.15"
+chrono = { workspace = true, features = ["std", "clock"] }
+cron.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
-semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
+semver.workspace = true
+sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

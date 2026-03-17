@@ -13,26 +13,27 @@ description = "Semantic memory with SQLite and Qdrant for Zeph agent"
 readme = "README.md"
 
 [dependencies]
-bytemuck = { workspace = true }
+blake3.workspace = true
+bytemuck.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
 futures.workspace = true
-dashmap = { workspace = true }
-tiktoken-rs = { workspace = true }
 pdf-extract = { workspace = true, optional = true }
 petgraph.workspace = true
-regex = { workspace = true }
 qdrant-client = { workspace = true, features = ["serde"] }
+regex.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
+sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite", "migrate"] }
 thiserror.workspace = true
+tiktoken-rs.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "v5"] }
-blake3.workspace = true
-chrono = { workspace = true }
 zeph-llm.workspace = true
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [features]
 default = []
