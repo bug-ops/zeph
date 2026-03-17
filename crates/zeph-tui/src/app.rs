@@ -295,6 +295,7 @@ impl App {
 
     #[must_use]
     pub fn with_metrics_rx(mut self, rx: watch::Receiver<MetricsSnapshot>) -> Self {
+        self.metrics = rx.borrow().clone();
         self.metrics_rx = Some(rx);
         self
     }
@@ -3326,5 +3327,32 @@ mod tests {
             !output.contains("[1M CTX]"),
             "header must not contain [1M CTX] badge when extended_context is false; got: {output:?}"
         );
+    }
+
+    // R-FIX-1938: with_metrics_rx must eagerly read the initial snapshot so graph counts are
+    // visible immediately without waiting for the first watch::Receiver::has_changed() event.
+    #[test]
+    fn with_metrics_rx_reads_initial_value() {
+        use tokio::sync::watch;
+        use zeph_core::metrics::MetricsSnapshot;
+
+        let (user_tx, agent_rx) = {
+            let (u, _ur) = mpsc::channel(4);
+            let (_at, ar) = mpsc::channel(4);
+            (u, ar)
+        };
+        let mut initial = MetricsSnapshot::default();
+        initial.graph_entities_total = 42;
+        initial.graph_edges_total = 7;
+        initial.graph_communities_total = 3;
+
+        let (tx, rx) = watch::channel(initial);
+        let app = App::new(user_tx, agent_rx).with_metrics_rx(rx);
+
+        assert_eq!(app.metrics.graph_entities_total, 42);
+        assert_eq!(app.metrics.graph_edges_total, 7);
+        assert_eq!(app.metrics.graph_communities_total, 3);
+
+        drop(tx);
     }
 }
