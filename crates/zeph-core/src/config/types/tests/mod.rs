@@ -21,6 +21,21 @@ fn normalize_runtime_paths_for_snapshot(mut toml: String) -> String {
         toml = toml.replace(&actual.replace('\\', "\\\\"), &placeholder);
         toml = toml.replace(&actual, &placeholder);
     }
+
+    // TOML may use single quotes for Windows paths containing backslashes.
+    // After replacement, normalize single-quoted placeholders to double quotes
+    // so snapshots are consistent across platforms.
+    for placeholder in [
+        "<DEFAULT_SKILLS_DIR>",
+        "<DEFAULT_SQLITE_PATH>",
+        "<DEFAULT_DEBUG_DIR>",
+        "<DEFAULT_LOG_FILE>",
+    ] {
+        let single = format!("'{placeholder}'");
+        let double = format!("\"{placeholder}\"");
+        toml = toml.replace(&single, &double);
+    }
+
     toml
 }
 
