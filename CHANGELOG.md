@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(core): `resolve_config_path()` now falls back to `~/.config/zeph/config.toml` when `config/default.toml` is absent relative to CWD (closes #1945) — resolves ACP stdio/HTTP startup failure when launched from an IDE workspace directory; CWD-relative default is still preferred when the file exists (no behavior change for CLI/TUI); each resolution step emits a `tracing::debug!` message with the resolved path and source
 - fix(tui): filter metrics (`filter_raw_tokens`, `filter_saved_tokens`, `filter_applications`) always showed zero in the TUI dashboard when tool execution occurred via the native path (closes #1939)
   - Root cause: two "remaining tools" loops in `native.rs` (self-reflection `Ok(true)` and `Err(e)` branches) discarded `FilterStats` from parallel tool outputs without recording metrics
   - `record_filter_metrics` extracted to `agent/utils.rs` as shared helper; called from all four metric-recording sites (3 native + 1 legacy)
