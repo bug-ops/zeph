@@ -989,7 +989,8 @@ struct ToolChatRequest<'a> {
 #[derive(Serialize)]
 struct StructuredApiMessage {
     role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCallOut>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1083,7 +1084,8 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
                             r#type: "function".to_owned(),
                             function: OpenAiFunctionCall {
                                 name: name.clone(),
-                                arguments: serde_json::to_string(input).unwrap_or_default(),
+                                arguments: serde_json::to_string(input)
+                                    .unwrap_or_else(|_| "{}".to_owned()),
                             },
                         }),
                         _ => None,
@@ -1092,7 +1094,11 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
 
                 result.push(StructuredApiMessage {
                     role: "assistant".to_owned(),
-                    content: text_content,
+                    content: if text_content.is_empty() {
+                        None
+                    } else {
+                        Some(text_content)
+                    },
                     tool_calls: if tool_calls.is_empty() {
                         None
                     } else {
@@ -1111,7 +1117,7 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
                         } => {
                             result.push(StructuredApiMessage {
                                 role: "tool".to_owned(),
-                                content: content.clone(),
+                                content: Some(content.clone()),
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
                             });
@@ -1119,7 +1125,7 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
                         MessagePart::Text { text } if !text.is_empty() => {
                             result.push(StructuredApiMessage {
                                 role: "user".to_owned(),
-                                content: text.clone(),
+                                content: Some(text.clone()),
                                 tool_calls: None,
                                 tool_call_id: None,
                             });
@@ -1136,7 +1142,7 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
             };
             result.push(StructuredApiMessage {
                 role: role.to_owned(),
-                content: msg.to_llm_content().to_owned(),
+                content: Some(msg.to_llm_content().to_owned()),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -1618,7 +1624,7 @@ mod tests {
     fn tool_chat_request_serialization_uses_gpt5_completion_tokens() {
         let msgs = [StructuredApiMessage {
             role: "user".to_owned(),
-            content: "hello".to_owned(),
+            content: Some("hello".to_owned()),
             tool_calls: None,
             tool_call_id: None,
         }];
@@ -2074,8 +2080,30 @@ mod tests {
         let result = convert_messages_structured(&messages);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].role, "user");
-        assert_eq!(result[0].content, "hello");
+        assert_eq!(result[0].content.as_deref(), Some("hello"));
         assert!(result[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn convert_messages_structured_assistant_tool_only_content_is_none() {
+        // When assistant message has tool_calls but no text, content must be None (not "")
+        // OpenAI API rejects "content": "" combined with "tool_calls" with HTTP 400
+        let messages = vec![Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        )];
+        let result = convert_messages_structured(&messages);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "assistant");
+        assert!(
+            result[0].content.is_none(),
+            "content must be None (not \"\") for tool-only assistant messages"
+        );
+        assert!(result[0].tool_calls.is_some());
     }
 
     #[test]
