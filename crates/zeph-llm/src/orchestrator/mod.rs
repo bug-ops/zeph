@@ -9,9 +9,13 @@ pub use router::SubProvider;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+
+/// Default duration a failed provider is skipped before being retried.
+const DEFAULT_FAILURE_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct ModelOrchestrator {
@@ -22,6 +26,10 @@ pub struct ModelOrchestrator {
     status_tx: Option<StatusTx>,
     llm_routing: bool,
     last_used_provider: Arc<Mutex<Option<String>>>,
+    /// Tracks the last failure time per provider name.
+    provider_failures: Arc<Mutex<HashMap<String, Instant>>>,
+    /// How long a failed provider is bypassed before being retried.
+    failure_ttl: Duration,
 }
 
 impl ModelOrchestrator {
@@ -54,12 +62,21 @@ impl ModelOrchestrator {
             status_tx: None,
             llm_routing: false,
             last_used_provider: Arc::new(Mutex::new(None)),
+            provider_failures: Arc::new(Mutex::new(HashMap::new())),
+            failure_ttl: DEFAULT_FAILURE_TTL,
         })
     }
 
     #[must_use]
     pub fn with_llm_routing(mut self, enabled: bool) -> Self {
         self.llm_routing = enabled;
+        self
+    }
+
+    /// Set how long a failed provider is skipped before being retried (default: 300 s).
+    #[must_use]
+    pub fn with_failure_ttl(mut self, secs: u64) -> Self {
+        self.failure_ttl = Duration::from_secs(secs);
         self
     }
 
@@ -121,6 +138,25 @@ impl ModelOrchestrator {
         if let Some(ref tx) = self.status_tx {
             let _ = tx.send(msg.into());
         }
+    }
+
+    /// Returns `true` if the provider has not failed recently (within `failure_ttl`).
+    fn is_provider_healthy(&self, name: &str) -> bool {
+        let failures = self.provider_failures.lock().unwrap();
+        failures
+            .get(name)
+            .is_none_or(|t| t.elapsed() >= self.failure_ttl)
+    }
+
+    fn record_provider_failure(&self, name: &str) {
+        self.provider_failures
+            .lock()
+            .unwrap()
+            .insert(name.to_owned(), Instant::now());
+    }
+
+    fn record_provider_success(&self, name: &str) {
+        self.provider_failures.lock().unwrap().remove(name);
     }
 
     #[must_use]
@@ -201,10 +237,12 @@ impl ModelOrchestrator {
         {
             match provider.chat(messages).await {
                 Ok(response) => {
+                    self.record_provider_success(&selected);
                     *self.last_used_provider.lock().unwrap() = Some(selected.clone());
                     return Ok(response);
                 }
                 Err(e) => {
+                    self.record_provider_failure(&selected);
                     tracing::warn!("LLM-routed provider {selected} failed: {e:#}, falling back");
                 }
             }
@@ -216,30 +254,49 @@ impl ModelOrchestrator {
             .get(&task)
             .or_else(|| self.routes.get(&TaskType::General));
 
+        // Collect candidate names, preferring healthy providers but falling back to all if needed.
+        let candidates: Vec<&String> = if let Some(chain) = chain {
+            let healthy: Vec<&String> = chain
+                .iter()
+                .filter(|n| self.providers.contains_key(*n) && self.is_provider_healthy(n))
+                .collect();
+            if healthy.is_empty() {
+                chain
+                    .iter()
+                    .filter(|n| self.providers.contains_key(*n))
+                    .collect()
+            } else {
+                healthy
+            }
+        } else {
+            vec![]
+        };
+
         let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
 
-        if let Some(chain) = chain {
-            for name in chain {
-                let Some(provider) = self.providers.get(name) else {
-                    continue;
-                };
-                tried.insert(name);
-                match provider.chat(messages).await {
-                    Ok(response) => {
-                        *self.last_used_provider.lock().unwrap() = Some(name.clone());
-                        return Ok(response);
-                    }
-                    Err(e) => {
-                        self.emit_status(format!("Provider {name} failed, trying next..."));
-                        tracing::warn!("provider {name} failed: {e:#}, trying next");
-                        last_error = Some(e);
-                    }
+        for name in candidates {
+            let Some(provider) = self.providers.get(name) else {
+                continue;
+            };
+            tried.insert(name);
+            match provider.chat(messages).await {
+                Ok(response) => {
+                    self.record_provider_success(name);
+                    *self.last_used_provider.lock().unwrap() = Some(name.clone());
+                    return Ok(response);
+                }
+                Err(e) => {
+                    self.record_provider_failure(name);
+                    self.emit_status(format!("Provider {name} failed, trying next..."));
+                    tracing::warn!("provider {name} failed: {e:#}, trying next");
+                    last_error = Some(e);
                 }
             }
         }
 
         if !tried.contains(self.default_provider.as_str())
+            && (self.is_provider_healthy(&self.default_provider) || last_error.is_none())
             && let Some(provider) = self.providers.get(&self.default_provider)
         {
             self.emit_status(format!(
@@ -259,10 +316,14 @@ impl ModelOrchestrator {
             }
             match provider.chat(messages).await {
                 Ok(response) => {
+                    self.record_provider_success(&self.default_provider);
                     *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
                     return Ok(response);
                 }
-                Err(e) => last_error = Some(e),
+                Err(e) => {
+                    self.record_provider_failure(&self.default_provider);
+                    last_error = Some(e);
+                }
             }
         }
 
@@ -351,10 +412,12 @@ impl ModelOrchestrator {
         {
             match provider.chat_stream(messages).await {
                 Ok(stream) => {
+                    self.record_provider_success(&selected);
                     *self.last_used_provider.lock().unwrap() = Some(selected.clone());
                     return Ok(stream);
                 }
                 Err(e) => {
+                    self.record_provider_failure(&selected);
                     tracing::warn!(
                         "LLM-routed provider {selected} stream failed: {e:#}, falling back"
                     );
@@ -368,30 +431,48 @@ impl ModelOrchestrator {
             .get(&task)
             .or_else(|| self.routes.get(&TaskType::General));
 
+        let candidates: Vec<&String> = if let Some(chain) = chain {
+            let healthy: Vec<&String> = chain
+                .iter()
+                .filter(|n| self.providers.contains_key(*n) && self.is_provider_healthy(n))
+                .collect();
+            if healthy.is_empty() {
+                chain
+                    .iter()
+                    .filter(|n| self.providers.contains_key(*n))
+                    .collect()
+            } else {
+                healthy
+            }
+        } else {
+            vec![]
+        };
+
         let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut last_error = None;
 
-        if let Some(chain) = chain {
-            for name in chain {
-                let Some(provider) = self.providers.get(name) else {
-                    continue;
-                };
-                tried.insert(name);
-                match provider.chat_stream(messages).await {
-                    Ok(stream) => {
-                        *self.last_used_provider.lock().unwrap() = Some(name.clone());
-                        return Ok(stream);
-                    }
-                    Err(e) => {
-                        self.emit_status(format!("Provider {name} failed, trying next..."));
-                        tracing::warn!("provider {name} stream failed: {e:#}, trying next");
-                        last_error = Some(e);
-                    }
+        for name in candidates {
+            let Some(provider) = self.providers.get(name) else {
+                continue;
+            };
+            tried.insert(name);
+            match provider.chat_stream(messages).await {
+                Ok(stream) => {
+                    self.record_provider_success(name);
+                    *self.last_used_provider.lock().unwrap() = Some(name.clone());
+                    return Ok(stream);
+                }
+                Err(e) => {
+                    self.record_provider_failure(name);
+                    self.emit_status(format!("Provider {name} failed, trying next..."));
+                    tracing::warn!("provider {name} stream failed: {e:#}, trying next");
+                    last_error = Some(e);
                 }
             }
         }
 
         if !tried.contains(self.default_provider.as_str())
+            && (self.is_provider_healthy(&self.default_provider) || last_error.is_none())
             && let Some(provider) = self.providers.get(&self.default_provider)
         {
             self.emit_status(format!(
@@ -411,10 +492,101 @@ impl ModelOrchestrator {
             }
             match provider.chat_stream(messages).await {
                 Ok(stream) => {
+                    self.record_provider_success(&self.default_provider);
                     *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
                     return Ok(stream);
                 }
-                Err(e) => last_error = Some(e),
+                Err(e) => {
+                    self.record_provider_failure(&self.default_provider);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or(LlmError::NoProviders))
+    }
+
+    async fn chat_with_tools_with_fallback(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        let task = TaskType::classify(messages);
+        let chain = self
+            .routes
+            .get(&task)
+            .or_else(|| self.routes.get(&TaskType::General));
+
+        let candidates: Vec<&String> = if let Some(chain) = chain {
+            let healthy: Vec<&String> = chain
+                .iter()
+                .filter(|n| self.providers.contains_key(*n) && self.is_provider_healthy(n))
+                .collect();
+            if healthy.is_empty() {
+                chain
+                    .iter()
+                    .filter(|n| self.providers.contains_key(*n))
+                    .collect()
+            } else {
+                healthy
+            }
+        } else {
+            vec![]
+        };
+
+        let mut tried: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut last_error = None;
+
+        for name in candidates {
+            let Some(provider) = self.providers.get(name) else {
+                continue;
+            };
+            tried.insert(name);
+            match provider.chat_with_tools(messages, tools).await {
+                Ok(response) => {
+                    self.record_provider_success(name);
+                    *self.last_used_provider.lock().unwrap() = Some(name.clone());
+                    return Ok(response);
+                }
+                Err(e) => {
+                    self.record_provider_failure(name);
+                    self.emit_status(format!("Provider {name} failed, trying next..."));
+                    tracing::warn!("provider {name} chat_with_tools failed: {e:#}, trying next");
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        // Fall back to default provider if not already tried.
+        if !tried.contains(self.default_provider.as_str())
+            && (self.is_provider_healthy(&self.default_provider) || last_error.is_none())
+            && let Some(provider) = self.providers.get(&self.default_provider)
+        {
+            self.emit_status(format!(
+                "Falling back to default provider {}",
+                self.default_provider
+            ));
+            if tried.is_empty() {
+                tracing::debug!(
+                    "no chain configured, routing to default provider {} for chat_with_tools",
+                    self.default_provider
+                );
+            } else {
+                tracing::info!(
+                    "all chain providers failed, falling back to default provider {} for chat_with_tools",
+                    self.default_provider
+                );
+            }
+            match provider.chat_with_tools(messages, tools).await {
+                Ok(response) => {
+                    self.record_provider_success(&self.default_provider);
+                    *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
+                    return Ok(response);
+                }
+                Err(e) => {
+                    self.record_provider_failure(&self.default_provider);
+                    last_error = Some(e);
+                }
             }
         }
 
@@ -468,19 +640,12 @@ impl LlmProvider for ModelOrchestrator {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
-        let provider = self
-            .providers
-            .get(&self.default_provider)
-            .ok_or(LlmError::NoProviders)?;
         tracing::debug!(
             default_provider = %self.default_provider,
             tool_count = tools.len(),
-            provider_supports_tool_use = provider.supports_tool_use(),
-            "orchestrator delegating chat_with_tools"
+            "orchestrator delegating chat_with_tools with fallback"
         );
-        let response = provider.chat_with_tools(messages, tools).await?;
-        *self.last_used_provider.lock().unwrap() = Some(self.default_provider.clone());
-        Ok(response)
+        self.chat_with_tools_with_fallback(messages, tools).await
     }
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
@@ -1495,5 +1660,103 @@ mod tests {
             .await;
         assert!(result.is_ok(), "expected success, got: {result:?}");
         assert_eq!(orch.last_used_provider_name(), "named");
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_falls_back_when_default_fails() {
+        // chat_with_tools must fall back to next chain provider when default is in the chain and fails.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"fallback ok"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        // "bad" provider points to unreachable port.
+        providers.insert(
+            "bad".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://127.0.0.1:1",
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        // "good" provider points to the mock server.
+        providers.insert(
+            "good".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        let mut routes = HashMap::new();
+        routes.insert(TaskType::General, vec!["bad".into(), "good".into()]);
+
+        let orch = ModelOrchestrator::new(routes, providers, "bad".into(), "bad".into()).unwrap();
+        let result = LlmProvider::chat_with_tools(&orch, &user_msg("hi"), &[]).await;
+        assert!(result.is_ok(), "expected fallback success, got: {result:?}");
+        assert_eq!(orch.last_used_provider_name(), "good");
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_skips_recently_failed_provider() {
+        // After a provider fails, it should be skipped immediately on the next request
+        // and the healthy provider used instead.
+        let chat_response = r#"{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"healthy ok"},"done":true,"done_reason":"stop","total_duration":1000000,"load_duration":0,"prompt_eval_count":1,"prompt_eval_duration":0,"eval_count":1,"eval_duration":0}"#;
+        let (port, _handle) = spawn_mock_ollama_server(chat_response).await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "bad".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://127.0.0.1:1",
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        providers.insert(
+            "good".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                &format!("http://127.0.0.1:{port}"),
+                "test".into(),
+                "test".into(),
+            )),
+        );
+        let mut routes = HashMap::new();
+        routes.insert(TaskType::General, vec!["bad".into(), "good".into()]);
+
+        let orch = ModelOrchestrator::new(routes, providers, "bad".into(), "bad".into()).unwrap();
+
+        // First call: "bad" fails, "good" succeeds, failure recorded.
+        let r1 = orch.chat(&user_msg("hello")).await;
+        assert!(r1.is_ok(), "first call should succeed via fallback: {r1:?}");
+        assert_eq!(orch.last_used_provider_name(), "good");
+
+        // Second call: "bad" is in failure map, should be skipped immediately.
+        assert!(
+            !orch.is_provider_healthy("bad"),
+            "bad should be unhealthy after failure"
+        );
+        let r2 = orch.chat(&user_msg("hello again")).await;
+        assert!(
+            r2.is_ok(),
+            "second call should also succeed skipping bad: {r2:?}"
+        );
+        assert_eq!(orch.last_used_provider_name(), "good");
+    }
+
+    #[test]
+    fn with_failure_ttl_sets_duration() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "p".into(),
+            SubProvider::Ollama(OllamaProvider::new(
+                "http://localhost:11434",
+                "m".into(),
+                "e".into(),
+            )),
+        );
+        let orch = ModelOrchestrator::new(HashMap::new(), providers, "p".into(), "p".into())
+            .unwrap()
+            .with_failure_ttl(60);
+        assert_eq!(orch.failure_ttl, std::time::Duration::from_secs(60));
     }
 }

@@ -1311,6 +1311,7 @@ fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> 
         embed: embed_model,
         providers,
         routes,
+        failure_ttl_secs: None,
     })
 }
 

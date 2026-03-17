@@ -516,7 +516,7 @@ impl SemanticMemory {
         context_messages: Vec<String>,
         config: GraphExtractionConfig,
         post_extract_validator: PostExtractValidator,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let pool = self.sqlite.pool().clone();
         let provider = self.provider.clone();
         let failure_counter = self.community_detection_failures.clone();
@@ -653,6 +653,6 @@ impl SemanticMemory {
                     });
                 }
             }
-        });
+        })
     }
 }

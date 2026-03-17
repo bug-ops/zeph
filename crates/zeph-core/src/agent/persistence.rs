@@ -485,12 +485,34 @@ impl<C: Channel> Agent<C> {
                 } else {
                     None
                 };
-            memory.spawn_graph_extraction(
+            let extraction_handle = memory.spawn_graph_extraction(
                 content.to_owned(),
                 context_messages,
                 extraction_cfg,
                 validator,
             );
+            // After the background extraction completes, refresh graph counts in metrics.
+            // This ensures the TUI panel reflects actual DB counts rather than stale zeros.
+            if let (Some(store), Some(tx)) =
+                (memory.graph_store.clone(), self.metrics.metrics_tx.clone())
+            {
+                let start = self.lifecycle.start_time;
+                tokio::spawn(async move {
+                    let _ = extraction_handle.await;
+                    let (entities, edges, communities) = tokio::join!(
+                        store.entity_count(),
+                        store.active_edge_count(),
+                        store.community_count()
+                    );
+                    let elapsed = start.elapsed().as_secs();
+                    tx.send_modify(|m| {
+                        m.uptime_seconds = elapsed;
+                        m.graph_entities_total = entities.unwrap_or(0).cast_unsigned();
+                        m.graph_edges_total = edges.unwrap_or(0).cast_unsigned();
+                        m.graph_communities_total = communities.unwrap_or(0).cast_unsigned();
+                    });
+                });
+            }
         }
         let _ = self.channel.send_status("").await;
         self.sync_community_detection_failures();

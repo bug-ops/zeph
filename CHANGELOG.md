@@ -41,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tui): graph metrics panel now shows correct entity/edge/community counts (closes #1938)
+  - `App::with_metrics_rx()` now eagerly reads the initial `MetricsSnapshot` value so counts are visible immediately on TUI startup, not skipped because `has_changed() = false`
+  - `spawn_graph_extraction()` in `zeph-memory` now returns `JoinHandle<()>`; a follow-up spawn in `persistence.rs` awaits the handle and re-reads graph counts from the DB after extraction completes, replacing the stale-zero read that happened synchronously before the fire-and-forget task finished
 - fix(tui): implement `send_tool_start` in `TuiChannel` — native tool calls now emit a `ToolStart` event so the TUI shows a spinner and `$ command` header before tool output arrives (closes #1931); `handle_tool_output_event` now appends output content when finalizing a streaming tool message
 - fix(tui): graph memory metrics (entities/edges/communities) now update every turn instead of only when graph extraction fires — `sync_graph_counts()` is now called per-turn in `process_user_message_inner` in addition to at startup (closes #1932)
 - fix(context-compression): `extract_task_goal` is now fire-and-forget — spawns a background tokio task and returns immediately; result is applied at the start of the next Soft compaction (#1909). Eliminates the 5-second blocking LLM call on every compaction that made `task_aware`/`mig`/`task_aware_mig` strategies non-functional for cloud LLM providers. Timeout raised from 5s to 30s in the background task. Current compaction uses the cached goal from the previous turn with no latency impact.
