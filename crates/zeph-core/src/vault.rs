@@ -394,8 +394,10 @@ impl VaultProvider for ArcAgeVaultProvider {
     }
 
     fn list_keys(&self) -> Vec<String> {
-        // Blocking read is acceptable here: list_keys is only called at startup.
-        let guard = self.0.blocking_read();
+        // block_in_place is required because list_keys is a sync trait method that may be called
+        // from within a tokio async context (e.g. resolve_secrets). blocking_read() panics there.
+        let arc = Arc::clone(&self.0);
+        let guard = tokio::task::block_in_place(|| arc.blocking_read());
         let mut keys: Vec<String> = guard.list_keys().iter().map(|s| (*s).to_owned()).collect();
         keys.sort_unstable();
         keys
