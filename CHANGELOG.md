@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(tui): filter metrics (`filter_raw_tokens`, `filter_saved_tokens`, `filter_applications`) always showed zero in the TUI dashboard when tool execution occurred via the native path (closes #1939)
+  - Root cause: two "remaining tools" loops in `native.rs` (self-reflection `Ok(true)` and `Err(e)` branches) discarded `FilterStats` from parallel tool outputs without recording metrics
+  - `record_filter_metrics` extracted to `agent/utils.rs` as shared helper; called from all four metric-recording sites (3 native + 1 legacy)
+  - Added two regression tests: normal native path and self-reflection remaining-tools path
+
 ### Added
 
 - test(memory): add integration tests for `store_session_summary` → Qdrant upsert roundtrip (closes #1916) — four `#[ignore]` tests in `crates/zeph-memory/tests/qdrant_integration.rs` using testcontainers: `store_session_summary_roundtrip`, `store_session_summary_multiple_conversations`, `store_shutdown_summary_full_roundtrip`, `search_session_summaries_returns_empty_when_no_data`; each test guards against silent Qdrant disconnection and verifies both the Qdrant vector path and (where applicable) the SQLite content path
