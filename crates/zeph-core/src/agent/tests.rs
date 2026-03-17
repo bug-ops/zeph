@@ -4226,6 +4226,86 @@ mod shutdown_summary_tests {
         );
     }
 
+    // Tests for filter_stats metric propagation (issue #1939).
+    // The normal native tool path (single tool call) must increment filter_* metrics when the
+    // tool returns FilterStats.
+
+    #[tokio::test]
+    async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
+        use crate::metrics::MetricsSnapshot;
+        use tokio::sync::watch;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_tools::executor::{FilterStats, ToolCall, ToolError, ToolExecutor, ToolOutput};
+
+        struct FilteredToolExecutor;
+
+        impl ToolExecutor for FilteredToolExecutor {
+            async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+
+            async fn execute_tool_call(
+                &self,
+                _call: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(Some(ToolOutput {
+                    tool_name: "shell".to_owned(),
+                    summary: "filtered output".to_owned(),
+                    blocks_executed: 1,
+                    filter_stats: Some(FilterStats {
+                        raw_chars: 400,
+                        filtered_chars: 200,
+                        raw_lines: 20,
+                        filtered_lines: 10,
+                        confidence: None,
+                        command: None,
+                        kept_lines: vec![],
+                    }),
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                }))
+            }
+        }
+
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![ToolUseRequest {
+                    id: "call-1".to_owned(),
+                    name: "shell".to_owned(),
+                    input: serde_json::json!({"cmd": "ls"}),
+                }],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".to_owned()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec!["run a tool".to_owned()]);
+        let registry = create_test_registry();
+        let executor = FilteredToolExecutor;
+        let (tx, rx) = watch::channel(MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+        agent.run().await.expect("agent run must succeed");
+
+        let snap: MetricsSnapshot = rx.borrow().clone();
+        assert!(
+            snap.filter_applications > 0,
+            "filter_applications must be > 0"
+        );
+        assert!(snap.filter_raw_tokens > 0, "filter_raw_tokens must be > 0");
+        assert!(
+            snap.filter_saved_tokens > 0,
+            "filter_saved_tokens must be > 0"
+        );
+        assert_eq!(snap.filter_total_commands, 1);
+        assert_eq!(snap.filter_filtered_commands, 1);
+    }
+
     // Regression test for issue #1910: corrections must be stored in user_corrections even when
     // LearningConfig::enabled = false (skill auto-improvement is disabled).
     #[tokio::test]
