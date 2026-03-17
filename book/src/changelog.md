@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-03-17
+
+### Fixed
+
+- **ACP config fallback** (#1945) — `resolve_config_path()` now falls back to `~/.config/zeph/config.toml` when `config/default.toml` is absent relative to CWD; resolves ACP stdio/HTTP startup failure when launched from an IDE workspace directory.
+- **TUI filter metrics zero** (#1939) — filter metrics (`filter_raw_tokens`, `filter_saved_tokens`, `filter_applications`) no longer show zero in the TUI dashboard during native tool execution. Extracted `record_filter_metrics` helper and called from all four metric-recording sites.
+- **Graph metrics initialization** (#1938) — TUI graph metrics panel now shows correct entity/edge/community counts on startup. `App::with_metrics_rx()` eagerly reads the initial snapshot; graph extraction now awaits the background task and re-reads counts.
+- **TUI tool start events** (#1931) — native tool calls now emit `ToolStart` events so the TUI shows a spinner and `$ command` header before tool output arrives.
+- **Graph metrics per-turn update** (#1932) — graph memory metrics (entities/edges/communities) now update every turn via per-turn `sync_graph_counts()` call.
+
+### Added
+
+- **OAuth 2.1 PKCE for MCP** (#1930) — `McpTransport::OAuth` variant with `url`, `scopes`, `callback_port`, `client_name`. `McpManager::with_oauth_credential_store()` for credential persistence via `VaultCredentialStore`. Two-phase `connect_all()`: stdio/HTTP concurrently, OAuth sequentially. SSRF validation on all OAuth metadata endpoints.
+- **Background code indexing progress** (#1923) — `IndexProgress` struct with `files_done`, `files_total`, `chunks_created`. CLI prints progress to stderr; TUI shows "Indexing codebase... N/M files (X%)" in status bar.
+- **Real behavioral learning** (#1913) — `LearningEngine` now injects inferred user preferences (verbosity, response format, language) into the volatile system prompt block. Preferences learned from corrections via watermark-based incremental scan every 5 turns. Wilson-score confidence threshold gates persistence.
+- **Context compression overrides** (#1904) — CLI flags `--focus`/`--no-focus`, `--sidequest`/`--no-sidequest`, `--pruning-strategy <reactive|task_aware|mig|task_aware_mig>` for per-session overrides. `--init` wizard step added.
+- **Orchestration metrics** (#1899) — `LlmPlanner::plan()` and `LlmAggregator::aggregate()` return token usage; `/status` command shows Orchestration block when plans executed.
+- **Memory integration tests** (#1916) — four `#[ignore]` tests for session summary → Qdrant roundtrip using testcontainers.
+
 ## [0.15.2] - 2026-03-16
 
 ### Added

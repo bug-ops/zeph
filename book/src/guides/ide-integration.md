@@ -21,7 +21,7 @@ Expected output:
 ```json
 {
   "name": "zeph",
-  "version": "0.15.0",
+  "version": "0.15.3",
   "transport": "stdio",
   "command": ["zeph", "--acp"],
   "capabilities": ["prompt", "cancel", "load_session", "set_session_mode", "config_options", "ext_methods"],
