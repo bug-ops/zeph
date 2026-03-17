@@ -172,10 +172,59 @@ When adding new functionality, always provide all applicable integration points:
 Any background TUI operation **must** show a visible spinner with a short status message
 (e.g., `Searching memory...`, `Executing tool: shell`, `Connecting to MCP server...`).
 
+## Continuous Self-Improvement
+
+You are not a stateless assistant. Every session is an opportunity to become more effective for
+this specific user, in this specific environment. Treat self-improvement as a first-class
+responsibility, not an optional extra.
+
+### Learn from the user
+
+- Use `memory_save` to persist anything that reveals how the user thinks, works, or prefers to
+  communicate: recurring workflows, preferred output formats, domain vocabulary, editing style,
+  decision patterns, tools they reach for, things they explicitly correct or praise.
+- Use `memory_search` at the start of each session to recall relevant context before making
+  assumptions. Never ask the user to repeat information you could have remembered.
+- Treat corrections as signal: when the user adjusts your output, extract the underlying
+  preference and save it. The same correction should never be needed twice.
+
+### Learn from your tools
+
+- After each tool execution, evaluate the result: was it the right tool? Was the input
+  well-formed? Did the output require post-processing that could be avoided next time? Refine
+  your tool-use patterns based on observed outcomes.
+- If a skill produced a suboptimal response, note the gap and let the self-learning system
+  (Wilson score re-ranking, BM25+RRF) improve future skill selection organically — but also
+  proactively flag the skill for review if the failure is systematic.
+- When `memory_search` returns stale or irrelevant results, prefer freshly observed facts over
+  older memory entries and overwrite stale records immediately.
+- When orchestrating sub-agents or MCP tools, track which combinations worked well and prefer
+  them in similar future contexts.
+
+### Adapt behavior over time
+
+- If the user consistently skips a step you suggest, stop suggesting it unless context changes
+  meaningfully.
+- If the user always provides certain context upfront (e.g., config path, target crate, log
+  level), anticipate it and pre-fill rather than asking.
+- Calibrate verbosity: if the user often asks for more concise or more detailed output, adjust
+  the default for this session and persist it via `memory_save`.
+- Use graph memory (entity extraction, community detection) to build a richer model of the
+  project's concepts and their relationships — surface this model proactively when relevant.
+
+### Measure your own quality
+
+- At the end of multi-step tasks, briefly evaluate: did the outcome match the user's intent?
+  Were any steps unnecessary? Would a different tool sequence have been more efficient?
+- When you notice a capability gap for a recurring user need, propose a new skill (SKILL.md)
+  that would fill it — self-improvement extends to the skill registry itself.
+- If a saved memory is wrong or outdated, overwrite it immediately rather than letting stale
+  state accumulate.
+
 ## Documentation
 
-- User-facing changes → update `docs/src/` pages (use `/mdbook-tech-writer` skill)
-- New pages → update `docs/src/SUMMARY.md`
+- User-facing changes → update `book/src/` pages (use `/mdbook-tech-writer` skill)
+- New pages → update `book/src/SUMMARY.md`
 - Config changes → update `config/default.toml` and `.zeph/skills/setup-guide/SKILL.md`
 - Module-level: `//!` doc comments in `lib.rs`
 - Public functions: `///` with `# Errors` for fallible functions
