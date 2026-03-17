@@ -1,125 +1,125 @@
 # Type labels
 - name: enhancement
-  color: "a2eeef"
+  color: "0ea5e9"
   description: "New feature or request"
 
 - name: bug
-  color: "d73a4a"
+  color: "ef4444"
   description: "Something isn't working"
 
 - name: documentation
-  color: "0075ca"
+  color: "3b82f6"
   description: "Improvements or additions to documentation"
 
 - name: refactor
-  color: "fbca04"
+  color: "f59e0b"
   description: "Code refactoring without functional changes"
 
 - name: performance
-  color: "5319e7"
+  color: "8b5cf6"
   description: "Performance improvements"
 
 - name: chore
-  color: "fef2c0"
+  color: "64748b"
   description: "Maintenance tasks"
 
 - name: build
-  color: "bfdadc"
+  color: "14b8a6"
   description: "Build system or external dependencies"
 
 - name: style
-  color: "c5def5"
+  color: "ec4899"
   description: "Code style/formatting changes"
 
 - name: revert
-  color: "d4c5f9"
+  color: "a78bfa"
   description: "Reverts a previous change"
 
 - name: breaking-change
-  color: "b60205"
+  color: "be123c"
   description: "Introduces breaking changes"
 
 # Technology labels
 - name: rust
-  color: "dea584"
+  color: "ce4a02"
   description: "Rust code changes"
 
 # Component labels
 - name: core
-  color: "e99695"
+  color: "d946ef"
   description: "zeph-core crate"
 
 - name: llm
-  color: "ffd700"
+  color: "6366f1"
   description: "zeph-llm crate (Ollama, Claude)"
 
 - name: skills
-  color: "c5def5"
+  color: "06b6d4"
   description: "zeph-skills crate"
 
 - name: memory
-  color: "0e8a16"
+  color: "10b981"
   description: "zeph-memory crate (SQLite)"
 
 - name: channels
-  color: "1d76db"
+  color: "2563eb"
   description: "zeph-channels crate (Telegram)"
 
 # Category labels
 - name: tests
-  color: "bfd4f2"
+  color: "22c55e"
   description: "Test-related changes"
 
 - name: ci
-  color: "c2e0c6"
+  color: "0284c7"
   description: "CI/CD configuration"
 
 - name: dependencies
-  color: "0366d6"
+  color: "7c3aed"
   description: "Dependency updates"
 
 - name: config
-  color: "ededed"
+  color: "475569"
   description: "Configuration file changes"
 
 # Size labels
 - name: size/XS
-  color: "3cbf00"
+  color: "4ade80"
   description: "Extra small PR (1-10 lines)"
 
 - name: size/S
-  color: "5d9801"
+  color: "a3e635"
   description: "Small PR (11-50 lines)"
 
 - name: size/M
-  color: "7f7203"
+  color: "facc15"
   description: "Medium PR (51-200 lines)"
 
 - name: size/L
-  color: "a14c05"
+  color: "fb923c"
   description: "Large PR (201-500 lines)"
 
 - name: size/XL
-  color: "c32607"
+  color: "f87171"
   description: "Extra large PR (500+ lines)"
 
 # Issue labels
 - name: triage
-  color: "d876e3"
+  color: "e879f9"
   description: "Needs triage"
 
 - name: question
-  color: "d876e3"
+  color: "38bdf8"
   description: "Further information requested"
 
 - name: help wanted
-  color: "008672"
+  color: "059669"
   description: "Extra attention needed"
 
 - name: good first issue
-  color: "7057ff"
+  color: "7c3aed"
   description: "Good for newcomers"
 
 - name: security
-  color: "ee0701"
+  color: "dc2626"
   description: "Security-related issue"
