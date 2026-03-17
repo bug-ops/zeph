@@ -45,7 +45,8 @@ impl QdrantOps {
 
     /// Ensure a collection exists with cosine distance vectors.
     ///
-    /// Idempotent: no-op if the collection already exists.
+    /// If the collection already exists but has a different vector dimension than `vector_size`,
+    /// the collection is deleted and recreated. All existing data in the collection is lost.
     ///
     /// # Errors
     ///
@@ -57,7 +58,20 @@ impl QdrantOps {
             .await
             .map_err(Box::new)?
         {
-            return Ok(());
+            let existing_size = self.get_collection_vector_size(collection).await?;
+            if existing_size == Some(vector_size) {
+                return Ok(());
+            }
+            tracing::warn!(
+                collection,
+                existing = ?existing_size,
+                required = vector_size,
+                "vector dimension mismatch — recreating collection (existing data will be lost)"
+            );
+            self.client
+                .delete_collection(collection)
+                .await
+                .map_err(Box::new)?;
         }
         self.client
             .create_collection(
@@ -67,6 +81,32 @@ impl QdrantOps {
             .await
             .map_err(Box::new)?;
         Ok(())
+    }
+
+    /// Returns the configured vector size of an existing collection, or `None` if it cannot be
+    /// determined (e.g. named-vector collections, or `collection_info` fails gracefully).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on hard Qdrant communication failures.
+    async fn get_collection_vector_size(&self, collection: &str) -> QdrantResult<Option<u64>> {
+        let info = self
+            .client
+            .collection_info(collection)
+            .await
+            .map_err(Box::new)?;
+        let size = info
+            .result
+            .and_then(|r| r.config)
+            .and_then(|cfg| cfg.params)
+            .and_then(|params| params.vectors_config)
+            .and_then(|vc| vc.config)
+            .and_then(|cfg| match cfg {
+                qdrant_client::qdrant::vectors_config::Config::Params(vp) => Some(vp.size),
+                // Named-vector collections are not supported here; treat as unknown.
+                qdrant_client::qdrant::vectors_config::Config::ParamsMap(_) => None,
+            });
+        Ok(size)
     }
 
     /// Check whether a collection exists.
@@ -203,7 +243,8 @@ impl QdrantOps {
     /// Create a collection with scalar INT8 quantization if it does not exist,
     /// then create keyword indexes for the given fields.
     ///
-    /// Idempotent: no-op if the collection already exists.
+    /// If the collection already exists but has a different vector dimension than `vector_size`,
+    /// the collection is deleted and recreated. All existing data in the collection is lost.
     ///
     /// # Errors
     ///
@@ -223,7 +264,23 @@ impl QdrantOps {
             .await
             .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?
         {
-            return Ok(());
+            let existing_size = self
+                .get_collection_vector_size(collection)
+                .await
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+            if existing_size == Some(vector_size) {
+                return Ok(());
+            }
+            tracing::warn!(
+                collection,
+                existing = ?existing_size,
+                required = vector_size,
+                "vector dimension mismatch — recreating collection (existing data will be lost)"
+            );
+            self.client
+                .delete_collection(collection)
+                .await
+                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
         }
         self.client
             .create_collection(
@@ -549,5 +606,86 @@ mod tests {
         // Empty ID list must short-circuit and return Ok without hitting Qdrant.
         let result = ops.delete_by_ids("nonexistent_collection", vec![]).await;
         assert!(result.is_ok());
+    }
+
+    /// Requires a live Qdrant instance at localhost:6334.
+    #[tokio::test]
+    #[ignore = "requires a live Qdrant instance at localhost:6334"]
+    async fn ensure_collection_idempotent_same_size() {
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let collection = "test_ensure_idempotent";
+
+        let _ = ops.delete_collection(collection).await;
+
+        ops.ensure_collection(collection, 128).await.unwrap();
+        assert!(ops.collection_exists(collection).await.unwrap());
+
+        // Second call with same size must be a no-op.
+        ops.ensure_collection(collection, 128).await.unwrap();
+        assert!(ops.collection_exists(collection).await.unwrap());
+
+        ops.delete_collection(collection).await.unwrap();
+    }
+
+    /// Requires a live Qdrant instance at localhost:6334.
+    ///
+    /// Verifies that `ensure_collection` detects a vector dimension mismatch and
+    /// recreates the collection instead of silently reusing the wrong-dimension one.
+    #[tokio::test]
+    #[ignore = "requires a live Qdrant instance at localhost:6334"]
+    async fn ensure_collection_recreates_on_dimension_mismatch() {
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let collection = "test_dim_mismatch";
+
+        let _ = ops.delete_collection(collection).await;
+
+        // Create with 128 dims.
+        ops.ensure_collection(collection, 128).await.unwrap();
+        assert_eq!(
+            ops.get_collection_vector_size(collection).await.unwrap(),
+            Some(128)
+        );
+
+        // Call again with a different size — must recreate.
+        ops.ensure_collection(collection, 256).await.unwrap();
+        assert_eq!(
+            ops.get_collection_vector_size(collection).await.unwrap(),
+            Some(256),
+            "collection must have been recreated with the new dimension"
+        );
+
+        ops.delete_collection(collection).await.unwrap();
+    }
+
+    /// Requires a live Qdrant instance at localhost:6334.
+    ///
+    /// Verifies that `ensure_collection_with_quantization` also detects dimension mismatch.
+    #[tokio::test]
+    #[ignore = "requires a live Qdrant instance at localhost:6334"]
+    async fn ensure_collection_with_quantization_recreates_on_dimension_mismatch() {
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let collection = "test_quant_dim_mismatch";
+
+        let _ = ops.delete_collection(collection).await;
+
+        ops.ensure_collection_with_quantization(collection, 128, &["language"])
+            .await
+            .unwrap();
+        assert_eq!(
+            ops.get_collection_vector_size(collection).await.unwrap(),
+            Some(128)
+        );
+
+        // Call again with a different size — must recreate.
+        ops.ensure_collection_with_quantization(collection, 384, &["language"])
+            .await
+            .unwrap();
+        assert_eq!(
+            ops.get_collection_vector_size(collection).await.unwrap(),
+            Some(384),
+            "collection must have been recreated with the new dimension"
+        );
+
+        ops.delete_collection(collection).await.unwrap();
     }
 }

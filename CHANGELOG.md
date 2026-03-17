@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Fixed tool `arguments` JSON fallback: `unwrap_or_default()` → `unwrap_or_else(|_| "{}".to_owned())`
   - Added regression test: `convert_messages_structured_assistant_tool_only_content_is_none`
   - Error was intermittent because it only manifested when prior assistant turns had tool_calls without text and survived compression cycles
+- fix(memory): `QdrantOps::ensure_collection` and `ensure_collection_with_quantization` now detect
+  vector dimension mismatches on existing collections and automatically recreate them instead of
+  silently returning `Ok(())` with stale dimensions (closes #1951)
+  - Affects all Qdrant-backed collections: `zeph_conversations`, `zeph_session_summaries`,
+    `zeph_key_facts`, `zeph_corrections`, `zeph_graph_entities`, and code-index collections
+  - Logs a `WARN`-level message with collection name, existing and required dimensions before
+    recreating; data loss is expected and intentional when the embedding model changes
+  - Added four `#[ignore]` integration tests covering idempotency (same size) and recreation
+    (mismatched size) for both `ensure_collection` and `ensure_collection_with_quantization`
 
 ## [0.15.3] - 2026-03-17
 
