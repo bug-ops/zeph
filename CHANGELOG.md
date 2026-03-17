@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(llm): OpenAI API 400 Bad Request on skill documentation queries (closes #1952)
+  - Root cause: `StructuredApiMessage.content` was `String` instead of `Option<String>`. When LLM called tools without preceding text, empty string `""` was serialized alongside `tool_calls`, but OpenAI API requires `null` (or absent) for messages with `tool_calls`
+  - Changed `content: String` → `content: Option<String>` with `#[serde(skip_serializing_if = "Option::is_none")]`
+  - Updated `convert_messages_structured` to emit `None` when text content is empty
+  - Fixed tool `arguments` JSON fallback: `unwrap_or_default()` → `unwrap_or_else(|_| "{}".to_owned())`
+  - All StructuredApiMessage creation sites updated to wrap content in Some()
+  - Added regression test: `convert_messages_structured_assistant_tool_only_content_is_none`
+  - Enhanced test coverage: explicit content assertions in `convert_messages_structured_with_tool_parts` to catch regressions on Windows and other platforms
+  - Error was intermittent because it only manifested when prior assistant turns had tool_calls without text and survived compression cycles
+
 ## [0.15.3] - 2026-03-17
 
 ### Fixed
