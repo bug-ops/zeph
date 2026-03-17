@@ -458,6 +458,10 @@ pub struct OrchestratorConfig {
     pub providers: std::collections::HashMap<String, OrchestratorProviderConfig>,
     #[serde(default)]
     pub routes: std::collections::HashMap<String, Vec<String>>,
+    /// How long (in seconds) a failed provider is bypassed before being retried.
+    /// Defaults to 300 seconds (5 minutes) when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
