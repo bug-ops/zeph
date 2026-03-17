@@ -7,13 +7,95 @@ use crate::bootstrap::VaultArgs;
 use crate::config::Config;
 
 pub fn resolve_config_path(cli_override: Option<&Path>) -> PathBuf {
+    let cwd_default = Path::new("config/default.toml");
+    resolve_config_path_impl(
+        cli_override,
+        |name| std::env::var(name).ok(),
+        cwd_default.exists(),
+    )
+}
+
+fn resolve_config_path_impl(
+    cli_override: Option<&Path>,
+    get_env: impl Fn(&str) -> Option<String>,
+    cwd_default_exists: bool,
+) -> PathBuf {
     if let Some(path) = cli_override {
+        tracing::debug!("config resolved via CLI flag: {}", path.display());
         return path.to_owned();
     }
-    if let Ok(path) = std::env::var("ZEPH_CONFIG") {
-        return PathBuf::from(path);
+    if let Some(val) = get_env("ZEPH_CONFIG") {
+        let path = PathBuf::from(&val);
+        tracing::debug!(
+            "config resolved via ZEPH_CONFIG env var: {}",
+            path.display()
+        );
+        return path;
     }
-    PathBuf::from("config/default.toml")
+    if cwd_default_exists {
+        tracing::debug!("config resolved via CWD default: config/default.toml");
+        return PathBuf::from("config/default.toml");
+    }
+    let xdg = dirs::config_dir()
+        .unwrap_or_else(|| {
+            get_env("HOME")
+                .map_or_else(|| PathBuf::from("~"), PathBuf::from)
+                .join(".config")
+        })
+        .join("zeph")
+        .join("config.toml");
+    tracing::debug!("config resolved via XDG fallback: {}", xdg.display());
+    xdg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn cli_override_takes_precedence() {
+        let path = Path::new("/custom/config.toml");
+        let result = resolve_config_path_impl(Some(path), no_env, false);
+        assert_eq!(result, PathBuf::from("/custom/config.toml"));
+    }
+
+    #[test]
+    fn env_var_used_when_no_cli() {
+        let result = resolve_config_path_impl(
+            None,
+            |name| {
+                if name == "ZEPH_CONFIG" {
+                    Some("/env/config.toml".to_owned())
+                } else {
+                    None
+                }
+            },
+            false,
+        );
+        assert_eq!(result, PathBuf::from("/env/config.toml"));
+    }
+
+    #[test]
+    fn cwd_default_returned_when_exists() {
+        let result = resolve_config_path_impl(None, no_env, true);
+        assert_eq!(result, PathBuf::from("config/default.toml"));
+    }
+
+    #[test]
+    fn xdg_fallback_path_constructed() {
+        // dirs::config_dir() reads the real environment (HOME / XDG_CONFIG_HOME).
+        // We only assert the path ends with the expected platform-independent suffix.
+        let result = resolve_config_path_impl(None, no_env, false);
+        assert!(
+            result.ends_with("zeph/config.toml"),
+            "unexpected path: {}",
+            result.display()
+        );
+    }
 }
 
 /// Priority: CLI flag > `ZEPH_VAULT_*` env > config.vault.* > defaults
