@@ -354,7 +354,7 @@ show_source_labels = false
 [acp]
 enabled = false
 agent_name = "zeph"
-agent_version = "0.15.2"
+agent_version = "0.15.3"
 max_sessions = 4
 session_idle_timeout_secs = 1800
 broadcast_capacity = 256
