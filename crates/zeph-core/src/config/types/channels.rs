@@ -39,6 +39,14 @@ fn default_mcp_timeout() -> u64 {
     30
 }
 
+fn default_oauth_callback_port() -> u16 {
+    18766
+}
+
+fn default_oauth_client_name() -> String {
+    "Zeph".into()
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
     pub token: Option<String>,
@@ -192,12 +200,68 @@ pub struct McpServerConfig {
     /// Optional declarative policy for this server (allowlist, denylist, rate limit).
     #[serde(default)]
     pub policy: zeph_mcp::McpPolicy,
+    /// Static HTTP headers for the transport (e.g. `Authorization: Bearer <token>`).
+    /// Values support vault references: `${VAULT_KEY}`.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// OAuth 2.1 configuration for this server.
+    #[serde(default)]
+    pub oauth: Option<McpOAuthConfig>,
+}
+
+/// OAuth 2.1 configuration for an MCP server.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpOAuthConfig {
+    /// Enable OAuth 2.1 for this server.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Token storage backend.
+    #[serde(default)]
+    pub token_storage: OAuthTokenStorage,
+    /// OAuth scopes to request. Empty = server default.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// Port for the local callback server. `0` = auto-assign, `18766` = default fixed port.
+    #[serde(default = "default_oauth_callback_port")]
+    pub callback_port: u16,
+    /// Client name sent during dynamic registration.
+    #[serde(default = "default_oauth_client_name")]
+    pub client_name: String,
+}
+
+impl Default for McpOAuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token_storage: OAuthTokenStorage::default(),
+            scopes: Vec::new(),
+            callback_port: default_oauth_callback_port(),
+            client_name: default_oauth_client_name(),
+        }
+    }
+}
+
+/// Where OAuth tokens are stored.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OAuthTokenStorage {
+    /// Persisted in the age vault (default).
+    #[default]
+    Vault,
+    /// In-memory only — tokens lost on restart.
+    Memory,
 }
 
 impl std::fmt::Debug for McpServerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted: HashMap<&str, &str> = self
+        let redacted_env: HashMap<&str, &str> = self
             .env
+            .keys()
+            .map(|k| (k.as_str(), "[REDACTED]"))
+            .collect();
+        // Redact header values to avoid leaking tokens in logs.
+        let redacted_headers: HashMap<&str, &str> = self
+            .headers
             .keys()
             .map(|k| (k.as_str(), "[REDACTED]"))
             .collect();
@@ -205,10 +269,12 @@ impl std::fmt::Debug for McpServerConfig {
             .field("id", &self.id)
             .field("command", &self.command)
             .field("args", &self.args)
-            .field("env", &redacted)
+            .field("env", &redacted_env)
             .field("url", &self.url)
             .field("timeout", &self.timeout)
             .field("policy", &self.policy)
+            .field("headers", &redacted_headers)
+            .field("oauth", &self.oauth)
             .finish()
     }
 }

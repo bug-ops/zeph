@@ -1,16 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use http::{HeaderName, HeaderValue};
 use rmcp::ClientHandler;
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
+use rmcp::transport::auth::{
+    AuthClient, AuthError, CredentialStore, InMemoryStateStore, OAuthState, StoredCredentials,
+};
+use rmcp::transport::streamable_http_client::{
+    StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
@@ -22,6 +29,25 @@ use crate::tool::McpTool;
 
 /// Minimum interval between tool list refreshes per server (rate limiting).
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Newtype wrapper so an `Arc<dyn CredentialStore>` satisfies the `CredentialStore + 'static`
+/// bound required by `AuthorizationManager::set_credential_store`.
+struct ArcCredentialStore(Arc<dyn CredentialStore>);
+
+#[async_trait::async_trait]
+impl CredentialStore for ArcCredentialStore {
+    async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
+        self.0.load().await
+    }
+
+    async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
+        self.0.save(credentials).await
+    }
+
+    async fn clear(&self) -> Result<(), AuthError> {
+        self.0.clear().await
+    }
+}
 
 /// Maximum number of tools accepted from a single server on refresh.
 const MAX_TOOLS_PER_SERVER: usize = 100;
@@ -142,6 +168,33 @@ impl ClientHandler for ToolListChangedHandler {
     }
 }
 
+/// Result of an OAuth connection attempt.
+pub enum OAuthConnectResult {
+    /// Connection established using cached or freshly obtained tokens.
+    Connected(McpClient),
+    /// User authorization required. The caller must present `auth_url` to the user
+    /// and then call `McpClient::complete_oauth` with the callback parameters.
+    AuthorizationRequired(Box<OAuthPending>),
+}
+
+/// Pending OAuth state: listener is already bound, state machine is in Session state.
+///
+/// Not `Clone`. Must be consumed in the same task via `McpClient::complete_oauth`.
+pub struct OAuthPending {
+    pub server_id: String,
+    pub auth_url: String,
+    /// Pre-bound callback listener. Taken out by the caller before `complete_oauth`.
+    pub listener: Option<tokio::net::TcpListener>,
+    pub actual_port: u16,
+    /// `OAuthState` in Session state, ready for `handle_callback()`.
+    pub oauth_state: OAuthState,
+    /// Original MCP server URL (needed to rebuild transport after auth).
+    pub url: String,
+    pub timeout: Duration,
+    pub tx: UnboundedSender<ToolRefreshEvent>,
+    pub last_refresh: Arc<DashMap<String, Instant>>,
+}
+
 type ClientService = RunningService<rmcp::RoleClient, ToolListChangedHandler>;
 
 pub struct McpClient {
@@ -260,6 +313,265 @@ impl McpClient {
         })
     }
 
+    /// Connect with static custom headers (Mode A).
+    ///
+    /// Headers are injected into every HTTP request. Values must be pre-resolved
+    /// (no vault references — callers must resolve them before building the transport).
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::SsrfBlocked` if the URL resolves to a private IP (unless `trusted`),
+    /// or `McpError::Connection` if the handshake fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_url_with_headers(
+        server_id: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        timeout: Duration,
+        trusted: bool,
+        tx: UnboundedSender<ToolRefreshEvent>,
+        last_refresh: Arc<DashMap<String, Instant>>,
+    ) -> Result<Self, McpError> {
+        if !trusted {
+            validate_url_ssrf(url).await?;
+        }
+
+        let custom_headers: HashMap<HeaderName, HeaderValue> = headers
+            .iter()
+            .filter_map(|(k, v)| {
+                let name = HeaderName::from_bytes(k.as_bytes()).ok().or_else(|| {
+                    tracing::warn!(
+                        server_id,
+                        header_name = k,
+                        "invalid header name — dropping from request"
+                    );
+                    None
+                })?;
+                let value = HeaderValue::from_str(v).ok().or_else(|| {
+                    tracing::warn!(
+                        server_id,
+                        header_name = k,
+                        "invalid header value — dropping from request"
+                    );
+                    None
+                })?;
+                Some((name, value))
+            })
+            .collect();
+
+        let config =
+            StreamableHttpClientTransportConfig::with_uri(url).custom_headers(custom_headers);
+        let transport =
+            StreamableHttpClientTransport::with_client(reqwest::Client::default(), config);
+
+        let handler = ToolListChangedHandler::new(server_id, tx, last_refresh);
+        let service = handler
+            .serve(transport)
+            .await
+            .map_err(|e| McpError::Connection {
+                server_id: server_id.into(),
+                message: e.to_string(),
+            })?;
+
+        Ok(Self {
+            server_id: server_id.into(),
+            service: Arc::new(service),
+            timeout,
+        })
+    }
+
+    /// Attempt OAuth 2.1 connection (Mode B).
+    ///
+    /// Returns `OAuthConnectResult::Connected` if cached tokens are valid and the
+    /// MCP handshake succeeds without user interaction.
+    ///
+    /// Returns `OAuthConnectResult::AuthorizationRequired` if the user must open
+    /// the authorization URL in a browser. The caller must then call
+    /// [`McpClient::complete_oauth`] after receiving the callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::OAuthError` on metadata discovery, SSRF, or authorization failures.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_url_oauth(
+        server_id: &str,
+        url: &str,
+        scopes: &[String],
+        callback_port: u16,
+        client_name: &str,
+        credential_store: Arc<dyn CredentialStore>,
+        trusted: bool,
+        tx: UnboundedSender<ToolRefreshEvent>,
+        last_refresh: Arc<DashMap<String, Instant>>,
+        timeout: Duration,
+    ) -> Result<OAuthConnectResult, McpError> {
+        if !trusted {
+            validate_url_ssrf(url).await?;
+        }
+
+        // Step 1: create OAuthState
+        let mut state = OAuthState::new(url, None)
+            .await
+            .map_err(|e| McpError::OAuthError {
+                server_id: server_id.into(),
+                message: e.to_string(),
+            })?;
+
+        // Step 2: configure stores and check for cached tokens.
+        // Uses a flag to avoid borrowing `state` across the authorization manager consumption.
+        let has_cached_tokens = if let OAuthState::Unauthorized(ref mut manager) = state {
+            manager.set_credential_store(ArcCredentialStore(credential_store));
+            manager.set_state_store(InMemoryStateStore::new());
+            manager.initialize_from_store().await.unwrap_or(false)
+        } else {
+            false
+        };
+
+        // Step 3: if cached tokens available, connect immediately without user interaction.
+        // `initialize_from_store()` configures the manager but leaves `OAuthState` in
+        // `Unauthorized`. Extract the manager directly from that variant — it is fully
+        // configured with metadata, client_id, and a credential store that holds tokens.
+        if has_cached_tokens {
+            let OAuthState::Unauthorized(manager) = state else {
+                return Err(McpError::OAuthError {
+                    server_id: server_id.into(),
+                    message: "unexpected state after initialize_from_store".into(),
+                });
+            };
+
+            let auth_client: AuthClient<reqwest::Client> =
+                AuthClient::new(reqwest::Client::default(), manager);
+            let config = StreamableHttpClientTransportConfig::with_uri(url);
+            let transport = StreamableHttpClientTransport::with_client(auth_client, config);
+
+            let handler = ToolListChangedHandler::new(server_id, tx, last_refresh);
+            let service = handler
+                .serve(transport)
+                .await
+                .map_err(|e| McpError::Connection {
+                    server_id: server_id.into(),
+                    message: e.to_string(),
+                })?;
+
+            return Ok(OAuthConnectResult::Connected(McpClient {
+                server_id: server_id.into(),
+                service: Arc::new(service),
+                timeout,
+            }));
+        }
+
+        // Step 4: bind callback server before client registration to get actual port
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{callback_port}"))
+            .await
+            .map_err(|e| McpError::OAuthError {
+                server_id: server_id.into(),
+                message: format!("callback server bind failed: {e}"),
+            })?;
+        let actual_port = listener
+            .local_addr()
+            .map_err(|e| McpError::OAuthError {
+                server_id: server_id.into(),
+                message: format!("failed to get listener address: {e}"),
+            })?
+            .port();
+        let redirect_uri = format!("http://127.0.0.1:{actual_port}/callback");
+
+        // Step 5: discover metadata and validate endpoints
+        if let OAuthState::Unauthorized(ref manager) = state {
+            let metadata = manager
+                .discover_metadata()
+                .await
+                .map_err(|e| McpError::OAuthError {
+                    server_id: server_id.into(),
+                    message: format!("metadata discovery failed: {e}"),
+                })?;
+
+            crate::oauth::validate_oauth_metadata_urls(server_id, &metadata).await?;
+        }
+
+        // Step 6: start authorization
+        let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
+        state
+            .start_authorization(&scope_refs, &redirect_uri, Some(client_name))
+            .await
+            .map_err(|e| McpError::OAuthError {
+                server_id: server_id.into(),
+                message: format!("authorization start failed: {e}"),
+            })?;
+
+        let auth_url = state
+            .get_authorization_url()
+            .await
+            .map_err(|e| McpError::OAuthError {
+                server_id: server_id.into(),
+                message: format!("get auth URL failed: {e}"),
+            })?;
+
+        Ok(OAuthConnectResult::AuthorizationRequired(Box::new(
+            OAuthPending {
+                server_id: server_id.into(),
+                auth_url,
+                listener: Some(listener),
+                actual_port,
+                oauth_state: state,
+                url: url.into(),
+                timeout,
+                tx,
+                last_refresh,
+            },
+        )))
+    }
+
+    /// Complete an OAuth flow after receiving the callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::OAuthError` if token exchange fails or the connection
+    /// cannot be established.
+    pub async fn complete_oauth(
+        mut pending: OAuthPending,
+        code: &str,
+        csrf_token: &str,
+    ) -> Result<Self, McpError> {
+        pending
+            .oauth_state
+            .handle_callback(code, csrf_token)
+            .await
+            .map_err(|e| McpError::OAuthError {
+                server_id: pending.server_id.clone(),
+                message: format!("token exchange failed: {e}"),
+            })?;
+
+        let manager = pending
+            .oauth_state
+            .into_authorization_manager()
+            .ok_or_else(|| McpError::OAuthError {
+                server_id: pending.server_id.clone(),
+                message: "unexpected state after handle_callback".into(),
+            })?;
+
+        let auth_client: AuthClient<reqwest::Client> =
+            AuthClient::new(reqwest::Client::default(), manager);
+        let config = StreamableHttpClientTransportConfig::with_uri(pending.url.as_str());
+        let transport = StreamableHttpClientTransport::with_client(auth_client, config);
+
+        let handler =
+            ToolListChangedHandler::new(&pending.server_id, pending.tx, pending.last_refresh);
+        let service = handler
+            .serve(transport)
+            .await
+            .map_err(|e| McpError::Connection {
+                server_id: pending.server_id.clone(),
+                message: e.to_string(),
+            })?;
+
+        Ok(McpClient {
+            server_id: pending.server_id,
+            service: Arc::new(service),
+            timeout: pending.timeout,
+        })
+    }
+
     /// Call tools/list, convert to `McpTool` vec.
     ///
     /// # Errors
@@ -338,7 +650,7 @@ impl McpClient {
     }
 }
 
-async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
+pub(crate) async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
     let parsed = Url::parse(url).map_err(|e| McpError::InvalidUrl {
         url: url.into(),
         message: e.to_string(),

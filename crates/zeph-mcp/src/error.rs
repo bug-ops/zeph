@@ -58,6 +58,15 @@ pub enum McpError {
 
     #[error("policy violation: {0}")]
     PolicyViolation(String),
+
+    #[error("OAuth error for server '{server_id}': {message}")]
+    OAuthError { server_id: String, message: String },
+
+    #[error("OAuth callback timed out for server '{server_id}' after {timeout_secs}s")]
+    OAuthCallbackTimeout {
+        server_id: String,
+        timeout_secs: u64,
+    },
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ pub mod client;
 pub mod error;
 pub mod executor;
 pub mod manager;
+pub mod oauth;
 pub mod policy;
 pub mod prompt;
 pub mod registry;
@@ -22,7 +23,7 @@ pub mod testing;
 pub mod mock;
 
 pub use caller::McpCaller;
-pub use client::ToolRefreshEvent;
+pub use client::{OAuthConnectResult, OAuthPending, ToolRefreshEvent};
 pub use error::McpError;
 pub use executor::McpToolExecutor;
 pub use manager::{McpManager, McpTransport, ServerEntry};

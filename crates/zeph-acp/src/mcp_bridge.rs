@@ -41,6 +41,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                 id: http.name.clone(),
                 transport: McpTransport::Http {
                     url: http.url.clone(),
+                    headers: std::collections::HashMap::new(),
                 },
                 timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                 trusted: false,
@@ -52,6 +53,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     id: sse.name.clone(),
                     transport: McpTransport::Http {
                         url: sse.url.clone(),
+                        headers: std::collections::HashMap::new(),
                     },
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                     trusted: false,
@@ -100,7 +102,7 @@ mod tests {
             "http://example.com:8080/mcp",
         ))];
         let entries = acp_mcp_servers_to_entries(&servers);
-        if let McpTransport::Http { url } = &entries[0].transport {
+        if let McpTransport::Http { url, .. } = &entries[0].transport {
             assert_eq!(url, "http://example.com:8080/mcp");
         } else {
             panic!("expected Http transport");
@@ -146,7 +148,7 @@ mod tests {
             "http://example.com/sse",
         ))];
         let entries = acp_mcp_servers_to_entries(&servers);
-        if let McpTransport::Http { url } = &entries[0].transport {
+        if let McpTransport::Http { url, .. } = &entries[0].transport {
             assert_eq!(url, "http://example.com/sse");
         } else {
             panic!("expected Http transport");

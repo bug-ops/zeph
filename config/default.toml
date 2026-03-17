@@ -323,11 +323,32 @@ max_dynamic_servers = 10
 # env = {}                      # environment variables for the child process
 # timeout = 30
 
-# HTTP transport (remote MCP server, e.g. Docker container):
+# HTTP transport with static auth header (Mode A — static Bearer token):
+# Store the token in the vault: `zeph vault set TODOIST_API_TOKEN <value>`
+# [[mcp.servers]]
+# id = "todoist"
+# url = "https://api.todoist.com/mcp"
+# timeout = 30
+# [mcp.servers.headers]
+# Authorization = "Bearer ${TODOIST_API_TOKEN}"   # resolved from vault at startup
+
+# HTTP transport (no auth, e.g. Docker container):
 # [[mcp.servers]]
 # id = "remote-tools"
 # url = "http://localhost:3001/mcp"
 # timeout = 30
+
+# OAuth 2.1 transport (Mode B — interactive authorization flow):
+# [[mcp.servers]]
+# id = "my-oauth-server"
+# url = "https://mcp.example.com"
+# timeout = 60
+# [mcp.servers.oauth]
+# enabled = true
+# token_storage = "vault"    # "vault" (persist across sessions) or "memory" (re-auth on restart)
+# scopes = []                # request specific OAuth scopes, or leave empty for defaults
+# callback_port = 18766      # localhost port for the OAuth redirect; 0 = auto-assign
+# client_name = "Zeph"       # client name shown in authorization consent screen
 
 # LSP code intelligence via mcpls (https://github.com/bug-ops/mcpls)
 # Install: cargo install mcpls

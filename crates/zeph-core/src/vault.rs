@@ -371,6 +371,37 @@ impl VaultProvider for EnvVaultProvider {
     }
 }
 
+/// `VaultProvider` wrapper around `Arc<RwLock<AgeVaultProvider>>`.
+///
+/// Allows the age vault `Arc` to be stored as `Box<dyn VaultProvider>` while the
+/// underlying `Arc<RwLock<AgeVaultProvider>>` is separately held for OAuth credential
+/// persistence via `VaultCredentialStore`.
+pub struct ArcAgeVaultProvider(pub Arc<tokio::sync::RwLock<AgeVaultProvider>>);
+
+use std::sync::Arc;
+
+impl VaultProvider for ArcAgeVaultProvider {
+    fn get_secret(
+        &self,
+        key: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
+        let arc = Arc::clone(&self.0);
+        let key = key.to_owned();
+        Box::pin(async move {
+            let guard = arc.read().await;
+            Ok(guard.get(&key).map(str::to_owned))
+        })
+    }
+
+    fn list_keys(&self) -> Vec<String> {
+        // Blocking read is acceptable here: list_keys is only called at startup.
+        let guard = self.0.blocking_read();
+        let mut keys: Vec<String> = guard.list_keys().iter().map(|s| (*s).to_owned()).collect();
+        keys.sort_unstable();
+        keys
+    }
+}
+
 /// Test helper with BTreeMap-based secret storage.
 #[cfg(test)]
 #[derive(Default)]

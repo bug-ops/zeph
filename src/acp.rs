@@ -285,7 +285,11 @@ async fn build_acp_deps(
             .collect(),
     );
     let mcp_manager = prebuilt_mcp_manager.unwrap_or_else(|| {
-        std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config, false))
+        std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager_with_vault(
+            config,
+            false,
+            app.age_vault_arc(),
+        ))
     });
     let mcp_tools = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
@@ -1099,8 +1103,14 @@ pub(crate) async fn run_acp_server(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    let (mut deps, _keepalive) =
-        build_acp_deps(config_path, vault_backend, vault_key, vault_path, None).await?;
+    let (mut deps, _keepalive) = Box::pin(build_acp_deps(
+        config_path,
+        vault_backend,
+        vault_key,
+        vault_path,
+        None,
+    ))
+    .await?;
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
     warm_model_caches(provider, available_models).await;
@@ -1164,9 +1174,10 @@ pub(crate) async fn run_acp_http_server(
 
     // CLI flag overrides config/env values for auth token.
     let auth_bearer_token = auth_token_override.or(app.config().acp.auth_token.clone());
-    let mcp_manager_for_acp = Arc::new(zeph_core::bootstrap::create_mcp_manager(
+    let mcp_manager_for_acp = Arc::new(zeph_core::bootstrap::create_mcp_manager_with_vault(
         app.config(),
         false,
+        app.age_vault_arc(),
     ));
     let server_config = zeph_acp::AcpServerConfig {
         agent_name: app.config().acp.agent_name.clone(),
@@ -1217,13 +1228,13 @@ pub(crate) async fn run_acp_http_server(
     tracing::info!("ACP HTTP server listening on {bind_addr}");
     let server_task = tokio::spawn(async move { ::axum::serve(listener, router).await });
 
-    let (deps, _keepalive) = match build_acp_deps(
+    let (deps, _keepalive) = match Box::pin(build_acp_deps(
         config_path,
         vault_backend,
         vault_key,
         vault_path,
         Some(mcp_manager_for_acp),
-    )
+    ))
     .await
     {
         Ok(result) => result,

@@ -1477,6 +1477,8 @@ fn mcp_server_config_debug_redacts_env() {
         args: vec![],
         env: HashMap::from([("SECRET".into(), "super-secret".into())]),
         url: None,
+        headers: HashMap::new(),
+        oauth: None,
         timeout: 30,
         policy: Default::default(),
     };
@@ -3155,4 +3157,87 @@ history_limit = 50
     assert!(gemini.thinking_level.is_none());
     assert!(gemini.thinking_budget.is_none());
     assert!(gemini.include_thoughts.is_none());
+}
+
+// TC-01: McpOAuthConfig TOML deserialization with defaults.
+#[test]
+fn mcp_oauth_config_defaults() {
+    let toml_str = r#"enabled = true"#;
+    let cfg: crate::config::McpOAuthConfig = toml::from_str(toml_str).unwrap();
+    assert!(cfg.enabled);
+    assert_eq!(cfg.callback_port, 18766);
+    assert_eq!(cfg.client_name, "Zeph");
+    assert!(cfg.scopes.is_empty());
+    assert!(matches!(
+        cfg.token_storage,
+        crate::config::OAuthTokenStorage::Vault
+    ));
+}
+
+// TC-02: OAuthTokenStorage serde variants round-trip via JSON.
+#[test]
+fn oauth_token_storage_serde_vault() {
+    let s: crate::config::OAuthTokenStorage = serde_json::from_str(r#""vault""#).unwrap();
+    assert!(matches!(s, crate::config::OAuthTokenStorage::Vault));
+    let back = serde_json::to_string(&s).unwrap();
+    assert_eq!(back, r#""vault""#);
+}
+
+#[test]
+fn oauth_token_storage_serde_memory() {
+    let s: crate::config::OAuthTokenStorage = serde_json::from_str(r#""memory""#).unwrap();
+    assert!(matches!(s, crate::config::OAuthTokenStorage::Memory));
+    let back = serde_json::to_string(&s).unwrap();
+    assert_eq!(back, r#""memory""#);
+}
+
+// TC-03: Config::validate() rejects headers + oauth simultaneously.
+#[test]
+fn validate_rejects_headers_and_oauth_together() {
+    use std::collections::HashMap;
+    let mut config = Config::default();
+    let mut headers = HashMap::new();
+    headers.insert("Authorization".to_owned(), "Bearer tok".to_owned());
+    config.mcp.servers.push(crate::config::McpServerConfig {
+        id: "srv".into(),
+        command: None,
+        args: vec![],
+        env: HashMap::new(),
+        url: Some("https://mcp.example.com".into()),
+        timeout: 30,
+        policy: zeph_mcp::McpPolicy::default(),
+        headers,
+        oauth: Some(crate::config::McpOAuthConfig {
+            enabled: true,
+            ..Default::default()
+        }),
+    });
+    let err = config.validate().unwrap_err();
+    assert!(err.to_string().contains("cannot use both"));
+}
+
+// TC-04: Config::validate() detects vault key collision.
+#[test]
+fn validate_detects_vault_key_collision() {
+    use std::collections::HashMap;
+    let mut config = Config::default();
+    // Two servers with IDs that normalize to the same vault key.
+    for id in &["my-server", "my_server"] {
+        config.mcp.servers.push(crate::config::McpServerConfig {
+            id: (*id).to_owned(),
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some("https://mcp.example.com".into()),
+            timeout: 30,
+            policy: zeph_mcp::McpPolicy::default(),
+            headers: HashMap::new(),
+            oauth: Some(crate::config::McpOAuthConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+        });
+    }
+    let err = config.validate().unwrap_err();
+    assert!(err.to_string().contains("vault key collision"));
 }

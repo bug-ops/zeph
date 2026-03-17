@@ -771,6 +771,8 @@ fn create_mcp_manager_with_http_transport() {
         command: None,
         args: vec![],
         env: HashMap::new(),
+        headers: HashMap::new(),
+        oauth: None,
         timeout: 30,
         policy: Default::default(),
     }];
@@ -791,6 +793,8 @@ fn create_mcp_manager_with_stdio_transport() {
         command: Some("node".into()),
         args: vec!["server.js".into()],
         env: HashMap::new(),
+        headers: HashMap::new(),
+        oauth: None,
         timeout: 30,
         policy: Default::default(),
     }];
@@ -848,6 +852,7 @@ fn skill_paths_includes_managed_dir() {
         config,
         config_path: PathBuf::from("/nonexistent/config.toml"),
         vault: Box::new(EnvVaultProvider),
+        age_vault: None,
         qdrant_ops: None,
     };
     let paths = builder.skill_paths();
@@ -867,6 +872,7 @@ fn skill_paths_does_not_duplicate_managed_dir() {
         config,
         config_path: PathBuf::from("/nonexistent/config.toml"),
         vault: Box::new(EnvVaultProvider),
+        age_vault: None,
         qdrant_ops: None,
     };
     let paths = builder.skill_paths();

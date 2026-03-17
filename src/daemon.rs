@@ -243,7 +243,11 @@ pub(crate) async fn run_daemon(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager(config, false));
+    let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager_with_vault(
+        config,
+        false,
+        app.age_vault_arc(),
+    ));
     let mcp_tools = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =

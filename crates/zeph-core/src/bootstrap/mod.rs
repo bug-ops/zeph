@@ -6,12 +6,14 @@
 pub mod config;
 pub mod health;
 pub mod mcp;
+pub mod oauth;
 pub mod provider;
 pub mod skills;
 
 pub use config::{parse_vault_args, resolve_config_path};
 pub use health::{health_check, warmup_provider};
-pub use mcp::{create_mcp_manager, create_mcp_registry};
+pub use mcp::{create_mcp_manager, create_mcp_manager_with_vault, create_mcp_registry};
+pub use oauth::VaultCredentialStore;
 #[cfg(feature = "candle")]
 pub use provider::select_device;
 pub use provider::{
@@ -23,7 +25,7 @@ pub use skills::{create_skill_matcher, effective_embedding_model, managed_skills
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{RwLock, mpsc, watch};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::GraphStore;
@@ -43,6 +45,9 @@ pub struct AppBuilder {
     config: Config,
     config_path: PathBuf,
     vault: Box<dyn VaultProvider>,
+    /// Present when the vault backend is `age`. Used to pass to `create_mcp_manager_with_vault`
+    /// for OAuth credential persistence across sessions.
+    age_vault: Option<Arc<RwLock<AgeVaultProvider>>>,
     qdrant_ops: Option<QdrantOps>,
 }
 
@@ -84,8 +89,11 @@ impl AppBuilder {
             vault_key_override,
             vault_path_override,
         );
-        let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
-            "env" => Box::new(EnvVaultProvider),
+        let (vault, age_vault): (
+            Box<dyn VaultProvider>,
+            Option<Arc<RwLock<AgeVaultProvider>>>,
+        ) = match vault_args.backend.as_str() {
+            "env" => (Box::new(EnvVaultProvider), None),
             "age" => {
                 let key = vault_args.key_path.ok_or_else(|| {
                     BootstrapError::Provider("--vault-key required for age backend".into())
@@ -93,10 +101,12 @@ impl AppBuilder {
                 let path = vault_args.vault_path.ok_or_else(|| {
                     BootstrapError::Provider("--vault-path required for age backend".into())
                 })?;
-                Box::new(
-                    AgeVaultProvider::new(Path::new(&key), Path::new(&path))
-                        .map_err(BootstrapError::VaultInit)?,
-                )
+                let provider = AgeVaultProvider::new(Path::new(&key), Path::new(&path))
+                    .map_err(BootstrapError::VaultInit)?;
+                let arc = Arc::new(RwLock::new(provider));
+                let boxed: Box<dyn VaultProvider> =
+                    Box::new(crate::vault::ArcAgeVaultProvider(Arc::clone(&arc)));
+                (boxed, Some(arc))
             }
             other => {
                 return Err(BootstrapError::Provider(format!(
@@ -124,6 +134,7 @@ impl AppBuilder {
             config,
             config_path,
             vault,
+            age_vault,
             qdrant_ops,
         })
     }
@@ -150,6 +161,14 @@ impl AppBuilder {
     /// that may inspect or override vault behavior at runtime.
     pub fn vault(&self) -> &dyn VaultProvider {
         self.vault.as_ref()
+    }
+
+    /// Returns the shared age vault, if the backend is `age`.
+    ///
+    /// Pass this to `create_mcp_manager_with_vault` so OAuth tokens are persisted
+    /// across sessions.
+    pub fn age_vault_arc(&self) -> Option<&Arc<RwLock<AgeVaultProvider>>> {
+        self.age_vault.as_ref()
     }
 
     /// # Errors

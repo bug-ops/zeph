@@ -505,7 +505,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             config,
             permission_policy.clone(),
             with_tool_events,
-            suppress_mcp_stderr
+            suppress_mcp_stderr,
+            app.age_vault_arc(),
+            Some(agent_status_tx.clone()),
         ),
     );
     let memory = std::sync::Arc::new(memory_result?);

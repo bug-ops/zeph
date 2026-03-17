@@ -9,9 +9,13 @@ use dashmap::DashMap;
 use rmcp::model::CallToolResult;
 use tokio::sync::RwLock;
 use tokio::sync::{mpsc, watch};
+
+type StatusTx = mpsc::UnboundedSender<String>;
 use tokio::task::JoinSet;
 
-use crate::client::{McpClient, ToolRefreshEvent};
+use rmcp::transport::auth::CredentialStore;
+
+use crate::client::{McpClient, OAuthConnectResult, ToolRefreshEvent};
 use crate::error::McpError;
 use crate::policy::PolicyEnforcer;
 use crate::sanitize::sanitize_tools;
@@ -26,8 +30,20 @@ pub enum McpTransport {
         args: Vec<String>,
         env: HashMap<String, String>,
     },
-    /// Streamable HTTP: connect to remote URL.
-    Http { url: String },
+    /// Streamable HTTP with optional static headers (already resolved, no vault refs).
+    Http {
+        url: String,
+        /// Static headers injected into every request (e.g. `Authorization: Bearer <token>`).
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
+    /// OAuth 2.1 authenticated HTTP transport.
+    OAuth {
+        url: String,
+        scopes: Vec<String>,
+        callback_port: u16,
+        client_name: String,
+    },
 }
 
 /// Server connection parameters consumed by `McpManager`.
@@ -61,6 +77,13 @@ pub struct McpManager {
     tools_watch_tx: watch::Sender<Vec<McpTool>>,
     /// Shared rate-limit state across all `ToolListChangedHandler` instances.
     last_refresh: Arc<DashMap<String, Instant>>,
+    /// Per-server OAuth credential stores. Keyed by server ID.
+    /// Set via `with_oauth_credential_store` before `connect_all()`.
+    oauth_credentials: HashMap<String, Arc<dyn CredentialStore>>,
+    /// Optional status sender for OAuth authorization messages.
+    /// When set, the authorization URL is sent as a status message instead of
+    /// (or in addition to) printing to stderr — required for TUI and Telegram modes.
+    status_tx: Option<StatusTx>,
 }
 
 impl std::fmt::Debug for McpManager {
@@ -92,7 +115,32 @@ impl McpManager {
             refresh_rx: std::sync::Mutex::new(Some(refresh_rx)),
             tools_watch_tx,
             last_refresh: Arc::new(DashMap::new()),
+            oauth_credentials: HashMap::new(),
+            status_tx: None,
         }
+    }
+
+    /// Set a status sender for OAuth authorization messages.
+    ///
+    /// When set, the OAuth authorization URL is sent as a status message so the
+    /// TUI can display it in the status panel. In CLI mode this is not required.
+    #[must_use]
+    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+        self.status_tx = Some(tx);
+        self
+    }
+
+    /// Register a credential store for an OAuth server.
+    ///
+    /// Must be called before `connect_all()` for any server using `McpTransport::OAuth`.
+    #[must_use]
+    pub fn with_oauth_credential_store(
+        mut self,
+        server_id: impl Into<String>,
+        store: Arc<dyn CredentialStore>,
+    ) -> Self {
+        self.oauth_credentials.insert(server_id.into(), store);
+        self
     }
 
     /// Clone the refresh sender for use in `ToolListChangedHandler`.
@@ -169,22 +217,35 @@ impl McpManager {
         self
     }
 
-    /// Connect to all configured servers concurrently, return aggregated tool list.
-    /// Servers that fail to connect are logged and skipped.
+    /// Connect to all configured servers, return aggregated tool list.
+    ///
+    /// Phase 1: non-OAuth servers connect concurrently via `JoinSet`.
+    /// Phase 2: OAuth servers connect sequentially (requires user interaction).
+    ///
+    /// For OAuth servers without a registered credential store, a warning is
+    /// logged and the server is skipped.
     ///
     /// # Panics
     ///
     /// Panics if the internal `connected_server_ids` lock is poisoned.
+    #[allow(clippy::too_many_lines)]
     pub async fn connect_all(&self) -> Vec<McpTool> {
-        let mut join_set = JoinSet::new();
-
         let allowed = self.allowed_commands.clone();
         let suppress = self.suppress_stderr;
         let last_refresh = Arc::clone(&self.last_refresh);
-        for config in self.configs.clone() {
+
+        // Partition configs into non-OAuth (concurrent) and OAuth (sequential)
+        let (non_oauth, oauth_configs): (Vec<_>, Vec<_>) = self
+            .configs
+            .iter()
+            .cloned()
+            .partition(|c| !matches!(c.transport, McpTransport::OAuth { .. }));
+
+        // Phase 1: connect non-OAuth servers concurrently
+        let mut join_set = JoinSet::new();
+        for config in non_oauth {
             let allowed = allowed.clone();
             let last_refresh = Arc::clone(&last_refresh);
-            // If manager is shutting down, no tx available; skip connection.
             let Some(tx) = self.clone_refresh_tx() else {
                 continue;
             };
@@ -195,42 +256,177 @@ impl McpManager {
         }
 
         let mut all_tools = Vec::new();
-        let mut clients = self.clients.write().await;
-        let mut server_tools = self.server_tools.write().await;
+        {
+            let mut clients = self.clients.write().await;
+            let mut server_tools = self.server_tools.write().await;
 
-        while let Some(result) = join_set.join_next().await {
-            let Ok((server_id, connect_result)) = result else {
-                tracing::warn!("MCP connection task panicked");
+            while let Some(result) = join_set.join_next().await {
+                let Ok((server_id, connect_result)) = result else {
+                    tracing::warn!("MCP connection task panicked");
+                    continue;
+                };
+
+                self.handle_connect_result(
+                    server_id,
+                    connect_result,
+                    &mut all_tools,
+                    &mut clients,
+                    &mut server_tools,
+                )
+                .await;
+            }
+        }
+
+        // Phase 2: connect OAuth servers sequentially
+        for config in oauth_configs {
+            let McpTransport::OAuth {
+                ref url,
+                ref scopes,
+                callback_port,
+                ref client_name,
+            } = config.transport
+            else {
                 continue;
             };
 
+            let Some(credential_store_ref) = self.oauth_credentials.get(&config.id) else {
+                tracing::warn!(
+                    server_id = config.id,
+                    "OAuth server has no credential store registered — skipping"
+                );
+                continue;
+            };
+            let credential_store = Arc::clone(credential_store_ref);
+
+            let Some(tx) = self.clone_refresh_tx() else {
+                continue;
+            };
+
+            let connect_result = McpClient::connect_url_oauth(
+                &config.id,
+                url,
+                scopes,
+                callback_port,
+                client_name,
+                credential_store,
+                config.trusted,
+                tx,
+                Arc::clone(&last_refresh),
+                config.timeout,
+            )
+            .await;
+
             match connect_result {
-                Ok(client) => match client.list_tools().await {
-                    Ok(mut tools) => {
-                        // Sanitize tool definitions before they enter the system prompt.
-                        // On server reconnect or tool list refresh, new tools must also
-                        // be passed through sanitize_tools() before use.
-                        sanitize_tools(&mut tools, &server_id);
-                        tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
-                        server_tools.insert(server_id.clone(), tools.clone());
-                        all_tools.extend(tools);
-                        clients.insert(server_id.clone(), client);
-                        self.connected_server_ids
-                            .write()
-                            .expect("connected_server_ids lock poisoned")
-                            .insert(server_id);
+                Ok(OAuthConnectResult::Connected(client)) => {
+                    let mut clients = self.clients.write().await;
+                    let mut server_tools = self.server_tools.write().await;
+                    self.handle_connect_result(
+                        config.id.clone(),
+                        Ok(client),
+                        &mut all_tools,
+                        &mut clients,
+                        &mut server_tools,
+                    )
+                    .await;
+                }
+                Ok(OAuthConnectResult::AuthorizationRequired(pending_box)) => {
+                    let mut pending = *pending_box;
+                    tracing::info!(
+                        server_id = config.id,
+                        auth_url = pending.auth_url,
+                        callback_port = pending.actual_port,
+                        "OAuth authorization required — open this URL to authorize"
+                    );
+                    let auth_msg = format!(
+                        "MCP OAuth: Open this URL to authorize '{}': {}",
+                        config.id, pending.auth_url
+                    );
+                    if let Some(ref tx) = self.status_tx {
+                        let _ = tx.send(format!("Waiting for OAuth: {}", config.id));
+                        let _ = tx.send(auth_msg.clone());
+                    } else {
+                        eprintln!("{auth_msg}");
                     }
-                    Err(e) => {
-                        tracing::warn!(server_id, "failed to list tools: {e:#}");
+
+                    let callback_timeout = std::time::Duration::from_secs(300);
+                    let listener = pending
+                        .listener
+                        .take()
+                        .expect("listener always set by connect_url_oauth");
+                    match crate::oauth::await_oauth_callback(listener, callback_timeout, &config.id)
+                        .await
+                    {
+                        Ok((code, csrf_token)) => {
+                            if let Some(ref tx) = self.status_tx {
+                                let _ = tx.send(String::new()); // clear "Waiting for OAuth..." spinner
+                            }
+                            match McpClient::complete_oauth(pending, &code, &csrf_token).await {
+                                Ok(client) => {
+                                    let mut clients = self.clients.write().await;
+                                    let mut server_tools = self.server_tools.write().await;
+                                    self.handle_connect_result(
+                                        config.id.clone(),
+                                        Ok(client),
+                                        &mut all_tools,
+                                        &mut clients,
+                                        &mut server_tools,
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        server_id = config.id,
+                                        "OAuth token exchange failed: {e:#}"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(ref tx) = self.status_tx {
+                                let _ = tx.send(String::new());
+                            }
+                            tracing::warn!(server_id = config.id, "OAuth callback failed: {e:#}");
+                        }
                     }
-                },
+                }
                 Err(e) => {
-                    tracing::warn!(server_id, "MCP server connection failed: {e:#}");
+                    tracing::warn!(server_id = config.id, "OAuth connection failed: {e:#}");
                 }
             }
         }
 
         all_tools
+    }
+
+    async fn handle_connect_result(
+        &self,
+        server_id: String,
+        connect_result: Result<McpClient, McpError>,
+        all_tools: &mut Vec<McpTool>,
+        clients: &mut HashMap<String, McpClient>,
+        server_tools: &mut HashMap<String, Vec<McpTool>>,
+    ) {
+        match connect_result {
+            Ok(client) => match client.list_tools().await {
+                Ok(mut tools) => {
+                    sanitize_tools(&mut tools, &server_id);
+                    tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
+                    server_tools.insert(server_id.clone(), tools.clone());
+                    all_tools.extend(tools);
+                    clients.insert(server_id.clone(), client);
+                    self.connected_server_ids
+                        .write()
+                        .expect("connected_server_ids lock poisoned")
+                        .insert(server_id);
+                }
+                Err(e) => {
+                    tracing::warn!(server_id, "failed to list tools: {e:#}");
+                }
+            },
+            Err(e) => {
+                tracing::warn!(server_id, "MCP server connection failed: {e:#}");
+            }
+        }
     }
 
     /// Route tool call to the correct server's client.
@@ -451,16 +647,36 @@ async fn connect_entry(
             )
             .await
         }
-        McpTransport::Http { url } => {
-            McpClient::connect_url(
-                &entry.id,
-                url,
-                entry.timeout,
-                entry.trusted,
-                tx,
-                last_refresh,
-            )
-            .await
+        McpTransport::Http { url, headers } => {
+            if headers.is_empty() {
+                McpClient::connect_url(
+                    &entry.id,
+                    url,
+                    entry.timeout,
+                    entry.trusted,
+                    tx,
+                    last_refresh,
+                )
+                .await
+            } else {
+                McpClient::connect_url_with_headers(
+                    &entry.id,
+                    url,
+                    headers,
+                    entry.timeout,
+                    entry.trusted,
+                    tx,
+                    last_refresh,
+                )
+                .await
+            }
+        }
+        McpTransport::OAuth { .. } => {
+            // OAuth connections are handled separately in connect_all() Phase 2.
+            Err(McpError::OAuthError {
+                server_id: entry.id.clone(),
+                message: "OAuth transport cannot be used via connect_entry".into(),
+            })
         }
     }
 }
@@ -631,9 +847,10 @@ mod tests {
     fn transport_http_clone() {
         let transport = McpTransport::Http {
             url: "http://localhost:3000".into(),
+            headers: HashMap::new(),
         };
         let cloned = transport.clone();
-        if let McpTransport::Http { url } = &cloned {
+        if let McpTransport::Http { url, .. } = &cloned {
             assert_eq!(url, "http://localhost:3000");
         } else {
             panic!("expected Http variant");
@@ -656,6 +873,7 @@ mod tests {
     fn transport_http_debug() {
         let transport = McpTransport::Http {
             url: "http://example.com".into(),
+            headers: HashMap::new(),
         };
         let dbg = format!("{transport:?}");
         assert!(dbg.contains("Http"));
@@ -667,6 +885,7 @@ mod tests {
             id: id.into(),
             transport: McpTransport::Http {
                 url: "http://127.0.0.1:1/nonexistent".into(),
+                headers: HashMap::new(),
             },
             timeout: Duration::from_secs(1),
             trusted: false,

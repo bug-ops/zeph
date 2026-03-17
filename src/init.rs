@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, CascadeConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig,
-    McpServerConfig, MemoryConfig, OrchestrationConfig, OrchestratorConfig,
-    OrchestratorProviderConfig, ProviderKind, PruningStrategy, RouterConfig, RouterStrategyConfig,
-    SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
+    McpOAuthConfig, McpServerConfig, MemoryConfig, OAuthTokenStorage, OrchestrationConfig,
+    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, PruningStrategy, RouterConfig,
+    RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -107,6 +107,8 @@ pub(crate) struct WizardState {
     // LSP code intelligence via mcpls
     pub(crate) mcpls_enabled: bool,
     pub(crate) mcpls_workspace_roots: Vec<String>,
+    // Remote MCP servers with OAuth or static headers
+    pub(crate) mcp_remote_servers: Vec<McpServerConfig>,
     // LSP context injection
     pub(crate) lsp_context_enabled: bool,
     pub(crate) soft_compaction_threshold: f32,
@@ -224,6 +226,7 @@ impl Default for WizardState {
             server_compaction_enabled: false,
             mcpls_enabled: false,
             mcpls_workspace_roots: Vec::new(),
+            mcp_remote_servers: Vec::new(),
             lsp_context_enabled: false,
             // Valid sentinel values so WizardState is usable outside run() without
             // out-of-range values; run() initialises these to the same values explicitly.
@@ -306,6 +309,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
     step_mcpls(&mut state)?;
+    step_mcp_remote(&mut state)?;
     step_lsp_context(&mut state)?;
     step_agents(&mut state)?;
     step_router(&mut state)?;
@@ -1197,9 +1201,14 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             args: vec!["--config".to_owned(), ".zeph/mcpls.toml".to_owned()],
             env: std::collections::HashMap::new(),
             url: None,
+            headers: std::collections::HashMap::new(),
+            oauth: None,
             timeout: 60,
             policy: zeph_mcp::McpPolicy::default(),
         });
+    }
+    for server in state.mcp_remote_servers.clone() {
+        config.mcp.servers.push(server);
     }
 
     if state.experiments_enabled {
@@ -1559,6 +1568,112 @@ file_patterns = ["**/*.rs"]
     std::fs::write(&mcpls_path, content)?;
     println!("mcpls config written to {}", mcpls_path.display());
 
+    Ok(())
+}
+
+fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== MCP: Remote Servers ==\n");
+    println!(
+        "Configure remote MCP servers that require authentication (static headers or OAuth 2.1)."
+    );
+    println!("Skip this step if you have no remote MCP servers.\n");
+
+    loop {
+        let add = Confirm::new()
+            .with_prompt("Add a remote MCP server?")
+            .default(false)
+            .interact()?;
+        if !add {
+            break;
+        }
+
+        let id: String = Input::new()
+            .with_prompt("Server ID (unique slug, e.g. 'todoist')")
+            .interact_text()?;
+        let url: String = Input::new()
+            .with_prompt("Server URL (e.g. https://mcp.example.com)")
+            .interact_text()?;
+
+        let auth_choices = [
+            "None (no auth)",
+            "Static header (Bearer token)",
+            "OAuth 2.1 (interactive flow)",
+        ];
+        let auth_sel = Select::new()
+            .with_prompt("Authentication method")
+            .items(auth_choices)
+            .default(0)
+            .interact()?;
+
+        let mut headers = std::collections::HashMap::new();
+        let mut oauth: Option<McpOAuthConfig> = None;
+
+        match auth_sel {
+            1 => {
+                println!("Header value supports vault references: ${{VAULT_KEY}}");
+                let header_name: String = Input::new()
+                    .with_prompt("Header name")
+                    .default("Authorization".into())
+                    .interact_text()?;
+                let header_value: String = Input::new()
+                    .with_prompt("Header value (e.g. 'Bearer ${{MY_TOKEN}}')")
+                    .interact_text()?;
+                headers.insert(header_name, header_value);
+            }
+            2 => {
+                let storage_choices =
+                    ["vault (persisted in age vault)", "memory (lost on restart)"];
+                let storage_sel = Select::new()
+                    .with_prompt("Token storage")
+                    .items(storage_choices)
+                    .default(0)
+                    .interact()?;
+                let token_storage = if storage_sel == 0 {
+                    OAuthTokenStorage::Vault
+                } else {
+                    OAuthTokenStorage::Memory
+                };
+                let scopes_raw: String = Input::new()
+                    .with_prompt("OAuth scopes (space-separated, leave empty for server default)")
+                    .default(String::new())
+                    .interact_text()?;
+                let scopes: Vec<String> =
+                    scopes_raw.split_whitespace().map(str::to_owned).collect();
+                let callback_port: u16 = Input::new()
+                    .with_prompt("Local callback port (0 = auto-assign)")
+                    .default(18766)
+                    .interact_text()?;
+                let client_name: String = Input::new()
+                    .with_prompt("OAuth client name")
+                    .default("Zeph".into())
+                    .interact_text()?;
+                oauth = Some(McpOAuthConfig {
+                    enabled: true,
+                    token_storage,
+                    scopes,
+                    callback_port,
+                    client_name,
+                });
+            }
+            _ => {}
+        }
+
+        state.mcp_remote_servers.push(McpServerConfig {
+            id,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::HashMap::new(),
+            url: Some(url),
+            timeout: 30,
+            policy: zeph_mcp::McpPolicy::default(),
+            headers,
+            oauth,
+        });
+
+        println!("Server added.");
+    }
+
+    println!();
     Ok(())
 }
 

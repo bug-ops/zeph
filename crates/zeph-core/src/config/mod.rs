@@ -146,6 +146,32 @@ impl Config {
                 self.memory.graph.temporal_decay_rate
             )));
         }
+        // MCP server validation
+        {
+            use std::collections::HashSet;
+            let mut seen_oauth_vault_keys: HashSet<String> = HashSet::new();
+            for s in &self.mcp.servers {
+                // headers and oauth are mutually exclusive
+                if !s.headers.is_empty() && s.oauth.as_ref().is_some_and(|o| o.enabled) {
+                    return Err(ConfigError::Validation(format!(
+                        "MCP server '{}': cannot use both 'headers' and 'oauth' simultaneously",
+                        s.id
+                    )));
+                }
+                // vault key collision detection
+                if s.oauth.as_ref().is_some_and(|o| o.enabled) {
+                    let key = format!("ZEPH_MCP_OAUTH_{}", s.id.to_uppercase().replace('-', "_"));
+                    if !seen_oauth_vault_keys.insert(key.clone()) {
+                        return Err(ConfigError::Validation(format!(
+                            "MCP server '{}' has vault key collision ('{key}'): another server \
+                             with the same normalized ID already uses this key",
+                            s.id
+                        )));
+                    }
+                }
+            }
+        }
+
         self.experiments.validate()?;
 
         // Focus config validation

@@ -68,6 +68,7 @@ impl<C: Channel> Agent<C> {
         let transport = if is_url {
             zeph_mcp::McpTransport::Http {
                 url: target.to_owned(),
+                headers: std::collections::HashMap::new(),
             }
         } else {
             zeph_mcp::McpTransport::Stdio {

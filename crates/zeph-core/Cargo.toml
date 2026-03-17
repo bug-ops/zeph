@@ -27,6 +27,7 @@ context-compression = []
 
 [dependencies]
 age.workspace = true
+async-trait.workspace = true
 blake3.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
 futures.workspace = true
@@ -51,6 +52,7 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 tempfile.workspace = true
 tree-sitter.workspace = true
+rmcp = { workspace = true, features = ["auth"] }
 zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-mcp.workspace = true

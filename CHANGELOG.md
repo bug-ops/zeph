@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - test(memory): add integration tests for `store_session_summary` → Qdrant upsert roundtrip (closes #1916) — four `#[ignore]` tests in `crates/zeph-memory/tests/qdrant_integration.rs` using testcontainers: `store_session_summary_roundtrip`, `store_session_summary_multiple_conversations`, `store_shutdown_summary_full_roundtrip`, `search_session_summaries_returns_empty_when_no_data`; each test guards against silent Qdrant disconnection and verifies both the Qdrant vector path and (where applicable) the SQLite content path
+- feat(mcp): OAuth 2.1 PKCE support for remote MCP servers (closes #1930)
+  - New `McpTransport::OAuth` variant: `url`, `scopes`, `callback_port`, `client_name`
+  - New `McpTransport::Http` variant gains optional `headers` map with vault-reference support (`${VAULT_KEY}` syntax)
+  - `McpManager::with_oauth_credential_store()` builder for registering per-server credential stores
+  - `VaultCredentialStore` in `zeph-core` persists OAuth tokens to the age vault under `ZEPH_MCP_OAUTH_<SERVER_ID>` keys
+  - Two-phase `connect_all()`: stdio/HTTP servers connect concurrently (Phase 1), OAuth servers sequentially with callback listener (Phase 2)
+  - Callback server: raw `tokio::net::TcpListener` pre-bound to capture the actual port before client registration
+  - SSRF validation on all OAuth metadata endpoints (authorization, token, registration, jwks_uri)
+  - Config: `[mcp.servers.*.oauth]` section with `enabled`, `token_storage` (vault/memory), `scopes`, `callback_port`, `client_name`; `headers` map for static bearer tokens
+  - Config validation: `headers` and `oauth` are mutually exclusive; vault key collision detection for servers with identical normalized IDs
 - feat(index): show indexing progress during background code indexing (#1923)
   - Added `IndexProgress` struct to `zeph-index` with `files_done`, `files_total`, `chunks_created` fields
   - `index_project()` now accepts `progress_tx: Option<&watch::Sender<IndexProgress>>` and sends progress after each file
