@@ -150,7 +150,7 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/**/*.sha256
-            install/install.sh
+            scripts/install.sh
 
   docker-publish:
     name: Publish Docker Image

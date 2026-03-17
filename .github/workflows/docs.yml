@@ -3,9 +3,9 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths: [docs/**, README.md, "crates/*/README.md", ".github/lychee.toml", ".github/workflows/docs.yml"]
+    paths: [book/**, README.md, "crates/*/README.md", ".github/lychee.toml", ".github/workflows/docs.yml"]
   pull_request:
-    paths: [docs/**, README.md, "crates/*/README.md", ".github/lychee.toml", ".github/workflows/docs.yml"]
+    paths: [book/**, README.md, "crates/*/README.md", ".github/lychee.toml", ".github/workflows/docs.yml"]
   schedule:
     - cron: "0 6 * * 1"  # every Monday 06:00 UTC
   workflow_dispatch:
@@ -31,13 +31,13 @@ jobs:
             | tar xz -C $HOME/.local/bin
           echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Build
-        run: mdbook build docs
+        run: mdbook build book
       - uses: actions/configure-pages@v5
         if: github.ref == 'refs/heads/main'
       - uses: actions/upload-pages-artifact@v4
         if: github.ref == 'refs/heads/main'
         with:
-          path: docs/book
+          path: book/book
 
   link-check:
     name: Check links (lychee)
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2
         with:
-          args: "--config .github/lychee.toml README.md crates/*/README.md docs/src/**/*.md --offline --no-progress"
+          args: "--config .github/lychee.toml README.md crates/*/README.md book/src/**/*.md --offline --no-progress"
           fail: true
 
   link-check-external:
@@ -64,7 +64,7 @@ jobs:
             --cache
             --max-retries 3
             --retry-wait-time 5
-            README.md crates/*/README.md docs/src/**/*.md
+            README.md crates/*/README.md book/src/**/*.md
           fail: true
 
   deploy:

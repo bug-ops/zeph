@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="asset/zeph_v8_github.png" alt="Zeph" width="800">
+  <img src="book/src/assets/zeph_v8_github.png" alt="Zeph" width="800">
 
   **The AI agent that respects your resources.**
 
@@ -95,7 +95,7 @@ Optional features are grouped into use-case bundles: `desktop` (TUI + scheduler)
 ```
 
 <div align="center">
-  <img src="asset/zeph.gif" alt="Zeph TUI Dashboard" width="800">
+  <img src="book/src/assets/zeph.gif" alt="Zeph TUI Dashboard" width="800">
 </div>
 
 ## Documentation

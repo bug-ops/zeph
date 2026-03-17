@@ -10,6 +10,6 @@ data/
 !.zeph/skills/
 !.zeph/agents/
 **/.zeph/subagents/
-docs/book/
+book/book/
 *.log
 zeph.log
