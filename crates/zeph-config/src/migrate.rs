@@ -81,7 +81,7 @@ impl ConfigMigrator {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            reference_src: include_str!("../../config/default.toml"),
+            reference_src: include_str!("../config/default.toml"),
         }
     }
 
@@ -640,7 +640,7 @@ name = "Test"
     #[test]
     fn full_config_produces_zero_additions() {
         // Migrating the reference config itself should add nothing new.
-        let reference = include_str!("../../config/default.toml");
+        let reference = include_str!("../config/default.toml");
         let migrator = ConfigMigrator::new();
         let result = migrator.migrate(reference).expect("migrate reference");
         assert_eq!(
@@ -691,7 +691,7 @@ redact_secrets = true
         // used by ConfigMigrator) contains a [tools.policy] section. This ensures that
         // `zeph --migrate-config` will surface the section to users as a discoverable commented
         // block, even if it cannot be injected as a live sub-table via toml_edit's round-trip.
-        let reference = include_str!("../../config/default.toml");
+        let reference = include_str!("../config/default.toml");
         assert!(
             reference.contains("[tools.policy]"),
             "default.toml must contain [tools.policy] section so migrate-config can surface it"

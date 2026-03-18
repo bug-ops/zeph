@@ -36,7 +36,7 @@ use zeph_skills::matcher::SkillMatcherBackend;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::{SkillEvent, SkillWatcher};
 
-use crate::config::Config;
+use crate::config::{Config, SecretResolver};
 use crate::config_watcher::{ConfigEvent, ConfigWatcher};
 use crate::vault::AgeVaultProvider;
 use crate::vault::{EnvVaultProvider, VaultProvider};

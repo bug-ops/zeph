@@ -1,0 +1,788 @@
+[agent]
+# Agent display name
+name = "Zeph"
+# Maximum tool execution iterations per user message (doom-loop protection)
+max_tool_iterations = 10
+# Check for new Zeph releases on startup
+# auto_update_check = true
+# Automatically detect provider-specific instruction files (CLAUDE.md, AGENTS.md, etc.)
+# instruction_auto_detect = true
+# Additional instruction files to always inject into the system prompt
+# instruction_files = ["custom-instructions.md"]
+
+[llm]
+# LLM provider: "ollama", "claude", "openai", "candle", "orchestrator", "compatible", "router"
+provider = "ollama"
+# Base URL for Ollama server
+base_url = "http://localhost:11434"
+# Primary model for chat completions
+model = "qwen3:8b"
+# Model for generating embeddings (semantic memory)
+embedding_model = "qwen3-embedding"
+# Provider-specific instruction file to inject into the system prompt (optional)
+# instruction_file = "llm-instructions.md"
+
+# Dedicated provider for tool-pair summarization and context compaction (optional).
+# Falls back to the primary provider when unset.
+# String shorthand (summary_model) or structured table ([llm.summary_provider]) — pick one.
+# summary_model = "ollama/qwen3:1.7b"   # ollama/<model> | claude[/<model>] | openai[/<model>] | compatible/<name> | candle
+# [llm.summary_provider]
+# type = "claude"                          # claude, openai, compatible, ollama, candle
+# model = "claude-haiku-4-5-20251001"     # model override (or [[llm.compatible]] entry name for compatible)
+
+[llm.cloud]
+# Claude API model (used when provider = "claude")
+model = "claude-sonnet-4-5-20250929"
+# Maximum tokens for Claude responses
+max_tokens = 4096
+# Enable Claude server-side context compaction (compact-2026-01-12 beta).
+# When enabled, the API automatically summarizes long conversations; client-side compaction is skipped.
+# server_compaction = false
+# Enable 1M token extended context window (Opus 4.6 / Sonnet 4.6 only).
+# Tokens above 200K use long-context pricing — see https://www.anthropic.com/pricing
+# enable_extended_context = false
+
+# OpenAI-compatible API (GPT-5.2, Together, Groq, Fireworks, etc.)
+# [llm.openai]
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-5.2"
+# max_tokens = 4096
+# embedding_model = "text-embedding-3-small"
+# reasoning_effort = "medium"  # low, medium, high (for reasoning models)
+
+# LLM response cache (SQLite-backed, blake3 key hashing)
+# response_cache_enabled = false
+# response_cache_ttl_secs = 3600
+
+# Speech-to-text provider (Whisper API)
+# [llm.stt]
+# provider = "whisper"
+# model = "whisper-1"
+
+# Vision model for image understanding
+# vision_model = "llava:7b"
+
+# Candle local inference (feature-gated: --features candle)
+# [llm.candle]
+# source = "huggingface"  # "local" or "huggingface"
+# filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+# local_path = ""          # used when source = "local"
+# chat_template = "chatml"  # llama3, chatml, mistral, phi3, raw
+# device = "cpu"           # auto, cpu, metal, cuda
+# embedding_repo = "sentence-transformers/all-MiniLM-L6-v2"
+# [llm.candle.generation]
+# temperature = 0.7
+# top_p = 0.9
+# top_k = 40
+# max_tokens = 2048
+# seed = 42
+# repeat_penalty = 1.1
+# repeat_last_n = 64
+
+# Model orchestrator (enabled by default)
+# Routes tasks to different providers with fallback chains
+# [llm.orchestrator]
+# default = "ollama"
+# embed = "ollama"
+# [llm.orchestrator.providers.ollama]
+# type = "ollama"
+# model = "qwen3:8b"          # optional: override model
+# base_url = "http://localhost:11434"  # optional: override base URL
+# embedding_model = "qwen3-embedding"  # optional: override embedding model
+# [llm.orchestrator.providers.claude]
+# type = "claude"
+# model = "claude-sonnet-4-5-20250929"  # optional: override [llm.cloud].model
+# [llm.orchestrator.providers.candle]
+# type = "candle"
+# filename = "model.gguf"       # optional: GGUF filename
+# device = "metal"              # optional: cpu, metal, cuda
+# [llm.orchestrator.routes]
+# coding = ["claude", "ollama"]
+# creative = ["claude", "ollama"]
+# general = ["ollama"]
+
+# OpenAI-compatible providers (Groq, Together, Mistral, local vLLM, etc.)
+# Set provider = "<name>" and ZEPH_COMPATIBLE_<NAME>_API_KEY env var to use.
+# [[llm.compatible]]
+# name = "groq"
+# base_url = "https://api.groq.com/openai/v1"
+# model = "llama-3.3-70b-versatile"
+# max_tokens = 4096
+# # embedding_model = "..."  # optional
+
+# Router provider: sequential fallback across multiple providers.
+# Set provider = "router" to use.
+# [llm.router]
+# chain = ["groq", "openai", "ollama"]
+
+# --- Full orchestrator example with cloud + local + STT ---
+# The orchestrator routes tasks to different providers with fallback chains.
+# Sub-providers inherit from parent sections:
+#   - "ollama" sub-provider uses [llm].base_url, [llm].model, [llm].embedding_model as defaults
+#   - "claude" sub-provider requires [llm.cloud] section + ZEPH_CLAUDE_API_KEY
+#   - "openai" sub-provider requires [llm.openai] section + ZEPH_OPENAI_API_KEY
+#   - "candle" sub-provider requires [llm.candle] section
+# Per-provider `model` overrides the inherited default.
+#
+# [llm]
+# provider = "orchestrator"
+# base_url = "http://localhost:11434"      # used by ollama sub-provider
+# model = "qwen3:8b"                     # fallback model for sub-providers without explicit model
+# embedding_model = "qwen3-embedding"      # used by ollama sub-provider for embeddings
+#
+# [llm.cloud]
+# model = "claude-sonnet-4-5-20250929"
+# max_tokens = 4096
+#
+# [llm.stt]
+# provider = "whisper"
+# model = "whisper-1"
+#
+# [llm.orchestrator]
+# default = "ollama/qwen3:8b"            # "provider_name/model" or just "provider_name"
+# embed = "qwen3-embedding"                # embedding model name or "provider_name/model"
+#
+# [llm.orchestrator.providers.ollama]
+# type = "ollama"
+# model = "qwen3:8b"                     # optional: overrides [llm].model
+# base_url = "http://localhost:11434"      # optional: overrides [llm].base_url
+# embedding_model = "qwen3-embedding"      # optional: overrides [llm].embedding_model
+#
+# [llm.orchestrator.providers.claude]
+# type = "claude"
+# model = "claude-sonnet-4-5-20250929"     # optional: overrides [llm.cloud].model
+#
+# [llm.orchestrator.routes]
+# chat = ["ollama", "claude"]              # fallback chain: try ollama first, then claude
+# embed = ["ollama/qwen3-embedding"]       # "provider_name/model" format
+
+[skills]
+# Directories to scan for SKILL.md files
+# Defaults to the user config dir (for example ~/.config/zeph/skills on Linux,
+# ~/Library/Application Support/Zeph/skills on macOS,
+# %APPDATA%\zeph\skills on Windows).
+# paths = ["/absolute/path/to/skills"]
+# Maximum number of skills to inject into context per query (embedding-based selection)
+max_active_skills = 5
+# Prompt mode: "full" (inject full SKILL.md), "compact" (name+description only), "auto" (compact if budget < 8192)
+# prompt_mode = "auto"
+# Minimum score delta for skill disambiguation (0.0-1.0)
+# disambiguation_threshold = 0.05
+
+[skills.learning]
+# Enable self-learning skill improvement (feature enabled by default, runtime toggle)
+enabled = false
+# Automatically activate improved versions (false = require manual approval)
+auto_activate = false
+# Minimum failures before generating improvement
+min_failures = 3
+# Success rate threshold below which improvement is triggered (0.0-1.0)
+improve_threshold = 0.7
+# Success rate below which automatic rollback occurs (0.0-1.0)
+rollback_threshold = 0.5
+# Minimum evaluations before rollback decision
+min_evaluations = 5
+# Maximum auto-generated versions per skill
+max_versions = 10
+# Cooldown between improvements for same skill (minutes)
+cooldown_minutes = 60
+
+[skills.trust]
+# Default trust level for newly discovered skills: trusted, verified, quarantined, blocked
+default_level = "quarantined"
+# Trust level assigned to local (built-in) skills
+local_level = "trusted"
+# Trust level after blake3 hash mismatch on hot-reload
+hash_mismatch_level = "quarantined"
+
+[memory]
+# SQLite database path for conversation history
+# Defaults to the user data dir (for example ~/.local/share/zeph/data/zeph.db on Linux,
+# ~/Library/Application Support/Zeph/data/zeph.db on macOS,
+# %LOCALAPPDATA%\Zeph\data\zeph.db on Windows).
+# sqlite_path = "/absolute/path/to/zeph.db"
+# Maximum number of recent messages to load into context
+history_limit = 50
+# Qdrant vector database URL for semantic memory
+qdrant_url = "http://localhost:6334"
+# Number of messages before triggering summarization (0 = disabled)
+summarization_threshold = 50
+# Total token budget for context window (0 = auto-detect from model)
+context_budget_tokens = 0
+# Auto-detect context budget from model's context window size
+auto_budget = true
+# Soft compaction threshold (0.0-1.0): prune tool outputs + apply deferred summaries (no LLM).
+soft_compaction_threshold = 0.70
+# Hard compaction threshold (0.0-1.0): full LLM summarization when context usage exceeds this.
+hard_compaction_threshold = 0.90
+# Number of recent messages to preserve during compaction
+compaction_preserve_tail = 6
+# Turns to skip after a successful compaction (cooldown guard).
+# Prevents immediate re-compaction when the summary itself consumes many tokens.
+compaction_cooldown_turns = 2
+# Token budget protected from tool output pruning (recent context zone)
+prune_protect_tokens = 40000
+# Minimum relevance score for cross-session memory results (0.0-1.0)
+cross_session_score_threshold = 0.35
+# Vector backend: "qdrant" (external) or "sqlite" (embedded, zero-dependency)
+# vector_backend = "qdrant"
+# Token safety margin multiplier for compaction budget (must be > 0)
+# token_safety_margin = 1.0
+# Redact credentials from LLM context before sending
+# redact_credentials = true
+# Auto-save assistant responses to semantic memory
+# autosave_assistant = false
+# Minimum character length for autosave (shorter responses skip embedding)
+# autosave_min_length = 20
+
+[memory.sessions]
+# Maximum number of sessions returned by list operations (0 = unlimited)
+max_history = 100
+# Maximum characters for auto-generated session titles
+title_max_chars = 60
+
+[memory.documents]
+# Qdrant collection for ingested documents
+collection = "zeph_documents"
+# Text chunk size in characters
+chunk_size = 1000
+# Overlap between consecutive chunks in characters
+chunk_overlap = 100
+# Number of document chunks to inject into agent context per turn
+top_k = 3
+# Enable RAG: inject relevant document chunks into agent context
+rag_enabled = false
+
+[memory.semantic]
+# Enable semantic memory with vector search
+enabled = true
+# Maximum number of semantically relevant messages to recall
+recall_limit = 5
+# Hybrid search weights (vector + FTS5 keyword). Must sum to 1.0.
+vector_weight = 0.7
+keyword_weight = 0.3
+# Temporal decay: penalize older memories by age
+# temporal_decay_enabled = false
+# temporal_decay_half_life_days = 30
+# MMR re-ranking: diversify recall results
+# mmr_enabled = false
+# mmr_lambda = 0.7
+
+# Code RAG: AST-based code indexing and hybrid retrieval
+# Requires Qdrant for semantic retrieval; tree-sitter grammars are always available
+[index]
+# Enable code indexing and retrieval (requires Qdrant)
+enabled = false
+# Watch for file changes and reindex incrementally
+watch = true
+# Maximum code chunks to retrieve per query
+max_chunks = 12
+# Minimum cosine similarity score to accept
+score_threshold = 0.25
+# Fraction of code_context budget used by retriever (0.0-1.0)
+budget_ratio = 0.40
+# Token budget for repo structural map in system prompt (0 = disabled)
+repo_map_tokens = 500
+# Cache TTL for repo map in seconds (avoids regeneration on every message)
+repo_map_ttl_secs = 300
+
+# [discord]
+# token = ""                    # or set ZEPH_DISCORD_TOKEN
+# application_id = ""           # for slash command registration
+# allowed_user_ids = []         # Discord user IDs (empty = allow all)
+# allowed_role_ids = []         # Discord role IDs
+# allowed_channel_ids = []      # restrict to specific channels
+
+# [slack]
+# bot_token = ""                # or set ZEPH_SLACK_BOT_TOKEN
+# signing_secret = ""           # or set ZEPH_SLACK_SIGNING_SECRET
+# port = 3000                   # Events API webhook port
+# webhook_host = "127.0.0.1"   # bind address for Events API webhook
+# allowed_user_ids = []         # Slack user IDs (empty = allow all)
+# allowed_channel_ids = []      # restrict to specific channels
+
+[mcp]
+# Allowlist of permitted commands for /mcp add (empty = allow all)
+allowed_commands = ["npx", "uvx", "node", "python", "python3"]
+# Maximum number of dynamically added MCP servers
+max_dynamic_servers = 10
+
+# Stdio transport (spawn child process):
+# [[mcp.servers]]
+# id = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = {}                      # environment variables for the child process
+# timeout = 30
+
+# HTTP transport (remote MCP server, e.g. Docker container):
+# [[mcp.servers]]
+# id = "remote-tools"
+# url = "http://localhost:3001/mcp"
+# timeout = 30
+
+# LSP code intelligence via mcpls (https://github.com/bug-ops/mcpls)
+# Install: cargo install mcpls
+# mcpls auto-detects language servers from project files (Cargo.toml → rust-analyzer, etc.)
+# [[mcp.servers]]
+# id = "mcpls"
+# command = "mcpls"
+# args = ["--workspace-root", "."]
+# timeout = 60                     # LSP servers need warmup time; 60s recommended
+
+[cost]
+# Track LLM API costs and enforce daily budget
+enabled = false
+# Maximum daily spend in cents (0 = unlimited)
+max_daily_cents = 500
+
+[observability]
+# Tracing exporter: "" (disabled) or "otlp" (requires otel feature)
+exporter = ""
+# OTLP collector endpoint
+endpoint = "http://localhost:4317"
+
+[vault]
+# Secret retrieval backend: "env" reads from environment variables
+backend = "env"
+
+[a2a]
+# Enable A2A server for agent-to-agent communication
+enabled = false
+# Bind address
+host = "0.0.0.0"
+# HTTP port
+port = 8080
+# Public URL advertised in AgentCard (auto-generated if empty)
+public_url = ""
+# Bearer token for authentication (from vault ZEPH_A2A_AUTH_TOKEN)
+# auth_token = ""
+# Rate limit: max requests per minute per IP (0 = unlimited)
+rate_limit = 60
+# Require TLS for outbound A2A connections
+require_tls = true
+# Block requests to private/loopback IPs
+ssrf_protection = true
+# Maximum request body size in bytes (1MB)
+max_body_size = 1048576
+
+[tools]
+# Enable tool execution (bash commands)
+enabled = true
+# Summarize long tool output via LLM instead of head+tail truncation
+summarize_output = true
+
+[tools.shell]
+# Command timeout in seconds
+timeout = 30
+# Additional commands to block (case-insensitive, supports wildcards)
+blocked_commands = []
+# Commands to remove from the default blocklist (e.g., ["curl", "wget"])
+allowed_commands = []
+# Restrict file access to these paths (empty = current directory only)
+allowed_paths = []
+# Allow network commands (curl, wget, nc)
+allow_network = true
+# Commands that require user confirmation before execution
+confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
+
+[tools.scrape]
+# HTTP request timeout in seconds
+timeout = 15
+# Maximum response body size in bytes (1MB)
+max_body_bytes = 1048576
+
+[tools.filters]
+# Enable smart output filtering for tool results
+enabled = true
+# [tools.filters.test]
+# enabled = true
+# max_failures = 10
+# truncate_stack_trace = 50
+# [tools.filters.git]
+# enabled = true
+# max_log_entries = 20
+# max_diff_lines = 500
+# [tools.filters.clippy]
+# enabled = true
+# [tools.filters.cargo_build]
+# enabled = true
+# [tools.filters.dir_listing]
+# enabled = true
+# [tools.filters.log_dedup]
+# enabled = true
+# [tools.filters.security]
+# enabled = true
+# extra_patterns = []
+
+# Per-tool permission rules (glob patterns with allow/ask/deny actions)
+# [tools.permissions]
+# shell = [{ pattern = "/tmp/*", action = "allow" }, { pattern = "/etc/*", action = "deny" }]
+
+[tools.overflow]
+# Offload large tool responses to SQLite instead of truncating in-memory.
+# Characters threshold above which output is stored in the overflow table (default: 50000)
+threshold = 50000
+# Days to retain overflow entries before age-based cleanup on next startup (default: 7)
+retention_days = 7
+# Maximum bytes per overflow entry; 0 means unlimited (default: 10485760 = 10 MiB)
+max_overflow_bytes = 10485760
+
+[tools.audit]
+# Enable audit logging for tool executions
+enabled = false
+# Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
+destination = "stdout"
+
+[tools.policy]
+# Enable declarative policy compiler for tool call authorization (requires policy-enforcer feature)
+enabled = false
+# Fallback effect when no rule matches: "allow" or "deny"
+default_effect = "deny"
+# Optional external policy rules file (TOML). Overrides inline rules when set.
+# policy_file = "policy.toml"
+
+[tools.anomaly]
+# Enable sliding-window anomaly detection for tool execution errors
+enabled = false
+# Number of recent tool calls to track in the window
+window_size = 10
+# Error ratio threshold for warning alerts (0.0-1.0)
+error_threshold = 0.5
+# Error ratio threshold for critical alerts (0.0-1.0)
+critical_threshold = 0.8
+
+[gateway]
+# Enable HTTP gateway for webhook ingestion (feature-gated: --features gateway)
+enabled = false
+# Bind address (127.0.0.1 = localhost only, 0.0.0.0 = all interfaces)
+bind = "127.0.0.1"
+# HTTP port
+port = 8090
+# auth_token = "secret"  # optional, from vault ZEPH_GATEWAY_TOKEN
+# Rate limit: max requests per minute per IP
+rate_limit = 120
+# Maximum request body size in bytes (1MB)
+max_body_size = 1048576
+
+[daemon]
+# Enable daemon supervisor
+enabled = false
+# PID file location
+pid_file = "~/.zeph/zeph.pid"
+# Health check interval in seconds
+health_interval_secs = 30
+# Maximum restart backoff in seconds
+max_restart_backoff_secs = 60
+
+[scheduler]
+# Enable cron scheduler (feature-gated: --features scheduler)
+enabled = true
+# Example task definitions:
+# [[scheduler.tasks]]
+# name = "memory_cleanup"
+# cron = "0 0 0 * * *"
+# kind = "memory_cleanup"
+# config = { max_age_days = 90 }
+#
+# [[scheduler.tasks]]
+# name = "health_check"
+# cron = "0 */5 * * * *"
+# kind = "health_check"
+
+[security]
+# Redact secrets (API keys, tokens) from LLM responses before display
+redact_secrets = true
+# Tool access level: "readonly" (observe only), "supervised" (default, with confirmations), "full" (all tools, no confirmations)
+autonomy_level = "supervised"
+
+[security.content_isolation]
+# Enable the 4-step sanitization pipeline for untrusted content (default: true)
+enabled = true
+# Maximum byte length of untrusted content before truncation (default: 65536)
+max_content_size = 65536
+# Flag detected injection patterns in the spotlighting wrapper (default: true)
+flag_injection_patterns = true
+# Wrap untrusted content in spotlighting XML delimiters (default: true)
+spotlight_untrusted = true
+
+[security.content_isolation.quarantine]
+# Route high-risk content through an isolated LLM for fact extraction (default: false)
+enabled = false
+# Source kinds to route through quarantine (default: web_scrape, a2a_message)
+sources = ["web_scrape", "a2a_message"]
+# Provider to use for quarantine LLM calls — must be a recognized provider name
+# (e.g. "claude", "ollama", "openai", or a compatible entry name)
+model = "claude"
+
+[security.pii_filter]
+# Scrub PII from tool outputs before they enter LLM context and debug dumps (default: false)
+enabled = false
+# Scrub email addresses (default: true)
+filter_email = true
+# Scrub US phone numbers (default: true)
+filter_phone = true
+# Scrub US Social Security Numbers (default: true)
+filter_ssn = true
+# Scrub credit card numbers (16-digit patterns) (default: true)
+filter_credit_card = true
+# Custom regex patterns (optional, in addition to built-ins)
+# [[security.pii_filter.custom_patterns]]
+# name = "employee_id"
+# pattern = "EMP-\\d{6}"
+# replacement = "[PII:employee_id]"
+
+[security.memory_validation]
+# Validate content before memory_save writes and graph extraction (default: true)
+enabled = true
+# Maximum byte length of content passed to memory_save (default: 4096)
+max_content_bytes = 4096
+# Maximum byte length of a single entity name in graph extraction (default: 256)
+max_entity_name_bytes = 256
+# Maximum byte length of an edge fact string in graph extraction (default: 1024)
+max_fact_bytes = 1024
+# Maximum number of entities allowed per graph extraction result (default: 50)
+max_entities_per_extraction = 50
+# Maximum number of edges allowed per graph extraction result (default: 100)
+max_edges_per_extraction = 100
+# Forbidden substring patterns — content containing any is rejected (default: empty)
+# forbidden_content_patterns = ["<script", "javascript:"]
+
+[security.rate_limit]
+# Per-category sliding-window rate limiter for tool calls (default: false)
+enabled = false
+# Maximum shell tool calls per 60-second window (default: 30)
+shell_calls_per_minute = 30
+# Maximum web scrape tool calls per 60-second window (default: 20)
+web_calls_per_minute = 20
+# Maximum memory tool calls per 60-second window (default: 60)
+memory_calls_per_minute = 60
+# Maximum MCP tool calls per 60-second window (default: 40)
+mcp_calls_per_minute = 40
+# Maximum other tool calls per 60-second window (default: 60)
+other_calls_per_minute = 60
+# Circuit breaker cooldown in seconds after limit is exceeded (default: 30)
+circuit_breaker_cooldown_secs = 30
+
+[security.guardrail]
+# Enable LLM-based prompt injection pre-screener (default: false)
+enabled = false
+# Provider for guardrail classification — must be a leaf provider (ollama, claude, openai, compatible)
+# provider = "ollama"
+# Safety model to use (e.g. llama-guard-3:1b for Ollama)
+# model = "llama-guard-3:1b"
+# Timeout for each classification call in milliseconds (default: 500)
+timeout_ms = 500
+# Action when input is flagged: "block" (default) or "warn"
+action = "block"
+# Behavior on timeout or LLM error: "closed" = block (default), "open" = allow
+fail_strategy = "closed"
+# Also scan tool outputs before they enter message history (default: false; opt-in)
+scan_tool_output = false
+# Maximum characters sent to the guard model — input is truncated (default: 4096)
+max_input_chars = 4096
+
+# [telegram]
+# token = "your-bot-token"
+# Allowed usernames (empty = allow all except for /start command)
+# allowed_users = ["username1", "username2"]
+
+[timeouts]
+# LLM chat completion timeout in seconds
+llm_seconds = 120
+# Embedding generation timeout in seconds
+embedding_seconds = 30
+# A2A remote call timeout in seconds
+a2a_seconds = 30
+# Maximum number of tool calls to execute in parallel
+max_parallel_tools = 8
+
+[debug]
+# Enable debug dump: write every LLM request/response pair to timestamped files.
+# CLI flag --debug-dump takes priority over this setting.
+# Use /debug-dump in TUI/CLI to toggle at runtime.
+enabled = false
+# Directory where per-session subdirectories are created
+# Defaults to the user data dir (for example ~/.local/share/zeph/debug on Linux,
+# ~/Library/Application Support/Zeph/debug on macOS,
+# %LOCALAPPDATA%\Zeph\debug on Windows).
+# output_dir = "/absolute/path/to/debug"
+# Output format for LLM request files:
+#   "json"  — internal zeph-llm representation (default)
+#   "raw"   — actual API payload (system extracted, content blocks, mirrors what is sent to the provider)
+#   "trace" — OpenTelemetry-compatible OTLP JSON spans written to trace.json at session end
+#             Use --dump-format trace on the CLI to override at runtime.
+format = "json"
+
+[debug.traces]
+# OTLP gRPC endpoint for trace export (only used when format = "trace" and otel feature enabled).
+# Falls back to observability.endpoint if unset.
+otlp_endpoint = "http://localhost:4317"
+# Service name reported to the OTel collector.
+service_name = "zeph"
+# Redact secrets and sensitive paths from span attributes (recommended).
+redact = true
+
+[tui]
+# Show role prefix labels ([user], [zeph], etc.) in chat messages
+show_source_labels = false
+
+[acp]
+# Auto-start ACP server on plain `zeph` startup using the configured transport (CLI flags override)
+enabled = false
+# Agent name advertised to IDE clients
+agent_name = "zeph"
+# Transport mode: "stdio" (default, for IDE embedding), "http", or "both"
+transport = "stdio"
+# Bind address for the HTTP transport
+http_bind = "127.0.0.1:9800"
+# Maximum number of concurrent ACP sessions (LRU eviction when exceeded)
+max_sessions = 4
+# Session idle timeout in seconds before eviction
+session_idle_timeout_secs = 1800
+# Reload/config broadcast backlog per ACP session fan-out
+broadcast_capacity = 256
+# Whether to serve the /.well-known/acp.json agent discovery manifest (HTTP/both only)
+discovery_enabled = true
+# LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-4-5", "ollama:llama3"]
+available_models = []
+
+[acp.lsp]
+# Enable LSP code intelligence extension when IDE advertises lsp capability
+enabled = true
+# Fetch diagnostics automatically when lsp/didSave notification is received
+auto_diagnostics_on_save = true
+# Maximum diagnostics to accept per file
+max_diagnostics_per_file = 20
+# Maximum files in diagnostics cache (LRU eviction)
+max_diagnostic_files = 5
+# Maximum reference locations returned
+max_references = 100
+# Maximum workspace symbol search results
+max_workspace_symbols = 50
+# Timeout in seconds for LSP extension method calls
+request_timeout_secs = 10
+
+[agents]
+# Enable sub-agent spawning (required for /agent commands and multi-agent workflows)
+enabled = false
+# Maximum number of sub-agents that can run concurrently
+max_concurrent = 1
+# Allow sub-agents to use bypass_permissions mode (enable only in trusted environments)
+allow_bypass_permissions = false
+# Enable writing JSONL transcripts for sub-agent sessions (required for /agent resume)
+transcript_enabled = true
+# Maximum number of transcript files to retain (0 = unlimited)
+transcript_max_files = 50
+
+[orchestration]
+# Enable the orchestration subsystem (/plan commands and task graph execution)
+enabled = false
+# Maximum number of tasks in a single plan graph
+max_tasks = 20
+# Maximum number of tasks that can run in parallel
+max_parallel = 4
+# Default failure strategy: "abort", "retry", "skip", or "ask"
+default_failure_strategy = "abort"
+# Default number of retries for the retry failure strategy
+default_max_retries = 3
+# Task execution timeout in seconds (0 = no timeout)
+task_timeout_secs = 300
+# Maximum tokens budget for planner LLM responses
+planner_max_tokens = 4096
+# Total character budget for cross-task dependency context injection
+dependency_context_budget = 16384
+# Show a confirmation prompt before executing a plan
+confirm_before_execute = true
+# Maximum tokens budget for aggregation LLM calls
+aggregator_max_tokens = 4096
+# Backoff in ms before retrying deferred tasks
+deferral_backoff_ms = 250
+
+[experiments]
+# Enable the autonomous self-experimentation engine
+enabled = false
+# Maximum number of experiments to run in a single session
+max_experiments = 20
+# Maximum wall-clock time per experiment session in seconds
+max_wall_time_secs = 3600
+# Minimum relative improvement (%) required to keep an experiment result
+min_improvement = 0.5
+# Token budget for evaluation LLM calls
+eval_budget_tokens = 100000
+# Automatically apply improvements without confirmation
+auto_apply = false
+
+[experiments.schedule]
+# Enable scheduled automatic experiment runs
+enabled = false
+# Cron expression for scheduled runs (default: 3am daily)
+cron = "0 3 * * *"
+# Maximum experiments per scheduled run
+max_experiments_per_run = 20
+# Wall-time cap for a single scheduled session in seconds
+max_wall_time_secs = 1800
+
+[logging]
+# Log file path (empty string disables file logging)
+# Defaults to the user data dir (for example ~/.local/share/zeph/logs/zeph.log on Linux,
+# ~/Library/Application Support/Zeph/logs/zeph.log on macOS,
+# %LOCALAPPDATA%\Zeph\logs\zeph.log on Windows).
+# file = "/absolute/path/to/zeph.log"
+# Log level for the file sink: "trace", "debug", "info", "warn", "error"
+level = "info"
+# Rotation strategy: "daily", "hourly", or "never"
+rotation = "daily"
+# Maximum number of rotated log files to retain
+max_files = 7
+
+# Knowledge graph memory
+# Extracts entities and relations from conversations into a persistent graph.
+# WARNING: entity names and facts are stored verbatim without PII redaction.
+# Do not enable when processing conversations with sensitive personal data.
+# [memory.graph]
+# enabled = false
+# # LLM model used for entity/relation extraction (required when enabled)
+# extract_model = "claude-sonnet-4-5-20250929"
+# # Maximum entities extracted per message
+# max_entities_per_message = 10
+# # Maximum edges (relations) extracted per message
+# max_edges_per_message = 15
+# # Messages between community detection runs
+# community_refresh_interval = 100
+# # Cosine similarity threshold for entity deduplication (0.0-1.0)
+# entity_similarity_threshold = 0.85
+# # Use embedding-based entity resolution instead of name matching
+# use_embedding_resolution = false
+# # Ambiguity threshold for embedding resolution (0.0-1.0)
+# entity_ambiguous_threshold = 0.70
+# # Timeout in seconds for extraction LLM calls
+# extraction_timeout_secs = 15
+# # Maximum graph traversal depth for recall queries
+# max_hops = 2
+# # Maximum entities to return per recall query
+# recall_limit = 10
+# # Days to retain expired edges before deletion
+# expired_edge_retention_days = 90
+# # Maximum total entities in the graph (0 = unlimited)
+# max_entities = 0
+# # Temporal recency decay rate for graph recall scoring (1/day). 0.0 = disabled.
+# temporal_decay_rate = 0.0
+
+# ACON failure-driven compression guidelines
+# Learns compression rules from detected context-loss events after hard compaction.
+# Requires the `compression-guidelines` feature flag to be enabled at compile time.
+# [memory.compression_guidelines]
+# enabled = false
+# # Minimum unused failure pairs before triggering a guidelines update
+# update_threshold = 5
+# # Maximum token budget for the guidelines document
+# max_guidelines_tokens = 500
+# # Maximum failure pairs consumed per update cycle
+# max_pairs_per_update = 10
+# # Number of turns after hard compaction to watch for context loss
+# detection_window_turns = 10
+# # Interval in seconds between background updater checks
+# update_interval_secs = 300
+# # Maximum unused failure pairs to retain (cleanup policy)
+# max_stored_pairs = 100

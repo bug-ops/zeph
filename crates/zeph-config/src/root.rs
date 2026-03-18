@@ -1,61 +1,42 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// All pure-data types are now defined in zeph-config and re-exported here
-// for backward compatibility. zeph-core-internal types (Config, ResolvedSecrets)
-// that depend on vault::Secret remain here.
-
-#[cfg(test)]
-mod tests;
-
-pub use zeph_config::{
-    AcpConfig, AcpLspConfig, AcpTransport, AgentConfig, CandleConfig, CascadeClassifierMode,
-    CascadeConfig, CloudLlmConfig, CompatibleConfig, CompressionConfig, CompressionStrategy,
-    CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig, DocumentConfig, DumpFormat,
-    ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig, GeminiConfig,
-    GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig, LearningConfig,
-    LlmConfig, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig,
-    McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig, OAuthTokenStorage,
-    ObservabilityConfig, OllamaConfig, OpenAiConfig, OrchestrationConfig, OrchestratorConfig,
-    OrchestratorProviderConfig, PermissionMode, ProviderKind, PruningStrategy, RateLimitConfig,
-    RouterConfig, RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig,
-    ScheduledTaskKind, SchedulerConfig, SecurityConfig, SemanticConfig, SessionsConfig,
-    SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig, SlackConfig, SttConfig,
-    SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks, TelegramConfig, TimeoutConfig,
-    ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig, VectorBackend,
-};
-
-#[cfg(feature = "lsp-context")]
-pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
-
-pub use zeph_config::{
-    ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
-    PiiFilterConfig, QuarantineConfig,
-};
-
-#[cfg(feature = "guardrail")]
-pub use zeph_config::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
-
-pub use zeph_config::A2aServerConfig;
-
-pub use zeph_config::{
-    DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,
-    default_debug_dir, default_log_file_path, default_skills_dir, default_sqlite_path,
-    is_legacy_default_debug_dir, is_legacy_default_log_file, is_legacy_default_skills_path,
-    is_legacy_default_sqlite_path,
-};
-
-pub use zeph_config::providers::{default_stt_language, default_stt_model, default_stt_provider};
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use zeph_common::secret::Secret;
 use zeph_tools::ToolsConfig;
 
-use crate::vault::Secret;
+use crate::agent::{AgentConfig, FocusConfig, SubAgentConfig};
+use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig};
+use crate::defaults::{default_skill_paths, default_sqlite_path_field};
+use crate::experiment::{ExperimentConfig, OrchestrationConfig};
+use crate::features::{
+    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
+    SchedulerConfig, SkillPromptMode, SkillsConfig, VaultConfig,
+};
+use crate::learning::LearningConfig;
+use crate::logging::LoggingConfig;
+use crate::memory::{
+    CompressionConfig, DocumentConfig, GraphConfig, MemoryConfig, RoutingConfig, SemanticConfig,
+    SessionsConfig, SidequestConfig, VectorBackend,
+};
+use crate::providers::{
+    LlmConfig, ProviderKind, get_default_embedding_model, get_default_response_cache_ttl_secs,
+    get_default_router_ema_alpha, get_default_router_reorder_interval,
+};
+use crate::security::TrustConfig;
+use crate::security::{SecurityConfig, TimeoutConfig};
+use crate::ui::{AcpConfig, TuiConfig};
 
-use zeph_config::defaults::{default_skill_paths, default_sqlite_path_field};
+#[cfg(feature = "lsp-context")]
+use crate::ui::LspConfig;
 
+/// Top-level agent configuration.
+///
+/// Loaded from a TOML file via [`Config::load`]. Env-var overrides can be applied
+/// via [`crate::env::apply_env_overrides`]. Secret resolution via `VaultProvider`
+/// is handled in `zeph-core` through the `SecretResolver` trait.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub agent: AgentConfig,
@@ -109,10 +90,15 @@ pub struct Config {
     #[cfg(feature = "lsp-context")]
     #[serde(default)]
     pub lsp: LspConfig,
+    /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
 }
 
+/// Secrets resolved from the vault at runtime.
+///
+/// Populated by `SecretResolver::resolve_secrets()` in `zeph-core`.
+/// Never serialized to TOML.
 #[derive(Debug, Default)]
 pub struct ResolvedSecrets {
     pub claude_api_key: Option<Secret>,
@@ -130,10 +116,6 @@ pub struct ResolvedSecrets {
 impl Default for Config {
     #[allow(clippy::too_many_lines)] // flat struct literal with one field per config section — no meaningful split exists
     fn default() -> Self {
-        use zeph_config::providers::{
-            get_default_embedding_model, get_default_response_cache_ttl_secs,
-            get_default_router_ema_alpha, get_default_router_reorder_interval,
-        };
         Self {
             agent: AgentConfig {
                 name: "Zeph".into(),

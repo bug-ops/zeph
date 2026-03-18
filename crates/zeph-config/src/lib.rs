@@ -1,23 +1,28 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Pure-data configuration types for Zeph.
+//! Configuration types and loaders for Zeph.
 //!
-//! This crate contains all configuration struct and enum definitions that are
-//! serializable/deserializable via serde. No business logic or I/O lives here.
-//! Config loading, env-var overrides, and vault resolution remain in `zeph-core`.
+//! This crate contains configuration struct and enum definitions, the TOML loader,
+//! environment variable overrides, validation, and migration helpers.
+//! Vault secret resolution is handled in `zeph-core` through the `SecretResolver` trait.
 
 pub mod agent;
 pub mod channels;
 pub mod defaults;
 pub mod dump_format;
+mod env;
+pub mod error;
 pub mod experiment;
 pub mod features;
 pub mod learning;
+mod loader;
 pub mod logging;
 pub mod memory;
+pub mod migrate;
 pub mod providers;
 pub mod rate_limit;
+pub mod root;
 pub mod sanitizer;
 pub mod security;
 pub mod subagent;
@@ -71,3 +76,7 @@ pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
 
 #[cfg(feature = "lsp-context")]
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
+
+// Top-level config struct, error type, and resolved secrets — moved from zeph-core.
+pub use error::ConfigError;
+pub use root::{Config, ResolvedSecrets};

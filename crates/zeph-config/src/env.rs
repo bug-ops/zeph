@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{Config, SttConfig, default_stt_language, default_stt_model, default_stt_provider};
+use crate::providers::{SttConfig, default_stt_language, default_stt_model, default_stt_provider};
+use crate::root::Config;
 
 impl Config {
-    pub(crate) fn apply_env_overrides(&mut self) {
+    pub fn apply_env_overrides(&mut self) {
         self.apply_env_overrides_core();
         self.apply_env_overrides_security();
     }
@@ -87,10 +88,10 @@ impl Config {
         if let Ok(v) = std::env::var("ZEPH_MEMORY_VECTOR_BACKEND") {
             match v.to_lowercase().as_str() {
                 "sqlite" => {
-                    self.memory.vector_backend = super::VectorBackend::Sqlite;
+                    self.memory.vector_backend = crate::memory::VectorBackend::Sqlite;
                 }
                 "qdrant" => {
-                    self.memory.vector_backend = super::VectorBackend::Qdrant;
+                    self.memory.vector_backend = crate::memory::VectorBackend::Qdrant;
                 }
                 _ => {}
             }
@@ -115,9 +116,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ZEPH_SKILLS_PROMPT_MODE") {
             match v.to_lowercase().as_str() {
-                "full" => self.skills.prompt_mode = super::SkillPromptMode::Full,
-                "compact" => self.skills.prompt_mode = super::SkillPromptMode::Compact,
-                "auto" => self.skills.prompt_mode = super::SkillPromptMode::Auto,
+                "full" => self.skills.prompt_mode = crate::features::SkillPromptMode::Full,
+                "compact" => self.skills.prompt_mode = crate::features::SkillPromptMode::Compact,
+                "auto" => self.skills.prompt_mode = crate::features::SkillPromptMode::Auto,
                 _ => {}
             }
         }

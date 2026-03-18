@@ -9414,6 +9414,8 @@ dependencies = [
 name = "zeph-common"
 version = "0.15.3"
 dependencies = [
+ "serde",
+ "thiserror 2.0.18",
  "tracing",
  "tree-sitter",
  "tree-sitter-go",
@@ -9421,6 +9423,7 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "zeroize",
 ]
 
 [[package]]
@@ -9428,11 +9431,17 @@ name = "zeph-config"
 version = "0.15.3"
 dependencies = [
  "dirs",
+ "insta",
  "ordered-float 5.1.0",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
  "toml 1.0.7+spec-1.1.0",
+ "toml_edit",
+ "tracing",
+ "zeph-common",
  "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
