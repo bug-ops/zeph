@@ -354,11 +354,11 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
         if config.correction_detection {
-            self.feedback_detector = super::feedback_detector::FeedbackDetector::new(
+            self.feedback.detector = super::feedback_detector::FeedbackDetector::new(
                 config.correction_confidence_threshold,
             );
             if config.detector_mode == crate::config::DetectorMode::Judge {
-                self.judge_detector = Some(super::feedback_detector::JudgeDetector::new(
+                self.feedback.judge = Some(super::feedback_detector::JudgeDetector::new(
                     config.judge_adaptive_low,
                     config.judge_adaptive_high,
                 ));
@@ -435,7 +435,7 @@ impl<C: Channel> Agent<C> {
             crate::sanitizer::memory_validation::MemoryWriteValidator::new(
                 security.memory_validation.clone(),
             );
-        self.rate_limiter =
+        self.runtime.rate_limiter =
             crate::agent::rate_limiter::ToolRateLimiter::new(security.rate_limit.clone());
 
         // Build pre-execution verifiers from config.

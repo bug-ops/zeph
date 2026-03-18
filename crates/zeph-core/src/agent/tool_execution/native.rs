@@ -762,7 +762,7 @@ impl<C: Channel> Agent<C> {
                 .iter()
                 .map(|&i| tool_calls[i].name.as_str())
                 .collect();
-            let rate_results = self.rate_limiter.check_batch(&tier_tool_names);
+            let rate_results = self.runtime.rate_limiter.check_batch(&tier_tool_names);
 
             for (tier_local_idx, &idx) in tier.indices.iter().enumerate() {
                 let tc = &tool_calls[idx];

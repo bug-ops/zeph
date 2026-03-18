@@ -70,7 +70,8 @@ use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 use state::CompressionState;
 use state::{
     DebugState, ExperimentState, IndexState, InstructionState, LifecycleState, McpState,
-    MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState, RuntimeConfig,
+    FeedbackState, MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState,
+    RuntimeConfig,
     SecurityState, SessionState, SkillState,
 };
 
@@ -134,8 +135,7 @@ pub struct Agent<C: Channel> {
     pub(super) context_manager: context_manager::ContextManager,
     pub(super) tool_orchestrator: tool_orchestrator::ToolOrchestrator,
     pub(super) learning_engine: learning_engine::LearningEngine,
-    pub(super) feedback_detector: feedback_detector::FeedbackDetector,
-    pub(super) judge_detector: Option<feedback_detector::JudgeDetector>,
+    pub(super) feedback: FeedbackState,
     pub(super) runtime: RuntimeConfig,
     pub(super) mcp: McpState,
     pub(super) index: IndexState,
@@ -150,7 +150,6 @@ pub struct Agent<C: Channel> {
     pub(super) providers: ProviderState,
     pub(super) metrics: MetricsState,
     pub(super) orchestration: OrchestrationState,
-    pub(super) rate_limiter: rate_limiter::ToolRateLimiter,
     /// Focus agent state: active session tracking, knowledge block, reminder counters (#1850).
     pub(super) focus: focus::FocusState,
     /// `SideQuest` state: cursor tracking, turn counter, eviction stats (#1885).
@@ -272,8 +271,10 @@ impl<C: Channel> Agent<C> {
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
             learning_engine: learning_engine::LearningEngine::new(),
-            feedback_detector: feedback_detector::FeedbackDetector::new(0.6),
-            judge_detector: None,
+            feedback: FeedbackState {
+                detector: feedback_detector::FeedbackDetector::new(0.6),
+                judge: None,
+            },
             debug_state: DebugState {
                 debug_dumper: None,
                 dump_format: crate::debug_dump::DumpFormat::default(),
@@ -292,6 +293,9 @@ impl<C: Channel> Agent<C> {
                 model_name: String::new(),
                 permission_policy: zeph_tools::PermissionPolicy::default(),
                 redact_credentials: true,
+                rate_limiter: rate_limiter::ToolRateLimiter::new(
+                    rate_limiter::RateLimitConfig::default(),
+                ),
             },
             mcp: McpState {
                 tools: Vec::new(),
@@ -391,9 +395,6 @@ impl<C: Channel> Agent<C> {
                 subagent_config: crate::config::SubAgentConfig::default(),
                 orchestration_config: crate::config::OrchestrationConfig::default(),
             },
-            rate_limiter: rate_limiter::ToolRateLimiter::new(
-                crate::agent::rate_limiter::RateLimitConfig::default(),
-            ),
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
         }
@@ -2787,7 +2788,8 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.content.as_str())
             .collect();
         let regex_signal = self
-            .feedback_detector
+            .feedback
+            .detector
             .detect(trimmed, &previous_user_messages);
 
         // Judge mode: invoke LLM in background if regex is borderline or missed.
@@ -2801,13 +2803,15 @@ impl<C: Channel> Agent<C> {
         // acceptable for the learning subsystem at MVP. Future: collect handles in
         // Agent and drain on graceful shutdown.
         // Check rate limit synchronously before deciding to spawn.
-        // The judge_detector is &mut self so check_rate_limit() can update call_times.
+        // The feedback.judge is &mut self so check_rate_limit() can update call_times.
         let judge_should_run = self
-            .judge_detector
+            .feedback
+            .judge
             .as_ref()
             .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
             && self
-                .judge_detector
+                .feedback
+                .judge
                 .as_mut() // lgtm[rust/cleartext-logging]
                 .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
 
@@ -3332,7 +3336,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         };
 
-        let outcome_type = if self.feedback_detector.detect(feedback, &[]).is_some() {
+        let outcome_type = if self.feedback.detector.detect(feedback, &[]).is_some() {
             "user_rejection"
         } else {
             "user_approval"
