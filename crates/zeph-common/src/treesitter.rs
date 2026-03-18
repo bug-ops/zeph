@@ -63,6 +63,7 @@ pub const GO_SYM_Q: &str = "
 /// Compile a tree-sitter query, logging a warning on failure.
 ///
 /// Returns `None` if the query string fails to compile (e.g. grammar version mismatch).
+#[must_use]
 pub fn compile_query(lang: &Language, source: &str, label: &str) -> Option<Query> {
     Query::new(lang, source)
         .map_err(|e| tracing::warn!("{label} query compile failed: {e}"))
@@ -78,9 +79,7 @@ pub fn lang_for_ext(ext: &str) -> Option<Language> {
         "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
         "py" | "pyi" => Some(tree_sitter_python::LANGUAGE.into()),
         "js" | "jsx" | "mjs" | "cjs" => Some(tree_sitter_javascript::LANGUAGE.into()),
-        "ts" | "tsx" | "mts" | "cts" => {
-            Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-        }
+        "ts" | "tsx" | "mts" | "cts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "go" => Some(tree_sitter_go::LANGUAGE.into()),
         _ => None,
     }

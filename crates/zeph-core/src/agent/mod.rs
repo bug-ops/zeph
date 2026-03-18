@@ -69,10 +69,9 @@ use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 #[cfg(feature = "context-compression")]
 use state::CompressionState;
 use state::{
-    DebugState, ExperimentState, IndexState, InstructionState, LifecycleState, McpState,
-    FeedbackState, MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState,
-    RuntimeConfig,
-    SecurityState, SessionState, SkillState,
+    DebugState, ExperimentState, FeedbackState, IndexState, InstructionState, LifecycleState,
+    McpState, MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState,
+    RuntimeConfig, SecurityState, SessionState, SkillState,
 };
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
