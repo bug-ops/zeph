@@ -27,6 +27,7 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
+use zeph_common::text::truncate_to_bytes;
 
 use crate::tool::McpTool;
 use zeph_tools::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
@@ -133,25 +134,6 @@ fn sanitize_for_log(text: &str) -> String {
             }
         })
         .collect()
-}
-
-/// Truncate `s` to at most `max_bytes` bytes, preserving UTF-8 char boundaries.
-fn truncate_to_bytes(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_owned();
-    }
-    // Walk chars until we exceed the byte budget
-    let mut byte_count = 0;
-    let mut end = 0;
-    for ch in s.chars() {
-        let ch_len = ch.len_utf8();
-        if byte_count + ch_len > max_bytes {
-            break;
-        }
-        byte_count += ch_len;
-        end += ch_len;
-    }
-    s[..end].to_owned()
 }
 
 // ---------------------------------------------------------------------------

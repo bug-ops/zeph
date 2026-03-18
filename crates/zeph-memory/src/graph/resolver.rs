@@ -8,6 +8,8 @@ use futures::stream::{self, StreamExt as _};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use zeph_common::sanitize::strip_control_chars;
+use zeph_common::text::truncate_to_bytes_ref;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
@@ -33,25 +35,6 @@ const ENTITY_COLLECTION: &str = "zeph_graph_entities";
 
 /// Timeout for a single `embed()` call in seconds.
 const EMBED_TIMEOUT_SECS: u64 = 30;
-
-/// Strip ASCII control characters and Unicode `BiDi` override codepoints.
-fn strip_control_chars(s: &str) -> String {
-    s.chars()
-        .filter(|c| !c.is_control() && !matches!(*c as u32, 0x202A..=0x202E | 0x2066..=0x2069))
-        .collect()
-}
-
-/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 char boundary.
-fn truncate_to_bytes(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut boundary = max_bytes;
-    while !s.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    &s[..boundary]
-}
 
 /// Outcome of an entity resolution attempt.
 #[derive(Debug, Clone, PartialEq)]
@@ -136,7 +119,7 @@ impl<'a> EntityResolver<'a> {
     fn normalize_name(name: &str) -> String {
         let lowered = name.trim().to_lowercase();
         let cleaned = strip_control_chars(&lowered);
-        let normalized = truncate_to_bytes(&cleaned, MAX_ENTITY_NAME_BYTES).to_owned();
+        let normalized = truncate_to_bytes_ref(&cleaned, MAX_ENTITY_NAME_BYTES).to_owned();
         if normalized.len() < cleaned.len() {
             tracing::debug!(
                 "graph resolver: entity name truncated to {} bytes",
@@ -259,7 +242,7 @@ impl<'a> EntityResolver<'a> {
         normalized: &str,
         summary: Option<&str>,
     ) -> Option<Vec<f32>> {
-        let safe_summary = truncate_to_bytes(summary.unwrap_or(""), MAX_FACT_BYTES);
+        let safe_summary = truncate_to_bytes_ref(summary.unwrap_or(""), MAX_FACT_BYTES);
         let embed_text = format!("{normalized}: {safe_summary}");
         let embed_result = tokio::time::timeout(
             std::time::Duration::from_secs(EMBED_TIMEOUT_SECS),
@@ -508,7 +491,7 @@ impl<'a> EntityResolver<'a> {
         // (e.g. when control chars were stripped, leaving a shorter string).
         let original_trimmed = original_name.trim().to_lowercase();
         let original_clean_str = strip_control_chars(&original_trimmed);
-        let original_clean = truncate_to_bytes(&original_clean_str, MAX_ENTITY_NAME_BYTES);
+        let original_clean = truncate_to_bytes_ref(&original_clean_str, MAX_ENTITY_NAME_BYTES);
         if original_clean != normalized {
             self.store.add_alias(entity_id, original_clean).await?;
         }
@@ -540,7 +523,7 @@ impl<'a> EntityResolver<'a> {
             if !new.is_empty() && !existing_summary.is_empty() {
                 let combined = format!("{existing_summary}; {new}");
                 // TODO(S2): use LLM-based summary merge when summary exceeds 512 bytes
-                truncate_to_bytes(&combined, MAX_FACT_BYTES).to_owned()
+                truncate_to_bytes_ref(&combined, MAX_FACT_BYTES).to_owned()
             } else if !new.is_empty() {
                 new.to_owned()
             } else {
@@ -838,10 +821,11 @@ impl<'a> EntityResolver<'a> {
         episode_id: Option<MessageId>,
     ) -> Result<Option<i64>, MemoryError> {
         let relation_clean = strip_control_chars(&relation.trim().to_lowercase());
-        let normalized_relation = truncate_to_bytes(&relation_clean, MAX_RELATION_BYTES).to_owned();
+        let normalized_relation =
+            truncate_to_bytes_ref(&relation_clean, MAX_RELATION_BYTES).to_owned();
 
         let fact_clean = strip_control_chars(fact.trim());
-        let normalized_fact = truncate_to_bytes(&fact_clean, MAX_FACT_BYTES).to_owned();
+        let normalized_fact = truncate_to_bytes_ref(&fact_clean, MAX_FACT_BYTES).to_owned();
 
         // Fetch only exact-direction edges — no reverse edges to filter out
         let existing_edges = self.store.edges_exact(source_id, target_id).await?;
@@ -1309,15 +1293,15 @@ mod tests {
     #[test]
     fn truncate_to_bytes_exact_boundary() {
         let s = "hello";
-        assert_eq!(truncate_to_bytes(s, 5), "hello");
-        assert_eq!(truncate_to_bytes(s, 3), "hel");
+        assert_eq!(truncate_to_bytes_ref(s, 5), "hello");
+        assert_eq!(truncate_to_bytes_ref(s, 3), "hel");
     }
 
     #[test]
     fn truncate_to_bytes_respects_utf8_boundary() {
         // "é" is 2 bytes in UTF-8 — truncating at 1 byte should give ""
         let s = "élan";
-        let truncated = truncate_to_bytes(s, 1);
+        let truncated = truncate_to_bytes_ref(s, 1);
         assert!(s.is_char_boundary(truncated.len()));
     }
 

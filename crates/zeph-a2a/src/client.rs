@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::net::IpAddr;
 use std::pin::Pin;
 
 use eventsource_stream::Eventsource;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio_stream::StreamExt;
+use zeph_common::net::is_private_ip;
 
 use crate::error::A2aError;
 use crate::jsonrpc::{
@@ -188,48 +188,10 @@ impl A2aClient {
     }
 }
 
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let n = u32::from(v4);
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                // CGNAT range 100.64.0.0/10 (RFC 6598).
-                || (n & 0xFFC0_0000 == 0x6440_0000)
-        }
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() || v6.is_unspecified() {
-                return true;
-            }
-            let seg = v6.segments();
-            // fe80::/10 — link-local
-            if seg[0] & 0xffc0 == 0xfe80 {
-                return true;
-            }
-            // fc00::/7 — unique local
-            if seg[0] & 0xfe00 == 0xfc00 {
-                return true;
-            }
-            // ::ffff:x.x.x.x — IPv4-mapped, check inner IPv4
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                let n = u32::from(v4);
-                return v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_broadcast()
-                    || (n & 0xFFC0_0000 == 0x6440_0000);
-            }
-            false
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+
     use super::*;
     use crate::jsonrpc::{JsonRpcError, JsonRpcResponse};
     use crate::types::{

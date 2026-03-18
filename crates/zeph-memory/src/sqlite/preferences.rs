@@ -1,21 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_common::text::truncate_to_bytes_ref;
+
 use super::SqliteStore;
 use crate::error::MemoryError;
-
-/// Truncate `s` to at most `max_bytes` bytes at a valid UTF-8 char boundary.
-fn truncate_to_bytes(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    // Walk backwards from max_bytes to find a valid char boundary.
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
 
 #[derive(Debug, Clone)]
 pub struct LearnedPreferenceRow {
@@ -62,8 +51,8 @@ impl SqliteStore {
     ) -> Result<(), MemoryError> {
         const MAX_KEY_BYTES: usize = 128;
         const MAX_VALUE_BYTES: usize = 256;
-        let key_trunc = truncate_to_bytes(key, MAX_KEY_BYTES);
-        let value_trunc = truncate_to_bytes(value, MAX_VALUE_BYTES);
+        let key_trunc = truncate_to_bytes_ref(key, MAX_KEY_BYTES);
+        let value_trunc = truncate_to_bytes_ref(value, MAX_VALUE_BYTES);
         if key_trunc.len() < key.len() {
             tracing::warn!(
                 original_len = key.len(),

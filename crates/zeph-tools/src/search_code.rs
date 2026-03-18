@@ -4,14 +4,144 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::LazyLock;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tree_sitter::{Parser, QueryCursor, StreamingIterator};
-use zeph_index::languages::detect_language;
+use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use crate::registry::{InvocationHint, ToolDef};
+
+// ---------------------------------------------------------------------------
+// Language detection (inlined from zeph-index to avoid same-layer dependency)
+// ---------------------------------------------------------------------------
+
+const RUST_SYM_Q: &str = "
+(function_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(struct_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(enum_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(trait_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(impl_item type: (_) @name) @def
+(type_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
+(const_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(static_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(mod_item (visibility_modifier)? @vis name: (identifier) @name) @def
+(macro_definition name: (identifier) @name) @def
+";
+const PYTHON_SYM_Q: &str = "
+(function_definition name: (identifier) @name) @def
+(class_definition name: (identifier) @name) @def
+";
+const JS_SYM_Q: &str = "
+(function_declaration name: (identifier) @name) @def
+(class_declaration name: (identifier) @name) @def
+(method_definition name: (property_identifier) @name) @def
+(export_statement declaration: (function_declaration name: (identifier) @name)) @def
+(export_statement declaration: (class_declaration name: (identifier) @name)) @def
+(lexical_declaration (variable_declarator name: (identifier) @name)) @def
+";
+const TS_SYM_Q: &str = "
+(function_declaration name: (identifier) @name) @def
+(class_declaration name: (type_identifier) @name) @def
+(method_definition name: (property_identifier) @name) @def
+(interface_declaration name: (type_identifier) @name) @def
+(type_alias_declaration name: (type_identifier) @name) @def
+(export_statement declaration: (function_declaration name: (identifier) @name)) @def
+(export_statement declaration: (class_declaration name: (type_identifier) @name)) @def
+(lexical_declaration (variable_declarator name: (identifier) @name)) @def
+";
+const GO_SYM_Q: &str = "
+(function_declaration name: (identifier) @name) @def
+(method_declaration name: (field_identifier) @name) @def
+(type_declaration (type_spec name: (type_identifier) @name)) @def
+(const_declaration (const_spec name: (identifier) @name)) @def
+";
+
+fn compile_sym_query(lang: &tree_sitter::Language, src: &str, label: &str) -> Option<Query> {
+    Query::new(lang, src)
+        .map_err(|e| tracing::warn!("{label} symbol query compile failed: {e}"))
+        .ok()
+}
+
+struct LangInfo {
+    grammar: tree_sitter::Language,
+    symbol_query: Option<&'static Query>,
+}
+
+fn lang_info_for_path(path: &Path) -> Option<LangInfo> {
+    let ext = path.extension()?.to_str()?;
+    match ext {
+        "rs" => {
+            static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
+                let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+                compile_sym_query(&lang, RUST_SYM_Q, "rust")
+            });
+            Some(LangInfo {
+                grammar: tree_sitter_rust::LANGUAGE.into(),
+                symbol_query: Q.as_ref(),
+            })
+        }
+        "py" | "pyi" => {
+            static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
+                let lang: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
+                compile_sym_query(&lang, PYTHON_SYM_Q, "python")
+            });
+            Some(LangInfo {
+                grammar: tree_sitter_python::LANGUAGE.into(),
+                symbol_query: Q.as_ref(),
+            })
+        }
+        "js" | "jsx" | "mjs" | "cjs" => {
+            static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
+                let lang: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
+                compile_sym_query(&lang, JS_SYM_Q, "javascript")
+            });
+            Some(LangInfo {
+                grammar: tree_sitter_javascript::LANGUAGE.into(),
+                symbol_query: Q.as_ref(),
+            })
+        }
+        "ts" | "tsx" | "mts" | "cts" => {
+            static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
+                let lang: tree_sitter::Language =
+                    tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+                compile_sym_query(&lang, TS_SYM_Q, "typescript")
+            });
+            Some(LangInfo {
+                grammar: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+                symbol_query: Q.as_ref(),
+            })
+        }
+        "go" => {
+            static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
+                let lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
+                compile_sym_query(&lang, GO_SYM_Q, "go")
+            });
+            Some(LangInfo {
+                grammar: tree_sitter_go::LANGUAGE.into(),
+                symbol_query: Q.as_ref(),
+            })
+        }
+        "sh" | "bash" | "zsh" => Some(LangInfo {
+            grammar: tree_sitter_bash::LANGUAGE.into(),
+            symbol_query: None,
+        }),
+        "toml" => Some(LangInfo {
+            grammar: tree_sitter_toml_ng::LANGUAGE.into(),
+            symbol_query: None,
+        }),
+        "json" | "jsonc" => Some(LangInfo {
+            grammar: tree_sitter_json::LANGUAGE.into(),
+            symbol_query: None,
+        }),
+        "md" | "markdown" => Some(LangInfo {
+            grammar: tree_sitter_md::LANGUAGE.into(),
+            symbol_query: None,
+        }),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchCodeSource {
@@ -418,13 +548,11 @@ fn collect_structural_hits(
         if !matches_pattern(root, &path, matcher) {
             continue;
         }
-        let Some(lang) = detect_language(&path) else {
+        let Some(info) = lang_info_for_path(&path) else {
             continue;
         };
-        let Some(grammar) = lang.grammar() else {
-            continue;
-        };
-        let Some(query) = lang.symbol_query() else {
+        let grammar = info.grammar;
+        let Some(query) = info.symbol_query.as_ref() else {
             continue;
         };
         let Ok(source) = std::fs::read_to_string(&path) else {

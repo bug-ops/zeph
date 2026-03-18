@@ -1,0 +1,20 @@
+[package]
+name = "zeph-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-common"
+keywords.workspace = true
+categories.workspace = true
+description = "Shared utility functions for Zeph crates (text, net, sanitize)"
+readme = "README.md"
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true
