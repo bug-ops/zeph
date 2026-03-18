@@ -54,6 +54,7 @@ toml_edit.workspace = true
 tracing.workspace = true
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+zeph-common.workspace = true
 zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true

@@ -35,7 +35,7 @@ pub mod overflow_tools;
 pub mod sanitizer;
 pub mod skill_loader;
 pub mod subagent;
-pub mod text;
+pub use zeph_common::text;
 
 #[cfg(test)]
 pub mod testing;
