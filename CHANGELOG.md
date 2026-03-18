@@ -35,6 +35,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - docs(specs): amend constitution to formalize layered crate DAG (Layer 0–4)
   - Replaces "leaf crates must NOT import each other directly" with explicit layer model
   - Documents which cross-crate dependencies are legitimate (downward-only)
+- docs(zeph-common): add `README.md` — describes modules, optional treesitter feature, and usage examples (closes #1969)
+- refactor(zeph-core): consolidate `text` module into `zeph-common` — delete duplicate `zeph-core::text`, add `zeph-common` dep, re-export via `pub use` (closes #1967)
+- refactor(zeph-common): extract shared tree-sitter symbol query constants and helpers into optional `treesitter` feature — `zeph-tools` and `zeph-index` now import from `zeph-common::treesitter` (closes #1968)
+- refactor(agent): group loose `Agent` fields into `FeedbackState` and move `rate_limiter` into `RuntimeConfig` (closes #1971)
+  - `feedback_detector` + `judge_detector` → `feedback: FeedbackState { detector, judge }`
+  - `rate_limiter` moved from top-level `Agent` field into `RuntimeConfig`
+  - All ~30 call sites updated across `mod.rs`, `builder.rs`, `tool_execution/native.rs`
+- test(zeph-core): add unit tests for agent state sub-structs in `agent/state/tests.rs` (closes #1970)
+  - Covers `InstructionState`, `ExperimentState`, `MessageState`, `SessionState`, `RuntimeConfig`, `FeedbackState`, and `CompressionState`
+  - Feature-gated tests: `experiments` and `context-compression` paths verified independently
 
 ### Fixed
 
