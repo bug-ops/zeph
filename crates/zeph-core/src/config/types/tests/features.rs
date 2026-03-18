@@ -25,7 +25,8 @@ fn orchestration_config_serde_roundtrip() {
 #[test]
 fn orchestration_config_failure_strategy_valid() {
     let cfg = OrchestrationConfig::default(); // "abort"
-    let fs = cfg.failure_strategy().expect("should parse");
+    let fs: crate::orchestration::FailureStrategy =
+        cfg.default_failure_strategy.parse().expect("should parse");
     assert_eq!(fs, crate::orchestration::FailureStrategy::Abort);
 }
 
@@ -35,7 +36,11 @@ fn orchestration_config_failure_strategy_invalid() {
         default_failure_strategy: "abort_all".to_string(),
         ..Default::default()
     };
-    assert!(cfg.failure_strategy().is_err());
+    assert!(
+        cfg.default_failure_strategy
+            .parse::<crate::orchestration::FailureStrategy>()
+            .is_err()
+    );
 }
 
 #[test]

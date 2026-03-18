@@ -87,19 +87,23 @@ pub fn default_stt_language() -> String {
     "auto".into()
 }
 
-pub(super) fn get_default_embedding_model() -> String {
+#[must_use]
+pub fn get_default_embedding_model() -> String {
     default_embedding_model()
 }
 
-pub(super) fn get_default_response_cache_ttl_secs() -> u64 {
+#[must_use]
+pub fn get_default_response_cache_ttl_secs() -> u64 {
     default_response_cache_ttl_secs()
 }
 
-pub(super) fn get_default_router_ema_alpha() -> f64 {
+#[must_use]
+pub fn get_default_router_ema_alpha() -> f64 {
     default_router_ema_alpha()
 }
 
-pub(super) fn get_default_router_reorder_interval() -> u64 {
+#[must_use]
+pub fn get_default_router_reorder_interval() -> u64 {
     default_router_reorder_interval()
 }
 

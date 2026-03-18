@@ -10,7 +10,8 @@ use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use regex::{Regex, RegexBuilder};
-use serde::{Deserialize, Serialize};
+
+pub use zeph_config::{CustomPiiPattern, PiiFilterConfig};
 
 // ---------------------------------------------------------------------------
 // Built-in patterns
@@ -44,69 +45,6 @@ static SSN_RE: LazyLock<Regex> =
 /// Credit card number: 16 digits in groups of 4 (space or dash separated, or bare).
 static CREDIT_CARD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d{4}[-\s]?){3}\d{4}\b").expect("valid CREDIT_CARD_RE"));
-
-// ---------------------------------------------------------------------------
-// Config types
-// ---------------------------------------------------------------------------
-
-fn default_true() -> bool {
-    true
-}
-
-/// A single user-defined PII pattern.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct CustomPiiPattern {
-    /// Human-readable name used in the replacement label.
-    pub name: String,
-    /// Regular expression pattern.
-    pub pattern: String,
-    /// Replacement text. Defaults to `[PII:custom]`.
-    #[serde(default = "default_custom_replacement")]
-    pub replacement: String,
-}
-
-fn default_custom_replacement() -> String {
-    "[PII:custom]".to_owned()
-}
-
-/// Configuration for the PII filter, nested under `[security.pii_filter]` in the config file.
-///
-/// Disabled by default — opt-in to avoid unexpected data loss.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // per-category toggles are semantically distinct, not state machine flags
-pub struct PiiFilterConfig {
-    /// Master switch. When `false`, the filter is a no-op.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Scrub email addresses.
-    #[serde(default = "default_true")]
-    pub filter_email: bool,
-    /// Scrub US phone numbers.
-    #[serde(default = "default_true")]
-    pub filter_phone: bool,
-    /// Scrub US Social Security Numbers.
-    #[serde(default = "default_true")]
-    pub filter_ssn: bool,
-    /// Scrub credit card numbers (16-digit patterns).
-    #[serde(default = "default_true")]
-    pub filter_credit_card: bool,
-    /// Custom regex patterns to add on top of the built-ins.
-    #[serde(default)]
-    pub custom_patterns: Vec<CustomPiiPattern>,
-}
-
-impl Default for PiiFilterConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            filter_email: true,
-            filter_phone: true,
-            filter_ssn: true,
-            filter_credit_card: true,
-            custom_patterns: Vec::new(),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Internal pattern record

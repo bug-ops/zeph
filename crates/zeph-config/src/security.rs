@@ -2,19 +2,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use serde::{Deserialize, Serialize};
-use zeph_skills::TrustLevel;
 use zeph_tools::AutonomyLevel;
 use zeph_tools::PreExecutionVerifierConfig;
+use zeph_tools::TrustLevel;
 
-use crate::agent::rate_limiter::RateLimitConfig;
-use crate::sanitizer::ContentIsolationConfig;
-use crate::sanitizer::exfiltration::ExfiltrationGuardConfig;
+use crate::defaults::default_true;
+use crate::rate_limit::RateLimitConfig;
+use crate::sanitizer::{
+    ContentIsolationConfig, ExfiltrationGuardConfig, MemoryWriteValidationConfig, PiiFilterConfig,
+};
+
 #[cfg(feature = "guardrail")]
-use crate::sanitizer::guardrail::GuardrailConfig;
-use crate::sanitizer::memory_validation::MemoryWriteValidationConfig;
-use crate::sanitizer::pii::PiiFilterConfig;
-
-use super::defaults::default_true;
+use crate::sanitizer::GuardrailConfig;
 
 fn default_trust_default_level() -> TrustLevel {
     TrustLevel::Quarantined
@@ -95,17 +94,9 @@ pub struct SecurityConfig {
     #[serde(default)]
     pub pii_filter: PiiFilterConfig,
     /// Tool action rate limiter (opt-in, disabled by default).
-    ///
-    /// Note: The legacy tool path (`providers without native function-calling`) is not
-    /// covered by this rate limiter. For MVP, only the native tool dispatch path is
-    /// rate-limited. See architecture decision S2.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
     /// Pre-execution verifiers (enabled by default).
-    ///
-    /// When `enabled = true` (default), destructive command and injection pattern
-    /// checks run before every native tool call. Use `--no-pre-execution-verify`
-    /// to disable for trusted environments.
     #[serde(default)]
     pub pre_execution_verify: PreExecutionVerifierConfig,
     /// LLM-based prompt injection pre-screener (opt-in, disabled by default).
@@ -182,7 +173,6 @@ mod tests {
 
     #[test]
     fn trust_config_missing_scan_on_load_defaults_to_true() {
-        // Simulate an old config that has no scan_on_load key
         let toml = r#"
 default_level = "quarantined"
 local_level = "trusted"

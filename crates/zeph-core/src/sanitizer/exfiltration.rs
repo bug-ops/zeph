@@ -14,42 +14,8 @@ use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-fn default_true() -> bool {
-    true
-}
-
-/// Configuration for exfiltration guards, nested under
-/// `[security.exfiltration_guard]` in the agent config file.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct ExfiltrationGuardConfig {
-    /// Strip external markdown images from LLM output to prevent pixel-tracking exfiltration.
-    #[serde(default = "default_true")]
-    pub block_markdown_images: bool,
-
-    /// Cross-reference tool call arguments against URLs seen in flagged untrusted content.
-    #[serde(default = "default_true")]
-    pub validate_tool_urls: bool,
-
-    /// Skip Qdrant embedding for messages that contained injection-flagged content.
-    #[serde(default = "default_true")]
-    pub guard_memory_writes: bool,
-}
-
-impl Default for ExfiltrationGuardConfig {
-    fn default() -> Self {
-        Self {
-            block_markdown_images: true,
-            validate_tool_urls: true,
-            guard_memory_writes: true,
-        }
-    }
-}
+pub use zeph_config::ExfiltrationGuardConfig;
 
 // ---------------------------------------------------------------------------
 // Regex patterns

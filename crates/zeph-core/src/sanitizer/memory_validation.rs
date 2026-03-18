@@ -11,9 +11,10 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeph_memory::graph::extractor::ExtractionResult;
+
+pub use zeph_config::MemoryWriteValidationConfig;
 
 // ---------------------------------------------------------------------------
 // PII patterns for entity name scanning (subset — email and SSN only)
@@ -59,88 +60,6 @@ pub enum MemoryValidationError {
 
     #[error("PII detected in entity name: '{entity}'")]
     SuspiciousPiiInEntityName { entity: String },
-}
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_max_content_bytes() -> usize {
-    4096
-}
-
-fn default_max_entity_name_bytes() -> usize {
-    256
-}
-
-fn default_min_entity_name_bytes() -> usize {
-    3
-}
-
-fn default_max_fact_bytes() -> usize {
-    1024
-}
-
-fn default_max_entities() -> usize {
-    50
-}
-
-fn default_max_edges() -> usize {
-    100
-}
-
-/// Configuration for memory write validation, nested under `[security.memory_validation]`.
-///
-/// Enabled by default with conservative limits. All values correspond to existing
-/// capacity constraints already enforced elsewhere; the validator makes them explicit
-/// and configurable.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct MemoryWriteValidationConfig {
-    /// Master switch. When `false`, validation is a no-op.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Maximum byte length of content passed to `memory_save`.
-    #[serde(default = "default_max_content_bytes")]
-    pub max_content_bytes: usize,
-    /// Minimum byte length of an entity name in graph extraction.
-    /// Names shorter than this are rejected as noise (e.g. "go", "cd").
-    #[serde(default = "default_min_entity_name_bytes")]
-    pub min_entity_name_bytes: usize,
-    /// Maximum byte length of a single entity name in graph extraction.
-    #[serde(default = "default_max_entity_name_bytes")]
-    pub max_entity_name_bytes: usize,
-    /// Maximum byte length of an edge fact string in graph extraction.
-    #[serde(default = "default_max_fact_bytes")]
-    pub max_fact_bytes: usize,
-    /// Maximum number of entities allowed per graph extraction result.
-    #[serde(default = "default_max_entities")]
-    pub max_entities_per_extraction: usize,
-    /// Maximum number of edges allowed per graph extraction result.
-    #[serde(default = "default_max_edges")]
-    pub max_edges_per_extraction: usize,
-    /// Forbidden substring patterns. Content containing any of these is rejected.
-    /// Default empty — users can add custom patterns (e.g., `"<script"`, `"javascript:"`).
-    #[serde(default)]
-    pub forbidden_content_patterns: Vec<String>,
-}
-
-impl Default for MemoryWriteValidationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_content_bytes: default_max_content_bytes(),
-            min_entity_name_bytes: default_min_entity_name_bytes(),
-            max_entity_name_bytes: default_max_entity_name_bytes(),
-            max_fact_bytes: default_max_fact_bytes(),
-            max_entities_per_extraction: default_max_entities(),
-            max_edges_per_extraction: default_max_edges(),
-            forbidden_content_patterns: Vec::new(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

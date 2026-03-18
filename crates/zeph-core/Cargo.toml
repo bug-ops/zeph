@@ -15,13 +15,13 @@ readme = "README.md"
 [features]
 default = []
 candle = ["zeph-llm/candle"]
-compression-guidelines = ["zeph-memory/compression-guidelines"]
+compression-guidelines = ["zeph-memory/compression-guidelines", "zeph-config/compression-guidelines"]
 cuda = ["zeph-llm/cuda"]
-experiments = ["dep:ordered-float", "zeph-memory/experiments"]
-guardrail = []
+experiments = ["dep:ordered-float", "zeph-memory/experiments", "zeph-config/experiments"]
+guardrail = ["zeph-config/guardrail"]
 metal = ["zeph-llm/metal"]
-lsp-context = []
-policy-enforcer = ["zeph-tools/policy-enforcer"]
+lsp-context = ["zeph-config/lsp-context"]
+policy-enforcer = ["zeph-tools/policy-enforcer", "zeph-config/policy-enforcer"]
 scheduler = []
 context-compression = []
 
@@ -55,6 +55,7 @@ tracing.workspace = true
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common.workspace = true
+zeph-config.workspace = true
 zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true

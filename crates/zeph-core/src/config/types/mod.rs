@@ -1,57 +1,51 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-mod agent;
-mod channels;
-mod defaults;
-mod experiment;
-mod features;
-mod learning;
-mod logging;
-mod memory;
-mod providers;
-mod security;
-mod ui;
+// All pure-data types are now defined in zeph-config and re-exported here
+// for backward compatibility. zeph-core-internal types (Config, ResolvedSecrets)
+// that depend on vault::Secret remain here.
 
 #[cfg(test)]
 mod tests;
 
-pub use agent::{AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks};
-pub use channels::{
-    A2aServerConfig, DiscordConfig, McpConfig, McpOAuthConfig, McpServerConfig, OAuthTokenStorage,
-    SlackConfig, TelegramConfig,
+pub use zeph_config::{
+    AcpConfig, AcpLspConfig, AcpTransport, AgentConfig, CandleConfig, CascadeClassifierMode,
+    CascadeConfig, CloudLlmConfig, CompatibleConfig, CompressionConfig, CompressionStrategy,
+    CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig, DocumentConfig, DumpFormat,
+    ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig, GeminiConfig,
+    GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig, LearningConfig,
+    LlmConfig, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig,
+    McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig, OAuthTokenStorage,
+    ObservabilityConfig, OllamaConfig, OpenAiConfig, OrchestrationConfig, OrchestratorConfig,
+    OrchestratorProviderConfig, PermissionMode, ProviderKind, PruningStrategy, RateLimitConfig,
+    RouterConfig, RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig,
+    ScheduledTaskKind, SchedulerConfig, SecurityConfig, SemanticConfig, SessionsConfig,
+    SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig, SlackConfig, SttConfig,
+    SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks, TelegramConfig, TimeoutConfig,
+    ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig, VectorBackend,
 };
-pub use defaults::{
+
+#[cfg(feature = "lsp-context")]
+pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
+
+pub use zeph_config::{
+    ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
+    PiiFilterConfig, QuarantineConfig,
+};
+
+#[cfg(feature = "guardrail")]
+pub use zeph_config::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
+
+pub use zeph_config::A2aServerConfig;
+
+pub use zeph_config::{
     DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,
     default_debug_dir, default_log_file_path, default_skills_dir, default_sqlite_path,
     is_legacy_default_debug_dir, is_legacy_default_log_file, is_legacy_default_skills_path,
     is_legacy_default_sqlite_path,
 };
-pub use experiment::{ExperimentConfig, ExperimentSchedule, OrchestrationConfig};
-pub use features::{
-    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
-    ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SkillPromptMode, SkillsConfig,
-    TraceConfig, VaultConfig,
-};
-pub use learning::{DetectorMode, LearningConfig};
-pub use logging::{LogRotation, LoggingConfig};
-pub use memory::{
-    CompressionConfig, CompressionStrategy, DocumentConfig, GraphConfig, MemoryConfig,
-    NoteLinkingConfig, PruningStrategy, RoutingConfig, RoutingStrategy, SemanticConfig,
-    SessionsConfig, SidequestConfig, VectorBackend,
-};
-pub use providers::{
-    CandleConfig, CascadeClassifierMode, CascadeConfig, CloudLlmConfig, CompatibleConfig,
-    GeminiConfig, GenerationParams, LlmConfig, MAX_TOKENS_CAP, OllamaConfig, OpenAiConfig,
-    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, RouterConfig,
-    RouterStrategyConfig, SttConfig,
-};
-pub use providers::{default_stt_language, default_stt_model, default_stt_provider};
-pub use security::{SecurityConfig, TimeoutConfig, TrustConfig};
-pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
 
-#[cfg(feature = "lsp-context")]
-pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
+pub use zeph_config::providers::{default_stt_language, default_stt_model, default_stt_provider};
 
 use std::collections::HashMap;
 
@@ -60,7 +54,7 @@ use zeph_tools::ToolsConfig;
 
 use crate::vault::Secret;
 
-use defaults::{default_skill_paths, default_sqlite_path_field};
+use zeph_config::defaults::{default_skill_paths, default_sqlite_path_field};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -136,7 +130,7 @@ pub struct ResolvedSecrets {
 impl Default for Config {
     #[allow(clippy::too_many_lines)] // flat struct literal with one field per config section — no meaningful split exists
     fn default() -> Self {
-        use providers::{
+        use zeph_config::providers::{
             get_default_embedding_model, get_default_response_cache_ttl_secs,
             get_default_router_ema_alpha, get_default_router_reorder_interval,
         };

@@ -1,0 +1,73 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Pure-data configuration types for Zeph.
+//!
+//! This crate contains all configuration struct and enum definitions that are
+//! serializable/deserializable via serde. No business logic or I/O lives here.
+//! Config loading, env-var overrides, and vault resolution remain in `zeph-core`.
+
+pub mod agent;
+pub mod channels;
+pub mod defaults;
+pub mod dump_format;
+pub mod experiment;
+pub mod features;
+pub mod learning;
+pub mod logging;
+pub mod memory;
+pub mod providers;
+pub mod rate_limit;
+pub mod sanitizer;
+pub mod security;
+pub mod subagent;
+pub mod ui;
+
+pub use agent::{AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks};
+pub use channels::{
+    A2aServerConfig, DiscordConfig, McpConfig, McpOAuthConfig, McpServerConfig, OAuthTokenStorage,
+    SlackConfig, TelegramConfig,
+};
+pub use defaults::{
+    DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,
+    default_debug_dir, default_log_file_path, default_skills_dir, default_sqlite_path,
+    is_legacy_default_debug_dir, is_legacy_default_log_file, is_legacy_default_skills_path,
+    is_legacy_default_sqlite_path,
+};
+pub use dump_format::DumpFormat;
+pub use experiment::{ExperimentConfig, ExperimentSchedule, OrchestrationConfig};
+pub use features::{
+    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
+    ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SkillPromptMode, SkillsConfig,
+    TraceConfig, VaultConfig,
+};
+pub use learning::{DetectorMode, LearningConfig};
+pub use logging::{LogRotation, LoggingConfig};
+pub use memory::{
+    CompressionConfig, CompressionStrategy, DocumentConfig, GraphConfig, MemoryConfig,
+    NoteLinkingConfig, PruningStrategy, RoutingConfig, RoutingStrategy, SemanticConfig,
+    SessionsConfig, SidequestConfig, VectorBackend,
+};
+pub use providers::{
+    CandleConfig, CascadeClassifierMode, CascadeConfig, CloudLlmConfig, CompatibleConfig,
+    GeminiConfig, GenerationParams, LlmConfig, MAX_TOKENS_CAP, OllamaConfig, OpenAiConfig,
+    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, RouterConfig,
+    RouterStrategyConfig, SttConfig,
+};
+pub use providers::{default_stt_language, default_stt_model, default_stt_provider};
+pub use rate_limit::RateLimitConfig;
+pub use sanitizer::{
+    ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
+    PiiFilterConfig, QuarantineConfig,
+};
+#[cfg(feature = "guardrail")]
+pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
+pub use security::{SecurityConfig, TimeoutConfig, TrustConfig};
+pub use subagent::{
+    HookDef, HookMatcher, HookType, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
+    ToolPolicy,
+};
+pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
+
+#[cfg(feature = "lsp-context")]
+pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};

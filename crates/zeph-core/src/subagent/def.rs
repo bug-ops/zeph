@@ -12,6 +12,8 @@ use tempfile::NamedTempFile;
 use super::error::SubAgentError;
 use super::hooks::SubagentHooks;
 
+pub use zeph_config::{MemoryScope, PermissionMode, SkillFilter, ToolPolicy};
+
 /// Validated agent name pattern: ASCII alphanumeric, hyphen, underscore.
 /// Must start with alphanumeric, max 64 chars. Rejects unicode homoglyphs.
 pub(super) static AGENT_NAME_RE: LazyLock<Regex> =
@@ -34,50 +36,6 @@ const MAX_DEF_SIZE: usize = 256 * 1024;
 const MAX_ENTRIES_PER_DIR: usize = 100;
 
 // ── Public types ──────────────────────────────────────────────────────────────
-
-/// Controls tool execution and prompt interactivity for a sub-agent.
-///
-/// For sub-agents (non-interactive), `Default`, `AcceptEdits`, `DontAsk`, and
-/// `BypassPermissions` are functionally equivalent — sub-agents never prompt the
-/// user. The meaningful differentiator is `Plan` mode, which suppresses all tool
-/// execution and returns only the plan text.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionMode {
-    /// Standard behavior — prompt for each action (sub-agents auto-approve).
-    #[default]
-    Default,
-    /// Auto-accept file edits without prompting.
-    AcceptEdits,
-    /// Auto-approve all tool calls without prompting.
-    DontAsk,
-    /// Unrestricted tool access; emits a warning when loaded.
-    BypassPermissions,
-    /// Read-only planning: tools are visible in the catalog but execution is blocked.
-    Plan,
-}
-
-/// Persistence scope for sub-agent memory files.
-///
-/// Determines where the agent's `MEMORY.md` and topic files are stored across sessions.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryScope {
-    /// User-level: `~/.zeph/agent-memory/<name>/`.
-    ///
-    /// Persists across all projects. Memory is shared between same-named agents from
-    /// different projects — do not store project-specific secrets here.
-    User,
-    /// Project-level: `.zeph/agent-memory/<name>/`.
-    ///
-    /// Scoped to the current project. Intended for version-controlled memory.
-    Project,
-    /// Local-only: `.zeph/agent-memory-local/<name>/`.
-    ///
-    /// Scoped to the current project and not committed. Add `.zeph/agent-memory-local/`
-    /// to `.gitignore` to prevent accidental commits.
-    Local,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentDef {
@@ -125,14 +83,6 @@ pub struct SubAgentDef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolPolicy {
-    AllowList(Vec<String>),
-    DenyList(Vec<String>),
-    InheritAll,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentPermissions {
     pub secrets: Vec<String>,
     pub max_turns: u32,
@@ -153,12 +103,6 @@ impl Default for SubAgentPermissions {
             permission_mode: PermissionMode::Default,
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SkillFilter {
-    pub include: Vec<String>,
-    pub exclude: Vec<String>,
 }
 
 // ── Raw deserialization structs ───────────────────────────────────────────────
@@ -771,18 +715,6 @@ impl<'a> WritablePermissions<'a> {
             && self.timeout_secs == default_timeout()
             && self.ttl_secs == default_ttl()
             && self.permission_mode == PermissionMode::Default
-    }
-}
-
-impl SkillFilter {
-    fn is_empty(&self) -> bool {
-        self.include.is_empty() && self.exclude.is_empty()
-    }
-}
-
-impl SubagentHooks {
-    fn is_empty(&self) -> bool {
-        self.pre_tool_use.is_empty() && self.post_tool_use.is_empty()
     }
 }
 

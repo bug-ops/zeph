@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::default_true;
+use crate::defaults::default_true;
 
 fn default_acp_agent_name() -> String {
     "zeph".to_owned()

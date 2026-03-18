@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::default_true;
+use crate::defaults::default_true;
 
 fn default_slack_port() -> u16 {
     3000

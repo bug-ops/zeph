@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- refactor(config): extract pure-data configuration types into new `zeph-config` crate (Epic #1973 Phase 1a)
+  - New `zeph-config` crate at Layer 1 (no `zeph-core` dependency) with all pure-data config structs
+  - Moved: `AgentConfig`, `FocusConfig`, `LlmConfig`, `MemoryConfig`, `SecurityConfig`, `TrustConfig`, `TimeoutConfig`, `RateLimitConfig`, `ContentIsolationConfig`, `QuarantineConfig`, `ExfiltrationGuardConfig`, `PiiFilterConfig`, `CustomPiiPattern`, `MemoryWriteValidationConfig`, `GuardrailConfig`, `GuardrailAction`, `GuardrailFailStrategy`, `PermissionMode`, `MemoryScope`, `ToolPolicy`, `SkillFilter`, `HookDef`, `HookType`, `HookMatcher`, `SubagentHooks`, `DumpFormat`, and all other pure-data config types
+  - `zeph-core` re-exports all types from `zeph-config` — no import path changes for downstream crates
+  - Feature flags propagated: `guardrail`, `lsp-context`, `compression-guidelines`, `experiments`, `policy-enforcer`
+  - `ContentSanitizer::escape_delimiter_tags` and `apply_spotlight` widened from `pub(crate)` to `pub`
+  - Added `SubAgentHandle::for_test()` test helper for unit tests
+  - `ExperimentConfig::validate()` moved to `zeph-config` returning `Result<(), String>`
+
 ### Changed
 
 - refactor(agent): decompose `Agent<C>` struct into named sub-structs (EPIC-02)

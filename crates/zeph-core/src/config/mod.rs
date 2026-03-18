@@ -172,7 +172,9 @@ impl Config {
             }
         }
 
-        self.experiments.validate()?;
+        self.experiments
+            .validate()
+            .map_err(ConfigError::Validation)?;
 
         // Focus config validation
         if self.agent.focus.compression_interval == 0 {

@@ -5,8 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::subagent::def::{MemoryScope, PermissionMode};
-use crate::subagent::hooks::HookDef;
+use crate::subagent::{HookDef, MemoryScope, PermissionMode};
 
 fn default_max_tool_iterations() -> usize {
     10
@@ -108,16 +107,13 @@ pub struct AgentConfig {
     #[serde(default = "default_instruction_auto_detect")]
     pub instruction_auto_detect: bool,
     /// Maximum retry attempts for transient tool errors (0 to disable).
-    /// Retries are bounded per tool call and do not consume the outer `max_tool_iterations` budget. Capped at 5.
     #[serde(default = "default_max_tool_retries")]
     pub max_tool_retries: usize,
     /// Number of identical tool+args calls within the recent window to trigger repeat-detection
-    /// abort (0 to disable). Window size is `2 * tool_repeat_threshold`.
+    /// abort (0 to disable).
     #[serde(default = "default_tool_repeat_threshold")]
     pub tool_repeat_threshold: usize,
     /// Maximum total wall-clock time (seconds) to spend on retries for a single tool call.
-    /// When the budget is exhausted the retry loop breaks even if attempts remain.
-    /// 0 = no wall-clock budget (only `max_tool_retries` applies).
     #[serde(default = "default_max_retry_duration_secs")]
     pub max_retry_duration_secs: u64,
     /// Focus-based active context compression configuration (#1850).
@@ -130,67 +126,33 @@ pub struct AgentConfig {
 pub struct SubAgentConfig {
     pub enabled: bool,
     /// Maximum number of sub-agents that can run concurrently.
-    ///
-    /// Must be >= `max_parallel` + 1 when orchestration is enabled, to avoid starving
-    /// orchestration tasks while a planning-phase sub-agent is still active.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
     pub extra_dirs: Vec<PathBuf>,
     /// User-level agents directory.
-    ///
-    /// Set to an absolute path to override the platform default (`~/.config/zeph/agents`
-    /// on Linux/macOS, `%APPDATA%/zeph/agents` on Windows). Note: tilde (`~`) expansion
-    /// is not supported — use an absolute path or omit this field to use the platform default.
-    /// Set to empty string to disable the user-level directory entirely.
     #[serde(default)]
     pub user_agents_dir: Option<PathBuf>,
     /// Default permission mode applied to sub-agents that do not specify one.
-    ///
-    /// Only takes effect when the sub-agent definition leaves `permission_mode` at its
-    /// default value (`Default`). If the definition sets an explicit mode, this field is
-    /// ignored. `Some(PermissionMode::Default)` behaves identically to `None` — both
-    /// result in `Default` mode. Prefer omitting the field over explicitly setting
-    /// `default_permission_mode = "default"` in config.
     pub default_permission_mode: Option<PermissionMode>,
     /// Global denylist applied to all sub-agents in addition to per-agent `tools.except`.
     #[serde(default)]
     pub default_disallowed_tools: Vec<String>,
     /// Allow sub-agents to use `bypass_permissions` mode.
-    ///
-    /// When `false` (default), spawning a sub-agent with `permission_mode: bypass_permissions`
-    /// is rejected with an error. Set to `true` only in trusted, controlled environments.
     #[serde(default)]
     pub allow_bypass_permissions: bool,
     /// Default memory scope applied to sub-agents that do not set `memory` in their definition.
-    ///
-    /// When set, all agents without an explicit `memory` field will use this scope.
-    /// Set to `None` (omit from config) to disable memory by default.
-    ///
-    /// **Note**: Setting this affects ALL agents without an explicit `memory` field.
-    /// Agents can opt out by setting `memory: ~` in their frontmatter (not yet supported — None
-    /// means "not specified", which falls back to this default).
     #[serde(default)]
     pub default_memory_scope: Option<MemoryScope>,
     /// Lifecycle hooks executed when any sub-agent starts or stops.
-    ///
-    /// `start` hooks run after the agent is spawned (fire-and-forget).
-    /// `stop` hooks run after the agent finishes or is cancelled (fire-and-forget).
     #[serde(default)]
     pub hooks: SubAgentLifecycleHooks,
     /// Directory where transcript JSONL files and meta sidecars are stored.
-    ///
-    /// Defaults to `.zeph/subagents` relative to the working directory when `None`.
     #[serde(default)]
     pub transcript_dir: Option<PathBuf>,
     /// Enable writing JSONL transcripts for sub-agent sessions.
-    ///
-    /// When `false`, no transcript files are written and `/agent resume` is unavailable.
     #[serde(default = "default_transcript_enabled")]
     pub transcript_enabled: bool,
     /// Maximum number of `.jsonl` transcript files to keep.
-    ///
-    /// When the count exceeds this limit, the oldest files are deleted on each spawn or
-    /// resume. `0` means unlimited (no cleanup performed).
     #[serde(default = "default_transcript_max_files")]
     pub transcript_max_files: usize,
 }

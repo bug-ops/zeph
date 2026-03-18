@@ -9413,6 +9413,32 @@ dependencies = [
 [[package]]
 name = "zeph-common"
 version = "0.15.3"
+dependencies = [
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+]
+
+[[package]]
+name = "zeph-config"
+version = "0.15.3"
+dependencies = [
+ "dirs",
+ "ordered-float 5.1.0",
+ "regex",
+ "serde",
+ "serde_json",
+ "toml 1.0.7+spec-1.1.0",
+ "zeph-llm",
+ "zeph-mcp",
+ "zeph-memory",
+ "zeph-skills",
+ "zeph-tools",
+]
 
 [[package]]
 name = "zeph-core"
@@ -9452,6 +9478,8 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "uuid",
+ "zeph-common",
+ "zeph-config",
  "zeph-index",
  "zeph-llm",
  "zeph-mcp",
@@ -9504,6 +9532,7 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "uuid",
+ "zeph-common",
  "zeph-llm",
  "zeph-memory",
 ]

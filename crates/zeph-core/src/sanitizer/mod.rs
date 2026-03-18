@@ -21,99 +21,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_max_content_size() -> usize {
-    65_536
-}
-
-/// Configuration for the content isolation pipeline, nested under
-/// `[security.content_isolation]` in the agent config file.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct ContentIsolationConfig {
-    /// When `false`, the sanitizer is a no-op: content passes through unchanged.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Maximum byte length of untrusted content before truncation.
-    ///
-    /// Truncation is char-safe (UTF-8 boundary) but not grapheme-safe; a grapheme
-    /// cluster spanning the boundary may be split into its constituent code points.
-    #[serde(default = "default_max_content_size")]
-    pub max_content_size: usize,
-
-    /// When `true`, injection patterns detected in content are recorded as
-    /// [`InjectionFlag`]s and a warning is prepended to the spotlighting wrapper.
-    #[serde(default = "default_true")]
-    pub flag_injection_patterns: bool,
-
-    /// When `true`, untrusted content is wrapped in spotlighting XML delimiters
-    /// that instruct the LLM to treat the enclosed text as data, not instructions.
-    #[serde(default = "default_true")]
-    pub spotlight_untrusted: bool,
-
-    /// Quarantine summarizer configuration.
-    #[serde(default)]
-    pub quarantine: QuarantineConfig,
-}
-
-/// Configuration for the quarantine summarizer, nested under
-/// `[security.content_isolation.quarantine]` in the agent config file.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct QuarantineConfig {
-    /// When `false`, quarantine summarization is disabled entirely.
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// Source kinds to route through the quarantine LLM.
-    ///
-    /// Accepted values: `"tool_result"`, `"web_scrape"`, `"mcp_response"`,
-    /// `"a2a_message"`, `"memory_retrieval"`, `"instruction_file"`.
-    #[serde(default = "default_quarantine_sources")]
-    pub sources: Vec<String>,
-
-    /// Provider name passed to `create_named_provider`.
-    ///
-    /// Accepted values: `"claude"`, `"ollama"`, `"openai"`, or a compatible entry name.
-    #[serde(default = "default_quarantine_model")]
-    pub model: String,
-}
-
-fn default_quarantine_sources() -> Vec<String> {
-    vec!["web_scrape".to_owned(), "a2a_message".to_owned()]
-}
-
-fn default_quarantine_model() -> String {
-    "claude".to_owned()
-}
-
-impl Default for QuarantineConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            sources: default_quarantine_sources(),
-            model: default_quarantine_model(),
-        }
-    }
-}
-
-impl Default for ContentIsolationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_content_size: default_max_content_size(),
-            flag_injection_patterns: true,
-            spotlight_untrusted: true,
-            quarantine: QuarantineConfig::default(),
-        }
-    }
-}
+pub use zeph_config::{ContentIsolationConfig, QuarantineConfig};
 
 // ---------------------------------------------------------------------------
 // Trust model
@@ -416,7 +324,7 @@ impl ContentSanitizer {
     /// Replace delimiter tag names that would allow content to escape the spotlighting
     /// wrapper (CRIT-03). Uses case-insensitive regex replacement so mixed-case variants
     /// like `<Tool-Output>` or `<EXTERNAL-DATA>` are also neutralized (FIX-03).
-    pub(crate) fn escape_delimiter_tags(content: &str) -> String {
+    pub fn escape_delimiter_tags(content: &str) -> String {
         use std::sync::LazyLock;
         static RE_TOOL_OUTPUT: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?i)</?tool-output").expect("static regex"));
@@ -443,7 +351,8 @@ impl ContentSanitizer {
             .replace('>', "&gt;")
     }
 
-    pub(crate) fn apply_spotlight(
+    #[must_use]
+    pub fn apply_spotlight(
         content: &str,
         source: &ContentSource,
         flags: &[InjectionFlag],

@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::default_sqlite_path_field;
+use crate::defaults::default_sqlite_path_field;
 
 fn default_sqlite_pool_size() -> u32 {
     5

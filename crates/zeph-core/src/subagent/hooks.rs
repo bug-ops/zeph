@@ -11,10 +11,11 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::Command;
 use tokio::time::timeout;
+
+pub use zeph_config::{HookDef, HookMatcher, HookType, SubagentHooks};
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
@@ -32,56 +33,6 @@ pub enum HookError {
         #[source]
         source: std::io::Error,
     },
-}
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-/// The type of hook — currently only shell command hooks are supported.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum HookType {
-    Command,
-}
-
-fn default_hook_timeout() -> u64 {
-    30
-}
-
-/// A single hook definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HookDef {
-    #[serde(rename = "type")]
-    pub hook_type: HookType,
-    pub command: String,
-    #[serde(default = "default_hook_timeout")]
-    pub timeout_secs: u64,
-    /// When `true`, a non-zero exit code or timeout causes the calling operation to fail.
-    /// When `false` (default), errors are logged but execution continues.
-    #[serde(default)]
-    pub fail_closed: bool,
-}
-
-/// Tool-name matcher with associated hooks.
-///
-/// `matcher` is a pipe-separated list of substrings or exact names.
-/// A tool matches when its name contains any of the listed tokens.
-/// Example: `"Edit|Write"` matches tools named `"Edit"`, `"WriteFile"`, etc.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HookMatcher {
-    pub matcher: String,
-    pub hooks: Vec<HookDef>,
-}
-
-/// Per-agent frontmatter hook collections (`PreToolUse` / `PostToolUse`).
-///
-/// `SubagentStart` and `SubagentStop` live in [`crate::config::SubAgentConfig`], not here.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct SubagentHooks {
-    #[serde(default)]
-    pub pre_tool_use: Vec<HookMatcher>,
-    #[serde(default)]
-    pub post_tool_use: Vec<HookMatcher>,
 }
 
 // ── Matching ──────────────────────────────────────────────────────────────────

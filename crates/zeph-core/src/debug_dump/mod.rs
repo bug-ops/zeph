@@ -13,38 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::Engine as _;
-use serde::{Deserialize, Serialize};
 use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
 
-/// Output format for debug dump files.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DumpFormat {
-    /// Write LLM requests as pretty-printed internal zeph-llm JSON (`{id}-request.json`).
-    #[default]
-    Json,
-    /// Write LLM requests as the actual API payload sent to the provider (`{id}-request.json`):
-    /// system extracted, `agent_invisible` messages filtered, parts rendered as content blocks.
-    Raw,
-    /// Emit OpenTelemetry-compatible OTLP JSON trace spans (`trace.json` at session end).
-    /// Legacy numbered dump files are NOT written unless `[debug.traces] legacy_files = true`.
-    Trace,
-}
-
-impl std::str::FromStr for DumpFormat {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "json" => Ok(Self::Json),
-            "raw" => Ok(Self::Raw),
-            "trace" => Ok(Self::Trace),
-            other => Err(format!(
-                "unknown dump format `{other}`, expected json|raw|trace"
-            )),
-        }
-    }
-}
+pub use zeph_config::DumpFormat;
 
 pub struct DebugDumper {
     dir: PathBuf,

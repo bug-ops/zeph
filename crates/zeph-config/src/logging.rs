@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::default_log_file;
+use crate::defaults::default_log_file;
 
 fn default_log_level() -> String {
     "info".to_owned()

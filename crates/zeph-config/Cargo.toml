@@ -1,0 +1,39 @@
+[package]
+name = "zeph-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-config"
+keywords.workspace = true
+categories.workspace = true
+description = "Pure-data configuration types for Zeph"
+readme = "README.md"
+
+[features]
+default = []
+guardrail = []
+lsp-context = []
+compression-guidelines = ["zeph-memory/compression-guidelines"]
+experiments = ["dep:ordered-float", "zeph-memory/experiments"]
+policy-enforcer = ["zeph-tools/policy-enforcer"]
+
+[dependencies]
+dirs.workspace = true
+ordered-float = { workspace = true, optional = true, features = ["serde"] }
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+zeph-memory.workspace = true
+zeph-mcp.workspace = true
+zeph-skills.workspace = true
+zeph-tools.workspace = true
+zeph-llm.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

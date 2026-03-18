@@ -505,6 +505,43 @@ pub struct SubAgentHandle {
     pub(crate) transcript_dir: Option<PathBuf>,
 }
 
+impl SubAgentHandle {
+    /// Construct a minimal `SubAgentHandle` for use in unit tests.
+    ///
+    /// The returned handle has a no-op cancel token, closed channels, and no grants.
+    /// It must not be spawned or collected — it is only valid for inspection logic
+    /// that operates on the handle's metadata fields (id, def, state, etc.).
+    #[cfg(test)]
+    pub fn for_test(id: impl Into<String>, def: SubAgentDef) -> Self {
+        let initial_status = SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: Instant::now(),
+        };
+        let (status_tx, status_rx) = watch::channel(initial_status);
+        drop(status_tx);
+        let (pending_secret_rx_tx, pending_secret_rx) = mpsc::channel(1);
+        drop(pending_secret_rx_tx);
+        let (secret_tx, _) = mpsc::channel(1);
+        let id_str = id.into();
+        Self {
+            task_id: id_str.clone(),
+            id: id_str,
+            def,
+            state: SubAgentState::Working,
+            join_handle: None,
+            cancel: CancellationToken::new(),
+            status_rx,
+            grants: PermissionGrants::default(),
+            pending_secret_rx,
+            secret_tx,
+            started_at_str: String::new(),
+            transcript_dir: None,
+        }
+    }
+}
+
 impl std::fmt::Debug for SubAgentHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubAgentHandle")

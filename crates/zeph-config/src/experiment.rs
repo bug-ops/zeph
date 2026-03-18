@@ -101,23 +101,6 @@ impl Default for OrchestrationConfig {
     }
 }
 
-impl OrchestrationConfig {
-    /// Parse and validate `default_failure_strategy` as a typed `FailureStrategy`.
-    ///
-    /// Called at orchestration startup to validate the config value.
-    ///
-    /// # Errors
-    ///
-    /// Returns `OrchestrationError::InvalidGraph` if the string is not one of
-    /// `abort`, `retry`, `skip`, `ask`.
-    pub fn failure_strategy(
-        &self,
-    ) -> Result<crate::orchestration::FailureStrategy, crate::orchestration::OrchestrationError>
-    {
-        self.default_failure_strategy.parse()
-    }
-}
-
 /// Configuration for the autonomous self-experimentation engine (`[experiments]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -187,43 +170,43 @@ impl ExperimentConfig {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Validation` if any field is outside allowed range.
-    pub fn validate(&self) -> Result<(), crate::config::ConfigError> {
+    /// Returns a description string if any field is outside allowed range.
+    pub fn validate(&self) -> Result<(), String> {
         if !(1..=1_000).contains(&self.max_experiments) {
-            return Err(crate::config::ConfigError::Validation(format!(
+            return Err(format!(
                 "experiments.max_experiments must be in 1..=1000, got {}",
                 self.max_experiments
-            )));
+            ));
         }
         if !(60..=86_400).contains(&self.max_wall_time_secs) {
-            return Err(crate::config::ConfigError::Validation(format!(
+            return Err(format!(
                 "experiments.max_wall_time_secs must be in 60..=86400, got {}",
                 self.max_wall_time_secs
-            )));
+            ));
         }
         if !(1_000..=10_000_000).contains(&self.eval_budget_tokens) {
-            return Err(crate::config::ConfigError::Validation(format!(
+            return Err(format!(
                 "experiments.eval_budget_tokens must be in 1000..=10000000, got {}",
                 self.eval_budget_tokens
-            )));
+            ));
         }
         if !(0.0..=100.0).contains(&self.min_improvement) {
-            return Err(crate::config::ConfigError::Validation(format!(
+            return Err(format!(
                 "experiments.min_improvement must be in 0.0..=100.0, got {}",
                 self.min_improvement
-            )));
+            ));
         }
         if !(1..=100).contains(&self.schedule.max_experiments_per_run) {
-            return Err(crate::config::ConfigError::Validation(format!(
+            return Err(format!(
                 "experiments.schedule.max_experiments_per_run must be in 1..=100, got {}",
                 self.schedule.max_experiments_per_run
-            )));
+            ));
         }
         if !(60..=86_400).contains(&self.schedule.max_wall_time_secs) {
-            return Err(crate::config::ConfigError::Validation(format!(
+            return Err(format!(
                 "experiments.schedule.max_wall_time_secs must be in 60..=86400, got {}",
                 self.schedule.max_wall_time_secs
-            )));
+            ));
         }
         Ok(())
     }

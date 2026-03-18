@@ -20,7 +20,7 @@ const PLATFORM_APP_DIR_NAME: &str = "zeph";
 /// - Linux: `~/.local/share/zeph`
 /// - macOS: `~/Library/Application Support/Zeph`
 /// - Windows: `%LOCALAPPDATA%\Zeph`
-pub(super) fn default_runtime_data_root() -> PathBuf {
+pub(crate) fn default_runtime_data_root() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::data_dir)
         .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
@@ -37,11 +37,24 @@ pub fn default_sqlite_path() -> String {
         .into_owned()
 }
 
+/// Returns the default vault/config directory for skills.
+///
+/// Mirrors the logic in zeph-core's `default_vault_dir` but without depending on that crate.
+#[must_use]
+pub fn default_vault_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join("zeph");
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("zeph");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+    PathBuf::from(home).join(".config").join("zeph")
+}
+
 #[must_use]
 pub fn default_skills_dir() -> String {
-    // Skills remain under the config-style root (`default_vault_dir`) so the default
-    // path stays compatible with existing managed skill installation behavior.
-    crate::vault::default_vault_dir()
+    default_vault_dir()
         .join("skills")
         .to_string_lossy()
         .into_owned()
@@ -61,19 +74,21 @@ pub fn default_log_file_path() -> String {
         .into_owned()
 }
 
-pub(super) fn default_skill_paths() -> Vec<String> {
+#[must_use]
+pub fn default_skill_paths() -> Vec<String> {
     vec![default_skills_dir()]
 }
 
-pub(super) fn default_log_file() -> String {
+pub(crate) fn default_log_file() -> String {
     default_log_file_path()
 }
 
-pub(super) fn default_sqlite_path_field() -> String {
+#[must_use]
+pub fn default_sqlite_path_field() -> String {
     default_sqlite_path()
 }
 
-pub(super) fn default_debug_output_dir() -> PathBuf {
+pub(crate) fn default_debug_output_dir() -> PathBuf {
     default_debug_dir()
 }
 
@@ -97,6 +112,6 @@ pub fn is_legacy_default_log_file(path: &str) -> bool {
     path == DEFAULT_LOG_FILE
 }
 
-pub(super) fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }

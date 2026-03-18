@@ -3,9 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::default_skill_paths;
-use super::learning::LearningConfig;
-use super::security::TrustConfig;
+use crate::defaults::{default_skill_paths, default_true};
+use crate::learning::LearningConfig;
+use crate::security::TrustConfig;
 
 fn default_disambiguation_threshold() -> f32 {
     0.05
@@ -317,10 +317,6 @@ fn default_trace_service_name() -> String {
     "zeph".into()
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// Configuration for OTel-compatible trace dumps (`format = "trace"`).
 ///
 /// When `format = "trace"`, the `TracingCollector` writes a `trace.json` file in OTLP JSON
@@ -358,10 +354,10 @@ pub struct DebugConfig {
     /// Enable debug dump on startup (CLI `--debug-dump` takes priority).
     pub enabled: bool,
     /// Directory where per-session debug dump subdirectories are created.
-    #[serde(default = "super::defaults::default_debug_output_dir")]
+    #[serde(default = "crate::defaults::default_debug_output_dir")]
     pub output_dir: std::path::PathBuf,
     /// Output format: `"json"` (default), `"raw"` (API payload), or `"trace"` (OTLP spans).
-    pub format: crate::debug_dump::DumpFormat,
+    pub format: crate::dump_format::DumpFormat,
     /// `OTel` trace configuration (only used when `format = "trace"`).
     pub traces: TraceConfig,
 }
@@ -371,7 +367,7 @@ impl Default for DebugConfig {
         Self {
             enabled: false,
             output_dir: super::defaults::default_debug_output_dir(),
-            format: crate::debug_dump::DumpFormat::default(),
+            format: crate::dump_format::DumpFormat::default(),
             traces: TraceConfig::default(),
         }
     }
