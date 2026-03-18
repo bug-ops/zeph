@@ -266,3 +266,6 @@ pub(crate) struct MessageState {
     /// Image parts staged by `/image` commands, attached to the next user message.
     pub(crate) pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
 }
+
+#[cfg(test)]
+mod tests;
