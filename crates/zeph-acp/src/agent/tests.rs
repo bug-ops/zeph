@@ -1777,7 +1777,6 @@ async fn set_session_mode_rejects_unknown_session() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-list")]
 #[tokio::test]
 async fn list_sessions_returns_active_sessions() {
     let local = tokio::task::LocalSet::new();
@@ -1801,7 +1800,6 @@ async fn list_sessions_returns_active_sessions() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-list")]
 #[tokio::test]
 async fn list_sessions_filters_by_cwd() {
     let local = tokio::task::LocalSet::new();
@@ -2149,16 +2147,11 @@ fn loopback_usage_maps_to_usage_update() {
 fn loopback_session_title_maps_to_session_info_update() {
     let event = LoopbackEvent::SessionTitle("My Session".to_owned());
     let updates = loopback_event_to_updates(event);
-    #[cfg(feature = "unstable-session-info-update")]
-    {
-        assert_eq!(updates.len(), 1);
-        assert!(matches!(
-            updates[0],
-            acp::SessionUpdate::SessionInfoUpdate(_)
-        ));
-    }
-    #[cfg(not(feature = "unstable-session-info-update"))]
-    assert!(updates.is_empty());
+    assert_eq!(updates.len(), 1);
+    assert!(matches!(
+        updates[0],
+        acp::SessionUpdate::SessionInfoUpdate(_)
+    ));
 }
 
 // --- #960 Plan ---
@@ -2601,7 +2594,6 @@ async fn set_session_config_option_rejects_invalid_auto_approve() {
 
 // --- P1.1: list_sessions with title ---
 
-#[cfg(feature = "unstable-session-list")]
 #[tokio::test]
 async fn list_sessions_includes_title_for_in_memory_session() {
     let local = tokio::task::LocalSet::new();

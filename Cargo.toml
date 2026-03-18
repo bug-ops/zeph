@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "science"]
 
 [workspace.dependencies]
 age = { version = "0.11.2", default-features = false }
-agent-client-protocol = "0.10"
+agent-client-protocol = "0.10.2"
 anyhow = "1.0"
 async-stream = "0.3"
 async-trait = "0.1"
@@ -163,7 +163,7 @@ a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
 compression-guidelines = ["zeph-core/compression-guidelines", "zeph-memory/compression-guidelines"]
 acp = ["dep:zeph-acp"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
-acp-unstable = ["acp", "zeph-acp/unstable-session-list", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume"]
+acp-unstable = ["acp", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]
 metal = ["candle", "zeph-llm/metal", "zeph-core/metal"]
 cuda = ["candle", "zeph-llm/cuda", "zeph-core/cuda"]

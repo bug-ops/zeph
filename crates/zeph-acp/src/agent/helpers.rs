@@ -539,14 +539,11 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<acp::Sessio
         }
         #[cfg(not(feature = "unstable-session-usage"))]
         LoopbackEvent::Usage { .. } => vec![],
-        #[cfg(feature = "unstable-session-info-update")]
         LoopbackEvent::SessionTitle(title) => {
             vec![acp::SessionUpdate::SessionInfoUpdate(
                 acp::SessionInfoUpdate::new().title(title),
             )]
         }
-        #[cfg(not(feature = "unstable-session-info-update"))]
-        LoopbackEvent::SessionTitle(_) => vec![],
         LoopbackEvent::Plan(entries) => {
             let acp_entries = entries
                 .into_iter()

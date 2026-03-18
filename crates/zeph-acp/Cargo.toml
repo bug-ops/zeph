@@ -14,31 +14,25 @@ readme = "README.md"
 
 [features]
 default = [
-    "unstable-session-list",
     "unstable-session-fork",
     "unstable-session-resume",
     "unstable-session-usage",
     "unstable-session-model",
-    "unstable-session-info-update",
 ]
 acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
-unstable-session-list = ["agent-client-protocol/unstable_session_list"]
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
 unstable-session-resume = ["agent-client-protocol/unstable_session_resume"]
 unstable-session-usage = ["agent-client-protocol/unstable_session_usage"]
 unstable-session-model = ["agent-client-protocol/unstable_session_model"]
-unstable-session-info-update = ["agent-client-protocol/unstable_session_info_update"]
 
 [dependencies]
 agent-client-protocol = { workspace = true, features = [
-    "unstable_session_list",
     "unstable_session_fork",
     "unstable_session_resume",
     "unstable_session_usage",
     "unstable_session_model",
-    "unstable_session_info_update",
 ] }
-async-stream = { version = "0.3", optional = true }
+async-stream = { workspace = true, optional = true }
 async-trait.workspace = true
 axum = { workspace = true, features = ["ws"], optional = true }
 base64.workspace = true

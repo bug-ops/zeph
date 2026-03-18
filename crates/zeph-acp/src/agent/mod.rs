@@ -11,7 +11,6 @@ use agent_client_protocol as acp;
 use futures::StreamExt as _;
 use tokio::sync::{mpsc, oneshot};
 use zeph_core::channel::{ChannelMessage, LoopbackChannel, LoopbackHandle};
-#[cfg(feature = "unstable-session-info-update")]
 use zeph_core::text::truncate_to_chars;
 use zeph_core::{LoopbackEvent, StopHint};
 use zeph_llm::any::AnyProvider;
@@ -730,16 +729,12 @@ impl acp::Agent for ZephAcpAgent {
             caps = caps.mcp_capabilities(acp::McpCapabilities::new().http(true).sse(false));
         }
         #[cfg(any(
-            feature = "unstable-session-list",
             feature = "unstable-session-fork",
             feature = "unstable-session-resume",
         ))]
         let caps = {
             let mut session_caps = acp::SessionCapabilities::new();
-            #[cfg(feature = "unstable-session-list")]
-            {
-                session_caps = session_caps.list(acp::SessionListCapabilities::default());
-            }
+            session_caps = session_caps.list(acp::SessionListCapabilities::default());
             #[cfg(feature = "unstable-session-fork")]
             {
                 session_caps = session_caps.fork(acp::SessionForkCapabilities::default());
@@ -981,7 +976,6 @@ impl acp::Agent for ZephAcpAgent {
         };
 
         // Generate session title after first successful agent response (fire-and-forget).
-        #[cfg(feature = "unstable-session-info-update")]
         if !cancelled {
             self.maybe_generate_session_title(&args.session_id, &text);
         }
@@ -1085,7 +1079,6 @@ impl acp::Agent for ZephAcpAgent {
         Ok(load_resp)
     }
 
-    #[cfg(feature = "unstable-session-list")]
     async fn list_sessions(
         &self,
         args: acp::ListSessionsRequest,
@@ -1943,7 +1936,6 @@ impl ZephAcpAgent {
     }
 
     /// Spawn a background title-generation task for the session's first prompt.
-    #[cfg(feature = "unstable-session-info-update")]
     fn maybe_generate_session_title(&self, session_id: &acp::SessionId, user_text: &str) {
         let should_generate = self
             .sessions
