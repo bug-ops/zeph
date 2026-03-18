@@ -216,21 +216,18 @@ pub(crate) struct ExperimentState {
 }
 
 /// Groups context-compression feature state (gated behind `context-compression` feature flag).
+#[cfg(feature = "context-compression")]
 pub(crate) struct CompressionState {
     /// Cached task goal for TaskAware/MIG pruning. Set by `maybe_compact()`,
     /// invalidated when the last user message hash changes.
-    #[cfg(feature = "context-compression")]
     pub(crate) current_task_goal: Option<String>,
     /// Hash of the last user message when `current_task_goal` was populated.
-    #[cfg(feature = "context-compression")]
     pub(crate) task_goal_user_msg_hash: Option<u64>,
     /// Pending background task for goal extraction. Spawned fire-and-forget when the user message
     /// hash changes; result applied at the start of the next Soft compaction (#1909).
-    #[cfg(feature = "context-compression")]
     pub(crate) pending_task_goal: Option<tokio::task::JoinHandle<Option<String>>>,
     /// Pending `SideQuest` eviction result from the background LLM call spawned last turn.
     /// Applied at the START of the next turn before compaction (PERF-1 fix).
-    #[cfg(feature = "context-compression")]
     pub(crate) pending_sidequest_result: Option<tokio::task::JoinHandle<Option<Vec<usize>>>>,
 }
 

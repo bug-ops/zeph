@@ -66,10 +66,12 @@ use crate::context::{
 use crate::sanitizer::ContentSanitizer;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
+#[cfg(feature = "context-compression")]
+use state::CompressionState;
 use state::{
-    CompressionState, DebugState, ExperimentState, IndexState, InstructionState, LifecycleState,
-    McpState, MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState,
-    RuntimeConfig, SecurityState, SessionState, SkillState,
+    DebugState, ExperimentState, IndexState, InstructionState, LifecycleState, McpState,
+    MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState, RuntimeConfig,
+    SecurityState, SessionState, SkillState,
 };
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
@@ -142,6 +144,7 @@ pub struct Agent<C: Channel> {
     pub(super) instructions: InstructionState,
     pub(super) security: SecurityState,
     pub(super) experiments: ExperimentState,
+    #[cfg(feature = "context-compression")]
     pub(super) compression: CompressionState,
     pub(super) lifecycle: LifecycleState,
     pub(super) providers: ProviderState,
@@ -349,14 +352,11 @@ impl<C: Channel> Agent<C> {
                 #[cfg(feature = "experiments")]
                 notify_tx: exp_notify_tx,
             },
+            #[cfg(feature = "context-compression")]
             compression: CompressionState {
-                #[cfg(feature = "context-compression")]
                 current_task_goal: None,
-                #[cfg(feature = "context-compression")]
                 task_goal_user_msg_hash: None,
-                #[cfg(feature = "context-compression")]
                 pending_task_goal: None,
-                #[cfg(feature = "context-compression")]
                 pending_sidequest_result: None,
             },
             lifecycle: LifecycleState {
