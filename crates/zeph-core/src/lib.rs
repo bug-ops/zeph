@@ -62,7 +62,10 @@ pub use zeph_tools::executor::DiffData;
 // Re-export vault module to preserve internal import paths (e.g., `crate::vault::VaultProvider`).
 pub mod vault {
     pub use zeph_vault::{
-        AgeVaultError, AgeVaultProvider, ArcAgeVaultProvider, EnvVaultProvider,
-        MockVaultProvider, Secret, VaultError, VaultProvider, default_vault_dir,
+        AgeVaultError, AgeVaultProvider, ArcAgeVaultProvider, EnvVaultProvider, Secret,
+        VaultError, VaultProvider, default_vault_dir,
     };
+
+    #[cfg(any(test, feature = "mock"))]
+    pub use zeph_vault::MockVaultProvider;
 }

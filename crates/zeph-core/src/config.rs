@@ -1,35 +1,27 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// Config is defined in zeph-config. Inherent impls (load, validate, env overrides,
-// normalize_legacy_runtime_defaults) live there. Only trait impls (SecretResolver)
-// can be added here due to Rust orphan rules.
-pub mod migrate {
-    pub use zeph_config::migrate::*;
-}
+//! Extension trait for resolving vault secrets into a Config.
+//!
+//! This trait is defined in zeph-core (not in zeph-config) due to Rust's orphan rule:
+//! implementing a foreign trait on a foreign type requires the trait to be defined locally.
 
-#[cfg(test)]
-mod tests;
-
-pub use zeph_config::{Config, ConfigError, ResolvedSecrets};
-pub use zeph_tools::AutonomyLevel;
-
-// Re-export all previously available types so downstream users see no change.
+// Re-export Config types from zeph-config for internal use.
 pub use zeph_config::{
     AcpConfig, AcpLspConfig, AcpTransport, AgentConfig, CandleConfig, CascadeClassifierMode,
     CascadeConfig, CloudLlmConfig, CompatibleConfig, CompressionConfig, CompressionStrategy,
-    CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig, DocumentConfig, DumpFormat,
-    ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig, GeminiConfig,
-    GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig, LearningConfig,
-    LlmConfig, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig,
-    McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig, OAuthTokenStorage,
-    ObservabilityConfig, OllamaConfig, OpenAiConfig, OrchestrationConfig, OrchestratorConfig,
-    OrchestratorProviderConfig, PermissionMode, ProviderKind, PruningStrategy, RateLimitConfig,
-    RouterConfig, RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig,
-    ScheduledTaskKind, SchedulerConfig, SecurityConfig, SemanticConfig, SessionsConfig,
-    SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig, SlackConfig, SttConfig,
-    SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks, TelegramConfig, TimeoutConfig,
-    ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig, VectorBackend,
+    Config, ConfigError, CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig,
+    DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig,
+    GeminiConfig, GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig,
+    LearningConfig, LlmConfig, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig,
+    McpOAuthConfig, McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig,
+    OAuthTokenStorage, ObservabilityConfig, OllamaConfig, OpenAiConfig, OrchestrationConfig,
+    OrchestratorConfig, OrchestratorProviderConfig, PermissionMode, ProviderKind, PruningStrategy,
+    RateLimitConfig, ResolvedSecrets, RouterConfig, RouterStrategyConfig, RoutingConfig,
+    RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SecurityConfig,
+    SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig,
+    SlackConfig, SttConfig, SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks, TelegramConfig,
+    TimeoutConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig, VectorBackend,
 };
 
 #[cfg(feature = "lsp-context")]
@@ -54,7 +46,11 @@ pub use zeph_config::{
 
 pub use zeph_config::providers::{default_stt_language, default_stt_model, default_stt_provider};
 
-use crate::vault::VaultProvider;
+pub mod migrate {
+    pub use zeph_config::migrate::*;
+}
+
+use crate::vault::{Secret, VaultProvider};
 
 /// Extension trait for resolving vault secrets into a [`Config`].
 ///
@@ -74,8 +70,6 @@ pub trait SecretResolver {
 
 impl SecretResolver for Config {
     async fn resolve_secrets(&mut self, vault: &dyn VaultProvider) -> Result<(), ConfigError> {
-        use crate::vault::Secret;
-
         if let Some(val) = vault.get_secret("ZEPH_CLAUDE_API_KEY").await? {
             self.secrets.claude_api_key = Some(Secret::new(val));
         }
@@ -152,5 +146,31 @@ impl SecretResolver for Config {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_with_mock_vault() {
+        use crate::vault::MockVaultProvider;
+
+        let vault = MockVaultProvider::new()
+            .with_secret("ZEPH_CLAUDE_API_KEY", "sk-test-123")
+            .with_secret("ZEPH_TELEGRAM_TOKEN", "tg-token-456");
+
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert_eq!(
+            config.secrets.claude_api_key.as_ref().unwrap().expose(),
+            "sk-test-123"
+        );
+        if let Some(tg) = config.telegram {
+            assert_eq!(tg.token.as_deref(), Some("tg-token-456"));
+        }
     }
 }
