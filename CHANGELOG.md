@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- refactor(common): create `zeph-common` crate with shared utility functions
+  - New crate at Layer 0 (no zeph-* dependencies): `text`, `net`, `sanitize` modules
+  - Consolidates 3 independent `truncate_to_bytes` implementations into one
+  - Consolidates 2 independent `is_private_ip` implementations into one canonical version
+  - `zeph-tools/src/net.rs` now re-exports from `zeph-common`
+  - `zeph-a2a/src/client.rs` now uses `zeph-common::net::is_private_ip`
+  - `strip_control_chars` and `strip_null_bytes` primitives in `zeph-common::sanitize`
+- refactor(tools): remove `zeph-index` dependency from `zeph-tools` (fixes same-layer violation)
+  - Language detection and grammar/query setup inlined in `search_code.rs` using tree-sitter directly
+  - Layered architecture invariant restored: Layer 1 crates no longer import each other
+- docs(specs): amend constitution to formalize layered crate DAG (Layer 0–4)
+  - Replaces "leaf crates must NOT import each other directly" with explicit layer model
+  - Documents which cross-crate dependencies are legitimate (downward-only)
+
 ### Fixed
 
 - fix(llm): OpenAI API 400 Bad Request on skill documentation queries (closes #1952)
