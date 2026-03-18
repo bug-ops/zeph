@@ -25,6 +25,7 @@ tokio = { workspace = true, features = ["fs", "rt"] }
 tracing.workspace = true
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+zeph-common = { workspace = true, features = ["treesitter"] }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)

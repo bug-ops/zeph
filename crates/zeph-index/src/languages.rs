@@ -9,71 +9,20 @@ use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 
 // ts-query source strings for symbol and method extraction.
-
-const RUST_SYM_Q: &str = "
-(function_item (visibility_modifier)? @vis name: (identifier) @name) @def
-(struct_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
-(enum_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
-(trait_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
-(impl_item type: (_) @name) @def
-(type_item (visibility_modifier)? @vis name: (type_identifier) @name) @def
-(const_item (visibility_modifier)? @vis name: (identifier) @name) @def
-(static_item (visibility_modifier)? @vis name: (identifier) @name) @def
-(mod_item (visibility_modifier)? @vis name: (identifier) @name) @def
-(macro_definition name: (identifier) @name) @def
-";
+// Shared symbol queries are sourced from zeph-common::treesitter.
+use zeph_common::treesitter::{
+    GO_SYM_Q, JS_SYM_Q, PYTHON_SYM_Q, RUST_SYM_Q, TS_SYM_Q, compile_query,
+};
 
 const RUST_METHOD_Q: &str = "
 (impl_item body: (declaration_list
   (function_item (visibility_modifier)? @vis name: (identifier) @name) @def))
 ";
 
-const PYTHON_SYM_Q: &str = "
-(function_definition name: (identifier) @name) @def
-(class_definition name: (identifier) @name) @def
-";
-
 const PYTHON_METHOD_Q: &str = "
 (class_definition body: (block
   (function_definition name: (identifier) @name) @def))
 ";
-
-const JS_SYM_Q: &str = "
-(function_declaration name: (identifier) @name) @def
-(class_declaration name: (identifier) @name) @def
-(method_definition name: (property_identifier) @name) @def
-(export_statement declaration: (function_declaration name: (identifier) @name)) @def
-(export_statement declaration: (class_declaration name: (identifier) @name)) @def
-(lexical_declaration (variable_declarator name: (identifier) @name)) @def
-";
-
-const TS_SYM_Q: &str = "
-(function_declaration name: (identifier) @name) @def
-(class_declaration name: (type_identifier) @name) @def
-(method_definition name: (property_identifier) @name) @def
-(interface_declaration name: (type_identifier) @name) @def
-(type_alias_declaration name: (type_identifier) @name) @def
-(export_statement declaration: (function_declaration name: (identifier) @name)) @def
-(export_statement declaration: (class_declaration name: (type_identifier) @name)) @def
-(lexical_declaration (variable_declarator name: (identifier) @name)) @def
-";
-
-const GO_SYM_Q: &str = "
-(function_declaration name: (identifier) @name) @def
-(method_declaration name: (field_identifier) @name) @def
-(type_declaration (type_spec name: (type_identifier) @name)) @def
-(const_declaration (const_spec name: (identifier) @name)) @def
-";
-
-fn compile_query(
-    lang: &tree_sitter::Language,
-    source: &str,
-    label: &'static str,
-) -> Option<tree_sitter::Query> {
-    tree_sitter::Query::new(lang, source)
-        .map_err(|e| tracing::warn!("{label} query compile failed: {e}"))
-        .ok()
-}
 
 /// Supported language with its tree-sitter grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

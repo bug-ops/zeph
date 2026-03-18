@@ -12,7 +12,25 @@ categories.workspace = true
 description = "Shared utility functions for Zeph crates (text, net, sanitize)"
 readme = "README.md"
 
+[features]
+treesitter = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-typescript",
+    "dep:tracing",
+]
+
 [dependencies]
+tree-sitter = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
+tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-rust = { workspace = true, optional = true }
+tree-sitter-typescript = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 
