@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- refactor(vault): extract vault logic into new `zeph-vault` crate (Epic #1973 Phase 1c)
+  - New `zeph-vault` crate at Layer 1 with `VaultProvider` trait, `EnvVaultProvider`, `AgeVaultProvider`, `ArcAgeVaultProvider`, `AgeVaultError`, `default_vault_dir()`
+  - `MockVaultProvider` gated behind `#[cfg(any(test, feature = "mock"))]` — accessible from downstream test code via `zeph-vault/mock` feature
+  - `pub use zeph_common::secret::{Secret, VaultError}` re-exported from `zeph-vault` preserving `crate::vault::Secret` paths
+  - `zeph-core/src/vault.rs` replaced with thin re-export shim `pub use zeph_vault::*;` — zero import path changes in consumers
+  - `age_encrypt_decrypt_resolve_secrets_roundtrip` integration test kept in `zeph-core` (depends on `SecretResolver` trait)
+  - `age` and `zeroize` direct dependencies removed from `zeph-core` (now provided transitively via `zeph-vault`)
+
 - refactor(config): extract pure-data configuration types into new `zeph-config` crate (Epic #1973 Phase 1a)
   - New `zeph-config` crate at Layer 1 (no `zeph-core` dependency) with all pure-data config structs
   - Moved: `AgentConfig`, `FocusConfig`, `LlmConfig`, `MemoryConfig`, `SecurityConfig`, `TrustConfig`, `TimeoutConfig`, `RateLimitConfig`, `ContentIsolationConfig`, `QuarantineConfig`, `ExfiltrationGuardConfig`, `PiiFilterConfig`, `CustomPiiPattern`, `MemoryWriteValidationConfig`, `GuardrailConfig`, `GuardrailAction`, `GuardrailFailStrategy`, `PermissionMode`, `MemoryScope`, `ToolPolicy`, `SkillFilter`, `HookDef`, `HookType`, `HookMatcher`, `SubagentHooks`, `DumpFormat`, and all other pure-data config types

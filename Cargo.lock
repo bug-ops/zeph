@@ -9493,7 +9493,7 @@ dependencies = [
  "zeph-memory",
  "zeph-skills",
  "zeph-tools",
- "zeroize",
+ "zeph-vault",
 ]
 
 [[package]]
@@ -9746,6 +9746,22 @@ dependencies = [
  "tree-sitter-toml-ng",
  "unicode-width",
  "zeph-core",
+]
+
+[[package]]
+name = "zeph-vault"
+version = "0.15.3"
+dependencies = [
+ "age",
+ "proptest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zeph-common",
+ "zeroize",
 ]
 
 [[package]]

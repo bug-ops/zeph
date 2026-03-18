@@ -21,7 +21,7 @@ age.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
 zeph-common.workspace = true
 zeroize = { workspace = true, features = ["derive", "serde"] }
 
