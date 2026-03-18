@@ -33,24 +33,21 @@ pub mod session_config;
 pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;
+mod state;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
 mod utils;
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
-use std::time::Instant;
-
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
-use zeph_llm::stt::SpeechToText;
 
-use crate::metrics::MetricsSnapshot;
 use std::collections::HashMap;
 use zeph_memory::TokenCounter;
 use zeph_memory::semantic::SemanticMemory;
@@ -58,23 +55,22 @@ use zeph_skills::loader::Skill;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
-use zeph_skills::watcher::SkillEvent;
 use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 
 use crate::channel::Channel;
 use crate::config::Config;
 use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
-use crate::config_watcher::ConfigEvent;
 use crate::context::{
     ContextBudget, EnvironmentContext, build_system_prompt, build_system_prompt_with_instructions,
 };
-use crate::cost::CostTracker;
-use crate::instructions::{InstructionBlock, InstructionEvent, InstructionReloadState};
 use crate::sanitizer::ContentSanitizer;
-use crate::sanitizer::quarantine::QuarantinedSummarizer;
-use crate::vault::Secret;
 
-use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, QueuedMessage, detect_image_mime};
+use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
+use state::{
+    CompressionState, DebugState, ExperimentState, IndexState, InstructionState, LifecycleState,
+    McpState, MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState,
+    RuntimeConfig, SecurityState, SessionState, SkillState,
+};
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
 pub(crate) const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
@@ -126,167 +122,11 @@ pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
     buf
 }
 
-pub(super) struct MemoryState {
-    pub(super) memory: Option<Arc<SemanticMemory>>,
-    pub(super) conversation_id: Option<zeph_memory::ConversationId>,
-    pub(super) history_limit: u32,
-    pub(super) recall_limit: usize,
-    pub(super) summarization_threshold: usize,
-    pub(super) cross_session_score_threshold: f32,
-    pub(super) autosave_assistant: bool,
-    pub(super) autosave_min_length: usize,
-    pub(super) tool_call_cutoff: usize,
-    pub(super) unsummarized_count: usize,
-    pub(super) document_config: crate::config::DocumentConfig,
-    pub(super) graph_config: crate::config::GraphConfig,
-    pub(super) compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig,
-    pub(super) shutdown_summary: bool,
-    pub(super) shutdown_summary_min_messages: usize,
-    pub(super) shutdown_summary_max_messages: usize,
-    pub(super) shutdown_summary_timeout_secs: u64,
-}
-
-pub(super) struct SkillState {
-    pub(super) registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
-    pub(super) skill_paths: Vec<PathBuf>,
-    pub(super) managed_dir: Option<PathBuf>,
-    pub(super) trust_config: crate::config::TrustConfig,
-    pub(super) matcher: Option<SkillMatcherBackend>,
-    pub(super) max_active_skills: usize,
-    pub(super) disambiguation_threshold: f32,
-    pub(super) embedding_model: String,
-    pub(super) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
-    pub(super) active_skill_names: Vec<String>,
-    pub(super) last_skills_prompt: String,
-    pub(super) prompt_mode: SkillPromptMode,
-    /// Custom secrets available at runtime: key=hyphenated name, value=secret.
-    pub(super) available_custom_secrets: HashMap<String, Secret>,
-    pub(super) cosine_weight: f32,
-    pub(super) hybrid_search: bool,
-    pub(super) bm25_index: Option<zeph_skills::bm25::Bm25Index>,
-}
-
-pub(super) struct McpState {
-    pub(super) tools: Vec<zeph_mcp::McpTool>,
-    pub(super) registry: Option<zeph_mcp::McpToolRegistry>,
-    pub(super) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
-    pub(super) allowed_commands: Vec<String>,
-    pub(super) max_dynamic: usize,
-    /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
-    pub(super) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
-    /// Receives full flattened tool list after any `tools/list_changed` notification.
-    pub(super) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
-}
-
-pub(super) struct IndexState {
-    pub(super) retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever>>,
-    pub(super) repo_map_tokens: usize,
-    pub(super) cached_repo_map: Option<(String, std::time::Instant)>,
-    pub(super) repo_map_ttl: std::time::Duration,
-}
-
-pub(super) struct RuntimeConfig {
-    pub(super) security: SecurityConfig,
-    pub(super) timeouts: TimeoutConfig,
-    pub(super) model_name: String,
-    pub(super) permission_policy: zeph_tools::PermissionPolicy,
-    pub(super) redact_credentials: bool,
-}
-
-/// Groups security-related subsystems (sanitizer, quarantine, exfiltration guard).
-pub(super) struct SecurityState {
-    pub(super) sanitizer: ContentSanitizer,
-    pub(super) quarantine_summarizer: Option<QuarantinedSummarizer>,
-    pub(super) exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard,
-    pub(super) flagged_urls: std::collections::HashSet<String>,
-    pub(super) pii_filter: crate::sanitizer::pii::PiiFilter,
-    pub(super) memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator,
-    /// LLM-based prompt injection pre-screener (opt-in).
-    #[cfg(feature = "guardrail")]
-    pub(super) guardrail: Option<crate::sanitizer::guardrail::GuardrailFilter>,
-}
-
-/// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).
-pub(super) struct DebugState {
-    pub(super) debug_dumper: Option<crate::debug_dump::DebugDumper>,
-    pub(super) dump_format: crate::debug_dump::DumpFormat,
-    pub(super) trace_collector: Option<crate::debug_dump::trace::TracingCollector>,
-    /// Monotonically increasing counter for `process_user_message` calls.
-    /// Used to key spans in `trace_collector.active_iterations`.
-    pub(super) iteration_counter: usize,
-    pub(super) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
-    pub(super) logging_config: crate::config::LoggingConfig,
-    /// Base dump directory — stored so `/dump-format trace` can create a `TracingCollector` (CR-04).
-    pub(super) dump_dir: Option<PathBuf>,
-    /// Service name for `TracingCollector` created via runtime format switch (CR-04).
-    pub(super) trace_service_name: String,
-    /// Whether to redact in `TracingCollector` created via runtime format switch (CR-04).
-    pub(super) trace_redact: bool,
-    /// Span ID of the currently executing iteration — used by LLM/tool span wiring (CR-01).
-    /// Set to `Some` at the start of `process_user_message`, cleared at end.
-    pub(super) current_iteration_span_id: Option<[u8; 8]>,
-}
-
-/// Groups agent lifecycle state: shutdown signaling, timing, and I/O notification channels.
-pub(super) struct LifecycleState {
-    pub(super) shutdown: watch::Receiver<bool>,
-    pub(super) start_time: Instant,
-    pub(super) cancel_signal: Arc<Notify>,
-    pub(super) cancel_token: CancellationToken,
-    pub(super) config_path: Option<PathBuf>,
-    pub(super) config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
-    pub(super) warmup_ready: Option<watch::Receiver<bool>>,
-    pub(super) update_notify_rx: Option<mpsc::Receiver<String>>,
-    pub(super) custom_task_rx: Option<mpsc::Receiver<String>>,
-}
-
-/// Groups provider-related state: alternate providers, runtime switching, and compaction flags.
-pub(super) struct ProviderState {
-    pub(super) summary_provider: Option<AnyProvider>,
-    /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
-    pub(super) provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
-    pub(super) judge_provider: Option<AnyProvider>,
-    pub(super) cached_prompt_tokens: u64,
-    /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
-    /// When true, client-side compaction is skipped.
-    pub(super) server_compaction_active: bool,
-    pub(super) stt: Option<Box<dyn SpeechToText>>,
-}
-
-/// Groups metrics and cost tracking state.
-pub(super) struct MetricsState {
-    pub(super) metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
-    pub(super) cost_tracker: Option<CostTracker>,
-    pub(super) token_counter: Arc<TokenCounter>,
-    /// Set to `true` when Claude extended context (`enable_extended_context = true`) is active.
-    /// Read from config at build time, not derived from provider internals.
-    pub(super) extended_context: bool,
-}
-
-/// Groups task orchestration and subagent state.
-pub(super) struct OrchestrationState {
-    /// Graph waiting for `/plan confirm` before execution starts.
-    pub(super) pending_graph: Option<crate::orchestration::TaskGraph>,
-    /// Cancellation token for the currently executing plan. `None` when no plan is running.
-    /// Created fresh in `handle_plan_confirm()`, cancelled in `handle_plan_cancel()`.
-    ///
-    /// # Known limitation
-    ///
-    /// Token plumbing is ready; the delivery path requires the agent message loop to be
-    /// restructured so `/plan cancel` can be received while `run_scheduler_loop` holds
-    /// `&mut self`. See follow-up issue #1603 (SEC-M34-002).
-    pub(super) plan_cancel_token: Option<CancellationToken>,
-    /// Manages spawned sub-agents.
-    pub(super) subagent_manager: Option<crate::subagent::SubAgentManager>,
-    pub(super) subagent_config: crate::config::SubAgentConfig,
-    pub(super) orchestration_config: crate::config::OrchestrationConfig,
-}
-
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
     channel: C,
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
-    messages: Vec<Message>,
+    pub(super) msg: MessageState,
     pub(super) memory_state: MemoryState,
     pub(super) skill_state: SkillState,
     pub(super) context_manager: context_manager::ContextManager,
@@ -297,75 +137,21 @@ pub struct Agent<C: Channel> {
     pub(super) runtime: RuntimeConfig,
     pub(super) mcp: McpState,
     pub(super) index: IndexState,
-    message_queue: VecDeque<QueuedMessage>,
-    env_context: EnvironmentContext,
-    pub(super) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
-    /// Parent tool call ID when this agent runs as a subagent inside another agent session.
-    /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
-    /// a subagent hierarchy.
-    pub(crate) parent_tool_use_id: Option<String>,
+    pub(super) session: SessionState,
     pub(super) debug_state: DebugState,
-    /// Instruction blocks loaded at startup from provider-specific and explicit files.
-    pub(super) instruction_blocks: Vec<InstructionBlock>,
-    pub(super) instruction_reload_rx: Option<mpsc::Receiver<InstructionEvent>>,
-    pub(super) instruction_reload_state: Option<InstructionReloadState>,
+    pub(super) instructions: InstructionState,
     pub(super) security: SecurityState,
-    /// Image parts staged by `/image` commands, attached to the next user message.
-    pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
-    #[cfg(feature = "experiments")]
-    pub(super) experiment_config: crate::config::ExperimentConfig,
-    /// Cancellation token for a running experiment session. `Some` means an experiment is active.
-    #[cfg(feature = "experiments")]
-    pub(super) experiment_cancel: Option<tokio_util::sync::CancellationToken>,
-    /// Pre-built config snapshot used as the experiment baseline (agent path).
-    /// Set via `with_experiment_baseline()`; defaults to `ConfigSnapshot::default()`.
-    #[cfg(feature = "experiments")]
-    pub(super) experiment_baseline: crate::experiments::ConfigSnapshot,
-    /// Receives completion/error messages from the background experiment engine task.
-    /// When a message arrives in the agent loop, it is forwarded to the channel and
-    /// `experiment_cancel` is cleared. Always present so the select! branch compiles
-    /// unconditionally; only ever receives messages when the `experiments` feature is enabled.
-    pub(super) experiment_notify_rx: Option<tokio::sync::mpsc::Receiver<String>>,
-    /// Sender end paired with `experiment_notify_rx`. Cloned into the background task.
-    /// Feature-gated because it is only used in `experiment_cmd.rs`.
-    #[cfg(feature = "experiments")]
-    pub(super) experiment_notify_tx: tokio::sync::mpsc::Sender<String>,
-    /// LSP context injection hooks. Fires after native tool execution, injects
-    /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
-    #[cfg(feature = "lsp-context")]
-    pub(super) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
-    /// Optional status channel for sending spinner/status messages to TUI or stderr.
-    /// Cloned from the provider's `StatusTx` before the provider consumes it.
-    pub(super) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    // --- New sub-structs ---
+    pub(super) experiments: ExperimentState,
+    pub(super) compression: CompressionState,
     pub(super) lifecycle: LifecycleState,
     pub(super) providers: ProviderState,
     pub(super) metrics: MetricsState,
     pub(super) orchestration: OrchestrationState,
     pub(super) rate_limiter: rate_limiter::ToolRateLimiter,
-    /// Snapshot of the policy config for `/policy` command inspection.
-    #[cfg(feature = "policy-enforcer")]
-    pub(super) policy_config: Option<zeph_tools::PolicyConfig>,
     /// Focus agent state: active session tracking, knowledge block, reminder counters (#1850).
     pub(super) focus: focus::FocusState,
     /// `SideQuest` state: cursor tracking, turn counter, eviction stats (#1885).
     pub(super) sidequest: sidequest::SidequestState,
-    /// Cached task goal for TaskAware/MIG pruning. Set by `maybe_compact()`,
-    /// invalidated when the last user message hash changes.
-    #[cfg(feature = "context-compression")]
-    pub(super) current_task_goal: Option<String>,
-    /// Hash of the last user message when `current_task_goal` was populated.
-    /// Used to detect when the user's direction has changed.
-    #[cfg(feature = "context-compression")]
-    pub(super) task_goal_user_msg_hash: Option<u64>,
-    /// Pending background task for goal extraction. Spawned fire-and-forget when the user message
-    /// hash changes; result applied at the start of the next Soft compaction (#1909).
-    #[cfg(feature = "context-compression")]
-    pub(super) pending_task_goal: Option<tokio::task::JoinHandle<Option<String>>>,
-    /// Pending `SideQuest` eviction result from the background LLM call spawned last turn.
-    /// Applied at the START of the next turn before compaction (PERF-1 fix).
-    #[cfg(feature = "context-compression")]
-    pub(super) pending_sidequest_result: Option<tokio::task::JoinHandle<Option<Vec<usize>>>>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -433,12 +219,16 @@ impl<C: Channel> Agent<C> {
             provider,
             channel,
             tool_executor: Arc::new(tool_executor),
-            messages: vec![Message {
-                role: Role::System,
-                content: system_prompt,
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            }],
+            msg: MessageState {
+                messages: vec![Message {
+                    role: Role::System,
+                    content: system_prompt,
+                    parts: vec![],
+                    metadata: MessageMetadata::default(),
+                }],
+                message_queue: VecDeque::new(),
+                pending_image_parts: Vec::new(),
+            },
             memory_state: MemoryState {
                 memory: None,
                 conversation_id: None,
@@ -515,13 +305,21 @@ impl<C: Channel> Agent<C> {
                 cached_repo_map: None,
                 repo_map_ttl: std::time::Duration::from_secs(300),
             },
-            message_queue: VecDeque::new(),
-            env_context: EnvironmentContext::gather(""),
-            response_cache: None,
-            parent_tool_use_id: None,
-            instruction_blocks: Vec::new(),
-            instruction_reload_rx: None,
-            instruction_reload_state: None,
+            session: SessionState {
+                env_context: EnvironmentContext::gather(""),
+                response_cache: None,
+                parent_tool_use_id: None,
+                status_tx: None,
+                #[cfg(feature = "lsp-context")]
+                lsp_hooks: None,
+                #[cfg(feature = "policy-enforcer")]
+                policy_config: None,
+            },
+            instructions: InstructionState {
+                blocks: Vec::new(),
+                reload_rx: None,
+                reload_state: None,
+            },
             security: SecurityState {
                 sanitizer: ContentSanitizer::new(
                     &crate::sanitizer::ContentIsolationConfig::default(),
@@ -540,19 +338,27 @@ impl<C: Channel> Agent<C> {
                 #[cfg(feature = "guardrail")]
                 guardrail: None,
             },
-            pending_image_parts: Vec::new(),
-            #[cfg(feature = "experiments")]
-            experiment_config: crate::config::ExperimentConfig::default(),
-            #[cfg(feature = "experiments")]
-            experiment_baseline: crate::experiments::ConfigSnapshot::default(),
-            experiment_notify_rx: Some(exp_notify_rx),
-            #[cfg(feature = "experiments")]
-            experiment_notify_tx: exp_notify_tx,
-            #[cfg(feature = "lsp-context")]
-            lsp_hooks: None,
-            #[cfg(feature = "experiments")]
-            experiment_cancel: None,
-            // --- New sub-structs ---
+            experiments: ExperimentState {
+                #[cfg(feature = "experiments")]
+                config: crate::config::ExperimentConfig::default(),
+                #[cfg(feature = "experiments")]
+                cancel: None,
+                #[cfg(feature = "experiments")]
+                baseline: crate::experiments::ConfigSnapshot::default(),
+                notify_rx: Some(exp_notify_rx),
+                #[cfg(feature = "experiments")]
+                notify_tx: exp_notify_tx,
+            },
+            compression: CompressionState {
+                #[cfg(feature = "context-compression")]
+                current_task_goal: None,
+                #[cfg(feature = "context-compression")]
+                task_goal_user_msg_hash: None,
+                #[cfg(feature = "context-compression")]
+                pending_task_goal: None,
+                #[cfg(feature = "context-compression")]
+                pending_sidequest_result: None,
+            },
             lifecycle: LifecycleState {
                 shutdown: rx,
                 start_time: Instant::now(),
@@ -588,19 +394,8 @@ impl<C: Channel> Agent<C> {
             rate_limiter: rate_limiter::ToolRateLimiter::new(
                 crate::agent::rate_limiter::RateLimitConfig::default(),
             ),
-            #[cfg(feature = "policy-enforcer")]
-            policy_config: None,
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
-            #[cfg(feature = "context-compression")]
-            current_task_goal: None,
-            #[cfg(feature = "context-compression")]
-            task_goal_user_msg_hash: None,
-            #[cfg(feature = "context-compression")]
-            pending_task_goal: None,
-            #[cfg(feature = "context-compression")]
-            pending_sidequest_result: None,
-            status_tx: None,
         }
     }
 
@@ -1975,6 +1770,7 @@ impl<C: Channel> Agent<C> {
 
         // Count user-turn messages only (skip system prompt at index 0).
         let user_count = self
+            .msg
             .messages
             .iter()
             .skip(1)
@@ -1998,7 +1794,7 @@ impl<C: Channel> Agent<C> {
             tracing::debug!("shutdown summary: max_messages=0, skipping");
             return;
         }
-        let non_system: Vec<_> = self.messages.iter().skip(1).collect();
+        let non_system: Vec<_> = self.msg.messages.iter().skip(1).collect();
         let slice = if non_system.len() > max {
             &non_system[non_system.len() - max..]
         } else {
@@ -2194,7 +1990,7 @@ impl<C: Channel> Agent<C> {
 
             self.drain_channel();
 
-            let (text, image_parts) = if let Some(queued) = self.message_queue.pop_front() {
+            let (text, image_parts) = if let Some(queued) = self.msg.message_queue.pop_front() {
                 self.notify_queue_count().await;
                 if queued.raw_attachments.is_empty() {
                     (queued.text, queued.image_parts)
@@ -2216,7 +2012,7 @@ impl<C: Channel> Agent<C> {
                         self.reload_skills().await;
                         continue;
                     }
-                    Some(_) = recv_optional(&mut self.instruction_reload_rx) => {
+                    Some(_) = recv_optional(&mut self.instructions.reload_rx) => {
                         self.reload_instructions();
                         continue;
                     }
@@ -2230,11 +2026,11 @@ impl<C: Channel> Agent<C> {
                         }
                         continue;
                     }
-                    Some(msg) = recv_optional(&mut self.experiment_notify_rx) => {
+                    Some(msg) = recv_optional(&mut self.experiments.notify_rx) => {
                         // Experiment engine completed (ok or err). Clear the cancel token so
                         // status reports idle and new experiments can be started.
                         #[cfg(feature = "experiments")]
-                        { self.experiment_cancel = None; }
+                        { self.experiments.cancel = None; }
                         if let Err(e) = self.channel.send(&msg).await {
                             tracing::warn!("failed to send experiment completion: {e}");
                         }
@@ -2290,7 +2086,7 @@ impl<C: Channel> Agent<C> {
         }
 
         if trimmed == "/compact" {
-            if self.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
+            if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
                 match self.compact_context().await {
                     Ok(()) => {
                         let _ = self.channel.send("Context compacted successfully.").await;
@@ -2984,6 +2780,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let previous_user_messages: Vec<&str> = self
+            .msg
             .messages
             .iter()
             .filter(|m| m.role == Role::User)
@@ -3045,7 +2842,7 @@ impl<C: Channel> Agent<C> {
         }
         if let Some(memory) = &self.memory_state.memory {
             // Use `trimmed` (raw user input, untainted by secrets) instead of
-            // `feedback_text` (derived from previous_user_messages → self.messages)
+            // `feedback_text` (derived from previous_user_messages → self.msg.messages)
             // to avoid the CodeQL cleartext-logging taint path.
             let correction_text = context::truncate_chars(trimmed, 500);
             match memory
@@ -3219,7 +3016,7 @@ impl<C: Channel> Agent<C> {
 
         self.learning_engine.reset_reflection();
 
-        let mut all_image_parts = std::mem::take(&mut self.pending_image_parts);
+        let mut all_image_parts = std::mem::take(&mut self.msg.pending_image_parts);
         all_image_parts.extend(image_parts);
         let image_parts = all_image_parts;
 
@@ -3249,7 +3046,7 @@ impl<C: Channel> Agent<C> {
             tracing::error!("Response processing failed: {e:#}");
             let user_msg = format!("Error: {e:#}");
             self.channel.send(&user_msg).await?;
-            self.messages.pop();
+            self.msg.messages.pop();
             self.recompute_prompt_tokens();
             self.channel.flush_chunks().await?;
         }
@@ -3294,7 +3091,8 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
         let mime_type = detect_image_mime(Some(path)).to_string();
-        self.pending_image_parts
+        self.msg
+            .pending_image_parts
             .push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
         self.channel
             .send(&format!("Image loaded: {path}. Send your message."))
@@ -3352,6 +3150,7 @@ impl<C: Channel> Agent<C> {
 
         let uptime = self.lifecycle.start_time.elapsed().as_secs();
         let msg_count = self
+            .msg
             .messages
             .iter()
             .filter(|m| m.role == Role::User)
@@ -4026,7 +3825,7 @@ impl<C: Channel> Agent<C> {
             .last_skills_prompt
             .clone_from(&skills_prompt);
         let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
-        if let Some(msg) = self.messages.first_mut() {
+        if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }
 
@@ -4044,10 +3843,10 @@ impl<C: Channel> Agent<C> {
 
     fn reload_instructions(&mut self) {
         // Drain any additional queued events before reloading to avoid redundant reloads.
-        if let Some(ref mut rx) = self.instruction_reload_rx {
+        if let Some(ref mut rx) = self.instructions.reload_rx {
             while rx.try_recv().is_ok() {}
         }
-        let Some(ref state) = self.instruction_reload_state else {
+        let Some(ref state) = self.instructions.reload_state else {
             return;
         };
         let new_blocks = crate::instructions::load_instructions(
@@ -4057,7 +3856,7 @@ impl<C: Channel> Agent<C> {
             state.auto_detect,
         );
         let old_sources: std::collections::HashSet<_> =
-            self.instruction_blocks.iter().map(|b| &b.source).collect();
+            self.instructions.blocks.iter().map(|b| &b.source).collect();
         let new_sources: std::collections::HashSet<_> =
             new_blocks.iter().map(|b| &b.source).collect();
         for added in new_sources.difference(&old_sources) {
@@ -4067,11 +3866,11 @@ impl<C: Channel> Agent<C> {
             tracing::info!(path = %removed.display(), "instruction file removed");
         }
         tracing::info!(
-            old_count = self.instruction_blocks.len(),
+            old_count = self.instructions.blocks.len(),
             new_count = new_blocks.len(),
             "reloaded instruction files"
         );
-        self.instruction_blocks = new_blocks;
+        self.instructions.blocks = new_blocks;
     }
 
     fn reload_config(&mut self) {
@@ -4203,19 +4002,19 @@ impl<C: Channel> Agent<C> {
         if self.focus.is_active() {
             tracing::debug!("sidequest: skipping — focus session active");
             // Drop any pending result — cursors may be stale relative to focus truncation.
-            self.pending_sidequest_result = None;
+            self.compression.pending_sidequest_result = None;
             return;
         }
 
         // Phase 1: apply pending result from last turn's background LLM call.
-        if let Some(handle) = self.pending_sidequest_result.take() {
+        if let Some(handle) = self.compression.pending_sidequest_result.take() {
             // `now_or_never` avoids blocking — if the task isn't done yet, skip this turn.
             use futures::FutureExt as _;
             match handle.now_or_never() {
                 Some(Ok(Some(evicted_indices))) if !evicted_indices.is_empty() => {
                     let cursors_snapshot = self.sidequest.tool_output_cursors.clone();
                     let freed = self.sidequest.apply_eviction(
-                        &mut self.messages,
+                        &mut self.msg.messages,
                         &evicted_indices,
                         &self.metrics.token_counter,
                     );
@@ -4232,25 +4031,25 @@ impl<C: Channel> Agent<C> {
                         if let Some(ref d) = self.debug_state.debug_dumper {
                             d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
                         }
-                        if let Some(ref tx) = self.status_tx {
+                        if let Some(ref tx) = self.session.status_tx {
                             let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
                         }
                     } else {
                         // apply_eviction returned 0 — clear spinner so it doesn't dangle.
-                        if let Some(ref tx) = self.status_tx {
+                        if let Some(ref tx) = self.session.status_tx {
                             let _ = tx.send(String::new());
                         }
                     }
                 }
                 Some(Ok(None | Some(_))) => {
                     tracing::debug!("sidequest: pending result: no cursors to evict");
-                    if let Some(ref tx) = self.status_tx {
+                    if let Some(ref tx) = self.session.status_tx {
                         let _ = tx.send(String::new());
                     }
                 }
                 Some(Err(e)) => {
                     tracing::debug!("sidequest: background task panicked: {e}");
-                    if let Some(ref tx) = self.status_tx {
+                    if let Some(ref tx) = self.session.status_tx {
                         let _ = tx.send(String::new());
                     }
                 }
@@ -4267,7 +4066,7 @@ impl<C: Channel> Agent<C> {
 
         // Phase 2: rebuild cursors and schedule the next background eviction LLM call.
         self.sidequest
-            .rebuild_cursors(&self.messages, &self.metrics.token_counter);
+            .rebuild_cursors(&self.msg.messages, &self.metrics.token_counter);
 
         if self.sidequest.tool_output_cursors.is_empty() {
             tracing::debug!("sidequest: no eligible cursors");
@@ -4328,9 +4127,9 @@ impl<C: Channel> Agent<C> {
             Some(valid)
         });
 
-        self.pending_sidequest_result = Some(handle);
+        self.compression.pending_sidequest_result = Some(handle);
         tracing::debug!("sidequest: background LLM eviction task spawned");
-        if let Some(ref tx) = self.status_tx {
+        if let Some(ref tx) = self.session.status_tx {
             let _ = tx.send("SideQuest: scoring tool outputs...".into());
         }
     }

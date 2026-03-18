@@ -1,0 +1,213 @@
+# Default declarative filter rules (embedded fallback).
+# User can override by placing filters.toml next to config.toml.
+
+# --- Cargo ecosystem ---
+
+[[rules]]
+name = "cargo-build"
+match = { regex = "^cargo\\s+(test\\b|nextest\\b|clippy\\b)" }
+strategy = { type = "strip_annotated", patterns = [
+  "^\\s*Compiling ",
+  "^\\s*Downloading ",
+  "^\\s*Downloaded ",
+  "^\\s*Updating ",
+  "^\\s*Fetching ",
+  "^\\s*Fresh ",
+  "^\\s*Packaging ",
+  "^\\s*Verifying ",
+  "^\\s*Archiving ",
+  "^\\s*Locking ",
+  "^\\s*Adding ",
+  "^\\s*Removing ",
+  "^\\s*Checking ",
+  "^\\s*Documenting ",
+  "^\\s*Running ",
+  "^\\s*Loaded ",
+  "^\\s*Blocking ",
+  "^\\s*Unpacking ",
+], summary_pattern = "^\\s*Finished " }
+
+[[rules]]
+name = "cargo-test"
+match = { regex = "^cargo\\s+(\\+\\S+\\s+)?(test|nextest)" }
+strategy = { type = "test_summary", max_failures = 10, truncate_stack_trace = 50 }
+
+[[rules]]
+name = "cargo-clippy"
+match = { regex = "^cargo\\s+(\\+\\S+\\s+)?clippy" }
+strategy = { type = "group_by_rule", location_pattern = "^\\s*-->\\s*(.+:\\d+)", rule_pattern = "#\\[warn\\(([^)]+)\\)\\]" }
+
+# --- Git ---
+
+[[rules]]
+name = "git-status"
+match = { regex = "^git\\s+status" }
+strategy = { type = "git_status" }
+
+[[rules]]
+name = "git-diff"
+match = { regex = "^git\\s+diff" }
+strategy = { type = "git_diff", max_diff_lines = 500 }
+
+[[rules]]
+name = "git-log"
+match = { regex = "^git\\s+log" }
+strategy = { type = "truncate", max_lines = 20, head = 20, tail = 0 }
+
+[[rules]]
+name = "git-push"
+match = { regex = "^git\\s+push" }
+strategy = { type = "keep_matching", patterns = ["->", "^To ", "^Branch"] }
+
+# --- Directory listing ---
+
+[[rules]]
+name = "ls"
+match = { regex = "^ls(\\s|$)" }
+strategy = { type = "strip_annotated", patterns = [
+  "node_modules",
+  "^target$",
+  "^\\.git$",
+  "__pycache__",
+  "^\\.venv$",
+  "^venv$",
+  "^dist$",
+  "^build$",
+  "^\\.next$",
+  "^\\.cache$",
+] }
+
+# --- Log deduplication ---
+
+[[rules]]
+name = "log-dedup"
+match = { regex = "(journalctl|tail -f|docker logs|cat .+\\.log)" }
+strategy = { type = "dedup" }
+
+# --- External tools ---
+
+[[rules]]
+name = "docker-build"
+match = { prefix = "docker build" }
+strategy = { type = "strip_noise", patterns = [
+  "^Step \\d+/\\d+ : ",
+  "^ ---> [a-f0-9]+$",
+  "^Removing intermediate container",
+  "^\\s*$",
+] }
+
+[[rules]]
+name = "docker-compose"
+match = { prefix = "docker compose" }
+strategy = { type = "strip_noise", patterns = [
+  "^\\s*Network\\s+\\S+\\s+Created$",
+  "^\\s*Container\\s+\\S+\\s+(Creating|Created|Starting|Started)$",
+] }
+
+[[rules]]
+name = "npm-install"
+match = { regex = "^(npm|yarn|pnpm)\\s+(install|ci|add)" }
+strategy = { type = "strip_noise", patterns = [
+  "^npm warn",
+  "^npm notice",
+  "^added \\d+ packages",
+  "^up to date",
+  "^\\s*$",
+] }
+
+[[rules]]
+name = "pip-install"
+match = { regex = "^pip3?\\s+install" }
+strategy = { type = "strip_noise", patterns = [
+  "^\\s*Downloading\\s",
+  "^\\s*Installing collected",
+  "^\\s*Using cached",
+  "^\\s*Collecting\\s",
+  "^\\s*$",
+] }
+
+[[rules]]
+name = "make"
+match = { prefix = "make" }
+strategy = { type = "truncate", max_lines = 80, head = 15, tail = 15 }
+
+[[rules]]
+name = "pytest"
+match = { regex = "^(pytest|python -m pytest)" }
+strategy = { type = "truncate", max_lines = 100, head = 20, tail = 30 }
+
+[[rules]]
+name = "go-test"
+match = { regex = "^go\\s+test" }
+strategy = { type = "truncate", max_lines = 80, head = 15, tail = 20 }
+
+[[rules]]
+name = "terraform-plan"
+match = { regex = "^terraform\\s+(plan|apply)" }
+strategy = { type = "truncate", max_lines = 60, head = 10, tail = 15 }
+
+[[rules]]
+name = "kubectl-get"
+match = { regex = "^kubectl\\s+(get|describe)" }
+strategy = { type = "truncate", max_lines = 50, head = 10, tail = 10 }
+
+[[rules]]
+name = "brew-install"
+match = { regex = "^brew\\s+(install|upgrade)" }
+strategy = { type = "strip_noise", patterns = [
+  "^==> Downloading",
+  "^==> Fetching",
+  "^==> Installing",
+  "^==> Pouring",
+  "^Already downloaded",
+  "^\\s*$",
+] }
+
+# --- File search ---
+
+[[rules]]
+name = "find"
+match = { regex = "^find\\s" }
+strategy = { type = "truncate", max_lines = 100, head = 20, tail = 10 }
+
+# --- Text search ---
+
+[[rules]]
+name = "grep-rg"
+match = { regex = "^(grep|rg)\\s" }
+strategy = { type = "truncate", max_lines = 80, head = 30, tail = 10 }
+
+# --- HTTP clients ---
+
+[[rules]]
+name = "curl-wget"
+match = { regex = "^(curl|wget)\\s" }
+strategy = { type = "strip_noise", patterns = [
+  "^\\s*%",
+  "^--\\d{4}-\\d{2}-\\d{2}",
+  "^\\s*\\d+K",
+  "Resolving\\s",
+  "Connecting to\\s",
+  "^\\s*$",
+] }
+
+# --- System info ---
+
+[[rules]]
+name = "du-df-ps"
+match = { regex = "^(du|df|ps)(\\s|$)" }
+strategy = { type = "truncate", max_lines = 50, head = 20, tail = 5 }
+
+# --- JS test runners ---
+
+[[rules]]
+name = "js-test"
+match = { regex = "^(jest|mocha|vitest|npx jest|npx vitest)(\\s|$)" }
+strategy = { type = "truncate", max_lines = 100, head = 20, tail = 30 }
+
+# --- Generic linters ---
+
+[[rules]]
+name = "linter"
+match = { regex = "^(eslint|ruff|mypy|pylint|flake8)\\s|^(npx eslint|python -m (mypy|pylint|ruff))\\s" }
+strategy = { type = "truncate", max_lines = 80, head = 20, tail = 15 }

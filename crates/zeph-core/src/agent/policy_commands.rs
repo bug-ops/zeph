@@ -15,7 +15,7 @@ use crate::channel::Channel;
 impl<C: Channel> Agent<C> {
     /// Handle `/policy [status|check <tool> [args_json]]` command.
     pub(super) async fn handle_policy_command(&mut self, args: &str) -> Result<(), AgentError> {
-        let Some(ref policy_config) = self.policy_config else {
+        let Some(ref policy_config) = self.session.policy_config else {
             return self
                 .channel
                 .send("Policy enforcer: not configured (use --policy-file or set [tools.policy] in config)")
@@ -67,7 +67,7 @@ impl<C: Channel> Agent<C> {
 
     /// Handle `/policy check [--trust-level <level>] <tool> [args_json]`.
     async fn handle_policy_check(&mut self, raw: &[&str]) -> Result<(), AgentError> {
-        let Some(ref policy_config) = self.policy_config else {
+        let Some(ref policy_config) = self.session.policy_config else {
             return Ok(());
         };
 

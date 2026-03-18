@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(agent): decompose `Agent<C>` struct into named sub-structs (EPIC-02)
+  - Extracted `InstructionState`, `ExperimentState`, `CompressionState`, `MessageState`, `SessionState`
+  - Moved all sub-struct definitions to `agent/state/mod.rs`; `agent/mod.rs` reduced from 4,396 to 4,163 lines
+  - No public API changes; all sub-structs are `pub(crate)` within the agent module hierarchy
+- refactor(agent): split large test modules into sibling `tests.rs` files (EPIC-03)
+  - `agent/tool_execution/mod.rs`: 4,502 → 622 lines; tests moved to `tool_execution/tests.rs`
+  - `agent/context/mod.rs`: 4,320 → 94 lines; tests moved to `context/tests.rs`
+- refactor(memory): split large graph and SQLite modules into `mod.rs` + `tests.rs` (EPIC-05)
+  - `graph/store.rs` (3,886 lines) → `graph/store/mod.rs` (1,389) + `graph/store/tests.rs` (2,500)
+  - `graph/resolver.rs` (2,021 lines) → `graph/resolver/mod.rs` (886) + `graph/resolver/tests.rs` (1,138)
+  - `sqlite/messages.rs` (1,559 lines) → `sqlite/messages/mod.rs` (752) + `sqlite/messages/tests.rs` (810)
+- refactor(tools): split large filter and shell modules into `mod.rs` + `tests.rs` (EPIC-06)
+  - `filter/declarative.rs` (2,852 lines) → `filter/declarative/mod.rs` (1,044) + `filter/declarative/tests.rs` (1,811)
+  - `shell.rs` (2,459 lines) → `shell/mod.rs` (957) + `shell/tests.rs` (1,505)
 - refactor(common): create `zeph-common` crate with shared utility functions
   - New crate at Layer 0 (no zeph-* dependencies): `text`, `net`, `sanitize` modules
   - Consolidates 3 independent `truncate_to_bytes` implementations into one

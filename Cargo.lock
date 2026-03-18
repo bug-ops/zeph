@@ -9344,6 +9344,7 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+ "zeph-common",
 ]
 
 [[package]]
@@ -9408,6 +9409,10 @@ dependencies = [
  "unicode-width",
  "zeph-core",
 ]
+
+[[package]]
+name = "zeph-common"
+version = "0.15.3"
 
 [[package]]
 name = "zeph-core"
@@ -9559,6 +9564,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zeph-common",
  "zeph-llm",
  "zeph-memory",
  "zeph-tools",
@@ -9591,6 +9597,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "zeph-common",
  "zeph-llm",
 ]
 
@@ -9657,10 +9664,19 @@ dependencies = [
  "toml 1.0.7+spec-1.1.0",
  "tracing",
  "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-md",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-toml-ng",
+ "tree-sitter-typescript",
  "unicode-normalization",
  "url",
  "wiremock",
- "zeph-index",
+ "zeph-common",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 ---
-source: crates/zeph-tools/src/filter/declarative.rs
+source: crates/zeph-tools/src/filter/declarative/mod.rs
 assertion_line: 2268
 expression: result.output
 ---

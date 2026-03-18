@@ -171,7 +171,7 @@ impl<C: Channel> Agent<C> {
     /// to find and return that summary text.
     fn extract_last_compaction_summary(&self) -> String {
         const SUMMARY_MARKER: &str = "[conversation summary";
-        for msg in self.messages.iter().skip(1).take(3) {
+        for msg in self.msg.messages.iter().skip(1).take(3) {
             if msg.content.starts_with(SUMMARY_MARKER) {
                 return msg.content.clone();
             }

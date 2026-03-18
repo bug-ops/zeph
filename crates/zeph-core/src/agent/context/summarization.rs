@@ -93,7 +93,7 @@ mod tests {
             metadata: pinned_meta,
         };
         pinned_msg.rebuild_content();
-        agent.messages.push(pinned_msg);
+        agent.msg.messages.push(pinned_msg);
 
         // Non-pinned message with a large tool output
         let big_body2 = "y".repeat(5000);
@@ -108,12 +108,12 @@ mod tests {
             metadata: MessageMetadata::default(),
         };
         normal_msg.rebuild_content();
-        agent.messages.push(normal_msg);
+        agent.msg.messages.push(normal_msg);
 
         let freed = agent.prune_tool_outputs(1);
 
         // messages[0] = agent system prompt, messages[1] = pinned, messages[2] = normal.
-        let pinned = &agent.messages[1];
+        let pinned = &agent.msg.messages[1];
         if let MessagePart::ToolOutput {
             body, compacted_at, ..
         } = &pinned.parts[0]
@@ -126,7 +126,7 @@ mod tests {
         }
 
         // Non-pinned body must be evicted
-        let normal = &agent.messages[2];
+        let normal = &agent.msg.messages[2];
         if let MessagePart::ToolOutput { compacted_at, .. } = &normal.parts[0] {
             assert!(compacted_at.is_some(), "non-pinned body must be evicted");
         }
@@ -167,21 +167,21 @@ mod tests {
                 metadata: Default::default(),
             };
             msg.rebuild_content();
-            agent.messages.push(msg);
+            agent.msg.messages.push(msg);
         }
 
         // Evict just enough for the first message; the last two should be intact.
         agent.prune_tool_outputs_oldest_first(1);
 
         // messages[0] = agent system prompt, messages[1..=3] = ToolOutput messages.
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[1].parts[0] {
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
             assert!(
                 compacted_at.is_some(),
                 "oldest tool output must be evicted first"
             );
         }
         // Second should be intact (we only freed enough for 1)
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[2].parts[0] {
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
             assert!(
                 compacted_at.is_none(),
                 "second tool output must still be intact"
@@ -208,7 +208,8 @@ mod tests {
             MockToolExecutor::no_tools(),
         );
         agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
-        agent.current_task_goal = Some("authentication middleware session token".to_string());
+        agent.compression.current_task_goal =
+            Some("authentication middleware session token".to_string());
         // Disable tail protection so the pruner can evict all messages in the test.
         agent.context_manager.prune_protect_tokens = 0;
         // Agent::new puts system prompt at messages[0]; rel_msg goes to index 1, irrel_msg to 2.
@@ -226,7 +227,7 @@ mod tests {
             metadata: Default::default(),
         };
         rel_msg.rebuild_content();
-        agent.messages.push(rel_msg);
+        agent.msg.messages.push(rel_msg);
 
         // Low-relevance: unrelated content
         let irrel_body = "database migration schema table column index ".repeat(50);
@@ -241,18 +242,18 @@ mod tests {
             metadata: Default::default(),
         };
         irrel_msg.rebuild_content();
-        agent.messages.push(irrel_msg);
+        agent.msg.messages.push(irrel_msg);
 
         agent.prune_tool_outputs_scored(1);
 
         // messages[0] = agent system prompt, messages[1] = rel_msg, messages[2] = irrel_msg.
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[2].parts[0] {
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
             assert!(
                 compacted_at.is_some(),
                 "low-relevance block must be evicted"
             );
         }
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.messages[1].parts[0] {
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
             assert!(compacted_at.is_none(), "high-relevance block must survive");
         }
     }
@@ -647,22 +648,22 @@ impl<C: Channel> Agent<C> {
 
         let preserve_tail = self.context_manager.compaction_preserve_tail;
 
-        if self.messages.len() <= preserve_tail + 1 {
+        if self.msg.messages.len() <= preserve_tail + 1 {
             return Ok(());
         }
 
-        let compact_end = self.messages.len() - preserve_tail;
+        let compact_end = self.msg.messages.len() - preserve_tail;
 
         // S1 fix: extract focus-pinned messages before draining so they survive compaction.
         // These are Knowledge block messages created by the Focus Agent (#1850).
-        let pinned_messages: Vec<Message> = self.messages[1..compact_end]
+        let pinned_messages: Vec<Message> = self.msg.messages[1..compact_end]
             .iter()
             .filter(|m| m.metadata.focus_pinned)
             .cloned()
             .collect();
 
         // Summarize only the non-pinned messages in the compaction range.
-        let to_compact: Vec<Message> = self.messages[1..compact_end]
+        let to_compact: Vec<Message> = self.msg.messages[1..compact_end]
             .iter()
             .filter(|m| !m.metadata.focus_pinned)
             .cloned()
@@ -683,9 +684,9 @@ impl<C: Channel> Agent<C> {
         let summary_content =
             format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
         // Drain the original range (includes both pinned and non-pinned messages).
-        self.messages.drain(1..compact_end);
+        self.msg.messages.drain(1..compact_end);
         // Insert the compaction summary at position 1.
-        self.messages.insert(
+        self.msg.messages.insert(
             1,
             Message {
                 role: Role::System,
@@ -697,7 +698,7 @@ impl<C: Channel> Agent<C> {
         // Re-insert pinned messages right after the summary (position 2+).
         // They are placed before the preserved tail so the LLM always sees them.
         for (i, pinned) in pinned_messages.into_iter().enumerate() {
-            self.messages.insert(2 + i, pinned);
+            self.msg.messages.insert(2 + i, pinned);
         }
 
         tracing::info!(
@@ -716,11 +717,11 @@ impl<C: Channel> Agent<C> {
         {
             // Persist compaction: mark originals as user_only, insert summary as agent_only.
             // Assumption: the system prompt is always the first (oldest) row for this conversation
-            // in SQLite — i.e., ids[0] corresponds to self.messages[0] (the system prompt).
+            // in SQLite — i.e., ids[0] corresponds to self.msg.messages[0] (the system prompt).
             // This holds for normal sessions but may not hold after cross-session restore if a
             // non-system message was persisted first. MVP assumption; document if changed.
             // oldest_message_ids returns ascending order; ids[1..=compacted_count] are the messages
-            // that were drained from self.messages[1..compact_end].
+            // that were drained from self.msg.messages[1..compact_end].
             let sqlite = memory.sqlite();
             let ids = sqlite
                 .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
@@ -790,9 +791,9 @@ impl<C: Channel> Agent<C> {
     fn prune_tool_outputs_oldest_first(&mut self, min_to_free: usize) -> usize {
         let protect = self.context_manager.prune_protect_tokens;
         let mut tail_tokens = 0usize;
-        let mut protection_boundary = self.messages.len();
+        let mut protection_boundary = self.msg.messages.len();
         if protect > 0 {
-            for (i, msg) in self.messages.iter().enumerate().rev() {
+            for (i, msg) in self.msg.messages.iter().enumerate().rev() {
                 tail_tokens += self.metrics.token_counter.count_message_tokens(msg);
                 if tail_tokens >= protect {
                     protection_boundary = i;
@@ -810,7 +811,7 @@ impl<C: Channel> Agent<C> {
             .unwrap_or_default()
             .as_secs()
             .cast_signed();
-        for msg in &mut self.messages[..protection_boundary] {
+        for msg in &mut self.msg.messages[..protection_boundary] {
             if freed >= min_to_free {
                 break;
             }
@@ -869,13 +870,13 @@ impl<C: Channel> Agent<C> {
 
         let goal = match &self.context_manager.compression.pruning_strategy {
             PruningStrategy::TaskAware | PruningStrategy::TaskAwareMig => {
-                self.current_task_goal.clone()
+                self.compression.current_task_goal.clone()
             }
             _ => None,
         };
 
         let scores = if let Some(ref goal) = goal {
-            score_blocks_task_aware(&self.messages, goal, &self.metrics.token_counter)
+            score_blocks_task_aware(&self.msg.messages, goal, &self.metrics.token_counter)
         } else {
             // No goal available: fall back to oldest-first directly (not through the
             // dispatcher, which would recurse back here — S4 fix).
@@ -906,7 +907,7 @@ impl<C: Channel> Agent<C> {
             if freed >= min_to_free {
                 break;
             }
-            let msg = &mut self.messages[block.msg_index];
+            let msg = &mut self.msg.messages[block.msg_index];
             if msg.metadata.focus_pinned {
                 continue;
             }
@@ -934,7 +935,7 @@ impl<C: Channel> Agent<C> {
         }
 
         for &idx in &pruned_indices {
-            self.messages[idx].rebuild_content();
+            self.msg.messages[idx].rebuild_content();
         }
 
         if freed > 0 {
@@ -955,8 +956,8 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn prune_tool_outputs_mig(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_mig;
 
-        let goal = self.current_task_goal.as_deref();
-        let mut scores = score_blocks_mig(&self.messages, goal, &self.metrics.token_counter);
+        let goal = self.compression.current_task_goal.as_deref();
+        let mut scores = score_blocks_mig(&self.msg.messages, goal, &self.metrics.token_counter);
 
         if let Some(ref d) = self.debug_state.debug_dumper {
             d.dump_pruning_scores(&scores);
@@ -981,7 +982,7 @@ impl<C: Channel> Agent<C> {
             if freed >= min_to_free {
                 break;
             }
-            let msg = &mut self.messages[block.msg_index];
+            let msg = &mut self.msg.messages[block.msg_index];
             if msg.metadata.focus_pinned {
                 continue;
             }
@@ -1009,7 +1010,7 @@ impl<C: Channel> Agent<C> {
         }
 
         for &idx in &pruned_indices {
-            self.messages[idx].rebuild_content();
+            self.msg.messages[idx].rebuild_content();
         }
 
         if freed > 0 {
@@ -1037,10 +1038,10 @@ impl<C: Channel> Agent<C> {
     /// is skipped by `count_unsummarized_pairs`. The pruning loop may still clear their
     /// bodies for token savings, but the content has already been captured in the summary.
     pub(crate) fn prune_stale_tool_outputs(&mut self, keep_recent: usize) -> usize {
-        if self.messages.len() <= keep_recent + 1 {
+        if self.msg.messages.len() <= keep_recent + 1 {
             return 0;
         }
-        let boundary = self.messages.len().saturating_sub(keep_recent);
+        let boundary = self.msg.messages.len().saturating_sub(keep_recent);
         let mut freed = 0usize;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1049,7 +1050,7 @@ impl<C: Channel> Agent<C> {
             .cast_signed();
         // Skip system prompt (index 0), prune from 1..boundary.
         // Also skip focus-pinned Knowledge block messages (#1850 S1 fix).
-        for msg in &mut self.messages[1..boundary] {
+        for msg in &mut self.msg.messages[1..boundary] {
             if msg.metadata.focus_pinned {
                 continue;
             }
@@ -1109,8 +1110,8 @@ impl<C: Channel> Agent<C> {
     pub(super) fn count_unsummarized_pairs(&self) -> usize {
         let mut count = 0usize;
         let mut i = 1; // skip system prompt
-        while i < self.messages.len() {
-            let msg = &self.messages[i];
+        while i < self.msg.messages.len() {
+            let msg = &self.msg.messages[i];
             if !msg.metadata.agent_visible {
                 i += 1;
                 continue;
@@ -1120,8 +1121,8 @@ impl<C: Channel> Agent<C> {
                     .parts
                     .iter()
                     .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-            if is_tool_request && i + 1 < self.messages.len() {
-                let next = &self.messages[i + 1];
+            if is_tool_request && i + 1 < self.msg.messages.len() {
+                let next = &self.msg.messages[i + 1];
                 if next.metadata.agent_visible
                     && next.role == Role::User
                     && next.parts.iter().any(|p| {
@@ -1150,8 +1151,8 @@ impl<C: Channel> Agent<C> {
     ///   contain only `"[pruned]"`), which would produce a useless summary (IMP-03 fix).
     pub(super) fn find_oldest_unsummarized_pair(&self) -> Option<(usize, usize)> {
         let mut i = 1; // skip system prompt
-        while i < self.messages.len() {
-            let msg = &self.messages[i];
+        while i < self.msg.messages.len() {
+            let msg = &self.msg.messages[i];
             if !msg.metadata.agent_visible {
                 i += 1;
                 continue;
@@ -1161,8 +1162,8 @@ impl<C: Channel> Agent<C> {
                     .parts
                     .iter()
                     .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-            if is_tool_request && i + 1 < self.messages.len() {
-                let next = &self.messages[i + 1];
+            if is_tool_request && i + 1 < self.msg.messages.len() {
+                let next = &self.msg.messages[i + 1];
                 if next.metadata.agent_visible
                     && next.role == Role::User
                     && next.parts.iter().any(|p| {
@@ -1193,7 +1194,8 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn count_deferred_summaries(&self) -> usize {
-        self.messages
+        self.msg
+            .messages
             .iter()
             .filter(|m| m.metadata.deferred_summary.is_some())
             .count()
@@ -1228,8 +1230,8 @@ impl<C: Channel> Agent<C> {
                 break;
             };
             let prompt = Self::build_tool_pair_summary_prompt(
-                &self.messages[req_idx],
-                &self.messages[resp_idx],
+                &self.msg.messages[req_idx],
+                &self.msg.messages[resp_idx],
             );
             let msgs = [Message {
                 role: Role::User,
@@ -1259,7 +1261,7 @@ impl<C: Channel> Agent<C> {
             // array. Applied lazily by apply_deferred_summaries() when context pressure rises,
             // preserving the message prefix for Claude API cache hits.
             let summary = super::cap_summary(self.maybe_redact(&summary).into_owned(), 8_000);
-            self.messages[resp_idx].metadata.deferred_summary = Some(summary.clone());
+            self.msg.messages[resp_idx].metadata.deferred_summary = Some(summary.clone());
             summarized += 1;
             tracing::debug!(
                 pair_count,
@@ -1285,22 +1287,22 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn apply_deferred_summaries(&mut self) -> usize {
         // Phase 1: collect (resp_idx, req_idx, summary) for all messages with deferred_summary.
         let mut targets: Vec<(usize, usize, String)> = Vec::new();
-        for i in 1..self.messages.len() {
-            if self.messages[i].metadata.deferred_summary.is_none() {
+        for i in 1..self.msg.messages.len() {
+            if self.msg.messages[i].metadata.deferred_summary.is_none() {
                 continue;
             }
             // Verify the structural invariant: tool response preceded by matching tool request.
-            if self.messages[i].role == Role::User
-                && self.messages[i].metadata.agent_visible
+            if self.msg.messages[i].role == Role::User
+                && self.msg.messages[i].metadata.agent_visible
                 && i > 0
-                && self.messages[i - 1].role == Role::Assistant
-                && self.messages[i - 1].metadata.agent_visible
-                && self.messages[i - 1]
+                && self.msg.messages[i - 1].role == Role::Assistant
+                && self.msg.messages[i - 1].metadata.agent_visible
+                && self.msg.messages[i - 1]
                     .parts
                     .iter()
                     .any(|p| matches!(p, MessagePart::ToolUse { .. }))
             {
-                let summary = self.messages[i]
+                let summary = self.msg.messages[i]
                     .metadata
                     .deferred_summary
                     .clone()
@@ -1323,9 +1325,9 @@ impl<C: Channel> Agent<C> {
 
         let count = targets.len();
         for (resp_idx, req_idx, summary) in targets {
-            self.messages[req_idx].metadata.agent_visible = false;
-            self.messages[resp_idx].metadata.agent_visible = false;
-            self.messages[resp_idx].metadata.deferred_summary = None;
+            self.msg.messages[req_idx].metadata.agent_visible = false;
+            self.msg.messages[resp_idx].metadata.agent_visible = false;
+            self.msg.messages[resp_idx].metadata.deferred_summary = None;
 
             let content = format!("[tool summary] {summary}");
             let summary_msg = Message {
@@ -1334,7 +1336,7 @@ impl<C: Channel> Agent<C> {
                 parts: vec![MessagePart::Summary { text: summary }],
                 metadata: MessageMetadata::agent_only(),
             };
-            self.messages.insert(resp_idx + 1, summary_msg);
+            self.msg.messages.insert(resp_idx + 1, summary_msg);
         }
 
         self.recompute_prompt_tokens();
@@ -1422,6 +1424,7 @@ impl<C: Channel> Agent<C> {
                 .map_or(0, ContextBudget::max_tokens);
             if budget > 0 {
                 let total_tokens: usize = self
+                    .msg
                     .messages
                     .iter()
                     .map(|m| self.metrics.token_counter.count_message_tokens(m))
@@ -1542,7 +1545,7 @@ impl<C: Channel> Agent<C> {
                 // Step 3: Guard 2 — Counterproductive: check if there are enough messages
                 // to make LLM summarization worthwhile.
                 let preserve_tail = self.context_manager.compaction_preserve_tail;
-                let compactable = self.messages.len().saturating_sub(preserve_tail + 1);
+                let compactable = self.msg.messages.len().saturating_sub(preserve_tail + 1);
                 if compactable <= 1 {
                     tracing::warn!(
                         compactable,
@@ -1714,12 +1717,12 @@ impl<C: Channel> Agent<C> {
 
         let preserve_tail = self.context_manager.compaction_preserve_tail;
 
-        if self.messages.len() <= preserve_tail + 1 {
+        if self.msg.messages.len() <= preserve_tail + 1 {
             return Ok(());
         }
 
-        let compact_end = self.messages.len() - preserve_tail;
-        let to_compact = &self.messages[1..compact_end];
+        let compact_end = self.msg.messages.len() - preserve_tail;
+        let to_compact = &self.msg.messages[1..compact_end];
         if to_compact.is_empty() {
             return Ok(());
         }
@@ -1731,8 +1734,8 @@ impl<C: Channel> Agent<C> {
         let compacted_count = to_compact.len();
         let summary_content =
             format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
-        self.messages.drain(1..compact_end);
-        self.messages.insert(
+        self.msg.messages.drain(1..compact_end);
+        self.msg.messages.insert(
             1,
             Message {
                 role: Role::System,
@@ -1887,30 +1890,32 @@ impl<C: Channel> Agent<C> {
 
         // Phase 1: apply background result if the task has completed.
         if self
+            .compression
             .pending_task_goal
             .as_ref()
             .is_some_and(tokio::task::JoinHandle::is_finished)
         {
             use futures::FutureExt as _;
-            if let Some(handle) = self.pending_task_goal.take() {
+            if let Some(handle) = self.compression.pending_task_goal.take() {
                 if let Some(Ok(Some(goal))) = handle.now_or_never() {
                     tracing::debug!("extract_task_goal: background result applied");
-                    self.current_task_goal = Some(goal);
+                    self.compression.current_task_goal = Some(goal);
                 }
                 // Clear spinner on ALL completion paths (success, None result, or task panic).
-                if let Some(ref tx) = self.status_tx {
+                if let Some(ref tx) = self.session.status_tx {
                     let _ = tx.send(String::new());
                 }
             }
         }
 
         // Phase 2: do not spawn a second task while one is already in-flight.
-        if self.pending_task_goal.is_some() {
+        if self.compression.pending_task_goal.is_some() {
             return;
         }
 
         // Find the last user message content.
         let last_user_content = self
+            .msg
             .messages
             .iter()
             .rev()
@@ -1930,15 +1935,16 @@ impl<C: Channel> Agent<C> {
         };
 
         // Cache hit: extraction already scheduled or completed for this user message.
-        if self.task_goal_user_msg_hash == Some(hash) {
+        if self.compression.task_goal_user_msg_hash == Some(hash) {
             return;
         }
 
         // Cache miss: update hash and spawn background extraction.
-        self.task_goal_user_msg_hash = Some(hash);
+        self.compression.task_goal_user_msg_hash = Some(hash);
 
         // Clone only the data needed by the background task (avoids borrowing self).
         let recent: Vec<(zeph_llm::provider::Role, String)> = self
+            .msg
             .messages
             .iter()
             .filter(|m| {
@@ -2017,9 +2023,9 @@ impl<C: Channel> Agent<C> {
             }
         });
 
-        self.pending_task_goal = Some(handle);
+        self.compression.pending_task_goal = Some(handle);
         tracing::debug!("extract_task_goal: background task spawned");
-        if let Some(ref tx) = self.status_tx {
+        if let Some(ref tx) = self.session.status_tx {
             let _ = tx.send("Extracting task goal...".into());
         }
     }

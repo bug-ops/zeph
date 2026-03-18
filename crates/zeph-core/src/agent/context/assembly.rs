@@ -32,16 +32,16 @@ use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn clear_history(&mut self) {
-        let system_prompt = self.messages.first().cloned();
-        self.messages.clear();
+        let system_prompt = self.msg.messages.first().cloned();
+        self.msg.messages.clear();
         if let Some(sp) = system_prompt {
-            self.messages.push(sp);
+            self.msg.messages.push(sp);
         }
         self.recompute_prompt_tokens();
     }
 
     pub(in crate::agent) fn remove_recall_messages(&mut self) {
-        self.messages.retain(|m| {
+        self.msg.messages.retain(|m| {
             if m.role != Role::System {
                 return true;
             }
@@ -56,12 +56,14 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(in crate::agent) fn remove_correction_messages(&mut self) {
-        self.messages
+        self.msg
+            .messages
             .retain(|m| m.role != Role::System || !m.content.starts_with(CORRECTIONS_PREFIX));
     }
 
     pub(in crate::agent) fn remove_graph_facts_messages(&mut self) {
-        self.messages
+        self.msg
+            .messages
             .retain(|m| m.role != Role::System || !m.content.starts_with(GRAPH_FACTS_PREFIX));
     }
 
@@ -73,7 +75,8 @@ impl<C: Channel> Agent<C> {
     /// so they are skipped by tool-pair summarization automatically.
     #[cfg(feature = "lsp-context")]
     pub(in crate::agent) fn remove_lsp_messages(&mut self) {
-        self.messages
+        self.msg
+            .messages
             .retain(|m| m.role != Role::System || !m.content.starts_with(LSP_NOTE_PREFIX));
     }
 
@@ -174,9 +177,9 @@ impl<C: Channel> Agent<C> {
             None,
         )
         .await?
-            && self.messages.len() > 1
+            && self.msg.messages.len() > 1
         {
-            self.messages.insert(1, msg);
+            self.msg.messages.insert(1, msg);
         }
 
         Ok(())
@@ -239,7 +242,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(in crate::agent) fn remove_code_context_messages(&mut self) {
-        self.messages.retain(|m| {
+        self.msg.messages.retain(|m| {
             if m.role != Role::System {
                 return true;
             }
@@ -254,7 +257,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn remove_summary_messages(&mut self) {
-        self.messages.retain(|m| {
+        self.msg.messages.retain(|m| {
             if m.role != Role::System {
                 return true;
             }
@@ -269,7 +272,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn remove_cross_session_messages(&mut self) {
-        self.messages.retain(|m| {
+        self.msg.messages.retain(|m| {
             if m.role != Role::System {
                 return true;
             }
@@ -284,7 +287,8 @@ impl<C: Channel> Agent<C> {
     }
 
     fn remove_document_rag_messages(&mut self) {
-        self.messages
+        self.msg
+            .messages
             .retain(|m| m.role != Role::System || !m.content.starts_with(DOCUMENT_RAG_PREFIX));
     }
 
@@ -358,9 +362,9 @@ impl<C: Channel> Agent<C> {
             &self.metrics.token_counter,
         )
         .await?
-            && self.messages.len() > 1
+            && self.msg.messages.len() > 1
         {
-            self.messages.insert(1, msg);
+            self.msg.messages.insert(1, msg);
             tracing::debug!("injected cross-session context");
         }
 
@@ -427,9 +431,9 @@ impl<C: Channel> Agent<C> {
             &self.metrics.token_counter,
         )
         .await?
-            && self.messages.len() > 1
+            && self.msg.messages.len() > 1
         {
-            self.messages.insert(1, msg);
+            self.msg.messages.insert(1, msg);
             tracing::debug!("injected summaries into context");
         }
 
@@ -484,23 +488,24 @@ impl<C: Channel> Agent<C> {
         }
 
         let history_start = self
+            .msg
             .messages
             .iter()
             .position(|m| m.role != Role::System)
-            .unwrap_or(self.messages.len());
+            .unwrap_or(self.msg.messages.len());
 
-        if history_start >= self.messages.len() {
+        if history_start >= self.msg.messages.len() {
             return;
         }
 
         let mut total = 0usize;
-        let mut keep_from = self.messages.len();
+        let mut keep_from = self.msg.messages.len();
 
-        for i in (history_start..self.messages.len()).rev() {
+        for i in (history_start..self.msg.messages.len()).rev() {
             let msg_tokens = self
                 .metrics
                 .token_counter
-                .count_message_tokens(&self.messages[i]);
+                .count_message_tokens(&self.msg.messages[i]);
             if total + msg_tokens > token_budget {
                 break;
             }
@@ -510,7 +515,7 @@ impl<C: Channel> Agent<C> {
 
         if keep_from > history_start {
             let removed = keep_from - history_start;
-            self.messages.drain(history_start..keep_from);
+            self.msg.messages.drain(history_start..keep_from);
             self.recompute_prompt_tokens();
             tracing::info!(
                 removed,
@@ -532,7 +537,7 @@ impl<C: Channel> Agent<C> {
         };
         let _ = self.channel.send_status("recalling context...").await;
 
-        let system_prompt = self.messages.first().map_or("", |m| m.content.as_str());
+        let system_prompt = self.msg.messages.first().map_or("", |m| m.content.as_str());
         let graph_enabled = self.memory_state.graph_config.enabled;
         let alloc = budget.allocate(
             system_prompt,
@@ -659,31 +664,37 @@ impl<C: Channel> Agent<C> {
 
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
-        if let Some(msg) = graph_facts_msg.filter(|_| self.messages.len() > 1) {
-            self.messages
+        if let Some(msg) = graph_facts_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg
+                .messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected knowledge graph facts into context");
         }
-        if let Some(msg) = doc_rag_msg.filter(|_| self.messages.len() > 1) {
-            self.messages
+        if let Some(msg) = doc_rag_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg
+                .messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected document RAG context");
         }
-        if let Some(msg) = corrections_msg.filter(|_| self.messages.len() > 1) {
-            self.messages
+        if let Some(msg) = corrections_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg
+                .messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected past corrections into context");
         }
-        if let Some(msg) = recall_msg.filter(|_| self.messages.len() > 1) {
-            self.messages
+        if let Some(msg) = recall_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg
+                .messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
         }
-        if let Some(msg) = cross_session_msg.filter(|_| self.messages.len() > 1) {
-            self.messages
+        if let Some(msg) = cross_session_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg
+                .messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
         }
-        if let Some(msg) = summaries_msg.filter(|_| self.messages.len() > 1) {
-            self.messages
+        if let Some(msg) = summaries_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg
+                .messages
                 .insert(1, self.sanitize_memory_message(msg).await); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected summaries into context");
         }
@@ -731,7 +742,7 @@ impl<C: Channel> Agent<C> {
         self.trim_messages_to_budget(alloc.recent_history);
 
         if self.runtime.redact_credentials {
-            for msg in &mut self.messages {
+            for msg in &mut self.msg.messages {
                 if msg.role == Role::System {
                     continue;
                 }
@@ -1129,8 +1140,9 @@ impl<C: Channel> Agent<C> {
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        self.env_context.refresh_git_branch();
-        self.env_context
+        self.session.env_context.refresh_git_branch();
+        self.session
+            .env_context
             .model_name
             .clone_from(&self.runtime.model_name);
         let tool_catalog = if self.provider.supports_tool_use() {
@@ -1150,10 +1162,10 @@ impl<C: Channel> Agent<C> {
         #[allow(unused_mut)]
         let mut system_prompt = build_system_prompt_with_instructions(
             &skills_prompt,
-            Some(&self.env_context),
+            Some(&self.session.env_context),
             tool_catalog.as_deref(),
             self.provider.supports_tool_use(),
-            &self.instruction_blocks,
+            &self.instructions.blocks,
         );
 
         // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
@@ -1166,7 +1178,7 @@ impl<C: Channel> Agent<C> {
 
         self.append_mcp_prompt(query, &mut system_prompt).await;
 
-        let cwd = match self.env_context.working_dir.as_str() {
+        let cwd = match self.session.env_context.working_dir.as_str() {
             "" | "unknown" => std::env::current_dir().unwrap_or_default(),
             dir => PathBuf::from(dir),
         };
@@ -1216,7 +1228,7 @@ impl<C: Channel> Agent<C> {
         );
         tracing::trace!(prompt = %system_prompt, "full system prompt");
 
-        if let Some(msg) = self.messages.first_mut() {
+        if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }
     }

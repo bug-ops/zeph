@@ -1,6 +1,5 @@
 ---
-source: crates/zeph-llm/src/claude.rs
-assertion_line: 1601
+source: crates/zeph-llm/src/claude/tests.rs
 expression: pretty
 ---
 [

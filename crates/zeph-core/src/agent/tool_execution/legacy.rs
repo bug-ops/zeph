@@ -134,7 +134,7 @@ impl<C: Channel> Agent<C> {
         self.maybe_soft_compact_mid_iteration();
 
         // Doom-loop detection
-        if let Some(last_msg) = self.messages.last() {
+        if let Some(last_msg) = self.msg.messages.last() {
             let hash = doom_loop_hash(&last_msg.content);
             tracing::debug!(
                 iteration,
@@ -278,10 +278,10 @@ impl<C: Channel> Agent<C> {
                 .map(|d: &crate::debug_dump::DebugDumper| {
                     d.dump_request(&crate::debug_dump::RequestDebugDump {
                         model_name: &self.runtime.model_name,
-                        messages: &self.messages,
+                        messages: &self.msg.messages,
                         tools: &[],
                         provider_request: self.provider.debug_request_json(
-                            &self.messages,
+                            &self.msg.messages,
                             &[],
                             self.provider.supports_streaming(),
                         ),
@@ -404,7 +404,7 @@ impl<C: Channel> Agent<C> {
         llm_span: tracing::Span,
     ) -> Result<Option<String>, super::super::error::AgentError> {
         let cancel = self.lifecycle.cancel_token.clone();
-        let chat_fut = self.provider.chat(&self.messages).instrument(llm_span);
+        let chat_fut = self.provider.chat(&self.msg.messages).instrument(llm_span);
         let result = tokio::select! {
             r = tokio::time::timeout(llm_timeout, chat_fut) => r,
             () = cancel.cancelled() => {
@@ -587,7 +587,7 @@ impl<C: Channel> Agent<C> {
                 tool_name: &output.tool_name,
                 tool_call_id: &tool_call_id,
                 params: None,
-                parent_tool_use_id: self.parent_tool_use_id.clone(),
+                parent_tool_use_id: self.session.parent_tool_use_id.clone(),
             })
             .await?;
         if let Some(ref d) = self.debug_state.debug_dumper {
@@ -620,7 +620,7 @@ impl<C: Channel> Agent<C> {
                 locations: output.locations,
                 tool_call_id: &tool_call_id,
                 is_error: false,
-                parent_tool_use_id: self.parent_tool_use_id.clone(),
+                parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                 raw_response: output.raw_response.map(|r| self.redact_json(r)),
                 started_at: Some(tool_started_at),
             })
@@ -673,7 +673,7 @@ impl<C: Channel> Agent<C> {
                         tool_name: &out.tool_name,
                         tool_call_id: &confirmed_tool_call_id,
                         params: None,
-                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                     })
                     .await?;
                 if let Some(ref d) = self.debug_state.debug_dumper {
@@ -696,7 +696,7 @@ impl<C: Channel> Agent<C> {
                         locations: out.locations,
                         tool_call_id: &confirmed_tool_call_id,
                         is_error: false,
-                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                         raw_response: out.raw_response.map(|r| self.redact_json(r)),
                         started_at: Some(confirmed_started_at),
                     })
@@ -731,7 +731,7 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn process_response_streaming(
         &mut self,
     ) -> Result<String, super::super::error::AgentError> {
-        let mut stream = self.provider.chat_stream(&self.messages).await?;
+        let mut stream = self.provider.chat_stream(&self.msg.messages).await?;
         let mut response = String::with_capacity(2048);
 
         loop {
@@ -777,17 +777,18 @@ impl<C: Channel> Agent<C> {
                     let summary = sanitized.body;
                     tracing::info!(
                         summary_len = summary.len(),
-                        messages_before = self.messages.len(),
+                        messages_before = self.msg.messages.len(),
                         "server-side compaction received via stream; pruning old messages"
                     );
                     let last_user = self
+                        .msg
                         .messages
                         .iter()
                         .rposition(|m| m.role == Role::User)
                         .unwrap_or(0);
-                    let tail: Vec<Message> = self.messages.drain(last_user..).collect();
-                    self.messages.clear();
-                    self.messages.push(Message {
+                    let tail: Vec<Message> = self.msg.messages.drain(last_user..).collect();
+                    self.msg.messages.clear();
+                    self.msg.messages.push(Message {
                         role: Role::Assistant,
                         content: summary.clone(),
                         parts: vec![MessagePart::Compaction {
@@ -795,7 +796,7 @@ impl<C: Channel> Agent<C> {
                         }],
                         metadata: MessageMetadata::default(),
                     });
-                    self.messages.extend(tail);
+                    self.msg.messages.extend(tail);
                     self.update_metrics(|m| m.server_compaction_events += 1);
                     let _ = self.channel.send_status("").await;
                 }
@@ -824,7 +825,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         iteration: usize,
     ) -> Result<bool, super::super::error::AgentError> {
-        if let Some(last_msg) = self.messages.last() {
+        if let Some(last_msg) = self.msg.messages.last() {
             let hash = doom_loop_hash(&last_msg.content);
             tracing::debug!(
                 iteration,

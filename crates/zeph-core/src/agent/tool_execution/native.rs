@@ -96,7 +96,8 @@ impl<C: Channel> Agent<C> {
         if let Some(cached) = self.check_response_cache().await? {
             self.persist_message(Role::Assistant, &cached, &[], false)
                 .await;
-            self.messages
+            self.msg
+                .messages
                 .push(Message::from_legacy(Role::Assistant, cached.as_str()));
             if cached.contains(MAX_TOKENS_TRUNCATION_MARKER) {
                 let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
@@ -147,10 +148,10 @@ impl<C: Channel> Agent<C> {
         // never accumulate when no new notes were produced.
         // Role::System ensures they are skipped by tool-pair summarization.
         #[cfg(feature = "lsp-context")]
-        if self.lsp_hooks.is_some() {
+        if self.session.lsp_hooks.is_some() {
             self.remove_lsp_messages();
             let tc = std::sync::Arc::clone(&self.metrics.token_counter);
-            if let Some(ref mut lsp) = self.lsp_hooks
+            if let Some(ref mut lsp) = self.session.lsp_hooks
                 && let Some(note_text) = lsp.drain_notes(&tc)
             {
                 self.push_message(zeph_llm::provider::Message::from_legacy(
@@ -198,7 +199,8 @@ impl<C: Channel> Agent<C> {
             self.store_response_in_cache(&cleaned).await;
             self.persist_message(Role::Assistant, &cleaned, &[], false)
                 .await;
-            self.messages
+            self.msg
+                .messages
                 .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
             // Detect context loss after compaction and log failure pair if found.
             #[cfg(feature = "compression-guidelines")]
@@ -263,10 +265,10 @@ impl<C: Channel> Agent<C> {
                 .map(|d: &crate::debug_dump::DebugDumper| {
                     d.dump_request(&crate::debug_dump::RequestDebugDump {
                         model_name: &self.runtime.model_name,
-                        messages: &self.messages,
+                        messages: &self.msg.messages,
                         tools: tool_defs,
                         provider_request: self.provider.debug_request_json(
-                            &self.messages,
+                            &self.msg.messages,
                             tool_defs,
                             false,
                         ), // lgtm[rust/cleartext-logging]
@@ -284,7 +286,7 @@ impl<C: Channel> Agent<C> {
         let chat_fut = tokio::time::timeout(
             llm_timeout,
             self.provider
-                .chat_with_tools(&self.messages, tool_defs)
+                .chat_with_tools(&self.msg.messages, tool_defs)
                 .instrument(llm_span),
         );
         let timeout_result = tokio::select! {
@@ -410,7 +412,7 @@ impl<C: Channel> Agent<C> {
                 .await;
             tracing::info!(
                 summary_len = raw_summary.len(),
-                messages_before = self.messages.len(),
+                messages_before = self.msg.messages.len(),
                 "server-side compaction received; pruning old messages"
             );
             // SEC-COMPACT-01: sanitize (McpResponse = ExternalUntrusted).
@@ -418,13 +420,14 @@ impl<C: Channel> Agent<C> {
             let sanitized = self.security.sanitizer.sanitize(&raw_summary, source);
             let summary = sanitized.body;
             let last_user = self
+                .msg
                 .messages
                 .iter()
                 .rposition(|m| m.role == Role::User)
                 .unwrap_or(0);
-            let tail: Vec<Message> = self.messages.drain(last_user..).collect();
-            self.messages.clear();
-            self.messages.push(Message {
+            let tail: Vec<Message> = self.msg.messages.drain(last_user..).collect();
+            self.msg.messages.clear();
+            self.msg.messages.push(Message {
                 role: Role::Assistant,
                 content: summary.clone(),
                 parts: vec![MessagePart::Compaction {
@@ -432,7 +435,7 @@ impl<C: Channel> Agent<C> {
                 }],
                 metadata: MessageMetadata::default(),
             });
-            self.messages.extend(tail);
+            self.msg.messages.extend(tail);
             self.update_metrics(|m| m.server_compaction_events += 1);
             let _ = self.channel.send_status("").await;
         }
@@ -448,7 +451,7 @@ impl<C: Channel> Agent<C> {
         if blocks.is_empty() {
             return;
         }
-        if let Some(last) = self.messages.last_mut()
+        if let Some(last) = self.msg.messages.last_mut()
             && last.role == Role::Assistant
         {
             let mut thinking_parts: Vec<MessagePart> = blocks
@@ -742,7 +745,7 @@ impl<C: Channel> Agent<C> {
                         tool_name: &tc.name,
                         tool_call_id,
                         params: Some(tc.input.clone()),
-                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                     })
                     .await?;
             }
@@ -1278,7 +1281,7 @@ impl<C: Channel> Agent<C> {
                                         locations: None,
                                         tool_call_id: &tool_call_ids[remaining_idx],
                                         is_error: remaining_is_error,
-                                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                                         raw_response: None,
                                         started_at: Some(tool_started_ats[remaining_idx]),
                                     })
@@ -1349,7 +1352,7 @@ impl<C: Channel> Agent<C> {
                                         locations: None,
                                         tool_call_id: &tool_call_ids[remaining_idx],
                                         is_error: remaining_is_error,
-                                        parent_tool_use_id: self.parent_tool_use_id.clone(),
+                                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                                         raw_response: None,
                                         started_at: Some(tool_started_ats[remaining_idx]),
                                     })
@@ -1400,7 +1403,7 @@ impl<C: Channel> Agent<C> {
                     locations,
                     tool_call_id,
                     is_error,
-                    parent_tool_use_id: self.parent_tool_use_id.clone(),
+                    parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                     raw_response: None,
                     started_at: Some(*started_at),
                 })
@@ -1448,13 +1451,13 @@ impl<C: Channel> Agent<C> {
         // is spawned in background; hover calls are awaited but short-lived).
         // `lsp_tool_calls` collects (name, params, output) tuples built during the
         // results loop above. They are captured into a separate Vec so we can call
-        // `&mut self.lsp_hooks` without conflicting borrows.
+        // `&mut self.session.lsp_hooks` without conflicting borrows.
         #[cfg(feature = "lsp-context")]
-        if self.lsp_hooks.is_some() {
+        if self.session.lsp_hooks.is_some() {
             let tc_arc = std::sync::Arc::clone(&self.metrics.token_counter);
             let sanitizer = self.security.sanitizer.clone();
             for (name, input, output) in lsp_tool_calls {
-                if let Some(ref mut lsp) = self.lsp_hooks {
+                if let Some(ref mut lsp) = self.session.lsp_hooks {
                     lsp.after_tool(&name, &input, &output, &tc_arc, &sanitizer)
                         .await;
                 }
@@ -1530,6 +1533,7 @@ impl<C: Channel> Agent<C> {
 
                 // S4: find the checkpoint message by marker UUID.
                 let checkpoint_pos = self
+                    .msg
                     .messages
                     .iter()
                     .position(|m| m.metadata.focus_marker_id == Some(marker));
@@ -1543,7 +1547,7 @@ impl<C: Channel> Agent<C> {
                 // Collect messages since the checkpoint (exclusive of the checkpoint itself)
                 // up to the end, minus any messages added in this very tool call turn.
                 // The checkpoint itself and the bracketed messages are removed from history.
-                let messages_to_summarize = self.messages[checkpoint_pos + 1..].to_vec();
+                let messages_to_summarize = self.msg.messages[checkpoint_pos + 1..].to_vec();
 
                 // Sanitize the LLM-supplied summary before storing it to the pinned Knowledge
                 // block. The summary may summarize transitive external content (web scrapes,
@@ -1571,7 +1575,7 @@ impl<C: Channel> Agent<C> {
                 self.focus.complete();
 
                 // Remove the checkpoint and all messages after it (bracketed phase cleanup).
-                self.messages.truncate(checkpoint_pos);
+                self.msg.messages.truncate(checkpoint_pos);
                 self.recompute_prompt_tokens();
                 // C1 fix: mark compacted so maybe_compact() does not double-fire this turn.
                 self.context_manager.compacted_this_turn = true;
@@ -1580,14 +1584,15 @@ impl<C: Channel> Agent<C> {
                 // Remove any existing Knowledge block (focus_pinned=true, no marker_id).
                 // Checkpoints have focus_marker_id set and must be preserved here
                 // (they were already truncated above along with the bracketed messages).
-                self.messages
+                self.msg
+                    .messages
                     .retain(|m| !(m.metadata.focus_pinned && m.metadata.focus_marker_id.is_none()));
                 if let Some(kb_msg) = self.focus.build_knowledge_message() {
                     // Insert the Knowledge block right after the system prompt (index 1).
-                    if self.messages.is_empty() {
-                        self.messages.push(kb_msg);
+                    if self.msg.messages.is_empty() {
+                        self.msg.messages.push(kb_msg);
                     } else {
-                        self.messages.insert(1, kb_msg);
+                        self.msg.messages.insert(1, kb_msg);
                     }
                 }
                 self.recompute_prompt_tokens();
@@ -1644,6 +1649,7 @@ mod tests {
         agent.focus.config.enabled = true;
         // System prompt at index 0 (required by complete_focus insert logic)
         agent
+            .msg
             .messages
             .push(Message::from_legacy(Role::System, "system"));
         agent
@@ -1666,6 +1672,7 @@ mod tests {
 
         // Checkpoint message must exist and be pinned (S5 fix)
         let checkpoint = agent
+            .msg
             .messages
             .iter()
             .find(|m| m.metadata.focus_marker_id.is_some());
@@ -1707,6 +1714,7 @@ mod tests {
         agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "test"}));
         // Add some messages in the focus window
         agent
+            .msg
             .messages
             .push(Message::from_legacy(Role::User, "some work"));
         let result = agent.handle_focus_tool(
@@ -1733,6 +1741,7 @@ mod tests {
         agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "test"}));
         // Remove checkpoint by hand to simulate marker eviction
         agent
+            .msg
             .messages
             .retain(|m| m.metadata.focus_marker_id.is_none());
         let result =
@@ -1747,10 +1756,11 @@ mod tests {
     fn complete_focus_truncates_bracketed_messages() {
         let mut agent = make_agent();
         agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "test"}));
-        let before_len = agent.messages.len();
+        let before_len = agent.msg.messages.len();
         // Add 3 messages in the focus window
         for i in 0..3 {
             agent
+                .msg
                 .messages
                 .push(Message::from_legacy(Role::User, &format!("msg {i}")));
         }
@@ -1758,7 +1768,7 @@ mod tests {
         // Messages after complete_focus: [system prompt, knowledge block] at minimum
         // Checkpoint + bracketed messages must be gone
         assert!(
-            agent.messages.len() < before_len + 3,
+            agent.msg.messages.len() < before_len + 3,
             "bracketed messages must be truncated after complete_focus"
         );
     }

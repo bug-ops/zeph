@@ -1,0 +1,264 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Sub-struct definitions for the `Agent` struct.
+//!
+//! Each struct groups a related cluster of `Agent` fields.
+//! All types are `pub(super)` — visible only within the `agent` module.
+
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+
+use tokio::sync::{Notify, mpsc, watch};
+use tokio_util::sync::CancellationToken;
+use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::Message;
+use zeph_llm::stt::SpeechToText;
+
+use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
+use crate::config_watcher::ConfigEvent;
+use crate::context::EnvironmentContext;
+use crate::cost::CostTracker;
+use crate::instructions::{InstructionBlock, InstructionEvent, InstructionReloadState};
+use crate::metrics::MetricsSnapshot;
+use crate::sanitizer::ContentSanitizer;
+use crate::sanitizer::quarantine::QuarantinedSummarizer;
+use crate::vault::Secret;
+use zeph_memory::TokenCounter;
+use zeph_memory::semantic::SemanticMemory;
+use zeph_skills::matcher::SkillMatcherBackend;
+use zeph_skills::registry::SkillRegistry;
+use zeph_skills::watcher::SkillEvent;
+
+use super::message_queue::QueuedMessage;
+
+pub(crate) struct MemoryState {
+    pub(crate) memory: Option<Arc<SemanticMemory>>,
+    pub(crate) conversation_id: Option<zeph_memory::ConversationId>,
+    pub(crate) history_limit: u32,
+    pub(crate) recall_limit: usize,
+    pub(crate) summarization_threshold: usize,
+    pub(crate) cross_session_score_threshold: f32,
+    pub(crate) autosave_assistant: bool,
+    pub(crate) autosave_min_length: usize,
+    pub(crate) tool_call_cutoff: usize,
+    pub(crate) unsummarized_count: usize,
+    pub(crate) document_config: crate::config::DocumentConfig,
+    pub(crate) graph_config: crate::config::GraphConfig,
+    pub(crate) compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig,
+    pub(crate) shutdown_summary: bool,
+    pub(crate) shutdown_summary_min_messages: usize,
+    pub(crate) shutdown_summary_max_messages: usize,
+    pub(crate) shutdown_summary_timeout_secs: u64,
+}
+
+pub(crate) struct SkillState {
+    pub(crate) registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
+    pub(crate) skill_paths: Vec<PathBuf>,
+    pub(crate) managed_dir: Option<PathBuf>,
+    pub(crate) trust_config: crate::config::TrustConfig,
+    pub(crate) matcher: Option<SkillMatcherBackend>,
+    pub(crate) max_active_skills: usize,
+    pub(crate) disambiguation_threshold: f32,
+    pub(crate) embedding_model: String,
+    pub(crate) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
+    pub(crate) active_skill_names: Vec<String>,
+    pub(crate) last_skills_prompt: String,
+    pub(crate) prompt_mode: SkillPromptMode,
+    /// Custom secrets available at runtime: key=hyphenated name, value=secret.
+    pub(crate) available_custom_secrets: HashMap<String, Secret>,
+    pub(crate) cosine_weight: f32,
+    pub(crate) hybrid_search: bool,
+    pub(crate) bm25_index: Option<zeph_skills::bm25::Bm25Index>,
+}
+
+pub(crate) struct McpState {
+    pub(crate) tools: Vec<zeph_mcp::McpTool>,
+    pub(crate) registry: Option<zeph_mcp::McpToolRegistry>,
+    pub(crate) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
+    pub(crate) allowed_commands: Vec<String>,
+    pub(crate) max_dynamic: usize,
+    /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
+    pub(crate) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
+    /// Receives full flattened tool list after any `tools/list_changed` notification.
+    pub(crate) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
+}
+
+pub(crate) struct IndexState {
+    pub(crate) retriever: Option<std::sync::Arc<zeph_index::retriever::CodeRetriever>>,
+    pub(crate) repo_map_tokens: usize,
+    pub(crate) cached_repo_map: Option<(String, std::time::Instant)>,
+    pub(crate) repo_map_ttl: std::time::Duration,
+}
+
+pub(crate) struct RuntimeConfig {
+    pub(crate) security: SecurityConfig,
+    pub(crate) timeouts: TimeoutConfig,
+    pub(crate) model_name: String,
+    pub(crate) permission_policy: zeph_tools::PermissionPolicy,
+    pub(crate) redact_credentials: bool,
+}
+
+/// Groups security-related subsystems (sanitizer, quarantine, exfiltration guard).
+pub(crate) struct SecurityState {
+    pub(crate) sanitizer: ContentSanitizer,
+    pub(crate) quarantine_summarizer: Option<QuarantinedSummarizer>,
+    pub(crate) exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard,
+    pub(crate) flagged_urls: std::collections::HashSet<String>,
+    pub(crate) pii_filter: crate::sanitizer::pii::PiiFilter,
+    pub(crate) memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator,
+    /// LLM-based prompt injection pre-screener (opt-in).
+    #[cfg(feature = "guardrail")]
+    pub(crate) guardrail: Option<crate::sanitizer::guardrail::GuardrailFilter>,
+}
+
+/// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).
+pub(crate) struct DebugState {
+    pub(crate) debug_dumper: Option<crate::debug_dump::DebugDumper>,
+    pub(crate) dump_format: crate::debug_dump::DumpFormat,
+    pub(crate) trace_collector: Option<crate::debug_dump::trace::TracingCollector>,
+    /// Monotonically increasing counter for `process_user_message` calls.
+    /// Used to key spans in `trace_collector.active_iterations`.
+    pub(crate) iteration_counter: usize,
+    pub(crate) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
+    pub(crate) logging_config: crate::config::LoggingConfig,
+    /// Base dump directory — stored so `/dump-format trace` can create a `TracingCollector` (CR-04).
+    pub(crate) dump_dir: Option<PathBuf>,
+    /// Service name for `TracingCollector` created via runtime format switch (CR-04).
+    pub(crate) trace_service_name: String,
+    /// Whether to redact in `TracingCollector` created via runtime format switch (CR-04).
+    pub(crate) trace_redact: bool,
+    /// Span ID of the currently executing iteration — used by LLM/tool span wiring (CR-01).
+    /// Set to `Some` at the start of `process_user_message`, cleared at end.
+    pub(crate) current_iteration_span_id: Option<[u8; 8]>,
+}
+
+/// Groups agent lifecycle state: shutdown signaling, timing, and I/O notification channels.
+pub(crate) struct LifecycleState {
+    pub(crate) shutdown: watch::Receiver<bool>,
+    pub(crate) start_time: Instant,
+    pub(crate) cancel_signal: Arc<Notify>,
+    pub(crate) cancel_token: CancellationToken,
+    pub(crate) config_path: Option<PathBuf>,
+    pub(crate) config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
+    pub(crate) warmup_ready: Option<watch::Receiver<bool>>,
+    pub(crate) update_notify_rx: Option<mpsc::Receiver<String>>,
+    pub(crate) custom_task_rx: Option<mpsc::Receiver<String>>,
+}
+
+/// Groups provider-related state: alternate providers, runtime switching, and compaction flags.
+pub(crate) struct ProviderState {
+    pub(crate) summary_provider: Option<AnyProvider>,
+    /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
+    pub(crate) provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
+    pub(crate) judge_provider: Option<AnyProvider>,
+    pub(crate) cached_prompt_tokens: u64,
+    /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
+    /// When true, client-side compaction is skipped.
+    pub(crate) server_compaction_active: bool,
+    pub(crate) stt: Option<Box<dyn SpeechToText>>,
+}
+
+/// Groups metrics and cost tracking state.
+pub(crate) struct MetricsState {
+    pub(crate) metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
+    pub(crate) cost_tracker: Option<CostTracker>,
+    pub(crate) token_counter: Arc<TokenCounter>,
+    /// Set to `true` when Claude extended context (`enable_extended_context = true`) is active.
+    /// Read from config at build time, not derived from provider internals.
+    pub(crate) extended_context: bool,
+}
+
+/// Groups task orchestration and subagent state.
+pub(crate) struct OrchestrationState {
+    /// Graph waiting for `/plan confirm` before execution starts.
+    pub(crate) pending_graph: Option<crate::orchestration::TaskGraph>,
+    /// Cancellation token for the currently executing plan. `None` when no plan is running.
+    /// Created fresh in `handle_plan_confirm()`, cancelled in `handle_plan_cancel()`.
+    ///
+    /// # Known limitation
+    ///
+    /// Token plumbing is ready; the delivery path requires the agent message loop to be
+    /// restructured so `/plan cancel` can be received while `run_scheduler_loop` holds
+    /// `&mut self`. See follow-up issue #1603 (SEC-M34-002).
+    pub(crate) plan_cancel_token: Option<CancellationToken>,
+    /// Manages spawned sub-agents.
+    pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
+    pub(crate) subagent_config: crate::config::SubAgentConfig,
+    pub(crate) orchestration_config: crate::config::OrchestrationConfig,
+}
+
+/// Groups instruction hot-reload state.
+pub(crate) struct InstructionState {
+    pub(crate) blocks: Vec<InstructionBlock>,
+    pub(crate) reload_rx: Option<mpsc::Receiver<InstructionEvent>>,
+    pub(crate) reload_state: Option<InstructionReloadState>,
+}
+
+/// Groups experiment feature state (gated behind `experiments` feature flag).
+pub(crate) struct ExperimentState {
+    #[cfg(feature = "experiments")]
+    pub(crate) config: crate::config::ExperimentConfig,
+    /// Cancellation token for a running experiment session. `Some` means an experiment is active.
+    #[cfg(feature = "experiments")]
+    pub(crate) cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Pre-built config snapshot used as the experiment baseline (agent path).
+    #[cfg(feature = "experiments")]
+    pub(crate) baseline: crate::experiments::ConfigSnapshot,
+    /// Receives completion/error messages from the background experiment engine task.
+    /// Always present so the select! branch compiles unconditionally.
+    pub(crate) notify_rx: Option<tokio::sync::mpsc::Receiver<String>>,
+    /// Sender end paired with `experiment_notify_rx`. Cloned into the background task.
+    #[cfg(feature = "experiments")]
+    pub(crate) notify_tx: tokio::sync::mpsc::Sender<String>,
+}
+
+/// Groups context-compression feature state (gated behind `context-compression` feature flag).
+pub(crate) struct CompressionState {
+    /// Cached task goal for TaskAware/MIG pruning. Set by `maybe_compact()`,
+    /// invalidated when the last user message hash changes.
+    #[cfg(feature = "context-compression")]
+    pub(crate) current_task_goal: Option<String>,
+    /// Hash of the last user message when `current_task_goal` was populated.
+    #[cfg(feature = "context-compression")]
+    pub(crate) task_goal_user_msg_hash: Option<u64>,
+    /// Pending background task for goal extraction. Spawned fire-and-forget when the user message
+    /// hash changes; result applied at the start of the next Soft compaction (#1909).
+    #[cfg(feature = "context-compression")]
+    pub(crate) pending_task_goal: Option<tokio::task::JoinHandle<Option<String>>>,
+    /// Pending `SideQuest` eviction result from the background LLM call spawned last turn.
+    /// Applied at the START of the next turn before compaction (PERF-1 fix).
+    #[cfg(feature = "context-compression")]
+    pub(crate) pending_sidequest_result: Option<tokio::task::JoinHandle<Option<Vec<usize>>>>,
+}
+
+/// Groups per-session I/O and policy state.
+pub(crate) struct SessionState {
+    pub(crate) env_context: EnvironmentContext,
+    pub(crate) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
+    /// Parent tool call ID when this agent runs as a subagent inside another agent session.
+    /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
+    /// a subagent hierarchy.
+    pub(crate) parent_tool_use_id: Option<String>,
+    /// Optional status channel for sending spinner/status messages to TUI or stderr.
+    pub(crate) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// LSP context injection hooks. Fires after native tool execution, injects
+    /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
+    #[cfg(feature = "lsp-context")]
+    pub(crate) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
+    /// Snapshot of the policy config for `/policy` command inspection.
+    #[cfg(feature = "policy-enforcer")]
+    pub(crate) policy_config: Option<zeph_tools::PolicyConfig>,
+}
+
+// Groups message buffering and image staging state.
+pub(crate) struct MessageState {
+    pub(crate) messages: Vec<Message>,
+    // QueuedMessage is pub(super) in message_queue — same visibility as this struct; lint suppressed.
+    #[allow(private_interfaces)]
+    pub(crate) message_queue: VecDeque<QueuedMessage>,
+    /// Image parts staged by `/image` commands, attached to the next user message.
+    pub(crate) pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
+}

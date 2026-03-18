@@ -203,7 +203,7 @@ impl<C: Channel> Agent<C> {
             metadata: MessageMetadata::default(),
         });
 
-        let messages_before = self.messages.len();
+        let messages_before = self.msg.messages.len();
         let _ = self.channel.send_status("reflecting...").await;
         // Box::pin to break async recursion cycle (process_response -> attempt_self_reflection -> process_response)
         if let Err(e) = Box::pin(self.process_response()).await {
@@ -211,10 +211,11 @@ impl<C: Channel> Agent<C> {
             return Err(e);
         }
         let _ = self.channel.send_status("").await;
-        let retry_succeeded = self.messages.len() > messages_before;
+        let retry_succeeded = self.msg.messages.len() > messages_before;
 
         if retry_succeeded {
             let successful_response = self
+                .msg
                 .messages
                 .iter()
                 .rev()

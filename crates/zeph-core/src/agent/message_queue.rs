@@ -37,12 +37,12 @@ pub(super) fn detect_image_mime(filename: Option<&str>) -> &'static str {
 
 impl<C: Channel> Agent<C> {
     pub(super) fn drain_channel(&mut self) {
-        while self.message_queue.len() < MAX_QUEUE_SIZE {
+        while self.msg.message_queue.len() < MAX_QUEUE_SIZE {
             let Some(msg) = self.channel.try_recv() else {
                 break;
             };
             if msg.text.trim() == "/drop-last-queued" {
-                self.message_queue.pop_back();
+                self.msg.message_queue.pop_back();
                 continue;
             }
             self.enqueue_or_merge(msg.text, vec![], msg.attachments);
@@ -56,7 +56,7 @@ impl<C: Channel> Agent<C> {
         raw_attachments: Vec<crate::channel::Attachment>,
     ) {
         let now = Instant::now();
-        if let Some(last) = self.message_queue.back_mut()
+        if let Some(last) = self.msg.message_queue.back_mut()
             && now.duration_since(last.received_at) < MESSAGE_MERGE_WINDOW
             && last.image_parts.is_empty()
             && image_parts.is_empty()
@@ -67,8 +67,8 @@ impl<C: Channel> Agent<C> {
             last.text.push_str(&text);
             return;
         }
-        if self.message_queue.len() < MAX_QUEUE_SIZE {
-            self.message_queue.push_back(QueuedMessage {
+        if self.msg.message_queue.len() < MAX_QUEUE_SIZE {
+            self.msg.message_queue.push_back(QueuedMessage {
                 text,
                 received_at: now,
                 image_parts,
@@ -80,13 +80,13 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn notify_queue_count(&mut self) {
-        let count = self.message_queue.len();
+        let count = self.msg.message_queue.len();
         let _ = self.channel.send_queue_count(count).await;
     }
 
     pub(super) fn clear_queue(&mut self) -> usize {
-        let count = self.message_queue.len();
-        self.message_queue.clear();
+        let count = self.msg.message_queue.len();
+        self.msg.message_queue.clear();
         count
     }
 }
@@ -107,8 +107,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         agent.enqueue_or_merge("hello".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 1);
-        assert_eq!(agent.message_queue[0].text, "hello");
+        assert_eq!(agent.msg.message_queue.len(), 1);
+        assert_eq!(agent.msg.message_queue[0].text, "hello");
     }
 
     #[test]
@@ -121,8 +121,8 @@ mod tests {
 
         agent.enqueue_or_merge("first".into(), vec![], vec![]);
         agent.enqueue_or_merge("second".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 1);
-        assert_eq!(agent.message_queue[0].text, "first\nsecond");
+        assert_eq!(agent.msg.message_queue.len(), 1);
+        assert_eq!(agent.msg.message_queue[0].text, "first\nsecond");
     }
 
     #[test]
@@ -133,16 +133,16 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.message_queue.push_back(QueuedMessage {
+        agent.msg.message_queue.push_back(QueuedMessage {
             text: "old".into(),
             received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
             image_parts: vec![],
             raw_attachments: vec![],
         });
         agent.enqueue_or_merge("new".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 2);
-        assert_eq!(agent.message_queue[0].text, "old");
-        assert_eq!(agent.message_queue[1].text, "new");
+        assert_eq!(agent.msg.message_queue.len(), 2);
+        assert_eq!(agent.msg.message_queue[0].text, "old");
+        assert_eq!(agent.msg.message_queue[1].text, "new");
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         for i in 0..MAX_QUEUE_SIZE {
-            agent.message_queue.push_back(QueuedMessage {
+            agent.msg.message_queue.push_back(QueuedMessage {
                 text: format!("msg{i}"),
                 received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
                 image_parts: vec![],
@@ -162,7 +162,7 @@ mod tests {
             });
         }
         agent.enqueue_or_merge("overflow".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
+        assert_eq!(agent.msg.message_queue.len(), MAX_QUEUE_SIZE);
     }
 
     #[test]
@@ -175,14 +175,14 @@ mod tests {
 
         agent.enqueue_or_merge("a".into(), vec![], vec![]);
         // Wait past merge window
-        agent.message_queue.back_mut().unwrap().received_at =
+        agent.msg.message_queue.back_mut().unwrap().received_at =
             Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         agent.enqueue_or_merge("b".into(), vec![], vec![]);
-        assert_eq!(agent.message_queue.len(), 2);
+        assert_eq!(agent.msg.message_queue.len(), 2);
 
         let count = agent.clear_queue();
         assert_eq!(count, 2);
-        assert!(agent.message_queue.is_empty());
+        assert!(agent.msg.message_queue.is_empty());
     }
 
     #[test]
@@ -196,9 +196,9 @@ mod tests {
 
         agent.drain_channel();
         // All 5 messages arrive within the merge window, so they merge into 1
-        assert_eq!(agent.message_queue.len(), 1);
-        assert!(agent.message_queue[0].text.contains("msg0"));
-        assert!(agent.message_queue[0].text.contains("msg4"));
+        assert_eq!(agent.msg.message_queue.len(), 1);
+        assert!(agent.msg.message_queue[0].text.contains("msg0"));
+        assert!(agent.msg.message_queue[0].text.contains("msg4"));
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
 
         // Pre-fill queue to near capacity with old timestamps (outside merge window)
         for i in 0..MAX_QUEUE_SIZE - 1 {
-            agent.message_queue.push_back(QueuedMessage {
+            agent.msg.message_queue.push_back(QueuedMessage {
                 text: format!("pre{i}"),
                 received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
                 image_parts: vec![],
@@ -221,7 +221,7 @@ mod tests {
         }
         agent.drain_channel();
         // One more slot was available; all 15 messages merge into it
-        assert_eq!(agent.message_queue.len(), MAX_QUEUE_SIZE);
+        assert_eq!(agent.msg.message_queue.len(), MAX_QUEUE_SIZE);
     }
 
     #[test]
@@ -233,7 +233,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         for i in 0..3 {
-            agent.message_queue.push_back(QueuedMessage {
+            agent.msg.message_queue.push_back(QueuedMessage {
                 text: format!("msg{i}"),
                 received_at: Instant::now().checked_sub(Duration::from_secs(2)).unwrap(),
                 image_parts: vec![],
@@ -241,8 +241,8 @@ mod tests {
             });
         }
 
-        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg0");
-        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg1");
-        assert_eq!(agent.message_queue.pop_front().unwrap().text, "msg2");
+        assert_eq!(agent.msg.message_queue.pop_front().unwrap().text, "msg0");
+        assert_eq!(agent.msg.message_queue.pop_front().unwrap().text, "msg1");
+        assert_eq!(agent.msg.message_queue.pop_front().unwrap().text, "msg2");
     }
 }

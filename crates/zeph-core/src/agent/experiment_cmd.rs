@@ -51,7 +51,8 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), AgentError> {
         // Guard: reject if an experiment is already running.
         if self
-            .experiment_cancel
+            .experiments
+            .cancel
             .as_ref()
             .is_some_and(|t| !t.is_cancelled())
         {
@@ -61,7 +62,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let mut config = self.experiment_config.clone();
+        let mut config = self.experiments.config.clone();
 
         if !config.enabled {
             self.channel
@@ -125,7 +126,7 @@ impl<C: Channel> Agent<C> {
         // Use the pre-built baseline snapshot that reflects actual runtime config values.
         // Set via Agent::with_experiment_baseline(); defaults to ConfigSnapshot::default()
         // when not explicitly provided.
-        let baseline = self.experiment_baseline.clone();
+        let baseline = self.experiments.baseline.clone();
         let memory = self.memory_state.memory.clone();
 
         Ok(
@@ -140,7 +141,7 @@ impl<C: Channel> Agent<C> {
         max_n: u32,
     ) -> Result<(), AgentError> {
         let cancel = engine.cancel_token();
-        self.experiment_cancel = Some(cancel);
+        self.experiments.cancel = Some(cancel);
 
         self.channel
             .send(&format!(
@@ -152,7 +153,7 @@ impl<C: Channel> Agent<C> {
         // Run the engine in a background task so the agent loop remains responsive.
         // Completion (ok or error) is forwarded via experiment_notify_tx; the agent loop
         // select! branch clears experiment_cancel and delivers the message to the channel.
-        let notify_tx = self.experiment_notify_tx.clone();
+        let notify_tx = self.experiments.notify_tx.clone();
         tokio::spawn(async move {
             let msg = match engine.run().await {
                 Ok(report) => {
@@ -181,7 +182,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_experiment_stop(&mut self) -> Result<(), AgentError> {
-        match &self.experiment_cancel {
+        match &self.experiments.cancel {
             Some(token) if !token.is_cancelled() => {
                 token.cancel();
                 self.channel
@@ -199,7 +200,8 @@ impl<C: Channel> Agent<C> {
 
     async fn handle_experiment_status(&mut self) -> Result<(), AgentError> {
         let running = self
-            .experiment_cancel
+            .experiments
+            .cancel
             .as_ref()
             .is_some_and(|t| !t.is_cancelled());
 
@@ -411,7 +413,7 @@ mod tests {
 
         let mut agent = make_agent();
         // Simulate a running experiment by inserting a live cancel token.
-        agent.experiment_cancel = Some(CancellationToken::new());
+        agent.experiments.cancel = Some(CancellationToken::new());
 
         agent
             .handle_experiment_command("/experiment start")

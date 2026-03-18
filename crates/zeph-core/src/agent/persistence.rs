@@ -263,17 +263,17 @@ impl<C: Channel> Agent<C> {
                     skipped += 1;
                     continue;
                 }
-                self.messages.push(msg);
+                self.msg.messages.push(msg);
                 loaded += 1;
             }
 
             // Determine the start index of just-loaded messages (system prompt is at index 0).
-            let history_start = self.messages.len() - loaded;
-            let mut restored_slice = self.messages.split_off(history_start);
+            let history_start = self.msg.messages.len() - loaded;
+            let mut restored_slice = self.msg.messages.split_off(history_start);
             let orphans = sanitize_tool_pairs(&mut restored_slice);
             skipped += orphans;
             loaded = loaded.saturating_sub(orphans);
-            self.messages.append(&mut restored_slice);
+            self.msg.messages.append(&mut restored_slice);
 
             tracing::info!("restored {loaded} message(s) from conversation {cid}");
             if skipped > 0 {
@@ -456,6 +456,7 @@ impl<C: Channel> Agent<C> {
         // Exclude tool result messages (Role::User with ToolResult parts) — they contain
         // raw structured output and would pollute the extraction context with noise.
         let context_messages: Vec<String> = self
+            .msg
             .messages
             .iter()
             .rev()
@@ -583,7 +584,7 @@ mod tests {
         let result = agent.load_history().await;
         assert!(result.is_ok());
         // No messages added when no memory is configured
-        assert_eq!(agent.messages.len(), 1); // system prompt only
+        assert_eq!(agent.msg.messages.len(), 1); // system prompt only
     }
 
     #[tokio::test]
@@ -615,10 +616,10 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
         // Two messages were added from history
-        assert_eq!(agent.messages.len(), messages_before + 2);
+        assert_eq!(agent.msg.messages.len(), messages_before + 2);
     }
 
     #[tokio::test]
@@ -651,10 +652,10 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
         // Only the non-empty message is loaded
-        assert_eq!(agent.messages.len(), messages_before + 1);
+        assert_eq!(agent.msg.messages.len(), messages_before + 1);
     }
 
     #[tokio::test]
@@ -675,10 +676,10 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
         // No messages added — empty history
-        assert_eq!(agent.messages.len(), messages_before);
+        assert_eq!(agent.msg.messages.len(), messages_before);
     }
 
     #[tokio::test]
@@ -1072,14 +1073,14 @@ mod tests {
             // This test verifies the guard fires: a tool result message alone is passed
             // (has_tool_result_parts=true) → extraction is skipped entirely, so context
             // filtering is not exercised. We verify FIX-2 by ensuring a prior tool result
-            // message in agent.messages is excluded when a subsequent conversational message
+            // message in agent.msg.messages is excluded when a subsequent conversational message
             // triggers extraction.
             let provider = mock_provider(vec![]);
             let mut agent = agent_with_graph(&provider, enabled_graph_config()).await;
 
             // Add a tool result message to the agent's message history — this simulates
             // a tool call response that arrived before the current conversational turn.
-            agent.messages.push(Message {
+            agent.msg.messages.push(Message {
                 role: Role::User,
                 content: "[tool_result: abc]\nprovider_type = \"openai\"".to_owned(),
                 parts: vec![MessagePart::ToolResult {
@@ -1483,16 +1484,16 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // Only the user message should be loaded; orphaned assistant tool_use removed.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 1,
             "orphaned trailing tool_use must be removed"
         );
-        assert_eq!(agent.messages.last().unwrap().role, Role::User);
+        assert_eq!(agent.msg.messages.last().unwrap().role, Role::User);
     }
 
     #[tokio::test]
@@ -1539,16 +1540,16 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // Orphaned leading tool_result removed; only assistant message kept.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 1,
             "orphaned leading tool_result must be removed"
         );
-        assert_eq!(agent.messages.last().unwrap().role, Role::Assistant);
+        assert_eq!(agent.msg.messages.last().unwrap().role, Role::Assistant);
     }
 
     #[tokio::test]
@@ -1600,17 +1601,17 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // Both messages must be preserved.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 2,
             "complete tool_use/tool_result pair must be preserved"
         );
-        assert_eq!(agent.messages[messages_before].role, Role::Assistant);
-        assert_eq!(agent.messages[messages_before + 1].role, Role::User);
+        assert_eq!(agent.msg.messages[messages_before].role, Role::Assistant);
+        assert_eq!(agent.msg.messages[messages_before + 1].role, Role::User);
     }
 
     #[tokio::test]
@@ -1661,16 +1662,16 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // Both orphaned tool_use messages removed; only the user message kept.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 1,
             "all trailing orphaned tool_use messages must be removed"
         );
-        assert_eq!(agent.messages.last().unwrap().role, Role::User);
+        assert_eq!(agent.msg.messages.last().unwrap().role, Role::User);
     }
 
     #[tokio::test]
@@ -1702,12 +1703,12 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // All three plain messages must be preserved.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 3,
             "plain messages without tool parts must pass through unchanged"
         );
@@ -1775,19 +1776,22 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // Both orphans removed; only the 2 valid middle messages kept.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 2,
             "both leading and trailing orphans must be removed"
         );
-        assert_eq!(agent.messages[messages_before].role, Role::User);
-        assert_eq!(agent.messages[messages_before].content, "what is 2+2?");
-        assert_eq!(agent.messages[messages_before + 1].role, Role::Assistant);
-        assert_eq!(agent.messages[messages_before + 1].content, "4");
+        assert_eq!(agent.msg.messages[messages_before].role, Role::User);
+        assert_eq!(agent.msg.messages[messages_before].content, "what is 2+2?");
+        assert_eq!(
+            agent.msg.messages[messages_before + 1].role,
+            Role::Assistant
+        );
+        assert_eq!(agent.msg.messages[messages_before + 1].content, "4");
     }
 
     /// RC1 regression: mid-history assistant[`ToolUse`] without a following user[`ToolResult`]
@@ -1854,19 +1858,19 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // All 5 messages remain (orphan message kept because it has text), but the orphaned
         // message must have its ToolUse parts stripped.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 5,
             "message count must be 5 (orphan message kept — has text content)"
         );
 
         // The orphaned assistant message (index 2 in the loaded slice) must have no ToolUse parts.
-        let orphan = &agent.messages[messages_before + 2];
+        let orphan = &agent.msg.messages[messages_before + 2];
         assert_eq!(orphan.role, Role::Assistant);
         assert!(
             !orphan
@@ -1935,19 +1939,19 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // All 3 messages must be loaded — the empty-content ToolResult user message must NOT be
         // dropped.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 3,
             "user message with empty content but ToolResult parts must not be dropped"
         );
 
         // The user message at index 1 must still carry the ToolResult part.
-        let user_msg = &agent.messages[messages_before + 1];
+        let user_msg = &agent.msg.messages[messages_before + 1];
         assert_eq!(user_msg.role, Role::User);
         assert!(
             user_msg.parts.iter().any(
@@ -2013,13 +2017,13 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // The orphaned ToolResult part must have been stripped from the user message.
         // The user message itself may be removed (parts empty + content non-empty) or kept with
         // the text content — but it must NOT retain the orphaned ToolResult part.
-        let loaded = &agent.messages[messages_before..];
+        let loaded = &agent.msg.messages[messages_before..];
         for msg in loaded {
             assert!(
                 !msg.parts.iter().any(|p| matches!(
@@ -2076,16 +2080,16 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 2,
             "complete tool_use/tool_result pair must be preserved"
         );
 
-        let user_msg = &agent.messages[messages_before + 1];
+        let user_msg = &agent.msg.messages[messages_before + 1];
         assert!(
             user_msg.parts.iter().any(|p| matches!(
                 p,
@@ -2168,10 +2172,10 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
-        let loaded = &agent.messages[messages_before..];
+        let loaded = &agent.msg.messages[messages_before..];
 
         // The orphaned ToolResult part must not appear in any message.
         for msg in loaded {
@@ -2255,16 +2259,16 @@ mod tests {
             100,
         );
 
-        let messages_before = agent.messages.len();
+        let messages_before = agent.msg.messages.len();
         agent.load_history().await.unwrap();
 
         // All 4 messages preserved, tool_use parts intact.
         assert_eq!(
-            agent.messages.len(),
+            agent.msg.messages.len(),
             messages_before + 4,
             "matched tool pair must not be removed"
         );
-        let tool_msg = &agent.messages[messages_before + 1];
+        let tool_msg = &agent.msg.messages[messages_before + 1];
         assert!(
             tool_msg
                 .parts

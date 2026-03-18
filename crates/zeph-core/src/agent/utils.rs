@@ -149,6 +149,7 @@ impl<C: Channel> Agent<C> {
 
     pub(super) fn recompute_prompt_tokens(&mut self) {
         self.providers.cached_prompt_tokens = self
+            .msg
             .messages
             .iter()
             .map(|m| self.metrics.token_counter.count_message_tokens(m) as u64)
@@ -158,7 +159,7 @@ impl<C: Channel> Agent<C> {
     pub(super) fn push_message(&mut self, msg: Message) {
         self.providers.cached_prompt_tokens +=
             self.metrics.token_counter.count_message_tokens(&msg) as u64;
-        self.messages.push(msg);
+        self.msg.messages.push(msg);
     }
 
     pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {
@@ -183,11 +184,11 @@ impl<C: Channel> Agent<C> {
     /// The caller is responsible for retrieving and formatting the text.
     pub fn inject_code_context(&mut self, text: &str) {
         self.remove_code_context_messages();
-        if text.is_empty() || self.messages.len() <= 1 {
+        if text.is_empty() || self.msg.messages.len() <= 1 {
             return;
         }
         let content = format!("{CODE_CONTEXT_PREFIX}{text}");
-        self.messages.insert(
+        self.msg.messages.insert(
             1,
             Message::from_parts(
                 Role::System,
@@ -198,7 +199,7 @@ impl<C: Channel> Agent<C> {
 
     #[must_use]
     pub fn context_messages(&self) -> &[Message] {
-        &self.messages
+        &self.msg.messages
     }
 }
 
@@ -241,13 +242,13 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::User,
             content: "1234".to_string(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         });
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::Assistant,
             content: "5678".to_string(),
             parts: vec![],
@@ -257,6 +258,7 @@ mod tests {
         agent.recompute_prompt_tokens();
 
         let expected: u64 = agent
+            .msg
             .messages
             .iter()
             .map(|m| agent.metrics.token_counter.count_message_tokens(m) as u64)
@@ -282,7 +284,7 @@ mod tests {
 
         agent.inject_code_context("some code here");
 
-        let found = agent.messages.iter().any(|m| {
+        let found = agent.msg.messages.iter().any(|m| {
             m.parts.iter().any(|p| {
                 matches!(p, MessagePart::CodeContext { text } if text.contains("some code here"))
             })
@@ -304,12 +306,12 @@ mod tests {
             parts: vec![],
             metadata: MessageMetadata::default(),
         });
-        let count_before = agent.messages.len();
+        let count_before = agent.msg.messages.len();
 
         agent.inject_code_context("");
 
         // No code context message inserted for empty text
-        assert_eq!(agent.messages.len(), count_before);
+        assert_eq!(agent.msg.messages.len(), count_before);
     }
 
     #[test]
@@ -320,11 +322,11 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
         // Only system prompt → len == 1 → inject should be noop
-        let count_before = agent.messages.len();
+        let count_before = agent.msg.messages.len();
 
         agent.inject_code_context("some code");
 
-        assert_eq!(agent.messages.len(), count_before);
+        assert_eq!(agent.msg.messages.len(), count_before);
     }
 
     #[test]
@@ -342,6 +344,6 @@ mod tests {
             metadata: MessageMetadata::default(),
         });
 
-        assert_eq!(agent.context_messages().len(), agent.messages.len());
+        assert_eq!(agent.context_messages().len(), agent.msg.messages.len());
     }
 }

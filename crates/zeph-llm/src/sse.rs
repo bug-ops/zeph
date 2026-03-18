@@ -37,19 +37,23 @@ pub(crate) fn claude_sse_to_stream(response: reqwest::Response) -> ChatStream {
 
 /// Convert a Gemini streaming response into a `ChatStream`.
 pub(crate) fn gemini_sse_to_stream(response: reqwest::Response) -> ChatStream {
-    let event_stream = response.bytes_stream().eventsource();
-    let mapped = event_stream.filter_map(|event| match event {
-        Ok(event) => parse_gemini_sse_event(&event.data),
-        Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
-    });
-    Box::pin(mapped)
+    stateless_sse_to_stream(response, parse_gemini_sse_event)
 }
 
 /// Convert an `OpenAI` streaming response into a `ChatStream`.
 pub(crate) fn openai_sse_to_stream(response: reqwest::Response) -> ChatStream {
+    stateless_sse_to_stream(response, parse_openai_sse_event)
+}
+
+/// Shared helper for stateless SSE providers: applies `parse_fn` to each event and
+/// wraps parse errors in `LlmError::SseParse`.
+fn stateless_sse_to_stream(
+    response: reqwest::Response,
+    parse_fn: fn(&str) -> Option<Result<StreamChunk, LlmError>>,
+) -> ChatStream {
     let event_stream = response.bytes_stream().eventsource();
-    let mapped = event_stream.filter_map(|event| match event {
-        Ok(event) => parse_openai_sse_event(&event.data),
+    let mapped = event_stream.filter_map(move |event| match event {
+        Ok(event) => parse_fn(&event.data),
         Err(e) => Some(Err(LlmError::SseParse(e.to_string()))),
     });
     Box::pin(mapped)

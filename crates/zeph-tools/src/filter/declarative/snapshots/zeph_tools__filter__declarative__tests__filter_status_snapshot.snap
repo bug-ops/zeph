@@ -1,0 +1,6 @@
+---
+source: crates/zeph-tools/src/filter/declarative/tests.rs
+assertion_line: 1200
+expression: result.output
+---
+M  2 files | A  1 files | D  0 files | ??  1 files

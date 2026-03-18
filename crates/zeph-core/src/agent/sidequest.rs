@@ -31,7 +31,7 @@ use crate::config::SidequestConfig;
 // Fields consumed by context-compression feature paths.
 #[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) struct ToolOutputCursor {
-    /// Index in `self.messages`.
+    /// Index in `self.msg.messages`.
     pub(crate) msg_index: usize,
     /// Part index within the message parts vec.
     pub(crate) part_index: usize,

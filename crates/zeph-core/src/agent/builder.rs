@@ -29,7 +29,7 @@ impl<C: Channel> Agent<C> {
     /// `provider.set_status_tx()` consumes it.
     #[must_use]
     pub fn with_status_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
-        self.status_tx = Some(tx);
+        self.session.status_tx = Some(tx);
         self
     }
 
@@ -37,7 +37,7 @@ impl<C: Channel> Agent<C> {
     #[cfg(feature = "policy-enforcer")]
     #[must_use]
     pub fn with_policy_config(mut self, config: zeph_tools::PolicyConfig) -> Self {
-        self.policy_config = Some(config);
+        self.session.policy_config = Some(config);
         self
     }
 
@@ -74,7 +74,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         cache: std::sync::Arc<zeph_memory::ResponseCache>,
     ) -> Self {
-        self.response_cache = Some(cache);
+        self.session.response_cache = Some(cache);
         self
     }
 
@@ -85,7 +85,7 @@ impl<C: Channel> Agent<C> {
     /// hierarchy tree.
     #[must_use]
     pub fn with_parent_tool_use_id(mut self, id: impl Into<String>) -> Self {
-        self.parent_tool_use_id = Some(id.into());
+        self.session.parent_tool_use_id = Some(id.into());
         self
     }
 
@@ -130,7 +130,7 @@ impl<C: Channel> Agent<C> {
     #[cfg(feature = "lsp-context")]
     #[must_use]
     pub fn with_lsp_hooks(mut self, runner: crate::lsp_hooks::LspHookRunner) -> Self {
-        self.lsp_hooks = Some(runner);
+        self.session.lsp_hooks = Some(runner);
         self
     }
 
@@ -266,7 +266,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         blocks: Vec<crate::instructions::InstructionBlock>,
     ) -> Self {
-        self.instruction_blocks = blocks;
+        self.instructions.blocks = blocks;
         self
     }
 
@@ -276,8 +276,8 @@ impl<C: Channel> Agent<C> {
         rx: mpsc::Receiver<InstructionEvent>,
         state: InstructionReloadState,
     ) -> Self {
-        self.instruction_reload_rx = Some(rx);
-        self.instruction_reload_state = Some(state);
+        self.instructions.reload_rx = Some(rx);
+        self.instructions.reload_state = Some(state);
         self
     }
 
@@ -515,7 +515,8 @@ impl<C: Channel> Agent<C> {
 
     /// Extract the last assistant message, truncated to 500 chars, for the judge prompt.
     pub(super) fn last_assistant_response(&self) -> String {
-        self.messages
+        self.msg
+            .messages
             .iter()
             .rev()
             .find(|m| m.role == zeph_llm::provider::Role::Assistant)
@@ -598,7 +599,7 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        self.env_context =
+        self.session.env_context =
             crate::context::EnvironmentContext::gather_for_dir(&self.runtime.model_name, &path);
         self
     }
@@ -654,6 +655,7 @@ impl<C: Channel> Agent<C> {
         let qdrant_available = false;
         let conversation_id = self.memory_state.conversation_id;
         let prompt_estimate = self
+            .msg
             .messages
             .first()
             .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
@@ -721,7 +723,7 @@ impl<C: Channel> Agent<C> {
     #[cfg(feature = "experiments")]
     #[must_use]
     pub fn with_experiment_config(mut self, config: crate::config::ExperimentConfig) -> Self {
-        self.experiment_config = config;
+        self.experiments.config = config;
         self
     }
 
@@ -736,7 +738,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         baseline: crate::experiments::ConfigSnapshot,
     ) -> Self {
-        self.experiment_baseline = baseline;
+        self.experiments.baseline = baseline;
         self
     }
 

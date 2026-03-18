@@ -1,0 +1,13 @@
+---
+source: crates/zeph-tools/src/filter/declarative/tests.rs
+assertion_line: 1172
+expression: result.output
+---
+clippy::needless_pass_by_value (2 warnings):
+  src/foo.rs:12:5
+  src/bar.rs:45:10
+
+clippy::unused_imports (1 warning):
+  src/main.rs:5:1
+
+3 warnings total (2 rules)

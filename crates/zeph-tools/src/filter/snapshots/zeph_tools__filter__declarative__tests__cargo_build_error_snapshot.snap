@@ -1,5 +1,5 @@
 ---
-source: crates/zeph-tools/src/filter/declarative.rs
+source: crates/zeph-tools/src/filter/declarative/mod.rs
 expression: result.output
 ---
 (1 noise lines removed)

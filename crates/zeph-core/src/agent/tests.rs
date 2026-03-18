@@ -239,9 +239,9 @@ pub mod agent_tests {
 
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        assert_eq!(agent.messages.len(), 1);
-        assert_eq!(agent.messages[0].role, Role::System);
-        assert!(!agent.messages[0].content.is_empty());
+        assert_eq!(agent.msg.messages.len(), 1);
+        assert_eq!(agent.msg.messages[0].role, Role::System);
+        assert!(!agent.msg.messages[0].content.is_empty());
     }
 
     #[tokio::test]
@@ -257,10 +257,10 @@ pub mod agent_tests {
             .with_working_dir(tmp.path().to_path_buf());
 
         assert_eq!(
-            agent.env_context.working_dir,
+            agent.session.env_context.working_dir,
             tmp.path().display().to_string()
         );
-        assert_eq!(agent.env_context.model_name, "test-model");
+        assert_eq!(agent.session.env_context.model_name, "test-model");
     }
 
     #[tokio::test]
@@ -334,10 +334,10 @@ pub mod agent_tests {
 
         let result = agent.run().await;
         assert!(result.is_ok());
-        assert_eq!(agent.messages.len(), 3);
-        assert_eq!(agent.messages[1].role, Role::User);
-        assert_eq!(agent.messages[1].content, "hello");
-        assert_eq!(agent.messages[2].role, Role::Assistant);
+        assert_eq!(agent.msg.messages.len(), 3);
+        assert_eq!(agent.msg.messages[1].role, Role::User);
+        assert_eq!(agent.msg.messages[1].content, "hello");
+        assert_eq!(agent.msg.messages[2].role, Role::Assistant);
     }
 
     #[tokio::test]
@@ -594,8 +594,8 @@ pub mod agent_tests {
 
         let result = agent.run().await;
         assert!(result.is_ok());
-        assert_eq!(agent.messages.len(), 3);
-        assert_eq!(agent.messages[1].content, "first\nsecond");
+        assert_eq!(agent.msg.messages.len(), 3);
+        assert_eq!(agent.msg.messages[1].content, "first\nsecond");
     }
 
     #[tokio::test]
@@ -744,7 +744,7 @@ pub mod agent_tests {
 
         let result = agent.run().await;
         assert!(result.is_ok());
-        assert!(agent.messages.len() > 3);
+        assert!(agent.msg.messages.len() > 3);
     }
 
     #[tokio::test]
@@ -778,6 +778,7 @@ pub mod agent_tests {
         let result = agent.run().await;
         assert!(result.is_ok());
         let assistant_count = agent
+            .msg
             .messages
             .iter()
             .filter(|m| m.role == Role::Assistant)
@@ -911,19 +912,19 @@ pub mod agent_tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::User,
             content: "hello".to_string(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         });
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::Assistant,
             content: "cmd".to_string(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         });
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::User,
             content: "[tool output: bash]\nsome output".to_string(),
             parts: vec![],
@@ -1421,7 +1422,7 @@ pub mod agent_tests {
 
         let result = agent.handle_image_command("../../etc/passwd").await;
         assert!(result.is_ok());
-        assert!(agent.pending_image_parts.is_empty());
+        assert!(agent.msg.pending_image_parts.is_empty());
         // Channel should have received an error message
         let sent = agent.channel.sent_messages();
         assert!(sent.iter().any(|m| m.contains("traversal")));
@@ -1437,7 +1438,7 @@ pub mod agent_tests {
 
         let result = agent.handle_image_command("/nonexistent/image.png").await;
         assert!(result.is_ok());
-        assert!(agent.pending_image_parts.is_empty());
+        assert!(agent.msg.pending_image_parts.is_empty());
         let sent = agent.channel.sent_messages();
         assert!(sent.iter().any(|m| m.contains("Cannot read image")));
     }
@@ -1459,8 +1460,8 @@ pub mod agent_tests {
 
         let result = agent.handle_image_command(&path).await;
         assert!(result.is_ok());
-        assert_eq!(agent.pending_image_parts.len(), 1);
-        match &agent.pending_image_parts[0] {
+        assert_eq!(agent.msg.pending_image_parts.len(), 1);
+        match &agent.msg.pending_image_parts[0] {
             zeph_llm::provider::MessagePart::Image(img) => {
                 assert_eq!(img.data, data);
                 assert_eq!(img.mime_type, "image/jpeg");
@@ -1997,7 +1998,7 @@ pub mod agent_tests {
         let result = agent.run().await;
         assert!(result.is_ok());
         // /exit should not produce any LLM message — only system message in history
-        assert_eq!(agent.messages.len(), 1, "expected only system message");
+        assert_eq!(agent.msg.messages.len(), 1, "expected only system message");
     }
 
     #[tokio::test]
@@ -2010,7 +2011,7 @@ pub mod agent_tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
         let result = agent.run().await;
         assert!(result.is_ok());
-        assert_eq!(agent.messages.len(), 1, "expected only system message");
+        assert_eq!(agent.msg.messages.len(), 1, "expected only system message");
     }
 
     #[tokio::test]
@@ -2086,9 +2087,9 @@ pub mod agent_tests {
         );
         // No assistant message should be added to history (LLM was not called).
         assert!(
-            agent.messages.iter().all(|m| m.role != Role::Assistant),
+            agent.msg.messages.iter().all(|m| m.role != Role::Assistant),
             "bare /skill must not produce an assistant message; messages: {:?}",
-            agent.messages
+            agent.msg.messages
         );
     }
 
@@ -2109,9 +2110,9 @@ pub mod agent_tests {
             "bare /feedback must send usage; got: {sent:?}"
         );
         assert!(
-            agent.messages.iter().all(|m| m.role != Role::Assistant),
+            agent.msg.messages.iter().all(|m| m.role != Role::Assistant),
             "bare /feedback must not produce an assistant message; messages: {:?}",
-            agent.messages
+            agent.msg.messages
         );
     }
 
@@ -2132,9 +2133,9 @@ pub mod agent_tests {
             "bare /image must send usage; got: {sent:?}"
         );
         assert!(
-            agent.messages.iter().all(|m| m.role != Role::Assistant),
+            agent.msg.messages.iter().all(|m| m.role != Role::Assistant),
             "bare /image must not produce an assistant message; messages: {:?}",
-            agent.messages
+            agent.msg.messages
         );
     }
 
@@ -2255,14 +2256,14 @@ pub mod agent_tests {
     #[test]
     fn agent_test_harness_minimal_constructs_agent() {
         let harness = QuickTestAgent::minimal("hello from mock");
-        assert!(!harness.agent.messages.is_empty());
-        assert_eq!(harness.agent.messages[0].role, Role::System);
+        assert!(!harness.agent.msg.messages.is_empty());
+        assert_eq!(harness.agent.msg.messages[0].role, Role::System);
     }
 
     #[test]
     fn agent_test_harness_with_responses_constructs_agent() {
         let harness = QuickTestAgent::with_responses(vec!["first".into(), "second".into()]);
-        assert!(!harness.agent.messages.is_empty());
+        assert!(!harness.agent.msg.messages.is_empty());
     }
 
     #[test]
@@ -2299,7 +2300,7 @@ mod compaction_e2e {
             .with_context_budget(200_000, 0.20, 0.80, 4, 0);
 
         // Seed a user message so the agent has something to compact/retry
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::User,
             content: "describe the architecture".into(),
             parts: vec![],
@@ -3063,7 +3064,7 @@ mod compaction_e2e {
     ///
     /// Verifies the `tokio::select!` path added in #1603: when the channel delivers a
     /// non-cancel message while the loop is waiting for a scheduler event, the message
-    /// is passed to `enqueue_or_merge()` and appears in `agent.message_queue` after
+    /// is passed to `enqueue_or_merge()` and appears in `agent.msg.message_queue` after
     /// `run_scheduler_loop` returns.
     #[tokio::test]
     async fn scheduler_loop_queues_non_cancel_message() {
@@ -3104,17 +3105,18 @@ mod compaction_e2e {
             .unwrap();
 
         assert_eq!(
-            agent.message_queue.len(),
+            agent.msg.message_queue.len(),
             1,
             "non-cancel message must be queued in message_queue; got: {:?}",
             agent
+                .msg
                 .message_queue
                 .iter()
                 .map(|m| &m.text)
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            agent.message_queue[0].text, "hello",
+            agent.msg.message_queue[0].text, "hello",
             "queued message text must match the received message"
         );
     }
@@ -3889,7 +3891,7 @@ mod confirmation_propagation_tests {
         let result = agent.run().await;
         assert!(result.is_ok());
 
-        let has_skipped = agent.messages.iter().any(|m| {
+        let has_skipped = agent.msg.messages.iter().any(|m| {
             m.content
                 .contains("Skipped: a prerequisite tool failed or requires confirmation")
         });
@@ -3901,6 +3903,7 @@ mod confirmation_propagation_tests {
             has_skipped || has_skipped_in_sent,
             "expected synthetic skip message for tool_b; sent={sent:?}, agent_msgs={:?}",
             agent
+                .msg
                 .messages
                 .iter()
                 .map(|m| &m.content)
@@ -3938,6 +3941,7 @@ mod confirmation_propagation_tests {
         assert!(result.is_ok());
 
         let has_independent_result = agent
+            .msg
             .messages
             .iter()
             .any(|m| m.content.contains("independent result"));
@@ -3945,6 +3949,7 @@ mod confirmation_propagation_tests {
             has_independent_result,
             "expected tool_c (independent) to execute normally; agent_msgs={:?}",
             agent
+                .msg
                 .messages
                 .iter()
                 .map(|m| &m.content)
@@ -3976,7 +3981,7 @@ mod shutdown_summary_tests {
 
         // Add enough user messages to exceed the threshold.
         for i in 0..5 {
-            agent.messages.push(Message {
+            agent.msg.messages.push(Message {
                 role: Role::User,
                 content: format!("user message {i}"),
                 parts: vec![],
@@ -4006,7 +4011,7 @@ mod shutdown_summary_tests {
             .with_shutdown_summary_config(true, 4, 20, 10);
 
         for i in 0..5 {
-            agent.messages.push(Message {
+            agent.msg.messages.push(Message {
                 role: Role::User,
                 content: format!("user message {i}"),
                 parts: vec![],
@@ -4049,19 +4054,19 @@ mod shutdown_summary_tests {
 
         // System prompt is messages[0] — skip(1) counts from index 1.
         // Add 2 user messages: below the threshold of 4.
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::User,
             content: "first user message".into(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         });
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::Assistant,
             content: "assistant reply".into(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         });
-        agent.messages.push(Message {
+        agent.msg.messages.push(Message {
             role: Role::User,
             content: "second user message".into(),
             parts: vec![],
@@ -4103,7 +4108,7 @@ mod shutdown_summary_tests {
             .with_shutdown_summary_config(true, 4, 20, 10);
 
         for _ in 0..8 {
-            agent.messages.push(Message {
+            agent.msg.messages.push(Message {
                 role: Role::Assistant,
                 content: "assistant reply".into(),
                 parts: vec![],
@@ -4111,7 +4116,7 @@ mod shutdown_summary_tests {
             });
         }
         for i in 0..3 {
-            agent.messages.push(Message {
+            agent.msg.messages.push(Message {
                 role: Role::User,
                 content: format!("user message {i}"),
                 parts: vec![],

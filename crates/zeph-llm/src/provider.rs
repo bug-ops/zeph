@@ -206,6 +206,32 @@ pub enum MessagePart {
     },
 }
 
+impl MessagePart {
+    /// Return the plain text content if this part is a text-like variant (`Text`, `Recall`,
+    /// `CodeContext`, `Summary`, `CrossSession`), `None` otherwise.
+    #[must_use]
+    pub fn as_plain_text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text }
+            | Self::Recall { text }
+            | Self::CodeContext { text }
+            | Self::Summary { text }
+            | Self::CrossSession { text } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Return the image data if this part is an `Image` variant, `None` otherwise.
+    #[must_use]
+    pub fn as_image(&self) -> Option<&ImageData> {
+        if let Self::Image(img) = self {
+            Some(img)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageData {
     #[serde(with = "serde_bytes_base64")]

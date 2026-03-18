@@ -1,5 +1,5 @@
 ---
-source: crates/zeph-tools/src/filter/declarative.rs
+source: crates/zeph-tools/src/filter/declarative/mod.rs
 expression: result.output
 ---
 Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.23s
