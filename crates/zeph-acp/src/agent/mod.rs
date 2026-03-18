@@ -728,10 +728,7 @@ impl acp::Agent for ZephAcpAgent {
         if self.mcp_manager.is_some() {
             caps = caps.mcp_capabilities(acp::McpCapabilities::new().http(true).sse(false));
         }
-        #[cfg(any(
-            feature = "unstable-session-fork",
-            feature = "unstable-session-resume",
-        ))]
+        #[cfg(any(feature = "unstable-session-fork", feature = "unstable-session-resume",))]
         let caps = {
             let mut session_caps = acp::SessionCapabilities::new();
             session_caps = session_caps.list(acp::SessionListCapabilities::default());
