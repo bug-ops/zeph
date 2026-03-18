@@ -9433,7 +9433,6 @@ dependencies = [
  "dirs",
  "insta",
  "ordered-float 5.1.0",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -9445,7 +9444,6 @@ dependencies = [
  "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
- "zeph-skills",
  "zeph-tools",
 ]
 
