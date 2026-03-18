@@ -18,7 +18,6 @@ pub mod metrics;
 pub mod pipeline;
 pub mod project;
 pub mod redact;
-pub mod vault;
 
 #[cfg(feature = "experiments")]
 pub mod experiments;
@@ -59,3 +58,11 @@ pub use sanitizer::{
 };
 pub use skill_loader::SkillLoaderExecutor;
 pub use zeph_tools::executor::DiffData;
+
+// Re-export vault module to preserve internal import paths (e.g., `crate::vault::VaultProvider`).
+pub mod vault {
+    pub use zeph_vault::{
+        AgeVaultError, AgeVaultProvider, ArcAgeVaultProvider, EnvVaultProvider,
+        MockVaultProvider, Secret, VaultError, VaultProvider, default_vault_dir,
+    };
+}
