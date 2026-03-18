@@ -1,0 +1,35 @@
+[package]
+name = "zeph-vault"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-vault"
+keywords.workspace = true
+categories.workspace = true
+description = "VaultProvider trait and backends (env, age) for Zeph secret management"
+readme = "README.md"
+
+[features]
+default = []
+mock = []
+
+[dependencies]
+age.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+zeph-common.workspace = true
+zeroize = { workspace = true, features = ["derive", "serde"] }
+
+[dev-dependencies]
+proptest.workspace = true
+serial_test.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
