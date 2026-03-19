@@ -9,8 +9,8 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use super::error::OrchestrationError;
 use super::graph::{TaskGraph, TaskStatus};
-use crate::config::OrchestrationConfig;
-use crate::text::truncate_chars;
+use zeph_common::text::truncate_chars;
+use zeph_config::OrchestrationConfig;
 use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
 
 /// Collects results from completed tasks and produces a final synthesis.
@@ -185,7 +185,7 @@ fn build_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::graph::{GraphStatus, TaskGraph, TaskNode, TaskResult, TaskStatus};
+    use crate::graph::{GraphStatus, TaskGraph, TaskNode, TaskResult, TaskStatus};
 
     fn make_graph_with_tasks(statuses: &[(TaskStatus, Option<&str>)]) -> TaskGraph {
         let mut graph = TaskGraph::new("test goal");

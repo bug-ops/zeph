@@ -303,7 +303,7 @@ impl From<&crate::orchestration::TaskGraph> for TaskGraphSnapshot {
                     });
                 let duration_ms = t.result.as_ref().map_or(0, |r| r.duration_ms);
                 TaskSnapshotRow {
-                    id: t.id.0,
+                    id: t.id.as_u32(),
                     title: strip_ctrl(&t.title),
                     status: t.status.to_string(),
                     agent: t.assigned_agent.as_deref().map(strip_ctrl),

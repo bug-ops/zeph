@@ -129,6 +129,7 @@ zeph-skills = { path = "crates/zeph-skills", version = "0.15.3" }
 zeph-tools = { path = "crates/zeph-tools", version = "0.15.3" }
 zeph-tui = { path = "crates/zeph-tui", version = "0.15.3" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.15.3" }
+zeph-orchestration = { path = "crates/zeph-orchestration", version = "0.15.3" }
 zeph-sanitizer = { path = "crates/zeph-sanitizer", version = "0.15.3" }
 zeph-subagent = { path = "crates/zeph-subagent", version = "0.15.3" }
 

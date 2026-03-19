@@ -332,9 +332,7 @@ pub fn reset_for_retry(graph: &mut TaskGraph) -> Result<(), OrchestrationError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::graph::{
-        FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus,
-    };
+    use crate::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus};
 
     fn make_node(id: u32, deps: &[u32]) -> TaskNode {
         let mut n = TaskNode::new(id, format!("task-{id}"), "desc");

@@ -11,8 +11,8 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 use super::dag;
 use super::error::OrchestrationError;
 use super::graph::{FailureStrategy, TaskGraph, TaskId, TaskNode};
-use crate::config::OrchestrationConfig;
-use crate::subagent::def::{SubAgentDef, ToolPolicy};
+use zeph_config::OrchestrationConfig;
+use zeph_subagent::{SubAgentDef, ToolPolicy};
 
 /// Decomposes a high-level goal into a validated `TaskGraph`.
 #[allow(async_fn_in_trait)]
@@ -291,8 +291,7 @@ mod tests {
     #![allow(clippy::needless_pass_by_value)]
 
     use super::*;
-    use crate::subagent::def::{SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy};
-    use crate::subagent::hooks::SubagentHooks;
+    use zeph_subagent::{SkillFilter, SubAgentDef, SubAgentPermissions, SubagentHooks, ToolPolicy};
 
     fn make_agent(name: &str, tools: ToolPolicy) -> SubAgentDef {
         SubAgentDef {

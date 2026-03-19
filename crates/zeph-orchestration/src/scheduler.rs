@@ -14,10 +14,9 @@ use super::dag;
 use super::error::OrchestrationError;
 use super::graph::{GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus};
 use super::router::AgentRouter;
-use crate::config::OrchestrationConfig;
-use crate::subagent::SubAgentDef;
-use crate::subagent::error::SubAgentError;
+use zeph_config::OrchestrationConfig;
 use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
+use zeph_subagent::{SubAgentDef, SubAgentError};
 
 /// Actions the scheduler requests the caller to perform.
 ///
@@ -863,9 +862,7 @@ mod tests {
     #![allow(clippy::default_trait_access)]
 
     use super::*;
-    use crate::orchestration::graph::{
-        FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus,
-    };
+    use crate::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus};
 
     fn make_node(id: u32, deps: &[u32]) -> TaskNode {
         let mut n = TaskNode::new(
@@ -884,7 +881,7 @@ mod tests {
     }
 
     fn make_def(name: &str) -> SubAgentDef {
-        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::{SkillFilter, SubAgentPermissions, SubagentHooks, ToolPolicy};
         SubAgentDef {
             name: name.to_string(),
             description: format!("{name} agent"),
@@ -894,15 +891,15 @@ mod tests {
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: String::new(),
-            hooks: crate::subagent::SubagentHooks::default(),
+            hooks: SubagentHooks::default(),
             memory: None,
             source: None,
             file_path: None,
         }
     }
 
-    fn make_config() -> crate::config::OrchestrationConfig {
-        crate::config::OrchestrationConfig {
+    fn make_config() -> zeph_config::OrchestrationConfig {
+        zeph_config::OrchestrationConfig {
             enabled: true,
             max_tasks: 20,
             max_parallel: 4,
@@ -1432,7 +1429,7 @@ mod tests {
         // After the caller calls record_spawn_failure(ConcurrencyLimit), the task reverts
         // to Ready and the graph stays Running (no deadlock).
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             max_parallel: 0,
             ..make_config()
         };
@@ -1558,7 +1555,7 @@ mod tests {
             agent_def: None,
         });
 
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             dependency_context_budget: 50,
             ..make_config()
         };
@@ -1630,7 +1627,7 @@ mod tests {
 
         // Budget large enough to hold the spotlighting wrapper + some Japanese chars.
         // The sanitizer adds ~200 chars of spotlight header, so 500 chars is sufficient.
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             dependency_context_budget: 500,
             ..make_config()
         };
@@ -1732,7 +1729,7 @@ mod tests {
             agent_def: None,
         });
 
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             dependency_context_budget: 10, // truncate: sanitized output >> 10 chars
             ..make_config()
         };
@@ -1906,7 +1903,7 @@ mod tests {
         // With consecutive_spawn_failures=0, backoff equals the base interval.
         // With consecutive_spawn_failures=3, backoff = min(base * 8, 5000ms).
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             deferral_backoff_ms: 50,
             ..make_config()
         };
@@ -1959,7 +1956,7 @@ mod tests {
         // Regression for issue #1519: wait_event must sleep deferral_backoff when
         // running is empty, preventing a busy spin-loop.
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             deferral_backoff_ms: 50,
             ..make_config()
         };
@@ -1990,7 +1987,7 @@ mod tests {
         // Regression for issue #1618: backoff must grow exponentially with consecutive
         // spawn failures so the scheduler does not busy-spin at 250ms when saturated.
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             deferral_backoff_ms: 250,
             ..make_config()
         };
@@ -2084,7 +2081,7 @@ mod tests {
         // Here 6 independent tasks with max_parallel=2.
         let nodes: Vec<_> = (0..6).map(|i| make_node(i, &[])).collect();
         let graph = graph_from_nodes(nodes);
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             max_parallel: 2,
             ..make_config()
         };
@@ -2167,7 +2164,7 @@ mod tests {
         // The guard must use 20, not 4.
         let nodes: Vec<_> = (0..10).map(|i| make_node(i, &[])).collect();
         let graph = graph_from_nodes(nodes);
-        let config = crate::config::OrchestrationConfig {
+        let config = zeph_config::OrchestrationConfig {
             max_parallel: 2, // 2*2=4, but tasks.len()*2=20
             ..make_config()
         };

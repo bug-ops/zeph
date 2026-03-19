@@ -9493,6 +9493,7 @@ dependencies = [
  "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
+ "zeph-orchestration",
  "zeph-sanitizer",
  "zeph-skills",
  "zeph-subagent",
@@ -9662,6 +9663,25 @@ dependencies = [
  "uuid",
  "zeph-common",
  "zeph-llm",
+]
+
+[[package]]
+name = "zeph-orchestration"
+version = "0.15.3"
+dependencies = [
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeph-common",
+ "zeph-config",
+ "zeph-llm",
+ "zeph-memory",
+ "zeph-sanitizer",
+ "zeph-subagent",
 ]
 
 [[package]]

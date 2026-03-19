@@ -3,7 +3,7 @@
 
 //! Agent routing: selects the best agent definition for a given task.
 
-use crate::subagent::{SubAgentDef, ToolPolicy};
+use zeph_subagent::{SubAgentDef, ToolPolicy};
 
 use super::graph::TaskNode;
 
@@ -118,8 +118,8 @@ mod tests {
     #![allow(clippy::default_trait_access)]
 
     use super::*;
-    use crate::orchestration::graph::{TaskId, TaskNode, TaskStatus};
-    use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+    use crate::graph::{TaskId, TaskNode, TaskStatus};
+    use zeph_subagent::{SkillFilter, SubAgentPermissions, ToolPolicy};
 
     fn make_task(id: u32, desc: &str, hint: Option<&str>) -> TaskNode {
         TaskNode {
@@ -147,7 +147,7 @@ mod tests {
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: String::new(),
-            hooks: crate::subagent::SubagentHooks::default(),
+            hooks: zeph_subagent::SubagentHooks::default(),
             memory: None,
             source: None,
             file_path: None,
@@ -168,7 +168,7 @@ mod tests {
             permissions: SubAgentPermissions::default(),
             skills: SkillFilter::default(),
             system_prompt: String::new(),
-            hooks: crate::subagent::SubagentHooks::default(),
+            hooks: zeph_subagent::SubagentHooks::default(),
             memory: None,
             source: None,
             file_path: None,

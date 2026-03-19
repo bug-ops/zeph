@@ -57,6 +57,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-vault.workspace = true
+zeph-orchestration.workspace = true
 zeph-sanitizer.workspace = true
 zeph-subagent.workspace = true
 zeph-experiments.workspace = true

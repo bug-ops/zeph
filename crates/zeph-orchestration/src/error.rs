@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::subagent::error::SubAgentError;
+use zeph_subagent::SubAgentError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestrationError {

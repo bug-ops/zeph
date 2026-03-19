@@ -21,6 +21,12 @@ impl TaskId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// Returns the raw `u32` value.
+    #[must_use]
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
 }
 
 impl fmt::Display for TaskId {

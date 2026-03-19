@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- refactor(orchestration): extract task orchestration into new `zeph-orchestration` crate (Epic #1973 Phase 1g, #1979)
+  - New `zeph-orchestration` crate (5,380 LOC) with 8 modules: `aggregator`, `command`, `dag`, `error`, `graph`, `planner`, `router`, `scheduler`
+  - Moved `TaskGraph`, `TaskNode`, `TaskId`, `GraphId`, `TaskStatus`, `GraphStatus`, `FailureStrategy`, `GraphPersistence`, `DagScheduler`, `SchedulerAction`, `TaskEvent`, `TaskOutcome`, `LlmPlanner`, `Planner`, `LlmAggregator`, `Aggregator`, `RuleBasedRouter`, `AgentRouter`, `PlanCommand`, `OrchestrationError` to new crate
+  - `zeph-core` reduces from 55,860 to ~50,480 LOC (-5,380 LOC, -9.6%)
+  - 169 tests migrated to `zeph-orchestration`; zeph-core 1199→1030 tests; workspace total: 5,917 tests
+  - `zeph-core/src/orchestration/mod.rs` replaced with re-export shim preserving all `crate::orchestration::*` import paths
+  - Added `TaskId::as_u32()` public accessor replacing `pub(crate)` field access from `zeph-core::metrics`
+  - Layer 2 crate: depends on `zeph-config`, `zeph-common`, `zeph-llm`, `zeph-memory`, `zeph-sanitizer`, `zeph-subagent`
+
 - refactor(subagent): extract subagent management into new `zeph-subagent` crate (Epic #1973 Phase 1f)
   - New `zeph-subagent` crate (9,036 LOC) with 11 modules: `command`, `def`, `error`, `filter`, `grants`, `hooks`, `manager`, `memory`, `resolve`, `state`, `transcript`
   - `SubAgentManager`, `SubAgentHandle`, `SubAgentDef`, `SubAgentGrant`, `SubAgentTranscript`, `SubAgentError`, `SubAgentState`, `ToolFilter`, `SkillFilter`, `SubagentHooks` moved to new crate

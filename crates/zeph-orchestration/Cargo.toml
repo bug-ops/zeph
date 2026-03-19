@@ -1,0 +1,35 @@
+[package]
+name = "zeph-orchestration"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/zeph-orchestration"
+keywords.workspace = true
+categories.workspace = true
+description = "Task orchestration: DAG execution, failure propagation, and persistence for Zeph"
+readme = "README.md"
+
+[dependencies]
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+zeph-common.workspace = true
+zeph-config.workspace = true
+zeph-llm.workspace = true
+zeph-memory.workspace = true
+zeph-sanitizer.workspace = true
+zeph-subagent.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
