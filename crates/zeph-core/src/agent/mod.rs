@@ -63,7 +63,7 @@ use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
 use crate::context::{
     ContextBudget, EnvironmentContext, build_system_prompt, build_system_prompt_with_instructions,
 };
-use crate::sanitizer::ContentSanitizer;
+use zeph_sanitizer::ContentSanitizer;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 #[cfg(feature = "context-compression")]
@@ -327,19 +327,17 @@ impl<C: Channel> Agent<C> {
                 reload_state: None,
             },
             security: SecurityState {
-                sanitizer: ContentSanitizer::new(
-                    &crate::sanitizer::ContentIsolationConfig::default(),
-                ),
+                sanitizer: ContentSanitizer::new(&zeph_sanitizer::ContentIsolationConfig::default()),
                 quarantine_summarizer: None,
-                exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard::new(
-                    crate::sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
+                exfiltration_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
+                    zeph_sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
                 ),
                 flagged_urls: std::collections::HashSet::new(),
-                pii_filter: crate::sanitizer::pii::PiiFilter::new(
-                    crate::sanitizer::pii::PiiFilterConfig::default(),
+                pii_filter: zeph_sanitizer::pii::PiiFilter::new(
+                    zeph_sanitizer::pii::PiiFilterConfig::default(),
                 ),
-                memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator::new(
-                    crate::sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
+                memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
+                    zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
                 ),
                 #[cfg(feature = "guardrail")]
                 guardrail: None,
@@ -2936,7 +2934,7 @@ impl<C: Channel> Agent<C> {
         // Guardrail: LLM-based prompt injection pre-screening at the user input boundary.
         #[cfg(feature = "guardrail")]
         if let Some(ref guardrail) = self.security.guardrail {
-            use crate::sanitizer::guardrail::GuardrailVerdict;
+            use zeph_sanitizer::guardrail::GuardrailVerdict;
             let verdict = guardrail.check(trimmed).await;
             match &verdict {
                 GuardrailVerdict::Flagged { reason, .. } => {

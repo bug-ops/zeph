@@ -15,11 +15,9 @@ use super::error::OrchestrationError;
 use super::graph::{GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus};
 use super::router::AgentRouter;
 use crate::config::OrchestrationConfig;
-use crate::sanitizer::{
-    ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind,
-};
 use crate::subagent::SubAgentDef;
 use crate::subagent::error::SubAgentError;
+use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
 
 /// Actions the scheduler requests the caller to perform.
 ///

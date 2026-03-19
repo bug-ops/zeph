@@ -10,10 +10,8 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 use super::error::OrchestrationError;
 use super::graph::{TaskGraph, TaskStatus};
 use crate::config::OrchestrationConfig;
-use crate::sanitizer::{
-    ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind,
-};
 use crate::text::truncate_chars;
+use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
 
 /// Collects results from completed tasks and produces a final synthesis.
 #[allow(async_fn_in_trait)]

@@ -1166,8 +1166,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             config.security.guardrail.model = Some(state.guardrail_model.clone());
         }
         config.security.guardrail.action = match state.guardrail_action.as_str() {
-            "warn" => zeph_core::sanitizer::guardrail::GuardrailAction::Warn,
-            _ => zeph_core::sanitizer::guardrail::GuardrailAction::Block,
+            "warn" => zeph_sanitizer::guardrail::GuardrailAction::Warn,
+            _ => zeph_sanitizer::guardrail::GuardrailAction::Block,
         };
         config.security.guardrail.timeout_ms = state.guardrail_timeout_ms;
     }

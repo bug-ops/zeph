@@ -460,13 +460,10 @@ pub(crate) fn apply_summary_provider<C: Channel>(
 
 pub(crate) fn apply_quarantine_provider<C: Channel>(
     agent: Agent<C>,
-    quarantine: Option<(
-        zeph_llm::any::AnyProvider,
-        zeph_core::sanitizer::QuarantineConfig,
-    )>,
+    quarantine: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
 ) -> Agent<C> {
     if let Some((provider, config)) = quarantine {
-        let qs = zeph_core::sanitizer::quarantine::QuarantinedSummarizer::new(provider, &config);
+        let qs = zeph_sanitizer::quarantine::QuarantinedSummarizer::new(provider, &config);
         agent.with_quarantine_summarizer(qs)
     } else {
         agent
@@ -478,11 +475,11 @@ pub(crate) fn apply_guardrail<C: Channel>(
     agent: Agent<C>,
     guardrail: Option<(
         zeph_llm::any::AnyProvider,
-        zeph_core::sanitizer::guardrail::GuardrailConfig,
+        zeph_sanitizer::guardrail::GuardrailConfig,
     )>,
 ) -> Agent<C> {
     if let Some((provider, config)) = guardrail {
-        match zeph_core::sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
+        match zeph_sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
             Ok(filter) => agent.with_guardrail(filter),
             Err(e) => {
                 tracing::warn!(error = %e, "guardrail filter construction failed, guardrail disabled");

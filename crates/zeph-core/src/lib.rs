@@ -31,7 +31,6 @@ pub mod hash;
 pub mod http;
 pub mod memory_tools;
 pub mod overflow_tools;
-pub mod sanitizer;
 pub mod skill_loader;
 pub mod subagent;
 pub use zeph_common::text;
@@ -49,14 +48,14 @@ pub use channel::{
 };
 pub use config::{Config, ConfigError};
 pub use hash::content_hash;
-pub use sanitizer::exfiltration::{
+pub use skill_loader::SkillLoaderExecutor;
+pub use zeph_sanitizer::exfiltration::{
     ExfiltrationEvent, ExfiltrationGuard, ExfiltrationGuardConfig, extract_flagged_urls,
 };
-pub use sanitizer::{
+pub use zeph_sanitizer::{
     ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind, InjectionFlag,
     QuarantineConfig, SanitizedContent, TrustLevel,
 };
-pub use skill_loader::SkillLoaderExecutor;
 pub use zeph_tools::executor::DiffData;
 
 // Re-export vault module to preserve internal import paths (e.g., `crate::vault::VaultProvider`).

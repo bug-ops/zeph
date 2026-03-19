@@ -10,9 +10,9 @@ use super::super::Agent;
 use super::{AnomalyOutcome, retry_backoff_ms, tool_args_hash, tool_def_to_definition};
 use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 use crate::overflow_tools::OverflowToolExecutor;
-use crate::sanitizer::{ContentSource, ContentSourceKind};
 use tracing::Instrument;
 use zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER;
+use zeph_sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::evolution::FailureKind;
 use zeph_tools::executor::ToolCall;
 
@@ -1558,8 +1558,8 @@ impl<C: Channel> Agent<C> {
                     .sanitizer
                     .sanitize(
                         &summary,
-                        crate::sanitizer::ContentSource::new(
-                            crate::sanitizer::ContentSourceKind::WebScrape,
+                        zeph_sanitizer::ContentSource::new(
+                            zeph_sanitizer::ContentSourceKind::WebScrape,
                         ),
                     )
                     .body;

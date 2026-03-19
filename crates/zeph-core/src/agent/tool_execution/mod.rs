@@ -10,7 +10,7 @@ use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role, ToolDefini
 use super::Agent;
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
-use crate::sanitizer::{ContentSource, ContentSourceKind};
+use zeph_sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::loader::Skill;
 
 /// Prefix used in the overflow notice appended to tool outputs that exceed the size threshold.
@@ -308,7 +308,7 @@ impl<C: Channel> Agent<C> {
             // Collect URLs from the SANITIZED content (not raw body) for validate_tool_call.
             // Using sanitized.body ensures only URLs the LLM actually sees are tracked,
             // avoiding false-positive SuspiciousToolUrl warnings for truncated/stripped content.
-            let urls = crate::sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
+            let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
             self.security.flagged_urls.extend(urls);
         }
         if sanitized.was_truncated {
@@ -334,9 +334,9 @@ impl<C: Channel> Agent<C> {
                         tool_name,
                         "Content quarantined, facts extracted",
                     );
-                    let escaped = crate::sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                    let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
                     return (
-                        crate::sanitizer::ContentSanitizer::apply_spotlight(
+                        zeph_sanitizer::ContentSanitizer::apply_spotlight(
                             &escaped,
                             &sanitized.source,
                             &flags,
@@ -382,7 +382,7 @@ impl<C: Channel> Agent<C> {
 
     #[cfg(feature = "guardrail")]
     async fn apply_guardrail_to_tool_output(&self, mut body: String, tool_name: &str) -> String {
-        use crate::sanitizer::guardrail::GuardrailVerdict;
+        use zeph_sanitizer::guardrail::GuardrailVerdict;
         let Some(ref guardrail) = self.security.guardrail else {
             return body;
         };

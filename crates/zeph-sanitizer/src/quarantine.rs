@@ -188,7 +188,7 @@ fn extract_wrapper_inner<'a>(body: &'a str, open_tag: &str, close_tag: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sanitizer::{ContentIsolationConfig, ContentSource, ContentSourceKind};
+    use crate::{ContentIsolationConfig, ContentSource, ContentSourceKind};
 
     fn default_sanitizer() -> ContentSanitizer {
         ContentSanitizer::new(&ContentIsolationConfig::default())
@@ -225,8 +225,7 @@ max_content_size = 65536
 flag_injection_patterns = true
 spotlight_untrusted = true
 ";
-        let cfg: crate::sanitizer::ContentIsolationConfig =
-            toml::from_str(toml_str).expect("deserialize");
+        let cfg: ContentIsolationConfig = toml::from_str(toml_str).expect("deserialize");
         assert_eq!(cfg.quarantine, QuarantineConfig::default());
     }
 

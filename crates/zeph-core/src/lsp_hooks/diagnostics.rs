@@ -9,7 +9,7 @@ use zeph_mcp::McpCaller;
 use zeph_memory::TokenCounter;
 
 use crate::config::{DiagnosticSeverity, LspConfig};
-use crate::sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
 use super::LspNote;
 
@@ -251,7 +251,7 @@ mod tests {
         use zeph_memory::TokenCounter;
 
         use crate::config::LspConfig;
-        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
         let diagnostics_json = serde_json::json!([
             { "severity": 1, "message": "type error", "range": { "start": { "line": 0 } } }
@@ -284,7 +284,7 @@ mod tests {
         use zeph_memory::TokenCounter;
 
         use crate::config::LspConfig;
-        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
         let mock = RecordingCaller::new().with_text("[]");
         let config = LspConfig::default();

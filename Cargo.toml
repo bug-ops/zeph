@@ -128,6 +128,7 @@ zeph-skills = { path = "crates/zeph-skills", version = "0.15.3" }
 zeph-tools = { path = "crates/zeph-tools", version = "0.15.3" }
 zeph-tui = { path = "crates/zeph-tui", version = "0.15.3" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.15.3" }
+zeph-sanitizer = { path = "crates/zeph-sanitizer", version = "0.15.3" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -222,6 +223,7 @@ zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-mcp.workspace = true
+zeph-sanitizer.workspace = true
 zeph-scheduler = { workspace = true, optional = true }
 zeph-skills.workspace = true
 zeph-tools.workspace = true

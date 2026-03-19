@@ -14,7 +14,7 @@ use zeph_mcp::McpCaller;
 use zeph_memory::TokenCounter;
 
 use crate::config::LspConfig;
-use crate::sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
 use super::{LspHookRunner, LspNote};
 
@@ -495,7 +495,7 @@ mod tests {
         use zeph_memory::TokenCounter;
 
         use crate::config::{HoverConfig, LspConfig};
-        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
         let mock = RecordingCaller::new().with_text("hover info for my_function");
         let config = LspConfig {
@@ -533,7 +533,7 @@ mod tests {
         use zeph_memory::TokenCounter;
 
         use crate::config::{HoverConfig, LspConfig};
-        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
         let mock = RecordingCaller::new().with_text("hover info");
         let config = LspConfig {

@@ -18,7 +18,7 @@ use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 
 use crate::redact::scrub_content;
-use crate::sanitizer::{ContentSource, ContentSourceKind};
+use zeph_sanitizer::{ContentSource, ContentSourceKind};
 
 #[cfg(feature = "lsp-context")]
 use super::super::LSP_NOTE_PREFIX;
@@ -811,8 +811,8 @@ impl<C: Channel> Agent<C> {
                         "memory_retrieval",
                         "Content quarantined, facts extracted",
                     );
-                    let escaped = crate::sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
-                    msg.content = crate::sanitizer::ContentSanitizer::apply_spotlight(
+                    let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                    msg.content = zeph_sanitizer::ContentSanitizer::apply_spotlight(
                         &escaped,
                         &sanitized.source,
                         &flags,

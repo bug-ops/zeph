@@ -7,9 +7,9 @@ use zeph_tools::executor::{ToolError, ToolOutput};
 use super::super::{Agent, DOOM_LOOP_WINDOW, format_tool_output};
 use super::{AnomalyOutcome, doom_loop_hash, first_tool_name};
 use crate::channel::{Channel, ToolOutputEvent, ToolStartEvent};
-use crate::sanitizer::{ContentSource, ContentSourceKind}; // already imported for tool output sanitization
 use tokio_stream::StreamExt;
 use tracing::Instrument;
+use zeph_sanitizer::{ContentSource, ContentSourceKind}; // already imported for tool output sanitization
 use zeph_skills::evolution::FailureKind;
 
 impl<C: Channel> Agent<C> {

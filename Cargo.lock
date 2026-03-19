@@ -9315,6 +9315,7 @@ dependencies = [
  "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
+ "zeph-sanitizer",
  "zeph-scheduler",
  "zeph-skills",
  "zeph-tools",
@@ -9491,6 +9492,7 @@ dependencies = [
  "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
+ "zeph-sanitizer",
  "zeph-skills",
  "zeph-tools",
  "zeph-vault",
@@ -9635,6 +9637,26 @@ dependencies = [
  "uuid",
  "zeph-common",
  "zeph-llm",
+]
+
+[[package]]
+name = "zeph-sanitizer"
+version = "0.15.3"
+dependencies = [
+ "proptest",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 1.0.7+spec-1.1.0",
+ "tracing",
+ "zeph-common",
+ "zeph-config",
+ "zeph-llm",
+ "zeph-memory",
+ "zeph-tools",
 ]
 
 [[package]]

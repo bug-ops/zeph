@@ -119,14 +119,11 @@ struct SharedAgentDeps {
     // Optional runtime providers (contain HTTP client pools; excluded from session_config)
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     judge_provider: Option<zeph_llm::any::AnyProvider>,
-    quarantine_provider: Option<(
-        zeph_llm::any::AnyProvider,
-        zeph_core::sanitizer::QuarantineConfig,
-    )>,
+    quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
     #[cfg(feature = "guardrail")]
     guardrail_provider: Option<(
         zeph_llm::any::AnyProvider,
-        zeph_core::sanitizer::guardrail::GuardrailConfig,
+        zeph_sanitizer::guardrail::GuardrailConfig,
     )>,
 
     // Config snapshot — single source of truth for all config-derived agent settings
@@ -567,9 +564,7 @@ async fn spawn_acp_agent(
         session_ctx
             .conversation_id
             .unwrap_or(zeph_memory::ConversationId(0)),
-        zeph_core::sanitizer::memory_validation::MemoryWriteValidator::new(
-            memory_validation_config,
-        ),
+        zeph_sanitizer::memory_validation::MemoryWriteValidator::new(memory_validation_config),
     );
     let overflow_executor = {
         let mut ex =

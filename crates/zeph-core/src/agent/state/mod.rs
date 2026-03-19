@@ -23,11 +23,11 @@ use crate::context::EnvironmentContext;
 use crate::cost::CostTracker;
 use crate::instructions::{InstructionBlock, InstructionEvent, InstructionReloadState};
 use crate::metrics::MetricsSnapshot;
-use crate::sanitizer::ContentSanitizer;
-use crate::sanitizer::quarantine::QuarantinedSummarizer;
 use crate::vault::Secret;
 use zeph_memory::TokenCounter;
 use zeph_memory::semantic::SemanticMemory;
+use zeph_sanitizer::ContentSanitizer;
+use zeph_sanitizer::quarantine::QuarantinedSummarizer;
 use zeph_skills::matcher::SkillMatcherBackend;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
@@ -112,13 +112,13 @@ pub(crate) struct FeedbackState {
 pub(crate) struct SecurityState {
     pub(crate) sanitizer: ContentSanitizer,
     pub(crate) quarantine_summarizer: Option<QuarantinedSummarizer>,
-    pub(crate) exfiltration_guard: crate::sanitizer::exfiltration::ExfiltrationGuard,
+    pub(crate) exfiltration_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard,
     pub(crate) flagged_urls: std::collections::HashSet<String>,
-    pub(crate) pii_filter: crate::sanitizer::pii::PiiFilter,
-    pub(crate) memory_validator: crate::sanitizer::memory_validation::MemoryWriteValidator,
+    pub(crate) pii_filter: zeph_sanitizer::pii::PiiFilter,
+    pub(crate) memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator,
     /// LLM-based prompt injection pre-screener (opt-in).
     #[cfg(feature = "guardrail")]
-    pub(crate) guardrail: Option<crate::sanitizer::guardrail::GuardrailFilter>,
+    pub(crate) guardrail: Option<zeph_sanitizer::guardrail::GuardrailFilter>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).

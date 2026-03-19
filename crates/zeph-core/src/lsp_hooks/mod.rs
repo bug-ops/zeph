@@ -107,7 +107,7 @@ impl LspHookRunner {
         tool_params: &serde_json::Value,
         tool_output: &str,
         token_counter: &Arc<zeph_memory::TokenCounter>,
-        sanitizer: &crate::sanitizer::ContentSanitizer,
+        sanitizer: &zeph_sanitizer::ContentSanitizer,
     ) {
         if !self.config.enabled {
             tracing::debug!(tool = tool_name, "LSP hook: skipped (disabled)");
@@ -154,7 +154,7 @@ impl LspHookRunner {
         &mut self,
         tool_params: &serde_json::Value,
         token_counter: &Arc<zeph_memory::TokenCounter>,
-        sanitizer: &crate::sanitizer::ContentSanitizer,
+        sanitizer: &zeph_sanitizer::ContentSanitizer,
     ) {
         let Some(path) = tool_params
             .get("path")
@@ -369,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn after_tool_disabled_does_not_queue_notes() {
-        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
         let tc = Arc::new(TokenCounter::default());
         let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
         let mut runner = make_runner(false); // lsp disabled
@@ -386,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn after_tool_unavailable_skips_on_write() {
-        use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
         let tc = Arc::new(TokenCounter::default());
         let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
         // Runner enabled but no MCP server configured — is_available() returns false.

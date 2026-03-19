@@ -430,7 +430,7 @@ impl AppBuilder {
     /// Emits a `tracing::warn` on resolution failure (quarantine silently disabled).
     pub fn build_quarantine_provider(
         &self,
-    ) -> Option<(AnyProvider, crate::sanitizer::QuarantineConfig)> {
+    ) -> Option<(AnyProvider, zeph_sanitizer::QuarantineConfig)> {
         let qc = &self.config.security.content_isolation.quarantine;
         if !qc.enabled {
             return None;
@@ -456,9 +456,9 @@ impl AppBuilder {
     /// Returns `None` when guardrail is disabled or provider resolution fails.
     /// Emits a `tracing::warn` on resolution failure (guardrail silently disabled).
     #[cfg(feature = "guardrail")]
-    pub fn build_guardrail_filter(&self) -> Option<crate::sanitizer::guardrail::GuardrailFilter> {
+    pub fn build_guardrail_filter(&self) -> Option<zeph_sanitizer::guardrail::GuardrailFilter> {
         let (provider, config) = self.build_guardrail_provider()?;
-        match crate::sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
+        match zeph_sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
             Ok(filter) => Some(filter),
             Err(e) => {
                 tracing::warn!(error = %e, "guardrail filter construction failed, guardrail disabled");
@@ -473,7 +473,7 @@ impl AppBuilder {
     #[cfg(feature = "guardrail")]
     pub fn build_guardrail_provider(
         &self,
-    ) -> Option<(AnyProvider, crate::sanitizer::guardrail::GuardrailConfig)> {
+    ) -> Option<(AnyProvider, zeph_sanitizer::guardrail::GuardrailConfig)> {
         let gc = &self.config.security.guardrail;
         if !gc.enabled {
             return None;

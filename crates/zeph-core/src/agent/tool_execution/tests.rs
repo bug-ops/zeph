@@ -1568,13 +1568,13 @@ macro_rules! assert_external_data {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
-        let cfg = crate::sanitizer::ContentIsolationConfig {
+        let cfg = zeph_sanitizer::ContentIsolationConfig {
             enabled: true,
             spotlight_untrusted: true,
             flag_injection_patterns: false,
             ..Default::default()
         };
-        agent.security.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
         let (result, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<external-data"),
@@ -1601,13 +1601,13 @@ macro_rules! assert_tool_output {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
-        let cfg = crate::sanitizer::ContentIsolationConfig {
+        let cfg = zeph_sanitizer::ContentIsolationConfig {
             enabled: true,
             spotlight_untrusted: true,
             flag_injection_patterns: false,
             ..Default::default()
         };
-        agent.security.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
         let (result, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<tool-output"),
@@ -1670,11 +1670,11 @@ async fn sanitize_tool_output_disabled_returns_raw_body() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
-    let cfg = crate::sanitizer::ContentIsolationConfig {
+    let cfg = zeph_sanitizer::ContentIsolationConfig {
         enabled: false,
         ..Default::default()
     };
-    agent.security.sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body = "raw mcp output";
     let (result, _) = agent.sanitize_tool_output(body, "gh:create_issue").await;
     assert_eq!(
@@ -1690,17 +1690,17 @@ fn sanitize_error_str_strips_injection_patterns() {
     // to self_reflection in the Err(e) branch. We test this by calling the sanitizer
     // directly with McpResponse kind (as the error path does) and confirming that
     // spotlighting is applied while body content is preserved.
-    let cfg = crate::sanitizer::ContentIsolationConfig {
+    let cfg = zeph_sanitizer::ContentIsolationConfig {
         enabled: true,
         spotlight_untrusted: true,
         flag_injection_patterns: true,
         ..Default::default()
     };
-    let sanitizer = crate::sanitizer::ContentSanitizer::new(&cfg);
+    let sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let err_msg = "HTTP 500: server error body";
     let result = sanitizer.sanitize(
         err_msg,
-        crate::sanitizer::ContentSource::new(crate::sanitizer::ContentSourceKind::McpResponse),
+        zeph_sanitizer::ContentSource::new(zeph_sanitizer::ContentSourceKind::McpResponse),
     );
     // ExternalUntrusted wraps in <external-data>
     assert!(result.body.contains("<external-data"));
@@ -1715,11 +1715,11 @@ async fn sanitize_tool_output_quarantine_web_scrape_invoked() {
     use super::super::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::sanitizer::QuarantineConfig;
-    use crate::sanitizer::quarantine::QuarantinedSummarizer;
-    use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
     use tokio::sync::watch;
     use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -1774,11 +1774,11 @@ async fn sanitize_tool_output_quarantine_fallback_on_error() {
     use super::super::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::sanitizer::QuarantineConfig;
-    use crate::sanitizer::quarantine::QuarantinedSummarizer;
-    use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
     use tokio::sync::watch;
     use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -1831,11 +1831,11 @@ async fn sanitize_tool_output_quarantine_skips_shell_tool() {
     use super::super::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::sanitizer::QuarantineConfig;
-    use crate::sanitizer::quarantine::QuarantinedSummarizer;
-    use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
     use tokio::sync::watch;
     use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -1890,8 +1890,8 @@ async fn sanitize_tool_output_injection_flag_emits_security_event() {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use crate::metrics::SecurityEventCategory;
-    use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
     use tokio::sync::watch;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -1937,8 +1937,8 @@ async fn sanitize_tool_output_truncation_emits_security_event() {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use crate::metrics::SecurityEventCategory;
-    use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
     use tokio::sync::watch;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -1981,11 +1981,11 @@ async fn sanitize_tool_output_text_only_injection_guards_memory_write() {
     use super::super::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::sanitizer::exfiltration::{ExfiltrationGuard, ExfiltrationGuardConfig};
-    use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
     use tokio::sync::watch;
     use zeph_llm::provider::Role;
     use zeph_memory::semantic::SemanticMemory;
+    use zeph_sanitizer::exfiltration::{ExfiltrationGuard, ExfiltrationGuardConfig};
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -2179,7 +2179,7 @@ async fn native_tool_use_cache_stores_only_text_responses() {
     // Disable sanitizer so ToolResult content passed to the cache key is raw (no spotlight
     // wrapping), keeping this test focused on cache-store logic rather than sanitization.
     agent.security.sanitizer =
-        crate::sanitizer::ContentSanitizer::new(&crate::sanitizer::ContentIsolationConfig {
+        zeph_sanitizer::ContentSanitizer::new(&zeph_sanitizer::ContentIsolationConfig {
             enabled: false,
             ..Default::default()
         });
@@ -2737,8 +2737,8 @@ async fn native_tool_executor_error_does_not_panic() {
 #[tokio::test]
 async fn native_tool_injection_pattern_populates_flagged_urls() {
     use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
-    use crate::sanitizer::{ContentIsolationConfig, ContentSanitizer};
     use tokio::sync::watch;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let executor = FixedOutputExecutor {
         // "ignore previous instructions" matches injection detection pattern

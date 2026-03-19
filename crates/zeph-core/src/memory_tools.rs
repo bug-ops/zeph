@@ -10,7 +10,7 @@ use zeph_memory::types::ConversationId;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use zeph_tools::registry::{InvocationHint, ToolDef};
 
-use crate::sanitizer::memory_validation::MemoryWriteValidator;
+use zeph_sanitizer::memory_validation::MemoryWriteValidator;
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 struct MemorySearchParams {
@@ -51,7 +51,7 @@ impl MemoryToolExecutor {
             memory,
             conversation_id,
             validator: MemoryWriteValidator::new(
-                crate::sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
+                zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
             ),
         }
     }

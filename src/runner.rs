@@ -666,7 +666,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         std::sync::Arc::clone(&memory),
         conversation_id,
-        zeph_core::sanitizer::memory_validation::MemoryWriteValidator::new(
+        zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
             config.security.memory_validation.clone(),
         ),
     );

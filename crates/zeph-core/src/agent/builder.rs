@@ -425,14 +425,13 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
         self.security.sanitizer =
-            crate::sanitizer::ContentSanitizer::new(&security.content_isolation);
-        self.security.exfiltration_guard = crate::sanitizer::exfiltration::ExfiltrationGuard::new(
+            zeph_sanitizer::ContentSanitizer::new(&security.content_isolation);
+        self.security.exfiltration_guard = zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
             security.exfiltration_guard.clone(),
         );
-        self.security.pii_filter =
-            crate::sanitizer::pii::PiiFilter::new(security.pii_filter.clone());
+        self.security.pii_filter = zeph_sanitizer::pii::PiiFilter::new(security.pii_filter.clone());
         self.security.memory_validator =
-            crate::sanitizer::memory_validation::MemoryWriteValidator::new(
+            zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
                 security.memory_validation.clone(),
             );
         self.runtime.rate_limiter =
@@ -487,7 +486,7 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_quarantine_summarizer(
         mut self,
-        qs: crate::sanitizer::quarantine::QuarantinedSummarizer,
+        qs: zeph_sanitizer::quarantine::QuarantinedSummarizer,
     ) -> Self {
         self.security.quarantine_summarizer = Some(qs);
         self
@@ -495,8 +494,8 @@ impl<C: Channel> Agent<C> {
 
     #[cfg(feature = "guardrail")]
     #[must_use]
-    pub fn with_guardrail(mut self, filter: crate::sanitizer::guardrail::GuardrailFilter) -> Self {
-        use crate::sanitizer::guardrail::GuardrailAction;
+    pub fn with_guardrail(mut self, filter: zeph_sanitizer::guardrail::GuardrailFilter) -> Self {
+        use zeph_sanitizer::guardrail::GuardrailAction;
         let warn_mode = filter.action() == GuardrailAction::Warn;
         self.security.guardrail = Some(filter);
         self.update_metrics(|m| {
