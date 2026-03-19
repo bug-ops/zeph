@@ -148,8 +148,9 @@ async fn run_session(
                             payload.get("d").and_then(parse_interaction_create)
                         {
                             // ACK the interaction immediately to prevent "interaction failed".
-                            // Using type 6 (DEFERRED_UPDATE_MESSAGE) keeps the thinking indicator
-                            // visible; the agent's response arrives via a follow-up message.
+                            // Using type 5 (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE) keeps the
+                            // thinking indicator visible; the agent's response arrives via a
+                            // follow-up message.
                             if let Err(e) = ack_interaction(&ack).await {
                                 tracing::warn!("discord: interaction ack failed: {e}");
                             }
