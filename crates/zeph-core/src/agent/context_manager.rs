@@ -4,6 +4,100 @@
 use crate::config::{CompressionConfig, RoutingConfig};
 use crate::context::ContextBudget;
 
+/// Lifecycle state of the compaction subsystem within a single session.
+///
+/// Replaces four independent boolean/u8 fields with an explicit state machine that makes
+/// invalid states unrepresentable (e.g., warned-without-exhausted).
+///
+/// # Transition map
+///
+/// ```text
+/// Ready
+///   → CompactedThisTurn { cooldown } when hard compaction succeeds (pruning or LLM)
+///   → CompactedThisTurn { cooldown: 0 } when focus truncation, eviction, or proactive
+///     compression fires (these callers do not want post-compaction cooldown)
+///   → Exhausted { warned: false } when compaction is counterproductive (too few messages,
+///     zero net freed tokens, or still above hard threshold after LLM compaction)
+///
+/// CompactedThisTurn { cooldown }
+///   → Cooling { turns_remaining: cooldown } when cooldown > 0  (via advance_turn)
+///   → Ready                                 when cooldown == 0 (via advance_turn)
+///
+/// Cooling { turns_remaining }
+///   → Cooling { turns_remaining - 1 } decremented inside maybe_compact each turn
+///   → Ready                           when turns_remaining reaches 0
+///   NOTE: Exhausted is NOT reachable from Cooling — all exhaustion-setting sites in
+///   summarization.rs are guarded by an early-return when in_cooldown is true.
+///
+/// Exhausted { warned: false }
+///   → Exhausted { warned: true } after the user warning is sent (one-shot)
+///
+/// Exhausted { warned: true }  (terminal — no further transitions)
+/// ```
+///
+/// `turns_since_last_hard_compaction` is a **metric counter**, not part of this state machine,
+/// and remains a separate field on `ContextManager`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactionState {
+    /// Normal state — compaction may fire if context exceeds thresholds.
+    Ready,
+    /// Hard compaction (or focus truncation / eviction / proactive compression) ran this turn.
+    /// No further compaction until `advance_turn()` is called at the next turn boundary.
+    /// `cooldown` carries the number of cooling turns to enforce after this turn ends.
+    CompactedThisTurn { cooldown: u8 },
+    /// Cooling down after a recent hard compaction. Hard tier is skipped; soft is still allowed.
+    /// Counter decrements inside `maybe_compact` each turn until it reaches 0.
+    Cooling { turns_remaining: u8 },
+    /// Compaction cannot reduce context further. No more attempts will be made.
+    /// `warned` tracks whether the one-shot user warning has been sent.
+    Exhausted { warned: bool },
+}
+
+impl CompactionState {
+    /// Whether hard compaction (or a compaction-equivalent operation) already ran this turn.
+    ///
+    /// When `true`, `maybe_compact`, `maybe_proactive_compress`, and
+    /// `maybe_soft_compact_mid_iteration` all skip execution (CRIT-03).
+    pub(crate) fn is_compacted_this_turn(self) -> bool {
+        matches!(self, Self::CompactedThisTurn { .. })
+    }
+
+    /// Whether compaction is permanently disabled for this session.
+    pub(crate) fn is_exhausted(self) -> bool {
+        matches!(self, Self::Exhausted { .. })
+    }
+
+    /// Remaining cooldown turns (0 when not in `Cooling` state).
+    pub(crate) fn cooldown_remaining(self) -> u8 {
+        match self {
+            Self::Cooling { turns_remaining } => turns_remaining,
+            _ => 0,
+        }
+    }
+
+    /// Transition to the next-turn state at the start of each user turn.
+    ///
+    /// **Must be called exactly once per turn, before any compaction, eviction, or
+    /// focus truncation can run.** This guarantees that `is_compacted_this_turn()`
+    /// returns `false` when the sidequest check at `mod.rs:3024` executes — preserving
+    /// the invariant that the sidequest only sees same-turn compaction set by eviction
+    /// at `mod.rs:4055`, which runs *after* this call.
+    ///
+    /// Transitions:
+    /// - `CompactedThisTurn { cooldown: 0 }` → `Ready`
+    /// - `CompactedThisTurn { cooldown: n }` → `Cooling { turns_remaining: n }`
+    /// - All other states are returned unchanged.
+    pub(crate) fn advance_turn(self) -> Self {
+        match self {
+            Self::CompactedThisTurn { cooldown } if cooldown > 0 => Self::Cooling {
+                turns_remaining: cooldown,
+            },
+            Self::CompactedThisTurn { .. } => Self::Ready,
+            other => other,
+        }
+    }
+}
+
 /// Indicates which compaction tier applies for the current context size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompactionTier {
@@ -27,19 +121,13 @@ pub(crate) struct ContextManager {
     pub(super) compression: CompressionConfig,
     /// Routing configuration for query-aware memory routing (#1162).
     pub(super) routing: RoutingConfig,
-    /// Set to `true` when compaction or proactive compression fires in the current turn.
-    /// Cleared at the start of each turn. Prevents double LLM summarization per turn (CRIT-03).
-    pub(super) compacted_this_turn: bool,
-    /// Number of turns to skip compaction after a successful compaction (cooldown guard).
-    /// Prevents compaction from re-triggering immediately when the summary itself is large.
+    /// Compaction lifecycle state. Replaces four independent boolean/u8 fields to make
+    /// invalid states unrepresentable. See [`CompactionState`] for the full transition map.
+    pub(super) compaction: CompactionState,
+    /// Number of cooling turns to enforce after a successful hard compaction.
+    /// This is configuration, not state — it is read at compaction time and stored in
+    /// `CompactionState::CompactedThisTurn { cooldown }` for the duration of the cooldown.
     pub(super) compaction_cooldown_turns: u8,
-    /// Remaining turns in the current cooldown. Counts down each turn; 0 means ready.
-    pub(super) compaction_turns_since: u8,
-    /// Set to `true` when compaction is counterproductive (summary >= freed tokens)
-    /// or when context cannot be reduced below threshold. No further compaction is attempted.
-    pub(super) compaction_exhausted: bool,
-    /// Tracks whether the exhaustion warning message has been sent to the user.
-    pub(super) exhaustion_warned: bool,
     /// Counts user-message turns since the last hard compaction event.
     /// `None` = no hard compaction has occurred yet in this session.
     /// `Some(n)` = n turns have elapsed since the last hard compaction.
@@ -57,11 +145,8 @@ impl ContextManager {
             prune_protect_tokens: 40_000,
             compression: CompressionConfig::default(),
             routing: RoutingConfig::default(),
-            compacted_this_turn: false,
+            compaction: CompactionState::Ready,
             compaction_cooldown_turns: 2,
-            compaction_turns_since: 0,
-            compaction_exhausted: false,
-            exhaustion_warned: false,
             turns_since_last_hard_compaction: None,
         }
     }
@@ -129,7 +214,7 @@ impl ContextManager {
         current_tokens: u64,
     ) -> Option<(usize, usize)> {
         use crate::config::CompressionStrategy;
-        if self.compacted_this_turn {
+        if self.compaction.is_compacted_this_turn() {
             return None;
         }
         match &self.compression.strategy {
@@ -160,7 +245,7 @@ mod tests {
         assert!((cm.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
         assert_eq!(cm.compaction_preserve_tail, 6);
         assert_eq!(cm.prune_protect_tokens, 40_000);
-        assert!(!cm.compacted_this_turn);
+        assert_eq!(cm.compaction, CompactionState::Ready);
     }
 
     #[test]
@@ -260,7 +345,109 @@ mod tests {
             threshold_tokens: 80_000,
             max_summary_tokens: 4_000,
         };
-        cm.compacted_this_turn = true;
+        cm.compaction = CompactionState::CompactedThisTurn { cooldown: 0 };
         assert!(cm.should_proactively_compress(100_000).is_none());
+    }
+
+    // ── CompactionState unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn compaction_state_ready_is_not_compacted_this_turn() {
+        assert!(!CompactionState::Ready.is_compacted_this_turn());
+    }
+
+    #[test]
+    fn compaction_state_compacted_this_turn_flag() {
+        assert!(CompactionState::CompactedThisTurn { cooldown: 2 }.is_compacted_this_turn());
+        assert!(CompactionState::CompactedThisTurn { cooldown: 0 }.is_compacted_this_turn());
+    }
+
+    #[test]
+    fn compaction_state_cooling_is_not_compacted_this_turn() {
+        assert!(!CompactionState::Cooling { turns_remaining: 1 }.is_compacted_this_turn());
+    }
+
+    #[test]
+    fn compaction_state_exhausted_is_not_compacted_this_turn() {
+        assert!(!CompactionState::Exhausted { warned: false }.is_compacted_this_turn());
+        assert!(!CompactionState::Exhausted { warned: true }.is_compacted_this_turn());
+    }
+
+    #[test]
+    fn compaction_state_is_exhausted() {
+        assert!(!CompactionState::Ready.is_exhausted());
+        assert!(!CompactionState::CompactedThisTurn { cooldown: 0 }.is_exhausted());
+        assert!(!CompactionState::Cooling { turns_remaining: 1 }.is_exhausted());
+        assert!(CompactionState::Exhausted { warned: false }.is_exhausted());
+        assert!(CompactionState::Exhausted { warned: true }.is_exhausted());
+    }
+
+    #[test]
+    fn compaction_state_cooldown_remaining() {
+        assert_eq!(CompactionState::Ready.cooldown_remaining(), 0);
+        assert_eq!(
+            CompactionState::CompactedThisTurn { cooldown: 3 }.cooldown_remaining(),
+            0
+        );
+        assert_eq!(
+            CompactionState::Cooling { turns_remaining: 2 }.cooldown_remaining(),
+            2
+        );
+        assert_eq!(
+            CompactionState::Exhausted { warned: false }.cooldown_remaining(),
+            0
+        );
+    }
+
+    #[test]
+    fn advance_turn_compacted_with_cooldown_enters_cooling() {
+        let state = CompactionState::CompactedThisTurn { cooldown: 3 };
+        assert_eq!(
+            state.advance_turn(),
+            CompactionState::Cooling { turns_remaining: 3 }
+        );
+    }
+
+    #[test]
+    fn advance_turn_compacted_zero_cooldown_returns_ready() {
+        let state = CompactionState::CompactedThisTurn { cooldown: 0 };
+        assert_eq!(state.advance_turn(), CompactionState::Ready);
+    }
+
+    #[test]
+    fn advance_turn_ready_unchanged() {
+        assert_eq!(
+            CompactionState::Ready.advance_turn(),
+            CompactionState::Ready
+        );
+    }
+
+    #[test]
+    fn advance_turn_cooling_unchanged() {
+        let state = CompactionState::Cooling { turns_remaining: 2 };
+        assert_eq!(state.advance_turn(), state);
+    }
+
+    #[test]
+    fn advance_turn_exhausted_unchanged() {
+        let state = CompactionState::Exhausted { warned: true };
+        assert_eq!(state.advance_turn(), state);
+    }
+
+    /// Verifies the eviction ordering invariant from critic finding S1:
+    /// advance_turn() resets CompactedThisTurn → Ready, then eviction can set
+    /// CompactedThisTurn{0} again in the same turn, which is visible to the sidequest check.
+    #[test]
+    fn advance_turn_then_eviction_compacted_is_visible() {
+        // Start of turn: eviction from previous turn carries cooldown=0
+        let state = CompactionState::CompactedThisTurn { cooldown: 0 };
+        // advance_turn fires at mod.rs:3014
+        let after_advance = state.advance_turn();
+        assert_eq!(after_advance, CompactionState::Ready);
+        assert!(!after_advance.is_compacted_this_turn());
+
+        // Later in the same turn, eviction fires at mod.rs:4055
+        let after_eviction = CompactionState::CompactedThisTurn { cooldown: 0 };
+        assert!(after_eviction.is_compacted_this_turn());
     }
 }

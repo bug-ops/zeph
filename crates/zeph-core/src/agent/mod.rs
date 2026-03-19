@@ -3011,7 +3011,9 @@ impl<C: Channel> Agent<C> {
 
         // Reset per-turn compaction guard FIRST so SideQuest sees a clean slate (C2 fix).
         // complete_focus and maybe_sidequest_eviction set this flag when they run (C1 fix).
-        self.context_manager.compacted_this_turn = false;
+        // advance_turn() transitions CompactedThisTurn → Cooling/Ready; all other states
+        // pass through unchanged. See CompactionState::advance_turn for ordering guarantees.
+        self.context_manager.compaction = self.context_manager.compaction.advance_turn();
 
         // Tick Focus Agent and SideQuest turn counters (#1850, #1885).
         #[cfg(feature = "context-compression")]
@@ -3019,9 +3021,9 @@ impl<C: Channel> Agent<C> {
             self.focus.tick();
 
             // SideQuest eviction: runs every N user turns when enabled.
-            // Skipped when compacted_this_turn is set (focus truncation or prior eviction ran).
+            // Skipped when is_compacted_this_turn (focus truncation or prior eviction ran).
             let sidequest_should_fire = self.sidequest.tick();
-            if sidequest_should_fire && !self.context_manager.compacted_this_turn {
+            if sidequest_should_fire && !self.context_manager.compaction.is_compacted_this_turn() {
                 self.maybe_sidequest_eviction();
             }
         }
@@ -4052,7 +4054,11 @@ impl<C: Channel> Agent<C> {
                     if freed > 0 {
                         self.recompute_prompt_tokens();
                         // C1 fix: prevent maybe_compact() from firing in the same turn.
-                        self.context_manager.compacted_this_turn = true;
+                        // cooldown=0: eviction does not impose post-compaction cooldown.
+                        self.context_manager.compaction =
+                            crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                                cooldown: 0,
+                            };
                         tracing::info!(
                             freed_tokens = freed,
                             evicted_cursors = evicted_indices.len(),

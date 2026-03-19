@@ -44,6 +44,26 @@ pub(crate) fn cached_schema<T: schemars::JsonSchema + 'static>()
     Ok((value, pretty))
 }
 
+/// Extract the short (unqualified) type name for schema prompts and tool names.
+///
+/// Returns the last `::` segment of [`std::any::type_name::<T>()`], which is always
+/// non-empty. The `"Output"` fallback is unreachable in practice (`type_name` never returns
+/// an empty string and `rsplit` on a non-empty string always yields at least one element),
+/// but is kept for defensive clarity.
+///
+/// # Examples
+///
+/// ```
+/// struct MyOutput;
+/// // short_type_name::<MyOutput>() returns "MyOutput"
+/// ```
+pub(crate) fn short_type_name<T: ?Sized>() -> &'static str {
+    std::any::type_name::<T>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("Output")
+}
+
 /// A chunk from an LLM streaming response.
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
@@ -558,10 +578,7 @@ pub trait LlmProvider: Send + Sync {
         Self: Sized,
     {
         let (_, schema_json) = cached_schema::<T>()?;
-        let type_name = std::any::type_name::<T>()
-            .rsplit("::")
-            .next()
-            .unwrap_or("Output");
+        let type_name = short_type_name::<T>();
 
         let mut augmented = messages.to_vec();
         let instruction = format!(
@@ -1424,5 +1441,27 @@ mod tests {
     fn stream_chunk_compaction_variant() {
         let chunk = StreamChunk::Compaction("A summary".to_owned());
         assert!(matches!(chunk, StreamChunk::Compaction(s) if s == "A summary"));
+    }
+
+    #[test]
+    fn short_type_name_extracts_last_segment() {
+        struct MyOutput;
+        assert_eq!(short_type_name::<MyOutput>(), "MyOutput");
+    }
+
+    #[test]
+    fn short_type_name_primitive_returns_full_name() {
+        // Primitives have no "::" in their type_name — rsplit returns the full name.
+        assert_eq!(short_type_name::<u32>(), "u32");
+        assert_eq!(short_type_name::<bool>(), "bool");
+    }
+
+    #[test]
+    fn short_type_name_nested_path_returns_last() {
+        // Use a type whose path contains "::" segments.
+        assert_eq!(
+            short_type_name::<std::collections::HashMap<u32, u32>>(),
+            "HashMap<u32, u32>"
+        );
     }
 }

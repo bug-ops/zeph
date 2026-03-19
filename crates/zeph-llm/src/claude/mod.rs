@@ -831,10 +831,7 @@ impl LlmProvider for ClaudeProvider {
         Self: Sized,
     {
         let (schema_value, _) = crate::provider::cached_schema::<T>()?;
-        let type_name = std::any::type_name::<T>()
-            .rsplit("::")
-            .next()
-            .unwrap_or("Output");
+        let type_name = crate::provider::short_type_name::<T>();
 
         let tool_name = format!("submit_{type_name}");
         let tool = ToolDefinition {

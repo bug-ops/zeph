@@ -1398,19 +1398,23 @@ impl<C: Channel> Agent<C> {
         }
 
         // Guard 3 — Exhaustion: stop compaction permanently when it cannot reduce context.
-        if self.context_manager.compaction_exhausted {
-            if !self.context_manager.exhaustion_warned {
-                self.context_manager.exhaustion_warned = true;
-                tracing::warn!("compaction exhausted: context budget too tight for this session");
-                let _ = self
-                    .channel
-                    .send(
-                        "Warning: context budget is too tight — compaction cannot free enough \
-                         space. Consider increasing [memory] context_budget_tokens or starting \
-                         a new session.",
-                    )
-                    .await;
-            }
+        // One-shot warning: flip warned → true on first visit, no-op on subsequent calls.
+        if let crate::agent::context_manager::CompactionState::Exhausted { ref mut warned } =
+            self.context_manager.compaction
+            && !*warned
+        {
+            *warned = true;
+            tracing::warn!("compaction exhausted: context budget too tight for this session");
+            let _ = self
+                .channel
+                .send(
+                    "Warning: context budget is too tight — compaction cannot free enough \
+                     space. Consider increasing [memory] context_budget_tokens or starting \
+                     a new session.",
+                )
+                .await;
+        }
+        if self.context_manager.compaction.is_exhausted() {
             return Ok(());
         }
 
@@ -1443,14 +1447,24 @@ impl<C: Channel> Agent<C> {
             }
         }
         // Skip if hard compaction already ran this turn (CRIT-03).
-        if self.context_manager.compacted_this_turn {
+        if self.context_manager.compaction.is_compacted_this_turn() {
             return Ok(());
         }
         // Guard 1 — Cooldown: skip Hard-tier LLM compaction for N turns after the last successful
         // compaction. Soft compaction (pruning only) is still allowed during cooldown.
-        let in_cooldown = self.context_manager.compaction_turns_since > 0;
+        let in_cooldown = self.context_manager.compaction.cooldown_remaining() > 0;
         if in_cooldown {
-            self.context_manager.compaction_turns_since -= 1;
+            // Decrement the Cooling counter in place.
+            if let crate::agent::context_manager::CompactionState::Cooling {
+                ref mut turns_remaining,
+            } = self.context_manager.compaction
+            {
+                *turns_remaining -= 1;
+                if *turns_remaining == 0 {
+                    self.context_manager.compaction =
+                        crate::agent::context_manager::CompactionState::Ready;
+                }
+            }
         }
 
         match self.compaction_tier() {
@@ -1509,7 +1523,7 @@ impl<C: Channel> Agent<C> {
                 // Cooldown guard: skip LLM summarization while cooling down.
                 if in_cooldown {
                     tracing::debug!(
-                        turns_remaining = self.context_manager.compaction_turns_since,
+                        turns_remaining = self.context_manager.compaction.cooldown_remaining(),
                         "hard compaction skipped: cooldown active"
                     );
                     return Ok(());
@@ -1535,9 +1549,10 @@ impl<C: Channel> Agent<C> {
                 let freed = self.prune_tool_outputs(min_to_free);
                 if freed >= min_to_free {
                     tracing::info!(freed, "hard compaction: pruning sufficient");
-                    self.context_manager.compacted_this_turn = true;
-                    self.context_manager.compaction_turns_since =
-                        self.context_manager.compaction_cooldown_turns;
+                    self.context_manager.compaction =
+                        crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                            cooldown: self.context_manager.compaction_cooldown_turns,
+                        };
                     let _ = self.channel.send_status("").await;
                     return Ok(());
                 }
@@ -1551,7 +1566,9 @@ impl<C: Channel> Agent<C> {
                         compactable,
                         "hard compaction: too few messages to compact, marking exhausted"
                     );
-                    self.context_manager.compaction_exhausted = true;
+                    // Only reachable from Ready state (Cooling is guarded by in_cooldown above).
+                    self.context_manager.compaction =
+                        crate::agent::context_manager::CompactionState::Exhausted { warned: false };
                     let _ = self.channel.send_status("").await;
                     return Ok(());
                 }
@@ -1574,7 +1591,11 @@ impl<C: Channel> Agent<C> {
                             "hard compaction: summary consumed all freed tokens — no net \
                              reduction, marking exhausted"
                         );
-                        self.context_manager.compaction_exhausted = true;
+                        // Only reachable from Ready state (Cooling is guarded by in_cooldown).
+                        self.context_manager.compaction =
+                            crate::agent::context_manager::CompactionState::Exhausted {
+                                warned: false,
+                            };
                         let _ = self.channel.send_status("").await;
                         return result;
                     }
@@ -1586,13 +1607,18 @@ impl<C: Channel> Agent<C> {
                             "hard compaction: context still above hard threshold after \
                              compaction, marking exhausted"
                         );
-                        self.context_manager.compaction_exhausted = true;
+                        // Only reachable from Ready state (Cooling is guarded by in_cooldown).
+                        self.context_manager.compaction =
+                            crate::agent::context_manager::CompactionState::Exhausted {
+                                warned: false,
+                            };
                         let _ = self.channel.send_status("").await;
                         return result;
                     }
-                    self.context_manager.compacted_this_turn = true;
-                    self.context_manager.compaction_turns_since =
-                        self.context_manager.compaction_cooldown_turns;
+                    self.context_manager.compaction =
+                        crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                            cooldown: self.context_manager.compaction_cooldown_turns,
+                        };
                 }
                 let _ = self.channel.send_status("").await;
                 result
@@ -1613,7 +1639,7 @@ impl<C: Channel> Agent<C> {
         clippy::cast_sign_loss
     )]
     pub(in crate::agent) fn maybe_soft_compact_mid_iteration(&mut self) {
-        if self.context_manager.compacted_this_turn {
+        if self.context_manager.compaction.is_compacted_this_turn() {
             return;
         }
         if !matches!(
@@ -1692,7 +1718,9 @@ impl<C: Channel> Agent<C> {
             .await;
 
         if result.is_ok() {
-            self.context_manager.compacted_this_turn = true;
+            // Proactive compression does not impose a post-compaction cooldown.
+            self.context_manager.compaction =
+                crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 };
             let tokens_saved = tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
             self.update_metrics(|m| {
                 m.compression_events += 1;

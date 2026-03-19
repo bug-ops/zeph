@@ -1578,7 +1578,11 @@ impl<C: Channel> Agent<C> {
                 self.msg.messages.truncate(checkpoint_pos);
                 self.recompute_prompt_tokens();
                 // C1 fix: mark compacted so maybe_compact() does not double-fire this turn.
-                self.context_manager.compacted_this_turn = true;
+                // cooldown=0: focus truncation does not impose post-compaction cooldown.
+                self.context_manager.compaction =
+                    crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                        cooldown: 0,
+                    };
 
                 // Rebuild/insert the pinned Knowledge block message.
                 // Remove any existing Knowledge block (focus_pinned=true, no marker_id).

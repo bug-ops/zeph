@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 
 use sqlx::SqlitePool;
 
 use crate::vector_store::{
-    FieldValue, ScoredVectorPoint, ScrollResult, VectorFilter, VectorPoint, VectorStore,
+    BoxFuture, FieldValue, ScoredVectorPoint, ScrollResult, VectorFilter, VectorPoint, VectorStore,
     VectorStoreError,
 };
 
@@ -52,8 +50,6 @@ fn matches_filter(payload: &HashMap<String, serde_json::Value>, filter: &VectorF
     }
     true
 }
-
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 impl VectorStore for SqliteVectorStore {
     fn ensure_collection(

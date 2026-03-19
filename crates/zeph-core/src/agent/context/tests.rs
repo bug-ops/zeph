@@ -11,7 +11,7 @@ use zeph_skills::loader::SkillMeta;
 use super::*;
 #[allow(clippy::wildcard_imports)]
 use crate::agent::agent_tests::*;
-use crate::agent::context_manager::CompactionTier;
+use crate::agent::context_manager::{CompactionState, CompactionTier};
 use crate::agent::state::MemoryState;
 
 #[test]
@@ -2811,17 +2811,17 @@ async fn compacted_this_turn_reset_between_turns() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    // Manually set the flag as if proactive compression fired
-    agent.context_manager.compacted_this_turn = true;
+    // Manually set state as if proactive compression fired
+    agent.context_manager.compaction = CompactionState::CompactedThisTurn { cooldown: 0 };
 
-    // Process a message — reset happens at turn start
+    // Process a message — advance_turn() resets state at turn start
     let _ = agent.process_user_message("first".to_owned(), vec![]).await;
 
-    // After turn, flag should have been reset (reset at start) and may have been
-    // set again only if proactive compression fired. Since threshold is reactive
-    // by default, flag should be false after turn (no proactive).
+    // After turn, state should have been reset (via advance_turn at start) and may
+    // have been set again only if proactive compression fired. Since threshold is
+    // reactive by default, state should be Ready after turn (no proactive).
     // We can't inspect mid-turn, but we can check the default config doesn't trigger.
-    assert!(!agent.context_manager.compacted_this_turn);
+    assert!(!agent.context_manager.compaction.is_compacted_this_turn());
 }
 
 #[tokio::test]
@@ -2838,7 +2838,7 @@ async fn maybe_proactive_compress_does_not_fire_with_reactive_strategy() {
     // should_proactively_compress returns None for Reactive → no compression
     let result = agent.maybe_proactive_compress().await;
     assert!(result.is_ok());
-    assert!(!agent.context_manager.compacted_this_turn);
+    assert!(!agent.context_manager.compaction.is_compacted_this_turn());
 }
 
 // BudgetAllocation.graph_facts tests
@@ -3422,10 +3422,10 @@ fn tier0_does_not_set_compacted_this_turn() {
     // Simulate token usage above 70% soft threshold
     agent.providers.cached_prompt_tokens = 75_000;
 
-    assert!(!agent.context_manager.compacted_this_turn);
+    assert!(!agent.context_manager.compaction.is_compacted_this_turn());
     agent.maybe_apply_deferred_summaries();
     assert!(
-        !agent.context_manager.compacted_this_turn,
+        !agent.context_manager.compaction.is_compacted_this_turn(),
         "tier-0 must not set compacted_this_turn"
     );
 }
@@ -3608,7 +3608,7 @@ fn remove_lsp_messages_removes_lsp_system_keeps_others() {
 
 // --- Compaction guard tests (issue #1708) ---
 
-// Cooldown guard: compaction_turns_since counts down and blocks compaction.
+// Cooldown guard: cooling turns_remaining counts down and blocks compaction.
 #[tokio::test]
 async fn cooldown_guard_decrements_and_skips_compaction() {
     let provider = mock_provider(vec!["summary".to_string()]);
@@ -3622,8 +3622,8 @@ async fn cooldown_guard_decrements_and_skips_compaction() {
         .with_compaction_cooldown(2)
         .with_metrics(tx);
 
-    // Manually set cooldown counter as if compaction just fired.
-    agent.context_manager.compaction_turns_since = 2;
+    // Manually set cooling state as if compaction just fired and turn advanced.
+    agent.context_manager.compaction = CompactionState::Cooling { turns_remaining: 2 };
 
     // Push enough tokens to trigger compaction threshold.
     for i in 0..10 {
@@ -3635,14 +3635,14 @@ async fn cooldown_guard_decrements_and_skips_compaction() {
         });
     }
 
-    // First call: turns_since = 2 → skips, decrements to 1. No compaction fired.
+    // First call: turns_remaining = 2 → skips, decrements to 1. No compaction fired.
     agent.maybe_compact().await.unwrap();
-    assert_eq!(agent.context_manager.compaction_turns_since, 1);
+    assert_eq!(agent.context_manager.compaction.cooldown_remaining(), 1);
     assert_eq!(rx.borrow().context_compactions, 0);
 
-    // Second call: turns_since = 1 → skips, decrements to 0. No compaction fired.
+    // Second call: turns_remaining = 1 → skips, decrements to 0 → transitions to Ready.
     agent.maybe_compact().await.unwrap();
-    assert_eq!(agent.context_manager.compaction_turns_since, 0);
+    assert_eq!(agent.context_manager.compaction.cooldown_remaining(), 0);
     assert_eq!(rx.borrow().context_compactions, 0);
 }
 
@@ -3660,8 +3660,8 @@ async fn cooldown_guard_fires_after_expiry_and_resets_counter() {
         .with_compaction_cooldown(2)
         .with_metrics(tx);
 
-    // turns_since = 0 means cooldown has already expired.
-    agent.context_manager.compaction_turns_since = 0;
+    // Ready state means cooldown has already expired.
+    assert_eq!(agent.context_manager.compaction, CompactionState::Ready);
 
     for i in 0..10 {
         agent.msg.messages.push(Message {
@@ -3683,7 +3683,7 @@ async fn cooldown_guard_fires_after_expiry_and_resets_counter() {
     assert_eq!(rx.borrow().context_compactions, 1);
     // After compaction the system prompt alone exceeds the tiny 100-token budget, so
     // Guard 3 marks exhaustion (still above threshold). Cooldown is not reset — correct.
-    assert!(agent.context_manager.compaction_exhausted);
+    assert!(agent.context_manager.compaction.is_exhausted());
 }
 
 // Exhaustion guard: when compaction_exhausted is set, maybe_compact returns early.
@@ -3699,7 +3699,7 @@ async fn exhaustion_guard_skips_compaction_when_exhausted() {
         .with_context_budget(100, 0.20, 0.75, 2, 0)
         .with_metrics(tx);
 
-    agent.context_manager.compaction_exhausted = true;
+    agent.context_manager.compaction = CompactionState::Exhausted { warned: false };
 
     for i in 0..10 {
         agent.msg.messages.push(Message {
@@ -3727,7 +3727,7 @@ async fn exhaustion_guard_warned_flag_set_once() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(100, 0.20, 0.75, 2, 0);
 
-    agent.context_manager.compaction_exhausted = true;
+    agent.context_manager.compaction = CompactionState::Exhausted { warned: false };
 
     for i in 0..5 {
         agent.msg.messages.push(Message {
@@ -3738,14 +3738,23 @@ async fn exhaustion_guard_warned_flag_set_once() {
         });
     }
 
-    // First call: warning not yet sent → flag set.
-    assert!(!agent.context_manager.exhaustion_warned);
+    // First call: warning not yet sent → warned flipped to true.
+    assert!(matches!(
+        agent.context_manager.compaction,
+        CompactionState::Exhausted { warned: false }
+    ));
     agent.maybe_compact().await.unwrap();
-    assert!(agent.context_manager.exhaustion_warned);
+    assert!(matches!(
+        agent.context_manager.compaction,
+        CompactionState::Exhausted { warned: true }
+    ));
 
-    // Second call: flag already set, no state change.
+    // Second call: warned already set, no state change.
     agent.maybe_compact().await.unwrap();
-    assert!(agent.context_manager.exhaustion_warned);
+    assert!(matches!(
+        agent.context_manager.compaction,
+        CompactionState::Exhausted { warned: true }
+    ));
 }
 
 // Exhaustion guard fires before cooldown guard.
@@ -3763,9 +3772,9 @@ async fn exhaustion_guard_takes_precedence_over_cooldown() {
         .with_context_budget(100, 0.20, 0.75, 2, 0)
         .with_compaction_cooldown(2);
 
-    // Both exhaustion and cooldown set.
-    agent.context_manager.compaction_exhausted = true;
-    agent.context_manager.compaction_turns_since = 2;
+    // Exhausted state (the Cooling state would normally guard against exhaustion, but
+    // we test the ordering guarantee that exhaustion check happens before cooldown decrement).
+    agent.context_manager.compaction = CompactionState::Exhausted { warned: false };
 
     for i in 0..10 {
         agent.msg.messages.push(Message {
@@ -3778,8 +3787,8 @@ async fn exhaustion_guard_takes_precedence_over_cooldown() {
 
     agent.maybe_compact().await.unwrap();
 
-    // Cooldown counter must NOT have been decremented — exhaustion guard returned first.
-    assert_eq!(agent.context_manager.compaction_turns_since, 2);
+    // State must remain Exhausted — exhaustion guard returned before cooldown decrement.
+    assert!(agent.context_manager.compaction.is_exhausted());
     // No "compacting context..." status emitted.
     assert!(
         !statuses
@@ -3822,7 +3831,7 @@ async fn counterproductive_guard_sets_exhausted_when_too_few_messages() {
     agent.maybe_compact().await.unwrap();
 
     // Counterproductive guard: compactable ≤ 1 → exhausted set.
-    assert!(agent.context_manager.compaction_exhausted);
+    assert!(agent.context_manager.compaction.is_exhausted());
 }
 
 // Default value for compaction_cooldown_turns is 2.
@@ -3830,9 +3839,7 @@ async fn counterproductive_guard_sets_exhausted_when_too_few_messages() {
 fn context_manager_defaults_have_compaction_guard_fields() {
     let cm = crate::agent::context_manager::ContextManager::new();
     assert_eq!(cm.compaction_cooldown_turns, 2);
-    assert_eq!(cm.compaction_turns_since, 0);
-    assert!(!cm.compaction_exhausted);
-    assert!(!cm.exhaustion_warned);
+    assert_eq!(cm.compaction, CompactionState::Ready);
 }
 
 // with_compaction_cooldown builder sets the cooldown turns field.
@@ -3896,10 +3903,10 @@ async fn compaction_turns_after_hard_tracks_segments() {
     // turns_since_last_hard_compaction is now Some(0).
 
     // Simulate 3 turns where context is below threshold.
-    // Reset per-turn guard (done by handle_message at the start of each turn).
+    // Reset per-turn state (done by advance_turn at the start of each turn).
     agent.providers.cached_prompt_tokens = 0;
     for _ in 0..3 {
-        agent.context_manager.compacted_this_turn = false;
+        agent.context_manager.compaction = agent.context_manager.compaction.advance_turn();
         agent.maybe_compact().await.unwrap();
     }
     // turns_since_last_hard_compaction is now Some(3).
@@ -3931,7 +3938,7 @@ async fn compaction_turn_counter_increments_before_exhaustion_guard() {
 
     // Manually set tracking active and exhaust compaction.
     agent.context_manager.turns_since_last_hard_compaction = Some(0);
-    agent.context_manager.compaction_exhausted = true;
+    agent.context_manager.compaction = CompactionState::Exhausted { warned: false };
 
     // Call maybe_compact — early return via exhaustion guard.
     agent.maybe_compact().await.unwrap();
@@ -3961,7 +3968,7 @@ fn mid_iteration_skips_when_compacted_this_turn() {
     // Simulate token pressure above soft threshold
     agent.providers.cached_prompt_tokens = 75_000;
     // Mark hard compaction already ran this turn
-    agent.context_manager.compacted_this_turn = true;
+    agent.context_manager.compaction = CompactionState::CompactedThisTurn { cooldown: 2 };
 
     agent.maybe_soft_compact_mid_iteration();
 
@@ -4047,10 +4054,10 @@ fn mid_iteration_does_not_set_compacted_this_turn() {
     make_tool_pair_with_output(&mut agent, "a");
     agent.providers.cached_prompt_tokens = 75_000;
 
-    assert!(!agent.context_manager.compacted_this_turn);
+    assert!(!agent.context_manager.compaction.is_compacted_this_turn());
     agent.maybe_soft_compact_mid_iteration();
     assert!(
-        !agent.context_manager.compacted_this_turn,
+        !agent.context_manager.compaction.is_compacted_this_turn(),
         "maybe_soft_compact_mid_iteration must not set compacted_this_turn"
     );
 }
@@ -4083,9 +4090,9 @@ fn mid_iteration_fires_at_hard_tier() {
         summary_inserted,
         "deferred summaries must be applied even when tier is Hard"
     );
-    // compacted_this_turn must remain false (no LLM call, no Hard compaction)
+    // compaction state must remain unchanged (no LLM call, no Hard compaction)
     assert!(
-        !agent.context_manager.compacted_this_turn,
+        !agent.context_manager.compaction.is_compacted_this_turn(),
         "mid-iteration must not set compacted_this_turn even at Hard tier"
     );
 }

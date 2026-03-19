@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::vector_store::BoxFuture;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId, PointStruct,
@@ -321,9 +322,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
         &self,
         collection: &str,
         vector_size: u64,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
-    > {
+    ) -> BoxFuture<'_, Result<(), crate::VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
             self.ensure_collection(&collection, vector_size)
@@ -335,9 +334,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
     fn collection_exists(
         &self,
         collection: &str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<bool, crate::VectorStoreError>> + Send + '_>,
-    > {
+    ) -> BoxFuture<'_, Result<bool, crate::VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
             self.collection_exists(&collection)
@@ -349,9 +346,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
     fn delete_collection(
         &self,
         collection: &str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
-    > {
+    ) -> BoxFuture<'_, Result<(), crate::VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
             self.delete_collection(&collection)
@@ -364,9 +359,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
         &self,
         collection: &str,
         points: Vec<crate::VectorPoint>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
-    > {
+    ) -> BoxFuture<'_, Result<(), crate::VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
             let qdrant_points: Vec<PointStruct> = points
@@ -392,14 +385,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
         vector: Vec<f32>,
         limit: u64,
         filter: Option<crate::VectorFilter>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<crate::ScoredVectorPoint>, crate::VectorStoreError>,
-                > + Send
-                + '_,
-        >,
-    > {
+    ) -> BoxFuture<'_, Result<Vec<crate::ScoredVectorPoint>, crate::VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
             let qdrant_filter = filter.map(vector_filter_to_qdrant);
@@ -415,9 +401,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
         &self,
         collection: &str,
         ids: Vec<String>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), crate::VectorStoreError>> + Send + '_>,
-    > {
+    ) -> BoxFuture<'_, Result<(), crate::VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
             let point_ids: Vec<PointId> = ids.into_iter().map(PointId::from).collect();
@@ -431,17 +415,8 @@ impl crate::vector_store::VectorStore for QdrantOps {
         &self,
         collection: &str,
         key_field: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<
-                        HashMap<String, HashMap<String, String>>,
-                        crate::VectorStoreError,
-                    >,
-                > + Send
-                + '_,
-        >,
-    > {
+    ) -> BoxFuture<'_, Result<HashMap<String, HashMap<String, String>>, crate::VectorStoreError>>
+    {
         let collection = collection.to_owned();
         let key_field = key_field.to_owned();
         Box::pin(async move {
@@ -451,11 +426,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
         })
     }
 
-    fn health_check(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<bool, crate::VectorStoreError>> + Send + '_>,
-    > {
+    fn health_check(&self) -> BoxFuture<'_, Result<bool, crate::VectorStoreError>> {
         Box::pin(async move {
             self.client
                 .health_check()

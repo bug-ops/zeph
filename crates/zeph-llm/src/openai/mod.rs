@@ -568,10 +568,7 @@ impl LlmProvider for OpenAiProvider {
         let mut schema_value = raw_schema;
         inline_refs_openai(&mut schema_value, 8);
         normalize_for_openai_strict(&mut schema_value, 16);
-        let type_name = std::any::type_name::<T>()
-            .rsplit("::")
-            .next()
-            .unwrap_or("Output");
+        let type_name = crate::provider::short_type_name::<T>();
 
         let api_messages = convert_messages(messages);
         let body = TypedChatRequest {

@@ -55,7 +55,11 @@ pub struct ScoredVectorPoint {
     pub payload: HashMap<String, serde_json::Value>,
 }
 
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+/// Shared return type alias for all [`VectorStore`] trait methods.
+///
+/// Intentionally `pub(crate)` — all [`VectorStore`] implementations are internal to this crate.
+/// If the trait is ever made externally extensible, this alias should become `pub`.
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub type ScrollResult = HashMap<String, HashMap<String, String>>;
 
