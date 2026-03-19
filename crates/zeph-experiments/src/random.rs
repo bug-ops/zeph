@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use ordered_float::OrderedFloat;
-use rand::RngExt as _;
+use rand::Rng as _;
 use rand::SeedableRng as _;
 use rand::rngs::SmallRng;
 
@@ -57,9 +57,9 @@ impl VariationGenerator for Random {
         }
         let mut rng = self.rng.lock().expect("rng mutex poisoned");
         for _ in 0..MAX_RETRIES {
-            let idx = rng.random_range(0..self.search_space.parameters.len());
+            let idx = rng.gen_range(0..self.search_space.parameters.len());
             let range = &self.search_space.parameters[idx];
-            let raw: f64 = rng.random_range(range.min..=range.max);
+            let raw: f64 = rng.gen_range(range.min..=range.max);
             let value = range.quantize(raw);
             let variation = Variation {
                 parameter: range.kind,

@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- refactor(experiments): extract experiments logic into new `zeph-experiments` crate (Epic #1973 Phase 1d)
+  - New `zeph-experiments` crate at Layer 2 with `ExperimentEngine`, `Evaluator`, `BenchmarkSet`, and all experiment-related types
+  - Moved: `ExperimentEngine`, `ExperimentSessionReport`, `Evaluator`, `JudgeOutput`, `CaseScore`, `EvalReport`, `EvalError`, `VariationGenerator`, `GridStep`, `Random`, `Neighborhood`, `ParameterRange`, `SearchSpace`, `ParameterKind`, `Variation`, `VariationValue`, `ExperimentResult`, `ExperimentSource`, `BenchmarkCase`, `BenchmarkSet`, `ConfigSnapshot`, `GenerationOverrides`
+  - `zeph-core/src/experiments` replaced with thin re-export shim providing `pub use zeph_experiments::*` — zero import path changes for consumers using `crate::experiments::*`
+  - Feature flag `experiments` propagated to `zeph-experiments` and remains feature-gated
+  - All public API preserved via re-export module in `zeph-core`
+
 - refactor(vault): extract vault logic into new `zeph-vault` crate (Epic #1973 Phase 1c)
   - New `zeph-vault` crate at Layer 1 with `VaultProvider` trait, `EnvVaultProvider`, `AgeVaultProvider`, `ArcAgeVaultProvider`, `AgeVaultError`, `default_vault_dir()`
   - `MockVaultProvider` gated behind `#[cfg(any(test, feature = "mock"))]` — accessible from downstream test code via `zeph-vault/mock` feature

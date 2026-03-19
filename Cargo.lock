@@ -9487,6 +9487,7 @@ dependencies = [
  "uuid",
  "zeph-common",
  "zeph-config",
+ "zeph-experiments",
  "zeph-index",
  "zeph-llm",
  "zeph-mcp",
@@ -9494,6 +9495,29 @@ dependencies = [
  "zeph-skills",
  "zeph-tools",
  "zeph-vault",
+]
+
+[[package]]
+name = "zeph-experiments"
+version = "0.15.3"
+dependencies = [
+ "futures",
+ "ordered-float 5.1.0",
+ "proptest",
+ "rand 0.8.5",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml 1.0.7+spec-1.1.0",
+ "tracing",
+ "uuid",
+ "zeph-config",
+ "zeph-llm",
+ "zeph-memory",
 ]
 
 [[package]]

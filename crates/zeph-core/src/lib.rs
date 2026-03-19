@@ -19,8 +19,16 @@ pub mod pipeline;
 pub mod project;
 pub mod redact;
 
+// Re-export experiments module to preserve internal import paths (e.g., `crate::experiments::ExperimentEngine`).
 #[cfg(feature = "experiments")]
-pub mod experiments;
+pub mod experiments {
+    pub use zeph_experiments::{
+        BenchmarkCase, BenchmarkSet, CaseScore, ConfigSnapshot, EvalError, EvalReport, Evaluator,
+        ExperimentEngine, ExperimentResult, ExperimentSessionReport, ExperimentSource,
+        GenerationOverrides, GridStep, JudgeOutput, Neighborhood, ParameterKind, ParameterRange,
+        Random, SearchSpace, Variation, VariationGenerator, VariationValue,
+    };
+}
 
 #[cfg(feature = "lsp-context")]
 pub mod lsp_hooks;

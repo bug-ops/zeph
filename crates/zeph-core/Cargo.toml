@@ -17,7 +17,7 @@ default = []
 candle = ["zeph-llm/candle"]
 compression-guidelines = ["zeph-memory/compression-guidelines", "zeph-config/compression-guidelines"]
 cuda = ["zeph-llm/cuda"]
-experiments = ["dep:ordered-float", "zeph-memory/experiments", "zeph-config/experiments"]
+experiments = ["dep:ordered-float", "zeph-memory/experiments", "zeph-config/experiments", "zeph-experiments/experiments"]
 guardrail = ["zeph-config/guardrail"]
 lsp-context = ["zeph-config/lsp-context"]
 metal = ["zeph-llm/metal"]
@@ -57,6 +57,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-vault.workspace = true
+zeph-experiments.workspace = true
 zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true

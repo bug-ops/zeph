@@ -49,7 +49,7 @@ impl ConfigSnapshot {
     /// generation params in config — defaults are used for the experiment baseline.
     /// Memory parameters are read from `config.memory.semantic`.
     #[must_use]
-    pub fn from_config(config: &crate::config::Config) -> Self {
+    pub fn from_config(config: &zeph_config::Config) -> Self {
         let (temperature, top_p, top_k) = config.llm.candle.as_ref().map_or_else(
             || {
                 tracing::debug!(
