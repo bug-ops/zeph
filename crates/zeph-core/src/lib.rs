@@ -40,7 +40,14 @@ pub mod http;
 pub mod memory_tools;
 pub mod overflow_tools;
 pub mod skill_loader;
-pub mod subagent;
+/// Re-export zeph-subagent crate as a module to preserve internal import paths.
+pub mod subagent {
+    pub use zeph_subagent::*;
+    // Re-export submodules so `crate::subagent::def::*` paths continue to work.
+    pub use zeph_subagent::{
+        command, def, error, filter, grants, hooks, manager, memory, resolve, state, transcript,
+    };
+}
 pub use zeph_common::text;
 
 #[cfg(test)]

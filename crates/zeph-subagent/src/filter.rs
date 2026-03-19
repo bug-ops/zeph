@@ -341,7 +341,7 @@ mod tests {
     #![allow(clippy::default_trait_access)]
 
     use super::*;
-    use crate::subagent::def::ToolPolicy;
+    use crate::def::ToolPolicy;
 
     // ── FilteredToolExecutor tests ─────────────────────────────────────────
 

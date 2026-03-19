@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- refactor(subagent): extract subagent management into new `zeph-subagent` crate (Epic #1973 Phase 1f)
+  - New `zeph-subagent` crate (9,036 LOC) with 11 modules: `command`, `def`, `error`, `filter`, `grants`, `hooks`, `manager`, `memory`, `resolve`, `state`, `transcript`
+  - `SubAgentManager`, `SubAgentHandle`, `SubAgentDef`, `SubAgentGrant`, `SubAgentTranscript`, `SubAgentError`, `SubAgentState`, `ToolFilter`, `SkillFilter`, `SubagentHooks` moved to new crate
+  - `zeph-core` reduces to 55,860 LOC (from 64,851), -9,028 LOC (13.9% reduction)
+  - `spawn_for_task` refactored to accept a generic completion callback (`F: FnOnce`) eliminating orchestration dependency from `zeph-subagent`
+  - `zeph-core/src/lib.rs` re-exports `pub mod subagent { pub use zeph_subagent::*; }` preserving all `crate::subagent::*` import paths in orchestration, agent, and test code
+  - 299 tests in `zeph-subagent`; total workspace: 5,917 tests passing
+  - Phase 1g will extract `zeph-orchestration` (deferred due to resolved circular dependency)
+
 - refactor(sanitizer): extract content sanitization into new `zeph-sanitizer` crate (Epic #1973 Phase 1e)
   - New `zeph-sanitizer` crate at Layer 2 with 6 core modules: `exfiltration`, `guardrail`, `memory_validation`, `pii`, `quarantine`, and lib exports
   - Extracted 4,337 LOC from `zeph-core/src/sanitizer/` including `ContentSanitizer`, `ExfiltrationGuard`, `PiiFilter`, `MemoryWriteValidator`, `QuarantinedSummarizer`, and guardrail logic

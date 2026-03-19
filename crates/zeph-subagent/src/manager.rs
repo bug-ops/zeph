@@ -16,7 +16,7 @@ use zeph_llm::provider::{
 };
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
-use crate::config::SubAgentConfig;
+use zeph_config::SubAgentConfig;
 
 use super::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use super::error::SubAgentError;
@@ -312,7 +312,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
     let tool_defs: Vec<ToolDefinition> = executor
         .tool_definitions_erased()
         .iter()
-        .map(crate::agent::tool_execution::tool_def_to_definition)
+        .map(tool_def_to_definition)
         .collect();
 
     let mut turns: u32 = 0;
@@ -483,26 +483,26 @@ pub struct SubAgentStatus {
 
 /// Handle to a spawned sub-agent task.
 ///
-/// Fields are `pub(crate)` to prevent external code from bypassing the manager's
+/// Fields are public to allow test harnesses in downstream crates to construct handles.
 /// audit trail by mutating grants or cancellation state directly.
 pub struct SubAgentHandle {
-    pub(crate) id: String,
-    pub(crate) def: SubAgentDef,
+    pub id: String,
+    pub def: SubAgentDef,
     /// Task ID (UUID). Currently the same as `id`; separated for future use.
-    pub(crate) task_id: String,
-    pub(crate) state: SubAgentState,
-    pub(crate) join_handle: Option<JoinHandle<Result<String, SubAgentError>>>,
-    pub(crate) cancel: CancellationToken,
-    pub(crate) status_rx: watch::Receiver<SubAgentStatus>,
-    pub(crate) grants: PermissionGrants,
+    pub task_id: String,
+    pub state: SubAgentState,
+    pub join_handle: Option<JoinHandle<Result<String, SubAgentError>>>,
+    pub cancel: CancellationToken,
+    pub status_rx: watch::Receiver<SubAgentStatus>,
+    pub grants: PermissionGrants,
     /// Receives secret requests from the sub-agent loop.
-    pub(crate) pending_secret_rx: mpsc::Receiver<SecretRequest>,
+    pub pending_secret_rx: mpsc::Receiver<SecretRequest>,
     /// Delivers approval outcome to the sub-agent loop: None = denied, Some(_) = approved.
-    pub(crate) secret_tx: mpsc::Sender<Option<String>>,
+    pub secret_tx: mpsc::Sender<Option<String>>,
     /// ISO 8601 UTC timestamp recorded when the agent was spawned or resumed.
-    pub(crate) started_at_str: String,
+    pub started_at_str: String,
     /// Resolved transcript directory at spawn time; `None` if transcripts were disabled.
-    pub(crate) transcript_dir: Option<PathBuf>,
+    pub transcript_dir: Option<PathBuf>,
 }
 
 impl SubAgentHandle {
@@ -704,6 +704,21 @@ pub(crate) fn build_system_prompt_with_memory(
     prompt
 }
 
+fn tool_def_to_definition(
+    def: &zeph_tools::registry::ToolDef,
+) -> zeph_llm::provider::ToolDefinition {
+    let mut params = serde_json::to_value(&def.schema).unwrap_or_default();
+    if let serde_json::Value::Object(ref mut map) = params {
+        map.remove("$schema");
+        map.remove("title");
+    }
+    zeph_llm::provider::ToolDefinition {
+        name: def.id.to_string(),
+        description: def.description.to_string(),
+        parameters: params,
+    }
+}
+
 impl SubAgentManager {
     /// Create a new manager with the given concurrency limit.
     #[must_use]
@@ -843,8 +858,7 @@ impl SubAgentManager {
     ///
     /// Used in tests to simulate an agent that has already run and left a pending secret
     /// request in its channel without going through the full spawn lifecycle.
-    #[cfg(test)]
-    pub(crate) fn insert_handle_for_test(&mut self, id: String, handle: SubAgentHandle) {
+    pub fn insert_handle_for_test(&mut self, id: String, handle: SubAgentHandle) {
         self.agents.insert(id, handle);
     }
 
@@ -967,7 +981,7 @@ impl SubAgentManager {
             grants: PermissionGrants::default(),
             pending_secret_rx,
             secret_tx,
-            started_at_str: crate::subagent::transcript::utc_now_pub(),
+            started_at_str: crate::transcript::utc_now_pub(),
             transcript_dir: handle_transcript_dir,
         };
 
@@ -1029,7 +1043,7 @@ impl SubAgentManager {
                     agent_name: agent_name.to_owned(),
                     def_name: agent_name.to_owned(),
                     status: SubAgentState::Submitted,
-                    started_at: crate::subagent::transcript::utc_now_pub(),
+                    started_at: crate::transcript::utc_now_pub(),
                     finished_at: None,
                     resumed_from: None,
                     turns_used: 0,
@@ -1229,7 +1243,7 @@ impl SubAgentManager {
                 def_name: handle.def.name.clone(),
                 status: final_status,
                 started_at: handle.started_at_str.clone(),
-                finished_at: Some(crate::subagent::transcript::utc_now_pub()),
+                finished_at: Some(crate::transcript::utc_now_pub()),
                 resumed_from: None,
                 turns_used,
             };
@@ -1388,7 +1402,7 @@ impl SubAgentManager {
                 agent_name: def.name.clone(),
                 def_name: def.name.clone(),
                 status: SubAgentState::Submitted,
-                started_at: crate::subagent::transcript::utc_now_pub(),
+                started_at: crate::transcript::utc_now_pub(),
                 finished_at: None,
                 resumed_from: Some(original_id.clone()),
                 turns_used: 0,
@@ -1447,7 +1461,7 @@ impl SubAgentManager {
             grants: PermissionGrants::default(),
             pending_secret_rx,
             secret_tx,
-            started_at_str: crate::subagent::transcript::utc_now_pub(),
+            started_at_str: crate::transcript::utc_now_pub(),
             transcript_dir: resume_handle_transcript_dir,
         };
 
@@ -1550,7 +1564,21 @@ impl SubAgentManager {
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn_for_task(
+    /// Spawn a sub-agent and attach a completion callback invoked when the agent terminates.
+    ///
+    /// The callback receives the agent handle ID and the agent's result.
+    /// The caller is responsible for translating this into orchestration events.
+    ///
+    /// # Errors
+    ///
+    /// Same error conditions as [`spawn`][Self::spawn].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal agent entry is missing after a successful `spawn` call.
+    /// This is a programming error and should never occur in normal operation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_for_task<F>(
         &mut self,
         def_name: &str,
         task_prompt: &str,
@@ -1558,11 +1586,11 @@ impl SubAgentManager {
         tool_executor: Arc<dyn ErasedToolExecutor>,
         skills: Option<Vec<String>>,
         config: &SubAgentConfig,
-        orch_task_id: crate::orchestration::TaskId,
-        event_tx: tokio::sync::mpsc::Sender<crate::orchestration::TaskEvent>,
-    ) -> Result<String, SubAgentError> {
-        use crate::orchestration::{TaskEvent, TaskOutcome};
-
+        on_done: F,
+    ) -> Result<String, SubAgentError>
+    where
+        F: FnOnce(String, Result<String, SubAgentError>) + Send + 'static,
+    {
         let handle_id = self.spawn(
             def_name,
             task_prompt,
@@ -1587,46 +1615,25 @@ impl SubAgentManager {
             tokio::spawn(async move {
                 let result = original_join.await;
 
-                let (outcome, output) = match &result {
-                    Ok(Ok(output)) => (
-                        TaskOutcome::Completed {
-                            output: output.clone(),
-                            artifacts: vec![],
-                        },
-                        Ok(output.clone()),
-                    ),
+                let (notify_result, output) = match result {
+                    Ok(Ok(output)) => (Ok(output.clone()), Ok(output)),
                     Ok(Err(e)) => {
                         let msg = e.to_string();
                         (
-                            TaskOutcome::Failed { error: msg.clone() },
+                            Err(SubAgentError::Spawn(msg.clone())),
                             Err(SubAgentError::Spawn(msg)),
                         )
                     }
-                    Err(join_err) => (
-                        TaskOutcome::Failed {
-                            // Use Debug format to preserve panic backtrace info (S3).
-                            error: format!("task panicked: {join_err:?}"),
-                        },
-                        Err(SubAgentError::TaskPanic(format!(
-                            "task panicked: {join_err:?}"
-                        ))),
-                    ),
+                    Err(join_err) => {
+                        let msg = format!("task panicked: {join_err:?}");
+                        (
+                            Err(SubAgentError::TaskPanic(msg.clone())),
+                            Err(SubAgentError::TaskPanic(msg)),
+                        )
+                    }
                 };
 
-                // Best-effort send. If the scheduler was dropped, warn but do not fail.
-                if let Err(e) = event_tx
-                    .send(TaskEvent {
-                        task_id: orch_task_id,
-                        agent_handle_id: handle_id_clone,
-                        outcome,
-                    })
-                    .await
-                {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to send TaskEvent: scheduler may have been dropped"
-                    );
-                }
+                on_done(handle_id_clone, notify_result);
 
                 output
             });
@@ -1656,8 +1663,8 @@ mod tests {
 
     use serial_test::serial;
 
-    use crate::config::SubAgentConfig;
-    use crate::subagent::def::MemoryScope;
+    use crate::def::MemoryScope;
+    use zeph_config::SubAgentConfig;
 
     use super::*;
 
@@ -1829,7 +1836,7 @@ mod tests {
         assert!(
             handle
                 .grants
-                .is_active(&crate::subagent::GrantKind::Secret("api-key".into()))
+                .is_active(&crate::grants::GrantKind::Secret("api-key".into()))
         );
     }
 
@@ -2628,7 +2635,7 @@ mod tests {
 
     /// Write a minimal completed meta file and empty JSONL so `resume()` has something to load.
     fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
-        use crate::subagent::transcript::{TranscriptMeta, TranscriptWriter};
+        use crate::transcript::{TranscriptMeta, TranscriptWriter};
         let meta = TranscriptMeta {
             agent_id: agent_id.to_owned(),
             agent_name: def_name.to_owned(),
@@ -2876,8 +2883,7 @@ mod tests {
             .unwrap();
 
         // The new meta sidecar must have resumed_from = original_id.
-        let new_meta =
-            crate::subagent::transcript::TranscriptReader::load_meta(tmp.path(), &new_id).unwrap();
+        let new_meta = crate::transcript::TranscriptReader::load_meta(tmp.path(), &new_id).unwrap();
         assert_eq!(
             new_meta.resumed_from.as_deref(),
             Some(original_id),

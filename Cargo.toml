@@ -130,6 +130,7 @@ zeph-tools = { path = "crates/zeph-tools", version = "0.15.3" }
 zeph-tui = { path = "crates/zeph-tui", version = "0.15.3" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.15.3" }
 zeph-sanitizer = { path = "crates/zeph-sanitizer", version = "0.15.3" }
+zeph-subagent = { path = "crates/zeph-subagent", version = "0.15.3" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

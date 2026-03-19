@@ -770,6 +770,37 @@ impl<C: Channel> Agent<C> {
             .as_mut()
             .expect("subagent_manager checked above");
 
+        let on_done = {
+            use crate::orchestration::{TaskEvent, TaskOutcome};
+            move |handle_id: String, result: Result<String, crate::subagent::SubAgentError>| {
+                let outcome = match &result {
+                    Ok(output) => TaskOutcome::Completed {
+                        output: output.clone(),
+                        artifacts: vec![],
+                    },
+                    Err(e) => TaskOutcome::Failed {
+                        error: e.to_string(),
+                    },
+                };
+                let tx = event_tx;
+                tokio::spawn(async move {
+                    if let Err(e) = tx
+                        .send(TaskEvent {
+                            task_id,
+                            agent_handle_id: handle_id,
+                            outcome,
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to send TaskEvent: scheduler may have been dropped"
+                        );
+                    }
+                });
+            }
+        };
+
         match mgr.spawn_for_task(
             &agent_def_name,
             &prompt,
@@ -777,8 +808,7 @@ impl<C: Channel> Agent<C> {
             tool_executor,
             skills,
             &cfg,
-            task_id,
-            event_tx,
+            on_done,
         ) {
             Ok(handle_id) => {
                 *spawn_counter += 1;

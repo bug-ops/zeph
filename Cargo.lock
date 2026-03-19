@@ -9495,6 +9495,7 @@ dependencies = [
  "zeph-memory",
  "zeph-sanitizer",
  "zeph-skills",
+ "zeph-subagent",
  "zeph-tools",
  "zeph-vault",
 ]
@@ -9723,6 +9724,32 @@ dependencies = [
  "uuid",
  "zeph-llm",
  "zeph-memory",
+ "zeph-tools",
+]
+
+[[package]]
+name = "zeph-subagent"
+version = "0.15.3"
+dependencies = [
+ "dirs",
+ "indoc",
+ "proptest",
+ "regex",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml 1.0.7+spec-1.1.0",
+ "tracing",
+ "uuid",
+ "zeph-config",
+ "zeph-llm",
+ "zeph-skills",
  "zeph-tools",
 ]
 
