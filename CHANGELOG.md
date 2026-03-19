@@ -8,7 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(channels): register Discord slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task; idempotent via `PUT /applications/{id}/commands` (CHAN-05, epic #1978)
+- feat(channels): extract shared `CONFIRM_TIMEOUT` constant (30s) to `zeph-channels` crate; Telegram, Discord, and Slack `confirm()` all reference it (CHAN-02, epic #1978)
+
 ### Changed
+
+- fix(channels): `AnyChannel` and `AppChannel` now forward all 16 `Channel` trait methods; previously `send_thinking_chunk`, `send_stop_hint`, `send_usage`, and `send_tool_start` fell through to trait defaults, silently dropping events (CHAN-01, epic #1978)
+- fix(channels): Discord and Slack `confirm()` now deny after 30s timeout, matching the existing Telegram behavior; previously they blocked indefinitely waiting for user input (CHAN-02, epic #1978)
 
 - refactor(core): add state-group accessor methods to `Agent<C>` for all sub-structs (`msg`, `memory_state`, `skill_state`, `runtime`, etc.); migration from direct field access is incremental per file (ABS-04, epic #1977)
 - fix(llm): `convert_messages_structured()` now preserves `Recall`, `CodeContext`, `Summary`, and `CrossSession` variants in OpenAI tool-use messages instead of silently dropping them (ABS-05, epic #1977)

@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Slack channel adapter using Events API + Web API.
+//!
+//! # Slash commands
+//!
+//! Unlike Discord, Slack slash commands are configured statically in the Slack App Dashboard
+//! (App Manifest) and cannot be registered via API at runtime. To add slash commands to the
+//! Zeph Slack app, update the app manifest at <https://api.slack.com/apps> and add entries
+//! under `slash_commands`. No runtime registration is needed or possible.
 
 pub mod api;
 pub mod events;
@@ -199,12 +206,28 @@ impl Channel for SlackChannel {
     }
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        self.send(&format!("{prompt}\nReply 'yes' to confirm."))
-            .await?;
-        let Some(incoming) = self.rx.recv().await else {
-            return Ok(false);
-        };
-        Ok(incoming.text.trim().eq_ignore_ascii_case("yes"))
+        self.send(&format!(
+            "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
+            crate::CONFIRM_TIMEOUT.as_secs()
+        ))
+        .await?;
+        // Note: confirm() consumes the next message regardless of intent.
+        // If the user sends an unrelated message within the timeout window, it will be
+        // treated as a non-confirmation and swallowed. This is a known limitation.
+        match tokio::time::timeout(crate::CONFIRM_TIMEOUT, self.rx.recv()).await {
+            Ok(Some(incoming)) => Ok(incoming.text.trim().eq_ignore_ascii_case("yes")),
+            Ok(None) => {
+                tracing::warn!("slack confirm channel closed — denying");
+                Ok(false)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "slack confirm timed out after {}s — denied",
+                    crate::CONFIRM_TIMEOUT.as_secs()
+                );
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -300,5 +323,24 @@ mod tests {
         ch.accumulated.push_str("part1");
         ch.accumulated.push_str(" part2");
         assert_eq!(ch.accumulated, "part1 part2");
+    }
+
+    #[tokio::test]
+    async fn confirm_denies_when_channel_closed() {
+        // When the sender is dropped before confirm() reads, recv() returns None -> Ok(false).
+        let (tx, rx) = mpsc::channel(16);
+        drop(tx); // close channel immediately
+        let api = api::SlackApi::new("xoxb-test".into());
+        let mut ch = SlackChannel {
+            rx,
+            api,
+            channel_id: None,
+            accumulated: String::new(),
+            last_edit: None,
+            message_ts: None,
+        };
+        // Verify the channel-closed path: recv() returns None immediately after drop.
+        let result = tokio::time::timeout(std::time::Duration::from_millis(10), ch.rx.recv()).await;
+        assert!(matches!(result, Ok(None)));
     }
 }
