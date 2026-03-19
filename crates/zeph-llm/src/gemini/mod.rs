@@ -40,7 +40,7 @@ pub struct GeminiProvider {
     model: String,
     max_output_tokens: u32,
     embedding_model: Option<String>,
-    pub(crate) usage: UsageTracker,
+    usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
     status_tx: Option<StatusTx>,
     thinking_level: Option<ThinkingLevel>,

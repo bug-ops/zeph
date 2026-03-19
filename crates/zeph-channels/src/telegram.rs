@@ -264,7 +264,7 @@ impl TelegramChannel {
                             .map_err(ChannelError::other)?;
                         self.message_id = Some(msg.id);
                     } else {
-                        return Err(ChannelError::Other(e.to_string()));
+                        return Err(ChannelError::other(e));
                     }
                 } else {
                     tracing::debug!("message edited successfully");

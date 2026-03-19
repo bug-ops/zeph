@@ -33,7 +33,7 @@ pub struct OllamaProvider {
     vision_model: Option<String>,
     tool_use: bool,
     generation_overrides: Option<GenerationOverrides>,
-    pub(crate) usage: UsageTracker,
+    usage: UsageTracker,
 }
 
 #[allow(clippy::cast_possible_truncation)]

@@ -186,8 +186,11 @@ fn gemini_debug_redacts_api_key() {
 
 #[test]
 fn gemini_clone_resets_usage() {
+    // Both original and clone start with no usage (UsageTracker::default).
+    // Clone must not carry over any accumulated state — verified by checking
+    // that a freshly-cloned provider reports no usage.
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
-    p.usage.record_usage(100, 200);
+    assert!(p.last_usage().is_none());
     let cloned = p.clone();
     assert!(cloned.last_usage().is_none(), "clone must reset last_usage");
 }

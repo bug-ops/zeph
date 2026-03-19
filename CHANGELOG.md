@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(llm): extract `UsageTracker` struct to consolidate duplicate token usage tracking across Claude, OpenAI, Ollama, and Gemini providers (DRY-01+06, epic #1975)
+- refactor(memory): remove duplicate `BoxFuture` type alias from `in_memory_store.rs`; import canonical definition from `vector_store.rs` (DRY-05, epic #1975)
+- refactor(channels): add `ChannelError::other()` helper; replace 15 `.map_err(|e| ChannelError::Other(e.to_string()))` sites in telegram, discord, slack, and cli channels (DRY-04, epic #1975)
+
 ### Fixed
 
 ## [0.16.0] - 2026-03-19
