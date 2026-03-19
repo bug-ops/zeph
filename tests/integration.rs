@@ -15,8 +15,8 @@ use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::sqlite::SqliteStore;
 use zeph_skills::loader::load_skill;
 use zeph_skills::registry::SkillRegistry;
-use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 use zeph_tools::AutonomyLevel;
+use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 // -- Provider helpers --
 
