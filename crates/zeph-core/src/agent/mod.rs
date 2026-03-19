@@ -4141,7 +4141,6 @@ impl<C: Channel> Agent<C> {
                     }
                 };
 
-            // Parse and cap inline (state-free portion of parse_eviction_response).
             let start = response.find('{')?;
             let end = response.rfind('}')?;
             if start > end {

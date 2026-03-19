@@ -45,6 +45,7 @@ pub(crate) struct ToolOutputCursor {
 
 /// LLM response schema for `SideQuest` eviction.
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub(crate) struct EvictionResponse {
     pub(crate) del_cursors: Vec<usize>,
 }
@@ -169,42 +170,6 @@ impl SidequestState {
         prompt
     }
 
-    /// Parse an LLM eviction response, applying safety caps.
-    ///
-    /// Returns the validated list of cursor indices to evict, or `None` on parse failure
-    /// (the caller should skip eviction on `None`).
-    // Kept for unit testing; the hot path in the background spawn in mod.rs inlines
-    // equivalent logic because `self` cannot be moved into the `tokio::spawn` closure.
-    #[allow(dead_code)]
-    pub(crate) fn parse_eviction_response(&self, response: &str) -> Option<Vec<usize>> {
-        // Find JSON in the response (LLM may include preamble text)
-        let start = response.find('{')?;
-        let end = response.rfind('}')?;
-        if start > end {
-            return None;
-        }
-        let json_slice = &response[start..=end];
-
-        let parsed: EvictionResponse = serde_json::from_str(json_slice).ok()?;
-
-        // Validate cursor indices are in range
-        let n = self.tool_output_cursors.len();
-        let mut valid: Vec<usize> = parsed.del_cursors.into_iter().filter(|&c| c < n).collect();
-        valid.sort_unstable();
-        valid.dedup();
-
-        // Enforce max_eviction_ratio
-        #[allow(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss
-        )]
-        let max_evict = ((n as f32) * self.config.max_eviction_ratio).ceil() as usize;
-        valid.truncate(max_evict);
-
-        Some(valid)
-    }
-
     /// Apply eviction: replace tool output bodies at the given cursor indices with `[evicted]`.
     /// Returns the number of tokens freed.
     pub(crate) fn apply_eviction(
@@ -306,61 +271,6 @@ mod tests {
         for _ in 0..8 {
             assert!(!state.tick());
         }
-    }
-
-    #[test]
-    fn parse_eviction_response_valid() {
-        let mut state = SidequestState::new(make_config());
-        // Simulate 4 cursors
-        for i in 0..4 {
-            state.tool_output_cursors.push(ToolOutputCursor {
-                msg_index: i + 1,
-                part_index: 0,
-                tool_name: "shell".to_string(),
-                token_count: 200,
-                preview: "output".to_string(),
-            });
-        }
-        let result = state.parse_eviction_response(r#"{"del_cursors": [0, 1]}"#);
-        assert_eq!(result, Some(vec![0, 1]));
-    }
-
-    #[test]
-    fn parse_eviction_response_caps_at_ratio() {
-        let mut state = SidequestState::new(make_config()); // max_eviction_ratio=0.5
-        for i in 0..4 {
-            state.tool_output_cursors.push(ToolOutputCursor {
-                msg_index: i + 1,
-                part_index: 0,
-                tool_name: "shell".to_string(),
-                token_count: 200,
-                preview: "output".to_string(),
-            });
-        }
-        // Request all 4, should be capped to 2 (50% of 4)
-        let result = state.parse_eviction_response(r#"{"del_cursors": [0, 1, 2, 3]}"#);
-        assert_eq!(result.map(|v| v.len()), Some(2));
-    }
-
-    #[test]
-    fn parse_eviction_response_invalid_json_returns_none() {
-        let state = SidequestState::new(make_config());
-        assert!(state.parse_eviction_response("not json at all").is_none());
-    }
-
-    #[test]
-    fn parse_eviction_response_out_of_range_filtered() {
-        let mut state = SidequestState::new(make_config());
-        state.tool_output_cursors.push(ToolOutputCursor {
-            msg_index: 1,
-            part_index: 0,
-            tool_name: "shell".to_string(),
-            token_count: 200,
-            preview: "output".to_string(),
-        });
-        // Cursor index 5 is out of range (only 1 cursor)
-        let result = state.parse_eviction_response(r#"{"del_cursors": [5]}"#);
-        assert_eq!(result, Some(vec![]));
     }
 
     #[test]

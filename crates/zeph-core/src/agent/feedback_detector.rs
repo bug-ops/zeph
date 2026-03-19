@@ -65,9 +65,6 @@ pub enum CorrectionKind {
     Repetition,
     /// User corrects their own prior statement, not the agent's response.
     SelfCorrection,
-    /// Deferred to Phase 3 — requires session-level state machine.
-    #[allow(dead_code)]
-    Abandonment,
 }
 
 impl CorrectionKind {
@@ -78,7 +75,6 @@ impl CorrectionKind {
             Self::AlternativeRequest => "alternative_request",
             Self::Repetition => "repetition",
             Self::SelfCorrection => "self_correction",
-            Self::Abandonment => "abandonment",
         }
     }
 }
@@ -258,9 +254,6 @@ impl JudgeVerdict {
             "alternative_request" => CorrectionKind::AlternativeRequest,
             "repetition" => CorrectionKind::Repetition,
             "self_correction" => CorrectionKind::SelfCorrection,
-            // "abandonment" is intentionally excluded until Phase 3 (requires session-level
-            // state machine). When Phase 3 adds abandonment detection via the judge,
-            // add `"abandonment" => CorrectionKind::Abandonment` here.
             other => {
                 tracing::warn!(
                     kind = other,
@@ -576,7 +569,6 @@ mod tests {
         );
         assert_eq!(CorrectionKind::Repetition.as_str(), "repetition");
         assert_eq!(CorrectionKind::SelfCorrection.as_str(), "self_correction");
-        assert_eq!(CorrectionKind::Abandonment.as_str(), "abandonment");
     }
 
     #[test]

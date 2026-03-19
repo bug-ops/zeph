@@ -70,11 +70,6 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
 #[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) const KNOWLEDGE_BLOCK_PREFIX: &str = "[knowledge]\n";
 
-/// The name emitted in the system prompt to identify the Knowledge block.
-// Used by the reminder injection path (future work).
-#[allow(dead_code)]
-pub(crate) const FOCUS_REMINDER_PREFIX: &str = "[focus reminder] ";
-
 /// Tracks the state of the active focus session.
 // Fields and methods below are consumed by context-compression feature paths.
 #[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
@@ -119,17 +114,6 @@ impl FocusState {
         {
             false
         }
-    }
-
-    /// Returns `true` when a focus reminder should be injected this turn.
-    // Used by the reminder injection path (future work).
-    #[allow(dead_code)]
-    pub(crate) fn should_remind(&self) -> bool {
-        if !self.config.enabled {
-            return false;
-        }
-        self.turns_since_focus >= self.config.compression_interval
-            && self.turns_since_reminder >= self.config.reminder_interval
     }
 
     /// Increment turn counters. Called at the start of each user-message turn.
@@ -224,28 +208,6 @@ mod tests {
         let state = FocusState::new(FocusConfig::default());
         assert!(!state.is_active());
         assert!(state.knowledge_blocks.is_empty());
-    }
-
-    #[test]
-    fn should_remind_returns_false_when_disabled() {
-        let mut config = FocusConfig::default();
-        config.enabled = false;
-        let mut state = FocusState::new(config);
-        state.turns_since_focus = 100;
-        state.turns_since_reminder = 100;
-        assert!(!state.should_remind());
-    }
-
-    #[test]
-    fn should_remind_returns_true_when_thresholds_exceeded() {
-        let mut config = FocusConfig::default();
-        config.enabled = true;
-        config.compression_interval = 5;
-        config.reminder_interval = 3;
-        let mut state = FocusState::new(config);
-        state.turns_since_focus = 6;
-        state.turns_since_reminder = 4;
-        assert!(state.should_remind());
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use dashmap::DashMap;
 use http::{HeaderName, HeaderValue};
 use rmcp::ClientHandler;
@@ -34,7 +35,7 @@ const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// bound required by `AuthorizationManager::set_credential_store`.
 struct ArcCredentialStore(Arc<dyn CredentialStore>);
 
-#[async_trait::async_trait]
+#[async_trait]
 impl CredentialStore for ArcCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
         self.0.load().await
