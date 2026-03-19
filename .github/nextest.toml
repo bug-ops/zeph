@@ -18,3 +18,11 @@ test-threads = 8
 [profile.ci.junit]
 # Store JUnit XML report for CI
 path = "target/nextest/ci/junit.xml"
+
+[profile.ci-partition]
+# Used by the partitioned test matrix in CI (unit tests only).
+# Each shard receives --partition hash:K/4 on the command line.
+test-threads = 8
+
+[profile.ci-partition.junit]
+path = "target/nextest/ci/junit.xml"

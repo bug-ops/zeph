@@ -187,24 +187,30 @@ jobs:
           retention-days: 1
 
   test:
-    name: Test (${{ matrix.os }})
+    name: "Test (shard ${{ matrix.partition }})"
     needs: [detect-changes, lint-fmt, lint-clippy, build-tests]
     if: needs.detect-changes.outputs.run-full-ci == 'true'
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        partition: ["1/4", "2/4", "3/4", "4/4"]
     steps:
       - uses: actions/checkout@v6
       - uses: taiki-e/install-action@9786bf093d06fe2c715bc12b6ff3b97a491cab4f # nextest
       - name: Download test archive
         uses: actions/download-artifact@v7
         with:
-          name: nextest-archive-${{ matrix.os }}
-      - name: Run tests
-        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap .
+          name: nextest-archive-ubuntu-latest
+      - name: "Run tests (shard ${{ matrix.partition }})"
+        run: |
+          cargo nextest run \
+            --config-file .github/nextest.toml \
+            --archive-file nextest-archive.tar.zst \
+            --workspace-remap . \
+            --profile ci-partition \
+            --partition hash:${{ matrix.partition }}
 
   integration:
     name: Integration Tests
