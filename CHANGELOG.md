@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.16.0] - 2026-03-19
+### Added
+
 - refactor(orchestration): extract task orchestration into new `zeph-orchestration` crate (Epic #1973 Phase 1g, #1979)
   - New `zeph-orchestration` crate (5,380 LOC) with 8 modules: `aggregator`, `command`, `dag`, `error`, `graph`, `planner`, `router`, `scheduler`
   - Moved `TaskGraph`, `TaskNode`, `TaskId`, `GraphId`, `TaskStatus`, `GraphStatus`, `FailureStrategy`, `GraphPersistence`, `DagScheduler`, `SchedulerAction`, `TaskEvent`, `TaskOutcome`, `LlmPlanner`, `Planner`, `LlmAggregator`, `Aggregator`, `RuleBasedRouter`, `AgentRouter`, `PlanCommand`, `OrchestrationError` to new crate
@@ -2460,7 +2467,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent calls channel.send_typing() before each LLM request
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.15.3...HEAD
+[0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.16.0...HEAD
 [0.15.3]: https://github.com/bug-ops/zeph/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/bug-ops/zeph/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/bug-ops/zeph/compare/v0.15.0...v0.15.1
