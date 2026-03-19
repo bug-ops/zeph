@@ -33,7 +33,16 @@ pub mod experiments {
 #[cfg(feature = "lsp-context")]
 pub mod lsp_hooks;
 
-pub mod orchestration;
+/// Re-export zeph-orchestration crate as a module to preserve internal import paths.
+pub mod orchestration {
+    pub use zeph_orchestration::*;
+    // Re-export submodules so `crate::orchestration::graph::*` paths continue to work.
+    pub use zeph_orchestration::{
+        aggregator, command, dag, error, graph, planner, router, scheduler,
+    };
+    // Re-export OrchestrationConfig to preserve the `crate::orchestration::OrchestrationConfig` path.
+    pub use crate::config::OrchestrationConfig;
+}
 
 pub mod hash;
 pub mod http;
