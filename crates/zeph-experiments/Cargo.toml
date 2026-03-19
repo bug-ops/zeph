@@ -1,8 +1,15 @@
 [package]
 name = "zeph-experiments"
-version = "0.15.3"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
+description = "Experiment engine for adaptive agent behavior testing and hyperparameter tuning"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
