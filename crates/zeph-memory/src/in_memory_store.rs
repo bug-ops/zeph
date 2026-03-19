@@ -2,15 +2,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::RwLock;
 
 use crate::vector_store::{
-    FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore, VectorStoreError,
+    BoxFuture, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,
+    VectorStoreError,
 };
-
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 struct StoredPoint {
     vector: Vec<f32>,

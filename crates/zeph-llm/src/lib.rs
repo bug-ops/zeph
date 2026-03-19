@@ -29,6 +29,7 @@ pub(crate) mod sse;
 pub mod stt;
 #[cfg(test)]
 pub mod testing;
+pub(crate) mod usage;
 #[cfg(feature = "stt")]
 pub mod whisper;
 

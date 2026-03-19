@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::LlmError;
+use crate::usage::UsageTracker;
 
 use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, StatusTx,
@@ -51,8 +52,7 @@ pub struct ClaudeProvider {
     pub(crate) status_tx: Option<StatusTx>,
     /// Whether to attach `cache_control` to user messages in multi-turn conversations.
     cache_user_messages: bool,
-    last_cache: std::sync::Mutex<Option<(u64, u64)>>,
-    last_usage: std::sync::Mutex<Option<(u64, u64)>>,
+    usage: UsageTracker,
     /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
     tool_cache: std::sync::Mutex<Option<(u64, Vec<serde_json::Value>)>>,
     generation_overrides: Option<GenerationOverrides>,
@@ -76,8 +76,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("thinking", &self.thinking)
             .field("status_tx", &self.status_tx.is_some())
             .field("cache_user_messages", &self.cache_user_messages)
-            .field("last_usage", &self.last_usage.lock().ok())
-            .field("last_cache", &self.last_cache.lock().ok())
+            .field("usage", &self.usage)
             .field(
                 "tool_cache",
                 &self
@@ -115,8 +114,7 @@ impl Clone for ClaudeProvider {
             thinking: self.thinking.clone(),
             status_tx: self.status_tx.clone(),
             cache_user_messages: self.cache_user_messages,
-            last_cache: std::sync::Mutex::new(None),
-            last_usage: std::sync::Mutex::new(None),
+            usage: UsageTracker::default(),
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
             server_compaction: self.server_compaction,
@@ -147,8 +145,7 @@ impl ClaudeProvider {
             thinking: None,
             status_tx: None,
             cache_user_messages: true,
-            last_cache: std::sync::Mutex::new(None),
-            last_usage: std::sync::Mutex::new(None),
+            usage: UsageTracker::default(),
             tool_cache: std::sync::Mutex::new(None),
             generation_overrides: None,
             server_compaction: false,
@@ -514,15 +511,12 @@ impl ClaudeProvider {
     }
 
     fn store_cache_usage(&self, usage: &types::ApiUsage) {
-        if let Ok(mut guard) = self.last_cache.lock() {
-            *guard = Some((
-                usage.cache_creation_input_tokens,
-                usage.cache_read_input_tokens,
-            ));
-        }
-        if let Ok(mut guard) = self.last_usage.lock() {
-            *guard = Some((usage.input_tokens, usage.output_tokens));
-        }
+        self.usage.record_cache(
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
+        );
+        self.usage
+            .record_usage(usage.input_tokens, usage.output_tokens);
     }
 
     fn has_image_parts(messages: &[Message]) -> bool {
@@ -937,11 +931,11 @@ impl LlmProvider for ClaudeProvider {
     }
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        self.last_cache.lock().ok().and_then(|g| *g)
+        self.usage.last_cache_usage()
     }
 
     fn last_usage(&self) -> Option<(u64, u64)> {
-        self.last_usage.lock().ok().and_then(|g| *g)
+        self.usage.last_usage()
     }
 
     fn take_compaction_summary(&self) -> Option<String> {

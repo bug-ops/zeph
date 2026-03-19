@@ -1056,8 +1056,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             std::sync::Arc<zeph_llm::any::AnyProvider>,
             Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
         )> = None;
-        let (agent, sched_executor) =
-            bootstrap_scheduler(agent, config, shutdown_rx.clone(), exp_deps).await;
+        let (agent, sched_executor) = Box::pin(bootstrap_scheduler(
+            agent,
+            config,
+            shutdown_rx.clone(),
+            exp_deps,
+        ))
+        .await;
         if let Some(sched_exec) = sched_executor {
             #[cfg(feature = "tui")]
             {

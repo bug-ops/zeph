@@ -17,13 +17,14 @@ use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
     ToolDefinition, ToolUseRequest,
 };
+use crate::usage::UsageTracker;
 
 #[derive(Debug)]
 pub struct ModelInfo {
     pub context_length: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OllamaProvider {
     client: Ollama,
     model: String,
@@ -32,22 +33,7 @@ pub struct OllamaProvider {
     vision_model: Option<String>,
     tool_use: bool,
     generation_overrides: Option<GenerationOverrides>,
-    last_usage: std::sync::Mutex<Option<(u64, u64)>>,
-}
-
-impl Clone for OllamaProvider {
-    fn clone(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            model: self.model.clone(),
-            embedding_model: self.embedding_model.clone(),
-            context_window_size: self.context_window_size,
-            vision_model: self.vision_model.clone(),
-            tool_use: self.tool_use,
-            generation_overrides: self.generation_overrides.clone(),
-            last_usage: std::sync::Mutex::new(None),
-        }
-    }
+    pub(crate) usage: UsageTracker,
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -84,7 +70,7 @@ impl OllamaProvider {
             vision_model: None,
             tool_use: false,
             generation_overrides: None,
-            last_usage: std::sync::Mutex::new(None),
+            usage: UsageTracker::default(),
         }
     }
 
@@ -231,10 +217,8 @@ impl LlmProvider for OllamaProvider {
             .await
             .map_err(|e| LlmError::Other(format!("Ollama chat request failed: {e}")))?;
 
-        if let Some(ref fd) = response.final_data
-            && let Ok(mut guard) = self.last_usage.lock()
-        {
-            *guard = Some((fd.prompt_eval_count, fd.eval_count));
+        if let Some(ref fd) = response.final_data {
+            self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
         }
 
         Ok(response.message.content)
@@ -357,10 +341,8 @@ impl LlmProvider for OllamaProvider {
                 LlmError::Other(format!("Ollama chat_with_tools request failed: {e}"))
             })?;
 
-        if let Some(ref fd) = response.final_data
-            && let Ok(mut guard) = self.last_usage.lock()
-        {
-            *guard = Some((fd.prompt_eval_count, fd.eval_count));
+        if let Some(ref fd) = response.final_data {
+            self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
         }
 
         if response.message.tool_calls.is_empty() {
@@ -423,7 +405,7 @@ impl LlmProvider for OllamaProvider {
     }
 
     fn last_usage(&self) -> Option<(u64, u64)> {
-        self.last_usage.lock().ok().and_then(|g| *g)
+        self.usage.last_usage()
     }
 }
 
@@ -634,7 +616,7 @@ mod tests {
     fn clone_resets_last_usage() {
         let provider =
             OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
-        *provider.last_usage.lock().unwrap() = Some((100, 50));
+        provider.usage.record_usage(100, 50);
         assert!(provider.last_usage().is_some());
         let cloned = provider.clone();
         assert!(cloned.last_usage().is_none());

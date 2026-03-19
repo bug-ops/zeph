@@ -15,6 +15,7 @@ use crate::provider::{
 };
 use crate::retry::send_with_retry;
 use crate::sse::gemini_sse_to_stream;
+use crate::usage::UsageTracker;
 
 const MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -39,7 +40,7 @@ pub struct GeminiProvider {
     model: String,
     max_output_tokens: u32,
     embedding_model: Option<String>,
-    last_usage: std::sync::Mutex<Option<(u64, u64)>>,
+    pub(crate) usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
     status_tx: Option<StatusTx>,
     thinking_level: Option<ThinkingLevel>,
@@ -56,7 +57,7 @@ impl fmt::Debug for GeminiProvider {
             .field("model", &self.model)
             .field("max_output_tokens", &self.max_output_tokens)
             .field("embedding_model", &self.embedding_model)
-            .field("last_usage", &self.last_usage.lock().ok().and_then(|g| *g))
+            .field("usage", &self.usage)
             .field("generation_overrides", &self.generation_overrides)
             .field("status_tx", &self.status_tx.is_some())
             .field("thinking_level", &self.thinking_level)
@@ -75,7 +76,7 @@ impl Clone for GeminiProvider {
             model: self.model.clone(),
             max_output_tokens: self.max_output_tokens,
             embedding_model: self.embedding_model.clone(),
-            last_usage: std::sync::Mutex::new(None),
+            usage: UsageTracker::default(),
             generation_overrides: self.generation_overrides.clone(),
             status_tx: self.status_tx.clone(),
             thinking_level: self.thinking_level,
@@ -95,7 +96,7 @@ impl GeminiProvider {
             model,
             max_output_tokens,
             embedding_model: None,
-            last_usage: std::sync::Mutex::new(None),
+            usage: UsageTracker::default(),
             generation_overrides: None,
             status_tx: None,
             thinking_level: None,
@@ -272,10 +273,9 @@ impl GeminiProvider {
 
         let resp: GenerateContentResponse = serde_json::from_str(&body)?;
 
-        if let Some(ref usage) = resp.usage_metadata
-            && let Ok(mut guard) = self.last_usage.lock()
-        {
-            *guard = Some((usage.prompt_token_count, usage.candidates_token_count));
+        if let Some(ref u) = resp.usage_metadata {
+            self.usage
+                .record_usage(u.prompt_token_count, u.candidates_token_count);
         }
 
         resp.candidates
@@ -335,10 +335,9 @@ impl GeminiProvider {
 
         let resp: GenerateContentResponse = serde_json::from_str(&body)?;
 
-        if let Some(ref usage) = resp.usage_metadata
-            && let Ok(mut guard) = self.last_usage.lock()
-        {
-            *guard = Some((usage.prompt_token_count, usage.candidates_token_count));
+        if let Some(ref u) = resp.usage_metadata {
+            self.usage
+                .record_usage(u.prompt_token_count, u.candidates_token_count);
         }
 
         parse_tool_response(resp)
@@ -1301,7 +1300,7 @@ impl LlmProvider for GeminiProvider {
     }
 
     fn last_usage(&self) -> Option<(u64, u64)> {
-        self.last_usage.lock().ok().and_then(|g| *g)
+        self.usage.last_usage()
     }
 
     fn debug_request_json(

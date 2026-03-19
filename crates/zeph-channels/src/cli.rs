@@ -338,7 +338,7 @@ impl Channel for CliChannel {
         let prompt = format!("{prompt} [y/N]: ");
         let result = tokio::task::spawn_blocking(move || line_editor::read_line(&prompt, &[]))
             .await
-            .map_err(|e| ChannelError::Other(e.to_string()))?
+            .map_err(ChannelError::other)?
             .map_err(ChannelError::Io)?;
 
         match result {

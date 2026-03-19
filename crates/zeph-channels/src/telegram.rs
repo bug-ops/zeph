@@ -225,7 +225,7 @@ impl TelegramChannel {
                     .send_message(chat_id, formatted_text)
                     .parse_mode(ParseMode::MarkdownV2)
                     .await
-                    .map_err(|e| ChannelError::Other(e.to_string()))?;
+                    .map_err(ChannelError::other)?;
                 self.message_id = Some(msg.id);
                 tracing::debug!("new message sent with id: {:?}", msg.id);
             }
@@ -261,7 +261,7 @@ impl TelegramChannel {
                             .send_message(chat_id, &formatted_text)
                             .parse_mode(ParseMode::MarkdownV2)
                             .await
-                            .map_err(|e| ChannelError::Other(e.to_string()))?;
+                            .map_err(ChannelError::other)?;
                         self.message_id = Some(msg.id);
                     } else {
                         return Err(ChannelError::Other(e.to_string()));
@@ -366,7 +366,7 @@ impl Channel for TelegramChannel {
                 .send_message(chat_id, &formatted_text)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await
-                .map_err(|e| ChannelError::Other(e.to_string()))?;
+                .map_err(ChannelError::other)?;
         } else {
             let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
             for chunk in chunks {
@@ -374,7 +374,7 @@ impl Channel for TelegramChannel {
                     .send_message(chat_id, chunk)
                     .parse_mode(ParseMode::MarkdownV2)
                     .await
-                    .map_err(|e| ChannelError::Other(e.to_string()))?;
+                    .map_err(ChannelError::other)?;
             }
         }
 
@@ -424,7 +424,7 @@ impl Channel for TelegramChannel {
         self.bot
             .send_chat_action(chat_id, ChatAction::Typing)
             .await
-            .map_err(|e| ChannelError::Other(e.to_string()))?;
+            .map_err(ChannelError::other)?;
         Ok(())
     }
 

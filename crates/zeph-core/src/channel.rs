@@ -21,6 +21,12 @@ pub enum ChannelError {
     Other(String),
 }
 
+impl ChannelError {
+    pub fn other(e: impl std::fmt::Display) -> Self {
+        Self::Other(e.to_string())
+    }
+}
+
 /// All fields that describe a tool-start event sent to a channel.
 #[derive(Debug)]
 pub struct ToolStartEvent<'a> {

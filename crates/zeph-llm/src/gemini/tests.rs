@@ -187,9 +187,7 @@ fn gemini_debug_redacts_api_key() {
 #[test]
 fn gemini_clone_resets_usage() {
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
-    if let Ok(mut guard) = p.last_usage.lock() {
-        *guard = Some((100, 200));
-    }
+    p.usage.record_usage(100, 200);
     let cloned = p.clone();
     assert!(cloned.last_usage().is_none(), "clone must reset last_usage");
 }

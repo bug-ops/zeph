@@ -13,6 +13,7 @@ use crate::provider::{
     StatusTx, ToolDefinition, ToolUseRequest,
 };
 use crate::sse::openai_sse_to_stream;
+use crate::usage::UsageTracker;
 
 pub struct OpenAiProvider {
     client: reqwest::Client,
@@ -23,8 +24,7 @@ pub struct OpenAiProvider {
     embedding_model: Option<String>,
     reasoning_effort: Option<String>,
     pub(crate) status_tx: Option<StatusTx>,
-    last_cache: std::sync::Mutex<Option<(u64, u64)>>,
-    last_usage: std::sync::Mutex<Option<(u64, u64)>>,
+    usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
 }
 
@@ -39,8 +39,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("embedding_model", &self.embedding_model)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("status_tx", &self.status_tx.is_some())
-            .field("last_cache", &self.last_cache.lock().ok())
-            .field("last_usage", &self.last_usage.lock().ok())
+            .field("usage", &self.usage)
             .field("generation_overrides", &self.generation_overrides)
             .finish()
     }
@@ -57,8 +56,7 @@ impl Clone for OpenAiProvider {
             embedding_model: self.embedding_model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
             status_tx: self.status_tx.clone(),
-            last_cache: std::sync::Mutex::new(None),
-            last_usage: std::sync::Mutex::new(None),
+            usage: UsageTracker::default(),
             generation_overrides: self.generation_overrides.clone(),
         }
     }
@@ -86,8 +84,7 @@ impl OpenAiProvider {
             embedding_model,
             reasoning_effort,
             status_tx: None,
-            last_cache: std::sync::Mutex::new(None),
-            last_usage: std::sync::Mutex::new(None),
+            usage: UsageTracker::default(),
             generation_overrides: None,
         }
     }
@@ -190,17 +187,14 @@ impl OpenAiProvider {
     }
 
     fn store_cache_usage(&self, usage: &OpenAiUsage) {
-        if let Ok(mut guard) = self.last_usage.lock() {
-            *guard = Some((usage.prompt_tokens, usage.completion_tokens));
-        }
+        self.usage
+            .record_usage(usage.prompt_tokens, usage.completion_tokens);
         let cached = usage
             .prompt_tokens_details
             .as_ref()
             .map_or(0, |d| d.cached_tokens);
-        if cached > 0
-            && let Ok(mut guard) = self.last_cache.lock()
-        {
-            *guard = Some((0, cached));
+        if cached > 0 {
+            self.usage.record_cache(0, cached);
         }
         tracing::debug!(
             prompt_tokens = usage.prompt_tokens,
@@ -463,11 +457,11 @@ impl LlmProvider for OpenAiProvider {
     }
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        self.last_cache.lock().ok().and_then(|g| *g)
+        self.usage.last_cache_usage()
     }
 
     fn last_usage(&self) -> Option<(u64, u64)> {
-        self.last_usage.lock().ok().and_then(|g| *g)
+        self.usage.last_usage()
     }
 
     fn debug_request_json(

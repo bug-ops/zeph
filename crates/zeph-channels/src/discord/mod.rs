@@ -101,7 +101,7 @@ impl DiscordChannel {
                 self.rest
                     .send_message(&channel_id, chunk)
                     .await
-                    .map_err(|e| ChannelError::Other(e.to_string()))?;
+                    .map_err(ChannelError::other)?;
             }
             self.message_id = None;
             return Ok(());
@@ -113,7 +113,7 @@ impl DiscordChannel {
                     .rest
                     .send_message(&channel_id, &text)
                     .await
-                    .map_err(|e| ChannelError::Other(e.to_string()))?;
+                    .map_err(ChannelError::other)?;
                 self.message_id = Some(msg.id);
             }
             Some(msg_id) => {
@@ -124,7 +124,7 @@ impl DiscordChannel {
                         .rest
                         .send_message(&channel_id, &text)
                         .await
-                        .map_err(|e| ChannelError::Other(e.to_string()))?;
+                        .map_err(ChannelError::other)?;
                     self.message_id = Some(msg.id);
                 }
             }
@@ -194,14 +194,14 @@ impl Channel for DiscordChannel {
             self.rest
                 .send_message(channel_id, text)
                 .await
-                .map_err(|e| ChannelError::Other(e.to_string()))?;
+                .map_err(ChannelError::other)?;
         } else {
             let chunks = crate::markdown::utf8_chunks(text, MAX_MESSAGE_LEN);
             for chunk in chunks {
                 self.rest
                     .send_message(channel_id, chunk)
                     .await
-                    .map_err(|e| ChannelError::Other(e.to_string()))?;
+                    .map_err(ChannelError::other)?;
             }
         }
         Ok(())

@@ -99,7 +99,7 @@ impl SlackChannel {
                     .api
                     .post_message(channel_id, text)
                     .await
-                    .map_err(|e| ChannelError::Other(e.to_string()))?;
+                    .map_err(ChannelError::other)?;
                 self.message_ts = Some(ts);
             }
             Some(ts) => {
@@ -110,7 +110,7 @@ impl SlackChannel {
                         .api
                         .post_message(channel_id, text)
                         .await
-                        .map_err(|e| ChannelError::Other(e.to_string()))?;
+                        .map_err(ChannelError::other)?;
                     self.message_ts = Some(ts);
                 }
             }
@@ -176,7 +176,7 @@ impl Channel for SlackChannel {
         self.api
             .post_message(channel_id, text)
             .await
-            .map_err(|e| ChannelError::Other(e.to_string()))?;
+            .map_err(ChannelError::other)?;
         Ok(())
     }
 
