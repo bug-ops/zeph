@@ -456,27 +456,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirm_denies_when_channel_closed() {
-        // When the sender is dropped before confirm() reads, recv() returns None -> Ok(false).
-        let (tx, rx) = mpsc::channel(16);
-        drop(tx); // close channel immediately
-        let rest = rest::RestClient::new("test-token".into());
-        let mut ch = DiscordChannel {
-            rx,
-            rest,
-            channel_id: Some("ch1".into()),
-            allowed_user_ids: vec![],
-            allowed_role_ids: vec![],
-            allowed_channel_ids: vec![],
-            accumulated: String::new(),
-            last_edit: None,
-            message_id: None,
-        };
-        // send() will fail because REST has no real server, but we only care that the
-        // timeout-path and closed-channel-path compile and are exercised. Use a direct
-        // recv() match to test the channel-closed branch without the HTTP call.
-        let result = tokio::time::timeout(std::time::Duration::from_millis(10), ch.rx.recv()).await;
-        // Channel closed: recv() returns None immediately.
-        assert!(matches!(result, Ok(None)));
+    async fn confirm_returns_err_without_active_channel() {
+        // confirm() calls send() first. Without channel_id, send() returns
+        // Err("no active channel") and confirm() propagates it via `?`.
+        // This test verifies that confirm() is callable and errors correctly.
+        let mut ch = make_channel();
+        // channel_id is None in make_channel() — send() will fail immediately.
+        let result = ch.confirm("delete everything?").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn confirm_timeout_logic_denies_on_timeout() {
+        // Verify the timeout + recv logic used inside confirm() in isolation.
+        // Full integration testing of confirm() (including the send() REST call)
+        // requires a mock HTTP server and is covered by live agent testing.
+        tokio::time::pause();
+        let (_tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        // Advance past CONFIRM_TIMEOUT while _tx is still alive (no message sent).
+        let timeout_fut = tokio::time::timeout(crate::CONFIRM_TIMEOUT, rx.recv());
+        tokio::time::advance(crate::CONFIRM_TIMEOUT + Duration::from_millis(1)).await;
+        let result = timeout_fut.await;
+        // Should time out (Err), not receive a message.
+        assert!(result.is_err(), "expected timeout Err, got recv result");
     }
 }

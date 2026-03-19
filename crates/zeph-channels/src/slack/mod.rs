@@ -326,21 +326,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirm_denies_when_channel_closed() {
-        // When the sender is dropped before confirm() reads, recv() returns None -> Ok(false).
-        let (tx, rx) = mpsc::channel(16);
-        drop(tx); // close channel immediately
-        let api = api::SlackApi::new("xoxb-test".into());
-        let mut ch = SlackChannel {
-            rx,
-            api,
-            channel_id: None,
-            accumulated: String::new(),
-            last_edit: None,
-            message_ts: None,
-        };
-        // Verify the channel-closed path: recv() returns None immediately after drop.
-        let result = tokio::time::timeout(std::time::Duration::from_millis(10), ch.rx.recv()).await;
-        assert!(matches!(result, Ok(None)));
+    async fn confirm_returns_err_without_active_channel() {
+        // confirm() calls send() first. Without channel_id, send() returns
+        // Err("no active channel") and confirm() propagates it via `?`.
+        // This test verifies that confirm() is callable and errors correctly.
+        let mut ch = make_channel();
+        // channel_id is None in make_channel() — send() will fail immediately.
+        let result = ch.confirm("delete everything?").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn confirm_timeout_logic_denies_on_timeout() {
+        // Verify the timeout + recv logic used inside confirm() in isolation.
+        // Full integration testing of confirm() (including the Slack API call)
+        // requires a mock HTTP server and is covered by live agent testing.
+        tokio::time::pause();
+        let (_tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        let timeout_fut = tokio::time::timeout(crate::CONFIRM_TIMEOUT, rx.recv());
+        tokio::time::advance(crate::CONFIRM_TIMEOUT + Duration::from_millis(1)).await;
+        let result = timeout_fut.await;
+        assert!(result.is_err(), "expected timeout Err, got recv result");
     }
 }
