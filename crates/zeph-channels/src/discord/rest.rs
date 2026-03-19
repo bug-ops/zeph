@@ -7,6 +7,39 @@ use serde::{Deserialize, Serialize};
 
 const BASE_URL: &str = "https://discord.com/api/v10";
 
+#[derive(Deserialize)]
+struct CurrentApplication {
+    id: String,
+}
+
+#[derive(Serialize)]
+struct SlashCommand {
+    name: &'static str,
+    description: &'static str,
+    #[serde(rename = "type")]
+    kind: u8,
+}
+
+/// Slash commands to register with Discord at bot startup.
+const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand {
+        name: "reset",
+        description: "Reset conversation history",
+        kind: 1,
+    },
+    SlashCommand {
+        name: "skills",
+        description: "List loaded skills",
+        kind: 1,
+    },
+    SlashCommand {
+        name: "agent",
+        description: "Manage sub-agents",
+        kind: 1,
+    },
+];
+
+#[derive(Clone)]
 pub struct RestClient {
     client: reqwest::Client,
     token: String,
@@ -84,6 +117,47 @@ impl RestClient {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    /// Register global slash commands for this bot application.
+    ///
+    /// Uses `PUT /applications/{id}/commands` which is idempotent — safe to call on every
+    /// restart. Global commands take up to 1 hour to propagate. Logs success or failure;
+    /// never returns an error (fire-and-forget caller pattern).
+    pub async fn register_slash_commands(&self) {
+        let app_id = match self
+            .client
+            .get(format!("{BASE_URL}/applications/@me"))
+            .header("Authorization", self.auth_header())
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+        {
+            Ok(resp) => match resp.json::<CurrentApplication>().await {
+                Ok(app) => app.id,
+                Err(e) => {
+                    tracing::warn!("discord: failed to parse application info: {e}");
+                    return;
+                }
+            },
+            Err(e) => {
+                tracing::warn!("discord: failed to fetch application info: {e}");
+                return;
+            }
+        };
+
+        match self
+            .client
+            .put(format!("{BASE_URL}/applications/{app_id}/commands"))
+            .header("Authorization", self.auth_header())
+            .json(SLASH_COMMANDS)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+        {
+            Ok(_) => tracing::info!("discord: slash commands registered successfully"),
+            Err(e) => tracing::warn!("discord: slash command registration failed: {e}"),
+        }
     }
 
     /// # Errors

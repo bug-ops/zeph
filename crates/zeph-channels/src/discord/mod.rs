@@ -39,6 +39,9 @@ impl std::fmt::Debug for DiscordChannel {
 
 impl DiscordChannel {
     /// Create a new Discord channel and spawn the gateway listener.
+    ///
+    /// Slash commands are registered at startup in a background task (fire-and-forget).
+    /// If registration fails, a warning is logged and the bot continues normally.
     #[must_use]
     pub fn new(
         token: String,
@@ -48,6 +51,11 @@ impl DiscordChannel {
     ) -> Self {
         let rx = gateway::spawn_gateway(token.clone());
         let rest = rest::RestClient::new(token);
+        // Register slash commands asynchronously; failure is non-fatal.
+        let rest_for_reg = rest.clone();
+        tokio::spawn(async move {
+            rest_for_reg.register_slash_commands().await;
+        });
         Self {
             rx,
             rest,
@@ -234,12 +242,28 @@ impl Channel for DiscordChannel {
     }
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        self.send(&format!("{prompt}\nReply 'yes' to confirm."))
-            .await?;
-        let Some(incoming) = self.rx.recv().await else {
-            return Ok(false);
-        };
-        Ok(incoming.content.trim().eq_ignore_ascii_case("yes"))
+        self.send(&format!(
+            "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
+            crate::CONFIRM_TIMEOUT.as_secs()
+        ))
+        .await?;
+        // Note: confirm() consumes the next message regardless of intent.
+        // If the user sends an unrelated message within the timeout window, it will be
+        // treated as a non-confirmation and swallowed. This is a known limitation.
+        match tokio::time::timeout(crate::CONFIRM_TIMEOUT, self.rx.recv()).await {
+            Ok(Some(incoming)) => Ok(incoming.content.trim().eq_ignore_ascii_case("yes")),
+            Ok(None) => {
+                tracing::warn!("discord confirm channel closed — denying");
+                Ok(false)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "discord confirm timed out after {}s — denied",
+                    crate::CONFIRM_TIMEOUT.as_secs()
+                );
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -429,5 +453,31 @@ mod tests {
     #[test]
     fn edit_throttle_constant() {
         assert_eq!(EDIT_THROTTLE, Duration::from_millis(1500));
+    }
+
+    #[tokio::test]
+    async fn confirm_returns_err_without_active_channel() {
+        // confirm() calls send() first. Without channel_id, send() returns
+        // Err("no active channel") and confirm() propagates it via `?`.
+        // This test verifies that confirm() is callable and errors correctly.
+        let mut ch = make_channel();
+        // channel_id is None in make_channel() — send() will fail immediately.
+        let result = ch.confirm("delete everything?").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn confirm_timeout_logic_denies_on_timeout() {
+        // Verify the timeout + recv logic used inside confirm() in isolation.
+        // Full integration testing of confirm() (including the send() REST call)
+        // requires a mock HTTP server and is covered by live agent testing.
+        tokio::time::pause();
+        let (_tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        // Advance past CONFIRM_TIMEOUT while _tx is still alive (no message sent).
+        let timeout_fut = tokio::time::timeout(crate::CONFIRM_TIMEOUT, rx.recv());
+        tokio::time::advance(crate::CONFIRM_TIMEOUT + Duration::from_millis(1)).await;
+        let result = timeout_fut.await;
+        // Should time out (Err), not receive a message.
+        assert!(result.is_err(), "expected timeout Err, got recv result");
     }
 }

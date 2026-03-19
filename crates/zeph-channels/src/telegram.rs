@@ -429,9 +429,12 @@ impl Channel for TelegramChannel {
     }
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        self.send(&format!("{prompt}\nReply 'yes' to confirm (timeout: 30s)."))
-            .await?;
-        match tokio::time::timeout(Duration::from_secs(30), self.rx.recv()).await {
+        self.send(&format!(
+            "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
+            crate::CONFIRM_TIMEOUT.as_secs()
+        ))
+        .await?;
+        match tokio::time::timeout(crate::CONFIRM_TIMEOUT, self.rx.recv()).await {
             Ok(Some(incoming)) => Ok(incoming.text.trim().eq_ignore_ascii_case("yes")),
             Ok(None) => {
                 tracing::warn!("confirm channel closed — denying secret request");

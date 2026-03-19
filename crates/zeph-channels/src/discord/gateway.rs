@@ -141,12 +141,102 @@ async fn run_session(
                             let _ = tx.send(incoming).await;
                         }
                     }
+                    0 if payload.get("t").and_then(Value::as_str)
+                        == Some("INTERACTION_CREATE") =>
+                    {
+                        if let Some((incoming, ack)) =
+                            payload.get("d").and_then(parse_interaction_create)
+                        {
+                            // ACK the interaction immediately to prevent "interaction failed".
+                            // Using type 5 (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE) keeps the
+                            // thinking indicator visible; the agent's response arrives via a
+                            // follow-up message.
+                            if let Err(e) = ack_interaction(&ack).await {
+                                tracing::warn!("discord: interaction ack failed: {e}");
+                            }
+                            let _ = tx.send(incoming).await;
+                        }
+                    }
                     7 | 9 => return Ok(()), // Reconnect / Invalid Session
                     _ => {}
                 }
             }
         }
     }
+}
+
+struct InteractionAck {
+    id: String,
+    token: String,
+}
+
+/// Parse an `INTERACTION_CREATE` dispatch event for `APPLICATION_COMMAND` type (type 2).
+///
+/// Returns `(IncomingMessage, InteractionAck)` where the message content is `/<command_name>`,
+/// so the agent loop sees slash commands identically to text messages.
+fn parse_interaction_create(d: &Value) -> Option<(IncomingMessage, InteractionAck)> {
+    // Only handle APPLICATION_COMMAND interactions (type 2).
+    if d.get("type").and_then(Value::as_u64) != Some(2) {
+        return None;
+    }
+
+    let id = d.get("id")?.as_str()?.to_owned();
+    let token = d.get("token")?.as_str()?.to_owned();
+    let channel_id = d.get("channel_id")?.as_str()?.to_owned();
+    let command_name = d.get("data")?.get("name")?.as_str()?;
+
+    // Resolve author_id from member (guild) or user (DM) context.
+    let author_id = d
+        .get("member")
+        .and_then(|m| m.get("user"))
+        .or_else(|| d.get("user"))
+        .and_then(|u| u.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+
+    let author_roles: Vec<String> = d
+        .get("member")
+        .and_then(|m| m.get("roles"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let incoming = IncomingMessage {
+        channel_id,
+        // Translate to a slash command text so the agent loop handles it uniformly.
+        content: format!("/{command_name}"),
+        author_id,
+        author_roles,
+    };
+    Some((incoming, InteractionAck { id, token }))
+}
+
+/// Acknowledge a Discord slash command interaction to prevent "This interaction failed."
+///
+/// Uses type 5 (`DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE`) so Discord shows a thinking indicator
+/// while the agent processes the command and sends a follow-up message.
+async fn ack_interaction(
+    ack: &InteractionAck,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let client = zeph_core::http::default_client();
+    let url = format!(
+        "https://discord.com/api/v10/interactions/{}/{}/callback",
+        ack.id, ack.token
+    );
+    // type 5 = DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+    let body = serde_json::json!({"type": 5});
+    client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
 }
 
 fn parse_message_create(d: &Value) -> Option<IncomingMessage> {

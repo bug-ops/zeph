@@ -9,7 +9,9 @@ use zeph_channels::discord::DiscordChannel;
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::TelegramChannel;
 #[cfg(feature = "tui")]
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage, ToolOutputEvent};
+use zeph_core::channel::{
+    Channel, ChannelError, ChannelMessage, StopHint, ToolOutputEvent, ToolStartEvent,
+};
 use zeph_core::config::Config;
 #[cfg(feature = "tui")]
 use zeph_tui::TuiChannel;
@@ -77,6 +79,33 @@ impl Channel for AppChannel {
     }
     async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_tool_output, event)
+    }
+
+    async fn send_thinking_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_thinking_chunk, chunk)
+    }
+
+    async fn send_stop_hint(&mut self, hint: StopHint) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_stop_hint, hint)
+    }
+
+    async fn send_usage(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        context_window: u64,
+    ) -> Result<(), ChannelError> {
+        dispatch_app_channel!(
+            self,
+            send_usage,
+            input_tokens,
+            output_tokens,
+            context_window
+        )
+    }
+
+    async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_tool_start, event)
     }
 }
 
@@ -178,6 +207,119 @@ pub(crate) async fn create_channel_with_tui(
 #[cfg(test)]
 pub(crate) async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
     create_channel_inner(config, None).await
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use zeph_channels::AnyChannel;
+    use zeph_channels::CliChannel;
+    use zeph_core::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
+
+    fn make_app_channel() -> AppChannel {
+        AppChannel::Standard(AnyChannel::Cli(CliChannel::new()))
+    }
+
+    #[tokio::test]
+    async fn app_channel_sends_thinking_chunk() {
+        let mut ch = make_app_channel();
+        assert!(ch.send_thinking_chunk("reasoning...").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn app_channel_sends_stop_hint() {
+        let mut ch = make_app_channel();
+        assert!(ch.send_stop_hint(StopHint::MaxTokens).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn app_channel_sends_usage() {
+        let mut ch = make_app_channel();
+        assert!(ch.send_usage(100, 50, 200_000).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn app_channel_sends_tool_start() {
+        let mut ch = make_app_channel();
+        assert!(
+            ch.send_tool_start(ToolStartEvent {
+                tool_name: "shell",
+                tool_call_id: "tc-001",
+                params: None,
+                parent_tool_use_id: None,
+            })
+            .await
+            .is_ok()
+        );
+    }
+
+    /// Exhaustive Channel method coverage for AppChannel.
+    ///
+    /// When a new method is added to the Channel trait, it must be called here.
+    /// If a forwarding is missing in AppChannel, this test serves as a manual checklist
+    /// to catch the gap during review.
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn app_channel_forwards_all_channel_methods() {
+        let mut ch = make_app_channel();
+        // 1. recv — skipped (blocks on stdin)
+        // 2. try_recv
+        let _ = ch.try_recv();
+        // 3. supports_exit
+        let _ = ch.supports_exit();
+        // 4. send
+        ch.send("test").await.unwrap();
+        // 5. send_chunk
+        ch.send_chunk("chunk").await.unwrap();
+        // 6. flush_chunks
+        ch.flush_chunks().await.unwrap();
+        // 7. send_typing
+        ch.send_typing().await.unwrap();
+        // 8. send_status
+        ch.send_status("working").await.unwrap();
+        // 9. send_thinking_chunk
+        ch.send_thinking_chunk("...").await.unwrap();
+        // 10. send_queue_count
+        ch.send_queue_count(3).await.unwrap();
+        // 11. send_usage
+        ch.send_usage(10, 5, 8192).await.unwrap();
+        // 12. send_diff
+        ch.send_diff(zeph_core::DiffData {
+            file_path: String::new(),
+            old_content: String::new(),
+            new_content: String::new(),
+        })
+        .await
+        .unwrap();
+        // 13. send_tool_start
+        ch.send_tool_start(ToolStartEvent {
+            tool_name: "bash",
+            tool_call_id: "x",
+            params: None,
+            parent_tool_use_id: None,
+        })
+        .await
+        .unwrap();
+        // 14. send_tool_output
+        ch.send_tool_output(ToolOutputEvent {
+            tool_name: "bash",
+            body: "ok",
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: "x",
+            is_error: false,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: None,
+        })
+        .await
+        .unwrap();
+        // 15. send_stop_hint
+        ch.send_stop_hint(StopHint::MaxTurnRequests).await.unwrap();
+        // 16. confirm — skipped (reads from stdin; covered by separate test)
+    }
 }
 
 pub(crate) async fn build_cli_history(

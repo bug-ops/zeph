@@ -15,3 +15,9 @@ pub mod telegram;
 
 pub use any::AnyChannel;
 pub use cli::CliChannel;
+
+/// Shared timeout for interactive confirmation dialogs across all remote channels.
+///
+/// Used by Telegram, Discord, and Slack `confirm()` implementations to ensure
+/// consistent deny-on-timeout behavior.
+pub const CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
