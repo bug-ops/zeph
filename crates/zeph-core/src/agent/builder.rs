@@ -538,6 +538,9 @@ impl<C: Channel> Agent<C> {
         compaction_preserve_tail: usize,
         prune_protect_tokens: usize,
     ) -> Self {
+        if budget_tokens == 0 {
+            tracing::warn!("context budget is 0 — agent will have no token tracking");
+        }
         if budget_tokens > 0 {
             self.context_manager.budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
         }

@@ -1052,10 +1052,7 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
                 let text_content: String = msg
                     .parts
                     .iter()
-                    .filter_map(|p| match p {
-                        MessagePart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
+                    .filter_map(|p| p.as_plain_text())
                     .collect::<Vec<_>>()
                     .join("");
 
@@ -1106,15 +1103,16 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
                                 tool_call_id: Some(tool_use_id.clone()),
                             });
                         }
-                        MessagePart::Text { text } if !text.is_empty() => {
-                            result.push(StructuredApiMessage {
-                                role: "user".to_owned(),
-                                content: Some(text.clone()),
-                                tool_calls: None,
-                                tool_call_id: None,
-                            });
+                        other => {
+                            if let Some(text) = other.as_plain_text().filter(|t| !t.is_empty()) {
+                                result.push(StructuredApiMessage {
+                                    role: "user".to_owned(),
+                                    content: Some(text.to_owned()),
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                });
+                            }
                         }
-                        _ => {}
                     }
                 }
             }

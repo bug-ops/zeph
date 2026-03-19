@@ -1397,3 +1397,55 @@ fn normalize_nested_objects_get_additional_properties() {
     assert_eq!(schema["additionalProperties"], false);
     assert_eq!(schema["properties"]["inner"]["additionalProperties"], false);
 }
+
+#[test]
+fn convert_messages_structured_preserves_internal_variants() {
+    // Recall/CodeContext/Summary/CrossSession in tool-use messages must not be silently dropped.
+    // Previously, the wildcard `_ => {}` in convert_messages_structured() dropped these variants.
+    let messages = vec![
+        // Assistant message with Recall + ToolUse: Recall text must appear in content
+        Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::Recall {
+                    text: "past context".into(),
+                },
+                MessagePart::ToolUse {
+                    id: "call_1".into(),
+                    name: "search".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+        ),
+        // User message with ToolResult + CodeContext: CodeContext must not be dropped
+        Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                },
+                MessagePart::CodeContext {
+                    text: "fn main() {}".into(),
+                },
+            ],
+        ),
+    ];
+    let result = convert_messages_structured(&messages);
+    // Assistant message: content must include the Recall text
+    assert_eq!(result[0].role, "assistant");
+    assert_eq!(result[0].content.as_deref(), Some("past context"));
+    assert!(result[0].tool_calls.is_some());
+    // User messages: ToolResult becomes role "tool", CodeContext becomes role "user"
+    let tool_msg = result
+        .iter()
+        .find(|m| m.role == "tool")
+        .expect("tool message");
+    assert_eq!(tool_msg.content.as_deref(), Some("result"));
+    let user_msg = result
+        .iter()
+        .find(|m| m.role == "user")
+        .expect("user message");
+    assert_eq!(user_msg.content.as_deref(), Some("fn main() {}"));
+}

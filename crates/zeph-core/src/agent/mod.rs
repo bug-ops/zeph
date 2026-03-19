@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod accessors;
 mod builder;
 pub(crate) mod compaction_strategy;
 #[cfg(feature = "compression-guidelines")]
@@ -192,6 +193,7 @@ impl<C: Channel> Agent<C> {
         max_active_skills: usize,
         tool_executor: impl ToolExecutor + 'static,
     ) -> Self {
+        debug_assert!(max_active_skills > 0, "max_active_skills must be > 0");
         let all_skills: Vec<Skill> = {
             let reg = registry.read().expect("registry read lock poisoned");
             reg.all_meta()
