@@ -225,20 +225,6 @@ impl ToolRateLimiter {
         results
     }
 
-    /// Returns `true` if the circuit breaker is currently tripped for `category`.
-    ///
-    /// Available for testing and future TUI diagnostics.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn is_tripped(&self, category: ToolCategory) -> bool {
-        if let Some(&trip_time) = self.tripped.get(&category) {
-            let cooldown =
-                std::time::Duration::from_secs(self.config.circuit_breaker_cooldown_secs);
-            return Instant::now().duration_since(trip_time) < cooldown;
-        }
-        false
-    }
-
     /// Returns the calls-per-minute limit for `category`.
     #[must_use]
     pub fn limit_for(&self, category: ToolCategory) -> usize {
@@ -357,7 +343,6 @@ mod tests {
         // Third call — breaker still tripped, returns Some immediately.
         let r3 = limiter.check_batch(&["shell"]);
         assert!(r3[0].is_some());
-        assert!(limiter.is_tripped(ToolCategory::Shell));
     }
 
     #[test]
@@ -416,15 +401,6 @@ mod tests {
         assert_eq!(limiter.limit_for(ToolCategory::Memory), 30);
         assert_eq!(limiter.limit_for(ToolCategory::Mcp), 40);
         assert_eq!(limiter.limit_for(ToolCategory::Other), 50);
-    }
-
-    // --- is_tripped for fresh limiter ---
-
-    #[test]
-    fn is_tripped_false_for_fresh_limiter() {
-        let limiter = limiter_with(5, 30);
-        assert!(!limiter.is_tripped(ToolCategory::Shell));
-        assert!(!limiter.is_tripped(ToolCategory::Web));
     }
 
     // --- empty batch ---

@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - refactor(llm): extract `UsageTracker` struct to consolidate duplicate token usage tracking across Claude, OpenAI, Ollama, and Gemini providers (DRY-01+06, epic #1975)
 - refactor(memory): remove duplicate `BoxFuture` type alias from `in_memory_store.rs`; import canonical definition from `vector_store.rs` (DRY-05, epic #1975)
 - refactor(channels): add `ChannelError::other()` helper; replace 15 `.map_err(|e| ChannelError::Other(e.to_string()))` sites in telegram, discord, slack, and cli channels (DRY-04, epic #1975)
+- refactor: remove dead code: `FOCUS_REMINDER_PREFIX` constant, `FocusState::should_remind()`, `ToolRateLimiter::is_tripped()`, `CorrectionKind::Abandonment` variant, `SidequestState::parse_eviction_response()` (epic #1976)
+- ci: expand feature matrix to test intermediate feature combinations: `orchestration`, `orchestration,graph-memory`, `daemon,acp`, `tui,scheduler` (epic #1976)
 
 ### Fixed
 

@@ -29,7 +29,6 @@ serde_json.workspace = true
 sha2 = { version = "0.10", optional = true }
 subtle = { workspace = true, optional = true }
 teloxide = { workspace = true, features = ["rustls", "ctrlc_handler", "macros"] }
-thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tokio-tungstenite = { workspace = true, optional = true, features = ["connect", "rustls-tls-native-roots"] }
 tracing.workspace = true
