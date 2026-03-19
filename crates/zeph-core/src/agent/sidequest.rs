@@ -45,6 +45,7 @@ pub(crate) struct ToolOutputCursor {
 
 /// LLM response schema for `SideQuest` eviction.
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub(crate) struct EvictionResponse {
     pub(crate) del_cursors: Vec<usize>,
 }
