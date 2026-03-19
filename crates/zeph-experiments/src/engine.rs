@@ -22,7 +22,7 @@ use super::evaluator::Evaluator;
 use super::generator::VariationGenerator;
 use super::snapshot::ConfigSnapshot;
 use super::types::{ExperimentResult, ExperimentSource, Variation};
-use crate::config::ExperimentConfig;
+use zeph_config::ExperimentConfig;
 
 /// Final report produced by [`ExperimentEngine::run`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -443,14 +443,14 @@ mod tests {
     #![allow(clippy::doc_markdown)]
 
     use super::*;
-    use crate::config::ExperimentConfig;
-    use crate::experiments::benchmark::{BenchmarkCase, BenchmarkSet};
-    use crate::experiments::evaluator::Evaluator;
-    use crate::experiments::generator::VariationGenerator;
-    use crate::experiments::snapshot::ConfigSnapshot;
-    use crate::experiments::types::{ParameterKind, Variation, VariationValue};
+    use crate::benchmark::{BenchmarkCase, BenchmarkSet};
+    use crate::evaluator::Evaluator;
+    use crate::generator::VariationGenerator;
+    use crate::snapshot::ConfigSnapshot;
+    use crate::types::{ParameterKind, Variation, VariationValue};
     use ordered_float::OrderedFloat;
     use std::sync::Arc;
+    use zeph_config::ExperimentConfig;
 
     fn make_benchmark() -> BenchmarkSet {
         BenchmarkSet {
