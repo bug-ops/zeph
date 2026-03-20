@@ -1010,6 +1010,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent
     };
 
+    // Apply TAFC config — CLI --tafc flag takes priority over config file.
+    let tafc_config = {
+        let mut tafc = config.tools.tafc.clone();
+        if cli.tafc {
+            tafc.enabled = true;
+        }
+        tafc
+    };
+    let agent = agent.with_tafc_config(tafc_config);
+
     let agent = agent.with_document_config(config.memory.documents.clone());
     let agent = agent.with_graph_config(config.memory.graph.clone());
 
@@ -1261,6 +1271,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 metrics_rx: tui_metrics_rx,
                 warmup_provider: warmup_provider_clone,
                 index_progress_rx,
+                cli_tafc: cli.tafc,
             },
         ))
         .await;

@@ -9,8 +9,9 @@ use futures::future::join_all;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
 use super::{
-    doom_loop_hash, normalize_for_doom_loop, retry_backoff_ms, tool_args_hash,
-    tool_def_to_definition,
+    augment_with_tafc, doom_loop_hash, normalize_for_doom_loop, retry_backoff_ms,
+    schema_complexity, strip_tafc_fields, tool_args_hash, tool_def_to_definition,
+    tool_def_to_definition_with_tafc,
 };
 
 #[test]
@@ -3871,5 +3872,385 @@ async fn native_anomaly_executor_error_records_error() {
     assert!(
         det.check().is_some(),
         "executor Err must record error; 15 errors must produce anomaly"
+    );
+}
+
+// ── TAFC tests ──────────────────────────────────────────────────────────────
+
+fn make_complex_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "anyOf": [
+                    { "type": "string", "enum": ["read", "write", "append", "delete", "list", "stat", "copy", "move", "rename"] },
+                    { "type": "null" }
+                ]
+            },
+            "options": {
+                "type": "object",
+                "properties": {
+                    "encoding": { "type": "string" },
+                    "mode": {
+                        "type": "object",
+                        "properties": {
+                            "flag": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn make_simple_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "command": { "type": "string" }
+        },
+        "required": ["command"]
+    })
+}
+
+#[test]
+fn schema_complexity_simple_is_below_tau() {
+    let schema = make_simple_schema();
+    let c = schema_complexity(&schema);
+    assert!(c < 0.6, "simple schema complexity {c} should be < 0.6");
+}
+
+#[test]
+fn schema_complexity_complex_is_above_tau() {
+    let schema = make_complex_schema();
+    let c = schema_complexity(&schema);
+    assert!(c >= 0.6, "complex schema complexity {c} should be >= 0.6");
+}
+
+#[test]
+fn schema_complexity_range() {
+    let schema = make_complex_schema();
+    let c = schema_complexity(&schema);
+    assert!((0.0..=1.0).contains(&c), "complexity {c} out of [0, 1]");
+}
+
+#[test]
+fn augment_with_tafc_injects_think_field() {
+    use zeph_llm::provider::ToolDefinition;
+    let def = ToolDefinition {
+        name: "file_op".to_owned(),
+        description: "file operation".to_owned(),
+        parameters: make_complex_schema(),
+    };
+    let augmented = augment_with_tafc(def, 0.6);
+    let props = augmented.parameters["properties"]
+        .as_object()
+        .expect("properties must be object");
+    assert!(
+        props.contains_key("_tafc_think"),
+        "_tafc_think must be injected"
+    );
+    assert!(props["_tafc_think"]["description"].is_string());
+}
+
+#[test]
+fn augment_with_tafc_skips_simple_schema() {
+    use zeph_llm::provider::ToolDefinition;
+    let def = ToolDefinition {
+        name: "bash".to_owned(),
+        description: "run shell".to_owned(),
+        parameters: make_simple_schema(),
+    };
+    let augmented = augment_with_tafc(def, 0.6);
+    let props = augmented.parameters["properties"]
+        .as_object()
+        .expect("properties must be object");
+    assert!(
+        !props.contains_key("_tafc_think"),
+        "_tafc_think must NOT be injected for simple schemas"
+    );
+}
+
+#[test]
+fn strip_tafc_fields_removes_think_keys() {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "_tafc_think".to_owned(),
+        serde_json::Value::String("reasoning here".to_owned()),
+    );
+    map.insert(
+        "command".to_owned(),
+        serde_json::Value::String("ls".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "bash");
+    assert!(result.is_ok(), "should succeed when real params exist");
+    assert!(result.unwrap(), "should report fields were stripped");
+    assert!(
+        !map.contains_key("_tafc_think"),
+        "_tafc_think must be removed"
+    );
+    assert!(map.contains_key("command"), "real params must remain");
+}
+
+#[test]
+fn strip_tafc_fields_no_think_fields() {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "command".to_owned(),
+        serde_json::Value::String("echo".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "bash");
+    assert!(result.is_ok());
+    assert!(!result.unwrap(), "should report no fields stripped");
+}
+
+#[test]
+fn strip_tafc_fields_only_think_returns_err() {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "_tafc_think".to_owned(),
+        serde_json::Value::String("only reasoning".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "bash");
+    assert!(
+        result.is_err(),
+        "must return Err when only think fields present"
+    );
+    assert!(map.is_empty(), "think fields must still be removed");
+}
+
+#[test]
+fn tafc_config_default_disabled() {
+    let config = zeph_tools::TafcConfig::default();
+    assert!(!config.enabled);
+    assert!((config.complexity_threshold - 0.6).abs() < f64::EPSILON);
+}
+
+#[test]
+fn tafc_config_parse_from_toml() {
+    let toml_str = r#"
+        [tafc]
+        enabled = true
+        complexity_threshold = 0.7
+    "#;
+    let config: zeph_tools::ToolsConfig = toml::from_str(toml_str).unwrap();
+    assert!(config.tafc.enabled);
+    assert!((config.tafc.complexity_threshold - 0.7).abs() < f64::EPSILON);
+}
+
+#[test]
+fn tool_def_to_definition_with_tafc_augments_when_enabled() {
+    use schemars::Schema;
+    use zeph_tools::TafcConfig;
+    use zeph_tools::registry::{InvocationHint, ToolDef};
+
+    let raw = make_complex_schema();
+    let schema: Schema = serde_json::from_value(raw).expect("valid schema");
+    let def = ToolDef {
+        id: "file_op".into(),
+        description: "complex file operation tool".into(),
+        schema,
+        invocation: InvocationHint::ToolCall,
+    };
+    let tafc = TafcConfig {
+        enabled: true,
+        complexity_threshold: 0.6,
+    };
+    let result = tool_def_to_definition_with_tafc(&def, &tafc);
+    let props = result.parameters["properties"]
+        .as_object()
+        .expect("properties must be object");
+    assert!(props.contains_key("_tafc_think"));
+}
+
+#[test]
+fn tool_def_to_definition_with_tafc_skips_when_disabled() {
+    use schemars::Schema;
+    use zeph_tools::TafcConfig;
+    use zeph_tools::registry::{InvocationHint, ToolDef};
+
+    let raw = make_complex_schema();
+    let schema: Schema = serde_json::from_value(raw).expect("valid schema");
+    let def = ToolDef {
+        id: "file_op".into(),
+        description: "complex file operation tool".into(),
+        schema,
+        invocation: InvocationHint::ToolCall,
+    };
+    let tafc = TafcConfig {
+        enabled: false,
+        complexity_threshold: 0.6,
+    };
+    let result = tool_def_to_definition_with_tafc(&def, &tafc);
+    let map = result.parameters.as_object().expect("should be object");
+    let props = map.get("properties").and_then(|v| v.as_object());
+    if let Some(props) = props {
+        assert!(!props.contains_key("_tafc_think"));
+    }
+}
+
+#[test]
+fn tafc_complexity_threshold_boundary() {
+    use zeph_llm::provider::ToolDefinition;
+    let def = ToolDefinition {
+        name: "op".to_owned(),
+        description: "op".to_owned(),
+        parameters: make_complex_schema(),
+    };
+    let c = schema_complexity(&def.parameters);
+    // At threshold == complexity, augmentation should fire (complexity >= threshold)
+    let augmented_at = augment_with_tafc(def.clone(), c);
+    let props_at = augmented_at.parameters["properties"].as_object().unwrap();
+    assert!(
+        props_at.contains_key("_tafc_think"),
+        "at threshold: must augment"
+    );
+
+    // At threshold == complexity + epsilon, augmentation must NOT fire
+    let augmented_above = augment_with_tafc(def, c + 0.01);
+    let props_above = augmented_above.parameters["properties"]
+        .as_object()
+        .unwrap();
+    assert!(
+        !props_above.contains_key("_tafc_think"),
+        "above threshold: must not augment"
+    );
+}
+
+#[test]
+fn strip_tafc_fields_suffixed_variants_stripped() {
+    // SEC-01: suffixed keys like `_tafc_think_step1` must also be stripped.
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "_tafc_think_step1".to_owned(),
+        serde_json::Value::String("first step".to_owned()),
+    );
+    map.insert(
+        "_tafc_think_step2".to_owned(),
+        serde_json::Value::String("second step".to_owned()),
+    );
+    map.insert(
+        "query".to_owned(),
+        serde_json::Value::String("find files".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "search");
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap(),
+        "suffixed think fields must be reported as stripped"
+    );
+    assert!(
+        !map.contains_key("_tafc_think_step1"),
+        "_tafc_think_step1 must be stripped"
+    );
+    assert!(
+        !map.contains_key("_tafc_think_step2"),
+        "_tafc_think_step2 must be stripped"
+    );
+    assert!(map.contains_key("query"), "real param must remain");
+}
+
+#[test]
+fn strip_tafc_fields_case_insensitive() {
+    // SEC-01: uppercase/mixed-case variants must not bypass stripping.
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "_TAFC_THINK".to_owned(),
+        serde_json::Value::String("bypass attempt".to_owned()),
+    );
+    map.insert(
+        "arg".to_owned(),
+        serde_json::Value::String("value".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "tool");
+    assert!(result.is_ok());
+    assert!(result.unwrap(), "uppercase TAFC key must be stripped");
+    assert!(
+        !map.contains_key("_TAFC_THINK"),
+        "_TAFC_THINK must be stripped"
+    );
+    assert!(map.contains_key("arg"), "real param must remain");
+}
+
+#[test]
+fn strip_tafc_fields_empty_params_map() {
+    // Edge case: empty map must return Ok(false) without error.
+    let mut map = serde_json::Map::new();
+    let result = strip_tafc_fields(&mut map, "noop");
+    assert!(result.is_ok());
+    assert!(!result.unwrap(), "empty map has nothing to strip");
+}
+
+#[test]
+fn tafc_config_validated_clamps_out_of_range() {
+    use zeph_tools::TafcConfig;
+
+    let over = TafcConfig {
+        enabled: true,
+        complexity_threshold: 1.5,
+    }
+    .validated();
+    assert!(
+        (over.complexity_threshold - 1.0).abs() < f64::EPSILON,
+        "must clamp to 1.0"
+    );
+
+    let under = TafcConfig {
+        enabled: true,
+        complexity_threshold: -0.5,
+    }
+    .validated();
+    assert!(
+        (under.complexity_threshold - 0.0).abs() < f64::EPSILON,
+        "must clamp to 0.0"
+    );
+
+    let nan = TafcConfig {
+        enabled: true,
+        complexity_threshold: f64::NAN,
+    }
+    .validated();
+    assert!(
+        (nan.complexity_threshold - 0.6).abs() < f64::EPSILON,
+        "NaN must reset to default"
+    );
+
+    let inf = TafcConfig {
+        enabled: true,
+        complexity_threshold: f64::INFINITY,
+    }
+    .validated();
+    assert!(
+        (inf.complexity_threshold - 0.6).abs() < f64::EPSILON,
+        "Inf must reset to default"
+    );
+}
+
+#[test]
+fn schema_complexity_many_flat_params_score() {
+    // HIGH-02: a schema with 8+ flat properties should score higher than one with 2.
+    let few_props = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "a": { "type": "string" },
+            "b": { "type": "string" }
+        }
+    });
+    let many_props = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "a": { "type": "string" },
+            "b": { "type": "string" },
+            "c": { "type": "string" },
+            "d": { "type": "string" },
+            "e": { "type": "string" },
+            "f": { "type": "string" },
+            "g": { "type": "string" },
+            "h": { "type": "string" }
+        }
+    });
+    assert!(
+        schema_complexity(&many_props) > schema_complexity(&few_props),
+        "8 flat properties must score higher than 2"
     );
 }

@@ -183,6 +183,14 @@ impl Config {
             )));
         }
 
+        let sct = self.llm.semantic_cache_threshold;
+        if !(sct.is_finite() && (0.0..=1.0).contains(&sct)) {
+            return Err(ConfigError::Validation(format!(
+                "llm.semantic_cache_threshold must be in [0.0, 1.0], got {sct} \
+                 (override via ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD env var)"
+            )));
+        }
+
         Ok(())
     }
 
@@ -210,5 +218,76 @@ impl Config {
         if is_legacy_default_log_file(&self.logging.file) {
             self.logging.file = default_log_file_path();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_sct(threshold: f32) -> Config {
+        let mut cfg = Config::default();
+        cfg.llm.semantic_cache_threshold = threshold;
+        cfg
+    }
+
+    #[test]
+    fn semantic_cache_threshold_valid_zero() {
+        assert!(config_with_sct(0.0).validate().is_ok());
+    }
+
+    #[test]
+    fn semantic_cache_threshold_valid_mid() {
+        assert!(config_with_sct(0.5).validate().is_ok());
+    }
+
+    #[test]
+    fn semantic_cache_threshold_valid_one() {
+        assert!(config_with_sct(1.0).validate().is_ok());
+    }
+
+    #[test]
+    fn semantic_cache_threshold_invalid_negative() {
+        let err = config_with_sct(-0.1).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("semantic_cache_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn semantic_cache_threshold_invalid_above_one() {
+        let err = config_with_sct(1.1).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("semantic_cache_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn semantic_cache_threshold_invalid_nan() {
+        let err = config_with_sct(f32::NAN).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("semantic_cache_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn semantic_cache_threshold_invalid_infinity() {
+        let err = config_with_sct(f32::INFINITY).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("semantic_cache_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn semantic_cache_threshold_invalid_neg_infinity() {
+        let err = config_with_sct(f32::NEG_INFINITY).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("semantic_cache_threshold"),
+            "unexpected error: {err}"
+        );
     }
 }

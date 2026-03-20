@@ -1172,6 +1172,10 @@ impl<C: Channel> Agent<C> {
         use zeph_llm::provider::{ChatResponse, Message, MessagePart, Role, ToolDefinition};
         use zeph_tools::executor::ToolCall;
 
+        // CRIT-01 / TAFC isolation: inline tool loops run as subagent orchestration tasks
+        // (scheduler, planner, aggregator) and intentionally bypass TAFC augmentation.
+        // They use their own private message history and never surface TAFC think fields
+        // to the interactive session, so no stripping is needed here (CRIT-02 compliance).
         let tool_defs: Vec<ToolDefinition> = self
             .tool_executor
             .tool_definitions_erased()
