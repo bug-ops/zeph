@@ -2147,8 +2147,20 @@ impl<C: Channel> Agent<C> {
         if trimmed == "/compact" {
             if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
                 match self.compact_context().await {
-                    Ok(_) => {
+                    Ok(
+                        context::CompactionOutcome::Compacted
+                        | context::CompactionOutcome::NoChange,
+                    ) => {
                         let _ = self.channel.send("Context compacted successfully.").await;
+                    }
+                    Ok(context::CompactionOutcome::ProbeRejected) => {
+                        let _ = self
+                            .channel
+                            .send(
+                                "Compaction rejected: summary quality below threshold. \
+                                 Original context preserved.",
+                            )
+                            .await;
                     }
                     Err(e) => {
                         let _ = self.channel.send(&format!("Compaction failed: {e}")).await;
