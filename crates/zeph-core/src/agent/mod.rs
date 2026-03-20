@@ -3301,6 +3301,33 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Subgoal display (#2022): show active subgoal when a subgoal strategy is active.
+        #[cfg(feature = "context-compression")]
+        {
+            use crate::config::PruningStrategy;
+            if matches!(
+                self.context_manager.compression.pruning_strategy,
+                PruningStrategy::Subgoal | PruningStrategy::SubgoalMig
+            ) {
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
+                    "Pruning:   {}",
+                    match self.context_manager.compression.pruning_strategy {
+                        PruningStrategy::SubgoalMig => "subgoal_mig",
+                        _ => "subgoal",
+                    }
+                );
+                let subgoal_count = self.compression.subgoal_registry.subgoals.len();
+                let _ = writeln!(out, "Subgoals:  {subgoal_count} tracked");
+                if let Some(active) = self.compression.subgoal_registry.active_subgoal() {
+                    let _ = writeln!(out, "Active:    \"{}\"", active.description);
+                } else {
+                    let _ = writeln!(out, "Active:    (none yet)");
+                }
+            }
+        }
+
         self.channel.send(out.trim_end()).await?;
         Ok(())
     }

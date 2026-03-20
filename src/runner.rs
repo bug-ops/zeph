@@ -419,6 +419,24 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.config_mut().memory.compression.pruning_strategy = strategy;
     }
 
+    // M4 fix (#2022): SideQuest eviction and Subgoal pruning are mutually exclusive.
+    // Both attempt to manage tool output eviction; running them together produces
+    // conflicting eviction decisions and undefined registry state.
+    if app
+        .config()
+        .memory
+        .compression
+        .pruning_strategy
+        .is_subgoal()
+        && app.config().memory.sidequest.enabled
+    {
+        anyhow::bail!(
+            "SideQuest eviction and Subgoal pruning are mutually exclusive. \
+             Disable [memory.sidequest] enabled or switch pruning_strategy to \
+             reactive|task_aware|mig|task_aware_mig."
+        );
+    }
+
     if cli.server_compaction
         && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
     {

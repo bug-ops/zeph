@@ -786,11 +786,15 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
         "task_aware (keyword relevance scoring)",
         "mig (relevance minus redundancy)",
         "task_aware_mig (combined goal + MIG)",
+        "subgoal (HiAgent subgoal-aware, LLM extraction per turn)",
+        "subgoal_mig (subgoal + MIG redundancy scoring)",
     ];
     let default_idx = match state.pruning_strategy.as_str() {
         "task_aware" => 1,
         "mig" => 2,
         "task_aware_mig" => 3,
+        "subgoal" => 4,
+        "subgoal_mig" => 5,
         _ => 0,
     };
     let idx = Select::new()
@@ -802,6 +806,8 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
         1 => "task_aware".into(),
         2 => "mig".into(),
         3 => "task_aware_mig".into(),
+        4 => "subgoal".into(),
+        5 => "subgoal_mig".into(),
         _ => "reactive".into(),
     };
 
@@ -1131,6 +1137,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         "task_aware" => PruningStrategy::TaskAware,
         "mig" => PruningStrategy::Mig,
         "task_aware_mig" => PruningStrategy::TaskAwareMig,
+        "subgoal" => PruningStrategy::Subgoal,
+        "subgoal_mig" => PruningStrategy::SubgoalMig,
         _ => PruningStrategy::Reactive,
     };
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
