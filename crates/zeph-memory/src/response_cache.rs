@@ -89,14 +89,19 @@ impl ResponseCache {
         let mut best_score = -1.0_f32;
         let mut best_response: Option<String> = None;
 
-        for (response, blob) in rows {
+        for (response, blob) in &rows {
             // bytemuck::try_cast_slice handles corrupt BLOBs (non-multiple-of-4 length) safely.
-            match bytemuck::try_cast_slice::<u8, f32>(&blob) {
+            match bytemuck::try_cast_slice::<u8, f32>(blob) {
                 Ok(stored) => {
                     let score = crate::math::cosine_similarity(embedding, stored);
+                    tracing::debug!(
+                        score,
+                        threshold = similarity_threshold,
+                        "semantic cache candidate evaluated",
+                    );
                     if score > best_score {
                         best_score = score;
-                        best_response = Some(response);
+                        best_response = Some(response.clone());
                     }
                 }
                 Err(e) => {
@@ -104,6 +109,14 @@ impl ResponseCache {
                 }
             }
         }
+
+        tracing::debug!(
+            examined = rows.len(),
+            best_score,
+            threshold = similarity_threshold,
+            hit = best_score >= similarity_threshold,
+            "semantic cache scan complete",
+        );
 
         if best_score >= similarity_threshold {
             Ok(best_response.map(|r| (r, best_score)))

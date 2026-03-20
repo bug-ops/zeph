@@ -184,10 +184,25 @@ pub struct LlmConfig {
     /// Enable semantic similarity-based response caching. Requires embedding support.
     #[serde(default)]
     pub semantic_cache_enabled: bool,
-    /// Cosine similarity threshold for semantic cache hits (0.0-1.0). Recommended: 0.92-0.98.
+    /// Cosine similarity threshold for semantic cache hits (0.0–1.0).
+    ///
+    /// Only the highest-scoring candidate above this threshold is returned.
+    /// Lower values produce more cache hits but risk returning less relevant responses.
+    /// Recommended range: 0.92–0.98; default: 0.95.
     #[serde(default = "default_semantic_cache_threshold")]
     pub semantic_cache_threshold: f32,
-    /// Maximum cache entries to scan per semantic query. Limits search cost.
+    /// Maximum cached entries to examine per semantic lookup (SQL `LIMIT` clause in
+    /// `ResponseCache::get_semantic()`). Controls the recall-vs-performance tradeoff:
+    ///
+    /// - **Higher values** (e.g. 50): scan more entries, better chance of finding a
+    ///   semantically similar cached response, but slower queries.
+    /// - **Lower values** (e.g. 5): faster queries, but may miss relevant cached entries
+    ///   when the cache is large.
+    /// - **Default (10)**: balanced middle ground for typical workloads.
+    ///
+    /// Tuning guidance: set to 50+ when recall matters more than latency (e.g. long-running
+    /// sessions with many cached responses); reduce to 5 for low-latency interactive use.
+    /// Env override: `ZEPH_LLM_SEMANTIC_CACHE_MAX_CANDIDATES`.
     #[serde(default = "default_semantic_cache_max_candidates")]
     pub semantic_cache_max_candidates: u32,
     #[serde(default)]
