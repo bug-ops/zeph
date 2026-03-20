@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use zeph_tools::{OverflowConfig, TafcConfig, ResultCacheConfig, ToolResultCache};
+use zeph_tools::{OverflowConfig, ResultCacheConfig, TafcConfig, ToolResultCache};
 
 use super::DOOM_LOOP_WINDOW;
 
