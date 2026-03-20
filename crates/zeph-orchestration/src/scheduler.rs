@@ -662,6 +662,7 @@ impl DagScheduler {
                     duration_ms,
                     agent_id: Some(agent_handle_id),
                     agent_def: agent_def_name,
+                    handoff_output: None,
                 });
 
                 // Mark newly unblocked tasks as Ready.
@@ -913,6 +914,7 @@ mod tests {
             aggregator_max_tokens: 4096,
             deferral_backoff_ms: 250,
             plan_cache: zeph_config::PlanCacheConfig::default(),
+            handoff: zeph_config::HandoffConfig::default(),
         }
     }
 
@@ -1554,6 +1556,7 @@ mod tests {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
 
         let config = zeph_config::OrchestrationConfig {
@@ -1624,6 +1627,7 @@ mod tests {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
 
         // Budget large enough to hold the spotlighting wrapper + some Japanese chars.
@@ -1728,6 +1732,7 @@ mod tests {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
 
         let config = zeph_config::OrchestrationConfig {

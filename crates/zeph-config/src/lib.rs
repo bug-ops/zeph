@@ -42,7 +42,9 @@ pub use defaults::{
     is_legacy_default_sqlite_path,
 };
 pub use dump_format::DumpFormat;
-pub use experiment::{ExperimentConfig, ExperimentSchedule, OrchestrationConfig, PlanCacheConfig};
+pub use experiment::{
+    ExperimentConfig, ExperimentSchedule, HandoffConfig, OrchestrationConfig, PlanCacheConfig,
+};
 pub use features::{
     CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
     ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SkillPromptMode, SkillsConfig,
