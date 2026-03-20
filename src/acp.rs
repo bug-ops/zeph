@@ -639,30 +639,32 @@ async fn spawn_acp_agent(
             (zeph_tools::DynExecutor(base), None, None, None)
         };
 
-    let mut agent = Agent::new_with_registry_arc(
-        provider.clone(),
-        channel,
-        Arc::clone(&registry),
-        matcher,
-        max_active_skills,
-        tool_executor,
+    let mut agent = Box::pin(
+        Agent::new_with_registry_arc(
+            provider.clone(),
+            channel,
+            Arc::clone(&registry),
+            matcher,
+            max_active_skills,
+            tool_executor,
+        )
+        .apply_session_config(session_config)
+        .with_working_dir(session_ctx.working_dir.clone())
+        .with_skill_reload(skill_paths, reload_rx)
+        .with_managed_skills_dir(managed_skills_dir)
+        .with_shutdown(shutdown_rx)
+        .with_config_reload(config_path, config_reload_rx)
+        .with_mcp(
+            mcp_tools,
+            mcp_registry,
+            Some(Arc::clone(&mcp_manager)),
+            &mcp_config,
+        )
+        .with_mcp_shared_tools(mcp_shared_tools)
+        .with_focus_config(d.focus_config.clone())
+        .with_sidequest_config(d.sidequest_config.clone())
+        .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider),
     )
-    .apply_session_config(session_config)
-    .with_working_dir(session_ctx.working_dir.clone())
-    .with_skill_reload(skill_paths, reload_rx)
-    .with_managed_skills_dir(managed_skills_dir)
-    .with_shutdown(shutdown_rx)
-    .with_config_reload(config_path, config_reload_rx)
-    .with_mcp(
-        mcp_tools,
-        mcp_registry,
-        Some(Arc::clone(&mcp_manager)),
-        &mcp_config,
-    )
-    .with_mcp_shared_tools(mcp_shared_tools)
-    .with_focus_config(d.focus_config.clone())
-    .with_sidequest_config(d.sidequest_config.clone())
-    .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider)
     .await;
 
     // Wire scheduler per session: apply update/custom receivers and add executor.

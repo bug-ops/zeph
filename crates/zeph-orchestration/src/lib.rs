@@ -20,7 +20,9 @@ pub use graph::{
     FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId, TaskNode,
     TaskResult, TaskStatus,
 };
-pub use plan_cache::{PlanCache, PlanCacheError, PlanTemplate, TemplateTask, plan_with_cache};
+pub use plan_cache::{
+    PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
+};
 pub use planner::{LlmPlanner, Planner};
 pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};

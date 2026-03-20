@@ -413,6 +413,8 @@ impl<C: Channel> Agent<C> {
                 subagent_manager: None,
                 subagent_config: crate::config::SubAgentConfig::default(),
                 orchestration_config: crate::config::OrchestrationConfig::default(),
+                plan_cache: None,
+                pending_goal_embedding: None,
             },
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
@@ -492,8 +494,55 @@ impl<C: Channel> Agent<C> {
         &self.orchestration.orchestration_config
     }
 
+    /// Lazily initialize `OrchestrationState::plan_cache` on the first `/plan` call.
+    ///
+    /// No-op when the cache is already initialized, disabled in config, or memory is unavailable.
+    async fn init_plan_cache_if_needed(&mut self) {
+        let plan_cache_config = self.orchestration.orchestration_config.plan_cache.clone();
+        if !plan_cache_config.enabled || self.orchestration.plan_cache.is_some() {
+            return;
+        }
+        if let Some(ref memory) = self.memory_state.memory {
+            let pool = memory.sqlite().pool().clone();
+            let embed_model = self.skill_state.embedding_model.clone();
+            match crate::orchestration::PlanCache::new(pool, plan_cache_config, &embed_model).await
+            {
+                Ok(cache) => self.orchestration.plan_cache = Some(cache),
+                Err(e) => {
+                    tracing::warn!(error = %e, "plan cache: init failed, proceeding without cache");
+                }
+            }
+        } else {
+            tracing::warn!("plan cache: memory not configured, proceeding without cache");
+        }
+    }
+
+    /// Compute a normalized goal embedding for plan cache lookups (best-effort).
+    ///
+    /// Returns `None` when the cache is disabled, the provider does not support embeddings,
+    /// or the embedding call fails.
+    async fn goal_embedding_for_cache(&self, goal: &str) -> Option<Vec<f32>> {
+        use crate::orchestration::normalize_goal;
+
+        self.orchestration.plan_cache.as_ref()?;
+        let normalized = normalize_goal(goal);
+        match self.provider.embed(&normalized).await {
+            Ok(emb) => Some(emb),
+            Err(zeph_llm::LlmError::EmbedUnsupported { .. }) => {
+                tracing::debug!(
+                    "plan cache: provider does not support embeddings, skipping cache lookup"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "plan cache: goal embedding failed, skipping cache");
+                None
+            }
+        }
+    }
+
     async fn handle_plan_goal(&mut self, goal: &str) -> Result<(), error::AgentError> {
-        use crate::orchestration::{LlmPlanner, Planner};
+        use crate::orchestration::{LlmPlanner, plan_with_cache};
 
         if self.orchestration.pending_graph.is_some() {
             self.channel
@@ -518,13 +567,36 @@ impl<C: Channel> Agent<C> {
             .orchestration
             .orchestration_config
             .confirm_before_execute;
-        let (graph, planner_usage) = LlmPlanner::new(
+
+        self.init_plan_cache_if_needed().await;
+        let goal_embedding = self.goal_embedding_for_cache(goal).await;
+
+        tracing::debug!(
+            cache_enabled = self.orchestration.orchestration_config.plan_cache.enabled,
+            has_embedding = goal_embedding.is_some(),
+            "plan cache state for goal"
+        );
+
+        let planner = LlmPlanner::new(
             self.provider.clone(),
             &self.orchestration.orchestration_config,
+        );
+        let embed_model = self.skill_state.embedding_model.clone();
+        let (graph, planner_usage) = plan_with_cache(
+            &planner,
+            self.orchestration.plan_cache.as_ref(),
+            &self.provider,
+            goal_embedding.as_deref(),
+            &embed_model,
+            goal,
+            &available_agents,
+            self.orchestration.orchestration_config.max_tasks,
         )
-        .plan(goal, &available_agents)
         .await
         .map_err(|e| error::AgentError::Other(e.to_string()))?;
+
+        // Store embedding for cache_plan() after execution completes.
+        self.orchestration.pending_goal_embedding = goal_embedding;
 
         let task_count = graph.tasks.len() as u64;
         let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
@@ -564,6 +636,7 @@ impl<C: Channel> Agent<C> {
                     s.completed_at = Some(now);
                 }
             });
+            // pending_goal_embedding intentionally not cleared — overwritten on next /plan goal.
         }
 
         Ok(())
@@ -1401,6 +1474,20 @@ impl<C: Channel> Agent<C> {
                             .await?;
                     }
                 }
+
+                // Cache the completed plan template (best-effort, never blocks execution).
+                if let Some(ref cache) = self.orchestration.plan_cache
+                    && let Some(embedding) = self.orchestration.pending_goal_embedding.take()
+                {
+                    let embed_model = self.skill_state.embedding_model.clone();
+                    if let Err(e) = cache
+                        .cache_plan(&completed_graph, &embedding, &embed_model)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "plan cache: failed to cache completed plan");
+                    }
+                }
+
                 "completed"
             }
             GraphStatus::Failed => {
@@ -1584,6 +1671,7 @@ impl<C: Channel> Agent<C> {
                     s.completed_at = Some(now);
                 }
             });
+            self.orchestration.pending_goal_embedding = None;
             self.channel.send("Plan canceled.").await?;
         } else {
             self.channel.send("No active plan to cancel.").await?;
