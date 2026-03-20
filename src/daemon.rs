@@ -333,6 +333,19 @@ pub(crate) async fn run_daemon(
     .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
 
+    // Wire tool dependency graph if enabled (#2024).
+    let agent = if config.tools.dependencies.enabled && !config.tools.dependencies.rules.is_empty()
+    {
+        let graph = zeph_tools::ToolDependencyGraph::new(config.tools.dependencies.rules.clone());
+        let always_on: std::collections::HashSet<String> =
+            config.agent.tool_filter.always_on.iter().cloned().collect();
+        agent
+            .with_tool_dependency_graph(graph, always_on)
+            .with_dependency_config(config.tools.dependencies.clone())
+    } else {
+        agent
+    };
+
     let summary_provider = app.build_summary_provider();
     let agent = if let Some(sp) = summary_provider {
         agent.with_summary_provider(sp)

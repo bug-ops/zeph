@@ -55,6 +55,8 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         temporal_decay_half_life_days: 30,
         mmr_enabled: false,
         mmr_lambda: 0.7,
+        importance_enabled: false,
+        importance_weight: 0.15,
         token_counter: Arc::new(TokenCounter::new()),
         graph_store: None,
         community_detection_failures: Arc::new(AtomicU64::new(0)),
@@ -346,6 +348,99 @@ async fn recall_routed_episodic_all_temporal_stripped_falls_back_to_original() {
         !recalled.is_empty(),
         "fallback to original query must find the message containing 'last time'"
     );
+}
+
+// ── importance scoring tests (#2021) ──────────────────────────────────────
+
+#[tokio::test]
+async fn recall_importance_enabled_blends_score() {
+    // Build a memory with importance_enabled = true and no Qdrant (pure FTS5).
+    // A marker message should be boosted relative to a plain message.
+    let memory = {
+        let mut m = test_semantic_memory(false).await;
+        m.importance_enabled = true;
+        m.importance_weight = 0.20;
+        m
+    };
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+
+    memory
+        .remember(cid, "user", "remember: the API key rotates weekly")
+        .await
+        .unwrap();
+    memory.remember(cid, "user", "API key info").await.unwrap();
+
+    let recalled = memory.recall("API key", 5, None).await.unwrap();
+    assert!(
+        recalled.len() >= 2,
+        "both messages must be recalled, got {}",
+        recalled.len()
+    );
+
+    // The marker message must outrank the plain one.
+    let marker_rank = recalled
+        .iter()
+        .position(|r| r.message.content.contains("remember:"))
+        .expect("marker message missing from recall results");
+    assert_eq!(
+        marker_rank, 0,
+        "marker message must rank first when importance is enabled"
+    );
+}
+
+#[tokio::test]
+async fn recall_importance_disabled_no_blending() {
+    // importance_enabled = false → scores must equal plain FTS5 weighted scores (no boost).
+    // We verify the feature gate: turning it off must still work without panics.
+    let memory = test_semantic_memory(false).await;
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    memory
+        .remember(cid, "user", "remember: the API key rotates weekly")
+        .await
+        .unwrap();
+    memory.remember(cid, "user", "API key info").await.unwrap();
+
+    let recalled = memory.recall("API key", 5, None).await.unwrap();
+    // Must return results without panicking.
+    assert!(!recalled.is_empty());
+}
+
+#[tokio::test]
+async fn batch_increment_access_count_empty_vec_noop() {
+    let memory = test_semantic_memory(false).await;
+    // Recall on empty DB returns empty → access count increment is skipped.
+    // No panic, no SQL error.
+    let recalled = memory.recall("anything", 5, None).await.unwrap();
+    assert!(recalled.is_empty());
+}
+
+#[tokio::test]
+async fn recall_access_count_incremented_after_recall() {
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let id = memory
+        .remember(cid, "user", "rust async patterns")
+        .await
+        .unwrap();
+
+    let before: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_one(memory.sqlite.pool())
+        .await
+        .unwrap();
+    assert_eq!(before.0, 0, "access_count must start at 0");
+
+    let recalled = memory.recall("rust", 5, None).await.unwrap();
+    assert!(!recalled.is_empty());
+
+    let after: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_one(memory.sqlite.pool())
+        .await
+        .unwrap();
+    assert_eq!(after.0, 1, "access_count must be incremented after recall");
 }
 
 #[test]

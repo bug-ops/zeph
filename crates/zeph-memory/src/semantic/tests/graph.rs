@@ -306,6 +306,8 @@ async fn memory_with_in_memory_vector_store() -> (
         temporal_decay_half_life_days: 30,
         mmr_enabled: false,
         mmr_lambda: 0.7,
+        importance_enabled: false,
+        importance_weight: 0.15,
         token_counter: std::sync::Arc::new(TokenCounter::new()),
         graph_store: None,
         community_detection_failures: Arc::new(AtomicU64::new(0)),

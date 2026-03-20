@@ -279,6 +279,11 @@ impl AppBuilder {
             self.config.memory.semantic.mmr_lambda,
         );
 
+        memory = memory.with_importance_options(
+            self.config.memory.semantic.importance_enabled,
+            self.config.memory.semantic.importance_weight,
+        );
+
         if self.config.memory.semantic.enabled && memory.is_vector_store_connected().await {
             tracing::info!("semantic memory enabled, vector store connected");
             match memory.embed_missing().await {

@@ -123,9 +123,10 @@ impl SqliteStore {
         agent_visible: bool,
         user_visible: bool,
     ) -> Result<MessageId, MemoryError> {
+        let importance_score = crate::semantic::importance::compute_importance(content, role);
         let row: (MessageId,) = sqlx::query_as(
-            "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
-             VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible, importance_score) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
         )
         .bind(conversation_id)
         .bind(role)
@@ -133,6 +134,7 @@ impl SqliteStore {
         .bind(parts_json)
         .bind(i64::from(agent_visible))
         .bind(i64::from(user_visible))
+        .bind(importance_score)
         .fetch_one(&self.pool)
         .await?;
         Ok(row.0)
@@ -287,6 +289,7 @@ impl SqliteStore {
         .execute(&mut *tx)
         .await?;
 
+        // importance_score uses schema DEFAULT 0.5 (neutral); compaction summaries are not scored at write time.
         let row: (MessageId,) = sqlx::query_as(
             "INSERT INTO messages \
              (conversation_id, role, content, parts, agent_visible, user_visible) \
@@ -743,6 +746,56 @@ impl SqliteStore {
                 .execute(&self.pool)
                 .await?;
         }
+        Ok(())
+    }
+
+    /// Fetch `importance_score` values for the given message IDs.
+    ///
+    /// Messages missing from the table fall back to 0.5 (neutral) and are omitted from the map.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn fetch_importance_scores(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, f64>, MemoryError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT id, importance_score FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+        );
+        let mut q = sqlx::query_as::<_, (MessageId, f64)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Increment `access_count` and set `last_accessed = datetime('now')` for the given IDs.
+    ///
+    /// Skips the update when `ids` is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn increment_access_counts(&self, ids: &[MessageId]) -> Result<(), MemoryError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "UPDATE messages SET access_count = access_count + 1, last_accessed = datetime('now') \
+             WHERE id IN ({placeholders})"
+        );
+        let mut q = sqlx::query(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+        q.execute(&self.pool).await?;
         Ok(())
     }
 }

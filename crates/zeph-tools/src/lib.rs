@@ -34,8 +34,8 @@ pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::{
-    AnomalyConfig, AuditConfig, OverflowConfig, ResultCacheConfig, ScrapeConfig, ShellConfig,
-    TafcConfig, ToolsConfig,
+    AnomalyConfig, AuditConfig, DependencyConfig, OverflowConfig, ResultCacheConfig, ScrapeConfig,
+    ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{
@@ -60,7 +60,10 @@ pub use policy::{
 #[cfg(feature = "policy-enforcer")]
 pub use policy_gate::PolicyGateExecutor;
 pub use registry::ToolRegistry;
-pub use schema_filter::{InclusionReason, ToolEmbedding, ToolFilterResult, ToolSchemaFilter};
+pub use schema_filter::{
+    DependencyExclusion, InclusionReason, ToolDependencyGraph, ToolEmbedding, ToolFilterResult,
+    ToolSchemaFilter,
+};
 pub use scrape::WebScrapeExecutor;
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
