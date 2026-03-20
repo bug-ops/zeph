@@ -972,6 +972,7 @@ mod tests {
             },
             model: String::new(),
             pruning_strategy: crate::config::PruningStrategy::default(),
+            probe: Default::default(),
         };
         let agent = make_agent().with_compression(compression);
         assert!(

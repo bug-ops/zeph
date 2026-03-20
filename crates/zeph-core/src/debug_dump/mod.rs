@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use base64::Engine as _;
 use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
 
+use crate::redact::scrub_content;
+
 pub use zeph_config::DumpFormat;
 
 pub struct DebugDumper {
@@ -171,6 +173,54 @@ impl DebugDumper {
         match serde_json::to_string_pretty(&payload) {
             Ok(json) => self.write(&format!("{id:04}-anchored-summary.json"), json.as_bytes()),
             Err(e) => tracing::warn!("dump_anchored_summary: serialize failed: {e}"),
+        }
+    }
+
+    /// Dump the compaction probe result for a hard compaction event (#1609).
+    /// When `format = Trace`, this is a no-op.
+    pub(crate) fn dump_compaction_probe(&self, result: &zeph_memory::CompactionProbeResult) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
+        let id = self.next_id();
+        let questions: Vec<serde_json::Value> = result
+            .questions
+            .iter()
+            .zip(
+                result
+                    .answers
+                    .iter()
+                    .chain(std::iter::repeat(&String::new())),
+            )
+            .zip(
+                result
+                    .per_question_scores
+                    .iter()
+                    .chain(std::iter::repeat(&0.0_f32)),
+            )
+            .map(|((q, a), &s)| {
+                serde_json::json!({
+                    "question": scrub_content(&q.question),
+                    "expected": scrub_content(&q.expected_answer),
+                    "actual": scrub_content(a),
+                    "score": s,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "score": result.score,
+            "threshold": result.threshold,
+            "hard_fail_threshold": result.hard_fail_threshold,
+            "verdict": format!("{:?}", result.verdict),
+            "model": result.model,
+            "duration_ms": result.duration_ms,
+            "questions": questions,
+        });
+        match serde_json::to_string_pretty(&payload) {
+            Ok(json) => {
+                self.write(&format!("{id:04}-compaction-probe.json"), json.as_bytes());
+            }
+            Err(e) => tracing::warn!("dump_compaction_probe: serialize failed: {e}"),
         }
     }
 

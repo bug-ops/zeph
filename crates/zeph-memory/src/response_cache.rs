@@ -732,4 +732,69 @@ mod tests {
             .unwrap();
         assert!(result.is_none(), "all corrupt BLOBs must yield Ok(None)");
     }
+
+    // --- Dimension mismatch tests (issue #2034) ---
+
+    #[tokio::test]
+    async fn test_semantic_get_dimension_mismatch_returns_none() {
+        // Store dim=3, query dim=2 — cosine_similarity returns 0.0 for length mismatch.
+        // threshold=0.01 ensures 0.0 is below the bar (CRIT-01 fix verification).
+        let cache = test_cache().await;
+        cache
+            .put_with_embedding("k1", "resp-3d", "m1", &[1.0, 0.0, 0.0], "model-a")
+            .await
+            .unwrap();
+        let result = cache
+            .get_semantic(&[1.0, 0.0], "model-a", 0.01, 10)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "dimension mismatch must not produce a hit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_semantic_get_dimension_mismatch_query_longer() {
+        // Inverse case: store dim=2, query dim=3 — mismatch handling must be symmetric.
+        let cache = test_cache().await;
+        cache
+            .put_with_embedding("k1", "resp-2d", "m1", &[1.0, 0.0], "model-a")
+            .await
+            .unwrap();
+        let result = cache
+            .get_semantic(&[1.0, 0.0, 0.0], "model-a", 0.01, 10)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "query longer than stored embedding must not produce a hit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_semantic_get_mixed_dimensions_picks_correct_match() {
+        // Store entries at dim=2 and dim=3. Query with dim=3 must return only the dim=3 entry.
+        // The dim=2 entry scores 0.0 (mismatch) and must not interfere.
+        let cache = test_cache().await;
+        cache
+            .put_with_embedding("k-2d", "resp-2d", "m1", &[1.0, 0.0], "model-a")
+            .await
+            .unwrap();
+        cache
+            .put_with_embedding("k-3d", "resp-3d", "m1", &[1.0, 0.0, 0.0], "model-a")
+            .await
+            .unwrap();
+        let result = cache
+            .get_semantic(&[1.0, 0.0, 0.0], "model-a", 0.9, 10)
+            .await
+            .unwrap();
+        assert!(result.is_some(), "matching dim=3 entry should be returned");
+        let (response, score) = result.unwrap();
+        assert_eq!(response, "resp-3d", "wrong entry returned");
+        assert!(
+            (score - 1.0).abs() < 1e-5,
+            "expected score ~1.0 for identical vectors, got {score}"
+        );
+    }
 }

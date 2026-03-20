@@ -10,6 +10,7 @@ use zeph_memory::AnchoredSummary;
 use super::super::Agent;
 use super::super::context_manager::CompactionTier;
 use super::super::tool_execution::OVERFLOW_NOTICE_PREFIX;
+use super::CompactionOutcome;
 use crate::channel::Channel;
 use crate::context::ContextBudget;
 
@@ -1194,16 +1195,17 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(in crate::agent) async fn compact_context(
         &mut self,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<CompactionOutcome, super::super::error::AgentError> {
         // Force-apply any pending deferred summaries before draining to avoid losing them (CRIT-01).
         let _ = self.apply_deferred_summaries();
 
         let preserve_tail = self.context_manager.compaction_preserve_tail;
 
         if self.msg.messages.len() <= preserve_tail + 1 {
-            return Ok(());
+            return Ok(CompactionOutcome::NoChange);
         }
 
         let compact_end = self.msg.messages.len() - preserve_tail;
@@ -1223,7 +1225,7 @@ impl<C: Channel> Agent<C> {
             .cloned()
             .collect();
         if to_compact.is_empty() {
-            return Ok(());
+            return Ok(CompactionOutcome::NoChange);
         }
 
         // Load compression guidelines if the feature is enabled and configured.
@@ -1233,6 +1235,59 @@ impl<C: Channel> Agent<C> {
         let guidelines = String::new();
 
         let summary = self.summarize_messages(&to_compact, &guidelines).await?;
+
+        // Compaction probe: validate summary quality before committing it.
+        if self.context_manager.compression.probe.enabled {
+            let _ = self
+                .channel
+                .send_status("Validating compaction quality...")
+                .await;
+            let probe_result = match zeph_memory::validate_compaction(
+                self.summary_or_primary_provider(),
+                &to_compact,
+                &summary,
+                &self.context_manager.compression.probe,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::warn!("compaction probe error (non-blocking): {e:#}");
+                    self.update_metrics(|m| m.compaction_probe_errors += 1);
+                    None
+                }
+            };
+
+            if let Some(ref result) = probe_result {
+                if let Some(ref d) = self.debug_state.debug_dumper {
+                    d.dump_compaction_probe(result);
+                }
+
+                match result.verdict {
+                    zeph_memory::ProbeVerdict::HardFail => {
+                        tracing::warn!(
+                            score = result.score,
+                            threshold = result.hard_fail_threshold,
+                            "compaction probe HARD FAIL — keeping original messages"
+                        );
+                        self.update_metrics(|m| m.compaction_probe_failures += 1);
+                        return Ok(CompactionOutcome::ProbeRejected);
+                    }
+                    zeph_memory::ProbeVerdict::SoftFail => {
+                        tracing::warn!(
+                            score = result.score,
+                            threshold = result.threshold,
+                            "compaction probe SOFT FAIL — proceeding with warning"
+                        );
+                        self.update_metrics(|m| m.compaction_probe_soft_failures += 1);
+                    }
+                    zeph_memory::ProbeVerdict::Pass => {
+                        tracing::info!(score = result.score, "compaction probe passed");
+                        self.update_metrics(|m| m.compaction_probe_passes += 1);
+                    }
+                }
+            }
+        }
 
         let compacted_count = to_compact.len();
         let summary_content =
@@ -1309,7 +1364,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        Ok(())
+        Ok(CompactionOutcome::Compacted)
     }
 
     /// Prune tool output bodies.
@@ -2134,48 +2189,65 @@ impl<C: Channel> Agent<C> {
                     "hard compaction: pruning insufficient, falling back to LLM summarization"
                 );
                 let tokens_before = self.providers.cached_prompt_tokens;
-                let result = self.compact_context().await;
-                if result.is_ok() {
-                    // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all
-                    // freed space — no net reduction).
-                    let freed_tokens =
-                        tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
-                    if freed_tokens == 0 {
-                        tracing::warn!(
-                            "hard compaction: summary consumed all freed tokens — no net \
-                             reduction, marking exhausted"
-                        );
-                        // Only reachable from Ready state (Cooling is guarded by in_cooldown).
+                let outcome = self.compact_context().await?;
+                match outcome {
+                    CompactionOutcome::ProbeRejected => {
+                        // Probe rejected the summary. This is NOT exhaustion — the compactor
+                        // can still summarize, but the summary was too lossy.
+                        // Set cooldown to prevent immediate retry, but do NOT mark Exhausted.
+                        tracing::info!("compaction probe rejected summary — setting cooldown");
                         self.context_manager.compaction =
-                            crate::agent::context_manager::CompactionState::Exhausted {
-                                warned: false,
+                            crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                                cooldown: self.context_manager.compaction_cooldown_turns,
                             };
-                        let _ = self.channel.send_status("").await;
-                        return result;
                     }
-                    // Guard 3 — Still above threshold: compaction freed some tokens but context
-                    // remains above the hard threshold; further LLM attempts are unlikely to help.
-                    if matches!(self.compaction_tier(), CompactionTier::Hard) {
-                        tracing::warn!(
-                            freed_tokens,
-                            "hard compaction: context still above hard threshold after \
-                             compaction, marking exhausted"
-                        );
-                        // Only reachable from Ready state (Cooling is guarded by in_cooldown).
+                    CompactionOutcome::Compacted => {
+                        // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all
+                        // freed space — no net reduction).
+                        let freed_tokens =
+                            tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
+                        if freed_tokens == 0 {
+                            tracing::warn!(
+                                "hard compaction: summary consumed all freed tokens — no net \
+                                 reduction, marking exhausted"
+                            );
+                            // Only reachable from Ready state (Cooling is guarded by in_cooldown).
+                            self.context_manager.compaction =
+                                crate::agent::context_manager::CompactionState::Exhausted {
+                                    warned: false,
+                                };
+                            let _ = self.channel.send_status("").await;
+                            return Ok(());
+                        }
+                        // Guard 3 — Still above threshold: compaction freed some tokens but context
+                        // remains above the hard threshold; further LLM attempts are unlikely to help.
+                        if matches!(self.compaction_tier(), CompactionTier::Hard) {
+                            tracing::warn!(
+                                freed_tokens,
+                                "hard compaction: context still above hard threshold after \
+                                 compaction, marking exhausted"
+                            );
+                            // Only reachable from Ready state (Cooling is guarded by in_cooldown).
+                            self.context_manager.compaction =
+                                crate::agent::context_manager::CompactionState::Exhausted {
+                                    warned: false,
+                                };
+                            let _ = self.channel.send_status("").await;
+                            return Ok(());
+                        }
                         self.context_manager.compaction =
-                            crate::agent::context_manager::CompactionState::Exhausted {
-                                warned: false,
+                            crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                                cooldown: self.context_manager.compaction_cooldown_turns,
                             };
-                        let _ = self.channel.send_status("").await;
-                        return result;
                     }
-                    self.context_manager.compaction =
-                        crate::agent::context_manager::CompactionState::CompactedThisTurn {
-                            cooldown: self.context_manager.compaction_cooldown_turns,
-                        };
+                    CompactionOutcome::NoChange => {
+                        // compact_context() decided there was nothing to compact.
+                        // The compactable <= 1 guard above should have caught this, but handle
+                        // it gracefully if the messages changed during the async call.
+                    }
                 }
                 let _ = self.channel.send_status("").await;
-                result
+                Ok(())
             }
         }
     }
