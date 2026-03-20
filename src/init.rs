@@ -785,12 +785,10 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
         "reactive (oldest-first, default)",
         "task_aware (keyword relevance scoring)",
         "mig (relevance minus redundancy)",
-        "task_aware_mig (combined goal + MIG)",
     ];
     let default_idx = match state.pruning_strategy.as_str() {
         "task_aware" => 1,
         "mig" => 2,
-        "task_aware_mig" => 3,
         _ => 0,
     };
     let idx = Select::new()
@@ -801,7 +799,6 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
     state.pruning_strategy = match idx {
         1 => "task_aware".into(),
         2 => "mig".into(),
-        3 => "task_aware_mig".into(),
         _ => "reactive".into(),
     };
 
@@ -1130,7 +1127,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.compression.pruning_strategy = match state.pruning_strategy.as_str() {
         "task_aware" => PruningStrategy::TaskAware,
         "mig" => PruningStrategy::Mig,
-        "task_aware_mig" => PruningStrategy::TaskAwareMig,
         _ => PruningStrategy::Reactive,
     };
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
@@ -2894,7 +2890,8 @@ mod tests {
     }
 
     #[test]
-    fn build_config_pruning_strategy_task_aware_mig() {
+    fn build_config_pruning_strategy_task_aware_mig_falls_back_to_reactive() {
+        // task_aware_mig is no longer a valid strategy; build_config treats unknown values as reactive.
         let state = WizardState {
             pruning_strategy: "task_aware_mig".into(),
             vault_backend: "env".into(),
@@ -2903,7 +2900,7 @@ mod tests {
         let config = build_config(&state);
         assert_eq!(
             config.memory.compression.pruning_strategy,
-            PruningStrategy::TaskAwareMig
+            PruningStrategy::Reactive
         );
     }
 

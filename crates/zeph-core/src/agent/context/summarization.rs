@@ -630,6 +630,188 @@ mod tests {
             assert!(compacted_at.is_none(), "high-relevance block must survive");
         }
     }
+
+    // T-CRIT-04: prune_tool_outputs_mig evicts blocks with lowest MIG score first.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_mig_evicts_lowest_mig_first() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
+        // Set a goal so MIG scorer has context for relevance scoring.
+        agent.compression.current_task_goal = Some("authentication token".to_string());
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+
+        // High-relevance: repeated goal keywords → high relevance, low redundancy relative to goal
+        let rel_body = "authentication token session middleware ".repeat(50);
+        let mut rel_msg = Message {
+            role: Role::User,
+            content: rel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: rel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: Default::default(),
+        };
+        rel_msg.rebuild_content();
+        agent.msg.messages.push(rel_msg);
+
+        // Low-relevance: unrelated content → low relevance → low MIG → evicted first
+        let irrel_body = "database schema table column index ".repeat(50);
+        let mut irrel_msg = Message {
+            role: Role::User,
+            content: irrel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: irrel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: Default::default(),
+        };
+        irrel_msg.rebuild_content();
+        agent.msg.messages.push(irrel_msg);
+
+        // Ask to free only 1 token — should evict the lowest-MIG block.
+        agent.prune_tool_outputs_mig(1);
+
+        // messages[0] = system prompt, messages[1] = rel_msg, messages[2] = irrel_msg.
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
+            assert!(
+                compacted_at.is_some(),
+                "low-MIG (irrelevant) block must be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[2]");
+        }
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "high-MIG (relevant) block must survive"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
+    }
+
+    // T-CRIT-05: scored pruning respects prune_protect_tokens.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_scored_respects_protect_tokens() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
+        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
+        // Protect the entire tail (999_999 tokens) — nothing should be evicted.
+        agent.context_manager.prune_protect_tokens = 999_999;
+
+        let body = "unrelated content database schema ".repeat(50);
+        let mut msg = Message {
+            role: Role::User,
+            content: body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: body.clone(),
+                compacted_at: None,
+            }],
+            metadata: Default::default(),
+        };
+        msg.rebuild_content();
+        agent.msg.messages.push(msg);
+
+        let freed = agent.prune_tool_outputs_scored(1);
+        assert_eq!(
+            freed, 0,
+            "no tokens should be freed when everything is protected"
+        );
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "protected block must not be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
+    }
+
+    // T-CRIT-06: MIG pruning respects prune_protect_tokens.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_mig_respects_protect_tokens() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
+        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
+        // Protect the entire tail (999_999 tokens) — nothing should be evicted.
+        agent.context_manager.prune_protect_tokens = 999_999;
+
+        let body = "unrelated content database schema ".repeat(50);
+        let mut msg = Message {
+            role: Role::User,
+            content: body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: body.clone(),
+                compacted_at: None,
+            }],
+            metadata: Default::default(),
+        };
+        msg.rebuild_content();
+        agent.msg.messages.push(msg);
+
+        let freed = agent.prune_tool_outputs_mig(1);
+        assert_eq!(
+            freed, 0,
+            "no tokens should be freed when everything is protected"
+        );
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "protected block must not be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
+    }
 }
 
 impl<C: Channel> Agent<C> {
@@ -1400,7 +1582,7 @@ impl<C: Channel> Agent<C> {
         {
             use crate::config::PruningStrategy;
             match &self.context_manager.compression.pruning_strategy {
-                PruningStrategy::TaskAware | PruningStrategy::TaskAwareMig => {
+                PruningStrategy::TaskAware => {
                     return self.prune_tool_outputs_scored(min_to_free);
                 }
                 PruningStrategy::Mig => {
@@ -1481,6 +1663,30 @@ impl<C: Channel> Agent<C> {
         freed
     }
 
+    /// Compute the protection boundary index for `prune_protect_tokens`.
+    ///
+    /// Messages at or after the returned index must not be evicted. This mirrors the logic in
+    /// `prune_tool_outputs_oldest_first` so all pruning paths enforce the same tail protection.
+    fn prune_protection_boundary(&self) -> usize {
+        let protect = self.context_manager.prune_protect_tokens;
+        if protect == 0 {
+            return self.msg.messages.len();
+        }
+        let mut tail_tokens = 0usize;
+        let mut boundary = self.msg.messages.len();
+        for (i, msg) in self.msg.messages.iter().enumerate().rev() {
+            tail_tokens += self.metrics.token_counter.count_message_tokens(msg);
+            if tail_tokens >= protect {
+                boundary = i;
+                break;
+            }
+            if i == 0 {
+                boundary = 0;
+            }
+        }
+        boundary
+    }
+
     /// Task-aware / MIG pruning: score tool outputs by relevance to the current task goal,
     /// then evict lowest-scoring blocks until `min_to_free` tokens are freed.
     ///
@@ -1499,9 +1705,7 @@ impl<C: Channel> Agent<C> {
         use crate::config::PruningStrategy;
 
         let goal = match &self.context_manager.compression.pruning_strategy {
-            PruningStrategy::TaskAware | PruningStrategy::TaskAwareMig => {
-                self.compression.current_task_goal.clone()
-            }
+            PruningStrategy::TaskAware => self.compression.current_task_goal.clone(),
             _ => None,
         };
 
@@ -1525,6 +1729,8 @@ impl<C: Channel> Agent<C> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        let protection_boundary = self.prune_protection_boundary();
+
         let mut freed = 0usize;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1536,6 +1742,10 @@ impl<C: Channel> Agent<C> {
         for block in &sorted_scores {
             if freed >= min_to_free {
                 break;
+            }
+            // Respect prune_protect_tokens: skip messages in the protected tail.
+            if block.msg_index >= protection_boundary {
+                continue;
             }
             let msg = &mut self.msg.messages[block.msg_index];
             if msg.metadata.focus_pinned {
@@ -1600,6 +1810,8 @@ impl<C: Channel> Agent<C> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        let protection_boundary = self.prune_protection_boundary();
+
         let mut freed = 0usize;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1611,6 +1823,10 @@ impl<C: Channel> Agent<C> {
         for block in &scores {
             if freed >= min_to_free {
                 break;
+            }
+            // Respect prune_protect_tokens: skip messages in the protected tail.
+            if block.msg_index >= protection_boundary {
+                continue;
             }
             let msg = &mut self.msg.messages[block.msg_index];
             if msg.metadata.focus_pinned {
@@ -2588,7 +2804,7 @@ impl<C: Channel> Agent<C> {
         // Only needed when a task-aware or MIG strategy is active.
         match &self.context_manager.compression.pruning_strategy {
             PruningStrategy::Reactive => return,
-            PruningStrategy::TaskAware | PruningStrategy::Mig | PruningStrategy::TaskAwareMig => {}
+            PruningStrategy::TaskAware | PruningStrategy::Mig => {}
         }
 
         // Phase 1: apply background result if the task has completed.
@@ -2708,11 +2924,22 @@ impl<C: Channel> Agent<C> {
                 .await
             {
                 Ok(Ok(goal)) => {
-                    let trimmed = goal.trim().to_string();
+                    let trimmed = goal.trim();
                     if trimmed.is_empty() {
                         None
                     } else {
-                        Some(trimmed)
+                        const MAX_GOAL_CHARS: usize = 500;
+                        let capped = if trimmed.len() > MAX_GOAL_CHARS {
+                            tracing::warn!(
+                                len = trimmed.len(),
+                                "extract_task_goal: LLM returned oversized goal; truncating to {MAX_GOAL_CHARS} chars"
+                            );
+                            let end = trimmed.floor_char_boundary(MAX_GOAL_CHARS);
+                            &trimmed[..end]
+                        } else {
+                            trimmed
+                        };
+                        Some(capped.to_string())
                     }
                 }
                 Ok(Err(e)) => {
@@ -2726,6 +2953,10 @@ impl<C: Channel> Agent<C> {
             }
         });
 
+        // TODO(I3): this JoinHandle is never `.abort()`ed on agent shutdown. The background task
+        // will run to completion (or until the 30-second timeout) even after the agent is dropped.
+        // Proper cancellation requires surfacing the handle to the shutdown path — tracked as a
+        // separate issue (background tasks not cancelled on agent shutdown).
         self.compression.pending_task_goal = Some(handle);
         tracing::debug!("extract_task_goal: background task spawned");
         if let Some(ref tx) = self.session.status_tx {

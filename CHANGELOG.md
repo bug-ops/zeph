@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(config): remove dead `PruningStrategy::TaskAwareMig` variant (#1851) — the variant was routed to the same scored path as `TaskAware` (MIG scoring was never applied); serde `Deserialize` is now hand-implemented to route through `FromStr` so that `task_aware_mig` in TOML configs falls back to `Reactive` with a warning instead of hard-erroring; CLI `--pruning-strategy` help and `--init` wizard updated to remove the option; `config/default.toml` comment updated
+- fix(core): enforce `prune_protect_tokens` in scored (`TaskAware`) and MIG pruning paths (#1851) — messages inside the protected tail are now skipped during scored/MIG eviction, consistent with the existing oldest-first behavior; new helper `prune_protection_boundary()` shared across all three paths
+- fix(core): cap LLM-returned task goal to 500 characters in `maybe_refresh_task_goal()` (#1851) — oversized goals are truncated with a `WARN` log to prevent unbounded memory growth
+
 - refactor(config): add `Config::validate()` check for `llm.semantic_cache_threshold`; rejects values outside [0.0, 1.0] and non-finite values (NaN, Inf) with a descriptive error including the env var override hint (#2036)
 
 - fix(channels): `AnyChannel` and `AppChannel` now forward all 16 `Channel` trait methods; previously `send_thinking_chunk`, `send_stop_hint`, `send_usage`, and `send_tool_start` fell through to trait defaults, silently dropping events (CHAN-01, epic #1978)

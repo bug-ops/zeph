@@ -117,7 +117,7 @@ pub(crate) struct Cli {
     #[arg(long, conflicts_with = "sidequest")]
     pub(crate) no_sidequest: bool,
 
-    /// Override pruning strategy: reactive, `task_aware`, mig, `task_aware_mig`.
+    /// Override pruning strategy: reactive, `task_aware`, mig.
     /// Overrides `memory.compression.pruning_strategy` from config.
     #[arg(long, value_name = "STRATEGY")]
     pub(crate) pruning_strategy: Option<zeph_core::config::PruningStrategy>,
@@ -573,12 +573,10 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_pruning_strategy_task_aware_mig() {
-        let cli = Cli::try_parse_from(["zeph", "--pruning-strategy", "task_aware_mig"]).unwrap();
-        assert_eq!(
-            cli.pruning_strategy,
-            Some(zeph_core::config::PruningStrategy::TaskAwareMig)
-        );
+    fn cli_pruning_strategy_task_aware_mig_falls_back_to_reactive() {
+        // task_aware_mig was removed; FromStr now returns Reactive with a warning.
+        let parsed: zeph_core::config::PruningStrategy = "task_aware_mig".parse().unwrap();
+        assert_eq!(parsed, zeph_core::config::PruningStrategy::Reactive);
     }
 
     #[test]

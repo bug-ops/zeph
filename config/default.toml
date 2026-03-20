@@ -788,7 +788,7 @@ max_files = 7
 # Context-compression feature: task-aware pruning strategy (#1851)
 # Requires the `context-compression` feature flag to be enabled at compile time.
 # [memory.compression]
-# # Pruning strategy: "reactive" (default), "task_aware", "mig", "task_aware_mig"
+# # Pruning strategy: "reactive" (default), "task_aware", "mig"
 # pruning_strategy = "reactive"
 
 # Compaction probe: validates summary quality before committing it (#1609).
