@@ -147,6 +147,11 @@ pub(crate) struct WizardState {
     pub(crate) deployment_bundle: Option<String>,
     pub(crate) semantic_cache_enabled: bool,
     pub(crate) semantic_cache_threshold: f32,
+    // Compaction probe (#2048)
+    pub(crate) probe_enabled: bool,
+    pub(crate) probe_model: Option<String>,
+    pub(crate) probe_threshold: f32,
+    pub(crate) probe_hard_fail_threshold: f32,
 }
 
 impl Default for WizardState {
@@ -262,6 +267,10 @@ impl Default for WizardState {
             deployment_bundle: None,
             semantic_cache_enabled: false,
             semantic_cache_threshold: 0.95,
+            probe_enabled: false,
+            probe_model: None,
+            probe_threshold: 0.6,
+            probe_hard_fail_threshold: 0.35,
         }
     }
 }
@@ -734,6 +743,7 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Context Compression ==\n");
     println!(
@@ -794,6 +804,61 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
         3 => "task_aware_mig".into(),
         _ => "reactive".into(),
     };
+
+    state.probe_enabled = Confirm::new()
+        .with_prompt(
+            "Enable compaction probe? (validates summary quality before committing, \
+             adds 2 LLM calls per compaction)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.probe_enabled {
+        let model: String = Input::new()
+            .with_prompt("Model for probe LLM calls (empty = same as summary provider)")
+            .default(String::new())
+            .interact_text()?;
+        if !model.is_empty() {
+            state.probe_model = Some(model);
+        }
+
+        state.probe_threshold = Input::new()
+            .with_prompt("Probe pass threshold (0.0-1.0, scores below this trigger warnings)")
+            .default(state.probe_threshold)
+            .validate_with(|v: &f32| {
+                if v.is_finite() && *v > 0.0 && *v <= 1.0 {
+                    Ok(())
+                } else {
+                    Err("must be in (0.0, 1.0]")
+                }
+            })
+            .interact_text()?;
+
+        loop {
+            let threshold = state.probe_threshold;
+            let val: f32 = Input::new()
+                .with_prompt(format!(
+                    "Probe hard-fail threshold (0.0-1.0, scores below this block compaction, \
+                     must be below {threshold})"
+                ))
+                .default(state.probe_hard_fail_threshold)
+                .validate_with(|v: &f32| {
+                    if v.is_finite() && *v >= 0.0 && *v < 1.0 {
+                        Ok(())
+                    } else {
+                        Err("must be in [0.0, 1.0)")
+                    }
+                })
+                .interact_text()?;
+            if val < threshold {
+                state.probe_hard_fail_threshold = val;
+                break;
+            }
+            eprintln!(
+                "error: hard-fail threshold must be less than pass threshold ({threshold}), got {val}",
+            );
+        }
+    }
 
     println!();
     Ok(())
@@ -1070,6 +1135,14 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     };
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
     config.memory.hard_compaction_threshold = state.hard_compaction_threshold;
+    config.memory.compression.probe.enabled = state.probe_enabled;
+    if let Some(ref m) = state.probe_model {
+        config.memory.compression.probe.model.clone_from(m);
+    }
+    if state.probe_enabled {
+        config.memory.compression.probe.threshold = state.probe_threshold;
+        config.memory.compression.probe.hard_fail_threshold = state.probe_hard_fail_threshold;
+    }
     config.memory.shutdown_summary = state.shutdown_summary;
     if state.server_compaction_enabled
         && let Some(cloud) = config.llm.cloud.as_mut()
@@ -2845,6 +2918,86 @@ mod tests {
         assert_eq!(
             config.memory.compression.pruning_strategy,
             PruningStrategy::Reactive
+        );
+    }
+
+    #[test]
+    fn build_config_probe_disabled_by_default() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.memory.compression.probe.enabled);
+    }
+
+    #[test]
+    fn build_config_probe_enabled() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            probe_enabled: true,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.memory.compression.probe.enabled);
+    }
+
+    #[test]
+    fn build_config_probe_model_set() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            probe_enabled: true,
+            probe_model: Some("haiku".into()),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.memory.compression.probe.model, "haiku");
+    }
+
+    #[test]
+    fn build_config_probe_model_none_leaves_default() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            probe_enabled: true,
+            probe_model: None,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.memory.compression.probe.model, "");
+    }
+
+    #[test]
+    fn build_config_probe_thresholds_propagate_when_enabled() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            probe_enabled: true,
+            probe_threshold: 0.75,
+            probe_hard_fail_threshold: 0.25,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!((config.memory.compression.probe.threshold - 0.75).abs() < f32::EPSILON);
+        assert!((config.memory.compression.probe.hard_fail_threshold - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn build_config_probe_thresholds_stay_at_defaults_when_disabled() {
+        let default_threshold = zeph_memory::CompactionProbeConfig::default().threshold;
+        let default_hard_fail = zeph_memory::CompactionProbeConfig::default().hard_fail_threshold;
+        let state = WizardState {
+            vault_backend: "env".into(),
+            probe_enabled: false,
+            probe_threshold: 0.99,
+            probe_hard_fail_threshold: 0.01,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(
+            (config.memory.compression.probe.threshold - default_threshold).abs() < f32::EPSILON
+        );
+        assert!(
+            (config.memory.compression.probe.hard_fail_threshold - default_hard_fail).abs()
+                < f32::EPSILON
         );
     }
 }
