@@ -185,9 +185,11 @@ impl ResponseCache {
     /// Returns an error if either database operation fails.
     pub async fn cleanup(&self, current_embedding_model: &str) -> Result<u64, MemoryError> {
         let now = unix_now();
+        let mut tx = self.pool.begin().await?;
+
         let deleted = sqlx::query("DELETE FROM response_cache WHERE expires_at <= ?")
             .bind(now)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?
             .rows_affected();
 
@@ -197,10 +199,11 @@ impl ResponseCache {
              WHERE embedding IS NOT NULL AND embedding_model != ?",
         )
         .bind(current_embedding_model)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
 
+        tx.commit().await?;
         Ok(deleted + updated)
     }
 
