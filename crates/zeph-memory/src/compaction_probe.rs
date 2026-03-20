@@ -269,10 +269,13 @@ pub async fn generate_probe_questions(
         metadata: MessageMetadata::default(),
     }];
 
-    let output: ProbeQuestionsOutput = provider
+    let mut output: ProbeQuestionsOutput = provider
         .chat_typed_erased::<ProbeQuestionsOutput>(&msgs)
         .await
         .map_err(MemoryError::Llm)?;
+
+    // Cap the list to max_questions: a misbehaving LLM could return more.
+    output.questions.truncate(max_questions);
 
     Ok(output.questions)
 }

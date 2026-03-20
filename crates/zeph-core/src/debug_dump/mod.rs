@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use base64::Engine as _;
 use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
 
+use crate::redact::scrub_content;
+
 pub use zeph_config::DumpFormat;
 
 pub struct DebugDumper {
@@ -198,9 +200,9 @@ impl DebugDumper {
             )
             .map(|((q, a), &s)| {
                 serde_json::json!({
-                    "question": q.question,
-                    "expected": q.expected_answer,
-                    "actual": a,
+                    "question": scrub_content(&q.question),
+                    "expected": scrub_content(&q.expected_answer),
+                    "actual": scrub_content(a),
                     "score": s,
                 })
             })

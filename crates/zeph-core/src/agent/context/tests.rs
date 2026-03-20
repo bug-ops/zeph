@@ -4226,3 +4226,70 @@ async fn rebuild_system_prompt_cache_markers_count() {
         "total cache markers must not exceed 4 (Claude API limit); got {total}"
     );
 }
+
+// T-06: H1 regression — ProbeRejected must NOT trigger Exhausted transition.
+//
+// Design invariant (H1 fix): when the compaction probe rejects a summary,
+// compact_context() returns CompactionOutcome::ProbeRejected. The caller
+// (maybe_compact) must set CompactedThisTurn (cooldown) and NOT transition
+// to CompactionState::Exhausted, because the failure is quality-related, not
+// because the compactor is structurally unable to free tokens.
+#[tokio::test]
+async fn probe_rejected_does_not_trigger_exhausted() {
+    // Provider returns:
+    //   1st call: summary text (for summarize_messages)
+    //   2nd call: probe questions JSON
+    //   3rd call: probe answers JSON — all refusals → score ~0.0 → HardFail
+    let questions_json = r#"{"questions": [{"question": "What crate?", "expected_answer": "thiserror"}, {"question": "What file?", "expected_answer": "src/lib.rs"}]}"#;
+    let answers_json = r#"{"answers": ["UNKNOWN", "UNKNOWN"]}"#;
+    let provider = mock_provider(vec![
+        "compacted summary".to_string(),
+        questions_json.to_string(),
+        answers_json.to_string(),
+    ]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_context_budget(100, 0.20, 0.75, 2, 0);
+
+    // Enable compaction probe with default thresholds (Pass >= 0.6, HardFail < 0.35).
+    agent.context_manager.compression.probe.enabled = true;
+
+    // Populate enough messages to pass the too-few-messages guard.
+    for i in 0..8 {
+        agent.msg.messages.push(Message {
+            role: if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
+            content: format!("message {i}"),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+    }
+
+    let outcome = agent.compact_context().await.unwrap();
+
+    // H1 invariant: probe-rejected outcome must not cause Exhausted.
+    assert_eq!(
+        outcome,
+        CompactionOutcome::ProbeRejected,
+        "expected ProbeRejected when all probe answers are refusals"
+    );
+    // The messages must NOT have been drained (original messages preserved).
+    assert!(
+        agent.msg.messages.len() > 3,
+        "messages must not be drained after ProbeRejected"
+    );
+    // Verify the state machine invariant: not Exhausted.
+    assert!(
+        !matches!(
+            agent.context_manager.compaction,
+            CompactionState::Exhausted { .. }
+        ),
+        "ProbeRejected must not transition to Exhausted (H1 invariant)"
+    );
+}

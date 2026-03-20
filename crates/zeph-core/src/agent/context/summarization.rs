@@ -1238,6 +1238,10 @@ impl<C: Channel> Agent<C> {
 
         // Compaction probe: validate summary quality before committing it.
         if self.context_manager.compression.probe.enabled {
+            let _ = self
+                .channel
+                .send_status("Validating compaction quality...")
+                .await;
             let probe_result = match zeph_memory::validate_compaction(
                 self.summary_or_primary_provider(),
                 &to_compact,
