@@ -7,7 +7,10 @@ use zeph_llm::provider::{
 };
 
 use super::super::Agent;
-use super::{AnomalyOutcome, retry_backoff_ms, tool_args_hash, tool_def_to_definition};
+use super::{
+    AnomalyOutcome, retry_backoff_ms, strip_tafc_fields, tool_args_hash,
+    tool_def_to_definition_with_tafc,
+};
 use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 use crate::overflow_tools::OverflowToolExecutor;
 use tracing::Instrument;
@@ -74,11 +77,12 @@ impl<C: Channel> Agent<C> {
 
         // `mut` required when context-compression is enabled to inject focus tool definitions.
         #[cfg_attr(not(feature = "context-compression"), allow(unused_mut))]
+        let tafc = &self.tool_orchestrator.tafc;
         let mut tool_defs: Vec<ToolDefinition> = self
             .tool_executor
             .tool_definitions_erased()
             .iter()
-            .map(tool_def_to_definition)
+            .map(|def| tool_def_to_definition_with_tafc(def, tafc))
             .collect();
 
         // Inject focus tool definitions when the feature is enabled and configured (#1850).
@@ -543,20 +547,25 @@ impl<C: Channel> Agent<C> {
         .await;
         self.push_message(assistant_msg);
 
-        // Build tool calls for all requests
+        // Build tool calls for all requests, stripping TAFC think fields before execution.
+        let tafc_enabled = self.tool_orchestrator.tafc.enabled;
         let calls: Vec<ToolCall> = tool_calls
             .iter()
-            .map(|tc| {
-                let params: serde_json::Map<String, serde_json::Value> =
+            .filter_map(|tc| {
+                let mut params: serde_json::Map<String, serde_json::Value> =
                     if let serde_json::Value::Object(map) = &tc.input {
                         map.clone()
                     } else {
                         serde_json::Map::new()
                     };
-                ToolCall {
+                if tafc_enabled && strip_tafc_fields(&mut params, &tc.name).is_err() {
+                    // Model produced only think fields — skip this tool call.
+                    return None;
+                }
+                Some(ToolCall {
                     tool_id: tc.name.clone(),
                     params,
-                }
+                })
             })
             .collect();
 

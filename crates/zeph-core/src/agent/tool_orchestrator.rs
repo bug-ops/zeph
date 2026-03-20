@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use zeph_tools::{OverflowConfig, ResultCacheConfig, ToolResultCache};
+use zeph_tools::{OverflowConfig, ResultCacheConfig, TafcConfig, ToolResultCache};
 
 use super::DOOM_LOOP_WINDOW;
 
@@ -30,6 +30,8 @@ pub(crate) struct ToolOrchestrator {
     /// concerns: they inspect tool arguments at dispatch time, consistent with
     /// repeat-detection, rate-limiting, and overflow controls which also live here.
     pub(super) pre_execution_verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>>,
+    /// Think-Augmented Function Calling configuration.
+    pub(crate) tafc: TafcConfig,
     /// Session-scoped cache for tool results. Persists across tool rounds within a session;
     /// reset only on `/clear`. Unlike repeat-detection and doom-loop state (which reset per
     /// round), the cache is intentionally long-lived — its value comes from reuse across turns.
@@ -66,6 +68,7 @@ impl ToolOrchestrator {
             max_tool_retries: 2,
             max_retry_duration_secs: 30,
             pre_execution_verifiers: Vec::new(),
+            tafc: TafcConfig::default(),
             result_cache: ToolResultCache::new(true, Some(Duration::from_secs(300))),
         }
     }

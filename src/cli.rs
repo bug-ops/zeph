@@ -184,6 +184,12 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) no_pre_execution_verify: bool,
 
+    /// Enable Think-Augmented Function Calling (TAFC) for this session.
+    /// Injects a reasoning step into complex tool schemas.
+    /// Overrides `tools.tafc.enabled` from config.
+    #[arg(long)]
+    pub(crate) tafc: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }

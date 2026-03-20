@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(channels): register Discord slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task; idempotent via `PUT /applications/{id}/commands` (CHAN-05, epic #1978)
 - feat(channels): extract shared `CONFIRM_TIMEOUT` constant (30s) to `zeph-channels` crate; Telegram, Discord, and Slack `confirm()` all reference it (CHAN-02, epic #1978)
 
+- refactor(memory): wrap `ResponseCache::cleanup()` DELETE and UPDATE operations in a single SQLite transaction for atomicity (closes #2032)
+
 ### Changed
 
 - fix(channels): `AnyChannel` and `AppChannel` now forward all 16 `Channel` trait methods; previously `send_thinking_chunk`, `send_stop_hint`, `send_usage`, and `send_tool_start` fell through to trait defaults, silently dropping events (CHAN-01, epic #1978)
