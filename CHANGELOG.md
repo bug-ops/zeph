@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(ml): rubato 1.0.1 API upgrade and StreamChunk wrapping for candle provider (#1858) — updated `candle_whisper.rs` resample function for rubato 1.0.1 (SincFixedIn removed, replaced with Async::new_sinc); wrapped ChatStream output in StreamChunk::Content pattern in candle_provider; added audioadapter-buffers dependency (gated on candle feature)
+
 ## [0.16.0] - 2026-03-19
 ### Added
 

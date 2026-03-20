@@ -16,7 +16,7 @@ use self::embed::EmbedModel;
 use self::generate::{GenerationConfig, GenerationOutput, generate_tokens};
 use self::loader::{LoadedModel, ModelSource, load_chat_model};
 use self::template::ChatTemplate;
-use crate::provider::{ChatStream, LlmProvider, Message};
+use crate::provider::{ChatStream, LlmProvider, Message, StreamChunk};
 
 use candle_transformers::models::quantized_llama::ModelWeights;
 
@@ -146,7 +146,8 @@ impl LlmProvider for CandleProvider {
                     while !text.is_char_boundary(end) {
                         end -= 1;
                     }
-                    if tx.blocking_send(Ok(text[start..end].to_string())).is_err() {
+                    let chunk = StreamChunk::Content(text[start..end].to_string());
+                    if tx.blocking_send(Ok(chunk)).is_err() {
                         break;
                     }
                     start = end;

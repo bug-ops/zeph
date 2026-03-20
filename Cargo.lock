@@ -9576,6 +9576,7 @@ name = "zeph-llm"
 version = "0.16.0"
 dependencies = [
  "async-stream",
+ "audioadapter-buffers",
  "base64 0.22.1",
  "candle-core",
  "candle-nn",
