@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory): add `AnchoredSummary` struct with structured 5-section schema (session_intent, files_modified, decisions_made, open_questions, next_steps) for context compaction; replaces free-form prose when `[memory] structured_summaries = true` (issue #1607)
+- feat(core): structured summarization path in context compaction — applies `chat_typed_erased::<AnchoredSummary>()` for both single-pass and chunked consolidation; falls back to prose on any LLM or validation failure (issue #1607)
+- feat(core): `DebugDumper::dump_anchored_summary()` writes `{N}_anchored-summary.json` with section completeness metrics, total_items, token_estimate, and fallback flag when `--debug-dump` is active (issue #1607)
+- feat(config): `[memory] structured_summaries = false` config field enables opt-in structured compaction summaries (issue #1607)
+
 - feat(channels): register Discord slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task; idempotent via `PUT /applications/{id}/commands` (CHAN-05, epic #1978)
 - feat(channels): extract shared `CONFIRM_TIMEOUT` constant (30s) to `zeph-channels` crate; Telegram, Discord, and Slack `confirm()` all reference it (CHAN-02, epic #1978)
 
