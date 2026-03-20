@@ -701,4 +701,19 @@ redact_secrets = true
             "tools.policy section must include enabled = false default"
         );
     }
+
+    #[test]
+    fn migrate_reference_contains_probe_section() {
+        // default.toml must contain the probe section comment block so users can discover it
+        // when reading the file directly or after running --migrate-config.
+        let reference = include_str!("../config/default.toml");
+        assert!(
+            reference.contains("[memory.compression.probe]"),
+            "default.toml must contain [memory.compression.probe] section comment"
+        );
+        assert!(
+            reference.contains("hard_fail_threshold"),
+            "probe section must include hard_fail_threshold default"
+        );
+    }
 }

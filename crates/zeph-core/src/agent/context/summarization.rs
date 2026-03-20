@@ -1253,7 +1253,11 @@ impl<C: Channel> Agent<C> {
                 Ok(result) => result,
                 Err(e) => {
                     tracing::warn!("compaction probe error (non-blocking): {e:#}");
-                    self.update_metrics(|m| m.compaction_probe_errors += 1);
+                    self.update_metrics(|m| {
+                        m.compaction_probe_errors += 1;
+                        m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Error);
+                        m.last_probe_score = None;
+                    });
                     None
                 }
             };
@@ -1270,7 +1274,11 @@ impl<C: Channel> Agent<C> {
                             threshold = result.hard_fail_threshold,
                             "compaction probe HARD FAIL — keeping original messages"
                         );
-                        self.update_metrics(|m| m.compaction_probe_failures += 1);
+                        self.update_metrics(|m| {
+                            m.compaction_probe_failures += 1;
+                            m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::HardFail);
+                            m.last_probe_score = Some(result.score);
+                        });
                         return Ok(CompactionOutcome::ProbeRejected);
                     }
                     zeph_memory::ProbeVerdict::SoftFail => {
@@ -1279,11 +1287,24 @@ impl<C: Channel> Agent<C> {
                             threshold = result.threshold,
                             "compaction probe SOFT FAIL — proceeding with warning"
                         );
-                        self.update_metrics(|m| m.compaction_probe_soft_failures += 1);
+                        self.update_metrics(|m| {
+                            m.compaction_probe_soft_failures += 1;
+                            m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::SoftFail);
+                            m.last_probe_score = Some(result.score);
+                        });
                     }
                     zeph_memory::ProbeVerdict::Pass => {
                         tracing::info!(score = result.score, "compaction probe passed");
-                        self.update_metrics(|m| m.compaction_probe_passes += 1);
+                        self.update_metrics(|m| {
+                            m.compaction_probe_passes += 1;
+                            m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Pass);
+                            m.last_probe_score = Some(result.score);
+                        });
+                    }
+                    zeph_memory::ProbeVerdict::Error => {
+                        // Unreachable: validate_compaction returns Err on errors, not Ok(Error).
+                        // If this fires, the error-handling path in validate_compaction changed.
+                        debug_assert!(false, "ProbeVerdict::Error reached inside Ok path");
                     }
                 }
             }

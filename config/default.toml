@@ -790,3 +790,20 @@ max_files = 7
 # [memory.compression]
 # # Pruning strategy: "reactive" (default), "task_aware", "mig", "task_aware_mig"
 # pruning_strategy = "reactive"
+
+# Compaction probe: validates summary quality before committing it (#1609).
+# Generates factual questions from compacted messages, answers them from the summary,
+# and scores accuracy. HardFail blocks compaction; SoftFail logs a warning.
+# [memory.compression.probe]
+# # Enable compaction probe validation
+# enabled = false
+# # Model for probe LLM calls (empty = same as summary provider)
+# model = ""
+# # Minimum score to pass (scores in [hard_fail_threshold, threshold) = SoftFail)
+# threshold = 0.6
+# # Score below this blocks compaction (HardFail)
+# hard_fail_threshold = 0.35
+# # Maximum number of probe questions to generate
+# max_questions = 3
+# # Timeout for the entire probe (both LLM calls) in seconds
+# timeout_secs = 15

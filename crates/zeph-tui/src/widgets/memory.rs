@@ -3,10 +3,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::metrics::MetricsSnapshot;
+use crate::metrics::{MetricsSnapshot, ProbeVerdict};
 use crate::theme::Theme;
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
@@ -49,6 +50,41 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
             metrics.graph_extraction_count, metrics.graph_extraction_failures,
         )));
     }
+    let total_probes = metrics.compaction_probe_passes
+        + metrics.compaction_probe_soft_failures
+        + metrics.compaction_probe_failures
+        + metrics.compaction_probe_errors;
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    if total_probes > 0 {
+        let pct = |n: u64| -> u64 { (n as f64 / total_probes as f64 * 100.0).round() as u64 };
+        let p = pct(metrics.compaction_probe_passes);
+        let s = pct(metrics.compaction_probe_soft_failures);
+        let h = pct(metrics.compaction_probe_failures);
+        let e = pct(metrics.compaction_probe_errors);
+        mem_lines.push(Line::from(format!("  Probe: P {p}% S {s}% H {h}% E {e}%")));
+
+        if let Some(verdict) = &metrics.last_probe_verdict {
+            let (label, color) = match verdict {
+                ProbeVerdict::Pass => ("Pass", Color::Green),
+                ProbeVerdict::SoftFail => ("SoftFail", Color::Yellow),
+                ProbeVerdict::HardFail => ("HardFail", Color::Red),
+                ProbeVerdict::Error => ("Error", Color::Gray),
+            };
+            let score_str = metrics
+                .last_probe_score
+                .map_or_else(String::new, |sc| format!(" ({sc:.2})"));
+            mem_lines.push(Line::from(vec![
+                Span::raw("  Last: "),
+                Span::styled(format!("{label}{score_str}"), Style::default().fg(color)),
+            ]));
+        }
+    }
+
     if metrics.guidelines_version > 0 {
         mem_lines.push(Line::from(format!(
             "  Guidelines: v{} ({})",
@@ -68,7 +104,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
 mod tests {
     use insta::assert_snapshot;
 
-    use crate::metrics::MetricsSnapshot;
+    use crate::metrics::{MetricsSnapshot, ProbeVerdict};
     use crate::test_utils::render_to_string;
 
     #[test]
@@ -98,6 +134,61 @@ mod tests {
         };
 
         let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn probe_lines_visible_when_probes_ran() {
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 5,
+            compaction_probe_passes: 87,
+            compaction_probe_soft_failures: 10,
+            compaction_probe_failures: 2,
+            compaction_probe_errors: 1,
+            last_probe_verdict: Some(ProbeVerdict::Pass),
+            last_probe_score: Some(0.91),
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(50, 12, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn probe_lines_hidden_when_no_probes() {
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 5,
+            compaction_probe_passes: 0,
+            compaction_probe_soft_failures: 0,
+            compaction_probe_failures: 0,
+            compaction_probe_errors: 0,
+            last_probe_verdict: None,
+            last_probe_score: None,
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn probe_error_verdict_shows_no_score() {
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 5,
+            compaction_probe_passes: 1,
+            compaction_probe_errors: 1,
+            last_probe_verdict: Some(ProbeVerdict::Error),
+            last_probe_score: None,
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(50, 12, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert_snapshot!(output);

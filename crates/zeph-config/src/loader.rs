@@ -125,6 +125,41 @@ impl Config {
                 self.memory.graph.temporal_decay_rate
             )));
         }
+        if self.memory.compression.probe.enabled {
+            let probe = &self.memory.compression.probe;
+            if !probe.threshold.is_finite() || probe.threshold <= 0.0 || probe.threshold > 1.0 {
+                return Err(ConfigError::Validation(format!(
+                    "memory.compression.probe.threshold must be in (0.0, 1.0], got {}",
+                    probe.threshold
+                )));
+            }
+            if !probe.hard_fail_threshold.is_finite()
+                || probe.hard_fail_threshold < 0.0
+                || probe.hard_fail_threshold >= 1.0
+            {
+                return Err(ConfigError::Validation(format!(
+                    "memory.compression.probe.hard_fail_threshold must be in [0.0, 1.0), got {}",
+                    probe.hard_fail_threshold
+                )));
+            }
+            if probe.hard_fail_threshold >= probe.threshold {
+                return Err(ConfigError::Validation(format!(
+                    "memory.compression.probe.hard_fail_threshold ({}) must be less than \
+                     memory.compression.probe.threshold ({})",
+                    probe.hard_fail_threshold, probe.threshold
+                )));
+            }
+            if probe.max_questions < 1 {
+                return Err(ConfigError::Validation(
+                    "memory.compression.probe.max_questions must be >= 1".into(),
+                ));
+            }
+            if probe.timeout_secs < 1 {
+                return Err(ConfigError::Validation(
+                    "memory.compression.probe.timeout_secs must be >= 1".into(),
+                ));
+            }
+        }
         // MCP server validation
         {
             use std::collections::HashSet;
@@ -287,6 +322,54 @@ mod tests {
         let err = config_with_sct(f32::NEG_INFINITY).validate().unwrap_err();
         assert!(
             err.to_string().contains("semantic_cache_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn probe_config(enabled: bool, threshold: f32, hard_fail_threshold: f32) -> Config {
+        let mut cfg = Config::default();
+        cfg.memory.compression.probe.enabled = enabled;
+        cfg.memory.compression.probe.threshold = threshold;
+        cfg.memory.compression.probe.hard_fail_threshold = hard_fail_threshold;
+        cfg
+    }
+
+    #[test]
+    fn probe_disabled_skips_validation() {
+        // Invalid thresholds when probe is disabled must not cause errors.
+        let cfg = probe_config(false, 0.0, 1.0);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn probe_valid_thresholds() {
+        let cfg = probe_config(true, 0.6, 0.35);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn probe_threshold_zero_invalid() {
+        let err = probe_config(true, 0.0, 0.0).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("probe.threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn probe_hard_fail_threshold_above_one_invalid() {
+        let err = probe_config(true, 0.6, 1.0).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("probe.hard_fail_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn probe_hard_fail_gte_threshold_invalid() {
+        let err = probe_config(true, 0.3, 0.9).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("probe.hard_fail_threshold"),
             "unexpected error: {err}"
         );
     }
