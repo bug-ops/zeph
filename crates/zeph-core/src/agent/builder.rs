@@ -762,6 +762,72 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Initialize and attach the tool schema filter if enabled in config.
+    ///
+    /// Embeds all filterable tool descriptions at startup and caches the embeddings.
+    /// Gracefully degrades: returns `self` unchanged if embedding is unsupported or fails.
+    pub async fn maybe_init_tool_schema_filter(
+        mut self,
+        config: &crate::config::ToolFilterConfig,
+        provider: &zeph_llm::any::AnyProvider,
+    ) -> Self {
+        use zeph_llm::provider::LlmProvider;
+
+        if !config.enabled {
+            return self;
+        }
+
+        let always_on_set: std::collections::HashSet<&str> =
+            config.always_on.iter().map(String::as_str).collect();
+        let defs = self.tool_executor.tool_definitions_erased();
+        let filterable: Vec<&zeph_tools::registry::ToolDef> = defs
+            .iter()
+            .filter(|d| !always_on_set.contains(d.id.as_ref()))
+            .collect();
+
+        if filterable.is_empty() {
+            tracing::info!("tool schema filter: all tools are always-on, nothing to filter");
+            return self;
+        }
+
+        let mut embeddings = Vec::with_capacity(filterable.len());
+        for def in &filterable {
+            let text = format!("{}: {}", def.id, def.description);
+            match provider.embed(&text).await {
+                Ok(emb) => {
+                    embeddings.push(zeph_tools::ToolEmbedding {
+                        tool_id: def.id.to_string(),
+                        embedding: emb,
+                    });
+                }
+                Err(e) => {
+                    tracing::info!(
+                        provider = provider.name(),
+                        "tool schema filter disabled: embedding not supported \
+                        by provider ({e:#})"
+                    );
+                    return self;
+                }
+            }
+        }
+
+        tracing::info!(
+            tool_count = embeddings.len(),
+            always_on = config.always_on.len(),
+            top_k = config.top_k,
+            "tool schema filter initialized"
+        );
+
+        let filter = zeph_tools::ToolSchemaFilter::new(
+            config.always_on.clone(),
+            config.top_k,
+            config.min_description_words,
+            embeddings,
+        );
+        self.tool_schema_filter = Some(filter);
+        self
+    }
+
     /// Apply all config-derived settings from [`AgentSessionConfig`] in a single call.
     ///
     /// Takes `cfg` by value and destructures it so the compiler emits an unused-variable warning

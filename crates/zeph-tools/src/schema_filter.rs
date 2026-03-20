@@ -9,6 +9,8 @@
 
 use std::collections::HashSet;
 
+use zeph_common::math::cosine_similarity;
+
 /// Cached embedding for a tool definition.
 #[derive(Debug, Clone)]
 pub struct ToolEmbedding {
@@ -27,6 +29,8 @@ pub enum InclusionReason {
     SimilarityRank,
     /// MCP tool with too-short description to filter reliably.
     ShortDescription,
+    /// Tool has no cached embedding (e.g. added after startup via MCP).
+    NoEmbedding,
 }
 
 /// Result of filtering tool schemas against a query.
@@ -152,6 +156,16 @@ impl ToolSchemaFilter {
             }
         }
 
+        // 5. Auto-include tools without embeddings (e.g. new MCP tools added after startup).
+        let embedded_ids: HashSet<&str> =
+            self.embeddings.iter().map(|e| e.tool_id.as_str()).collect();
+        for id in all_tool_ids {
+            if !included.contains(*id) && !embedded_ids.contains(*id) {
+                included.insert((*id).to_owned());
+                inclusion_reasons.push(((*id).to_owned(), InclusionReason::NoEmbedding));
+            }
+        }
+
         // Build excluded list.
         let excluded: Vec<String> = all_tool_ids
             .iter()
@@ -168,39 +182,36 @@ impl ToolSchemaFilter {
     }
 }
 
-/// Find tool IDs explicitly mentioned in the query (case-insensitive substring match).
+/// Find tool IDs explicitly mentioned in the query (case-insensitive, word-boundary aware).
+///
+/// Uses word-boundary checking: the character before and after the match must not be
+/// alphanumeric or underscore. This prevents false positives like "read" matching "thread".
 #[must_use]
 pub fn find_mentioned_tool_ids(query: &str, all_tool_ids: &[&str]) -> Vec<String> {
     let query_lower = query.to_lowercase();
     all_tool_ids
         .iter()
-        .filter(|id| query_lower.contains(&id.to_lowercase()))
+        .filter(|id| {
+            let id_lower = id.to_lowercase();
+            let mut start = 0;
+            while let Some(pos) = query_lower[start..].find(&id_lower) {
+                let abs_pos = start + pos;
+                let end_pos = abs_pos + id_lower.len();
+                let before_ok = abs_pos == 0
+                    || !query_lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
+                        && query_lower.as_bytes()[abs_pos - 1] != b'_';
+                let after_ok = end_pos >= query_lower.len()
+                    || !query_lower.as_bytes()[end_pos].is_ascii_alphanumeric()
+                        && query_lower.as_bytes()[end_pos] != b'_';
+                if before_ok && after_ok {
+                    return true;
+                }
+                start = abs_pos + 1;
+            }
+            false
+        })
         .map(|id| (*id).to_owned())
         .collect()
-}
-
-/// Cosine similarity between two equal-length f32 vectors.
-/// Returns 0.0 for mismatched lengths, empty vectors, or zero vectors.
-#[inline]
-#[must_use]
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0_f32;
-    let mut norm_a = 0.0_f32;
-    let mut norm_b = 0.0_f32;
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
-    }
-    let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom < f32::EPSILON {
-        0.0
-    } else {
-        dot / denom
-    }
 }
 
 #[cfg(test)]
@@ -299,16 +310,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_embeddings_returns_all_tools() {
+    fn empty_embeddings_includes_all_via_no_embedding_fallback() {
         let filter = ToolSchemaFilter::new(vec!["bash".into()], 6, 5, vec![]);
         let all_ids: Vec<&str> = vec!["bash", "grep", "write"];
         let query_emb = vec![0.5, 0.5, 0.0];
         let result = filter.filter(&all_ids, &[], "test", &query_emb);
 
-        // bash is always-on, grep/write have no embeddings so not in filterable set
+        // All tools included: bash (always-on), grep+write (NoEmbedding fallback)
         assert!(result.included.contains("bash"));
-        // grep and write are excluded because no embeddings matched them
-        assert_eq!(result.excluded.len(), 2);
+        assert!(result.included.contains("grep"));
+        assert!(result.included.contains("write"));
+        assert!(result.excluded.is_empty());
     }
 
     #[test]
@@ -406,5 +418,21 @@ mod tests {
         assert!(found.contains(&"web_scrape".to_owned()));
         assert!(found.contains(&"Bash".to_owned()));
         assert!(!found.contains(&"grep".to_owned()));
+    }
+
+    #[test]
+    fn find_mentioned_tool_ids_word_boundary_no_false_positives() {
+        let ids = vec!["read", "edit", "fetch", "grep"];
+        // "read" should NOT match inside "thread" or "breadcrumb"
+        let found = find_mentioned_tool_ids("thread breadcrumb", &ids);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn find_mentioned_tool_ids_word_boundary_matches_standalone() {
+        let ids = vec!["read", "edit"];
+        let found = find_mentioned_tool_ids("please read and edit the file", &ids);
+        assert!(found.contains(&"read".to_owned()));
+        assert!(found.contains(&"edit".to_owned()));
     }
 }
