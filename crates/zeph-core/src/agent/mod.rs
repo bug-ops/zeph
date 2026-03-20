@@ -2139,6 +2139,14 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/clear" {
             self.clear_history();
+            self.tool_orchestrator.clear_cache();
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/cache-stats" {
+            let stats = self.tool_orchestrator.cache_stats();
+            self.channel.send(&stats).await?;
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));
         }

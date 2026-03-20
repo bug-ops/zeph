@@ -5,6 +5,7 @@
 
 pub mod anomaly;
 pub mod audit;
+pub mod cache;
 pub mod composite;
 pub mod config;
 pub mod diagnostics;
@@ -30,9 +31,11 @@ pub mod verifier;
 
 pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
+pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::{
-    AnomalyConfig, AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, ToolsConfig,
+    AnomalyConfig, AuditConfig, OverflowConfig, ResultCacheConfig, ScrapeConfig, ShellConfig,
+    ToolsConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{

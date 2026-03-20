@@ -15,6 +15,10 @@ fn default_timeout() -> u64 {
     30
 }
 
+fn default_cache_ttl_secs() -> u64 {
+    300
+}
+
 fn default_confirm_patterns() -> Vec<String> {
     vec![
         "rm ".into(),
@@ -106,6 +110,26 @@ impl Default for AnomalyConfig {
     }
 }
 
+/// Configuration for the tool result cache.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResultCacheConfig {
+    /// Whether caching is enabled. Default: `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Time-to-live in seconds. `0` means entries never expire. Default: `300`.
+    #[serde(default = "default_cache_ttl_secs")]
+    pub ttl_secs: u64,
+}
+
+impl Default for ResultCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl_secs: default_cache_ttl_secs(),
+        }
+    }
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -127,6 +151,8 @@ pub struct ToolsConfig {
     pub overflow: OverflowConfig,
     #[serde(default)]
     pub anomaly: AnomalyConfig,
+    #[serde(default)]
+    pub result_cache: ResultCacheConfig,
     /// Declarative policy compiler for tool call authorization.
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
@@ -187,6 +213,7 @@ impl Default for ToolsConfig {
             filters: crate::filter::FilterConfig::default(),
             overflow: OverflowConfig::default(),
             anomaly: AnomalyConfig::default(),
+            result_cache: ResultCacheConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
         }
@@ -497,5 +524,41 @@ mod tests {
         assert_eq!(config.overflow.threshold, 50_000);
         assert_eq!(config.overflow.retention_days, 7);
         assert_eq!(config.overflow.max_overflow_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn result_cache_config_defaults() {
+        let config = ResultCacheConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.ttl_secs, 300);
+    }
+
+    #[test]
+    fn deserialize_result_cache_config() {
+        let toml_str = r"
+            [result_cache]
+            enabled = false
+            ttl_secs = 60
+        ";
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.result_cache.enabled);
+        assert_eq!(config.result_cache.ttl_secs, 60);
+    }
+
+    #[test]
+    fn result_cache_omitted_uses_defaults() {
+        let config: ToolsConfig = toml::from_str("").unwrap();
+        assert!(config.result_cache.enabled);
+        assert_eq!(config.result_cache.ttl_secs, 300);
+    }
+
+    #[test]
+    fn result_cache_ttl_zero_is_valid() {
+        let toml_str = r"
+            [result_cache]
+            ttl_secs = 0
+        ";
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.result_cache.ttl_secs, 0);
     }
 }

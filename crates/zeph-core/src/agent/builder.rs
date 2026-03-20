@@ -478,6 +478,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_result_cache_config(mut self, config: &zeph_tools::ResultCacheConfig) -> Self {
+        self.tool_orchestrator.set_cache_config(config);
+        self
+    }
+
+    #[must_use]
     pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
         self.providers.summary_provider = Some(provider);
         self
@@ -861,6 +867,7 @@ impl<C: Channel> Agent<C> {
             document_config,
             graph_config,
             anomaly_config,
+            result_cache_config,
             orchestration_config,
             // Not applied here: caller clones this before `apply_session_config` and applies
             // it per-session (e.g. `spawn_acp_agent` passes it to `with_debug_config`).
@@ -909,6 +916,8 @@ impl<C: Channel> Agent<C> {
                 anomaly_config.critical_threshold,
             ));
         }
+
+        self = self.with_result_cache_config(&result_cache_config);
 
         self
     }
