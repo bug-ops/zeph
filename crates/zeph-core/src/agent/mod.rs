@@ -1563,6 +1563,9 @@ impl<C: Channel> Agent<C> {
                 };
                 self.channel.send(&msg).await?;
                 // Store graph back so /plan retry and /plan resume work.
+                // pending_goal_embedding is retained: retry/resume goes through handle_plan_confirm
+                // -> finalize_plan_execution again, reusing the same embedding. A new /plan goal
+                // cannot be issued while pending_graph is Some, so the embedding cannot go stale.
                 self.orchestration.pending_graph = Some(completed_graph);
                 "failed"
             }
@@ -1573,6 +1576,7 @@ impl<C: Channel> Agent<C> {
                          Use `/plan resume` to continue or `/plan retry` to retry failed tasks.",
                     )
                     .await?;
+                // Same retention rationale as Failed: embedding reused on resume/retry.
                 self.orchestration.pending_graph = Some(completed_graph);
                 "paused"
             }
@@ -1591,6 +1595,7 @@ impl<C: Channel> Agent<C> {
                     .await?;
                 // Do NOT store graph back into pending_graph — canceled plans are not
                 // retryable via /plan retry.
+                self.orchestration.pending_goal_embedding.take();
                 "canceled"
             }
             other => {
@@ -1598,6 +1603,7 @@ impl<C: Channel> Agent<C> {
                 self.channel
                     .send(&format!("Plan ended with status: {other}"))
                     .await?;
+                self.orchestration.pending_goal_embedding.take();
                 "unknown"
             }
         };
