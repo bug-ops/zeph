@@ -177,11 +177,13 @@ fn blob_to_embedding(blob: &[u8]) -> Option<Vec<f32>> {
 }
 
 fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .cast_signed()
+    #[allow(clippy::cast_possible_wrap)]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+    }
 }
 
 /// Error type for plan cache operations.
