@@ -254,12 +254,9 @@ pub(crate) struct CompressionState {
     /// Applied at the START of the next turn before compaction (PERF-1 fix).
     pub(crate) pending_sidequest_result: Option<tokio::task::JoinHandle<Option<Vec<usize>>>>,
     /// In-memory subgoal registry for `Subgoal`/`SubgoalMig` pruning strategies (#2022).
-    pub(crate) subgoal_registry:
-        crate::agent::compaction_strategy::SubgoalRegistry,
+    pub(crate) subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry,
     /// Pending background subgoal extraction task.
-    pub(crate) pending_subgoal: Option<
-        tokio::task::JoinHandle<Option<SubgoalExtractionResult>>,
-    >,
+    pub(crate) pending_subgoal: Option<tokio::task::JoinHandle<Option<SubgoalExtractionResult>>>,
     /// Hash of the last user message when subgoal extraction was scheduled.
     pub(crate) subgoal_user_msg_hash: Option<u64>,
 }

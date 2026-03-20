@@ -1252,7 +1252,11 @@ impl<C: Channel> Agent<C> {
         // Summarize only the non-pinned, non-active-subgoal messages in the compaction range.
         let to_compact: Vec<Message> = {
             #[cfg(feature = "context-compression")]
-            let is_subgoal = self.context_manager.compression.pruning_strategy.is_subgoal();
+            let is_subgoal = self
+                .context_manager
+                .compression
+                .pruning_strategy
+                .is_subgoal();
             #[cfg(not(feature = "context-compression"))]
             let is_subgoal = false;
 
@@ -1408,7 +1412,12 @@ impl<C: Channel> Agent<C> {
         // Arithmetic offset is fragile because the final positions depend on pinned_count
         // and active_subgoal_count. Rebuild is O(subgoals * avg_span) — negligible.
         #[cfg(feature = "context-compression")]
-        if self.context_manager.compression.pruning_strategy.is_subgoal() {
+        if self
+            .context_manager
+            .compression
+            .pruning_strategy
+            .is_subgoal()
+        {
             self.compression
                 .subgoal_registry
                 .rebuild_after_compaction(&self.msg.messages, compact_end);
@@ -1753,6 +1762,10 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn prune_tool_outputs_subgoal(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_subgoal;
 
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_subgoal_registry(&self.compression.subgoal_registry);
+        }
+
         let scores = score_blocks_subgoal(
             &self.msg.messages,
             &self.compression.subgoal_registry,
@@ -1777,11 +1790,12 @@ impl<C: Channel> Agent<C> {
     /// Subgoal + MIG hybrid pruning: combines subgoal tier relevance with pairwise
     /// redundancy scoring (MIG = relevance − redundancy).
     #[cfg(feature = "context-compression")]
-    pub(in crate::agent) fn prune_tool_outputs_subgoal_mig(
-        &mut self,
-        min_to_free: usize,
-    ) -> usize {
+    pub(in crate::agent) fn prune_tool_outputs_subgoal_mig(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_subgoal_mig;
+
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_subgoal_registry(&self.compression.subgoal_registry);
+        }
 
         let mut scores = score_blocks_subgoal_mig(
             &self.msg.messages,
@@ -2827,9 +2841,9 @@ impl<C: Channel> Agent<C> {
 
         // Only needed when a task-aware or MIG strategy is active.
         match &self.context_manager.compression.pruning_strategy {
-            PruningStrategy::Reactive
-            | PruningStrategy::Subgoal
-            | PruningStrategy::SubgoalMig => return,
+            PruningStrategy::Reactive | PruningStrategy::Subgoal | PruningStrategy::SubgoalMig => {
+                return;
+            }
             PruningStrategy::TaskAware | PruningStrategy::Mig | PruningStrategy::TaskAwareMig => {}
         }
 
@@ -3023,12 +3037,16 @@ impl<C: Channel> Agent<C> {
                                 "subgoal transition detected"
                             );
                         }
-                        self.compression.subgoal_registry.complete_active(msg_len.saturating_sub(1));
+                        self.compression
+                            .subgoal_registry
+                            .complete_active(msg_len.saturating_sub(1));
                         let new_id = self
                             .compression
                             .subgoal_registry
                             .push_active(result.current.clone(), msg_len.saturating_sub(1));
-                        self.compression.subgoal_registry.extend_active(msg_len.saturating_sub(1));
+                        self.compression
+                            .subgoal_registry
+                            .extend_active(msg_len.saturating_sub(1));
                         tracing::debug!(
                             current = result.current.as_str(),
                             id = new_id.0,
@@ -3045,9 +3063,13 @@ impl<C: Channel> Agent<C> {
                                 .push_active(result.current.clone(), msg_len.saturating_sub(1));
                             // S4 fix: retroactively tag all pre-extraction messages [1..msg_len-1].
                             if msg_len > 2 {
-                                self.compression.subgoal_registry.tag_range(1, msg_len - 2, id);
+                                self.compression
+                                    .subgoal_registry
+                                    .tag_range(1, msg_len - 2, id);
                             }
-                            self.compression.subgoal_registry.extend_active(msg_len.saturating_sub(1));
+                            self.compression
+                                .subgoal_registry
+                                .extend_active(msg_len.saturating_sub(1));
                             tracing::debug!(
                                 current = result.current.as_str(),
                                 id = id.0,
@@ -3146,10 +3168,8 @@ impl<C: Channel> Agent<C> {
                 } else {
                     content.as_str()
                 };
-                let _ = std::fmt::write(
-                    &mut context_text,
-                    format_args!("[{role_str}]: {preview}\n"),
-                );
+                let _ =
+                    std::fmt::write(&mut context_text, format_args!("[{role_str}]: {preview}\n"));
             }
 
             let prompt = format!(
@@ -3171,20 +3191,22 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             }];
 
-            let response =
-                match tokio::time::timeout(std::time::Duration::from_secs(30), provider.chat(&msgs))
-                    .await
-                {
-                    Ok(Ok(r)) => r,
-                    Ok(Err(e)) => {
-                        tracing::debug!("subgoal_extraction: LLM error: {e:#}");
-                        return None;
-                    }
-                    Err(_) => {
-                        tracing::debug!("subgoal_extraction: timed out");
-                        return None;
-                    }
-                };
+            let response = match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                provider.chat(&msgs),
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::debug!("subgoal_extraction: LLM error: {e:#}");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::debug!("subgoal_extraction: timed out");
+                    return None;
+                }
+            };
 
             Some(parse_subgoal_extraction_response(&response))
         });
@@ -3206,6 +3228,7 @@ impl<C: Channel> Agent<C> {
 /// ```
 ///
 /// Falls back to treating the entire response as the current subgoal on malformed input.
+#[cfg(feature = "context-compression")]
 fn parse_subgoal_extraction_response(
     response: &str,
 ) -> crate::agent::state::SubgoalExtractionResult {
@@ -3215,20 +3238,22 @@ fn parse_subgoal_extraction_response(
 
     // Try to extract CURRENT: and COMPLETED: prefixes.
     if let Some(current_pos) = trimmed.find("CURRENT:") {
-        let after_current = trimmed[current_pos + "CURRENT:".len()..].trim_start();
-        let (current_line, remainder) = after_current
+        let after_current = &trimmed[current_pos + "CURRENT:".len()..];
+        let (current_line_raw, remainder_raw) = after_current
             .split_once('\n')
-            .map(|(l, r)| (l.trim(), r.trim()))
-            .unwrap_or((after_current.trim(), ""));
+            .map_or((after_current, ""), |(l, r)| (l, r));
+        let current_line = current_line_raw.trim();
+        let remainder = remainder_raw.trim();
 
-        let current = current_line.to_string();
-        if current.is_empty() {
+        if current_line.is_empty() {
             // Malformed: treat entire response as current subgoal.
             return SubgoalExtractionResult {
                 current: trimmed.to_string(),
                 completed: None,
             };
         }
+
+        let current = current_line.to_string();
 
         let completed = if let Some(comp_pos) = remainder.find("COMPLETED:") {
             let comp_text = remainder[comp_pos + "COMPLETED:".len()..].trim();
@@ -3254,5 +3279,43 @@ fn parse_subgoal_extraction_response(
     SubgoalExtractionResult {
         current: trimmed.to_string(),
         completed: None,
+    }
+}
+
+#[cfg(test)]
+mod subgoal_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn parse_well_formed_with_both() {
+        let response = "CURRENT: Implement login\nCOMPLETED: Setup database";
+        let result = parse_subgoal_extraction_response(response);
+        assert_eq!(result.current, "Implement login");
+        assert_eq!(result.completed, Some("Setup database".to_string()));
+    }
+
+    #[test]
+    fn parse_well_formed_no_completed() {
+        let response = "CURRENT: Fetch user data\nCOMPLETED: NONE";
+        let result = parse_subgoal_extraction_response(response);
+        assert_eq!(result.current, "Fetch user data");
+        assert_eq!(result.completed, None);
+    }
+
+    #[test]
+    fn parse_malformed_no_current_prefix() {
+        let response = "Just some random text about subgoals";
+        let result = parse_subgoal_extraction_response(response);
+        assert_eq!(result.current, "Just some random text about subgoals");
+        assert_eq!(result.completed, None);
+    }
+
+    #[test]
+    fn parse_malformed_empty_current() {
+        let response = "CURRENT: \nCOMPLETED: Setup";
+        let result = parse_subgoal_extraction_response(response);
+        // Empty CURRENT falls back to treating entire response as current
+        assert_eq!(result.current.trim(), "CURRENT: \nCOMPLETED: Setup");
+        assert_eq!(result.completed, None);
     }
 }

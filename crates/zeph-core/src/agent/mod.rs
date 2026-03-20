@@ -3217,6 +3217,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_status_command(&mut self) -> Result<(), error::AgentError> {
         use std::fmt::Write;
 

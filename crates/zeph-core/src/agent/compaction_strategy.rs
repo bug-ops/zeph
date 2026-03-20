@@ -400,7 +400,7 @@ pub(crate) struct SubgoalRegistry {
     /// Maps message index → subgoal ID for fast lookup during compaction.
     pub(crate) msg_to_subgoal: std::collections::HashMap<usize, SubgoalId>,
     /// Highest message index already tagged for the active subgoal.
-    /// Used by `extend_active()` to avoid re-inserting existing entries. O(new_msgs) per turn.
+    /// Used by `extend_active()` to avoid re-inserting existing entries.
     last_tagged_index: usize,
 }
 
@@ -412,7 +412,11 @@ impl SubgoalRegistry {
     /// the new one. Prevents the invariant violation of multiple Active subgoals.
     pub(crate) fn push_active(&mut self, description: String, start_msg_index: usize) -> SubgoalId {
         // Auto-complete any existing Active subgoal (M3 fix — defense in depth).
-        if let Some(active) = self.subgoals.iter_mut().find(|s| s.state == SubgoalState::Active) {
+        if let Some(active) = self
+            .subgoals
+            .iter_mut()
+            .find(|s| s.state == SubgoalState::Active)
+        {
             active.state = SubgoalState::Completed;
         }
         let id = SubgoalId(self.next_id);
@@ -432,7 +436,11 @@ impl SubgoalRegistry {
 
     /// Mark the current active subgoal as completed and assign an end boundary.
     pub(crate) fn complete_active(&mut self, end_msg_index: usize) {
-        if let Some(active) = self.subgoals.iter_mut().find(|s| s.state == SubgoalState::Active) {
+        if let Some(active) = self
+            .subgoals
+            .iter_mut()
+            .find(|s| s.state == SubgoalState::Active)
+        {
             active.state = SubgoalState::Completed;
             active.end_msg_index = end_msg_index;
         }
@@ -441,9 +449,13 @@ impl SubgoalRegistry {
     /// Extend the active subgoal to cover new messages up to `new_end`.
     ///
     /// Only tags messages from `last_tagged_index + 1` to `new_end` to avoid redundant
-    /// HashMap re-insertions. O(new_messages_per_turn) rather than O(total_span).
+    /// re-insertions into `msg_to_subgoal`. Incremental cost per turn instead of per total span.
     pub(crate) fn extend_active(&mut self, new_end: usize) {
-        if let Some(active) = self.subgoals.iter_mut().find(|s| s.state == SubgoalState::Active) {
+        if let Some(active) = self
+            .subgoals
+            .iter_mut()
+            .find(|s| s.state == SubgoalState::Active)
+        {
             active.end_msg_index = new_end;
             let start = self.last_tagged_index.saturating_add(1);
             for idx in start..=new_end {
@@ -480,13 +492,15 @@ impl SubgoalRegistry {
 
     /// Get the current active subgoal (for debug output and TUI metrics).
     pub(crate) fn active_subgoal(&self) -> Option<&Subgoal> {
-        self.subgoals.iter().find(|s| s.state == SubgoalState::Active)
+        self.subgoals
+            .iter()
+            .find(|s| s.state == SubgoalState::Active)
     }
 
     /// Rebuild the registry after compaction.
     ///
     /// Instead of arithmetic offset adjustment (which is fragile because the final message
-    /// positions depend on pinned_count and active_subgoal_count — variable quantities),
+    /// positions depend on `pinned_count` and `active_subgoal_count` — variable quantities),
     /// this rebuilds `msg_to_subgoal` from scratch by iterating the post-compaction message
     /// array and matching message content against surviving `Subgoal` entries.
     ///
@@ -531,7 +545,7 @@ impl SubgoalRegistry {
         // otherwise to the most recent Completed subgoal. This is a conservative approximation
         // that preserves the invariant that Active subgoal messages are never mistakenly
         // evicted by subsequent pruning.
-        let active_id = self
+        let _active_id = self
             .subgoals
             .iter()
             .find(|s| s.state == SubgoalState::Active)
@@ -554,23 +568,32 @@ impl SubgoalRegistry {
             return;
         }
 
-        // Rebuild: assign each non-system message to a subgoal.
-        // Strategy: messages are assigned to the Active subgoal if one exists and they are
-        // in the re-inserted block at the front. For remaining messages, assign to the last
-        // Completed subgoal (most recently completed = highest priority for retention).
+        // Rebuild: assign each non-system message to a subgoal based on surviving subgoal spans.
+        // Strategy: For each surviving message, determine which subgoal span it fell into
+        // based on the surviving subgoals' adjusted boundaries. Active subgoals take
+        // precedence, then Completed subgoals, then untagged.
         //
-        // This is a best-effort rebuild. The key invariant preserved: Active subgoal messages
-        // at the front of the surviving block are tagged as Active, so they won't be evicted.
-        let last_completed_id = self
-            .subgoals
-            .iter()
-            .filter(|s| s.state == SubgoalState::Completed)
-            .last()
-            .map(|s| s.id);
+        // This preserves tier differentiation: Active messages stay Active (unevictable),
+        // Completed messages stay Completed (summarizable), untagged stay untagged (outdated).
 
         let mut last_idx = 0usize;
         for (i, _msg) in messages.iter().enumerate().skip(1) {
-            let id = active_id.or(last_completed_id);
+            // Try to match this message index to a surviving subgoal span.
+            // Prefer Active subgoals, then Completed subgoals.
+            let id = self
+                .subgoals
+                .iter()
+                .filter(|s| s.state == SubgoalState::Active)
+                .find(|s| i >= s.start_msg_index && i <= s.end_msg_index)
+                .map(|s| s.id)
+                .or_else(|| {
+                    self.subgoals
+                        .iter()
+                        .filter(|s| s.state == SubgoalState::Completed)
+                        .find(|s| i >= s.start_msg_index && i <= s.end_msg_index)
+                        .map(|s| s.id)
+                });
+
             if let Some(id) = id {
                 self.msg_to_subgoal.insert(i, id);
                 last_idx = i;
