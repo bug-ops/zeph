@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(core): `DebugDumper::dump_anchored_summary()` writes `{N}_anchored-summary.json` with section completeness metrics, total_items, token_estimate, and fallback flag when `--debug-dump` is active (issue #1607)
 - feat(config): `[memory] structured_summaries = false` config field enables opt-in structured compaction summaries (issue #1607)
 - feat(tools): dynamic tool schema filtering — sends only relevant tool definitions to the LLM per turn, selected by embedding similarity between user query and tool descriptions; configurable via `[agent.tool_filter]` with `enabled`, `top_k`, `always_on`, and `min_description_words`; disabled by default (#2020)
+- enh(tools): `/status` reports `tool_filter` state when enabled — shows Filter line with top_k, always_on count, and embedding count; silent when filter is disabled (#2028)
 - feat(channels): register Discord slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task; idempotent via `PUT /applications/{id}/commands` (CHAN-05, epic #1978)
 - feat(channels): extract shared `CONFIRM_TIMEOUT` constant (30s) to `zeph-channels` crate; Telegram, Discord, and Slack `confirm()` all reference it (CHAN-02, epic #1978)
 

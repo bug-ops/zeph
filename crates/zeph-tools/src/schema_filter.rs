@@ -85,6 +85,18 @@ impl ToolSchemaFilter {
         self.embeddings.len()
     }
 
+    /// Configured top-K limit for similarity ranking.
+    #[must_use]
+    pub fn top_k(&self) -> usize {
+        self.top_k
+    }
+
+    /// Number of always-on tools in the filter config.
+    #[must_use]
+    pub fn always_on_count(&self) -> usize {
+        self.always_on.len()
+    }
+
     /// Replace tool embeddings (e.g. after MCP tool changes) and bump version.
     pub fn recompute(&mut self, embeddings: Vec<ToolEmbedding>) {
         self.embeddings = embeddings;
@@ -356,6 +368,14 @@ mod tests {
         let result = filter.filter(&all_ids, &[], "test", &query_emb);
 
         assert_eq!(result.included.len(), 6);
+    }
+
+    #[test]
+    fn accessors_return_configured_values() {
+        let filter = make_filter(vec!["bash", "read"], 7);
+        assert_eq!(filter.top_k(), 7);
+        assert_eq!(filter.always_on_count(), 2);
+        assert_eq!(filter.embedding_count(), 5);
     }
 
     #[test]

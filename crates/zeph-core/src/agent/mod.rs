@@ -3260,6 +3260,15 @@ impl<C: Channel> Agent<C> {
         );
         let _ = writeln!(out, "Skills:    {skill_count}");
         let _ = writeln!(out, "MCP:       {mcp_servers} server(s)");
+        if let Some(ref tf) = self.tool_schema_filter {
+            let _ = writeln!(
+                out,
+                "Filter:    enabled (top_k={}, always_on={}, {} embeddings)",
+                tf.top_k(),
+                tf.always_on_count(),
+                tf.embedding_count(),
+            );
+        }
         if cost_cents > 0.0 {
             let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
         }
