@@ -233,6 +233,31 @@ where
     Ok(value)
 }
 
+fn validate_importance_weight<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "importance_weight must be a finite number",
+        ));
+    }
+    if value < 0.0 {
+        return Err(serde::de::Error::custom(
+            "importance_weight must be non-negative",
+        ));
+    }
+    if value > 1.0 {
+        return Err(serde::de::Error::custom("importance_weight must be <= 1.0"));
+    }
+    Ok(value)
+}
+
+fn default_importance_weight() -> f64 {
+    0.15
+}
+
 /// Configuration for A-MEM dynamic note linking.
 ///
 /// When enabled, after each graph extraction pass, entities extracted from the message are
@@ -421,6 +446,7 @@ impl Default for DocumentConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SemanticConfig {
     #[serde(default = "default_semantic_enabled")]
     pub enabled: bool,
@@ -438,6 +464,13 @@ pub struct SemanticConfig {
     pub mmr_enabled: bool,
     #[serde(default = "default_mmr_lambda")]
     pub mmr_lambda: f32,
+    #[serde(default)]
+    pub importance_enabled: bool,
+    #[serde(
+        default = "default_importance_weight",
+        deserialize_with = "validate_importance_weight"
+    )]
+    pub importance_weight: f64,
 }
 
 impl Default for SemanticConfig {
@@ -451,6 +484,8 @@ impl Default for SemanticConfig {
             temporal_decay_half_life_days: default_temporal_decay_half_life_days(),
             mmr_enabled: false,
             mmr_lambda: default_mmr_lambda(),
+            importance_enabled: false,
+            importance_weight: default_importance_weight(),
         }
     }
 }
@@ -689,5 +724,58 @@ impl Default for GraphConfig {
             edge_history_limit: default_graph_edge_history_limit(),
             note_linking: NoteLinkingConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deserialize_importance_weight(toml_val: &str) -> Result<SemanticConfig, toml::de::Error> {
+        let input = format!("importance_weight = {toml_val}");
+        toml::from_str::<SemanticConfig>(&input)
+    }
+
+    #[test]
+    fn importance_weight_default_is_0_15() {
+        let cfg = SemanticConfig::default();
+        assert!((cfg.importance_weight - 0.15).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn importance_weight_valid_zero() {
+        let cfg = deserialize_importance_weight("0.0").unwrap();
+        assert_eq!(cfg.importance_weight, 0.0);
+    }
+
+    #[test]
+    fn importance_weight_valid_one() {
+        let cfg = deserialize_importance_weight("1.0").unwrap();
+        assert_eq!(cfg.importance_weight, 1.0);
+    }
+
+    #[test]
+    fn importance_weight_rejects_near_zero_negative() {
+        // TOML does not have a NaN literal, but we can test via a f64 that
+        // the validator rejects out-of-range values. Test with negative here
+        // and rely on validate_importance_weight rejecting non-finite via
+        // a constructed deserializer call.
+        let result = deserialize_importance_weight("-0.01");
+        assert!(
+            result.is_err(),
+            "negative importance_weight must be rejected"
+        );
+    }
+
+    #[test]
+    fn importance_weight_rejects_negative() {
+        let result = deserialize_importance_weight("-1.0");
+        assert!(result.is_err(), "negative value must be rejected");
+    }
+
+    #[test]
+    fn importance_weight_rejects_greater_than_one() {
+        let result = deserialize_importance_weight("1.01");
+        assert!(result.is_err(), "value > 1.0 must be rejected");
     }
 }

@@ -341,7 +341,36 @@ impl SemanticMemory {
             ranked.truncate(limit);
         }
 
+        if self.importance_enabled && !ranked.is_empty() {
+            let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
+            match self.sqlite.fetch_importance_scores(&ids).await {
+                Ok(scores) => {
+                    for (msg_id, score) in &mut ranked {
+                        if let Some(&imp) = scores.get(msg_id) {
+                            *score += imp * self.importance_weight;
+                        }
+                    }
+                    ranked
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    tracing::debug!(
+                        importance_weight = %self.importance_weight,
+                        "recall: importance scores blended"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("importance scoring: failed to fetch scores: {e:#}");
+                }
+            }
+        }
+
         let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
+
+        if !ids.is_empty()
+            && let Err(e) = self.batch_increment_access_count(ids.clone()).await
+        {
+            tracing::warn!("recall: failed to increment access counts: {e:#}");
+        }
+
         let messages = self.sqlite.messages_by_ids(&ids).await?;
         let msg_map: std::collections::HashMap<MessageId, _> = messages.into_iter().collect();
 
@@ -512,6 +541,23 @@ impl SemanticMemory {
         tracing::debug!(result_count = results.len(), "graph: recall complete");
 
         Ok(results)
+    }
+
+    /// Increment access count and update `last_accessed` for a batch of message IDs.
+    ///
+    /// Skips the update if `message_ids` is empty to avoid an invalid `IN ()` clause.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` update fails.
+    async fn batch_increment_access_count(
+        &self,
+        message_ids: Vec<MessageId>,
+    ) -> Result<(), MemoryError> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        self.sqlite.increment_access_counts(&message_ids).await
     }
 
     /// Check whether an embedding exists for a given message ID.
