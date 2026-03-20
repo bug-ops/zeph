@@ -229,7 +229,7 @@ fn warn_if_acp_enabled_but_unavailable(config: &Config) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Load logging config early (sync, cheap) so every code path gets file logging.
     let config_path = resolve_config_path(cli.config.as_deref());
@@ -832,6 +832,23 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_sidequest_config(config.memory.sidequest.clone())
     .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
+
+    // Wire tool dependency graph if enabled (#2024).
+    let agent = if config.tools.dependencies.enabled && !config.tools.dependencies.rules.is_empty()
+    {
+        let graph = zeph_tools::ToolDependencyGraph::new(config.tools.dependencies.rules.clone());
+        let always_on: std::collections::HashSet<String> =
+            config.agent.tool_filter.always_on.iter().cloned().collect();
+        tracing::info!(
+            rules = config.tools.dependencies.rules.len(),
+            "tool dependency graph initialized"
+        );
+        agent
+            .with_tool_dependency_graph(graph, always_on)
+            .with_dependency_config(config.tools.dependencies.clone())
+    } else {
+        agent
+    };
 
     #[cfg(feature = "policy-enforcer")]
     let agent = if config.tools.policy.enabled {

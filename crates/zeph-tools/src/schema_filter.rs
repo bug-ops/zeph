@@ -7,9 +7,11 @@
 //! only the most relevant tools based on cosine similarity between the user query
 //! embedding and pre-computed tool description embeddings.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use zeph_common::math::cosine_similarity;
+
+use crate::config::ToolDependency;
 
 /// Cached embedding for a tool definition.
 #[derive(Debug, Clone)]
@@ -31,6 +33,18 @@ pub enum InclusionReason {
     ShortDescription,
     /// Tool has no cached embedding (e.g. added after startup via MCP).
     NoEmbedding,
+    /// Tool included because its hard requirements (`requires`) are all satisfied.
+    DependencyMet,
+    /// Tool received a similarity boost from satisfied soft prerequisites (`prefers`).
+    PreferenceBoost,
+}
+
+/// Exclusion reason for a tool that was blocked by the dependency gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyExclusion {
+    pub tool_id: String,
+    /// IDs of `requires` entries that are not yet satisfied.
+    pub unmet_requires: Vec<String>,
 }
 
 /// Result of filtering tool schemas against a query.
@@ -38,12 +52,309 @@ pub enum InclusionReason {
 pub struct ToolFilterResult {
     /// Tool IDs that passed the filter.
     pub included: HashSet<String>,
-    /// Tool IDs that were filtered out.
+    /// Tool IDs that were filtered out by similarity/embedding.
     pub excluded: Vec<String>,
     /// Per-tool similarity scores for filterable tools (sorted descending).
     pub scores: Vec<(String, f32)>,
     /// Reason each included tool was included.
     pub inclusion_reasons: Vec<(String, InclusionReason)>,
+    /// Tools excluded specifically due to unmet hard dependencies.
+    pub dependency_exclusions: Vec<DependencyExclusion>,
+}
+
+/// Dependency graph for sequential tool availability (issue #2024).
+///
+/// Built once from `DependencyConfig` at agent start, reused across turns.
+/// Implements cycle detection via DFS topological sort: any tool in a detected
+/// cycle has all its `requires` removed (made unconditionally available) so it
+/// can never be permanently blocked by a dependency loop.
+///
+/// # Deadlock fallback
+///
+/// If all non-always-on tools would be blocked (either by config cycles or
+/// unreachable `requires` chains), `apply()` detects this at filter time and
+/// disables hard gates for that turn, logging a warning.
+#[derive(Debug, Clone, Default)]
+pub struct ToolDependencyGraph {
+    /// Map from `tool_id` -> its dependency spec.
+    /// Tools in cycles have their `requires` cleared at construction time.
+    deps: HashMap<String, ToolDependency>,
+}
+
+impl ToolDependencyGraph {
+    /// Build a dependency graph from a map of tool rules.
+    ///
+    /// Performs DFS-based cycle detection. All tools participating in any cycle
+    /// have their `requires` entries removed so they are always available.
+    #[must_use]
+    pub fn new(deps: HashMap<String, ToolDependency>) -> Self {
+        if deps.is_empty() {
+            return Self { deps };
+        }
+        let cycled = detect_cycles(&deps);
+        if !cycled.is_empty() {
+            tracing::warn!(
+                tools = ?cycled,
+                "tool dependency graph: cycles detected, removing requires for cycle participants"
+            );
+        }
+        let mut resolved = deps;
+        for tool_id in &cycled {
+            if let Some(dep) = resolved.get_mut(tool_id) {
+                dep.requires.clear();
+            }
+        }
+        Self { deps: resolved }
+    }
+
+    /// Returns true if no dependency rules are configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.deps.is_empty()
+    }
+
+    /// Check if a tool's hard requirements are all satisfied.
+    ///
+    /// Returns `true` if the tool has no `requires` entries, or if all entries
+    /// are present in `completed`. Returns `true` for unconfigured tools.
+    #[must_use]
+    pub fn requirements_met(&self, tool_id: &str, completed: &HashSet<String>) -> bool {
+        self.deps
+            .get(tool_id)
+            .is_none_or(|d| d.requires.iter().all(|r| completed.contains(r)))
+    }
+
+    /// Returns the unmet `requires` entries for a tool, if any.
+    #[must_use]
+    pub fn unmet_requires<'a>(
+        &'a self,
+        tool_id: &str,
+        completed: &HashSet<String>,
+    ) -> Vec<&'a str> {
+        self.deps.get(tool_id).map_or_else(Vec::new, |d| {
+            d.requires
+                .iter()
+                .filter(|r| !completed.contains(r.as_str()))
+                .map(String::as_str)
+                .collect()
+        })
+    }
+
+    /// Calculate similarity boost for soft prerequisites.
+    ///
+    /// Returns `min(boost_per_dep * met_count, max_total_boost)`.
+    #[must_use]
+    pub fn preference_boost(
+        &self,
+        tool_id: &str,
+        completed: &HashSet<String>,
+        boost_per_dep: f32,
+        max_total_boost: f32,
+    ) -> f32 {
+        self.deps.get(tool_id).map_or(0.0, |d| {
+            let met = d
+                .prefers
+                .iter()
+                .filter(|p| completed.contains(p.as_str()))
+                .count();
+            #[allow(clippy::cast_precision_loss)]
+            let boost = met as f32 * boost_per_dep;
+            boost.min(max_total_boost)
+        })
+    }
+
+    /// Apply hard dependency gates and preference boosts to a `ToolFilterResult`.
+    ///
+    /// Called after `ToolSchemaFilter::filter()` returns so the filter signature
+    /// remains unchanged (HIGH-03 fix). Dependency gates are applied AFTER TAFC
+    /// augmentation to prevent re-adding gated tools through augmentation (MED-04 fix).
+    ///
+    /// # Deadlock fallback (CRIT-01)
+    ///
+    /// If applying hard gates would remove ALL non-always-on included tools, the
+    /// gates are disabled for this turn and a warning is logged.
+    pub fn apply(
+        &self,
+        result: &mut ToolFilterResult,
+        completed: &HashSet<String>,
+        boost_per_dep: f32,
+        max_total_boost: f32,
+        always_on: &HashSet<String>,
+    ) {
+        if self.deps.is_empty() {
+            return;
+        }
+
+        // Collect tools to gate (those not already excluded and not always-on / name-mentioned).
+        // Always-on and name-mentioned tools bypass the hard gate per design.
+        let bypassed: HashSet<&str> = result
+            .inclusion_reasons
+            .iter()
+            .filter(|(_, r)| {
+                matches!(
+                    r,
+                    InclusionReason::AlwaysOn | InclusionReason::NameMentioned
+                )
+            })
+            .map(|(id, _)| id.as_str())
+            .collect();
+
+        let mut to_exclude: Vec<DependencyExclusion> = Vec::new();
+        for tool_id in &result.included {
+            if bypassed.contains(tool_id.as_str()) {
+                continue;
+            }
+            let unmet: Vec<String> = self
+                .unmet_requires(tool_id, completed)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            if !unmet.is_empty() {
+                to_exclude.push(DependencyExclusion {
+                    tool_id: tool_id.clone(),
+                    unmet_requires: unmet,
+                });
+            }
+        }
+
+        // CRIT-01: deadlock fallback — if gating would leave no non-always-on tools,
+        // skip hard gates for this turn.
+        let non_always_on_included: usize = result
+            .included
+            .iter()
+            .filter(|id| !always_on.contains(id.as_str()))
+            .count();
+        if !to_exclude.is_empty() && to_exclude.len() >= non_always_on_included {
+            tracing::warn!(
+                gated = to_exclude.len(),
+                non_always_on = non_always_on_included,
+                "tool dependency graph: all non-always-on tools would be blocked; \
+                 disabling hard gates for this turn"
+            );
+            to_exclude.clear();
+        }
+
+        // Apply hard gates.
+        for excl in &to_exclude {
+            result.included.remove(&excl.tool_id);
+            result.excluded.push(excl.tool_id.clone());
+            tracing::debug!(
+                tool_id = %excl.tool_id,
+                unmet = ?excl.unmet_requires,
+                "tool dependency gate: excluded (requires not met)"
+            );
+        }
+        result.dependency_exclusions = to_exclude;
+
+        // Apply preference boosts: adjust scores for tools with satisfied prefers deps.
+        for (tool_id, score) in &mut result.scores {
+            if !result.included.contains(tool_id) {
+                continue;
+            }
+            let boost = self.preference_boost(tool_id, completed, boost_per_dep, max_total_boost);
+            if boost > 0.0 {
+                *score += boost;
+                // Record reason if not already recorded with a higher-priority reason.
+                let already_recorded = result.inclusion_reasons.iter().any(|(id, _)| id == tool_id);
+                if !already_recorded {
+                    result
+                        .inclusion_reasons
+                        .push((tool_id.clone(), InclusionReason::PreferenceBoost));
+                }
+                tracing::debug!(
+                    tool_id = %tool_id,
+                    boost,
+                    "tool dependency: preference boost applied"
+                );
+            }
+        }
+        // Re-sort scores after boosts.
+        result
+            .scores
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    /// Filter a slice of tool IDs to those whose hard requirements are met.
+    ///
+    /// Used on iterations 1+ in the native tool loop via the agent helper
+    /// `apply_hard_dependency_gate_to_names`. Returns only the IDs that pass.
+    #[must_use]
+    pub fn filter_tool_names<'a>(
+        &self,
+        names: &[&'a str],
+        completed: &HashSet<String>,
+        always_on: &HashSet<String>,
+    ) -> Vec<&'a str> {
+        names
+            .iter()
+            .copied()
+            .filter(|n| always_on.contains(*n) || self.requirements_met(n, completed))
+            .collect()
+    }
+}
+
+/// DFS-based cycle detection for tool dependency graphs.
+///
+/// Returns the set of tool IDs that participate in any cycle.
+/// Algorithm: standard DFS with three states (unvisited/in-progress/done).
+/// When a back-edge is found (visiting an in-progress node), all nodes in the
+/// current DFS path that form part of the cycle are collected.
+fn detect_cycles(deps: &HashMap<String, ToolDependency>) -> HashSet<String> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Unvisited,
+        InProgress,
+        Done,
+    }
+
+    let mut state: HashMap<&str, State> = HashMap::new();
+    let mut cycled: HashSet<String> = HashSet::new();
+
+    for start in deps.keys() {
+        if state
+            .get(start.as_str())
+            .copied()
+            .unwrap_or(State::Unvisited)
+            != State::Unvisited
+        {
+            continue;
+        }
+        let mut stack: Vec<(&str, usize)> = vec![(start.as_str(), 0)];
+        state.insert(start.as_str(), State::InProgress);
+
+        while let Some((node, child_idx)) = stack.last_mut() {
+            let node = *node;
+            let requires = deps
+                .get(node)
+                .map_or(&[] as &[String], |d| d.requires.as_slice());
+
+            if *child_idx >= requires.len() {
+                state.insert(node, State::Done);
+                stack.pop();
+                continue;
+            }
+
+            let child = requires[*child_idx].as_str();
+            *child_idx += 1;
+
+            match state.get(child).copied().unwrap_or(State::Unvisited) {
+                State::InProgress => {
+                    // Back-edge: mark all nodes currently in the DFS path as cycled.
+                    for (path_node, _) in &stack {
+                        cycled.insert((*path_node).to_owned());
+                    }
+                    cycled.insert(child.to_owned());
+                }
+                State::Unvisited => {
+                    state.insert(child, State::InProgress);
+                    stack.push((child, 0));
+                }
+                State::Done => {}
+            }
+        }
+    }
+
+    cycled
 }
 
 /// Core filter holding cached tool embeddings and config.
@@ -190,6 +501,7 @@ impl ToolSchemaFilter {
             excluded,
             scores,
             inclusion_reasons,
+            dependency_exclusions: Vec::new(),
         }
     }
 }
@@ -454,5 +766,180 @@ mod tests {
         let found = find_mentioned_tool_ids("please read and edit the file", &ids);
         assert!(found.contains(&"read".to_owned()));
         assert!(found.contains(&"edit".to_owned()));
+    }
+
+    // --- ToolDependencyGraph tests ---
+
+    fn make_dep_graph(rules: &[(&str, Vec<&str>, Vec<&str>)]) -> ToolDependencyGraph {
+        let deps = rules
+            .iter()
+            .map(|(id, requires, prefers)| {
+                (
+                    (*id).to_owned(),
+                    crate::config::ToolDependency {
+                        requires: requires.iter().map(|s| (*s).to_owned()).collect(),
+                        prefers: prefers.iter().map(|s| (*s).to_owned()).collect(),
+                    },
+                )
+            })
+            .collect();
+        ToolDependencyGraph::new(deps)
+    }
+
+    fn completed(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn requirements_met_no_deps() {
+        let graph = make_dep_graph(&[]);
+        assert!(graph.requirements_met("any_tool", &completed(&[])));
+    }
+
+    #[test]
+    fn requirements_met_all_satisfied() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        assert!(graph.requirements_met("apply_patch", &completed(&["read"])));
+    }
+
+    #[test]
+    fn requirements_met_unmet() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        assert!(!graph.requirements_met("apply_patch", &completed(&[])));
+    }
+
+    #[test]
+    fn requirements_met_unconfigured_tool() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        // tools not in the graph are always available
+        assert!(graph.requirements_met("grep", &completed(&[])));
+    }
+
+    #[test]
+    fn preference_boost_none_met() {
+        let graph = make_dep_graph(&[("format", vec![], vec!["search", "grep"])]);
+        let boost = graph.preference_boost("format", &completed(&[]), 0.15, 0.2);
+        assert_eq!(boost, 0.0);
+    }
+
+    #[test]
+    fn preference_boost_partial() {
+        let graph = make_dep_graph(&[("format", vec![], vec!["search", "grep"])]);
+        let boost = graph.preference_boost("format", &completed(&["search"]), 0.15, 0.2);
+        assert!((boost - 0.15).abs() < 1e-5);
+    }
+
+    #[test]
+    fn preference_boost_capped_at_max() {
+        // 3 prefs x 0.15 = 0.45 but max is 0.2
+        let graph = make_dep_graph(&[("format", vec![], vec!["a", "b", "c"])]);
+        let boost = graph.preference_boost("format", &completed(&["a", "b", "c"]), 0.15, 0.2);
+        assert!((boost - 0.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn cycle_detection_simple_cycle() {
+        // A requires B, B requires A → both should have requires cleared
+        let graph = make_dep_graph(&[
+            ("tool_a", vec!["tool_b"], vec![]),
+            ("tool_b", vec!["tool_a"], vec![]),
+        ]);
+        // After cycle removal both should be unconditionally available
+        assert!(graph.requirements_met("tool_a", &completed(&[])));
+        assert!(graph.requirements_met("tool_b", &completed(&[])));
+    }
+
+    #[test]
+    fn cycle_detection_does_not_affect_non_cycle_tools() {
+        // A requires B, B requires C (no cycle), C requires D (cycle: D requires C)
+        let graph = make_dep_graph(&[
+            ("tool_a", vec!["tool_b"], vec![]),
+            ("tool_b", vec!["tool_c"], vec![]),
+            ("tool_c", vec!["tool_d"], vec![]),
+            ("tool_d", vec!["tool_c"], vec![]), // cycle: c <-> d
+        ]);
+        // tool_c and tool_d participate in cycle → unconditionally available
+        assert!(graph.requirements_met("tool_c", &completed(&[])));
+        assert!(graph.requirements_met("tool_d", &completed(&[])));
+        // tool_a and tool_b are NOT in a cycle → still gated
+        assert!(!graph.requirements_met("tool_a", &completed(&[])));
+        assert!(!graph.requirements_met("tool_b", &completed(&[])));
+    }
+
+    #[test]
+    fn apply_excludes_gated_tool() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        let filter = make_filter(vec!["bash"], 5);
+        let all_ids = vec!["bash", "read", "apply_patch", "grep"];
+        let query_emb = vec![0.5, 0.5, 0.0];
+        let mut result = filter.filter(&all_ids, &[], "test", &query_emb);
+        // Ensure apply_patch is included before dependency gate
+        result.included.insert("apply_patch".into());
+
+        let always_on: HashSet<String> = ["bash".into()].into();
+        graph.apply(&mut result, &completed(&[]), 0.15, 0.2, &always_on);
+
+        assert!(!result.included.contains("apply_patch"));
+        assert_eq!(result.dependency_exclusions.len(), 1);
+        assert_eq!(result.dependency_exclusions[0].tool_id, "apply_patch");
+        assert_eq!(result.dependency_exclusions[0].unmet_requires, vec!["read"]);
+    }
+
+    #[test]
+    fn apply_includes_gated_tool_when_dep_met() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        let filter = make_filter(vec!["bash"], 5);
+        let all_ids = vec!["bash", "read", "apply_patch"];
+        let query_emb = vec![0.5, 0.5, 0.0];
+        let mut result = filter.filter(&all_ids, &[], "test", &query_emb);
+        result.included.insert("apply_patch".into());
+
+        let always_on: HashSet<String> = ["bash".into()].into();
+        graph.apply(&mut result, &completed(&["read"]), 0.15, 0.2, &always_on);
+
+        assert!(result.included.contains("apply_patch"));
+        assert!(result.dependency_exclusions.is_empty());
+    }
+
+    #[test]
+    fn apply_deadlock_fallback_when_all_gated() {
+        // Build a minimal filter with no embeddings so only bash (always-on) and
+        // only_tool (NoEmbedding) are in the result set.
+        let filter = ToolSchemaFilter::new(
+            vec!["bash".into()],
+            5,
+            5,
+            vec![], // no embeddings: only_tool will be included via NoEmbedding fallback
+        );
+        let graph = make_dep_graph(&[("only_tool", vec!["missing"], vec![])]);
+        let all_ids = vec!["bash", "only_tool"];
+        let query_emb = vec![0.5, 0.5, 0.0];
+        let mut result = filter.filter(&all_ids, &[], "test", &query_emb);
+
+        // At this point: included = {bash, only_tool}, non_always_on_included = 1
+        assert!(result.included.contains("only_tool"));
+        assert!(result.included.contains("bash"));
+
+        let always_on: HashSet<String> = ["bash".into()].into();
+        graph.apply(&mut result, &completed(&[]), 0.15, 0.2, &always_on);
+
+        // Deadlock fallback: only_tool remains included (all non-always-on would be blocked)
+        assert!(result.included.contains("only_tool"));
+        assert!(result.dependency_exclusions.is_empty());
+    }
+
+    #[test]
+    fn apply_always_on_bypasses_gate() {
+        let graph = make_dep_graph(&[("bash", vec!["nonexistent"], vec![])]);
+        let filter = make_filter(vec!["bash"], 5);
+        let all_ids = vec!["bash", "grep"];
+        let query_emb = vec![0.5, 0.5, 0.0];
+        let mut result = filter.filter(&all_ids, &[], "test", &query_emb);
+
+        let always_on: HashSet<String> = ["bash".into()].into();
+        graph.apply(&mut result, &completed(&[]), 0.15, 0.2, &always_on);
+
+        // bash is always-on, bypasses hard gate
+        assert!(result.included.contains("bash"));
     }
 }

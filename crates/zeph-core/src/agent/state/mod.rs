@@ -106,6 +106,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) semantic_cache_enabled: bool,
     pub(crate) semantic_cache_threshold: f32,
     pub(crate) semantic_cache_max_candidates: u32,
+    /// Dependency config snapshot stored for per-turn boost parameters.
+    pub(crate) dependency_config: zeph_tools::DependencyConfig,
 }
 
 /// Groups feedback detection subsystems: correction detector and judge detector.

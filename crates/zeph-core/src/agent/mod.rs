@@ -157,6 +157,15 @@ pub struct Agent<C: Channel> {
     /// Cached filtered tool IDs for the current user turn. Set by `compute_filtered_tool_ids()`
     /// in `rebuild_system_prompt()`, consumed by the native tool loop on iteration 0.
     pub(super) cached_filtered_tool_ids: Option<HashSet<String>>,
+    /// Tool dependency graph for sequential tool availability (issue #2024).
+    /// Built once from config, applied per-turn after tool schema filtering.
+    pub(super) dependency_graph: Option<zeph_tools::ToolDependencyGraph>,
+    /// Always-on tool IDs, mirrored from the tool schema filter for dependency gate bypass.
+    pub(super) dependency_always_on: HashSet<String>,
+    /// Tool IDs that completed successfully in the current session.
+    /// Grows monotonically per session; cleared on `/clear`.
+    /// NOTE: bounded by session length, typically < 1000 entries.
+    pub(super) completed_tool_ids: HashSet<String>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -304,6 +313,7 @@ impl<C: Channel> Agent<C> {
                 semantic_cache_enabled: false,
                 semantic_cache_threshold: 0.95,
                 semantic_cache_max_candidates: 10,
+                dependency_config: zeph_tools::DependencyConfig::default(),
             },
             mcp: McpState {
                 tools: Vec::new(),
@@ -405,6 +415,9 @@ impl<C: Channel> Agent<C> {
             sidequest: sidequest::SidequestState::default(),
             tool_schema_filter: None,
             cached_filtered_tool_ids: None,
+            dependency_graph: None,
+            dependency_always_on: HashSet::new(),
+            completed_tool_ids: HashSet::new(),
         }
     }
 
