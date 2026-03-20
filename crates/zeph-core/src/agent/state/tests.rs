@@ -206,6 +206,9 @@ fn compression_state_construction() {
         task_goal_user_msg_hash: None,
         pending_task_goal: None,
         pending_sidequest_result: None,
+        subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry::default(),
+        pending_subgoal: None,
+        subgoal_user_msg_hash: None,
     };
     assert!(state.current_task_goal.is_none());
     assert!(state.task_goal_user_msg_hash.is_none());

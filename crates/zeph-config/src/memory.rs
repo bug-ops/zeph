@@ -523,7 +523,7 @@ pub enum CompressionStrategy {
     },
 }
 
-/// Pruning strategy for tool-output eviction inside the compaction pipeline (#1851).
+/// Pruning strategy for tool-output eviction inside the compaction pipeline (#1851, #2022).
 ///
 /// When `context-compression` feature is enabled, this replaces the default oldest-first
 /// heuristic with scored eviction.
@@ -542,6 +542,21 @@ pub enum PruningStrategy {
     /// Combined `TaskAware` goal extraction + MIG scoring.
     /// Requires `context-compression` feature.
     TaskAwareMig,
+    /// Subgoal-aware pruning: tracks the agent's current subgoal via fire-and-forget LLM
+    /// extraction and partitions tool outputs into Active/Completed/Outdated tiers (#2022).
+    /// Requires `context-compression` feature.
+    Subgoal,
+    /// Subgoal-aware pruning combined with MIG redundancy scoring (#2022).
+    /// Requires `context-compression` feature.
+    SubgoalMig,
+}
+
+impl PruningStrategy {
+    /// Returns `true` when the strategy is subgoal-aware (`Subgoal` or `SubgoalMig`).
+    #[must_use]
+    pub fn is_subgoal(self) -> bool {
+        matches!(self, Self::Subgoal | Self::SubgoalMig)
+    }
 }
 
 impl std::str::FromStr for PruningStrategy {
@@ -553,8 +568,11 @@ impl std::str::FromStr for PruningStrategy {
             "task_aware" | "task-aware" => Ok(Self::TaskAware),
             "mig" => Ok(Self::Mig),
             "task_aware_mig" | "task-aware-mig" => Ok(Self::TaskAwareMig),
+            "subgoal" => Ok(Self::Subgoal),
+            "subgoal_mig" | "subgoal-mig" => Ok(Self::SubgoalMig),
             other => Err(format!(
-                "unknown pruning strategy `{other}`, expected reactive|task_aware|mig|task_aware_mig"
+                "unknown pruning strategy `{other}`, expected \
+                 reactive|task_aware|mig|task_aware_mig|subgoal|subgoal_mig"
             )),
         }
     }

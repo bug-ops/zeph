@@ -257,6 +257,104 @@ pub(crate) fn score_blocks_mig(
     scores
 }
 
+// ─── Phase C: Subgoal-aware scoring functions ────────────────────────────────
+
+/// Score each tool-output message block by subgoal tier membership.
+///
+/// Relevance tiers (architecture spec):
+/// - Active subgoal:    1.0  — never evicted by scoring
+/// - Completed subgoal: 0.3  — candidate for summarization
+/// - Untagged/outdated: 0.1  — highest eviction priority
+///
+/// Within each tier, recency is used as a tiebreaker (newer = slightly higher relevance)
+/// by adding a small `position_fraction` term that does not change tier ordering.
+#[cfg(feature = "context-compression")]
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn score_blocks_subgoal(
+    messages: &[Message],
+    registry: &SubgoalRegistry,
+    _tc: &TokenCounter,
+) -> Vec<BlockScore> {
+    let total = messages.len().max(1) as f32;
+    let mut scores = Vec::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        // Skip system prompt (index 0) and pinned messages.
+        if i == 0 || msg.metadata.focus_pinned {
+            continue;
+        }
+        let has_tool_output = msg.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolOutput { .. } | MessagePart::ToolResult { .. }
+            )
+        });
+        if !has_tool_output {
+            continue;
+        }
+
+        // Recency fraction: [0.0, 1.0) — does not exceed the tier gap.
+        let recency = i as f32 / total * 0.05;
+
+        let relevance = match registry.subgoal_state(i) {
+            Some(SubgoalState::Active) => 1.0_f32 + recency,
+            Some(SubgoalState::Completed) => 0.3_f32 + recency,
+            None => 0.1_f32 + recency,
+        };
+
+        scores.push(BlockScore {
+            msg_index: i,
+            relevance,
+            redundancy: 0.0,
+            mig: relevance,
+        });
+    }
+    scores
+}
+
+/// Score tool-output blocks using subgoal tiers combined with MIG redundancy.
+///
+/// Combines `score_blocks_subgoal` relevance with pairwise text redundancy:
+/// `mig = subgoal_relevance − max_redundancy_with_any_higher_scored_block`.
+///
+/// Redundancy is only counted against blocks with strictly higher relevance,
+/// so Active subgoal messages (tier 1.0) never have their MIG reduced below
+/// their tier baseline.
+#[cfg(feature = "context-compression")]
+pub(crate) fn score_blocks_subgoal_mig(
+    messages: &[Message],
+    registry: &SubgoalRegistry,
+    tc: &TokenCounter,
+) -> Vec<BlockScore> {
+    let mut scores = score_blocks_subgoal(messages, registry, tc);
+
+    // Compute pairwise redundancy (same algorithm as score_blocks_mig).
+    let texts: Vec<_> = scores
+        .iter()
+        .map(|s| {
+            let tokens = tokenize(&extract_scorable_text(&messages[s.msg_index]));
+            term_frequencies(&tokens)
+        })
+        .collect();
+
+    for i in 0..scores.len() {
+        let mut max_redundancy = 0.0_f32;
+        for j in 0..scores.len() {
+            if i == j {
+                continue;
+            }
+            if scores[j].relevance > scores[i].relevance {
+                let sim = tf_weighted_similarity(&texts[i], &texts[j]);
+                max_redundancy = max_redundancy.max(sim);
+            }
+        }
+        scores[i].redundancy = max_redundancy;
+        scores[i].mig = scores[i].relevance - max_redundancy;
+    }
+
+    scores
+}
+
 // ─── Phase A: SubgoalRegistry ───────────────────────────────────────────────
 
 /// Unique identifier for a subgoal within a session.
@@ -265,7 +363,7 @@ pub(crate) fn score_blocks_mig(
 /// a session would need 4 billion subgoal transitions).
 #[cfg(feature = "context-compression")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SubgoalId(u32);
+pub(crate) struct SubgoalId(pub(crate) u32);
 
 /// Lifecycle state of a subgoal.
 #[cfg(feature = "context-compression")]

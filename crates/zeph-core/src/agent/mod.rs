@@ -378,6 +378,9 @@ impl<C: Channel> Agent<C> {
                 task_goal_user_msg_hash: None,
                 pending_task_goal: None,
                 pending_sidequest_result: None,
+                subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry::default(),
+                pending_subgoal: None,
+                subgoal_user_msg_hash: None,
             },
             lifecycle: LifecycleState {
                 shutdown: rx,
