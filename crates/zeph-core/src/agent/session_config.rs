@@ -76,6 +76,7 @@ pub struct AgentSessionConfig {
     pub document_config: DocumentConfig,
     pub graph_config: GraphConfig,
     pub anomaly_config: zeph_tools::AnomalyConfig,
+    pub result_cache_config: zeph_tools::ResultCacheConfig,
     pub orchestration_config: OrchestrationConfig,
     pub debug_config: DebugConfig,
     pub server_compaction: bool,
@@ -121,6 +122,7 @@ impl AgentSessionConfig {
             document_config: config.memory.documents.clone(),
             graph_config: config.memory.graph.clone(),
             anomaly_config: config.tools.anomaly.clone(),
+            result_cache_config: config.tools.result_cache.clone(),
             orchestration_config: config.orchestration.clone(),
             debug_config: config.debug.clone(),
             server_compaction: config
@@ -192,6 +194,14 @@ mod tests {
             config.orchestration.max_tasks
         );
         assert_eq!(sc.anomaly_config.enabled, config.tools.anomaly.enabled);
+        assert_eq!(
+            sc.result_cache_config.enabled,
+            config.tools.result_cache.enabled
+        );
+        assert_eq!(
+            sc.result_cache_config.ttl_secs,
+            config.tools.result_cache.ttl_secs
+        );
         assert_eq!(sc.debug_config.enabled, config.debug.enabled);
         assert_eq!(
             sc.document_config.rag_enabled,

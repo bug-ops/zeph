@@ -7,10 +7,7 @@ use zeph_llm::provider::{
 };
 
 use super::super::Agent;
-use super::{
-    AnomalyOutcome, retry_backoff_ms, strip_tafc_fields, tool_args_hash,
-    tool_def_to_definition_with_tafc,
-};
+use super::{AnomalyOutcome, retry_backoff_ms, tool_args_hash, tool_def_to_definition};
 use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 use crate::overflow_tools::OverflowToolExecutor;
 use tracing::Instrument;
@@ -77,19 +74,30 @@ impl<C: Channel> Agent<C> {
 
         // `mut` required when context-compression is enabled to inject focus tool definitions.
         #[cfg_attr(not(feature = "context-compression"), allow(unused_mut))]
-        let mut tool_defs: Vec<ToolDefinition> = {
-            let tafc = &self.tool_orchestrator.tafc;
-            self.tool_executor
-                .tool_definitions_erased()
-                .iter()
-                .map(|def| tool_def_to_definition_with_tafc(def, tafc))
-                .collect()
-        };
+        let mut tool_defs: Vec<ToolDefinition> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .iter()
+            .map(tool_def_to_definition)
+            .collect();
 
         // Inject focus tool definitions when the feature is enabled and configured (#1850).
         #[cfg(feature = "context-compression")]
         if self.focus.config.enabled {
             tool_defs.extend(super::super::focus::focus_tool_definitions());
+        }
+
+        // Pre-compute the full tool set for iterations 1+ before filtering.
+        let all_tool_defs = tool_defs.clone();
+
+        // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
+        if let Some(ref filtered_ids) = self.cached_filtered_tool_ids {
+            tool_defs.retain(|d| filtered_ids.contains(&d.name));
+            tracing::debug!(
+                filtered = tool_defs.len(),
+                total = all_tool_defs.len(),
+                "tool schema filter: iteration 0 using filtered tool set"
+            );
         }
 
         tracing::debug!(
@@ -120,9 +128,15 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
+            // Iteration 0 uses filtered tool_defs; iterations 1+ expand to full set (#2020).
+            let defs_for_turn = if iteration == 0 {
+                &tool_defs
+            } else {
+                &all_tool_defs
+            };
             // None = continue loop, Some(()) = return Ok, Err = propagate
             if self
-                .process_single_native_turn(&tool_defs, iteration)
+                .process_single_native_turn(defs_for_turn, iteration)
                 .await?
                 .is_some()
             {
@@ -508,23 +522,10 @@ impl<C: Channel> Agent<C> {
             parts.push(MessagePart::Text { text: t.clone() });
         }
         for tc in tool_calls {
-            // HIGH-01: strip TAFC think fields before persisting to memory to avoid
-            // inflating conversation history with reasoning scaffolding.
-            let clean_input = if self.tool_orchestrator.tafc.enabled {
-                let mut map = if let serde_json::Value::Object(m) = &tc.input {
-                    m.clone()
-                } else {
-                    serde_json::Map::new()
-                };
-                let _ = strip_tafc_fields(&mut map, &tc.name);
-                serde_json::Value::Object(map)
-            } else {
-                tc.input.clone()
-            };
             parts.push(MessagePart::ToolUse {
                 id: tc.id.clone(),
                 name: tc.name.clone(),
-                input: clean_input,
+                input: tc.input.clone(),
             });
         }
         let assistant_msg = Message::from_parts(Role::Assistant, parts);
@@ -537,25 +538,16 @@ impl<C: Channel> Agent<C> {
         .await;
         self.push_message(assistant_msg);
 
-        // Build tool calls for all requests — strip TAFC fields before execution.
-        // tafc_failed[i] is true when the model produced only think fields with no real
-        // parameters; such calls receive a synthetic [error] output instead of executing.
-        let mut tafc_failed: Vec<bool> = vec![false; tool_calls.len()];
+        // Build tool calls for all requests
         let calls: Vec<ToolCall> = tool_calls
             .iter()
-            .enumerate()
-            .map(|(idx, tc)| {
-                let mut params: serde_json::Map<String, serde_json::Value> =
+            .map(|tc| {
+                let params: serde_json::Map<String, serde_json::Value> =
                     if let serde_json::Value::Object(map) = &tc.input {
                         map.clone()
                     } else {
                         serde_json::Map::new()
                     };
-                if self.tool_orchestrator.tafc.enabled
-                    && strip_tafc_fields(&mut params, &tc.name).is_err()
-                {
-                    tafc_failed[idx] = true;
-                }
                 ToolCall {
                     tool_id: tc.name.clone(),
                     params,
@@ -666,9 +658,26 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
         // Push LLM-initiated calls into the repeat-detection window (even if blocked).
+        // Cache hits are also pushed here (P1 invariant): a cached tool called N times must
+        // still trigger repeat-detection to prevent infinite loops if the LLM keeps requesting it.
         for (call, &hash) in calls.iter().zip(args_hashes.iter()) {
             self.tool_orchestrator.push_tool_call(&call.tool_id, hash);
         }
+
+        // Cache lookup: for each non-repeat, cacheable call, check result cache before dispatch.
+        // Hits are stored as pre-built results; cache store happens after join_all completes.
+        let cache_hits: Vec<Option<zeph_tools::ToolOutput>> = calls
+            .iter()
+            .zip(args_hashes.iter())
+            .zip(repeat_blocked.iter())
+            .map(|((call, &hash), &blocked)| {
+                if blocked || !zeph_tools::is_cacheable(&call.tool_id) {
+                    return None;
+                }
+                let key = zeph_tools::CacheKey::new(&call.tool_id, hash);
+                self.tool_orchestrator.result_cache.get(&key)
+            })
+            .collect();
 
         // Inject active skill secrets before tool execution
         self.inject_active_skill_env();
@@ -873,26 +882,15 @@ impl<C: Channel> Agent<C> {
                     continue;
                 }
 
-                // CRIT-01: model produced only TAFC think fields with no actual parameters.
-                // Synthesize an error result so the LLM can retry with proper arguments.
-                if tafc_failed[idx] {
-                    let msg = format!(
-                        "[error] Tool call to {} failed: model produced only reasoning fields \
-                         with no actual parameters. Please retry with the required arguments.",
-                        tc.name
+                // Cache hit: return pre-computed result without executing the tool.
+                // TUI events (ToolStartEvent already sent above) will still be emitted for cache
+                // hits in the result processing loop below, maintaining Start/Output pairing.
+                if let Some(cached_output) = cache_hits[idx].clone() {
+                    tracing::debug!(
+                        tool = %tc.name,
+                        "[tool-cache] returning cached result, skipping execution"
                     );
-                    let out = zeph_tools::ToolOutput {
-                        tool_name: tc.name.clone(),
-                        summary: msg,
-                        blocks_executed: 0,
-                        filter_stats: None,
-                        diff: None,
-                        streamed: false,
-                        terminal_id: None,
-                        locations: None,
-                        raw_response: None,
-                    };
-                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(cached_output))))));
                     continue;
                 }
 
@@ -985,6 +983,18 @@ impl<C: Channel> Agent<C> {
                 if is_failed {
                     failed_ids.insert(tool_calls[idx].id.clone());
                 }
+
+                // Store successful, non-cached results in the tool result cache.
+                // Skip if this was already a cache hit (no point caching a cached result).
+                if !is_failed
+                    && cache_hits[idx].is_none()
+                    && zeph_tools::is_cacheable(&tool_calls[idx].name)
+                    && let Ok(Some(ref out)) = result
+                {
+                    let key = zeph_tools::CacheKey::new(&tool_calls[idx].name, args_hashes[idx]);
+                    self.tool_orchestrator.result_cache.put(key, out.clone());
+                }
+
                 tool_results[idx] = result;
             }
 
@@ -1156,6 +1166,18 @@ impl<C: Channel> Agent<C> {
         }
 
         self.tool_executor.set_skill_env(None);
+
+        // Sync cache counters to metrics after all tool execution is complete.
+        {
+            let hits = self.tool_orchestrator.result_cache.hits();
+            let misses = self.tool_orchestrator.result_cache.misses();
+            let entries = self.tool_orchestrator.result_cache.len();
+            self.update_metrics(|m| {
+                m.tool_cache_hits = hits;
+                m.tool_cache_misses = misses;
+                m.tool_cache_entries = entries;
+            });
+        }
 
         // Collect (name, params, output) for LSP hooks. Built during the results loop below.
         #[cfg(feature = "lsp-context")]

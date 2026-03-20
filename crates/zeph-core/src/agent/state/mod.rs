@@ -52,6 +52,9 @@ pub(crate) struct MemoryState {
     pub(crate) shutdown_summary_min_messages: usize,
     pub(crate) shutdown_summary_max_messages: usize,
     pub(crate) shutdown_summary_timeout_secs: u64,
+    /// When `true`, hard compaction uses `AnchoredSummary` (structured JSON) instead of
+    /// free-form prose. Falls back to prose on any LLM or validation failure.
+    pub(crate) structured_summaries: bool,
 }
 
 pub(crate) struct SkillState {

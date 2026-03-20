@@ -43,6 +43,25 @@ fn default_tool_repeat_threshold() -> usize {
     2
 }
 
+fn default_tool_filter_top_k() -> usize {
+    6
+}
+
+fn default_tool_filter_min_description_words() -> usize {
+    5
+}
+
+fn default_tool_filter_always_on() -> Vec<String> {
+    vec![
+        "memory_search".into(),
+        "memory_save".into(),
+        "load_skill".into(),
+        "bash".into(),
+        "read".into(),
+        "edit".into(),
+    ]
+}
+
 fn default_instruction_auto_detect() -> bool {
     true
 }
@@ -92,6 +111,38 @@ impl Default for FocusConfig {
     }
 }
 
+/// Dynamic tool schema filtering configuration (#2020).
+///
+/// When enabled, only a subset of tool definitions is sent to the LLM on each turn,
+/// selected by embedding similarity between the user query and tool descriptions.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ToolFilterConfig {
+    /// Enable dynamic tool schema filtering. Default: `false` (opt-in).
+    pub enabled: bool,
+    /// Number of top-scoring filterable tools to include per turn.
+    /// Set to `0` to include all filterable tools.
+    #[serde(default = "default_tool_filter_top_k")]
+    pub top_k: usize,
+    /// Tool IDs that are never filtered out.
+    #[serde(default = "default_tool_filter_always_on")]
+    pub always_on: Vec<String>,
+    /// MCP tools with fewer description words than this are auto-included.
+    #[serde(default = "default_tool_filter_min_description_words")]
+    pub min_description_words: usize,
+}
+
+impl Default for ToolFilterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            top_k: default_tool_filter_top_k(),
+            always_on: default_tool_filter_always_on(),
+            min_description_words: default_tool_filter_min_description_words(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     pub name: String,
@@ -119,6 +170,9 @@ pub struct AgentConfig {
     /// Focus-based active context compression configuration (#1850).
     #[serde(default)]
     pub focus: FocusConfig,
+    /// Dynamic tool schema filtering configuration (#2020).
+    #[serde(default)]
+    pub tool_filter: ToolFilterConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

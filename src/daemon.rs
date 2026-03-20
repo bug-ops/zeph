@@ -305,7 +305,7 @@ pub(crate) async fn run_daemon(
     let (loopback_channel, loopback_handle) = zeph_core::LoopbackChannel::pair(64);
 
     let agent = Agent::new_with_registry_arc(
-        provider,
+        provider.clone(),
         loopback_channel,
         registry,
         matcher,
@@ -329,7 +329,9 @@ pub(crate) async fn run_daemon(
     .with_mcp_shared_tools(mcp_shared_tools)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_focus_config(config.agent.focus.clone())
-    .with_sidequest_config(config.memory.sidequest.clone());
+    .with_sidequest_config(config.memory.sidequest.clone())
+    .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
+    .await;
 
     let summary_provider = app.build_summary_provider();
     let agent = if let Some(sp) = summary_provider {

@@ -824,11 +824,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.shutdown_summary_max_messages,
         config.memory.shutdown_summary_timeout_secs,
     )
+    .with_structured_summaries(config.memory.structured_summaries)
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone())
     .with_focus_config(config.agent.focus.clone())
-    .with_sidequest_config(config.memory.sidequest.clone());
+    .with_sidequest_config(config.memory.sidequest.clone())
+    .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
+    .await;
 
     #[cfg(feature = "policy-enforcer")]
     let agent = if config.tools.policy.enabled {

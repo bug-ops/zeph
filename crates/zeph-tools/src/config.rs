@@ -15,6 +15,10 @@ fn default_timeout() -> u64 {
     30
 }
 
+fn default_cache_ttl_secs() -> u64 {
+    300
+}
+
 fn default_confirm_patterns() -> Vec<String> {
     vec![
         "rm ".into(),
@@ -82,10 +86,6 @@ fn default_anomaly_critical_threshold() -> f64 {
     0.8
 }
 
-fn default_tafc_complexity_threshold() -> f64 {
-    0.6
-}
-
 /// Configuration for the sliding-window anomaly detector.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnomalyConfig {
@@ -110,44 +110,23 @@ impl Default for AnomalyConfig {
     }
 }
 
-/// Configuration for Think-Augmented Function Calling (TAFC).
-///
-/// When enabled, a `_tafc_think` field is injected into each tool's JSON Schema,
-/// prompting the model to reason before producing parameters. The field is stripped
-/// before tool execution and before persisting to memory.
+/// Configuration for the tool result cache.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TafcConfig {
-    /// Enable TAFC schema augmentation (default: false).
-    #[serde(default)]
+pub struct ResultCacheConfig {
+    /// Whether caching is enabled. Default: `true`.
+    #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Complexity threshold tau in [0.0, 1.0]; tools with complexity >= tau are augmented.
-    /// Default: 0.6
-    #[serde(default = "default_tafc_complexity_threshold")]
-    pub complexity_threshold: f64,
+    /// Time-to-live in seconds. `0` means entries never expire. Default: `300`.
+    #[serde(default = "default_cache_ttl_secs")]
+    pub ttl_secs: u64,
 }
 
-impl Default for TafcConfig {
+impl Default for ResultCacheConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            complexity_threshold: default_tafc_complexity_threshold(),
+            enabled: true,
+            ttl_secs: default_cache_ttl_secs(),
         }
-    }
-}
-
-impl TafcConfig {
-    /// Return a copy with `complexity_threshold` clamped to [0.0, 1.0].
-    ///
-    /// NaN and infinite values are replaced with the default (0.6).
-    #[must_use]
-    pub fn validated(mut self) -> Self {
-        let t = self.complexity_threshold;
-        if t.is_nan() || t.is_infinite() {
-            self.complexity_threshold = default_tafc_complexity_threshold();
-        } else {
-            self.complexity_threshold = t.clamp(0.0, 1.0);
-        }
-        self
     }
 }
 
@@ -172,9 +151,8 @@ pub struct ToolsConfig {
     pub overflow: OverflowConfig,
     #[serde(default)]
     pub anomaly: AnomalyConfig,
-    /// Think-Augmented Function Calling configuration.
     #[serde(default)]
-    pub tafc: TafcConfig,
+    pub result_cache: ResultCacheConfig,
     /// Declarative policy compiler for tool call authorization.
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
@@ -235,7 +213,7 @@ impl Default for ToolsConfig {
             filters: crate::filter::FilterConfig::default(),
             overflow: OverflowConfig::default(),
             anomaly: AnomalyConfig::default(),
-            tafc: TafcConfig::default(),
+            result_cache: ResultCacheConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
         }
@@ -546,5 +524,41 @@ mod tests {
         assert_eq!(config.overflow.threshold, 50_000);
         assert_eq!(config.overflow.retention_days, 7);
         assert_eq!(config.overflow.max_overflow_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn result_cache_config_defaults() {
+        let config = ResultCacheConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.ttl_secs, 300);
+    }
+
+    #[test]
+    fn deserialize_result_cache_config() {
+        let toml_str = r"
+            [result_cache]
+            enabled = false
+            ttl_secs = 60
+        ";
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.result_cache.enabled);
+        assert_eq!(config.result_cache.ttl_secs, 60);
+    }
+
+    #[test]
+    fn result_cache_omitted_uses_defaults() {
+        let config: ToolsConfig = toml::from_str("").unwrap();
+        assert!(config.result_cache.enabled);
+        assert_eq!(config.result_cache.ttl_secs, 300);
+    }
+
+    #[test]
+    fn result_cache_ttl_zero_is_valid() {
+        let toml_str = r"
+            [result_cache]
+            ttl_secs = 0
+        ";
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.result_cache.ttl_secs, 0);
     }
 }

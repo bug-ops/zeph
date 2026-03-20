@@ -127,6 +127,7 @@ impl Default for Config {
                 tool_repeat_threshold: 2,
                 max_retry_duration_secs: 30,
                 focus: FocusConfig::default(),
+                tool_filter: crate::agent::ToolFilterConfig::default(),
             },
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,
@@ -195,6 +196,7 @@ impl Default for Config {
                 shutdown_summary_min_messages: 4,
                 shutdown_summary_max_messages: 20,
                 shutdown_summary_timeout_secs: 10,
+                structured_summaries: false,
             },
             telegram: None,
             discord: None,

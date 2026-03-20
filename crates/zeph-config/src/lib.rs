@@ -28,7 +28,9 @@ pub mod security;
 pub mod subagent;
 pub mod ui;
 
-pub use agent::{AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks};
+pub use agent::{
+    AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks, ToolFilterConfig,
+};
 pub use channels::{
     A2aServerConfig, DiscordConfig, McpConfig, McpOAuthConfig, McpServerConfig, OAuthTokenStorage,
     SlackConfig, TelegramConfig,

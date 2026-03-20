@@ -40,7 +40,7 @@ pub(crate) mod tool_orchestrator;
 mod trust_commands;
 mod utils;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -48,8 +48,6 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
-
-use std::collections::HashMap;
 use zeph_memory::TokenCounter;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::Skill;
@@ -154,6 +152,11 @@ pub struct Agent<C: Channel> {
     pub(super) focus: focus::FocusState,
     /// `SideQuest` state: cursor tracking, turn counter, eviction stats (#1885).
     pub(super) sidequest: sidequest::SidequestState,
+    /// Dynamic tool schema filter: pre-computed tool embeddings for per-turn filtering (#2020).
+    pub(super) tool_schema_filter: Option<zeph_tools::ToolSchemaFilter>,
+    /// Cached filtered tool IDs for the current user turn. Set by `compute_filtered_tool_ids()`
+    /// in `rebuild_system_prompt()`, consumed by the native tool loop on iteration 0.
+    pub(super) cached_filtered_tool_ids: Option<HashSet<String>>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -250,6 +253,7 @@ impl<C: Channel> Agent<C> {
                 shutdown_summary_min_messages: 4,
                 shutdown_summary_max_messages: 20,
                 shutdown_summary_timeout_secs: 10,
+                structured_summaries: false,
             },
             skill_state: SkillState {
                 registry,
@@ -396,6 +400,8 @@ impl<C: Channel> Agent<C> {
             },
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
+            tool_schema_filter: None,
+            cached_filtered_tool_ids: None,
         }
     }
 
@@ -2138,6 +2144,14 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/clear" {
             self.clear_history();
+            self.tool_orchestrator.clear_cache();
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/cache-stats" {
+            let stats = self.tool_orchestrator.cache_stats();
+            self.channel.send(&stats).await?;
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));
         }

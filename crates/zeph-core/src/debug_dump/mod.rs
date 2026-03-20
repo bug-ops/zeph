@@ -134,6 +134,46 @@ impl DebugDumper {
         }
     }
 
+    /// Dump an `AnchoredSummary` produced during structured compaction.
+    ///
+    /// Includes completeness metrics and a fallback flag.
+    /// When `format = Trace`, this is a no-op.
+    pub(crate) fn dump_anchored_summary(
+        &self,
+        summary: &zeph_memory::AnchoredSummary,
+        fallback: bool,
+        token_counter: &zeph_memory::TokenCounter,
+    ) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
+        let id = self.next_id();
+        let section_completeness = serde_json::json!({
+            "session_intent": !summary.session_intent.trim().is_empty(),
+            "files_modified": !summary.files_modified.is_empty(),
+            "decisions_made": !summary.decisions_made.is_empty(),
+            "open_questions": !summary.open_questions.is_empty(),
+            "next_steps": !summary.next_steps.is_empty(),
+        });
+        let total_items = summary.files_modified.len()
+            + summary.decisions_made.len()
+            + summary.open_questions.len()
+            + summary.next_steps.len();
+        let markdown = summary.to_markdown();
+        let token_estimate = token_counter.count_tokens(&markdown);
+        let payload = serde_json::json!({
+            "summary": summary,
+            "section_completeness": section_completeness,
+            "total_items": total_items,
+            "token_estimate": token_estimate,
+            "fallback": fallback,
+        });
+        match serde_json::to_string_pretty(&payload) {
+            Ok(json) => self.write(&format!("{id:04}-anchored-summary.json"), json.as_bytes()),
+            Err(e) => tracing::warn!("dump_anchored_summary: serialize failed: {e}"),
+        }
+    }
+
     /// Dump the accumulated Focus Agent knowledge blocks.
     /// When `format = Trace`, this is a no-op.
     pub fn dump_focus_knowledge(&self, knowledge: &str) {

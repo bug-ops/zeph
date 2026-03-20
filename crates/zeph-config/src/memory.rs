@@ -362,6 +362,13 @@ pub struct MemoryConfig {
     /// Default: `10`.
     #[serde(default = "default_shutdown_summary_timeout_secs")]
     pub shutdown_summary_timeout_secs: u64,
+    /// Use structured anchored summaries for context compaction.
+    ///
+    /// When enabled, hard compaction requests a JSON schema from the LLM
+    /// instead of free-form prose. Falls back to prose if the LLM fails
+    /// to produce valid JSON. Default: `false`.
+    #[serde(default)]
+    pub structured_summaries: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
