@@ -87,6 +87,19 @@ impl<C: Channel> Agent<C> {
             tool_defs.extend(super::super::focus::focus_tool_definitions());
         }
 
+        // Pre-compute the full tool set for iterations 1+ before filtering.
+        let all_tool_defs = tool_defs.clone();
+
+        // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
+        if let Some(ref filtered_ids) = self.cached_filtered_tool_ids {
+            tool_defs.retain(|d| filtered_ids.contains(&d.name));
+            tracing::debug!(
+                filtered = tool_defs.len(),
+                total = all_tool_defs.len(),
+                "tool schema filter: iteration 0 using filtered tool set"
+            );
+        }
+
         tracing::debug!(
             tool_count = tool_defs.len(),
             tools = ?tool_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
@@ -118,9 +131,15 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
+            // Iteration 0 uses filtered tool_defs; iterations 1+ expand to full set (#2020).
+            let defs_for_turn = if iteration == 0 {
+                &tool_defs
+            } else {
+                &all_tool_defs
+            };
             // None = continue loop, Some(()) = return Ok, Err = propagate
             if self
-                .process_single_native_turn(&tool_defs, iteration, query_embedding.clone())
+                .process_single_native_turn(defs_for_turn, iteration, query_embedding.clone())
                 .await?
                 .is_some()
             {
@@ -644,9 +663,26 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
         // Push LLM-initiated calls into the repeat-detection window (even if blocked).
+        // Cache hits are also pushed here (P1 invariant): a cached tool called N times must
+        // still trigger repeat-detection to prevent infinite loops if the LLM keeps requesting it.
         for (call, &hash) in calls.iter().zip(args_hashes.iter()) {
             self.tool_orchestrator.push_tool_call(&call.tool_id, hash);
         }
+
+        // Cache lookup: for each non-repeat, cacheable call, check result cache before dispatch.
+        // Hits are stored as pre-built results; cache store happens after join_all completes.
+        let cache_hits: Vec<Option<zeph_tools::ToolOutput>> = calls
+            .iter()
+            .zip(args_hashes.iter())
+            .zip(repeat_blocked.iter())
+            .map(|((call, &hash), &blocked)| {
+                if blocked || !zeph_tools::is_cacheable(&call.tool_id) {
+                    return None;
+                }
+                let key = zeph_tools::CacheKey::new(&call.tool_id, hash);
+                self.tool_orchestrator.result_cache.get(&key)
+            })
+            .collect();
 
         // Inject active skill secrets before tool execution
         self.inject_active_skill_env();
@@ -851,6 +887,18 @@ impl<C: Channel> Agent<C> {
                     continue;
                 }
 
+                // Cache hit: return pre-computed result without executing the tool.
+                // TUI events (ToolStartEvent already sent above) will still be emitted for cache
+                // hits in the result processing loop below, maintaining Start/Output pairing.
+                if let Some(cached_output) = cache_hits[idx].clone() {
+                    tracing::debug!(
+                        tool = %tc.name,
+                        "[tool-cache] returning cached result, skipping execution"
+                    );
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(cached_output))))));
+                    continue;
+                }
+
                 // Rate limiter: check the pre-computed batch result for this call.
                 if let Some(ref exceeded) = rate_results[tier_local_idx] {
                     tracing::warn!(
@@ -940,6 +988,18 @@ impl<C: Channel> Agent<C> {
                 if is_failed {
                     failed_ids.insert(tool_calls[idx].id.clone());
                 }
+
+                // Store successful, non-cached results in the tool result cache.
+                // Skip if this was already a cache hit (no point caching a cached result).
+                if !is_failed
+                    && cache_hits[idx].is_none()
+                    && zeph_tools::is_cacheable(&tool_calls[idx].name)
+                    && let Ok(Some(ref out)) = result
+                {
+                    let key = zeph_tools::CacheKey::new(&tool_calls[idx].name, args_hashes[idx]);
+                    self.tool_orchestrator.result_cache.put(key, out.clone());
+                }
+
                 tool_results[idx] = result;
             }
 
@@ -1111,6 +1171,18 @@ impl<C: Channel> Agent<C> {
         }
 
         self.tool_executor.set_skill_env(None);
+
+        // Sync cache counters to metrics after all tool execution is complete.
+        {
+            let hits = self.tool_orchestrator.result_cache.hits();
+            let misses = self.tool_orchestrator.result_cache.misses();
+            let entries = self.tool_orchestrator.result_cache.len();
+            self.update_metrics(|m| {
+                m.tool_cache_hits = hits;
+                m.tool_cache_misses = misses;
+                m.tool_cache_entries = entries;
+            });
+        }
 
         // Collect (name, params, output) for LSP hooks. Built during the results loop below.
         #[cfg(feature = "lsp-context")]

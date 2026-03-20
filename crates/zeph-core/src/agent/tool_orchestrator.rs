@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
-use zeph_tools::OverflowConfig;
+use zeph_tools::{OverflowConfig, ResultCacheConfig, ToolResultCache};
 
 use super::DOOM_LOOP_WINDOW;
 
@@ -29,6 +30,10 @@ pub(crate) struct ToolOrchestrator {
     /// concerns: they inspect tool arguments at dispatch time, consistent with
     /// repeat-detection, rate-limiting, and overflow controls which also live here.
     pub(super) pre_execution_verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>>,
+    /// Session-scoped cache for tool results. Persists across tool rounds within a session;
+    /// reset only on `/clear`. Unlike repeat-detection and doom-loop state (which reset per
+    /// round), the cache is intentionally long-lived — its value comes from reuse across turns.
+    pub(super) result_cache: ToolResultCache,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -61,7 +66,51 @@ impl ToolOrchestrator {
             max_tool_retries: 2,
             max_retry_duration_secs: 30,
             pre_execution_verifiers: Vec::new(),
+            result_cache: ToolResultCache::new(true, Some(Duration::from_secs(300))),
         }
+    }
+
+    /// Initialize the result cache from config.
+    pub(crate) fn set_cache_config(&mut self, config: &ResultCacheConfig) {
+        let ttl = if config.ttl_secs == 0 {
+            None // ttl_secs = 0 → never expire
+        } else {
+            Some(Duration::from_secs(config.ttl_secs))
+        };
+        self.result_cache = ToolResultCache::new(config.enabled, ttl);
+    }
+
+    /// Clear the result cache. Called on `/clear`.
+    pub(crate) fn clear_cache(&mut self) {
+        self.result_cache.clear();
+    }
+
+    /// Returns a formatted cache stats string for `/cache-stats` command.
+    pub(crate) fn cache_stats(&self) -> String {
+        let cache = &self.result_cache;
+        let status = if cache.is_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let hits = cache.hits();
+        let misses = cache.misses();
+        let total = hits + misses;
+        #[allow(clippy::cast_precision_loss)]
+        let hit_rate = if total > 0 {
+            format!("{:.1}%", (hits as f64 / total as f64) * 100.0)
+        } else {
+            "n/a".to_owned()
+        };
+        let ttl_display = if cache.ttl_secs() == 0 {
+            "never".to_owned()
+        } else {
+            format!("{}s", cache.ttl_secs())
+        };
+        format!(
+            "Tool result cache: {status}\nEntries: {}, Hits: {hits}, Misses: {misses}, Hit rate: {hit_rate}\nTTL: {ttl_display}",
+            cache.len(),
+        )
     }
 
     pub(super) fn push_doom_hash(&mut self, hash: u64) {
@@ -342,5 +391,98 @@ mod tests {
             budget_exceeded,
             "elapsed {elapsed_secs}s should exceed budget {budget_secs}s"
         );
+    }
+
+    // ── cache_stats() display ─────────────────────────────────────────────────
+
+    #[test]
+    fn cache_stats_disabled_shows_disabled_status() {
+        let mut o = ToolOrchestrator::new();
+        o.set_cache_config(&ResultCacheConfig {
+            enabled: false,
+            ttl_secs: 300,
+        });
+        let stats = o.cache_stats();
+        assert!(
+            stats.contains("disabled"),
+            "expected 'disabled' in: {stats}"
+        );
+    }
+
+    #[test]
+    fn cache_stats_no_calls_shows_na_hit_rate() {
+        let o = ToolOrchestrator::new();
+        let stats = o.cache_stats();
+        assert!(
+            stats.contains("n/a"),
+            "expected 'n/a' hit rate when total=0, got: {stats}"
+        );
+    }
+
+    #[test]
+    fn cache_stats_ttl_zero_shows_never() {
+        let mut o = ToolOrchestrator::new();
+        o.set_cache_config(&ResultCacheConfig {
+            enabled: true,
+            ttl_secs: 0,
+        });
+        let stats = o.cache_stats();
+        assert!(
+            stats.contains("never"),
+            "expected 'never' TTL display for ttl_secs=0, got: {stats}"
+        );
+    }
+
+    #[test]
+    fn cache_stats_hit_rate_percentage() {
+        use zeph_tools::CacheKey;
+        let mut o = ToolOrchestrator::new();
+        // Directly manipulate the cache to simulate 1 hit and 1 miss.
+        // put() one entry, get() it (hit), then get() a missing key (miss).
+        let output = zeph_tools::ToolOutput {
+            tool_name: "read".to_owned(),
+            summary: "contents".to_owned(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+        };
+        o.result_cache.put(CacheKey::new("read", 1), output);
+        o.result_cache.get(&CacheKey::new("read", 1)); // hit
+        o.result_cache.get(&CacheKey::new("read", 99)); // miss
+        let stats = o.cache_stats();
+        assert!(
+            stats.contains("50.0%"),
+            "expected 50.0% hit rate (1 hit / 2 total), got: {stats}"
+        );
+        assert!(
+            stats.contains("Hits: 1"),
+            "expected 'Hits: 1', got: {stats}"
+        );
+        assert!(
+            stats.contains("Misses: 1"),
+            "expected 'Misses: 1', got: {stats}"
+        );
+    }
+
+    #[test]
+    fn set_cache_config_ttl_mapping() {
+        let mut o = ToolOrchestrator::new();
+        // ttl_secs = 0 → None (never expire) → ttl_secs() returns 0
+        o.set_cache_config(&ResultCacheConfig {
+            enabled: true,
+            ttl_secs: 0,
+        });
+        assert_eq!(o.result_cache.ttl_secs(), 0);
+
+        // ttl_secs = 60 → Some(60s) → ttl_secs() returns 60
+        o.set_cache_config(&ResultCacheConfig {
+            enabled: true,
+            ttl_secs: 60,
+        });
+        assert_eq!(o.result_cache.ttl_secs(), 60);
     }
 }

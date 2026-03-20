@@ -1145,6 +1145,44 @@ impl<C: Channel> Agent<C> {
             .env_context
             .model_name
             .clone_from(&self.runtime.model_name);
+
+        // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
+        self.cached_filtered_tool_ids = None;
+        if let Some(ref filter) = self.tool_schema_filter
+            && self.provider.supports_tool_use()
+        {
+            let defs = self.tool_executor.tool_definitions_erased();
+            let all_ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
+            let descriptions: Vec<(&str, &str)> = defs
+                .iter()
+                .map(|d| (d.id.as_ref(), d.description.as_ref()))
+                .collect();
+
+            let _ = self.channel.send_status("filtering tools...").await;
+            match self.provider.embed(query).await {
+                Ok(query_emb) => {
+                    let result = filter.filter(&all_ids, &descriptions, query, &query_emb);
+                    tracing::info!(
+                        total = all_ids.len(),
+                        included = result.included.len(),
+                        excluded = result.excluded.len(),
+                        "tool schema filter applied"
+                    );
+                    for (tool_id, score) in &result.scores {
+                        tracing::debug!(tool_id, score, "tool similarity score");
+                    }
+                    for (tool_id, reason) in &result.inclusion_reasons {
+                        tracing::debug!(tool_id, ?reason, "tool inclusion reason");
+                    }
+                    self.cached_filtered_tool_ids = Some(result.included);
+                }
+                Err(e) => {
+                    tracing::warn!("tool filter: query embed failed, using all tools: {e:#}");
+                }
+            }
+            let _ = self.channel.send_status("").await;
+        }
+
         let tool_catalog = if self.provider.supports_tool_use() {
             // Native tool_use: tools are passed via API, skip prompt-based instructions
             None
