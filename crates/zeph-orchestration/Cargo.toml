@@ -14,7 +14,9 @@ description = "Task orchestration: DAG execution, failure propagation, and persi
 readme = "README.md"
 
 [dependencies]
+blake3.workspace = true
 schemars.workspace = true
+sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

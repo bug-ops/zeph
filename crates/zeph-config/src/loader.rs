@@ -190,6 +190,13 @@ impl Config {
             .validate()
             .map_err(ConfigError::Validation)?;
 
+        if self.orchestration.plan_cache.enabled {
+            self.orchestration
+                .plan_cache
+                .validate()
+                .map_err(ConfigError::Validation)?;
+        }
+
         // Focus config validation
         if self.agent.focus.compression_interval == 0 {
             return Err(ConfigError::Validation(

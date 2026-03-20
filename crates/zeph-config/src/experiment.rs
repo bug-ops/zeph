@@ -43,6 +43,75 @@ fn default_experiment_schedule_max_wall_time_secs() -> u64 {
     1800
 }
 
+fn default_plan_cache_similarity_threshold() -> f32 {
+    0.90
+}
+
+fn default_plan_cache_ttl_days() -> u32 {
+    30
+}
+
+fn default_plan_cache_max_templates() -> u32 {
+    100
+}
+
+/// Configuration for plan template caching (`[orchestration.plan_cache]` TOML section).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PlanCacheConfig {
+    /// Enable plan template caching. Default: false.
+    pub enabled: bool,
+    /// Minimum cosine similarity to consider a cached template a match. Default: 0.90.
+    #[serde(default = "default_plan_cache_similarity_threshold")]
+    pub similarity_threshold: f32,
+    /// Days since last access before a template is evicted. Default: 30.
+    #[serde(default = "default_plan_cache_ttl_days")]
+    pub ttl_days: u32,
+    /// Maximum number of cached templates. Default: 100.
+    #[serde(default = "default_plan_cache_max_templates")]
+    pub max_templates: u32,
+}
+
+impl Default for PlanCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            similarity_threshold: default_plan_cache_similarity_threshold(),
+            ttl_days: default_plan_cache_ttl_days(),
+            max_templates: default_plan_cache_max_templates(),
+        }
+    }
+}
+
+impl PlanCacheConfig {
+    /// Validate that all fields are within sane operating limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description string if any field is outside the allowed range.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.5..=1.0).contains(&self.similarity_threshold) {
+            return Err(format!(
+                "plan_cache.similarity_threshold must be in [0.5, 1.0], got {}",
+                self.similarity_threshold
+            ));
+        }
+        if self.max_templates == 0 || self.max_templates > 10_000 {
+            return Err(format!(
+                "plan_cache.max_templates must be in [1, 10000], got {}",
+                self.max_templates
+            ));
+        }
+        if self.ttl_days == 0 || self.ttl_days > 365 {
+            return Err(format!(
+                "plan_cache.ttl_days must be in [1, 365], got {}",
+                self.ttl_days
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Configuration for the task orchestration subsystem (`[orchestration]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -80,6 +149,9 @@ pub struct OrchestrationConfig {
     /// Base backoff for `ConcurrencyLimit` retries; grows exponentially (×2 each attempt) up to 5 s.
     #[serde(default = "default_deferral_backoff_ms")]
     pub deferral_backoff_ms: u64,
+    /// Plan template caching configuration.
+    #[serde(default)]
+    pub plan_cache: PlanCacheConfig,
 }
 
 impl Default for OrchestrationConfig {
@@ -97,6 +169,7 @@ impl Default for OrchestrationConfig {
             confirm_before_execute: true,
             aggregator_max_tokens: default_aggregator_max_tokens(),
             deferral_backoff_ms: default_deferral_backoff_ms(),
+            plan_cache: PlanCacheConfig::default(),
         }
     }
 }

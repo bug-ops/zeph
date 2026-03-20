@@ -184,6 +184,16 @@ fn is_valid_task_id(id: &str) -> bool {
 /// Convert a raw `PlannerResponse` into a `TaskGraph`.
 ///
 /// Maps string `task_id` values to `TaskId(u32)` via a position-based `HashMap`.
+/// Public within the crate for use by `plan_cache::adapt_plan`.
+pub(crate) fn convert_response_pub(
+    response: PlannerResponse,
+    goal: &str,
+    available_agents: &[SubAgentDef],
+    max_tasks: u32,
+) -> Result<TaskGraph, OrchestrationError> {
+    convert_response(response, goal, available_agents, max_tasks)
+}
+
 fn convert_response(
     response: PlannerResponse,
     goal: &str,

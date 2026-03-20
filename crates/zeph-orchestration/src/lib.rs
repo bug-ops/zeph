@@ -8,6 +8,7 @@ pub mod command;
 pub mod dag;
 pub mod error;
 pub mod graph;
+pub mod plan_cache;
 pub mod planner;
 pub mod router;
 pub mod scheduler;
@@ -19,6 +20,7 @@ pub use graph::{
     FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId, TaskNode,
     TaskResult, TaskStatus,
 };
+pub use plan_cache::{PlanCache, PlanCacheError, PlanTemplate, TemplateTask, plan_with_cache};
 pub use planner::{LlmPlanner, Planner};
 pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};

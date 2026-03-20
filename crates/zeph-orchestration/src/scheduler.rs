@@ -912,6 +912,7 @@ mod tests {
             confirm_before_execute: true,
             aggregator_max_tokens: 4096,
             deferral_backoff_ms: 250,
+            plan_cache: zeph_config::PlanCacheConfig::default(),
         }
     }
 
