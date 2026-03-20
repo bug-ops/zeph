@@ -4116,3 +4116,141 @@ fn tafc_complexity_threshold_boundary() {
         "above threshold: must not augment"
     );
 }
+
+#[test]
+fn strip_tafc_fields_suffixed_variants_stripped() {
+    // SEC-01: suffixed keys like `_tafc_think_step1` must also be stripped.
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "_tafc_think_step1".to_owned(),
+        serde_json::Value::String("first step".to_owned()),
+    );
+    map.insert(
+        "_tafc_think_step2".to_owned(),
+        serde_json::Value::String("second step".to_owned()),
+    );
+    map.insert(
+        "query".to_owned(),
+        serde_json::Value::String("find files".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "search");
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap(),
+        "suffixed think fields must be reported as stripped"
+    );
+    assert!(
+        !map.contains_key("_tafc_think_step1"),
+        "_tafc_think_step1 must be stripped"
+    );
+    assert!(
+        !map.contains_key("_tafc_think_step2"),
+        "_tafc_think_step2 must be stripped"
+    );
+    assert!(map.contains_key("query"), "real param must remain");
+}
+
+#[test]
+fn strip_tafc_fields_case_insensitive() {
+    // SEC-01: uppercase/mixed-case variants must not bypass stripping.
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "_TAFC_THINK".to_owned(),
+        serde_json::Value::String("bypass attempt".to_owned()),
+    );
+    map.insert(
+        "arg".to_owned(),
+        serde_json::Value::String("value".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "tool");
+    assert!(result.is_ok());
+    assert!(result.unwrap(), "uppercase TAFC key must be stripped");
+    assert!(
+        !map.contains_key("_TAFC_THINK"),
+        "_TAFC_THINK must be stripped"
+    );
+    assert!(map.contains_key("arg"), "real param must remain");
+}
+
+#[test]
+fn strip_tafc_fields_empty_params_map() {
+    // Edge case: empty map must return Ok(false) without error.
+    let mut map = serde_json::Map::new();
+    let result = strip_tafc_fields(&mut map, "noop");
+    assert!(result.is_ok());
+    assert!(!result.unwrap(), "empty map has nothing to strip");
+}
+
+#[test]
+fn tafc_config_validated_clamps_out_of_range() {
+    use zeph_tools::TafcConfig;
+
+    let over = TafcConfig {
+        enabled: true,
+        complexity_threshold: 1.5,
+    }
+    .validated();
+    assert!(
+        (over.complexity_threshold - 1.0).abs() < f64::EPSILON,
+        "must clamp to 1.0"
+    );
+
+    let under = TafcConfig {
+        enabled: true,
+        complexity_threshold: -0.5,
+    }
+    .validated();
+    assert!(
+        (under.complexity_threshold - 0.0).abs() < f64::EPSILON,
+        "must clamp to 0.0"
+    );
+
+    let nan = TafcConfig {
+        enabled: true,
+        complexity_threshold: f64::NAN,
+    }
+    .validated();
+    assert!(
+        (nan.complexity_threshold - 0.6).abs() < f64::EPSILON,
+        "NaN must reset to default"
+    );
+
+    let inf = TafcConfig {
+        enabled: true,
+        complexity_threshold: f64::INFINITY,
+    }
+    .validated();
+    assert!(
+        (inf.complexity_threshold - 0.6).abs() < f64::EPSILON,
+        "Inf must reset to default"
+    );
+}
+
+#[test]
+fn schema_complexity_many_flat_params_score() {
+    // HIGH-02: a schema with 8+ flat properties should score higher than one with 2.
+    let few_props = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "a": { "type": "string" },
+            "b": { "type": "string" }
+        }
+    });
+    let many_props = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "a": { "type": "string" },
+            "b": { "type": "string" },
+            "c": { "type": "string" },
+            "d": { "type": "string" },
+            "e": { "type": "string" },
+            "f": { "type": "string" },
+            "g": { "type": "string" },
+            "h": { "type": "string" }
+        }
+    });
+    assert!(
+        schema_complexity(&many_props) > schema_complexity(&few_props),
+        "8 flat properties must score higher than 2"
+    );
+}

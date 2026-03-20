@@ -478,9 +478,11 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Configure Think-Augmented Function Calling (TAFC).
+    ///
+    /// `complexity_threshold` is clamped to [0.0, 1.0]; NaN / Inf are reset to 0.6.
     #[must_use]
     pub fn with_tafc_config(mut self, config: zeph_tools::TafcConfig) -> Self {
-        self.tool_orchestrator.tafc = config;
+        self.tool_orchestrator.tafc = config.validated();
         self
     }
 

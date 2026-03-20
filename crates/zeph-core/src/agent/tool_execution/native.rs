@@ -537,18 +537,24 @@ impl<C: Channel> Agent<C> {
         .await;
         self.push_message(assistant_msg);
 
-        // Build tool calls for all requests — strip TAFC fields before execution
+        // Build tool calls for all requests — strip TAFC fields before execution.
+        // tafc_failed[i] is true when the model produced only think fields with no real
+        // parameters; such calls receive a synthetic [error] output instead of executing.
+        let mut tafc_failed: Vec<bool> = vec![false; tool_calls.len()];
         let calls: Vec<ToolCall> = tool_calls
             .iter()
-            .map(|tc| {
+            .enumerate()
+            .map(|(idx, tc)| {
                 let mut params: serde_json::Map<String, serde_json::Value> =
                     if let serde_json::Value::Object(map) = &tc.input {
                         map.clone()
                     } else {
                         serde_json::Map::new()
                     };
-                if self.tool_orchestrator.tafc.enabled {
-                    let _ = strip_tafc_fields(&mut params, &tc.name);
+                if self.tool_orchestrator.tafc.enabled
+                    && strip_tafc_fields(&mut params, &tc.name).is_err()
+                {
+                    tafc_failed[idx] = true;
                 }
                 ToolCall {
                     tool_id: tc.name.clone(),
@@ -850,6 +856,29 @@ impl<C: Channel> Agent<C> {
                     let msg = format!(
                         "[error] Repeated identical call to {} detected. \
                          Use different arguments or a different approach.",
+                        tc.name
+                    );
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                // CRIT-01: model produced only TAFC think fields with no actual parameters.
+                // Synthesize an error result so the LLM can retry with proper arguments.
+                if tafc_failed[idx] {
+                    let msg = format!(
+                        "[error] Tool call to {} failed: model produced only reasoning fields \
+                         with no actual parameters. Please retry with the required arguments.",
                         tc.name
                     );
                     let out = zeph_tools::ToolOutput {

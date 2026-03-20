@@ -135,6 +135,22 @@ impl Default for TafcConfig {
     }
 }
 
+impl TafcConfig {
+    /// Return a copy with `complexity_threshold` clamped to [0.0, 1.0].
+    ///
+    /// NaN and infinite values are replaced with the default (0.6).
+    #[must_use]
+    pub fn validated(mut self) -> Self {
+        let t = self.complexity_threshold;
+        if t.is_nan() || t.is_infinite() {
+            self.complexity_threshold = default_tafc_complexity_threshold();
+        } else {
+            self.complexity_threshold = t.clamp(0.0, 1.0);
+        }
+        self
+    }
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
