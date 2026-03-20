@@ -157,6 +157,15 @@ pub struct Agent<C: Channel> {
     /// Cached filtered tool IDs for the current user turn. Set by `compute_filtered_tool_ids()`
     /// in `rebuild_system_prompt()`, consumed by the native tool loop on iteration 0.
     pub(super) cached_filtered_tool_ids: Option<HashSet<String>>,
+    /// Tool dependency graph for sequential tool availability (issue #2024).
+    /// Built once from config, applied per-turn after tool schema filtering.
+    pub(super) dependency_graph: Option<zeph_tools::ToolDependencyGraph>,
+    /// Always-on tool IDs, mirrored from the tool schema filter for dependency gate bypass.
+    pub(super) dependency_always_on: HashSet<String>,
+    /// Tool IDs that completed successfully in the current session.
+    /// Grows monotonically per session; cleared on `/clear`.
+    /// NOTE: bounded by session length, typically < 1000 entries.
+    pub(super) completed_tool_ids: HashSet<String>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -304,6 +313,7 @@ impl<C: Channel> Agent<C> {
                 semantic_cache_enabled: false,
                 semantic_cache_threshold: 0.95,
                 semantic_cache_max_candidates: 10,
+                dependency_config: zeph_tools::DependencyConfig::default(),
             },
             mcp: McpState {
                 tools: Vec::new(),
@@ -368,6 +378,9 @@ impl<C: Channel> Agent<C> {
                 task_goal_user_msg_hash: None,
                 pending_task_goal: None,
                 pending_sidequest_result: None,
+                subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry::default(),
+                pending_subgoal: None,
+                subgoal_user_msg_hash: None,
             },
             lifecycle: LifecycleState {
                 shutdown: rx,
@@ -405,6 +418,9 @@ impl<C: Channel> Agent<C> {
             sidequest: sidequest::SidequestState::default(),
             tool_schema_filter: None,
             cached_filtered_tool_ids: None,
+            dependency_graph: None,
+            dependency_always_on: HashSet::new(),
+            completed_tool_ids: HashSet::new(),
         }
     }
 
@@ -2131,8 +2147,20 @@ impl<C: Channel> Agent<C> {
         if trimmed == "/compact" {
             if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
                 match self.compact_context().await {
-                    Ok(_) => {
+                    Ok(
+                        context::CompactionOutcome::Compacted
+                        | context::CompactionOutcome::NoChange,
+                    ) => {
                         let _ = self.channel.send("Context compacted successfully.").await;
+                    }
+                    Ok(context::CompactionOutcome::ProbeRejected) => {
+                        let _ = self
+                            .channel
+                            .send(
+                                "Compaction rejected: summary quality below threshold. \
+                                 Original context preserved.",
+                            )
+                            .await;
                     }
                     Err(e) => {
                         let _ = self.channel.send(&format!("Compaction failed: {e}")).await;
@@ -3201,6 +3229,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_status_command(&mut self) -> Result<(), error::AgentError> {
         use std::fmt::Write;
 
@@ -3282,6 +3311,33 @@ impl<C: Channel> Agent<C> {
             }
             if orch_skipped > 0 {
                 let _ = writeln!(out, "  Skipped:   {orch_skipped}");
+            }
+        }
+
+        // Subgoal display (#2022): show active subgoal when a subgoal strategy is active.
+        #[cfg(feature = "context-compression")]
+        {
+            use crate::config::PruningStrategy;
+            if matches!(
+                self.context_manager.compression.pruning_strategy,
+                PruningStrategy::Subgoal | PruningStrategy::SubgoalMig
+            ) {
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
+                    "Pruning:   {}",
+                    match self.context_manager.compression.pruning_strategy {
+                        PruningStrategy::SubgoalMig => "subgoal_mig",
+                        _ => "subgoal",
+                    }
+                );
+                let subgoal_count = self.compression.subgoal_registry.subgoals.len();
+                let _ = writeln!(out, "Subgoals:  {subgoal_count} tracked");
+                if let Some(active) = self.compression.subgoal_registry.active_subgoal() {
+                    let _ = writeln!(out, "Active:    \"{}\"", active.description);
+                } else {
+                    let _ = writeln!(out, "Active:    (none yet)");
+                }
             }
         }
 

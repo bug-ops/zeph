@@ -275,6 +275,9 @@ keyword_weight = 0.3
 # MMR re-ranking: diversify recall results
 # mmr_enabled = false
 # mmr_lambda = 0.7
+# Write-time importance scoring: boost recall rank for messages with explicit markers (#2021)
+# importance_enabled = false
+# importance_weight = 0.15
 
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant for semantic retrieval; tree-sitter grammars are always available

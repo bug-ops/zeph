@@ -275,6 +275,40 @@ impl DebugDumper {
         }
     }
 
+    /// Dump the subgoal registry state alongside a compaction event (#2022).
+    ///
+    /// Writes a human-readable text file listing each subgoal with its state and message span.
+    /// When `format = Trace`, this is a no-op.
+    #[cfg(feature = "context-compression")]
+    pub(crate) fn dump_subgoal_registry(
+        &self,
+        registry: &crate::agent::compaction_strategy::SubgoalRegistry,
+    ) {
+        if self.format == DumpFormat::Trace {
+            return;
+        }
+        let id = self.next_id();
+        let mut output = String::from("=== Subgoal Registry ===\n");
+        if registry.subgoals.is_empty() {
+            output.push_str("(no subgoals tracked yet)\n");
+        } else {
+            for sg in &registry.subgoals {
+                let state_str = match sg.state {
+                    crate::agent::compaction_strategy::SubgoalState::Active => "Active   ",
+                    crate::agent::compaction_strategy::SubgoalState::Completed => "Completed",
+                };
+                let _ = std::fmt::write(
+                    &mut output,
+                    format_args!(
+                        "[{}] {state_str}: \"{}\" (msgs {}-{})\n",
+                        sg.id.0, sg.description, sg.start_msg_index, sg.end_msg_index,
+                    ),
+                );
+            }
+        }
+        self.write(&format!("{id:04}-subgoal-registry.txt"), output.as_bytes());
+    }
+
     /// Dump a tool error with error classification for debugging transient/permanent failures.
     /// When `format = Trace`, this is a no-op.
     pub fn dump_tool_error(&self, tool_name: &str, error: &zeph_tools::ToolError) {
