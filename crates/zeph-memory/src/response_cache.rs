@@ -592,4 +592,144 @@ mod tests {
             .unwrap();
         assert!(semantic.is_some());
     }
+
+    // --- Corrupted BLOB tests ---
+    // These tests verify that get_semantic() gracefully handles corrupt embedding BLOBs
+    // stored directly in the database (bypassing put_with_embedding), simulating real-world
+    // scenarios such as disk errors, interrupted writes, or migration bugs.
+    //
+    // Note: NaN f32 values from garbage-but-valid-length BLOBs (length divisible by 4) are
+    // handled safely by IEEE 754 semantics — NaN > x is always false, so best_score is never
+    // updated and the row is silently skipped without panic.
+
+    /// Helper: insert a row with a raw (potentially corrupt) embedding BLOB via SQL.
+    async fn insert_corrupt_blob(pool: &SqlitePool, key: &str, blob: &[u8]) {
+        let now = unix_now();
+        let expires_at = now + 3600;
+        sqlx::query(
+            "INSERT INTO response_cache \
+             (cache_key, response, model, created_at, expires_at, embedding, embedding_model, embedding_ts) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(key)
+        .bind("corrupt-response")
+        .bind("m1")
+        .bind(now)
+        .bind(expires_at)
+        .bind(blob)
+        .bind("model-a")
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_semantic_get_corrupted_blob_odd_length() {
+        // A BLOB of 5 bytes is not a multiple of 4, so bytemuck::try_cast_slice returns
+        // Err(SizeMismatch). Verify that get_semantic returns Ok(None) without panicking.
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let pool = store.pool().clone();
+        let cache = ResponseCache::new(pool.clone(), 3600);
+
+        insert_corrupt_blob(&pool, "corrupt-key", &[0xAB, 0xCD, 0xEF, 0x01, 0x02]).await;
+
+        let result = cache
+            .get_semantic(&[1.0, 0.0, 0.0], "model-a", 0.9, 10)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "corrupt odd-length BLOB must yield Ok(None)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_semantic_get_corrupted_blob_skips_to_valid() {
+        // Insert one corrupt row (5 bytes) and one valid row with an embedding identical to
+        // the query. Verify that the corrupt row is silently skipped and the valid row is
+        // returned, proving the for loop continues after a deserialization failure.
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let pool = store.pool().clone();
+        let cache = ResponseCache::new(pool.clone(), 3600);
+
+        // Corrupt row — odd-length BLOB
+        insert_corrupt_blob(&pool, "corrupt-key", &[0x01, 0x02, 0x03]).await;
+
+        // Valid row — embedding [1.0, 0.0, 0.0] stored via the normal path
+        let valid_embedding = vec![1.0_f32, 0.0, 0.0];
+        cache
+            .put_with_embedding(
+                "valid-key",
+                "valid-response",
+                "m1",
+                &valid_embedding,
+                "model-a",
+            )
+            .await
+            .unwrap();
+
+        let result = cache
+            .get_semantic(&valid_embedding, "model-a", 0.9, 10)
+            .await
+            .unwrap();
+        assert!(
+            result.is_some(),
+            "valid row must be returned despite corrupt sibling"
+        );
+        let (resp, score) = result.unwrap();
+        assert_eq!(resp, "valid-response");
+        assert!(
+            (score - 1.0).abs() < 1e-5,
+            "identical vectors must yield score ~1.0, got {score}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_semantic_get_empty_blob() {
+        // An empty BLOB (0 bytes) causes bytemuck::try_cast_slice to return Ok(&[]) — an empty
+        // f32 slice. cosine_similarity returns 0.0 for mismatched lengths, which is below the
+        // 0.9 threshold. Verify Ok(None) is returned without panicking.
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let pool = store.pool().clone();
+        let cache = ResponseCache::new(pool.clone(), 3600);
+
+        insert_corrupt_blob(&pool, "empty-blob-key", &[]).await;
+
+        let result = cache
+            .get_semantic(&[1.0, 0.0], "model-a", 0.9, 10)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "empty BLOB must yield Ok(None) at threshold 0.9"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_semantic_get_all_blobs_corrupted() {
+        // All rows have corrupt BLOBs of various invalid lengths:
+        // 1, 3, 5, 7 bytes (odd) and 6 bytes (even but not a multiple of 4).
+        // Verify that get_semantic returns Ok(None) — all rows gracefully skipped.
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let pool = store.pool().clone();
+        let cache = ResponseCache::new(pool.clone(), 3600);
+
+        let corrupt_blobs: &[&[u8]] = &[
+            &[0x01],                                     // 1 byte
+            &[0x01, 0x02, 0x03],                         // 3 bytes
+            &[0x01, 0x02, 0x03, 0x04, 0x05],             // 5 bytes
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07], // 7 bytes
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06], // 6 bytes (even, not multiple of 4 — REC-1)
+        ];
+        for (i, blob) in corrupt_blobs.iter().enumerate() {
+            insert_corrupt_blob(&pool, &format!("corrupt-{i}"), blob).await;
+        }
+
+        let result = cache
+            .get_semantic(&[1.0, 0.0, 0.0], "model-a", 0.9, 10)
+            .await
+            .unwrap();
+        assert!(result.is_none(), "all corrupt BLOBs must yield Ok(None)");
+    }
 }

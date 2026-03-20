@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- test(memory): add corrupted BLOB deserialization tests in semantic cache (#2033) — verify graceful degradation when bytemuck::try_cast_slice fails; 4 tests cover odd-length BLOBs (SizeMismatch), even-but-not-aligned BLOBs (REC-1), empty BLOBs, and mixed corrupt+valid rows; no panics, proper error handling, IEEE 754 NaN safety documented
+
 ## [0.16.0] - 2026-03-19
 ### Added
 
