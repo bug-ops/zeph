@@ -4486,4 +4486,12 @@ mod shutdown_summary_tests {
         assert_eq!(rows[0].correction_kind, "explicit_rejection");
         assert_eq!(rows[0].correction_text, "no that's wrong");
     }
+
+    #[test]
+    fn test_scheduled_task_injection_format() {
+        let prompt = "bash -c 'echo hello'";
+        let text = format!("{}{prompt}", super::super::SCHEDULED_TASK_PREFIX);
+        assert!(text.starts_with(super::super::SCHEDULED_TASK_PREFIX));
+        assert!(text.contains(prompt));
+    }
 }

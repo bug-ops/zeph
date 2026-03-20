@@ -81,6 +81,7 @@ pub(crate) const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 pub(crate) const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
+pub(crate) const SCHEDULED_TASK_PREFIX: &str = "Execute the following scheduled task now: ";
 /// Prefix used for LSP context messages (`Role::System`) injected into message history.
 /// The tool-pair summarizer targets User/Assistant pairs and skips System messages,
 /// so these notes are never accidentally summarized. `remove_lsp_messages` uses this
@@ -2191,7 +2192,7 @@ impl<C: Channel> Agent<C> {
                     }
                     Some(prompt) = recv_optional(&mut self.lifecycle.custom_task_rx) => {
                         tracing::info!("scheduler: injecting custom task as agent turn");
-                        let text = format!("[Scheduled task] {prompt}");
+                        let text = format!("{SCHEDULED_TASK_PREFIX}{prompt}");
                         Some(crate::channel::ChannelMessage { text, attachments: Vec::new() })
                     }
                 };

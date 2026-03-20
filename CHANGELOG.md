@@ -42,6 +42,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - refactor(memory): wrap `ResponseCache::cleanup()` DELETE and UPDATE operations in a single SQLite transaction for atomicity (closes #2032)
 
+### Fixed
+
+- fix(scheduler): make task injection format explicit about execution intent (#2073) — replace ambiguous `[Scheduled task] <task>` prefix with `Execute the following scheduled task now: <task>` to prevent LLM from cancelling bash tasks instead of executing them
+
 ### Changed
 
 - refactor(config): remove dead `PruningStrategy::TaskAwareMig` variant (#1851) — the variant was routed to the same scored path as `TaskAware` (MIG scoring was never applied); serde `Deserialize` is now hand-implemented to route through `FromStr` so that `task_aware_mig` in TOML configs falls back to `Reactive` with a warning instead of hard-erroring; CLI `--pruning-strategy` help and `--init` wizard updated to remove the option; `config/default.toml` comment updated
