@@ -784,7 +784,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// The `hint` parameter modulates injection detection sensitivity:
     /// - `ConversationHistory` / `LlmSummary`: detection skipped (false-positive suppression).
-    /// - `ExternalContent` / `None`: full detection (document RAG, graph facts).
+    /// - `ExternalContent`: full detection (document RAG, graph facts).
     ///
     /// Truncation, control-char stripping, delimiter escaping, and spotlighting remain active
     /// for all hints (defense-in-depth invariant).
