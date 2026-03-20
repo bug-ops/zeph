@@ -23,6 +23,8 @@ pub(crate) struct TuiRunParams<'a> {
         Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
     pub(crate) warmup_provider: AnyProvider,
     pub(crate) index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
+    /// Whether --tafc CLI flag was passed (overrides config).
+    pub(crate) cli_tafc: bool,
 }
 
 #[cfg(feature = "tui")]
@@ -70,6 +72,8 @@ pub(crate) async fn run_tui_agent<C: Channel>(
             semantic_enabled: params.config.memory.semantic.enabled,
             autonomy_level: format!("{:?}", params.config.security.autonomy_level),
             max_tool_iterations: params.config.agent.max_tool_iterations,
+            tafc_enabled: params.config.tools.tafc.enabled || params.cli_tafc,
+            tafc_complexity_threshold: params.config.tools.tafc.complexity_threshold,
         },
     ));
 
@@ -133,6 +137,8 @@ pub(crate) struct TuiCommandContext {
     pub(crate) semantic_enabled: bool,
     pub(crate) autonomy_level: String,
     pub(crate) max_tool_iterations: usize,
+    pub(crate) tafc_enabled: bool,
+    pub(crate) tafc_complexity_threshold: f64,
 }
 
 #[cfg(feature = "tui")]
@@ -156,6 +162,21 @@ pub(crate) async fn forward_tui_commands(
                     ctx.autonomy_level, ctx.max_tool_iterations,
                 );
                 ("view:autonomy".to_owned(), text)
+            }
+            zeph_tui::TuiCommand::TafcStatus => {
+                let text = if ctx.tafc_enabled {
+                    format!(
+                        "TAFC (Think-Augmented Function Calling): enabled\n  \
+                         Complexity threshold: {:.2}\n  \
+                         Note: changing TAFC settings mid-session causes a prompt cache miss.",
+                        ctx.tafc_complexity_threshold,
+                    )
+                } else {
+                    "TAFC (Think-Augmented Function Calling): disabled\n  \
+                     Enable with --tafc CLI flag or [tools.tafc] enabled = true in config."
+                        .to_owned()
+                };
+                ("tafc:status".to_owned(), text)
             }
             _ => continue,
         };

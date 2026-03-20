@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(channels): register Discord slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task; idempotent via `PUT /applications/{id}/commands` (CHAN-05, epic #1978)
 - feat(channels): extract shared `CONFIRM_TIMEOUT` constant (30s) to `zeph-channels` crate; Telegram, Discord, and Slack `confirm()` all reference it (CHAN-02, epic #1978)
 
+- refactor(memory): wrap `ResponseCache::cleanup()` DELETE and UPDATE operations in a single SQLite transaction for atomicity (closes #2032)
+
 ### Changed
 
 - refactor(config): add `Config::validate()` check for `llm.semantic_cache_threshold`; rejects values outside [0.0, 1.0] and non-finite values (NaN, Inf) with a descriptive error including the env var override hint (#2036)
@@ -35,6 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ci: expand feature matrix to test intermediate feature combinations: `orchestration`, `orchestration,graph-memory`, `daemon,acp`, `tui,scheduler` (epic #1976)
 
 ### Fixed
+
+### Performance
+
+- perf(memory): add `expires_at` to `idx_response_cache_semantic` composite index (migration 038) — `get_semantic()` now filters expired rows within the index scan instead of post-filtering on the heap (#2030)
 
 ## [0.16.0] - 2026-03-19
 ### Added
