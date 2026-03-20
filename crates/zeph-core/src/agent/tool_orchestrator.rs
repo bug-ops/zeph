@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 
-use zeph_tools::OverflowConfig;
+use zeph_tools::{OverflowConfig, TafcConfig};
 
 use super::DOOM_LOOP_WINDOW;
 
@@ -29,6 +29,8 @@ pub(crate) struct ToolOrchestrator {
     /// concerns: they inspect tool arguments at dispatch time, consistent with
     /// repeat-detection, rate-limiting, and overflow controls which also live here.
     pub(super) pre_execution_verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>>,
+    /// Think-Augmented Function Calling configuration.
+    pub(crate) tafc: TafcConfig,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -61,6 +63,7 @@ impl ToolOrchestrator {
             max_tool_retries: 2,
             max_retry_duration_secs: 30,
             pre_execution_verifiers: Vec::new(),
+            tafc: TafcConfig::default(),
         }
     }
 

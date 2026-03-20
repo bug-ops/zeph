@@ -31,7 +31,7 @@ pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use composite::CompositeExecutor;
 pub use config::{
-    AnomalyConfig, AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, ToolsConfig,
+    AnomalyConfig, AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, TafcConfig, ToolsConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{

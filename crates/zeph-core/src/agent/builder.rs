@@ -477,6 +477,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure Think-Augmented Function Calling (TAFC).
+    #[must_use]
+    pub fn with_tafc_config(mut self, config: zeph_tools::TafcConfig) -> Self {
+        self.tool_orchestrator.tafc = config;
+        self
+    }
+
     #[must_use]
     pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
         self.providers.summary_provider = Some(provider);

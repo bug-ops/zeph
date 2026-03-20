@@ -74,6 +74,8 @@ pub enum TuiCommand {
     ServerCompactionStatus,
     // Compression guidelines
     ViewGuidelines,
+    // Think-Augmented Function Calling
+    TafcStatus,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -277,6 +279,13 @@ fn build_infra_commands() -> Vec<CommandEntry> {
             category: "context",
             shortcut: None,
             command: TuiCommand::ServerCompactionStatus,
+        },
+        CommandEntry {
+            id: "tafc:status",
+            label: "Show Think-Augmented Function Calling (TAFC) status (/tafc)",
+            category: "tools",
+            shortcut: None,
+            command: TuiCommand::TafcStatus,
         },
     ]
 }
@@ -547,12 +556,12 @@ mod tests {
     #[test]
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
-        // + 1 compaction:status + 1 guidelines:view = 33
+        // + 1 compaction:status + 1 guidelines:view + 1 tafc:status = 34
         // + 1 lsp:status command (when lsp-context feature enabled)
         #[cfg(feature = "lsp-context")]
-        assert_eq!(extra_command_registry().len(), 34);
+        assert_eq!(extra_command_registry().len(), 35);
         #[cfg(not(feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 33);
+        assert_eq!(extra_command_registry().len(), 34);
     }
 
     #[test]

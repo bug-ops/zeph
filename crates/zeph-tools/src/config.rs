@@ -82,6 +82,10 @@ fn default_anomaly_critical_threshold() -> f64 {
     0.8
 }
 
+fn default_tafc_complexity_threshold() -> f64 {
+    0.6
+}
+
 /// Configuration for the sliding-window anomaly detector.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnomalyConfig {
@@ -102,6 +106,31 @@ impl Default for AnomalyConfig {
             window_size: default_anomaly_window(),
             error_threshold: default_anomaly_error_threshold(),
             critical_threshold: default_anomaly_critical_threshold(),
+        }
+    }
+}
+
+/// Configuration for Think-Augmented Function Calling (TAFC).
+///
+/// When enabled, a `_tafc_think` field is injected into each tool's JSON Schema,
+/// prompting the model to reason before producing parameters. The field is stripped
+/// before tool execution and before persisting to memory.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TafcConfig {
+    /// Enable TAFC schema augmentation (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Complexity threshold tau in [0.0, 1.0]; tools with complexity >= tau are augmented.
+    /// Default: 0.6
+    #[serde(default = "default_tafc_complexity_threshold")]
+    pub complexity_threshold: f64,
+}
+
+impl Default for TafcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            complexity_threshold: default_tafc_complexity_threshold(),
         }
     }
 }
@@ -127,6 +156,9 @@ pub struct ToolsConfig {
     pub overflow: OverflowConfig,
     #[serde(default)]
     pub anomaly: AnomalyConfig,
+    /// Think-Augmented Function Calling configuration.
+    #[serde(default)]
+    pub tafc: TafcConfig,
     /// Declarative policy compiler for tool call authorization.
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
@@ -187,6 +219,7 @@ impl Default for ToolsConfig {
             filters: crate::filter::FilterConfig::default(),
             overflow: OverflowConfig::default(),
             anomaly: AnomalyConfig::default(),
+            tafc: TafcConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
         }

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(tools): Think-Augmented Function Calling (TAFC, issue #1861) — injects a `_tafc_think` reasoning field into tool schemas with structural complexity >= 0.6 (anyOf/oneOf/allOf combinators, deep nesting, large enums); fields stripped before execution and memory persistence to avoid token inflation; configurable via `[tools.tafc]` enabled/complexity_threshold; `--tafc` CLI flag; `/tafc` TUI command; `--init` wizard step; subagent scope excluded in phase 1
 - feat(channels): register Discord slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task; idempotent via `PUT /applications/{id}/commands` (CHAN-05, epic #1978)
 - feat(channels): extract shared `CONFIRM_TIMEOUT` constant (30s) to `zeph-channels` crate; Telegram, Discord, and Slack `confirm()` all reference it (CHAN-02, epic #1978)
 

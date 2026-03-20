@@ -7,7 +7,10 @@ use zeph_llm::provider::{
 };
 
 use super::super::Agent;
-use super::{AnomalyOutcome, retry_backoff_ms, tool_args_hash, tool_def_to_definition};
+use super::{
+    AnomalyOutcome, retry_backoff_ms, strip_tafc_fields, tool_args_hash,
+    tool_def_to_definition_with_tafc,
+};
 use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 use crate::overflow_tools::OverflowToolExecutor;
 use tracing::Instrument;
@@ -74,12 +77,14 @@ impl<C: Channel> Agent<C> {
 
         // `mut` required when context-compression is enabled to inject focus tool definitions.
         #[cfg_attr(not(feature = "context-compression"), allow(unused_mut))]
-        let mut tool_defs: Vec<ToolDefinition> = self
-            .tool_executor
-            .tool_definitions_erased()
-            .iter()
-            .map(tool_def_to_definition)
-            .collect();
+        let mut tool_defs: Vec<ToolDefinition> = {
+            let tafc = &self.tool_orchestrator.tafc;
+            self.tool_executor
+                .tool_definitions_erased()
+                .iter()
+                .map(|def| tool_def_to_definition_with_tafc(def, tafc))
+                .collect()
+        };
 
         // Inject focus tool definitions when the feature is enabled and configured (#1850).
         #[cfg(feature = "context-compression")]
@@ -503,10 +508,23 @@ impl<C: Channel> Agent<C> {
             parts.push(MessagePart::Text { text: t.clone() });
         }
         for tc in tool_calls {
+            // HIGH-01: strip TAFC think fields before persisting to memory to avoid
+            // inflating conversation history with reasoning scaffolding.
+            let clean_input = if self.tool_orchestrator.tafc.enabled {
+                let mut map = if let serde_json::Value::Object(m) = &tc.input {
+                    m.clone()
+                } else {
+                    serde_json::Map::new()
+                };
+                let _ = strip_tafc_fields(&mut map, &tc.name);
+                serde_json::Value::Object(map)
+            } else {
+                tc.input.clone()
+            };
             parts.push(MessagePart::ToolUse {
                 id: tc.id.clone(),
                 name: tc.name.clone(),
-                input: tc.input.clone(),
+                input: clean_input,
             });
         }
         let assistant_msg = Message::from_parts(Role::Assistant, parts);
@@ -519,16 +537,19 @@ impl<C: Channel> Agent<C> {
         .await;
         self.push_message(assistant_msg);
 
-        // Build tool calls for all requests
+        // Build tool calls for all requests — strip TAFC fields before execution
         let calls: Vec<ToolCall> = tool_calls
             .iter()
             .map(|tc| {
-                let params: serde_json::Map<String, serde_json::Value> =
+                let mut params: serde_json::Map<String, serde_json::Value> =
                     if let serde_json::Value::Object(map) = &tc.input {
                         map.clone()
                     } else {
                         serde_json::Map::new()
                     };
+                if self.tool_orchestrator.tafc.enabled {
+                    let _ = strip_tafc_fields(&mut params, &tc.name);
+                }
                 ToolCall {
                     tool_id: tc.name.clone(),
                     params,

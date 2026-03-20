@@ -617,5 +617,142 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
     }
 }
 
+/// Compute structural complexity of a JSON Schema in [0.0, 1.0].
+///
+/// The score is based on:
+/// - Nesting depth (deeply nested schemas require more reasoning)
+/// - Presence of combinators (`anyOf`, `oneOf`, `allOf`)
+/// - Number of enum variants (more choices = more reasoning)
+///
+/// Scores above `tau` (default 0.6) are considered complex enough to benefit
+/// from TAFC augmentation.
+pub(crate) fn schema_complexity(schema: &serde_json::Value) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let depth = schema_depth(schema).min(8) as f64 / 8.0;
+    let combinator_score = f64::from(u8::from(has_combinators(schema))) * 0.4;
+    #[allow(clippy::cast_precision_loss)]
+    let enum_score = (enum_variant_count(schema).min(10) as f64 / 10.0) * 0.3;
+    (depth * 0.3 + combinator_score + enum_score).min(1.0)
+}
+
+fn schema_depth(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Object(map) => {
+            let child_depth = map.values().map(schema_depth).max().unwrap_or(0);
+            1 + child_depth
+        }
+        serde_json::Value::Array(arr) => {
+            let child_depth = arr.iter().map(schema_depth).max().unwrap_or(0);
+            1 + child_depth
+        }
+        _ => 1,
+    }
+}
+
+fn has_combinators(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(map) => {
+            if map.contains_key("anyOf") || map.contains_key("oneOf") || map.contains_key("allOf") {
+                return true;
+            }
+            map.values().any(has_combinators)
+        }
+        serde_json::Value::Array(arr) => arr.iter().any(has_combinators),
+        _ => false,
+    }
+}
+
+fn enum_variant_count(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Object(map) => {
+            let local = map
+                .get("enum")
+                .and_then(|e| e.as_array())
+                .map_or(0, Vec::len);
+            let child = map.values().map(enum_variant_count).max().unwrap_or(0);
+            local.max(child)
+        }
+        serde_json::Value::Array(arr) => arr.iter().map(enum_variant_count).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Augment a `ToolDefinition` with the TAFC `_tafc_think` field.
+///
+/// Injects a top-level `_tafc_think` string property into the parameters schema,
+/// prompting the model to reason before filling actual parameters.
+/// Only applied when schema complexity >= `complexity_threshold`.
+pub(crate) fn augment_with_tafc(
+    mut def: ToolDefinition,
+    complexity_threshold: f64,
+) -> ToolDefinition {
+    let complexity = schema_complexity(&def.parameters);
+    if complexity < complexity_threshold {
+        return def;
+    }
+    if let serde_json::Value::Object(ref mut map) = def.parameters {
+        let properties = map
+            .entry("properties")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let serde_json::Value::Object(props) = properties {
+            props.insert(
+                "_tafc_think".to_owned(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Think step-by-step before filling the parameters. \
+                        Reason about the task, constraints, and which parameter values \
+                        are most appropriate. This field is stripped before execution."
+                }),
+            );
+        }
+    }
+    def
+}
+
+/// Prefix used to identify TAFC think fields in tool call inputs.
+pub(crate) const TAFC_FIELD_PREFIX: &str = "_tafc_think";
+
+/// Strip all TAFC think fields (`_tafc_think*`) from a tool input map.
+///
+/// Returns `true` if any fields were stripped, `false` otherwise.
+/// Logs a WARN and returns `Err` if only think fields were present (no actual params).
+pub(crate) fn strip_tafc_fields(
+    input: &mut serde_json::Map<String, serde_json::Value>,
+    tool_name: &str,
+) -> Result<bool, ()> {
+    let tafc_keys: Vec<String> = input
+        .keys()
+        .filter(|k| k.starts_with(TAFC_FIELD_PREFIX))
+        .cloned()
+        .collect();
+    if tafc_keys.is_empty() {
+        return Ok(false);
+    }
+    let has_real_params = input.keys().any(|k| !k.starts_with(TAFC_FIELD_PREFIX));
+    for k in &tafc_keys {
+        input.remove(k);
+    }
+    if !has_real_params {
+        tracing::warn!(
+            tool = %tool_name,
+            "TAFC: model produced only think fields with no actual parameters — treating as failure"
+        );
+        return Err(());
+    }
+    Ok(true)
+}
+
+pub(crate) fn tool_def_to_definition_with_tafc(
+    def: &zeph_tools::registry::ToolDef,
+    tafc: &zeph_tools::TafcConfig,
+) -> ToolDefinition {
+    let base = tool_def_to_definition(def);
+    if tafc.enabled {
+        augment_with_tafc(base, tafc.complexity_threshold)
+    } else {
+        base
+    }
+}
+
 #[cfg(test)]
 mod tests;
