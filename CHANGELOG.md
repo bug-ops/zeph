@@ -34,6 +34,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+### Performance
+
+- perf(memory): add `expires_at` to `idx_response_cache_semantic` composite index (migration 038) — `get_semantic()` now filters expired rows within the index scan instead of post-filtering on the heap (#2030)
+
 ## [0.16.0] - 2026-03-19
 ### Added
 

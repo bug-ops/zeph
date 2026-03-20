@@ -592,4 +592,34 @@ mod tests {
             .unwrap();
         assert!(semantic.is_some());
     }
+
+    #[tokio::test]
+    async fn test_semantic_query_uses_composite_index() {
+        let cache = test_cache().await;
+        // Verify that EXPLAIN QUERY PLAN for get_semantic() uses idx_response_cache_semantic.
+        // This confirms migration 038 applied the composite index correctly.
+        // SQLite EXPLAIN QUERY PLAN returns (id INTEGER, parent INTEGER, notused INTEGER, detail TEXT).
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN \
+             SELECT response, embedding FROM response_cache \
+             WHERE embedding_model = ? AND embedding IS NOT NULL AND expires_at > ? \
+             ORDER BY embedding_ts DESC LIMIT ?",
+        )
+        .bind("model-a")
+        .bind(0_i64)
+        .bind(10_u32)
+        .fetch_all(&cache.pool)
+        .await
+        .unwrap();
+
+        let plan = rows
+            .iter()
+            .map(|(_, _, _, detail)| detail.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains("idx_response_cache_semantic"),
+            "get_semantic() query plan should use idx_response_cache_semantic, got: {plan}"
+        );
+    }
 }
