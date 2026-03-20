@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(config): add `Config::validate()` check for `llm.semantic_cache_threshold`; rejects values outside [0.0, 1.0] and non-finite values (NaN, Inf) with a descriptive error including the env var override hint (#2036)
+
 - fix(channels): `AnyChannel` and `AppChannel` now forward all 16 `Channel` trait methods; previously `send_thinking_chunk`, `send_stop_hint`, `send_usage`, and `send_tool_start` fell through to trait defaults, silently dropping events (CHAN-01, epic #1978)
 - fix(channels): Discord and Slack `confirm()` now deny after 30s timeout, matching the existing Telegram behavior; previously they blocked indefinitely waiting for user input (CHAN-02, epic #1978)
 
