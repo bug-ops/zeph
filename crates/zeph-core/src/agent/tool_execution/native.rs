@@ -69,6 +69,7 @@ impl<C: Channel> Agent<C> {
         unreachable!("loop covers all attempts")
     }
 
+    #[allow(clippy::too_many_lines)] // tool loop with dependency gate, filter, and doom-loop checks
     pub(super) async fn process_response_native_tools(
         &mut self,
     ) -> Result<(), super::super::error::AgentError> {
@@ -135,9 +136,47 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
-            // Iteration 0 uses filtered tool_defs; iterations 1+ expand to full set (#2020).
-            let defs_for_turn = if iteration == 0 {
+            // Iteration 0 uses filtered tool_defs (schema filter + dependency gates).
+            // Iterations 1+ expand to the full set but still apply hard dependency gates
+            // so tools with unmet `requires` cannot re-enter through the expansion path (#2024).
+            let gated_iter1_defs: Vec<ToolDefinition>;
+            let defs_for_turn: &[ToolDefinition] = if iteration == 0 {
                 &tool_defs
+            } else if let Some(ref dep_graph) = self.dependency_graph
+                && !dep_graph.is_empty()
+            {
+                let names: Vec<&str> = all_tool_defs.iter().map(|d| d.name.as_str()).collect();
+                let allowed = dep_graph.filter_tool_names(
+                    &names,
+                    &self.completed_tool_ids,
+                    &self.dependency_always_on,
+                );
+                let allowed_set: std::collections::HashSet<&str> = allowed.into_iter().collect();
+                // Deadlock fallback: if all non-always-on tools would be blocked,
+                // use the full set for this iteration.
+                let non_ao_allowed = allowed_set
+                    .iter()
+                    .filter(|n| !self.dependency_always_on.contains(**n))
+                    .count();
+                let non_ao_total = all_tool_defs
+                    .iter()
+                    .filter(|d| !self.dependency_always_on.contains(d.name.as_str()))
+                    .count();
+                if non_ao_allowed == 0 && non_ao_total > 0 {
+                    tracing::warn!(
+                        iteration,
+                        "tool dependency graph: all non-always-on tools gated on iter 1+; \
+                         disabling hard gates for this iteration"
+                    );
+                    &all_tool_defs
+                } else {
+                    gated_iter1_defs = all_tool_defs
+                        .iter()
+                        .filter(|d| allowed_set.contains(d.name.as_str()))
+                        .cloned()
+                        .collect();
+                    &gated_iter1_defs
+                }
             } else {
                 &all_tool_defs
             };
@@ -1007,6 +1046,12 @@ impl<C: Channel> Agent<C> {
                 {
                     let key = zeph_tools::CacheKey::new(&tool_calls[idx].name, args_hashes[idx]);
                     self.tool_orchestrator.result_cache.put(key, out.clone());
+                }
+
+                // Record successful tool completions for the dependency graph (#2024).
+                // Only record on success (non-error) so `requires` chains work correctly.
+                if !is_failed && self.dependency_graph.is_some() {
+                    self.completed_tool_ids.insert(tool_calls[idx].name.clone());
                 }
 
                 tool_results[idx] = result;

@@ -783,6 +783,28 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set dependency config parameters (boost values) used per-turn.
+    #[must_use]
+    pub fn with_dependency_config(mut self, config: zeph_tools::DependencyConfig) -> Self {
+        self.runtime.dependency_config = config;
+        self
+    }
+
+    /// Attach a tool dependency graph for sequential tool availability (issue #2024).
+    ///
+    /// When set, hard gates (`requires`) are applied after schema filtering, and soft boosts
+    /// (`prefers`) are added to similarity scores. Always-on tool IDs bypass hard gates.
+    #[must_use]
+    pub fn with_tool_dependency_graph(
+        mut self,
+        graph: zeph_tools::ToolDependencyGraph,
+        always_on: std::collections::HashSet<String>,
+    ) -> Self {
+        self.dependency_graph = Some(graph);
+        self.dependency_always_on = always_on;
+        self
+    }
+
     /// Initialize and attach the tool schema filter if enabled in config.
     ///
     /// Embeds all filterable tool descriptions at startup and caches the embeddings.

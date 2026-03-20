@@ -37,6 +37,9 @@ impl<C: Channel> Agent<C> {
         if let Some(sp) = system_prompt {
             self.msg.messages.push(sp);
         }
+        // Clear completed tool IDs along with message history: dependency state is
+        // session-scoped and should reset when the conversation resets.
+        self.completed_tool_ids.clear();
         self.recompute_prompt_tokens();
     }
 
@@ -1184,11 +1187,40 @@ impl<C: Channel> Agent<C> {
             let _ = self.channel.send_status("filtering tools...").await;
             match self.provider.embed(query).await {
                 Ok(query_emb) => {
-                    let result = filter.filter(&all_ids, &descriptions, query, &query_emb);
+                    let mut result = filter.filter(&all_ids, &descriptions, query, &query_emb);
+
+                    // Apply dependency graph AFTER schema filter (and after any TAFC
+                    // augmentation that may have added tools). This ensures hard gates
+                    // are the final word on tool availability (MED-04 fix).
+                    if let Some(ref dep_graph) = self.dependency_graph {
+                        let dep_config = &self.runtime.dependency_config;
+                        dep_graph.apply(
+                            &mut result,
+                            &self.completed_tool_ids,
+                            dep_config.boost_per_dep,
+                            dep_config.max_total_boost,
+                            &self.dependency_always_on,
+                        );
+                        if !result.dependency_exclusions.is_empty() {
+                            tracing::info!(
+                                excluded = result.dependency_exclusions.len(),
+                                "tool dependency gate: excluded tools with unmet requires"
+                            );
+                            for excl in &result.dependency_exclusions {
+                                tracing::debug!(
+                                    tool_id = %excl.tool_id,
+                                    unmet = ?excl.unmet_requires,
+                                    "tool dependency gate exclusion"
+                                );
+                            }
+                        }
+                    }
+
                     tracing::info!(
                         total = all_ids.len(),
                         included = result.included.len(),
                         excluded = result.excluded.len(),
+                        dep_excluded = result.dependency_exclusions.len(),
                         "tool schema filter applied"
                     );
                     for (tool_id, score) in &result.scores {
