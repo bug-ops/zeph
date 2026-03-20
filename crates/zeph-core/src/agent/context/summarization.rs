@@ -3518,6 +3518,7 @@ fn parse_subgoal_extraction_response(
 }
 
 #[cfg(test)]
+#[cfg(feature = "context-compression")]
 mod subgoal_extraction_tests {
     use super::*;
 
