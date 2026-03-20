@@ -42,6 +42,7 @@ Each session creates a timestamped subdirectory under the output directory:
     ├── 0001-tool-shell.txt
     ├── 0002-request.json
     ├── 0002-response.txt
+    ├── 0003-compaction-probe.json
     └── …
 ```
 
@@ -52,12 +53,14 @@ Files are numbered sequentially with a shared counter. Request/response pairs sh
 | `{id}-request.json` | JSON array of messages sent to the LLM (full context) |
 | `{id}-response.txt` | Raw text returned by the LLM |
 | `{id}-tool-{name}.txt` | Raw tool output before summarization or truncation |
+| `{id}-compaction-probe.json` | Compaction probe result: verdict, score, questions, and per-question breakdown |
 
 ## What Gets Captured
 
 - **LLM requests** — the full `messages` array including all system blocks, tool results, and history. Useful for identifying what "garbage" is accumulating in context.
 - **LLM responses** — the complete raw text returned by the model, including thinking blocks if extended thinking is enabled.
 - **Tool output** — the unprocessed output string before `maybe_summarize_tool_output` runs. This lets you compare what the tool actually returned vs. what the model saw.
+- **Compaction probe** — the full probe result including verdict, score, per-question breakdown with expected vs actual answers, model name, and duration. Written when `[memory.compression.probe] enabled = true` and a hard compaction event occurs. See [Post-Compression Validation](context.md#post-compression-validation-compaction-probe) for details.
 
 Both the streaming and non-streaming LLM code paths are instrumented. Tool output is captured for every tool execution regardless of whether summarization is configured.
 

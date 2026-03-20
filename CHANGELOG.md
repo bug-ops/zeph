@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- Add compaction probe documentation to context engineering guide (#2050)
+
 ### Added
 
 - feat(orchestration): plan template caching for LLM planner cost reduction (#1856) — `PlanCache` stores completed `TaskGraph` plans as reusable `PlanTemplate` skeletons in SQLite with BLOB-encoded embeddings; cosine similarity computed in-process (no Qdrant dependency); cache lookup returns the closest template if similarity >= threshold, then uses a lightweight LLM adaptation call instead of full decomposition; `PlanCacheConfig` in `[orchestration.plan_cache]` with `enabled` (default: false), `similarity_threshold` (0.90), `ttl_days` (30), `max_templates` (100); goal normalization (trim + collapse whitespace + lowercase) and BLAKE3 hash for deduplication; `INSERT OR REPLACE ON CONFLICT(goal_hash)` prevents duplicate templates; stale embeddings NULLed on model change; two-phase eviction: TTL sweep + LRU size cap; graceful degradation: any cache failure falls back to full `planner.plan()` without blocking; DB migration 040
