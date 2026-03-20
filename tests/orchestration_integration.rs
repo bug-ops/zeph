@@ -54,6 +54,7 @@ mod orchestration_integration {
             confirm_before_execute: false,
             aggregator_max_tokens: 1024,
             deferral_backoff_ms: 250,
+            ..OrchestrationConfig::default()
         }
     }
 
