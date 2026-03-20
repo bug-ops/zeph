@@ -3,6 +3,7 @@
 
 //! SQLite-backed conversation persistence with Qdrant vector search.
 
+pub mod anchored_summary;
 pub mod compression_guidelines;
 pub mod document;
 
@@ -25,6 +26,7 @@ pub mod token_counter;
 pub mod types;
 pub mod vector_store;
 
+pub use anchored_summary::AnchoredSummary;
 pub use compression_guidelines::CompressionGuidelinesConfig;
 #[cfg(feature = "compression-guidelines")]
 pub use compression_guidelines::{

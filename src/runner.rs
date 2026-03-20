@@ -824,6 +824,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.shutdown_summary_max_messages,
         config.memory.shutdown_summary_timeout_secs,
     )
+    .with_structured_summaries(config.memory.structured_summaries)
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone())

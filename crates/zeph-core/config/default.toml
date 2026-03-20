@@ -234,6 +234,8 @@ cross_session_score_threshold = 0.35
 # autosave_assistant = false
 # Minimum character length for autosave (shorter responses skip embedding)
 # autosave_min_length = 20
+# Use structured anchored summaries for context compaction (experimental, off by default)
+# structured_summaries = false
 
 [memory.sessions]
 # Maximum number of sessions returned by list operations (0 = unlimited)

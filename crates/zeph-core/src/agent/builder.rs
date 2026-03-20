@@ -42,6 +42,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_structured_summaries(mut self, enabled: bool) -> Self {
+        self.memory_state.structured_summaries = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn with_autosave_config(mut self, autosave_assistant: bool, min_length: usize) -> Self {
         self.memory_state.autosave_assistant = autosave_assistant;
         self.memory_state.autosave_min_length = min_length;
