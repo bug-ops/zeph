@@ -35,7 +35,7 @@ pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::{
     AnomalyConfig, AuditConfig, OverflowConfig, ResultCacheConfig, ScrapeConfig, ShellConfig,
-    ToolsConfig,
+    TafcConfig, ToolsConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{

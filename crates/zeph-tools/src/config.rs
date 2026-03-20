@@ -130,6 +130,44 @@ impl Default for ResultCacheConfig {
     }
 }
 
+fn default_tafc_complexity_threshold() -> f64 {
+    0.6
+}
+
+/// Configuration for Think-Augmented Function Calling (TAFC).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TafcConfig {
+    /// Enable TAFC schema augmentation (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Complexity threshold tau in [0.0, 1.0]; tools with complexity >= tau are augmented.
+    /// Default: 0.6
+    #[serde(default = "default_tafc_complexity_threshold")]
+    pub complexity_threshold: f64,
+}
+
+impl Default for TafcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            complexity_threshold: default_tafc_complexity_threshold(),
+        }
+    }
+}
+
+impl TafcConfig {
+    /// Validate and clamp `complexity_threshold` to \[0.0, 1.0\]. Reset NaN/Infinity to 0.6.
+    #[must_use]
+    pub fn validated(mut self) -> Self {
+        if self.complexity_threshold.is_finite() {
+            self.complexity_threshold = self.complexity_threshold.clamp(0.0, 1.0);
+        } else {
+            self.complexity_threshold = 0.6;
+        }
+        self
+    }
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -153,6 +191,8 @@ pub struct ToolsConfig {
     pub anomaly: AnomalyConfig,
     #[serde(default)]
     pub result_cache: ResultCacheConfig,
+    #[serde(default)]
+    pub tafc: TafcConfig,
     /// Declarative policy compiler for tool call authorization.
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
@@ -214,6 +254,7 @@ impl Default for ToolsConfig {
             overflow: OverflowConfig::default(),
             anomaly: AnomalyConfig::default(),
             result_cache: ResultCacheConfig::default(),
+            tafc: TafcConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
         }
