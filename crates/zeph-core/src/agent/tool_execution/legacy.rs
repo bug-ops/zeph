@@ -263,9 +263,10 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         }
 
-        if let Some(resp) = self.check_response_cache().await? {
-            return Ok(Some(resp));
-        }
+        let query_embedding = match self.check_response_cache().await? {
+            super::CacheCheckResult::Hit(resp) => return Ok(Some(resp)),
+            super::CacheCheckResult::Miss { query_embedding } => query_embedding,
+        };
 
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let start = std::time::Instant::now();
@@ -297,11 +298,25 @@ impl<C: Channel> Agent<C> {
 
         let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
         let result = if self.provider.supports_streaming() {
-            self.call_llm_streaming(llm_timeout, start, prompt_estimate, dump_id, llm_span)
-                .await
+            self.call_llm_streaming(
+                llm_timeout,
+                start,
+                prompt_estimate,
+                dump_id,
+                llm_span,
+                query_embedding,
+            )
+            .await
         } else {
-            self.call_llm_non_streaming(llm_timeout, start, prompt_estimate, dump_id, llm_span)
-                .await
+            self.call_llm_non_streaming(
+                llm_timeout,
+                start,
+                prompt_estimate,
+                dump_id,
+                llm_span,
+                query_embedding,
+            )
+            .await
         };
 
         // CR-01: close LLM span after the call completes.
@@ -334,6 +349,7 @@ impl<C: Channel> Agent<C> {
         prompt_estimate: u64,
         dump_id: Option<u32>,
         llm_span: tracing::Span,
+        query_embedding: Option<Vec<f32>>,
     ) -> Result<Option<String>, super::super::error::AgentError> {
         let cancel = self.lifecycle.cancel_token.clone();
         let streaming_fut = self.process_response_streaming().instrument(llm_span);
@@ -391,7 +407,8 @@ impl<C: Channel> Agent<C> {
         // S2: scan accumulated streaming response. Per-chunk scanning not feasible
         // (markdown may split across chunk boundaries); persistence is guarded here.
         let cleaned = self.scan_output_and_warn(&redacted);
-        self.store_response_in_cache(&cleaned).await;
+        self.store_response_in_cache(&cleaned, query_embedding)
+            .await;
         Ok(Some(cleaned))
     }
 
@@ -402,6 +419,7 @@ impl<C: Channel> Agent<C> {
         prompt_estimate: u64,
         dump_id: Option<u32>,
         llm_span: tracing::Span,
+        query_embedding: Option<Vec<f32>>,
     ) -> Result<Option<String>, super::super::error::AgentError> {
         let cancel = self.lifecycle.cancel_token.clone();
         let chat_fut = self.provider.chat(&self.msg.messages).instrument(llm_span);
@@ -439,7 +457,8 @@ impl<C: Channel> Agent<C> {
                 }
                 let display = self.maybe_redact(&cleaned);
                 self.channel.send(&display).await?;
-                self.store_response_in_cache(&cleaned).await;
+                self.store_response_in_cache(&cleaned, query_embedding)
+                    .await;
                 Ok(Some(cleaned))
             }
             Ok(Err(e)) => Err(e.into()),

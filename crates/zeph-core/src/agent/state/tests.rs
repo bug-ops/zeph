@@ -80,6 +80,9 @@ fn make_runtime_config() -> RuntimeConfig {
         permission_policy: zeph_tools::PermissionPolicy::default(),
         redact_credentials: true,
         rate_limiter: ToolRateLimiter::new(RateLimitConfig::default()),
+        semantic_cache_enabled: false,
+        semantic_cache_threshold: 0.95,
+        semantic_cache_max_candidates: 10,
     }
 }
 

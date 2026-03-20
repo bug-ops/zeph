@@ -946,6 +946,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.llm.response_cache_enabled,
         cache_pool,
         config.llm.response_cache_ttl_secs,
+        config.llm.semantic_cache_enabled,
+        zeph_core::bootstrap::effective_embedding_model(config),
     );
     let agent =
         agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);

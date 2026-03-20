@@ -43,6 +43,7 @@ pub const CONTEXT_BUDGET_RESERVE_RATIO: f32 = 0.20;
 /// - **Scheduler runtime objects** (`scheduler_executor`, broadcast senders) — runtime state,
 ///   not config-derived values.
 #[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AgentSessionConfig {
     // Tool behavior
     pub max_tool_iterations: usize,
@@ -57,6 +58,11 @@ pub struct AgentSessionConfig {
     // Model
     pub model_name: String,
     pub embed_model: String,
+
+    // Semantic cache
+    pub semantic_cache_enabled: bool,
+    pub semantic_cache_threshold: f32,
+    pub semantic_cache_max_candidates: u32,
 
     // Memory / compaction
     pub budget_tokens: usize,
@@ -109,6 +115,9 @@ impl AgentSessionConfig {
                 .permission_policy(config.security.autonomy_level),
             model_name: config.llm.model.clone(),
             embed_model: crate::bootstrap::effective_embedding_model(config),
+            semantic_cache_enabled: config.llm.semantic_cache_enabled,
+            semantic_cache_threshold: config.llm.semantic_cache_threshold,
+            semantic_cache_max_candidates: config.llm.semantic_cache_max_candidates,
             budget_tokens,
             soft_compaction_threshold: config.memory.soft_compaction_threshold,
             hard_compaction_threshold: config.memory.hard_compaction_threshold,
@@ -164,6 +173,15 @@ mod tests {
         assert_eq!(
             sc.embed_model,
             crate::bootstrap::effective_embedding_model(&config)
+        );
+        assert_eq!(sc.semantic_cache_enabled, config.llm.semantic_cache_enabled);
+        assert_eq!(
+            sc.semantic_cache_threshold,
+            config.llm.semantic_cache_threshold
+        );
+        assert_eq!(
+            sc.semantic_cache_max_candidates,
+            config.llm.semantic_cache_max_candidates
         );
         assert_eq!(sc.budget_tokens, budget);
         assert_eq!(

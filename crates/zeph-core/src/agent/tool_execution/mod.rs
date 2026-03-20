@@ -25,6 +25,17 @@ enum AnomalyOutcome {
     Blocked,
 }
 
+/// Result of a response cache lookup.
+///
+/// On `Hit`, the caller should return the cached response.
+/// On `Miss`, the `query_embedding` field contains the pre-computed embedding (if semantic
+/// caching is enabled and embedding succeeded) — pass it to `store_response_in_cache` to
+/// avoid recomputing the embedding on the store path.
+pub(super) enum CacheCheckResult {
+    Hit(String),
+    Miss { query_embedding: Option<Vec<f32>> },
+}
+
 /// Hash message content for doom-loop detection, skipping volatile IDs in-place.
 /// Normalizes `[tool_result: <id>]` → `[tool_result]` and `[tool_use: <name>(<id>)]` → `[tool_use: <name>]`
 /// by feeding only stable segments into the hasher without materializing the normalized string.
@@ -485,35 +496,113 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.content.as_str())
     }
 
-    async fn check_response_cache(&mut self) -> Result<Option<String>, super::error::AgentError> {
-        if let Some(ref cache) = self.session.response_cache {
-            let Some(content) = self.last_user_content() else {
-                return Ok(None);
-            };
-            let key = zeph_memory::ResponseCache::compute_key(content, &self.runtime.model_name);
-            if let Ok(Some(cached)) = cache.get(&key).await {
-                tracing::debug!("response cache hit");
-                // M4: scan cached responses before sending to channel.
-                let cleaned = self.scan_output_and_warn(&cached);
-                if !cleaned.is_empty() {
-                    let display = self.maybe_redact(&cleaned);
-                    self.channel.send(&display).await?;
+    async fn check_response_cache(&mut self) -> Result<CacheCheckResult, super::error::AgentError> {
+        let Some(ref cache) = self.session.response_cache else {
+            return Ok(CacheCheckResult::Miss {
+                query_embedding: None,
+            });
+        };
+        let Some(content) = self.last_user_content() else {
+            return Ok(CacheCheckResult::Miss {
+                query_embedding: None,
+            });
+        };
+        // Clone content to avoid borrow conflict when calling self methods below.
+        let content = content.to_owned();
+        let key = zeph_memory::ResponseCache::compute_key(&content, &self.runtime.model_name);
+
+        // Fast path: exact-match lookup (sub-ms).
+        if let Ok(Some(cached)) = cache.get(&key).await {
+            tracing::debug!("response cache hit (exact match)");
+            let cleaned = self.scan_output_and_warn(&cached);
+            if !cleaned.is_empty() {
+                let display = self.maybe_redact(&cleaned);
+                self.channel.send(&display).await?;
+            }
+            return Ok(CacheCheckResult::Hit(cleaned));
+        }
+
+        // Semantic fallback: embed once, search by similarity.
+        if self.runtime.semantic_cache_enabled && self.provider.supports_embeddings() {
+            use zeph_llm::provider::LlmProvider as _;
+            match self.provider.embed(&content).await {
+                Ok(embedding) => {
+                    let embed_model = self.skill_state.embedding_model.clone();
+                    match cache
+                        .get_semantic(
+                            &embedding,
+                            &embed_model,
+                            self.runtime.semantic_cache_threshold,
+                            self.runtime.semantic_cache_max_candidates,
+                        )
+                        .await
+                    {
+                        Ok(Some((response, score))) => {
+                            tracing::debug!(score, "response cache hit (semantic)");
+                            let cleaned = self.scan_output_and_warn(&response);
+                            if !cleaned.is_empty() {
+                                let display = self.maybe_redact(&cleaned);
+                                self.channel.send(&display).await?;
+                            }
+                            return Ok(CacheCheckResult::Hit(cleaned));
+                        }
+                        Ok(None) => {
+                            // Semantic miss — pass embedding through to store path.
+                            return Ok(CacheCheckResult::Miss {
+                                query_embedding: Some(embedding),
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("semantic cache lookup failed: {e:#}");
+                        }
+                    }
                 }
-                return Ok(Some(cleaned));
+                Err(e) => {
+                    tracing::warn!("embedding generation failed, skipping semantic cache: {e:#}");
+                }
             }
         }
-        Ok(None)
+
+        Ok(CacheCheckResult::Miss {
+            query_embedding: None,
+        })
     }
 
-    async fn store_response_in_cache(&self, response: &str) {
-        if let Some(ref cache) = self.session.response_cache {
-            let Some(content) = self.last_user_content() else {
-                return;
-            };
-            let key = zeph_memory::ResponseCache::compute_key(content, &self.runtime.model_name);
-            if let Err(e) = cache.put(&key, response, &self.runtime.model_name).await {
-                tracing::warn!("failed to store response in cache: {e:#}");
+    async fn store_response_in_cache(&self, response: &str, query_embedding: Option<Vec<f32>>) {
+        let Some(ref cache) = self.session.response_cache else {
+            return;
+        };
+        let Some(content) = self.last_user_content() else {
+            return;
+        };
+        let key = zeph_memory::ResponseCache::compute_key(content, &self.runtime.model_name);
+
+        // If we have a pre-computed embedding (semantic cache enabled + embed succeeded) and the
+        // response is not tool-call output, use put_with_embedding — it uses INSERT OR REPLACE so
+        // it handles the exact-match write too, avoiding a redundant SQL round-trip.
+        // Otherwise fall back to exact-match-only put().
+        if let Some(embedding) = query_embedding
+            && !response.contains("[tool_use:")
+        {
+            let embed_model = &self.skill_state.embedding_model;
+            if let Err(e) = cache
+                .put_with_embedding(
+                    &key,
+                    response,
+                    &self.runtime.model_name,
+                    &embedding,
+                    embed_model,
+                )
+                .await
+            {
+                tracing::warn!("failed to store semantic cache entry: {e:#}");
+                // Fallback: at least persist exact-match entry.
+                if let Err(e2) = cache.put(&key, response, &self.runtime.model_name).await {
+                    tracing::warn!("failed to store response in cache: {e2:#}");
+                }
             }
+        } else if let Err(e) = cache.put(&key, response, &self.runtime.model_name).await {
+            tracing::warn!("failed to store response in cache: {e:#}");
         }
     }
 

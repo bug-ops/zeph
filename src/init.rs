@@ -145,9 +145,8 @@ pub(crate) struct WizardState {
     pub(crate) policy_enforcer_enabled: bool,
     /// Deployment bundle selected in the mode step (e.g. "desktop", "ide", "server").
     pub(crate) deployment_bundle: Option<String>,
-    // Think-Augmented Function Calling
-    pub(crate) tafc_enabled: bool,
-    pub(crate) tafc_complexity_threshold: f64,
+    pub(crate) semantic_cache_enabled: bool,
+    pub(crate) semantic_cache_threshold: f32,
 }
 
 impl Default for WizardState {
@@ -261,8 +260,8 @@ impl Default for WizardState {
             shutdown_summary: true,
             policy_enforcer_enabled: false,
             deployment_bundle: None,
-            tafc_enabled: false,
-            tafc_complexity_threshold: 0.6,
+            semantic_cache_enabled: false,
+            semantic_cache_threshold: 0.95,
         }
     }
 }
@@ -324,7 +323,6 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_logging(&mut state)?;
     step_experiments(&mut state)?;
     step_policy(&mut state)?;
-    step_tafc(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -1021,6 +1019,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
         response_cache_enabled: false,
         response_cache_ttl_secs: 3600,
+        semantic_cache_enabled: state.semantic_cache_enabled,
+        semantic_cache_threshold: state.semantic_cache_threshold,
+        semantic_cache_max_candidates: 10,
         router_ema_enabled: state.router_strategy.as_deref().is_some_and(|s| s == "ema"),
         router_ema_alpha: 0.1,
         router_reorder_interval: 10,
@@ -1233,11 +1234,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                     .clone_from(&state.experiments_schedule_cron);
             }
         }
-    }
-
-    if state.tafc_enabled {
-        config.tools.tafc.enabled = true;
-        config.tools.tafc.complexity_threshold = state.tafc_complexity_threshold;
     }
 
     config
@@ -2089,32 +2085,6 @@ fn step_policy(state: &mut WizardState) -> anyhow::Result<()> {
         .with_prompt("Enable policy enforcer?")
         .default(false)
         .interact()?;
-
-    println!();
-    Ok(())
-}
-
-fn step_tafc(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Think-Augmented Function Calling (TAFC) ==\n");
-    println!(
-        "TAFC injects a reasoning step (_tafc_think) into complex tool schemas,\n\
-         prompting the model to think step-by-step before filling parameters.\n\
-         This improves accuracy on complex tools at the cost of extra tokens.\n"
-    );
-
-    state.tafc_enabled = Confirm::new()
-        .with_prompt("Enable TAFC?")
-        .default(false)
-        .interact()?;
-
-    if state.tafc_enabled {
-        let threshold_str: String = Input::new()
-            .with_prompt("Complexity threshold (0.0–1.0, default 0.6)")
-            .default("0.6".to_owned())
-            .interact_text()?;
-        state.tafc_complexity_threshold =
-            threshold_str.parse::<f64>().unwrap_or(0.6).clamp(0.0, 1.0);
-    }
 
     println!();
     Ok(())

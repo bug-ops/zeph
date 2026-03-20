@@ -301,6 +301,9 @@ impl<C: Channel> Agent<C> {
                 rate_limiter: rate_limiter::ToolRateLimiter::new(
                     rate_limiter::RateLimitConfig::default(),
                 ),
+                semantic_cache_enabled: false,
+                semantic_cache_threshold: 0.95,
+                semantic_cache_max_candidates: 10,
             },
             mcp: McpState {
                 tools: Vec::new(),

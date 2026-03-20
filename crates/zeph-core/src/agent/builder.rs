@@ -869,6 +869,9 @@ impl<C: Channel> Agent<C> {
             permission_policy,
             model_name,
             embed_model,
+            semantic_cache_enabled,
+            semantic_cache_threshold,
+            semantic_cache_max_candidates,
             budget_tokens,
             soft_compaction_threshold,
             hard_compaction_threshold,
@@ -932,6 +935,9 @@ impl<C: Channel> Agent<C> {
             ));
         }
 
+        self.runtime.semantic_cache_enabled = semantic_cache_enabled;
+        self.runtime.semantic_cache_threshold = semantic_cache_threshold;
+        self.runtime.semantic_cache_max_candidates = semantic_cache_max_candidates;
         self = self.with_result_cache_config(&result_cache_config);
 
         self

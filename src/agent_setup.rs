@@ -415,8 +415,13 @@ pub(crate) fn apply_response_cache<C: Channel>(
     enabled: bool,
     pool: sqlx::SqlitePool,
     ttl_secs: u64,
+    semantic_cache_enabled: bool,
+    embed_model: String,
 ) -> Agent<C> {
     if !enabled {
+        if semantic_cache_enabled {
+            tracing::warn!("semantic_cache_enabled has no effect without response_cache_enabled");
+        }
         return agent;
     }
     let cache = std::sync::Arc::new(zeph_memory::ResponseCache::new(pool, ttl_secs));
@@ -426,8 +431,8 @@ pub(crate) fn apply_response_cache<C: Channel>(
         interval.tick().await; // skip immediate first tick
         loop {
             interval.tick().await;
-            match cache_clone.cleanup_expired().await {
-                Ok(n) if n > 0 => tracing::debug!("cleaned up {n} expired cache entries"),
+            match cache_clone.cleanup(&embed_model).await {
+                Ok(n) if n > 0 => tracing::debug!("cleaned up {n} cache entries"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!("response cache cleanup failed: {e:#}"),
             }
@@ -808,7 +813,7 @@ mod tests {
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
-        let result = apply_response_cache(agent, false, pool, 300);
+        let result = apply_response_cache(agent, false, pool, 300, false, "embed-model".into());
         drop(result);
     }
 
@@ -818,7 +823,7 @@ mod tests {
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
-        let result = apply_response_cache(agent, true, pool, 300);
+        let result = apply_response_cache(agent, true, pool, 300, false, "embed-model".into());
         drop(result);
     }
 

@@ -8,6 +8,14 @@ fn default_response_cache_ttl_secs() -> u64 {
     3600
 }
 
+fn default_semantic_cache_threshold() -> f32 {
+    0.95
+}
+
+fn default_semantic_cache_max_candidates() -> u32 {
+    10
+}
+
 fn default_router_ema_alpha() -> f64 {
     0.1
 }
@@ -173,6 +181,15 @@ pub struct LlmConfig {
     pub response_cache_enabled: bool,
     #[serde(default = "default_response_cache_ttl_secs")]
     pub response_cache_ttl_secs: u64,
+    /// Enable semantic similarity-based response caching. Requires embedding support.
+    #[serde(default)]
+    pub semantic_cache_enabled: bool,
+    /// Cosine similarity threshold for semantic cache hits (0.0-1.0). Recommended: 0.92-0.98.
+    #[serde(default = "default_semantic_cache_threshold")]
+    pub semantic_cache_threshold: f32,
+    /// Maximum cache entries to scan per semantic query. Limits search cost.
+    #[serde(default = "default_semantic_cache_max_candidates")]
+    pub semantic_cache_max_candidates: u32,
     #[serde(default)]
     pub router_ema_enabled: bool,
     #[serde(default = "default_router_ema_alpha")]
