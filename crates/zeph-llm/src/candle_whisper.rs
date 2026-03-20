@@ -318,7 +318,8 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
 
 fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, LlmError> {
     use rubato::{
-        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+        Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+        WindowFunction,
     };
 
     let params = SincInterpolationParameters {
@@ -330,14 +331,18 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Llm
     };
 
     let ratio = f64::from(to_rate) / f64::from(from_rate);
-    let mut resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, input.len(), 1)
-        .map_err(|e| LlmError::TranscriptionFailed(format!("resampler init: {e}")))?;
+    let mut resampler =
+        Async::<f32>::new_sinc(ratio, 2.0, &params, input.len(), 1, FixedAsync::Input)
+            .map_err(|e| LlmError::TranscriptionFailed(format!("resampler init: {e}")))?;
+
+    let input_adapter = audioadapter_buffers::direct::InterleavedSlice::new(input, 1, input.len())
+        .map_err(|e| LlmError::TranscriptionFailed(format!("input buffer: {e}")))?;
 
     let output = resampler
-        .process(&[input], None)
+        .process(&input_adapter, 0, None)
         .map_err(|e| LlmError::TranscriptionFailed(format!("resample: {e}")))?;
 
-    Ok(output.into_iter().next().unwrap_or_default())
+    Ok(output.take_data())
 }
 
 #[cfg(test)]
