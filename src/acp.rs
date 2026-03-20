@@ -130,6 +130,7 @@ struct SharedAgentDeps {
     session_config: zeph_core::AgentSessionConfig,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
+    tool_filter_config: zeph_core::config::ToolFilterConfig,
 
     // ACP-specific fields (transport-level; not agent-level)
     acp_agent_name: String,
@@ -442,6 +443,7 @@ async fn build_acp_deps(
         session_config,
         focus_config: config.agent.focus.clone(),
         sidequest_config: config.memory.sidequest.clone(),
+        tool_filter_config: config.agent.tool_filter.clone(),
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
         acp_max_sessions: config.acp.max_sessions,
@@ -638,7 +640,7 @@ async fn spawn_acp_agent(
         };
 
     let mut agent = Agent::new_with_registry_arc(
-        provider,
+        provider.clone(),
         channel,
         Arc::clone(&registry),
         matcher,
@@ -659,7 +661,9 @@ async fn spawn_acp_agent(
     )
     .with_mcp_shared_tools(mcp_shared_tools)
     .with_focus_config(d.focus_config.clone())
-    .with_sidequest_config(d.sidequest_config.clone());
+    .with_sidequest_config(d.sidequest_config.clone())
+    .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider)
+    .await;
 
     // Wire scheduler per session: apply update/custom receivers and add executor.
     #[cfg(feature = "scheduler")]

@@ -245,6 +245,9 @@ pub struct MetricsSnapshot {
     pub guidelines_version: u32,
     /// ISO 8601 timestamp of the latest guidelines update (empty if none).
     pub guidelines_updated_at: String,
+    pub tool_cache_hits: u64,
+    pub tool_cache_misses: u64,
+    pub tool_cache_entries: usize,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.

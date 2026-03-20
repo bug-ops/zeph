@@ -5,6 +5,7 @@
 
 pub mod anomaly;
 pub mod audit;
+pub mod cache;
 pub mod composite;
 pub mod config;
 pub mod diagnostics;
@@ -19,6 +20,7 @@ pub mod policy;
 #[cfg(feature = "policy-enforcer")]
 pub mod policy_gate;
 pub mod registry;
+pub mod schema_filter;
 pub mod scrape;
 pub mod search_code;
 pub mod shell;
@@ -29,9 +31,11 @@ pub mod verifier;
 
 pub use anomaly::{AnomalyDetector, AnomalySeverity};
 pub use audit::{AuditEntry, AuditLogger, AuditResult};
+pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::{
-    AnomalyConfig, AuditConfig, OverflowConfig, ScrapeConfig, ShellConfig, ToolsConfig,
+    AnomalyConfig, AuditConfig, OverflowConfig, ResultCacheConfig, ScrapeConfig, ShellConfig,
+    ToolsConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use executor::{
@@ -56,6 +60,7 @@ pub use policy::{
 #[cfg(feature = "policy-enforcer")]
 pub use policy_gate::PolicyGateExecutor;
 pub use registry::ToolRegistry;
+pub use schema_filter::{InclusionReason, ToolEmbedding, ToolFilterResult, ToolSchemaFilter};
 pub use scrape::WebScrapeExecutor;
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,

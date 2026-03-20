@@ -21,7 +21,8 @@ pub use zeph_config::{
     RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SecurityConfig,
     SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig,
     SlackConfig, SttConfig, SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks, TelegramConfig,
-    TimeoutConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig, VectorBackend,
+    TimeoutConfig, ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig,
+    VectorBackend,
 };
 
 #[cfg(feature = "lsp-context")]
