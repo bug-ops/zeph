@@ -267,6 +267,7 @@ pub async fn link_memory_notes(
 /// # Errors
 ///
 /// Returns an error if the database query fails or LLM extraction fails.
+#[allow(clippy::too_many_lines)]
 pub async fn extract_and_store(
     content: String,
     context_messages: Vec<String>,
@@ -354,8 +355,28 @@ pub async fn extract_and_store(
             );
             continue;
         };
+        // Parse LLM-provided edge_type; default to Semantic on any parse failure so
+        // edges are never dropped due to classification errors.
+        let edge_type = edge
+            .edge_type
+            .parse::<crate::graph::EdgeType>()
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    raw_type = %edge.edge_type,
+                    "graph: unknown edge_type from LLM, defaulting to semantic"
+                );
+                crate::graph::EdgeType::Semantic
+            });
         match resolver
-            .resolve_edge(src_id, tgt_id, &edge.relation, &edge.fact, 0.8, None)
+            .resolve_edge_typed(
+                src_id,
+                tgt_id,
+                &edge.relation,
+                &edge.fact,
+                0.8,
+                None,
+                edge_type,
+            )
             .await
         {
             Ok(Some(_)) => edges_inserted += 1,

@@ -10,7 +10,7 @@ use crate::error::MemoryError;
 use crate::sqlite::messages::sanitize_fts5_query;
 use crate::types::MessageId;
 
-use super::types::{Community, Edge, Entity, EntityAlias, EntityType};
+use super::types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType};
 
 pub struct GraphStore {
     pool: SqlitePool,
@@ -311,10 +311,15 @@ impl GraphStore {
 
     /// Insert a new edge between two entities, or update the existing active edge.
     ///
-    /// An active edge is identified by `(source_entity_id, target_entity_id, relation)` with
-    /// `valid_to IS NULL`. If such an edge already exists, its `confidence` is updated to the
+    /// An active edge is identified by `(source_entity_id, target_entity_id, relation, edge_type)`
+    /// with `valid_to IS NULL`. If such an edge already exists, its `confidence` is updated to the
     /// maximum of the stored and incoming values, and the existing id is returned. This prevents
     /// duplicate edges from repeated extraction of the same context messages.
+    ///
+    /// The dedup key includes `edge_type` (critic mitigation): the same `(source, target, relation)`
+    /// triple can legitimately exist with different edge types (e.g., `depends_on` can be both
+    /// Semantic and Causal). Without `edge_type` in the key, the second insertion would silently
+    /// update the first and lose the type classification.
     ///
     /// # Errors
     ///
@@ -328,19 +333,53 @@ impl GraphStore {
         confidence: f32,
         episode_id: Option<MessageId>,
     ) -> Result<i64, MemoryError> {
+        self.insert_edge_typed(
+            source_entity_id,
+            target_entity_id,
+            relation,
+            fact,
+            confidence,
+            episode_id,
+            EdgeType::Semantic,
+        )
+        .await
+    }
+
+    /// Insert a typed edge between two entities, or update the existing active edge of the same type.
+    ///
+    /// Identical semantics to [`insert_edge`] but with an explicit `edge_type` parameter.
+    /// The dedup key is `(source_entity_id, target_entity_id, relation, edge_type, valid_to IS NULL)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_edge_typed(
+        &self,
+        source_entity_id: i64,
+        target_entity_id: i64,
+        relation: &str,
+        fact: &str,
+        confidence: f32,
+        episode_id: Option<MessageId>,
+        edge_type: EdgeType,
+    ) -> Result<i64, MemoryError> {
         let confidence = confidence.clamp(0.0, 1.0);
+        let edge_type_str = edge_type.as_str();
 
         let existing: Option<(i64, f64)> = sqlx::query_as(
             "SELECT id, confidence FROM graph_edges
              WHERE source_entity_id = ?1
                AND target_entity_id = ?2
                AND relation = ?3
+               AND edge_type = ?4
                AND valid_to IS NULL
              LIMIT 1",
         )
         .bind(source_entity_id)
         .bind(target_entity_id)
         .bind(relation)
+        .bind(edge_type_str)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -356,8 +395,9 @@ impl GraphStore {
 
         let episode_raw: Option<i64> = episode_id.map(|m| m.0);
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, episode_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, episode_id, edge_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              RETURNING id",
         )
         .bind(source_entity_id)
@@ -366,6 +406,7 @@ impl GraphStore {
         .bind(fact)
         .bind(f64::from(confidence))
         .bind(episode_raw)
+        .bind(edge_type_str)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -395,7 +436,8 @@ impl GraphStore {
     pub async fn edges_for_entity(&self, entity_id: i64) -> Result<Vec<Edge>, MemoryError> {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE valid_to IS NULL
                AND (source_entity_id = ?1 OR target_entity_id = ?1)",
@@ -420,7 +462,8 @@ impl GraphStore {
         let limit = i64::try_from(limit)?;
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE source_entity_id = ?1 OR target_entity_id = ?1
              ORDER BY valid_from DESC
@@ -445,7 +488,8 @@ impl GraphStore {
     ) -> Result<Vec<Edge>, MemoryError> {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE valid_to IS NULL
                AND ((source_entity_id = ?1 AND target_entity_id = ?2)
@@ -470,7 +514,8 @@ impl GraphStore {
     ) -> Result<Vec<Edge>, MemoryError> {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE valid_to IS NULL
                AND source_entity_id = ?1
@@ -494,6 +539,20 @@ impl GraphStore {
                 .fetch_one(&self.pool)
                 .await?;
         Ok(count)
+    }
+
+    /// Return per-type active edge counts as `(edge_type, count)` pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn edge_type_distribution(&self) -> Result<Vec<(String, i64)>, MemoryError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT edge_type, COUNT(*) FROM graph_edges WHERE valid_to IS NULL GROUP BY edge_type ORDER BY edge_type",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     // ── Communities ───────────────────────────────────────────────────────────
@@ -708,7 +767,8 @@ impl GraphStore {
         use futures::StreamExt as _;
         sqlx::query_as::<_, EdgeRow>(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE valid_to IS NULL
              ORDER BY id ASC",
@@ -740,7 +800,8 @@ impl GraphStore {
     ) -> Result<Vec<Edge>, MemoryError> {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE valid_to IS NULL AND id > ?1
              ORDER BY id ASC
@@ -896,14 +957,16 @@ impl GraphStore {
         //   Branch 2 (historical edges): idx_graph_edges_src_temporal / idx_graph_edges_tgt_temporal
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?2
                AND (source_entity_id = ?1 OR target_entity_id = ?1)
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?2
@@ -942,7 +1005,8 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = if let Some(rel) = relation {
             sqlx::query_as(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                        edge_type
                  FROM graph_edges
                  WHERE source_entity_id = ?1
                    AND fact LIKE ?2 ESCAPE '\\'
@@ -959,7 +1023,8 @@ impl GraphStore {
         } else {
             sqlx::query_as(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                        edge_type
                  FROM graph_edges
                  WHERE source_entity_id = ?1
                    AND fact LIKE ?2 ESCAPE '\\'
@@ -1036,6 +1101,34 @@ impl GraphStore {
         timestamp: &str,
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
         self.bfs_core(start_entity_id, max_hops, Some(timestamp))
+            .await
+    }
+
+    /// BFS traversal scoped to specific MAGMA edge types.
+    ///
+    /// When `edge_types` is empty, behaves identically to [`bfs_with_depth`] (traverses all
+    /// active edges). When `edge_types` is non-empty, only traverses edges whose `edge_type`
+    /// matches one of the provided types.
+    ///
+    /// This enables subgraph-scoped retrieval: a causal query traverses only causal + semantic
+    /// edges, a temporal query only temporal + semantic edges, etc.
+    ///
+    /// Note: Semantic is typically included in `edge_types` by the caller to ensure recall is
+    /// never worse than the untyped BFS. See `classify_graph_subgraph` in `router.rs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database query fails.
+    pub async fn bfs_typed(
+        &self,
+        start_entity_id: i64,
+        max_hops: u32,
+        edge_types: &[EdgeType],
+    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+        if edge_types.is_empty() {
+            return self.bfs_with_depth(start_entity_id, max_hops).await;
+        }
+        self.bfs_core_typed(start_entity_id, max_hops, None, edge_types)
             .await
     }
 
@@ -1116,6 +1209,211 @@ impl GraphStore {
         self.bfs_fetch_results(depth_map, at_timestamp).await
     }
 
+    /// BFS implementation scoped to specific edge types.
+    ///
+    /// Builds the IN clause for `edge_type` filtering dynamically from enum values.
+    /// All enum-derived strings come from `EdgeType::as_str()` — no user input reaches SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database query fails.
+    async fn bfs_core_typed(
+        &self,
+        start_entity_id: i64,
+        max_hops: u32,
+        at_timestamp: Option<&str>,
+        edge_types: &[EdgeType],
+    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+        use std::collections::HashMap;
+
+        const MAX_FRONTIER: usize = 300;
+
+        let type_strs: Vec<&str> = edge_types.iter().map(|t| t.as_str()).collect();
+
+        let mut depth_map: HashMap<i64, u32> = HashMap::new();
+        let mut frontier: Vec<i64> = vec![start_entity_id];
+        depth_map.insert(start_entity_id, 0);
+
+        let n_types = type_strs.len();
+        // type_in is constant for the entire BFS — positions ?1..?n_types never change.
+        let type_in = (1..=n_types)
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let id_start = n_types + 1;
+
+        for hop in 0..max_hops {
+            if frontier.is_empty() {
+                break;
+            }
+            frontier.truncate(MAX_FRONTIER);
+
+            let n_frontier = frontier.len();
+            // Positions: types first (?1..?n_types), then 3 copies of frontier IDs
+            let frontier_placeholders = frontier
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", id_start + i))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let edge_filter = if at_timestamp.is_some() {
+                let ts_pos = id_start + n_frontier * 3;
+                format!(
+                    "edge_type IN ({type_in}) AND valid_from <= ?{ts_pos} AND (valid_to IS NULL OR valid_to > ?{ts_pos})"
+                )
+            } else {
+                format!("edge_type IN ({type_in}) AND valid_to IS NULL")
+            };
+
+            let neighbour_sql = format!(
+                "SELECT DISTINCT CASE
+                     WHEN source_entity_id IN ({frontier_placeholders}) THEN target_entity_id
+                     ELSE source_entity_id
+                 END as neighbour_id
+                 FROM graph_edges
+                 WHERE {edge_filter}
+                   AND (source_entity_id IN ({frontier_placeholders}) OR target_entity_id IN ({frontier_placeholders}))"
+            );
+
+            let mut q = sqlx::query_scalar::<_, i64>(&neighbour_sql);
+            // Bind types first
+            for t in &type_strs {
+                q = q.bind(*t);
+            }
+            // Bind frontier 3 times
+            for id in &frontier {
+                q = q.bind(*id);
+            }
+            for id in &frontier {
+                q = q.bind(*id);
+            }
+            for id in &frontier {
+                q = q.bind(*id);
+            }
+            if let Some(ts) = at_timestamp {
+                q = q.bind(ts);
+            }
+
+            let neighbours: Vec<i64> = q.fetch_all(&self.pool).await?;
+            let mut next_frontier: Vec<i64> = Vec::new();
+            for nbr in neighbours {
+                if let std::collections::hash_map::Entry::Vacant(e) = depth_map.entry(nbr) {
+                    e.insert(hop + 1);
+                    next_frontier.push(nbr);
+                }
+            }
+            frontier = next_frontier;
+        }
+
+        // Fetch results — pass edge_type filter to bfs_fetch_results_typed
+        self.bfs_fetch_results_typed(depth_map, at_timestamp, &type_strs)
+            .await
+    }
+
+    /// Fetch entities and typed edges for a completed BFS depth map.
+    ///
+    /// Filters returned edges by the provided `edge_type` strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database query fails.
+    async fn bfs_fetch_results_typed(
+        &self,
+        depth_map: std::collections::HashMap<i64, u32>,
+        at_timestamp: Option<&str>,
+        type_strs: &[&str],
+    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+        let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
+        if visited_ids.is_empty() {
+            return Ok((Vec::new(), Vec::new(), depth_map));
+        }
+        if visited_ids.len() > 499 {
+            tracing::warn!(
+                total = visited_ids.len(),
+                retained = 499,
+                "bfs_fetch_results_typed: visited entity set truncated to 499"
+            );
+            visited_ids.truncate(499);
+        }
+
+        let n_types = type_strs.len();
+        let n_visited = visited_ids.len();
+
+        // Bind order: types first, then visited_ids twice, then optional timestamp
+        let type_in = (1..=n_types)
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let id_start = n_types + 1;
+        let placeholders = visited_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", id_start + i))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let edge_filter = if at_timestamp.is_some() {
+            let ts_pos = id_start + n_visited * 2;
+            format!(
+                "edge_type IN ({type_in}) AND valid_from <= ?{ts_pos} AND (valid_to IS NULL OR valid_to > ?{ts_pos})"
+            )
+        } else {
+            format!("edge_type IN ({type_in}) AND valid_to IS NULL")
+        };
+
+        let edge_sql = format!(
+            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
+             FROM graph_edges
+             WHERE {edge_filter}
+               AND source_entity_id IN ({placeholders})
+               AND target_entity_id IN ({placeholders})"
+        );
+        let mut edge_query = sqlx::query_as::<_, EdgeRow>(&edge_sql);
+        for t in type_strs {
+            edge_query = edge_query.bind(*t);
+        }
+        for id in &visited_ids {
+            edge_query = edge_query.bind(*id);
+        }
+        for id in &visited_ids {
+            edge_query = edge_query.bind(*id);
+        }
+        if let Some(ts) = at_timestamp {
+            edge_query = edge_query.bind(ts);
+        }
+        let edge_rows: Vec<EdgeRow> = edge_query.fetch_all(&self.pool).await?;
+
+        // For entity query, use plain sequential bind positions (no type prefix offset)
+        let entity_sql2 = {
+            let ph = visited_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+                 FROM graph_entities WHERE id IN ({ph})"
+            )
+        };
+        let mut entity_query = sqlx::query_as::<_, EntityRow>(&entity_sql2);
+        for id in &visited_ids {
+            entity_query = entity_query.bind(*id);
+        }
+        let entity_rows: Vec<EntityRow> = entity_query.fetch_all(&self.pool).await?;
+
+        let entities: Vec<Entity> = entity_rows
+            .into_iter()
+            .map(entity_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let edges: Vec<Edge> = edge_rows.into_iter().map(edge_from_row).collect();
+
+        Ok((entities, edges, depth_map))
+    }
+
     /// Fetch entities and edges for a completed BFS depth map.
     async fn bfs_fetch_results(
         &self,
@@ -1151,7 +1449,8 @@ impl GraphStore {
         };
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id
+                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                    edge_type
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({placeholders})
@@ -1351,9 +1650,14 @@ struct EdgeRow {
     expired_at: Option<String>,
     episode_id: Option<i64>,
     qdrant_point_id: Option<String>,
+    edge_type: String,
 }
 
 fn edge_from_row(row: EdgeRow) -> Edge {
+    let edge_type = row
+        .edge_type
+        .parse::<EdgeType>()
+        .unwrap_or(EdgeType::Semantic);
     Edge {
         id: row.id,
         source_entity_id: row.source_entity_id,
@@ -1368,6 +1672,7 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         expired_at: row.expired_at,
         episode_id: row.episode_id.map(MessageId),
         qdrant_point_id: row.qdrant_point_id,
+        edge_type,
     }
 }
 

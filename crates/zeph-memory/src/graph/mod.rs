@@ -10,7 +10,7 @@ pub mod resolver;
 pub mod retrieval;
 
 pub use store::GraphStore;
-pub use types::{Community, Edge, Entity, EntityAlias, EntityType, GraphFact};
+pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphFact};
 
 pub use community::{
     GraphEvictionStats, assign_to_community, cleanup_stale_entity_embeddings, detect_communities,

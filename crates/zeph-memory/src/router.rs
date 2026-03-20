@@ -3,6 +3,8 @@
 
 use chrono::{DateTime, Duration, Utc};
 
+use crate::graph::EdgeType;
+
 /// Classification of which memory backend(s) to query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryRoute {
@@ -87,6 +89,94 @@ const TEMPORAL_PATTERNS: &[&str] = &[
 /// Single-word temporal tokens that require word-boundary checking.
 /// These are NOT in `TEMPORAL_PATTERNS` to avoid substring false positives.
 const WORD_BOUNDARY_TEMPORAL: &[&str] = &["ago"];
+
+/// MAGMA causal edge markers.
+///
+/// Shared between [`HeuristicRouter`] and [`classify_graph_subgraph`] to prevent
+/// pattern-list drift between the two classifiers (critic suggestion).
+pub(crate) const CAUSAL_MARKERS: &[&str] = &[
+    "why",
+    "because",
+    "caused",
+    "cause",
+    "reason",
+    "result",
+    "led to",
+    "consequence",
+    "trigger",
+    "effect",
+    "blame",
+    "fault",
+];
+
+/// MAGMA temporal edge markers for subgraph classification.
+///
+/// Shared between [`HeuristicRouter`] and [`classify_graph_subgraph`].
+/// Note: these are distinct from `TEMPORAL_PATTERNS` (which drive `Episodic` routing).
+/// `TEMPORAL_MARKERS` detect edges whose *semantics* are temporal (sequencing/ordering),
+/// while `TEMPORAL_PATTERNS` detect queries that ask about *when* events occurred.
+pub(crate) const TEMPORAL_MARKERS: &[&str] = &[
+    "before", "after", "first", "then", "timeline", "sequence", "preceded", "followed", "started",
+    "ended", "during", "prior",
+];
+
+/// MAGMA entity/structural markers.
+pub(crate) const ENTITY_MARKERS: &[&str] = &[
+    "is a",
+    "type of",
+    "kind of",
+    "part of",
+    "instance",
+    "same as",
+    "alias",
+    "subtype",
+    "subclass",
+    "belongs to",
+];
+
+/// Classify a query into the MAGMA edge types to use for subgraph-scoped BFS retrieval.
+///
+/// Pure heuristic, zero latency — no LLM call. Returns a prioritised list of [`EdgeType`]s.
+///
+/// Rules (checked in order):
+/// 1. Causal markers → include `Causal`
+/// 2. Temporal markers → include `Temporal`
+/// 3. Entity/structural markers → include `Entity`
+/// 4. `Semantic` is always included as fallback to guarantee recall >= current untyped BFS.
+///
+/// Multiple markers may match, producing a union of detected types.
+///
+/// # Example
+///
+/// ```
+/// # use zeph_memory::router::classify_graph_subgraph;
+/// # use zeph_memory::EdgeType;
+/// let types = classify_graph_subgraph("why did X happen");
+/// assert!(types.contains(&EdgeType::Causal));
+/// assert!(types.contains(&EdgeType::Semantic));
+/// ```
+#[must_use]
+pub fn classify_graph_subgraph(query: &str) -> Vec<EdgeType> {
+    let lower = query.to_ascii_lowercase();
+    let mut types: Vec<EdgeType> = Vec::new();
+
+    if CAUSAL_MARKERS.iter().any(|m| lower.contains(m)) {
+        types.push(EdgeType::Causal);
+    }
+    if TEMPORAL_MARKERS.iter().any(|m| lower.contains(m)) {
+        types.push(EdgeType::Temporal);
+    }
+    if ENTITY_MARKERS.iter().any(|m| lower.contains(m)) {
+        types.push(EdgeType::Entity);
+    }
+
+    // Semantic is always included as fallback — recall cannot be worse than untyped BFS.
+    if !types.contains(&EdgeType::Semantic) {
+        types.push(EdgeType::Semantic);
+    }
+
+    types
+}
 
 /// Heuristic-based memory router.
 ///

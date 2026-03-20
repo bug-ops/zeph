@@ -32,11 +32,17 @@ tokens (e.g. standalone \"go\", \"cd\"), URLs, and bare file paths.
 8. The \"fact\" field is a human-readable sentence summarizing the relationship.
 9. If a message contains a temporal change (e.g., \"switched from X to Y\"), include a \
 temporal_hint like \"replaced X\" or \"since January 2026\".
-10. Do not extract entities from greetings, filler, or meta-conversation (\"hi\", \"thanks\", \"ok\").
-11. Do not extract personal identifiable information as entity names: email addresses, \
+10. Each edge must include an \"edge_type\" field classifying the relationship:
+  - \"semantic\": conceptual relationships (uses, prefers, knows, works_on, depends_on, created)
+  - \"temporal\": time-ordered events (preceded_by, followed_by, happened_during, started_before)
+  - \"causal\": cause-effect chains (caused, triggered, resulted_in, led_to, prevented)
+  - \"entity\": identity/structural relationships (is_a, part_of, instance_of, alias_of, replaces)
+  Default to \"semantic\" if the relationship type is uncertain.
+11. Do not extract entities from greetings, filler, or meta-conversation (\"hi\", \"thanks\", \"ok\").
+12. Do not extract personal identifiable information as entity names: email addresses, \
 phone numbers, physical addresses, SSNs, or API keys. Use generic references instead.
-12. Always output entity names and relation verbs in English. Translate if needed.
-13. Return empty arrays if no entities or relationships are present.
+13. Always output entity names and relation verbs in English. Translate if needed.
+14. Return empty arrays if no entities or relationships are present.
 
 Output JSON schema:
 {
@@ -44,7 +50,7 @@ Output JSON schema:
     {\"name\": \"string\", \"type\": \"person|project|technology|organization|concept\", \"summary\": \"optional string\"}
   ],
   \"edges\": [
-    {\"source\": \"entity name\", \"target\": \"entity name\", \"relation\": \"verb phrase\", \"fact\": \"human-readable sentence\", \"temporal_hint\": \"optional string\"}
+    {\"source\": \"entity name\", \"target\": \"entity name\", \"relation\": \"verb phrase\", \"fact\": \"human-readable sentence\", \"temporal_hint\": \"optional string\", \"edge_type\": \"semantic|temporal|causal|entity\"}
   ]
 }";
 
@@ -62,6 +68,10 @@ pub struct ExtractedEntity {
     pub summary: Option<String>,
 }
 
+fn default_semantic() -> String {
+    "semantic".to_owned()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExtractedEdge {
     pub source: String,
@@ -69,6 +79,9 @@ pub struct ExtractedEdge {
     pub relation: String,
     pub fact: String,
     pub temporal_hint: Option<String>,
+    /// MAGMA edge type classification. Defaults to "semantic" when omitted by the LLM.
+    #[serde(default = "default_semantic")]
+    pub edge_type: String,
 }
 
 pub struct GraphExtractor {
@@ -171,6 +184,7 @@ mod tests {
             relation: relation.into(),
             fact: fact.into(),
             temporal_hint: temporal_hint.map(Into::into),
+            edge_type: "semantic".into(),
         }
     }
 
@@ -202,6 +216,57 @@ mod tests {
         let result: ExtractionResult = serde_json::from_str(json).unwrap();
         assert_eq!(result.entities[0].summary, None);
         assert_eq!(result.edges[0].temporal_hint, None);
+        // edge_type defaults to "semantic" when omitted
+        assert_eq!(result.edges[0].edge_type, "semantic");
+    }
+
+    #[test]
+    fn extracted_edge_type_defaults_to_semantic_when_missing() {
+        // When LLM omits edge_type, serde(default) must provide "semantic".
+        let json = r#"{"source":"A","target":"B","relation":"uses","fact":"A uses B"}"#;
+        let edge: ExtractedEdge = serde_json::from_str(json).unwrap();
+        assert_eq!(edge.edge_type, "semantic");
+    }
+
+    #[test]
+    fn extracted_edge_type_parses_all_variants() {
+        for et in &["semantic", "temporal", "causal", "entity"] {
+            let json = format!(
+                r#"{{"source":"A","target":"B","relation":"r","fact":"f","edge_type":"{et}"}}"#
+            );
+            let edge: ExtractedEdge = serde_json::from_str(&json).unwrap();
+            assert_eq!(&edge.edge_type, et);
+        }
+    }
+
+    #[test]
+    fn extraction_result_with_edge_types_roundtrip() {
+        let original = ExtractionResult {
+            entities: vec![],
+            edges: vec![
+                ExtractedEdge {
+                    source: "A".into(),
+                    target: "B".into(),
+                    relation: "caused".into(),
+                    fact: "A caused B".into(),
+                    temporal_hint: None,
+                    edge_type: "causal".into(),
+                },
+                ExtractedEdge {
+                    source: "B".into(),
+                    target: "C".into(),
+                    relation: "preceded_by".into(),
+                    fact: "B preceded_by C".into(),
+                    temporal_hint: None,
+                    edge_type: "temporal".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: ExtractionResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, restored);
+        assert_eq!(restored.edges[0].edge_type, "causal");
+        assert_eq!(restored.edges[1].edge_type, "temporal");
     }
 
     #[test]

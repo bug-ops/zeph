@@ -6,6 +6,57 @@ use std::str::FromStr;
 
 use crate::types::MessageId;
 
+/// MAGMA edge type: the semantic category of a relationship between two entities.
+///
+/// Four orthogonal relation categories from the MAGMA multi-graph architecture:
+/// - `Semantic`: conceptual relationships (`uses`, `knows`, `prefers`, `depends_on`, `works_on`)
+/// - `Temporal`: time-ordered events (`preceded_by`, `followed_by`, `happened_during`)
+/// - `Causal`: cause-effect chains (`caused`, `triggered`, `resulted_in`, `led_to`)
+/// - `Entity`: identity/structural (`is_a`, `part_of`, `instance_of`, `alias_of`)
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeType {
+    #[default]
+    Semantic,
+    Temporal,
+    Causal,
+    Entity,
+}
+
+impl EdgeType {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Temporal => "temporal",
+            Self::Causal => "causal",
+            Self::Entity => "entity",
+        }
+    }
+}
+
+impl fmt::Display for EdgeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for EdgeType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "semantic" => Ok(Self::Semantic),
+            "temporal" => Ok(Self::Temporal),
+            "causal" => Ok(Self::Causal),
+            "entity" => Ok(Self::Entity),
+            other => Err(format!("unknown edge type: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityType {
@@ -93,6 +144,7 @@ pub struct Edge {
     pub expired_at: Option<String>,
     pub episode_id: Option<MessageId>,
     pub qdrant_point_id: Option<String>,
+    pub edge_type: EdgeType,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +170,8 @@ pub struct GraphFact {
     /// `SQLite` datetime string when the edge became valid (e.g. `"2026-03-14 12:00:00"`).
     /// Used for optional temporal recency scoring. `None` when not populated.
     pub valid_from: Option<String>,
+    /// MAGMA edge classification for this fact.
+    pub edge_type: EdgeType,
 }
 
 impl GraphFact {
@@ -211,6 +265,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn edge_type_from_str_all_variants() {
+        assert_eq!("semantic".parse::<EdgeType>().unwrap(), EdgeType::Semantic);
+        assert_eq!("temporal".parse::<EdgeType>().unwrap(), EdgeType::Temporal);
+        assert_eq!("causal".parse::<EdgeType>().unwrap(), EdgeType::Causal);
+        assert_eq!("entity".parse::<EdgeType>().unwrap(), EdgeType::Entity);
+    }
+
+    #[test]
+    fn edge_type_from_str_unknown_rejected() {
+        assert!("unknown".parse::<EdgeType>().is_err());
+        assert!("Semantic".parse::<EdgeType>().is_err());
+        assert!("sematic".parse::<EdgeType>().is_err());
+        assert!("".parse::<EdgeType>().is_err());
+    }
+
+    #[test]
+    fn edge_type_display_round_trip() {
+        for et in [
+            EdgeType::Semantic,
+            EdgeType::Temporal,
+            EdgeType::Causal,
+            EdgeType::Entity,
+        ] {
+            let s = et.to_string();
+            assert_eq!(s.parse::<EdgeType>().unwrap(), et);
+        }
+    }
+
+    #[test]
+    fn edge_type_as_str_values() {
+        assert_eq!(EdgeType::Semantic.as_str(), "semantic");
+        assert_eq!(EdgeType::Temporal.as_str(), "temporal");
+        assert_eq!(EdgeType::Causal.as_str(), "causal");
+        assert_eq!(EdgeType::Entity.as_str(), "entity");
+    }
+
+    #[test]
+    fn edge_type_default_is_semantic() {
+        assert_eq!(EdgeType::default(), EdgeType::Semantic);
+    }
+
+    #[test]
+    fn edge_type_serde_roundtrip() {
+        for et in [
+            EdgeType::Semantic,
+            EdgeType::Temporal,
+            EdgeType::Causal,
+            EdgeType::Entity,
+        ] {
+            let json = serde_json::to_string(&et).unwrap();
+            let restored: EdgeType = serde_json::from_str(&json).unwrap();
+            assert_eq!(et, restored);
+        }
+    }
+
+    #[test]
     fn entity_type_from_str_all_variants() {
         assert_eq!("person".parse::<EntityType>().unwrap(), EntityType::Person);
         assert_eq!("tool".parse::<EntityType>().unwrap(), EntityType::Tool);
@@ -269,6 +379,7 @@ mod tests {
             hop_distance: 0,
             confidence: 1.0,
             valid_from: None,
+            edge_type: EdgeType::Semantic,
         };
         // 1.0 * (1/(1+0)) * 1.0 = 1.0
         assert!((fact.composite_score() - 1.0).abs() < 1e-6);
@@ -294,6 +405,7 @@ mod tests {
             hop_distance: 1,
             confidence: 0.8,
             valid_from: Some("2026-01-01 00:00:00".into()),
+            edge_type: EdgeType::Semantic,
         };
         let base = fact.composite_score();
         let with_decay = fact.score_with_decay(0.0, 1_752_000_000);
@@ -314,6 +426,7 @@ mod tests {
             hop_distance: 0,
             confidence: 1.0,
             valid_from: Some("2026-01-01 00:00:00".into()),
+            edge_type: EdgeType::Semantic,
         };
         let base = fact.composite_score();
         let boosted = fact.score_with_decay(0.01, now_secs);

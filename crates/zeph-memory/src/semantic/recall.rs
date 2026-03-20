@@ -514,6 +514,7 @@ impl SemanticMemory {
         max_hops: u32,
         at_timestamp: Option<&str>,
         temporal_decay_rate: f64,
+        edge_types: &[crate::graph::EdgeType],
     ) -> Result<Vec<crate::graph::types::GraphFact>, MemoryError> {
         let Some(store) = &self.graph_store else {
             return Ok(Vec::new());
@@ -535,6 +536,7 @@ impl SemanticMemory {
             max_hops,
             at_timestamp,
             temporal_decay_rate,
+            edge_types,
         )
         .await?;
 
