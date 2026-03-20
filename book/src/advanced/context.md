@@ -343,9 +343,9 @@ proceeds without validation.
 | HardFail | < 0.35 | Block compaction, preserve original messages | `compaction_probe_failures` |
 | Error | N/A (LLM/timeout) | Non-blocking, proceed with compaction | `compaction_probe_errors` |
 
-When HardFail blocks compaction, the outcome is `ProbeRejected`. This sets a
-cooldown (`compaction_cooldown_turns`) but does NOT trigger the `Exhausted`
-state — the compactor can retry on a later turn with new messages.
+When HardFail blocks compaction, the outcome is `ProbeRejected`. This sets an
+internal cooldown but does NOT trigger the `Exhausted` state — the compactor
+can retry on a later turn with new messages.
 
 #### User-Facing Messages
 
