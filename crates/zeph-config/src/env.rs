@@ -287,6 +287,21 @@ impl Config {
         {
             self.llm.response_cache_ttl_secs = secs;
         }
+        if let Ok(v) = std::env::var("ZEPH_LLM_SEMANTIC_CACHE_ENABLED")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.llm.semantic_cache_enabled = enabled;
+        }
+        if let Ok(v) = std::env::var("ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD")
+            && let Ok(threshold) = v.parse::<f32>()
+        {
+            self.llm.semantic_cache_threshold = threshold;
+        }
+        if let Ok(v) = std::env::var("ZEPH_LLM_SEMANTIC_CACHE_MAX_CANDIDATES")
+            && let Ok(max) = v.parse::<u32>()
+        {
+            self.llm.semantic_cache_max_candidates = max;
+        }
         if let Ok(v) = std::env::var("ZEPH_ACP_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()
         {

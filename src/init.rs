@@ -145,6 +145,8 @@ pub(crate) struct WizardState {
     pub(crate) policy_enforcer_enabled: bool,
     /// Deployment bundle selected in the mode step (e.g. "desktop", "ide", "server").
     pub(crate) deployment_bundle: Option<String>,
+    pub(crate) semantic_cache_enabled: bool,
+    pub(crate) semantic_cache_threshold: f32,
 }
 
 impl Default for WizardState {
@@ -258,6 +260,8 @@ impl Default for WizardState {
             shutdown_summary: true,
             policy_enforcer_enabled: false,
             deployment_bundle: None,
+            semantic_cache_enabled: false,
+            semantic_cache_threshold: 0.95,
         }
     }
 }
@@ -1015,6 +1019,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
         response_cache_enabled: false,
         response_cache_ttl_secs: 3600,
+        semantic_cache_enabled: state.semantic_cache_enabled,
+        semantic_cache_threshold: state.semantic_cache_threshold,
+        semantic_cache_max_candidates: 10,
         router_ema_enabled: state.router_strategy.as_deref().is_some_and(|s| s == "ema"),
         router_ema_alpha: 0.1,
         router_reorder_interval: 10,
