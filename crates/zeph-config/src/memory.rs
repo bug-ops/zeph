@@ -539,6 +539,9 @@ pub struct CompressionConfig {
     /// Currently unused — the primary summary provider is used regardless of this value.
     /// Reserved for future per-compression model selection. Setting this field has no effect.
     pub model: String,
+    /// Compaction probe: validates summary quality before committing it (#1609).
+    #[serde(default)]
+    pub probe: zeph_memory::CompactionProbeConfig,
 }
 
 fn default_sidequest_interval_turns() -> u32 {

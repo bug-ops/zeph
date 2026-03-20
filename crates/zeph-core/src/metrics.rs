@@ -189,6 +189,14 @@ pub struct MetricsSnapshot {
     pub compression_events: u64,
     pub compression_tokens_saved: u64,
     pub tool_output_prunes: u64,
+    /// Compaction probe outcomes (#1609).
+    pub compaction_probe_passes: u64,
+    /// Compaction probe soft failures (summary borderline — compaction proceeded with warning).
+    pub compaction_probe_soft_failures: u64,
+    /// Compaction probe hard failures (compaction blocked due to lossy summary).
+    pub compaction_probe_failures: u64,
+    /// Compaction probe errors (LLM/timeout — non-blocking, compaction proceeded).
+    pub compaction_probe_errors: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,

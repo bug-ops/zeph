@@ -4,6 +4,7 @@
 //! SQLite-backed conversation persistence with Qdrant vector search.
 
 pub mod anchored_summary;
+pub mod compaction_probe;
 pub mod compression_guidelines;
 pub mod document;
 
@@ -27,6 +28,10 @@ pub mod types;
 pub mod vector_store;
 
 pub use anchored_summary::AnchoredSummary;
+pub use compaction_probe::{
+    CompactionProbeConfig, CompactionProbeResult, ProbeQuestion, ProbeVerdict,
+    answer_probe_questions, generate_probe_questions, score_answers, validate_compaction,
+};
 pub use compression_guidelines::CompressionGuidelinesConfig;
 #[cfg(feature = "compression-guidelines")]
 pub use compression_guidelines::{

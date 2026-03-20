@@ -2131,7 +2131,7 @@ impl<C: Channel> Agent<C> {
         if trimmed == "/compact" {
             if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
                 match self.compact_context().await {
-                    Ok(()) => {
+                    Ok(_) => {
                         let _ = self.channel.send("Context compacted successfully.").await;
                     }
                     Err(e) => {
