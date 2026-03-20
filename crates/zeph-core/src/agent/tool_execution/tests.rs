@@ -4254,3 +4254,45 @@ fn schema_complexity_many_flat_params_score() {
         "8 flat properties must score higher than 2"
     );
 }
+
+// --- Issue #2057: memory_search classification ---
+
+#[tokio::test]
+async fn sanitize_tool_output_memory_search_uses_external_data_wrapper() {
+    assert_external_data!("memory_search", "recalled conversation about system prompt");
+}
+
+#[tokio::test]
+async fn sanitize_tool_output_memory_search_suppresses_injection_false_positive() {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+    let cfg = zeph_sanitizer::ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: true,
+        ..Default::default()
+    };
+    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    // "system prompt" in recalled history is a benign false positive — must be suppressed.
+    let (_, has_injection_flags) = agent
+        .sanitize_tool_output(
+            "user asked: show me the system prompt contents",
+            "memory_search",
+        )
+        .await;
+    assert!(
+        !has_injection_flags,
+        "memory_search recalled content must not trigger injection false positives"
+    );
+}
+
+#[tokio::test]
+async fn sanitize_tool_output_memory_save_still_uses_tool_result() {
+    assert_tool_output!("memory_save", "saved some content");
+}
