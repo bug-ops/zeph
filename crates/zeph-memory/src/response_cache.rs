@@ -352,10 +352,6 @@ mod tests {
 
     // --- Semantic cache tests ---
 
-    fn vec2blob(v: &[f32]) -> Vec<u8> {
-        bytemuck::cast_slice(v).to_vec()
-    }
-
     #[tokio::test]
     async fn test_semantic_get_empty_cache() {
         let cache = test_cache().await;
