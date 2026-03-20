@@ -7,6 +7,7 @@
 //! On subsequent semantically similar goals, retrieves the closest template
 //! and uses a lightweight LLM adaptation call instead of full decomposition.
 
+use blake3;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use zeph_config::PlanCacheConfig;
