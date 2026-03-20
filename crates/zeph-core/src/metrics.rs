@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 
 use tokio::sync::watch;
 
+pub use zeph_memory::ProbeVerdict;
+
 /// Category of a security event for TUI display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityEventCategory {
@@ -197,6 +199,11 @@ pub struct MetricsSnapshot {
     pub compaction_probe_failures: u64,
     /// Compaction probe errors (LLM/timeout — non-blocking, compaction proceeded).
     pub compaction_probe_errors: u64,
+    /// Last compaction probe verdict. `None` before the first probe completes.
+    pub last_probe_verdict: Option<zeph_memory::ProbeVerdict>,
+    /// Last compaction probe score in [0.0, 1.0]. `None` before the first probe
+    /// completes or after an Error verdict (errors produce no score).
+    pub last_probe_score: Option<f32>,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,

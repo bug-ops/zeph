@@ -38,6 +38,8 @@ pub enum ProbeVerdict {
     SoftFail,
     /// Score < `hard_fail_threshold`: summary lost critical facts. Block compaction.
     HardFail,
+    /// Transport/timeout failure — no quality score produced.
+    Error,
 }
 
 /// Full result of a compaction probe run.

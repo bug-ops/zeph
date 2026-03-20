@@ -2,6 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub use zeph_core::metrics::{
-    MetricsCollector, MetricsSnapshot, SecurityEvent, SecurityEventCategory, SkillConfidence,
-    TaskGraphSnapshot, TaskSnapshotRow,
+    MetricsCollector, MetricsSnapshot, ProbeVerdict, SecurityEvent, SecurityEventCategory,
+    SkillConfidence, TaskGraphSnapshot, TaskSnapshotRow,
 };
