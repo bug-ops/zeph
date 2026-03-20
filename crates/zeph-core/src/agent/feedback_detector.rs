@@ -55,7 +55,7 @@ static PATTERNS: LazyLock<LangPatterns> = LazyLock::new(|| LangPatterns {
 });
 
 fn build_rejection_patterns() -> Vec<(Regex, f32)> {
-    let mut p = Vec::new();
+    let mut p = Vec::with_capacity(25);
 
     // ── English ──
     // Anchored: base confidence 0.85
@@ -193,7 +193,7 @@ fn build_rejection_patterns() -> Vec<(Regex, f32)> {
 }
 
 fn build_alternative_patterns() -> Vec<(Regex, f32)> {
-    let mut p = Vec::new();
+    let mut p = Vec::with_capacity(20);
 
     // ── English ──
     p.push((Regex::new(r"(?i)^(instead|rather)\b").unwrap(), 0.70));
@@ -273,7 +273,7 @@ fn build_alternative_patterns() -> Vec<(Regex, f32)> {
 }
 
 fn build_self_correction_patterns() -> Vec<(Regex, f32)> {
-    let mut p = Vec::new();
+    let mut p = Vec::with_capacity(20);
 
     // ── English ──
     p.push((
