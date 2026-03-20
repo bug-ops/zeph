@@ -2346,7 +2346,10 @@ impl<C: Channel> Agent<C> {
                 }
 
                 // Step 1: apply deferred tool summaries (free tokens without LLM).
+                #[cfg(feature = "context-compression")]
                 let applied = self.apply_deferred_summaries();
+                #[cfg(not(feature = "context-compression"))]
+                let _ = self.apply_deferred_summaries();
 
                 // Step 1b (S5 fix): rebuild subgoal index map if deferred summaries were applied.
                 // Deferred summaries insert messages (shifting indices), invalidating msg_to_subgoal.
