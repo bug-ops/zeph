@@ -1765,6 +1765,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Messages at or after the returned index must not be evicted. This mirrors the logic in
     /// `prune_tool_outputs_oldest_first` so all pruning paths enforce the same tail protection.
+    #[cfg(feature = "context-compression")]
     fn prune_protection_boundary(&self) -> usize {
         let protect = self.context_manager.prune_protect_tokens;
         if protect == 0 {
