@@ -653,4 +653,125 @@ mod tests {
         assert!((restored.score - 0.75).abs() < 0.001);
         assert_eq!(restored.verdict, ProbeVerdict::Pass);
     }
+
+    // --- fewer answers than questions (LLM returned truncated list) ---
+
+    #[test]
+    fn score_fewer_answers_than_questions() {
+        let questions = vec![
+            ProbeQuestion {
+                question: "What crate?".into(),
+                expected_answer: "thiserror".into(),
+            },
+            ProbeQuestion {
+                question: "What file?".into(),
+                expected_answer: "src/lib.rs".into(),
+            },
+            ProbeQuestion {
+                question: "What decision?".into(),
+                expected_answer: "use async traits".into(),
+            },
+        ];
+        // LLM only returned 1 answer for 3 questions.
+        let answers = vec!["thiserror".into()];
+        let (scores, avg) = score_answers(&questions, &answers);
+        // scores must have the same length as questions (missing answers → empty string → ~0).
+        assert_eq!(scores.len(), 3);
+        // First answer is a perfect match.
+        assert!(
+            (scores[0] - 1.0).abs() < 0.01,
+            "first score should be ~1.0, got {}",
+            scores[0]
+        );
+        // Missing answers score 0 (empty string vs non-empty expected).
+        assert!(
+            scores[1] < 0.5,
+            "second score should be low for missing answer, got {}",
+            scores[1]
+        );
+        assert!(
+            scores[2] < 0.5,
+            "third score should be low for missing answer, got {}",
+            scores[2]
+        );
+        // Average is dragged down by the two missing answers.
+        assert!(
+            avg < 0.5,
+            "average should be below 0.5 with 2 missing answers, got {avg}"
+        );
+    }
+
+    // --- exact boundary values for threshold ---
+
+    #[test]
+    fn verdict_boundary_at_threshold() {
+        let config = CompactionProbeConfig::default();
+
+        // Exactly at pass threshold → Pass.
+        let score = config.threshold;
+        let verdict = if score >= config.threshold {
+            ProbeVerdict::Pass
+        } else if score >= config.hard_fail_threshold {
+            ProbeVerdict::SoftFail
+        } else {
+            ProbeVerdict::HardFail
+        };
+        assert_eq!(verdict, ProbeVerdict::Pass);
+
+        // One ULP below pass threshold, above hard-fail → SoftFail.
+        let score = config.threshold - f32::EPSILON;
+        let verdict = if score >= config.threshold {
+            ProbeVerdict::Pass
+        } else if score >= config.hard_fail_threshold {
+            ProbeVerdict::SoftFail
+        } else {
+            ProbeVerdict::HardFail
+        };
+        assert_eq!(verdict, ProbeVerdict::SoftFail);
+
+        // Exactly at hard-fail threshold → SoftFail (boundary is inclusive).
+        let score = config.hard_fail_threshold;
+        let verdict = if score >= config.threshold {
+            ProbeVerdict::Pass
+        } else if score >= config.hard_fail_threshold {
+            ProbeVerdict::SoftFail
+        } else {
+            ProbeVerdict::HardFail
+        };
+        assert_eq!(verdict, ProbeVerdict::SoftFail);
+
+        // One ULP below hard-fail threshold → HardFail.
+        let score = config.hard_fail_threshold - f32::EPSILON;
+        let verdict = if score >= config.threshold {
+            ProbeVerdict::Pass
+        } else if score >= config.hard_fail_threshold {
+            ProbeVerdict::SoftFail
+        } else {
+            ProbeVerdict::HardFail
+        };
+        assert_eq!(verdict, ProbeVerdict::HardFail);
+    }
+
+    // --- config partial deserialization (serde default fields) ---
+
+    #[test]
+    fn config_partial_json_uses_defaults() {
+        // Only `enabled` is specified; all other fields must fall back to defaults via #[serde(default)].
+        let json = r#"{"enabled": true}"#;
+        let c: CompactionProbeConfig =
+            serde_json::from_str(json).expect("deserialize partial json");
+        assert!(c.enabled);
+        assert!(c.model.is_empty());
+        assert!((c.threshold - 0.6).abs() < 0.001);
+        assert!((c.hard_fail_threshold - 0.35).abs() < 0.001);
+        assert_eq!(c.max_questions, 3);
+        assert_eq!(c.timeout_secs, 15);
+    }
+
+    #[test]
+    fn config_empty_json_uses_all_defaults() {
+        let c: CompactionProbeConfig = serde_json::from_str("{}").expect("deserialize empty json");
+        assert!(!c.enabled);
+        assert!(c.model.is_empty());
+    }
 }
