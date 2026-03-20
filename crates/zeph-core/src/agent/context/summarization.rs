@@ -1218,12 +1218,82 @@ impl<C: Channel> Agent<C> {
             .cloned()
             .collect();
 
-        // Summarize only the non-pinned messages in the compaction range.
-        let to_compact: Vec<Message> = self.msg.messages[1..compact_end]
-            .iter()
-            .filter(|m| !m.metadata.focus_pinned)
-            .cloned()
-            .collect();
+        // S2 fix (#2022): extract active-subgoal messages before draining so they survive
+        // compaction. Mirrors the focus_pinned pattern exactly. Only applies when a subgoal
+        // strategy is active and the registry has tagged active messages.
+        #[cfg(feature = "context-compression")]
+        let active_subgoal_messages: Vec<Message> = if self
+            .context_manager
+            .compression
+            .pruning_strategy
+            .is_subgoal()
+        {
+            use crate::agent::compaction_strategy::SubgoalState;
+            self.msg.messages[1..compact_end]
+                .iter()
+                .enumerate()
+                .filter(|(slice_i, m)| {
+                    // slice_i is 0-based within [1..compact_end]; actual index = slice_i + 1.
+                    let actual_i = slice_i + 1;
+                    !m.metadata.focus_pinned
+                        && matches!(
+                            self.compression.subgoal_registry.subgoal_state(actual_i),
+                            Some(SubgoalState::Active)
+                        )
+                })
+                .map(|(_, m)| m.clone())
+                .collect()
+        } else {
+            vec![]
+        };
+        #[cfg(not(feature = "context-compression"))]
+        let active_subgoal_messages: Vec<Message> = vec![];
+
+        // Summarize only the non-pinned, non-active-subgoal messages in the compaction range.
+        let to_compact: Vec<Message> = {
+            #[cfg(feature = "context-compression")]
+            let is_subgoal = self
+                .context_manager
+                .compression
+                .pruning_strategy
+                .is_subgoal();
+            #[cfg(not(feature = "context-compression"))]
+            let is_subgoal = false;
+
+            if is_subgoal {
+                #[cfg(feature = "context-compression")]
+                {
+                    use crate::agent::compaction_strategy::SubgoalState;
+                    self.msg.messages[1..compact_end]
+                        .iter()
+                        .enumerate()
+                        .filter(|(slice_i, m)| {
+                            let actual_i = slice_i + 1;
+                            !m.metadata.focus_pinned
+                                && !matches!(
+                                    self.compression.subgoal_registry.subgoal_state(actual_i),
+                                    Some(SubgoalState::Active)
+                                )
+                        })
+                        .map(|(_, m)| m.clone())
+                        .collect()
+                }
+                #[cfg(not(feature = "context-compression"))]
+                {
+                    self.msg.messages[1..compact_end]
+                        .iter()
+                        .filter(|m| !m.metadata.focus_pinned)
+                        .cloned()
+                        .collect()
+                }
+            } else {
+                self.msg.messages[1..compact_end]
+                    .iter()
+                    .filter(|m| !m.metadata.focus_pinned)
+                    .cloned()
+                    .collect()
+            }
+        };
         if to_compact.is_empty() {
             return Ok(CompactionOutcome::NoChange);
         }
@@ -1313,7 +1383,7 @@ impl<C: Channel> Agent<C> {
         let compacted_count = to_compact.len();
         let summary_content =
             format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
-        // Drain the original range (includes both pinned and non-pinned messages).
+        // Drain the original range (includes pinned, active-subgoal, and non-pinned messages).
         self.msg.messages.drain(1..compact_end);
         // Insert the compaction summary at position 1.
         self.msg.messages.insert(
@@ -1327,8 +1397,30 @@ impl<C: Channel> Agent<C> {
         );
         // Re-insert pinned messages right after the summary (position 2+).
         // They are placed before the preserved tail so the LLM always sees them.
+        let pinned_count = pinned_messages.len();
         for (i, pinned) in pinned_messages.into_iter().enumerate() {
             self.msg.messages.insert(2 + i, pinned);
+        }
+        // Re-insert active-subgoal messages after pinned messages (#2022 S2 fix).
+        // Active-subgoal messages are protected from summarization — they carry the current
+        // working context and must not be lost during compaction.
+        for (i, active_msg) in active_subgoal_messages.into_iter().enumerate() {
+            self.msg.messages.insert(2 + pinned_count + i, active_msg);
+        }
+
+        // S1 fix (#2022): rebuild subgoal index map from scratch after drain + reinsert.
+        // Arithmetic offset is fragile because the final positions depend on pinned_count
+        // and active_subgoal_count. Rebuild is O(subgoals * avg_span) — negligible.
+        #[cfg(feature = "context-compression")]
+        if self
+            .context_manager
+            .compression
+            .pruning_strategy
+            .is_subgoal()
+        {
+            self.compression
+                .subgoal_registry
+                .rebuild_after_compaction(&self.msg.messages, compact_end);
         }
 
         tracing::info!(
@@ -1405,6 +1497,12 @@ impl<C: Channel> Agent<C> {
                 }
                 PruningStrategy::Mig => {
                     return self.prune_tool_outputs_mig(min_to_free);
+                }
+                PruningStrategy::Subgoal => {
+                    return self.prune_tool_outputs_subgoal(min_to_free);
+                }
+                PruningStrategy::SubgoalMig => {
+                    return self.prune_tool_outputs_subgoal_mig(min_to_free);
                 }
                 PruningStrategy::Reactive => {} // fall through to oldest-first
             }
@@ -1649,6 +1747,138 @@ impl<C: Channel> Agent<C> {
                 pruned = pruned_indices.len(),
                 strategy = "mig",
                 "MIG-pruned tool outputs"
+            );
+            self.update_metrics(|m| m.tool_output_prunes += 1);
+        }
+        freed
+    }
+
+    /// Subgoal-aware pruning: score tool outputs by subgoal tier membership and evict
+    /// lowest-scoring blocks (outdated first, then completed, never active).
+    ///
+    /// Active-subgoal tool outputs receive relevance 1.0 and are effectively protected
+    /// from eviction as long as lower-tier outputs can satisfy `min_to_free`.
+    #[cfg(feature = "context-compression")]
+    pub(in crate::agent) fn prune_tool_outputs_subgoal(&mut self, min_to_free: usize) -> usize {
+        use crate::agent::compaction_strategy::score_blocks_subgoal;
+
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_subgoal_registry(&self.compression.subgoal_registry);
+        }
+
+        let scores = score_blocks_subgoal(
+            &self.msg.messages,
+            &self.compression.subgoal_registry,
+            &self.metrics.token_counter,
+        );
+
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_pruning_scores(&scores);
+        }
+
+        // Sort ascending: lowest relevance = highest eviction priority.
+        let mut sorted = scores;
+        sorted.sort_unstable_by(|a, b| {
+            a.relevance
+                .partial_cmp(&b.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        self.evict_sorted_blocks(&sorted, min_to_free, "subgoal")
+    }
+
+    /// Subgoal + MIG hybrid pruning: combines subgoal tier relevance with pairwise
+    /// redundancy scoring (MIG = relevance − redundancy).
+    #[cfg(feature = "context-compression")]
+    pub(in crate::agent) fn prune_tool_outputs_subgoal_mig(&mut self, min_to_free: usize) -> usize {
+        use crate::agent::compaction_strategy::score_blocks_subgoal_mig;
+
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_subgoal_registry(&self.compression.subgoal_registry);
+        }
+
+        let mut scores = score_blocks_subgoal_mig(
+            &self.msg.messages,
+            &self.compression.subgoal_registry,
+            &self.metrics.token_counter,
+        );
+
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            d.dump_pruning_scores(&scores);
+        }
+
+        // Sort ascending by MIG: most negative MIG = highest eviction priority.
+        scores.sort_unstable_by(|a, b| {
+            a.mig
+                .partial_cmp(&b.mig)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        self.evict_sorted_blocks(&scores, min_to_free, "subgoal_mig")
+    }
+
+    /// Shared eviction loop: given a sorted `BlockScore` slice (ascending priority = most evictable
+    /// first), evict tool outputs until `min_to_free` tokens are freed or all candidates are
+    /// exhausted. Returns tokens freed.
+    ///
+    /// Extracted to eliminate duplicate code between `prune_tool_outputs_scored`,
+    /// `prune_tool_outputs_mig`, and the new subgoal pruning variants.
+    #[cfg(feature = "context-compression")]
+    fn evict_sorted_blocks(
+        &mut self,
+        sorted_scores: &[crate::agent::compaction_strategy::BlockScore],
+        min_to_free: usize,
+        strategy: &str,
+    ) -> usize {
+        let mut freed = 0usize;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+
+        let mut pruned_indices = Vec::new();
+        for block in sorted_scores {
+            if freed >= min_to_free {
+                break;
+            }
+            let msg = &mut self.msg.messages[block.msg_index];
+            if msg.metadata.focus_pinned {
+                continue;
+            }
+            let mut modified = false;
+            for part in &mut msg.parts {
+                if let MessagePart::ToolOutput {
+                    body, compacted_at, ..
+                } = part
+                    && compacted_at.is_none()
+                    && !body.is_empty()
+                {
+                    freed += self.metrics.token_counter.count_tokens(body);
+                    let ref_notice = extract_overflow_ref(body)
+                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
+                        .unwrap_or_default();
+                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                    *compacted_at = Some(now);
+                    *body = ref_notice;
+                    modified = true;
+                }
+            }
+            if modified {
+                pruned_indices.push(block.msg_index);
+            }
+        }
+
+        for &idx in &pruned_indices {
+            self.msg.messages[idx].rebuild_content();
+        }
+
+        if freed > 0 {
+            tracing::info!(
+                freed,
+                pruned = pruned_indices.len(),
+                strategy,
+                "pruned tool outputs"
             );
             self.update_metrics(|m| m.tool_output_prunes += 1);
         }
@@ -2103,12 +2333,39 @@ impl<C: Channel> Agent<C> {
                 let _ = self.channel.send_status("soft compacting context...").await;
 
                 // Step 0 (context-compression): apply any completed background goal extraction
-                // and schedule a new one if the user message has changed (#1909).
+                // and schedule a new one if the user message has changed (#1909, #2022).
                 #[cfg(feature = "context-compression")]
-                self.maybe_refresh_task_goal();
+                {
+                    use crate::config::PruningStrategy;
+                    match &self.context_manager.compression.pruning_strategy {
+                        PruningStrategy::Subgoal | PruningStrategy::SubgoalMig => {
+                            self.maybe_refresh_subgoal();
+                        }
+                        _ => self.maybe_refresh_task_goal(),
+                    }
+                }
 
                 // Step 1: apply deferred tool summaries (free tokens without LLM).
-                self.apply_deferred_summaries();
+                #[cfg(feature = "context-compression")]
+                let applied = self.apply_deferred_summaries();
+                #[cfg(not(feature = "context-compression"))]
+                let _ = self.apply_deferred_summaries();
+
+                // Step 1b (S5 fix): rebuild subgoal index map if deferred summaries were applied.
+                // Deferred summaries insert messages (shifting indices), invalidating msg_to_subgoal.
+                #[cfg(feature = "context-compression")]
+                if applied > 0
+                    && self
+                        .context_manager
+                        .compression
+                        .pruning_strategy
+                        .is_subgoal()
+                {
+                    self.compression.subgoal_registry.rebuild_after_compaction(
+                        &self.msg.messages,
+                        0, // 0 = no drain, just repair shifted indices
+                    );
+                }
 
                 // Step 2: prune tool outputs down to soft threshold.
                 let budget = self
@@ -2587,7 +2844,9 @@ impl<C: Channel> Agent<C> {
 
         // Only needed when a task-aware or MIG strategy is active.
         match &self.context_manager.compression.pruning_strategy {
-            PruningStrategy::Reactive => return,
+            PruningStrategy::Reactive | PruningStrategy::Subgoal | PruningStrategy::SubgoalMig => {
+                return;
+            }
             PruningStrategy::TaskAware | PruningStrategy::Mig | PruningStrategy::TaskAwareMig => {}
         }
 
@@ -2731,5 +2990,335 @@ impl<C: Channel> Agent<C> {
         if let Some(ref tx) = self.session.status_tx {
             let _ = tx.send("Extracting task goal...".into());
         }
+    }
+
+    /// Refresh the subgoal registry when the last user message has changed (#2022).
+    ///
+    /// Mirrors the two-phase `maybe_refresh_task_goal` pattern exactly:
+    ///
+    /// - Phase 1 (apply): if the background extraction task from last turn has finished,
+    ///   parse the result and update the subgoal registry.
+    /// - Phase 2 (schedule): if the user message hash has changed and no task is in-flight,
+    ///   spawn a new background extraction. Current compaction uses the cached registry state.
+    ///
+    /// Transition detection: the LLM's `COMPLETED:` signal drives transitions (S3 fix).
+    /// When `COMPLETED: NONE`, the same subgoal continues (`extend_active`).
+    /// When `COMPLETED:` is non-NONE, a new subgoal is created (`complete_active` + `push_active`).
+    #[cfg(feature = "context-compression")]
+    #[allow(clippy::too_many_lines)]
+    pub(in crate::agent) fn maybe_refresh_subgoal(&mut self) {
+        use std::hash::Hash as _;
+
+        use crate::config::PruningStrategy;
+
+        // Only needed when a subgoal-aware strategy is active.
+        match &self.context_manager.compression.pruning_strategy {
+            PruningStrategy::Subgoal | PruningStrategy::SubgoalMig => {}
+            _ => return,
+        }
+
+        let msg_len = self.msg.messages.len();
+
+        // Phase 1: apply background result if the task has completed.
+        if self
+            .compression
+            .pending_subgoal
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            use futures::FutureExt as _;
+            if let Some(handle) = self.compression.pending_subgoal.take() {
+                if let Some(Ok(Some(result))) = handle.now_or_never() {
+                    // Detect subgoal transition via LLM signal (S3 fix).
+                    let is_transition = result.completed.is_some();
+
+                    if is_transition {
+                        // Complete the current active subgoal and start a new one.
+                        if let Some(completed_desc) = &result.completed {
+                            tracing::debug!(
+                                completed = completed_desc.as_str(),
+                                "subgoal transition detected"
+                            );
+                        }
+                        self.compression
+                            .subgoal_registry
+                            .complete_active(msg_len.saturating_sub(1));
+                        let new_id = self
+                            .compression
+                            .subgoal_registry
+                            .push_active(result.current.clone(), msg_len.saturating_sub(1));
+                        self.compression
+                            .subgoal_registry
+                            .extend_active(msg_len.saturating_sub(1));
+                        tracing::debug!(
+                            current = result.current.as_str(),
+                            id = new_id.0,
+                            "new active subgoal registered"
+                        );
+                    } else {
+                        // Same subgoal continues — extend or create first subgoal.
+                        let is_first = self.compression.subgoal_registry.subgoals.is_empty();
+                        if is_first {
+                            // First extraction result: create initial subgoal.
+                            let id = self
+                                .compression
+                                .subgoal_registry
+                                .push_active(result.current.clone(), msg_len.saturating_sub(1));
+                            // S4 fix: retroactively tag all pre-extraction messages [1..msg_len-1].
+                            if msg_len > 2 {
+                                self.compression
+                                    .subgoal_registry
+                                    .tag_range(1, msg_len - 2, id);
+                            }
+                            self.compression
+                                .subgoal_registry
+                                .extend_active(msg_len.saturating_sub(1));
+                            tracing::debug!(
+                                current = result.current.as_str(),
+                                id = id.0,
+                                retroactive_msgs = msg_len.saturating_sub(2),
+                                "first subgoal registered with retroactive tagging"
+                            );
+                        } else {
+                            // Extend existing active subgoal.
+                            self.compression
+                                .subgoal_registry
+                                .extend_active(msg_len.saturating_sub(1));
+                            tracing::debug!(
+                                current = result.current.as_str(),
+                                "active subgoal extended"
+                            );
+                        }
+                    }
+                }
+                // Clear spinner on ALL completion paths (success, None, or panic).
+                if let Some(ref tx) = self.session.status_tx {
+                    let _ = tx.send(String::new());
+                }
+            }
+        }
+
+        // Phase 2: do not spawn a second task while one is in-flight.
+        if self.compression.pending_subgoal.is_some() {
+            return;
+        }
+
+        // Find the last user message content and check for hash change.
+        let last_user_content = self
+            .msg
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == zeph_llm::provider::Role::User && m.metadata.agent_visible)
+            .map(|m| m.content.as_str())
+            .unwrap_or_default();
+
+        if last_user_content.is_empty() {
+            return;
+        }
+
+        let hash = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            last_user_content.hash(&mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+
+        if self.compression.subgoal_user_msg_hash == Some(hash) {
+            return;
+        }
+        self.compression.subgoal_user_msg_hash = Some(hash);
+
+        // Clone the last 6 agent-visible messages (M2 fix: only agent_visible, not invisible
+        // [tool summary] placeholders) for the extraction prompt.
+        let recent: Vec<(zeph_llm::provider::Role, String)> = self
+            .msg
+            .messages
+            .iter()
+            .filter(|m| {
+                m.metadata.agent_visible
+                    && matches!(
+                        m.role,
+                        zeph_llm::provider::Role::User | zeph_llm::provider::Role::Assistant
+                    )
+            })
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|m| (m.role, m.content.clone()))
+            .collect();
+
+        let provider = self.summary_or_primary_provider().clone();
+
+        let handle = tokio::spawn(async move {
+            use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+            if recent.is_empty() {
+                return None;
+            }
+
+            let mut context_text = String::new();
+            for (role, content) in &recent {
+                let role_str = match role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::System => "system",
+                };
+                let preview = if content.len() > 300 {
+                    let end = content.floor_char_boundary(300);
+                    &content[..end]
+                } else {
+                    content.as_str()
+                };
+                let _ =
+                    std::fmt::write(&mut context_text, format_args!("[{role_str}]: {preview}\n"));
+            }
+
+            let prompt = format!(
+                "Given this conversation excerpt, identify the agent's CURRENT subgoal in one \
+                 sentence. A subgoal is the immediate objective the agent is working toward right \
+                 now, not the overall task.\n\n\
+                 If the agent just completed a subgoal (answered a question, finished a subtask), \
+                 also state the COMPLETED subgoal.\n\n\
+                 Respond in this exact format:\n\
+                 CURRENT: <one sentence describing current subgoal>\n\
+                 COMPLETED: <one sentence describing just-completed subgoal, or NONE>\n\n\
+                 <conversation>\n{context_text}</conversation>"
+            );
+
+            let msgs = [Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+
+            let response = match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                provider.chat(&msgs),
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::debug!("subgoal_extraction: LLM error: {e:#}");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::debug!("subgoal_extraction: timed out");
+                    return None;
+                }
+            };
+
+            Some(parse_subgoal_extraction_response(&response))
+        });
+
+        self.compression.pending_subgoal = Some(handle);
+        tracing::debug!("subgoal_extraction: background task spawned");
+        if let Some(ref tx) = self.session.status_tx {
+            let _ = tx.send("Tracking subgoal...".into());
+        }
+    }
+}
+
+/// Parse the structured LLM response for subgoal extraction.
+///
+/// Expected format:
+/// ```text
+/// CURRENT: <description>
+/// COMPLETED: <description or NONE>
+/// ```
+///
+/// Falls back to treating the entire response as the current subgoal on malformed input.
+#[cfg(feature = "context-compression")]
+fn parse_subgoal_extraction_response(
+    response: &str,
+) -> crate::agent::state::SubgoalExtractionResult {
+    use crate::agent::state::SubgoalExtractionResult;
+
+    let trimmed = response.trim();
+
+    // Try to extract CURRENT: and COMPLETED: prefixes.
+    if let Some(current_pos) = trimmed.find("CURRENT:") {
+        let after_current = &trimmed[current_pos + "CURRENT:".len()..];
+        let (current_line_raw, remainder_raw) = after_current
+            .split_once('\n')
+            .map_or((after_current, ""), |(l, r)| (l, r));
+        let current_line = current_line_raw.trim();
+        let remainder = remainder_raw.trim();
+
+        if current_line.is_empty() {
+            // Malformed: treat entire response as current subgoal.
+            return SubgoalExtractionResult {
+                current: trimmed.to_string(),
+                completed: None,
+            };
+        }
+
+        let current = current_line.to_string();
+
+        let completed = if let Some(comp_pos) = remainder.find("COMPLETED:") {
+            let comp_text = remainder[comp_pos + "COMPLETED:".len()..].trim();
+            let comp_line = comp_text
+                .split('\n')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if comp_line.is_empty() || comp_line.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                Some(comp_line)
+            }
+        } else {
+            None
+        };
+
+        return SubgoalExtractionResult { current, completed };
+    }
+
+    // Malformed response: treat entire response as current subgoal.
+    SubgoalExtractionResult {
+        current: trimmed.to_string(),
+        completed: None,
+    }
+}
+
+#[cfg(test)]
+mod subgoal_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn parse_well_formed_with_both() {
+        let response = "CURRENT: Implement login\nCOMPLETED: Setup database";
+        let result = parse_subgoal_extraction_response(response);
+        assert_eq!(result.current, "Implement login");
+        assert_eq!(result.completed, Some("Setup database".to_string()));
+    }
+
+    #[test]
+    fn parse_well_formed_no_completed() {
+        let response = "CURRENT: Fetch user data\nCOMPLETED: NONE";
+        let result = parse_subgoal_extraction_response(response);
+        assert_eq!(result.current, "Fetch user data");
+        assert_eq!(result.completed, None);
+    }
+
+    #[test]
+    fn parse_malformed_no_current_prefix() {
+        let response = "Just some random text about subgoals";
+        let result = parse_subgoal_extraction_response(response);
+        assert_eq!(result.current, "Just some random text about subgoals");
+        assert_eq!(result.completed, None);
+    }
+
+    #[test]
+    fn parse_malformed_empty_current() {
+        let response = "CURRENT: \nCOMPLETED: Setup";
+        let result = parse_subgoal_extraction_response(response);
+        // Empty CURRENT falls back to treating entire response as current
+        assert_eq!(result.current.trim(), "CURRENT: \nCOMPLETED: Setup");
+        assert_eq!(result.completed, None);
     }
 }

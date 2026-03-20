@@ -808,3 +808,103 @@ async fn keyword_search_with_time_range_conversation_filter() {
         "conversation filter must restrict to cid1 only"
     );
 }
+
+// ── importance_score + access_count tests (#2021) ─────────────────────────
+
+#[tokio::test]
+async fn fetch_importance_scores_empty_input() {
+    let store = test_store().await;
+    let result = store.fetch_importance_scores(&[]).await.unwrap();
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_importance_scores_batch_fetch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    // Neutral content, user role → low marker/density, but non-zero overall.
+    let id1 = store
+        .save_message(cid, "user", "hello world")
+        .await
+        .unwrap();
+    // Explicit marker → high importance.
+    let id2 = store
+        .save_message(cid, "user", "remember: the API key rotates weekly")
+        .await
+        .unwrap();
+
+    let scores = store.fetch_importance_scores(&[id1, id2]).await.unwrap();
+    assert_eq!(scores.len(), 2);
+
+    let s1 = *scores.get(&id1).unwrap();
+    let s2 = *scores.get(&id2).unwrap();
+    assert!(s1 > 0.0 && s1 <= 1.0, "score must be in (0,1], got {s1}");
+    assert!(
+        s2 > s1,
+        "marker message must score higher than plain hello, got s1={s1} s2={s2}"
+    );
+}
+
+#[tokio::test]
+async fn increment_access_counts_empty_guard() {
+    // Empty slice must return Ok without any SQL execution.
+    let store = test_store().await;
+    store.increment_access_counts(&[]).await.unwrap();
+}
+
+#[tokio::test]
+async fn increment_access_counts_updates_rows() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store.save_message(cid, "user", "test").await.unwrap();
+
+    // Verify initial access_count is 0.
+    let before: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(before.0, 0);
+
+    store.increment_access_counts(&[id]).await.unwrap();
+
+    let after: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(after.0, 1);
+}
+
+#[tokio::test]
+async fn migration_039_default_importance_score_for_preexisting_rows() {
+    // Simulate a row that existed before migration 039 by checking that
+    // SQLite applies the DEFAULT 0.5 when importance_score is not specified.
+    // In practice, SqliteStore::new applies all migrations including 039, so
+    // any save_message call that omits importance_score would have defaulted.
+    // Here we directly INSERT without the column to verify the schema default.
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
+         VALUES (?, 'user', 'legacy row', '[]', 1, 1)",
+    )
+    .bind(cid)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    let row: (f64,) =
+        sqlx::query_as("SELECT importance_score FROM messages WHERE content = 'legacy row'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+
+    assert!(
+        (row.0 - 0.5).abs() < f64::EPSILON,
+        "legacy rows must default to importance_score = 0.5, got {}",
+        row.0
+    );
+}

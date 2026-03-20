@@ -168,6 +168,53 @@ impl TafcConfig {
     }
 }
 
+fn default_boost_per_dep() -> f32 {
+    0.15
+}
+
+fn default_max_total_boost() -> f32 {
+    0.2
+}
+
+/// Dependency specification for a single tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ToolDependency {
+    /// Hard prerequisites: tool is hidden until ALL of these have completed successfully.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// Soft prerequisites: tool gets a similarity boost when these have completed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefers: Vec<String>,
+}
+
+/// Configuration for the tool dependency graph feature.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DependencyConfig {
+    /// Whether dependency gating is enabled. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Similarity boost added per satisfied `prefers` dependency. Default: 0.15.
+    #[serde(default = "default_boost_per_dep")]
+    pub boost_per_dep: f32,
+    /// Maximum total boost applied regardless of how many `prefers` deps are met. Default: 0.2.
+    #[serde(default = "default_max_total_boost")]
+    pub max_total_boost: f32,
+    /// Per-tool dependency rules. Key is `tool_id`.
+    #[serde(default)]
+    pub rules: std::collections::HashMap<String, ToolDependency>,
+}
+
+impl Default for DependencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            boost_per_dep: default_boost_per_dep(),
+            max_total_boost: default_max_total_boost(),
+            rules: std::collections::HashMap::new(),
+        }
+    }
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -193,6 +240,8 @@ pub struct ToolsConfig {
     pub result_cache: ResultCacheConfig,
     #[serde(default)]
     pub tafc: TafcConfig,
+    #[serde(default)]
+    pub dependencies: DependencyConfig,
     /// Declarative policy compiler for tool call authorization.
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
@@ -255,6 +304,7 @@ impl Default for ToolsConfig {
             anomaly: AnomalyConfig::default(),
             result_cache: ResultCacheConfig::default(),
             tafc: TafcConfig::default(),
+            dependencies: DependencyConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
         }

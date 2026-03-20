@@ -106,6 +106,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) semantic_cache_enabled: bool,
     pub(crate) semantic_cache_threshold: f32,
     pub(crate) semantic_cache_max_candidates: u32,
+    /// Dependency config snapshot stored for per-turn boost parameters.
+    pub(crate) dependency_config: zeph_tools::DependencyConfig,
 }
 
 /// Groups feedback detection subsystems: correction detector and judge detector.
@@ -228,6 +230,15 @@ pub(crate) struct ExperimentState {
     pub(crate) notify_tx: tokio::sync::mpsc::Sender<String>,
 }
 
+/// Output of a background subgoal extraction LLM call.
+#[cfg(feature = "context-compression")]
+pub(crate) struct SubgoalExtractionResult {
+    /// Current subgoal the agent is working toward.
+    pub(crate) current: String,
+    /// Just-completed subgoal, if the LLM detected a transition (`COMPLETED:` non-NONE).
+    pub(crate) completed: Option<String>,
+}
+
 /// Groups context-compression feature state (gated behind `context-compression` feature flag).
 #[cfg(feature = "context-compression")]
 pub(crate) struct CompressionState {
@@ -242,6 +253,12 @@ pub(crate) struct CompressionState {
     /// Pending `SideQuest` eviction result from the background LLM call spawned last turn.
     /// Applied at the START of the next turn before compaction (PERF-1 fix).
     pub(crate) pending_sidequest_result: Option<tokio::task::JoinHandle<Option<Vec<usize>>>>,
+    /// In-memory subgoal registry for `Subgoal`/`SubgoalMig` pruning strategies (#2022).
+    pub(crate) subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry,
+    /// Pending background subgoal extraction task.
+    pub(crate) pending_subgoal: Option<tokio::task::JoinHandle<Option<SubgoalExtractionResult>>>,
+    /// Hash of the last user message when subgoal extraction was scheduled.
+    pub(crate) subgoal_user_msg_hash: Option<u64>,
 }
 
 /// Groups per-session I/O and policy state.

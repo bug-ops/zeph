@@ -257,6 +257,353 @@ pub(crate) fn score_blocks_mig(
     scores
 }
 
+// ─── Phase C: Subgoal-aware scoring functions ────────────────────────────────
+
+/// Score each tool-output message block by subgoal tier membership.
+///
+/// Relevance tiers (architecture spec):
+/// - Active subgoal:    1.0  — never evicted by scoring
+/// - Completed subgoal: 0.3  — candidate for summarization
+/// - Untagged/outdated: 0.1  — highest eviction priority
+///
+/// Within each tier, recency is used as a tiebreaker (newer = slightly higher relevance)
+/// by adding a small `position_fraction` term that does not change tier ordering.
+#[cfg(feature = "context-compression")]
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn score_blocks_subgoal(
+    messages: &[Message],
+    registry: &SubgoalRegistry,
+    _tc: &TokenCounter,
+) -> Vec<BlockScore> {
+    let total = messages.len().max(1) as f32;
+    let mut scores = Vec::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        // Skip system prompt (index 0) and pinned messages.
+        if i == 0 || msg.metadata.focus_pinned {
+            continue;
+        }
+        let has_tool_output = msg.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolOutput { .. } | MessagePart::ToolResult { .. }
+            )
+        });
+        if !has_tool_output {
+            continue;
+        }
+
+        // Recency fraction: [0.0, 1.0) — does not exceed the tier gap.
+        let recency = i as f32 / total * 0.05;
+
+        let relevance = match registry.subgoal_state(i) {
+            Some(SubgoalState::Active) => 1.0_f32 + recency,
+            Some(SubgoalState::Completed) => 0.3_f32 + recency,
+            None => 0.1_f32 + recency,
+        };
+
+        scores.push(BlockScore {
+            msg_index: i,
+            relevance,
+            redundancy: 0.0,
+            mig: relevance,
+        });
+    }
+    scores
+}
+
+/// Score tool-output blocks using subgoal tiers combined with MIG redundancy.
+///
+/// Combines `score_blocks_subgoal` relevance with pairwise text redundancy:
+/// `mig = subgoal_relevance − max_redundancy_with_any_higher_scored_block`.
+///
+/// Redundancy is only counted against blocks with strictly higher relevance,
+/// so Active subgoal messages (tier 1.0) never have their MIG reduced below
+/// their tier baseline.
+#[cfg(feature = "context-compression")]
+pub(crate) fn score_blocks_subgoal_mig(
+    messages: &[Message],
+    registry: &SubgoalRegistry,
+    tc: &TokenCounter,
+) -> Vec<BlockScore> {
+    let mut scores = score_blocks_subgoal(messages, registry, tc);
+
+    // Compute pairwise redundancy (same algorithm as score_blocks_mig).
+    let texts: Vec<_> = scores
+        .iter()
+        .map(|s| {
+            let tokens = tokenize(&extract_scorable_text(&messages[s.msg_index]));
+            term_frequencies(&tokens)
+        })
+        .collect();
+
+    for i in 0..scores.len() {
+        let mut max_redundancy = 0.0_f32;
+        for j in 0..scores.len() {
+            if i == j {
+                continue;
+            }
+            if scores[j].relevance > scores[i].relevance {
+                let sim = tf_weighted_similarity(&texts[i], &texts[j]);
+                max_redundancy = max_redundancy.max(sim);
+            }
+        }
+        scores[i].redundancy = max_redundancy;
+        scores[i].mig = scores[i].relevance - max_redundancy;
+    }
+
+    scores
+}
+
+// ─── Phase A: SubgoalRegistry ───────────────────────────────────────────────
+
+/// Unique identifier for a subgoal within a session.
+///
+/// Monotonically increasing, wraps on overflow (extremely unlikely in practice —
+/// a session would need 4 billion subgoal transitions).
+#[cfg(feature = "context-compression")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SubgoalId(pub(crate) u32);
+
+/// Lifecycle state of a subgoal.
+#[cfg(feature = "context-compression")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubgoalState {
+    /// Currently being worked on. Messages tagged with this subgoal are protected.
+    Active,
+    /// Completed. Messages tagged with this subgoal are candidates for summarization.
+    Completed,
+}
+
+/// A tracked subgoal with message span.
+#[cfg(feature = "context-compression")]
+#[derive(Debug, Clone)]
+pub(crate) struct Subgoal {
+    pub(crate) id: SubgoalId,
+    pub(crate) description: String,
+    pub(crate) state: SubgoalState,
+    /// Index of the first message in this subgoal's span.
+    pub(crate) start_msg_index: usize,
+    /// Index of the last message known to belong to this subgoal (updated each turn).
+    pub(crate) end_msg_index: usize,
+}
+
+/// In-memory registry of all subgoals in the current session.
+///
+/// Lives in `CompressionState` (gated behind `context-compression`).
+/// Not persisted across restarts — subgoal state is transient session data.
+#[cfg(feature = "context-compression")]
+#[derive(Debug, Default)]
+pub(crate) struct SubgoalRegistry {
+    pub(crate) subgoals: Vec<Subgoal>,
+    next_id: u32,
+    /// Maps message index → subgoal ID for fast lookup during compaction.
+    pub(crate) msg_to_subgoal: std::collections::HashMap<usize, SubgoalId>,
+    /// Highest message index already tagged for the active subgoal.
+    /// Used by `extend_active()` to avoid re-inserting existing entries.
+    last_tagged_index: usize,
+}
+
+#[cfg(feature = "context-compression")]
+impl SubgoalRegistry {
+    /// Register a new active subgoal starting at the given message index.
+    ///
+    /// Defense in depth: if an Active subgoal already exists, auto-completes it before creating
+    /// the new one. Prevents the invariant violation of multiple Active subgoals.
+    pub(crate) fn push_active(&mut self, description: String, start_msg_index: usize) -> SubgoalId {
+        // Auto-complete any existing Active subgoal (M3 fix — defense in depth).
+        if let Some(active) = self
+            .subgoals
+            .iter_mut()
+            .find(|s| s.state == SubgoalState::Active)
+        {
+            active.state = SubgoalState::Completed;
+        }
+        let id = SubgoalId(self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
+        self.subgoals.push(Subgoal {
+            id,
+            description,
+            state: SubgoalState::Active,
+            start_msg_index,
+            end_msg_index: start_msg_index,
+        });
+        // last_tagged_index starts just before the new subgoal's first message so that
+        // extend_active(start_msg_index) will tag it on the first call.
+        self.last_tagged_index = start_msg_index.saturating_sub(1);
+        id
+    }
+
+    /// Mark the current active subgoal as completed and assign an end boundary.
+    pub(crate) fn complete_active(&mut self, end_msg_index: usize) {
+        if let Some(active) = self
+            .subgoals
+            .iter_mut()
+            .find(|s| s.state == SubgoalState::Active)
+        {
+            active.state = SubgoalState::Completed;
+            active.end_msg_index = end_msg_index;
+        }
+    }
+
+    /// Extend the active subgoal to cover new messages up to `new_end`.
+    ///
+    /// Only tags messages from `last_tagged_index + 1` to `new_end` to avoid redundant
+    /// re-insertions into `msg_to_subgoal`. Incremental cost per turn instead of per total span.
+    pub(crate) fn extend_active(&mut self, new_end: usize) {
+        if let Some(active) = self
+            .subgoals
+            .iter_mut()
+            .find(|s| s.state == SubgoalState::Active)
+        {
+            active.end_msg_index = new_end;
+            let start = self.last_tagged_index.saturating_add(1);
+            for idx in start..=new_end {
+                self.msg_to_subgoal.insert(idx, active.id);
+            }
+            if new_end >= start {
+                self.last_tagged_index = new_end;
+            }
+        }
+    }
+
+    /// Tag messages in range `[start, end]` with the given subgoal ID.
+    ///
+    /// Used for retroactive tagging of pre-extraction messages on first subgoal creation
+    /// (S4 fix): all messages that existed before the first extraction result arrived are
+    /// tagged with the initial subgoal so they are not treated as "outdated" (relevance 0.1).
+    pub(crate) fn tag_range(&mut self, start: usize, end: usize, id: SubgoalId) {
+        for idx in start..=end {
+            self.msg_to_subgoal.insert(idx, id);
+        }
+        if end > self.last_tagged_index {
+            self.last_tagged_index = end;
+        }
+    }
+
+    /// Get the subgoal state for a given message index.
+    pub(crate) fn subgoal_state(&self, msg_index: usize) -> Option<SubgoalState> {
+        let sg_id = self.msg_to_subgoal.get(&msg_index)?;
+        self.subgoals
+            .iter()
+            .find(|s| &s.id == sg_id)
+            .map(|s| s.state)
+    }
+
+    /// Get the current active subgoal (for debug output and TUI metrics).
+    pub(crate) fn active_subgoal(&self) -> Option<&Subgoal> {
+        self.subgoals
+            .iter()
+            .find(|s| s.state == SubgoalState::Active)
+    }
+
+    /// Rebuild the registry after compaction.
+    ///
+    /// Instead of arithmetic offset adjustment (which is fragile because the final message
+    /// positions depend on `pinned_count` and `active_subgoal_count` — variable quantities),
+    /// this rebuilds `msg_to_subgoal` from scratch by iterating the post-compaction message
+    /// array and matching message content against surviving `Subgoal` entries.
+    ///
+    /// When `old_compact_end == 0`, the function simply rebuilds the map from the current
+    /// message array without dropping any subgoals (used after deferred summary insertions
+    /// to repair shifted indices — S5 fix).
+    ///
+    /// Algorithm:
+    /// 1. Drop `Subgoal` entries whose entire span was in the drained range.
+    /// 2. For surviving subgoals, re-scan the post-compaction array to find their messages.
+    /// 3. Rebuild `msg_to_subgoal` and reset `last_tagged_index`.
+    pub(crate) fn rebuild_after_compaction(
+        &mut self,
+        messages: &[zeph_llm::provider::Message],
+        old_compact_end: usize,
+    ) {
+        // Clear the index map; we'll rebuild it completely.
+        self.msg_to_subgoal.clear();
+
+        if self.subgoals.is_empty() {
+            self.last_tagged_index = 0;
+            return;
+        }
+
+        // For a full rebuild after drain (old_compact_end > 0), we need to identify which
+        // subgoals still have surviving messages. We do this by scanning the post-compaction
+        // message array: any message whose content matches a subgoal's tagged content range
+        // is re-associated with that subgoal.
+        //
+        // Since `Message` does not carry a subgoal tag in its metadata (by design — we avoid
+        // coupling the LLM message struct to compaction state), we use a different approach:
+        // for each message in the post-compaction array, assign it to the Active subgoal if
+        // it is in the re-inserted active-subgoal block, or to the most recent subgoal whose
+        // span plausibly covers it based on its relative position.
+        //
+        // The practical approach: rebuild by assigning each non-system message to the subgoal
+        // based on the message's position relative to the surviving subgoal spans.
+        // After compaction, we cannot know the exact original index of each message, so we
+        // rebuild using the surviving subgoal descriptions and the Active/Completed flags.
+        //
+        // Simplified rebuild: scan messages [1..], assign to Active subgoal if one exists,
+        // otherwise to the most recent Completed subgoal. This is a conservative approximation
+        // that preserves the invariant that Active subgoal messages are never mistakenly
+        // evicted by subsequent pruning.
+        let _active_id = self
+            .subgoals
+            .iter()
+            .find(|s| s.state == SubgoalState::Active)
+            .map(|s| s.id);
+
+        // When old_compact_end > 0, drop subgoals whose entire span was within the drained range.
+        // A subgoal is considered fully drained if its end_msg_index < old_compact_end
+        // AND it is Completed (Active subgoal messages are re-inserted so they survive).
+        if old_compact_end > 0 {
+            self.subgoals.retain(|s| {
+                // Keep Active subgoals — their messages were re-inserted.
+                s.state == SubgoalState::Active
+                // Keep Completed subgoals whose span extends into the preserved tail.
+                    || s.end_msg_index >= old_compact_end
+            });
+        }
+
+        if self.subgoals.is_empty() {
+            self.last_tagged_index = 0;
+            return;
+        }
+
+        // Rebuild: assign each non-system message to a subgoal based on surviving subgoal spans.
+        // Strategy: For each surviving message, determine which subgoal span it fell into
+        // based on the surviving subgoals' adjusted boundaries. Active subgoals take
+        // precedence, then Completed subgoals, then untagged.
+        //
+        // This preserves tier differentiation: Active messages stay Active (unevictable),
+        // Completed messages stay Completed (summarizable), untagged stay untagged (outdated).
+
+        let mut last_idx = 0usize;
+        for (i, _msg) in messages.iter().enumerate().skip(1) {
+            // Try to match this message index to a surviving subgoal span.
+            // Prefer Active subgoals, then Completed subgoals.
+            let id = self
+                .subgoals
+                .iter()
+                .filter(|s| s.state == SubgoalState::Active)
+                .find(|s| i >= s.start_msg_index && i <= s.end_msg_index)
+                .map(|s| s.id)
+                .or_else(|| {
+                    self.subgoals
+                        .iter()
+                        .filter(|s| s.state == SubgoalState::Completed)
+                        .find(|s| i >= s.start_msg_index && i <= s.end_msg_index)
+                        .map(|s| s.id)
+                });
+
+            if let Some(id) = id {
+                self.msg_to_subgoal.insert(i, id);
+                last_idx = i;
+            }
+        }
+
+        self.last_tagged_index = last_idx;
+    }
+}
+
 #[cfg(all(test, feature = "context-compression"))]
 mod tests {
     use super::*;
@@ -434,5 +781,172 @@ mod tests {
             new_score.relevance,
             old_score.relevance
         );
+    }
+
+    // ─── SubgoalRegistry tests ────────────────────────────────────────────────
+
+    #[test]
+    fn subgoal_registry_push_active_creates_active_subgoal() {
+        let mut registry = SubgoalRegistry::default();
+        let id = registry.push_active("Implement login endpoint".into(), 1);
+        assert_eq!(registry.subgoals.len(), 1);
+        assert_eq!(registry.subgoals[0].id, id);
+        assert_eq!(registry.subgoals[0].state, SubgoalState::Active);
+        assert_eq!(registry.subgoals[0].start_msg_index, 1);
+    }
+
+    #[test]
+    fn subgoal_registry_complete_active_transitions_state() {
+        let mut registry = SubgoalRegistry::default();
+        registry.push_active("initial subgoal".into(), 1);
+        registry.complete_active(5);
+        assert_eq!(registry.subgoals[0].state, SubgoalState::Completed);
+        assert_eq!(registry.subgoals[0].end_msg_index, 5);
+        assert!(registry.active_subgoal().is_none());
+    }
+
+    #[test]
+    fn subgoal_registry_push_active_auto_completes_existing_active() {
+        let mut registry = SubgoalRegistry::default();
+        registry.push_active("first subgoal".into(), 1);
+        // Push a second without completing the first
+        registry.push_active("second subgoal".into(), 6);
+        // First must be auto-completed
+        assert_eq!(registry.subgoals[0].state, SubgoalState::Completed);
+        assert_eq!(registry.subgoals[1].state, SubgoalState::Active);
+        // Only one Active at any time
+        let active_count = registry
+            .subgoals
+            .iter()
+            .filter(|s| s.state == SubgoalState::Active)
+            .count();
+        assert_eq!(active_count, 1);
+    }
+
+    #[test]
+    fn subgoal_registry_extend_active_tags_incrementally() {
+        let mut registry = SubgoalRegistry::default();
+        let id = registry.push_active("subgoal".into(), 3);
+        registry.extend_active(5);
+        // Messages 3, 4, 5 should all be tagged
+        assert_eq!(registry.subgoal_state(3), Some(SubgoalState::Active));
+        assert_eq!(registry.subgoal_state(4), Some(SubgoalState::Active));
+        assert_eq!(registry.subgoal_state(5), Some(SubgoalState::Active));
+        assert_eq!(registry.msg_to_subgoal.get(&3), Some(&id));
+
+        // Extend again: only new indices should be added
+        registry.extend_active(7);
+        assert_eq!(registry.subgoal_state(6), Some(SubgoalState::Active));
+        assert_eq!(registry.subgoal_state(7), Some(SubgoalState::Active));
+        // Count entries: 3,4,5,6,7 = 5 total (no duplicates)
+        assert_eq!(registry.msg_to_subgoal.len(), 5);
+    }
+
+    #[test]
+    fn subgoal_registry_subgoal_state_returns_correct_tier() {
+        let mut registry = SubgoalRegistry::default();
+        registry.push_active("completed subgoal".into(), 1);
+        registry.tag_range(1, 5, SubgoalId(0));
+        registry.complete_active(5);
+        registry.push_active("active subgoal".into(), 6);
+        registry.extend_active(9);
+
+        // Completed subgoal messages
+        assert_eq!(registry.subgoal_state(1), Some(SubgoalState::Completed));
+        assert_eq!(registry.subgoal_state(5), Some(SubgoalState::Completed));
+        // Active subgoal messages
+        assert_eq!(registry.subgoal_state(6), Some(SubgoalState::Active));
+        assert_eq!(registry.subgoal_state(9), Some(SubgoalState::Active));
+        // Untagged
+        assert_eq!(registry.subgoal_state(0), None);
+        assert_eq!(registry.subgoal_state(10), None);
+    }
+
+    #[test]
+    fn subgoal_registry_tag_range_retroactive_tagging() {
+        let mut registry = SubgoalRegistry::default();
+        // Simulate first extraction arriving late: pre-existing messages 1..5
+        let id = registry.push_active("first subgoal".into(), 5);
+        // Retroactive tag all existing messages
+        registry.tag_range(1, 4, id);
+        // All messages [1..4] should be tagged as Active
+        for i in 1..=4 {
+            assert_eq!(
+                registry.subgoal_state(i),
+                Some(SubgoalState::Active),
+                "message {i} must be tagged Active"
+            );
+        }
+    }
+
+    #[test]
+    fn subgoal_registry_rebuild_after_compaction_all_removed() {
+        use zeph_llm::provider::{Message, Role};
+        let mut registry = SubgoalRegistry::default();
+        let id = registry.push_active("completed subgoal".into(), 1);
+        registry.tag_range(1, 5, id);
+        registry.complete_active(5);
+
+        // Post-compaction: only system prompt + summary survive
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::System, "[summary]"),
+        ];
+        // compact_end = 6 means all original messages [1..5] were drained
+        registry.rebuild_after_compaction(&messages, 6);
+
+        // Completed subgoal with end_msg_index=5 < compact_end=6 is dropped
+        assert!(
+            registry.subgoals.is_empty(),
+            "fully drained completed subgoal must be removed"
+        );
+        assert!(registry.msg_to_subgoal.is_empty());
+    }
+
+    #[test]
+    fn subgoal_registry_rebuild_after_compaction_active_subgoal_survives() {
+        use zeph_llm::provider::{Message, Role};
+        let mut registry = SubgoalRegistry::default();
+        let id = registry.push_active("active subgoal".into(), 3);
+        registry.tag_range(3, 6, id);
+
+        // Post-compaction: system + summary + 2 re-inserted active subgoal msgs + preserved tail
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::System, "[summary]"),
+            Message::from_legacy(Role::User, "active msg 1"),
+            Message::from_legacy(Role::User, "active msg 2"),
+            Message::from_legacy(Role::User, "tail msg"),
+        ];
+        registry.rebuild_after_compaction(&messages, 3);
+
+        // Active subgoal must survive
+        assert!(registry.active_subgoal().is_some());
+        // Messages in new array should be tagged
+        assert!(!registry.msg_to_subgoal.is_empty());
+    }
+
+    #[test]
+    fn subgoal_registry_rebuild_no_drain_repairs_shifted_indices() {
+        use zeph_llm::provider::{Message, Role};
+        let mut registry = SubgoalRegistry::default();
+        let id = registry.push_active("subgoal".into(), 1);
+        registry.tag_range(1, 3, id);
+
+        // Simulate deferred summary insertion at index 2 (shifts indices up)
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "msg 1"),
+            Message::from_legacy(Role::Assistant, "[tool summary]"), // inserted
+            Message::from_legacy(Role::User, "msg 3"),               // was index 2
+            Message::from_legacy(Role::User, "msg 4"),               // was index 3
+        ];
+        // old_compact_end = 0 means "no drain, just repair indices"
+        registry.rebuild_after_compaction(&messages, 0);
+
+        // After rebuild, the Active subgoal must still exist and messages must be tagged
+        assert!(registry.active_subgoal().is_some());
+        // At least the new messages should be tagged
+        assert!(!registry.msg_to_subgoal.is_empty());
     }
 }

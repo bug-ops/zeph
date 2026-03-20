@@ -5,6 +5,7 @@ mod algorithms;
 mod corrections;
 mod cross_session;
 mod graph;
+pub(crate) mod importance;
 mod recall;
 mod summarization;
 
@@ -45,6 +46,8 @@ pub struct SemanticMemory {
     pub(crate) temporal_decay_half_life_days: u32,
     pub(crate) mmr_enabled: bool,
     pub(crate) mmr_lambda: f32,
+    pub(crate) importance_enabled: bool,
+    pub(crate) importance_weight: f64,
     pub token_counter: Arc<TokenCounter>,
     pub graph_store: Option<Arc<crate::graph::GraphStore>>,
     pub(crate) community_detection_failures: Arc<AtomicU64>,
@@ -139,6 +142,8 @@ impl SemanticMemory {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            importance_enabled: false,
+            importance_weight: 0.15,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
@@ -179,6 +184,8 @@ impl SemanticMemory {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            importance_enabled: false,
+            importance_weight: 0.15,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
@@ -234,6 +241,14 @@ impl SemanticMemory {
         self
     }
 
+    /// Configure write-time importance scoring for memory retrieval.
+    #[must_use]
+    pub fn with_importance_options(mut self, enabled: bool, weight: f64) -> Self {
+        self.importance_enabled = enabled;
+        self.importance_weight = weight;
+        self
+    }
+
     /// Construct a `SemanticMemory` from pre-built parts.
     ///
     /// Intended for tests that need full control over the backing stores.
@@ -258,6 +273,8 @@ impl SemanticMemory {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            importance_enabled: false,
+            importance_weight: 0.15,
             token_counter,
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
@@ -317,6 +334,8 @@ impl SemanticMemory {
             temporal_decay_half_life_days: 30,
             mmr_enabled: false,
             mmr_lambda: 0.7,
+            importance_enabled: false,
+            importance_weight: 0.15,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
