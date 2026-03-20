@@ -10,7 +10,7 @@ use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role, ToolDefini
 use super::Agent;
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
-use zeph_sanitizer::{ContentSource, ContentSourceKind};
+use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 use zeph_skills::loader::Skill;
 
 /// Prefix used in the overflow notice appended to tool outputs that exceed the size threshold.
@@ -286,14 +286,23 @@ impl<C: Channel> Agent<C> {
         // MCP tools use "server:tool" format (contains ':') or legacy "mcp" name.
         // Web scrape tools use "web-scrape" (hyphenated) or "fetch".
         // Everything else is local shell/file output.
-        let kind = if tool_name.contains(':') || tool_name == "mcp" || tool_name == "search_code" {
-            ContentSourceKind::McpResponse
+        let source = if tool_name.contains(':') || tool_name == "mcp" || tool_name == "search_code"
+        {
+            ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
         } else if tool_name == "web-scrape" || tool_name == "web_scrape" || tool_name == "fetch" {
-            ContentSourceKind::WebScrape
+            ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
+        } else if tool_name == "memory_search" {
+            // Issue #2057: memory_search output is conversation history from SQLite/Qdrant.
+            // Without this classification, benign recalled content (e.g. user discussing
+            // "system prompt") triggers injection false positives → Qdrant embedding skipped
+            // for the entire turn. ConversationHistory hint matches assembly.rs:698 usage.
+            ContentSource::new(ContentSourceKind::MemoryRetrieval)
+                .with_identifier(tool_name)
+                .with_memory_hint(MemorySourceHint::ConversationHistory)
         } else {
-            ContentSourceKind::ToolResult
+            ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
         };
-        let source = ContentSource::new(kind).with_identifier(tool_name);
+        let kind = source.kind;
         let sanitized = self.security.sanitizer.sanitize(body, source);
         let has_injection_flags = !sanitized.injection_flags.is_empty();
         if has_injection_flags {
