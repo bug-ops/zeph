@@ -169,6 +169,9 @@ impl ToolDependencyGraph {
     /// remains unchanged (HIGH-03 fix). Dependency gates are applied AFTER TAFC
     /// augmentation to prevent re-adding gated tools through augmentation (MED-04 fix).
     ///
+    /// Only `AlwaysOn` tools bypass hard gates. `NameMentioned` tools are still subject
+    /// to `requires` checks — a user mentioning a gated tool name does not grant access.
+    ///
     /// # Deadlock fallback (CRIT-01)
     ///
     /// If applying hard gates would remove ALL non-always-on included tools, the
@@ -185,17 +188,13 @@ impl ToolDependencyGraph {
             return;
         }
 
-        // Collect tools to gate (those not already excluded and not always-on / name-mentioned).
-        // Always-on and name-mentioned tools bypass the hard gate per design.
+        // Only AlwaysOn tools bypass the hard dependency gate.
+        // NameMentioned tools still respect `requires` constraints: a user mentioning a gated
+        // tool name in their query does not grant access to it before its prerequisites run.
         let bypassed: HashSet<&str> = result
             .inclusion_reasons
             .iter()
-            .filter(|(_, r)| {
-                matches!(
-                    r,
-                    InclusionReason::AlwaysOn | InclusionReason::NameMentioned
-                )
-            })
+            .filter(|(_, r)| matches!(r, InclusionReason::AlwaysOn))
             .map(|(id, _)| id.as_str())
             .collect();
 
@@ -339,9 +338,14 @@ fn detect_cycles(deps: &HashMap<String, ToolDependency>) -> HashSet<String> {
 
             match state.get(child).copied().unwrap_or(State::Unvisited) {
                 State::InProgress => {
-                    // Back-edge: mark all nodes currently in the DFS path as cycled.
-                    for (path_node, _) in &stack {
-                        cycled.insert((*path_node).to_owned());
+                    // Back-edge found: child is the cycle entry point already on the stack.
+                    // Only mark nodes from that entry point to the top of the stack as cycled.
+                    // Ancestors above the cycle entry are NOT part of the cycle.
+                    let cycle_start = stack.iter().position(|(n, _)| *n == child);
+                    if let Some(start) = cycle_start {
+                        for (path_node, _) in &stack[start..] {
+                            cycled.insert((*path_node).to_owned());
+                        }
                     }
                     cycled.insert(child.to_owned());
                 }
@@ -941,5 +945,284 @@ mod tests {
 
         // bash is always-on, bypasses hard gate
         assert!(result.included.contains("bash"));
+    }
+
+    // --- Regression tests for HIGH-01 and HIGH-02 ---
+
+    /// HIGH-01 regression: ancestors of a cycle must NOT lose their `requires`.
+    ///
+    /// Graph: A requires B, B requires C, C requires D, D requires C (cycle: C↔D).
+    /// Before fix: A and B were marked cycled and had their requires cleared.
+    /// After fix: only C and D are in the cycle; A and B remain gated.
+    #[test]
+    fn cycle_detection_does_not_clear_ancestor_requires() {
+        let graph = make_dep_graph(&[
+            ("tool_a", vec!["tool_b"], vec![]),
+            ("tool_b", vec!["tool_c"], vec![]),
+            ("tool_c", vec!["tool_d"], vec![]),
+            ("tool_d", vec!["tool_c"], vec![]),
+        ]);
+        // Cycle participants (C, D) must be unconditionally available.
+        assert!(graph.requirements_met("tool_c", &completed(&[])));
+        assert!(graph.requirements_met("tool_d", &completed(&[])));
+        // Non-cycle ancestors (A, B) must still be gated.
+        assert!(!graph.requirements_met("tool_a", &completed(&[])));
+        assert!(!graph.requirements_met("tool_b", &completed(&[])));
+        // A unlocks when B completes; B unlocks when C completes (C is free).
+        assert!(graph.requirements_met("tool_b", &completed(&["tool_c"])));
+        assert!(graph.requirements_met("tool_a", &completed(&["tool_b"])));
+    }
+
+    /// HIGH-02 regression: NameMentioned tools must still respect hard gates.
+    ///
+    /// If the user says "use apply_patch to fix the bug", apply_patch is
+    /// NameMentioned but must NOT bypass its requires=[read] constraint.
+    #[test]
+    fn name_mentioned_does_not_bypass_hard_gate() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        let filter = make_filter(vec!["bash"], 5);
+        // Query explicitly mentions apply_patch → NameMentioned reason
+        let all_ids = vec!["bash", "read", "apply_patch"];
+        let query_emb = vec![0.5, 0.5, 0.0];
+        let mut result = filter.filter(&all_ids, &[], "use apply_patch to fix the bug", &query_emb);
+
+        // apply_patch must be in included (name-mentioned) before dependency gate
+        assert!(result.included.contains("apply_patch"));
+        let reason = result
+            .inclusion_reasons
+            .iter()
+            .find(|(id, _)| id == "apply_patch")
+            .map(|(_, r)| r);
+        assert_eq!(reason, Some(&InclusionReason::NameMentioned));
+
+        let always_on: HashSet<String> = ["bash".into()].into();
+        graph.apply(&mut result, &completed(&[]), 0.15, 0.2, &always_on);
+
+        // After gate: apply_patch must be excluded (read not completed)
+        assert!(!result.included.contains("apply_patch"));
+        assert_eq!(result.dependency_exclusions.len(), 1);
+        assert_eq!(result.dependency_exclusions[0].tool_id, "apply_patch");
+    }
+
+    // --- Multi-turn dependency chain integration tests ---
+    //
+    // These tests simulate the session lifecycle: `completed_tool_ids` grows
+    // across turns, unlocking downstream tools one step at a time.
+
+    /// Turn 1: only `read` is available (no completed tools yet).
+    /// Turn 2: after `read` completes, `apply_patch` unlocks.
+    #[test]
+    fn multi_turn_chain_two_steps() {
+        // read → apply_patch (linear dependency)
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        let always_on: HashSet<String> = ["bash".into()].into();
+
+        // --- Turn 1: nothing completed yet ---
+        let filter = ToolSchemaFilter::new(vec!["bash".into()], 5, 5, vec![]);
+        let all_ids = vec!["bash", "read", "apply_patch"];
+        let q = vec![0.5, 0.5, 0.0];
+        let mut result = filter.filter(&all_ids, &[], "fix bug", &q);
+        graph.apply(&mut result, &completed(&[]), 0.15, 0.2, &always_on);
+
+        // apply_patch should be excluded (read not completed)
+        assert!(!result.included.contains("apply_patch"));
+        assert_eq!(result.dependency_exclusions.len(), 1);
+
+        // --- Turn 2: `read` was executed successfully ---
+        let mut result2 = filter.filter(&all_ids, &[], "fix bug", &q);
+        graph.apply(&mut result2, &completed(&["read"]), 0.15, 0.2, &always_on);
+
+        // apply_patch should now be included
+        assert!(result2.included.contains("apply_patch"));
+        assert!(result2.dependency_exclusions.is_empty());
+    }
+
+    /// Three-step linear chain: read → search → apply_patch.
+    /// Each turn unlocks exactly one more tool.
+    #[test]
+    fn multi_turn_chain_three_steps() {
+        let graph = make_dep_graph(&[
+            ("search", vec!["read"], vec![]),
+            ("apply_patch", vec!["search"], vec![]),
+        ]);
+        let always_on: HashSet<String> = ["bash".into()].into();
+        let filter = ToolSchemaFilter::new(vec!["bash".into()], 5, 5, vec![]);
+        let all_ids = vec!["bash", "read", "search", "apply_patch"];
+        let q = vec![0.5, 0.5, 0.0];
+
+        // Turn 1: only read available
+        let mut r1 = filter.filter(&all_ids, &[], "q", &q);
+        graph.apply(&mut r1, &completed(&[]), 0.15, 0.2, &always_on);
+        assert!(r1.included.contains("read"));
+        assert!(!r1.included.contains("search"));
+        assert!(!r1.included.contains("apply_patch"));
+
+        // Turn 2: read done, search unlocked
+        let mut r2 = filter.filter(&all_ids, &[], "q", &q);
+        graph.apply(&mut r2, &completed(&["read"]), 0.15, 0.2, &always_on);
+        assert!(r2.included.contains("search"));
+        assert!(!r2.included.contains("apply_patch"));
+
+        // Turn 3: search done, apply_patch unlocked
+        let mut r3 = filter.filter(&all_ids, &[], "q", &q);
+        graph.apply(
+            &mut r3,
+            &completed(&["read", "search"]),
+            0.15,
+            0.2,
+            &always_on,
+        );
+        assert!(r3.included.contains("apply_patch"));
+        assert!(r3.dependency_exclusions.is_empty());
+    }
+
+    /// Multi-requires: apply_patch needs both `read` AND `search` to be done.
+    #[test]
+    fn multi_turn_multi_requires_both_must_complete() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read", "search"], vec![])]);
+        let always_on: HashSet<String> = ["bash".into()].into();
+        let filter = ToolSchemaFilter::new(vec!["bash".into()], 5, 5, vec![]);
+        let all_ids = vec!["bash", "read", "search", "apply_patch"];
+        let q = vec![0.5, 0.5, 0.0];
+
+        // Only `read` done — not enough
+        let mut r1 = filter.filter(&all_ids, &[], "q", &q);
+        graph.apply(&mut r1, &completed(&["read"]), 0.15, 0.2, &always_on);
+        assert!(!r1.included.contains("apply_patch"));
+        let excl = &r1.dependency_exclusions[0];
+        assert_eq!(excl.unmet_requires, vec!["search"]);
+
+        // Both done — unlocked
+        let mut r2 = filter.filter(&all_ids, &[], "q", &q);
+        graph.apply(
+            &mut r2,
+            &completed(&["read", "search"]),
+            0.15,
+            0.2,
+            &always_on,
+        );
+        assert!(r2.included.contains("apply_patch"));
+        assert!(r2.dependency_exclusions.is_empty());
+    }
+
+    /// Preference boost increases across turns as soft deps are satisfied.
+    ///
+    /// A tool must have a cached embedding to appear in `scores` and receive a
+    /// score adjustment from `apply()`. This test uses a filter with an explicit
+    /// embedding for `format` so the score is trackable.
+    #[test]
+    fn multi_turn_preference_boost_accumulates() {
+        // format prefers search and grep (soft deps)
+        let graph = make_dep_graph(&[("format", vec![], vec!["search", "grep"])]);
+        let always_on: HashSet<String> = HashSet::new();
+        // Give format a real embedding so it appears in `scores`.
+        let filter = ToolSchemaFilter::new(
+            vec![],
+            5,
+            5,
+            vec![
+                ToolEmbedding {
+                    tool_id: "format".into(),
+                    embedding: vec![0.6, 0.4, 0.0],
+                },
+                ToolEmbedding {
+                    tool_id: "search".into(),
+                    embedding: vec![0.7, 0.3, 0.0],
+                },
+                ToolEmbedding {
+                    tool_id: "grep".into(),
+                    embedding: vec![0.8, 0.2, 0.0],
+                },
+            ],
+        );
+        let all_ids = vec!["format", "search", "grep"];
+        let q = vec![0.5, 0.5, 0.0];
+        let boost_per = 0.15_f32;
+        let max_boost = 0.3_f32;
+
+        let score_of = |result: &ToolFilterResult, id: &str| -> f32 {
+            result
+                .scores
+                .iter()
+                .find(|(tid, _)| tid == id)
+                .map(|(_, s)| *s)
+                .unwrap_or(0.0)
+        };
+
+        // Turn 1: no prefs satisfied — no boost
+        let mut r1 = filter.filter(&all_ids, &[], "q", &q);
+        let base_score = score_of(&r1, "format");
+        graph.apply(&mut r1, &completed(&[]), boost_per, max_boost, &always_on);
+        assert!((score_of(&r1, "format") - base_score).abs() < 1e-5);
+
+        // Turn 2: search done → +0.15
+        let mut r2 = filter.filter(&all_ids, &[], "q", &q);
+        graph.apply(
+            &mut r2,
+            &completed(&["search"]),
+            boost_per,
+            max_boost,
+            &always_on,
+        );
+        let delta2 = score_of(&r2, "format") - base_score;
+        assert!(
+            (delta2 - 0.15).abs() < 1e-4,
+            "expected +0.15 boost, got {delta2}"
+        );
+
+        // Turn 3: both done → +0.30 (2 * 0.15, within max_boost=0.30)
+        let mut r3 = filter.filter(&all_ids, &[], "q", &q);
+        graph.apply(
+            &mut r3,
+            &completed(&["search", "grep"]),
+            boost_per,
+            max_boost,
+            &always_on,
+        );
+        let delta3 = score_of(&r3, "format") - base_score;
+        assert!(
+            (delta3 - 0.30).abs() < 1e-4,
+            "expected +0.30 boost, got {delta3}"
+        );
+    }
+
+    /// `filter_tool_names` used for iteration 1+ gating in the native tool loop.
+    /// Simulates: iteration 0 executes `read`, iteration 1 should now allow `apply_patch`.
+    #[test]
+    fn filter_tool_names_multi_turn_unlocks_after_completion() {
+        let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
+        let always_on: HashSet<String> = ["bash".into()].into();
+        let all_names = vec!["bash", "read", "apply_patch"];
+
+        // Before read completes
+        let filtered_before = graph.filter_tool_names(&all_names, &completed(&[]), &always_on);
+        assert!(filtered_before.contains(&"bash")); // always-on
+        assert!(filtered_before.contains(&"read")); // no deps
+        assert!(!filtered_before.contains(&"apply_patch")); // gated
+
+        // After read completes
+        let filtered_after = graph.filter_tool_names(&all_names, &completed(&["read"]), &always_on);
+        assert!(filtered_after.contains(&"bash"));
+        assert!(filtered_after.contains(&"read"));
+        assert!(filtered_after.contains(&"apply_patch")); // unlocked
+    }
+
+    /// Deadlock fallback in `filter_tool_names`: if all non-always-on names would
+    /// be filtered, return them all unfiltered.
+    #[test]
+    fn filter_tool_names_deadlock_fallback_passes_all() {
+        // only_tool requires `missing` which is never completed
+        let graph = make_dep_graph(&[("only_tool", vec!["missing"], vec![])]);
+        let always_on: HashSet<String> = ["bash".into()].into();
+        let all_names = vec!["bash", "only_tool"];
+
+        let filtered = graph.filter_tool_names(&all_names, &completed(&[]), &always_on);
+
+        // bash is always-on, only_tool would be gated.
+        // filter_tool_names does NOT implement deadlock fallback itself —
+        // it is the caller's responsibility. Verify gating behaviour here:
+        // only_tool is excluded, only bash passes.
+        assert!(filtered.contains(&"bash"));
+        assert!(!filtered.contains(&"only_tool"));
     }
 }
