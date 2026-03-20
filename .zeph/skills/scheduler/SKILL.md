@@ -63,7 +63,7 @@ expressions are accepted. When 5 fields are given, seconds default to 0.
 Built-in kinds: `memory_cleanup`, `skill_refresh`, `health_check`, `update_check`, `custom`.
 
 For `custom` kind, the `task` field controls what happens at execution time.
-At the scheduled moment it is injected as `[Scheduled task] <task>` into the agent turn.
+At the scheduled moment it is injected as `Execute the following scheduled task now: <task>` into the agent turn.
 
 **Two patterns for `task`:**
 

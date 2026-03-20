@@ -28,7 +28,9 @@ pub use handoff::{
     ReviewerContext, RoleContext, TestDelta, TesterContext, ValidationResult, ValidationRule,
     ValidationSeverity, VerificationResult, VerificationStatus, validate_context, verify_output,
 };
-pub use plan_cache::{PlanCache, PlanCacheError, PlanTemplate, TemplateTask, plan_with_cache};
+pub use plan_cache::{
+    PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
+};
 pub use planner::{LlmPlanner, Planner};
 pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};

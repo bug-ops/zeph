@@ -100,7 +100,7 @@ Schedule a one-shot task to fire at a specific future time.
 | `name` | string | Max 128 characters; unique |
 | `run_at` | string | Future time in any supported format (see below) |
 | `kind` | string | Max 64 characters |
-| `task` | string | Optional. Injected as `[Scheduled task] <task>` into the agent turn when the task fires (for `custom` kind) |
+| `task` | string | Optional. Injected as `Execute the following scheduled task now: <task>` into the agent turn when the task fires (for `custom` kind) |
 
 ### `run_at` formats
 

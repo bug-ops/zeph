@@ -304,33 +304,35 @@ pub(crate) async fn run_daemon(
 
     let (loopback_channel, loopback_handle) = zeph_core::LoopbackChannel::pair(64);
 
-    let agent = Agent::new_with_registry_arc(
-        provider.clone(),
-        loopback_channel,
-        registry,
-        matcher,
-        config.skills.max_active_skills,
-        tool_executor,
+    let agent = Box::pin(
+        Agent::new_with_registry_arc(
+            provider.clone(),
+            loopback_channel,
+            registry,
+            matcher,
+            config.skills.max_active_skills,
+            tool_executor,
+        )
+        .apply_session_config(session_config)
+        .with_disambiguation_threshold(config.skills.disambiguation_threshold)
+        .with_skill_reload(skill_paths, reload_rx)
+        .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+        .with_memory(
+            std::sync::Arc::clone(&memory),
+            conversation_id,
+            config.memory.history_limit,
+            config.memory.semantic.recall_limit,
+            config.memory.summarization_threshold,
+        )
+        .with_shutdown(shutdown_rx.clone())
+        .with_config_reload(config_path_owned, config_reload_rx)
+        .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
+        .with_mcp_shared_tools(mcp_shared_tools)
+        .with_hybrid_search(config.skills.hybrid_search)
+        .with_focus_config(config.agent.focus.clone())
+        .with_sidequest_config(config.memory.sidequest.clone())
+        .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider),
     )
-    .apply_session_config(session_config)
-    .with_disambiguation_threshold(config.skills.disambiguation_threshold)
-    .with_skill_reload(skill_paths, reload_rx)
-    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
-    .with_memory(
-        std::sync::Arc::clone(&memory),
-        conversation_id,
-        config.memory.history_limit,
-        config.memory.semantic.recall_limit,
-        config.memory.summarization_threshold,
-    )
-    .with_shutdown(shutdown_rx.clone())
-    .with_config_reload(config_path_owned, config_reload_rx)
-    .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
-    .with_mcp_shared_tools(mcp_shared_tools)
-    .with_hybrid_search(config.skills.hybrid_search)
-    .with_focus_config(config.agent.focus.clone())
-    .with_sidequest_config(config.memory.sidequest.clone())
-    .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
 
     // Wire tool dependency graph if enabled (#2024).
