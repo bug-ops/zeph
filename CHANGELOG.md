@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(tools): dynamic tool schema filtering — sends only relevant tool definitions to the LLM per turn, selected by embedding similarity between user query and tool descriptions; configurable via `[agent.tool_filter]` with `enabled`, `top_k`, `always_on`, and `min_description_words`; disabled by default (#2020)
 - feat(channels): register Discord slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task; idempotent via `PUT /applications/{id}/commands` (CHAN-05, epic #1978)
 - feat(channels): extract shared `CONFIRM_TIMEOUT` constant (30s) to `zeph-channels` crate; Telegram, Discord, and Slack `confirm()` all reference it (CHAN-02, epic #1978)
 

@@ -755,6 +755,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the dynamic tool schema filter (pre-computed tool embeddings).
+    #[must_use]
+    pub fn with_tool_schema_filter(mut self, filter: zeph_tools::ToolSchemaFilter) -> Self {
+        self.tool_schema_filter = Some(filter);
+        self
+    }
+
     /// Apply all config-derived settings from [`AgentSessionConfig`] in a single call.
     ///
     /// Takes `cfg` by value and destructures it so the compiler emits an unused-variable warning

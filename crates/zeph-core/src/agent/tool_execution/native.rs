@@ -87,6 +87,19 @@ impl<C: Channel> Agent<C> {
             tool_defs.extend(super::super::focus::focus_tool_definitions());
         }
 
+        // Pre-compute the full tool set for iterations 1+ before filtering.
+        let all_tool_defs = tool_defs.clone();
+
+        // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
+        if let Some(ref filtered_ids) = self.cached_filtered_tool_ids {
+            tool_defs.retain(|d| filtered_ids.contains(&d.name));
+            tracing::debug!(
+                filtered = tool_defs.len(),
+                total = all_tool_defs.len(),
+                "tool schema filter: iteration 0 using filtered tool set"
+            );
+        }
+
         tracing::debug!(
             tool_count = tool_defs.len(),
             tools = ?tool_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
@@ -115,9 +128,15 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
+            // Iteration 0 uses filtered tool_defs; iterations 1+ expand to full set (#2020).
+            let defs_for_turn = if iteration == 0 {
+                &tool_defs
+            } else {
+                &all_tool_defs
+            };
             // None = continue loop, Some(()) = return Ok, Err = propagate
             if self
-                .process_single_native_turn(&tool_defs, iteration)
+                .process_single_native_turn(defs_for_turn, iteration)
                 .await?
                 .is_some()
             {

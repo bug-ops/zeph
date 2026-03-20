@@ -19,6 +19,7 @@ pub mod policy;
 #[cfg(feature = "policy-enforcer")]
 pub mod policy_gate;
 pub mod registry;
+pub mod schema_filter;
 pub mod scrape;
 pub mod search_code;
 pub mod shell;
@@ -56,6 +57,7 @@ pub use policy::{
 #[cfg(feature = "policy-enforcer")]
 pub use policy_gate::PolicyGateExecutor;
 pub use registry::ToolRegistry;
+pub use schema_filter::{InclusionReason, ToolEmbedding, ToolFilterResult, ToolSchemaFilter};
 pub use scrape::WebScrapeExecutor;
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,

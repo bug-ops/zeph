@@ -127,6 +127,7 @@ impl Default for Config {
                 tool_repeat_threshold: 2,
                 max_retry_duration_secs: 30,
                 focus: FocusConfig::default(),
+                tool_filter: crate::agent::ToolFilterConfig::default(),
             },
             llm: LlmConfig {
                 provider: ProviderKind::Ollama,
