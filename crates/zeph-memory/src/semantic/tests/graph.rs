@@ -18,7 +18,10 @@ async fn graph_memory() -> SemanticMemory {
 #[tokio::test]
 async fn recall_graph_returns_empty_when_no_entities() {
     let memory = graph_memory().await;
-    let facts = memory.recall_graph("rust", 10, 2, None, 0.0).await.unwrap();
+    let facts = memory
+        .recall_graph("rust", 10, 2, None, 0.0, &[])
+        .await
+        .unwrap();
     assert!(facts.is_empty(), "empty graph must return empty vec");
 }
 
@@ -47,7 +50,10 @@ async fn recall_graph_returns_facts_for_known_entity() {
         .await
         .unwrap();
 
-    let facts = memory.recall_graph("rust", 10, 2, None, 0.0).await.unwrap();
+    let facts = memory
+        .recall_graph("rust", 10, 2, None, 0.0, &[])
+        .await
+        .unwrap();
     assert!(!facts.is_empty(), "should return at least one fact");
     assert_eq!(facts[0].entity_name, "rust");
     assert_eq!(facts[0].relation, "uses");
@@ -80,7 +86,7 @@ async fn recall_graph_sorted_by_composite_score() {
         .unwrap();
 
     let facts = memory
-        .recall_graph("entity_a", 10, 1, None, 0.0)
+        .recall_graph("entity_a", 10, 1, None, 0.0, &[])
         .await
         .unwrap();
     if facts.len() >= 2 {
@@ -178,7 +184,10 @@ async fn recall_graph_truncates_to_limit() {
             .unwrap();
     }
 
-    let facts = memory.recall_graph("root", 3, 1, None, 0.0).await.unwrap();
+    let facts = memory
+        .recall_graph("root", 3, 1, None, 0.0, &[])
+        .await
+        .unwrap();
     assert!(facts.len() <= 3, "recall_graph must respect limit");
 }
 
@@ -210,13 +219,13 @@ async fn recall_graph_multi_hop_traverses_two_hops() {
         .unwrap();
 
     let facts_1hop = memory
-        .recall_graph("a_entity", 10, 1, None, 0.0)
+        .recall_graph("a_entity", 10, 1, None, 0.0, &[])
         .await
         .unwrap();
     assert!(!facts_1hop.is_empty(), "hop=1 must find direct edge");
 
     let facts_2hop = memory
-        .recall_graph("a_entity", 10, 2, None, 0.0)
+        .recall_graph("a_entity", 10, 2, None, 0.0, &[])
         .await
         .unwrap();
     assert!(

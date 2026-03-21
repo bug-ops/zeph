@@ -221,6 +221,7 @@ mod tests {
             relation: "knows".to_owned(),
             fact: fact.to_owned(),
             temporal_hint: None,
+            edge_type: "semantic".to_owned(),
         }
     }
 

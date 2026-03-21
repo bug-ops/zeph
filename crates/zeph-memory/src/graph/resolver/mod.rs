@@ -856,6 +856,65 @@ impl<'a> EntityResolver<'a> {
             .await?;
         Ok(Some(new_id))
     }
+
+    /// Resolve a typed edge: deduplicate or supersede existing edges of the same type.
+    ///
+    /// Identical to [`resolve_edge`] but includes `edge_type` in the matching key.
+    /// An active edge with the same `(source, target, relation, edge_type)` and identical
+    /// fact returns `None`; same relation+type with different fact is superseded.
+    ///
+    /// This ensures that different MAGMA edge types for the same entity pair are stored
+    /// independently (critic mitigation: dedup key includes `edge_type`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn resolve_edge_typed(
+        &self,
+        source_id: i64,
+        target_id: i64,
+        relation: &str,
+        fact: &str,
+        confidence: f32,
+        episode_id: Option<crate::types::MessageId>,
+        edge_type: crate::graph::EdgeType,
+    ) -> Result<Option<i64>, MemoryError> {
+        let relation_clean = strip_control_chars(&relation.trim().to_lowercase());
+        let normalized_relation =
+            truncate_to_bytes_ref(&relation_clean, MAX_RELATION_BYTES).to_owned();
+
+        let fact_clean = strip_control_chars(fact.trim());
+        let normalized_fact = truncate_to_bytes_ref(&fact_clean, MAX_FACT_BYTES).to_owned();
+
+        let existing_edges = self.store.edges_exact(source_id, target_id).await?;
+
+        // Match on (relation, edge_type) — different types are distinct edges
+        let matching = existing_edges
+            .iter()
+            .find(|e| e.relation == normalized_relation && e.edge_type == edge_type);
+
+        if let Some(old) = matching {
+            if old.fact == normalized_fact {
+                return Ok(None);
+            }
+            self.store.invalidate_edge(old.id).await?;
+        }
+
+        let new_id = self
+            .store
+            .insert_edge_typed(
+                source_id,
+                target_id,
+                &normalized_relation,
+                &normalized_fact,
+                confidence,
+                episode_id,
+                edge_type,
+            )
+            .await?;
+        Ok(Some(new_id))
+    }
 }
 
 /// Extract a JSON object from a string that may contain markdown code fences.

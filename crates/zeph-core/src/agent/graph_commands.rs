@@ -57,17 +57,24 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         };
 
-        let (entities, edges, communities) = tokio::join!(
+        let (entities, edges, communities, distribution) = tokio::join!(
             store.entity_count(),
             store.active_edge_count(),
-            store.community_count()
+            store.community_count(),
+            store.edge_type_distribution()
         );
-        let msg = format!(
+        let mut msg = format!(
             "Graph memory: {} entities, {} edges, {} communities",
             entities.unwrap_or(0),
             edges.unwrap_or(0),
             communities.unwrap_or(0)
         );
+        if let Ok(dist) = distribution
+            && !dist.is_empty()
+        {
+            let dist_str: Vec<String> = dist.iter().map(|(t, c)| format!("{t}={c}")).collect();
+            write!(msg, "\nEdge types: {}", dist_str.join(", ")).unwrap_or(());
+        }
         self.channel.send(&msg).await?;
         Ok(())
     }
@@ -182,8 +189,8 @@ impl<C: Channel> Agent<C> {
                     .cloned()
                     .unwrap_or_else(|| format!("#{}", e.target_entity_id));
                 format!(
-                    "  {} --[{}]--> {}: {} (confidence: {:.2})",
-                    src, e.relation, tgt, e.fact, e.confidence
+                    "  {} --[{}/{}]--> {}: {} (confidence: {:.2})",
+                    src, e.relation, e.edge_type, tgt, e.fact, e.confidence
                 )
             })
             .collect();
@@ -261,8 +268,8 @@ impl<C: Channel> Agent<C> {
                     .cloned()
                     .unwrap_or_else(|| format!("#{}", e.target_entity_id));
                 format!(
-                    "  {status} {} --[{}]--> {}: {} (confidence: {:.2})",
-                    src, e.relation, tgt, e.fact, e.confidence
+                    "  {status} {} --[{}/{}]--> {}: {} (confidence: {:.2})",
+                    src, e.relation, e.edge_type, tgt, e.fact, e.confidence
                 )
             })
             .collect();

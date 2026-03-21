@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::graph::types::EdgeType;
 use crate::sqlite::SqliteStore;
 
 async fn setup() -> GraphStore {
@@ -2493,5 +2494,302 @@ async fn bfs_at_timestamp_valid_to_boundary() {
     assert!(
         depth_map_before.contains_key(&b),
         "B must be reachable one second before valid_to"
+    );
+}
+
+// ── MAGMA EdgeType tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn insert_edge_typed_stores_edge_type() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("A", "A", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("B", "B", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge_typed(a, b, "caused", "A caused B", 0.9, None, EdgeType::Causal)
+        .await
+        .unwrap();
+    assert!(eid > 0);
+
+    let stored: String = sqlx::query_scalar("SELECT edge_type FROM graph_edges WHERE id = ?1")
+        .bind(eid)
+        .fetch_one(gs.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored, "causal");
+}
+
+#[tokio::test]
+async fn insert_edge_defaults_to_semantic() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("A2", "A2", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("B2", "B2", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(a, b, "uses", "A2 uses B2", 0.8, None)
+        .await
+        .unwrap();
+
+    let stored: String = sqlx::query_scalar("SELECT edge_type FROM graph_edges WHERE id = ?1")
+        .bind(eid)
+        .fetch_one(gs.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored, "semantic", "insert_edge must default to semantic");
+}
+
+#[tokio::test]
+async fn insert_edge_typed_dedup_key_includes_edge_type() {
+    // The same (source, target, relation) with different edge types must produce
+    // distinct edges (critic mitigation: dedup key includes edge_type).
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("X", "X", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("Y", "Y", EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    let id_semantic = gs
+        .insert_edge_typed(
+            a,
+            b,
+            "depends_on",
+            "X depends on Y (semantic)",
+            0.8,
+            None,
+            EdgeType::Semantic,
+        )
+        .await
+        .unwrap();
+    let id_causal = gs
+        .insert_edge_typed(
+            a,
+            b,
+            "depends_on",
+            "X depends on Y (causal)",
+            0.9,
+            None,
+            EdgeType::Causal,
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(
+        id_semantic, id_causal,
+        "same relation with different edge types must produce distinct edges"
+    );
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL AND source_entity_id = ?1",
+    )
+    .bind(a)
+    .fetch_one(gs.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 2, "both typed edges must exist");
+}
+
+#[tokio::test]
+async fn insert_edge_typed_deduplicates_same_type() {
+    // Same (source, target, relation, edge_type) must return the same id on repeat call.
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("P", "P", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("Q", "Q", EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    let id1 = gs
+        .insert_edge_typed(
+            a,
+            b,
+            "triggered",
+            "P triggered Q",
+            0.7,
+            None,
+            EdgeType::Causal,
+        )
+        .await
+        .unwrap();
+    let id2 = gs
+        .insert_edge_typed(
+            a,
+            b,
+            "triggered",
+            "P triggered Q",
+            0.95,
+            None,
+            EdgeType::Causal,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        id1, id2,
+        "same (source, target, relation, edge_type) must dedup"
+    );
+}
+
+#[tokio::test]
+async fn edges_for_entity_includes_edge_type() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("EA", "EA", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("EB", "EB", EntityType::Concept, None)
+        .await
+        .unwrap();
+    gs.insert_edge_typed(
+        a,
+        b,
+        "preceded_by",
+        "EA preceded_by EB",
+        0.8,
+        None,
+        EdgeType::Temporal,
+    )
+    .await
+    .unwrap();
+
+    let edges = gs.edges_for_entity(a).await.unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].edge_type, EdgeType::Temporal);
+}
+
+#[tokio::test]
+async fn bfs_typed_empty_types_behaves_like_bfs_with_depth() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("T_A", "T_A", EntityType::Person, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("T_B", "T_B", EntityType::Person, None)
+        .await
+        .unwrap();
+    gs.insert_edge_typed(
+        a,
+        b,
+        "knows",
+        "T_A knows T_B",
+        0.9,
+        None,
+        EdgeType::Semantic,
+    )
+    .await
+    .unwrap();
+
+    let (_, edges_typed, _) = gs.bfs_typed(a, 1, &[]).await.unwrap();
+    let (_, edges_plain, _) = gs.bfs_with_depth(a, 1).await.unwrap();
+    assert_eq!(
+        edges_typed.len(),
+        edges_plain.len(),
+        "empty edge_types must behave like bfs_with_depth"
+    );
+}
+
+#[tokio::test]
+async fn bfs_typed_filters_by_edge_type() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("BT_A", "BT_A", EntityType::Person, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("BT_B", "BT_B", EntityType::Person, None)
+        .await
+        .unwrap();
+    let c = gs
+        .upsert_entity("BT_C", "BT_C", EntityType::Person, None)
+        .await
+        .unwrap();
+
+    // A->B: semantic edge
+    gs.insert_edge_typed(a, b, "knows", "A knows B", 0.9, None, EdgeType::Semantic)
+        .await
+        .unwrap();
+    // A->C: causal edge
+    gs.insert_edge_typed(a, c, "caused", "A caused C", 0.9, None, EdgeType::Causal)
+        .await
+        .unwrap();
+
+    // BFS with only Semantic: C must not be reachable (only via causal)
+    let (_, edges_semantic, depth_semantic) =
+        gs.bfs_typed(a, 2, &[EdgeType::Semantic]).await.unwrap();
+    assert!(
+        depth_semantic.contains_key(&b),
+        "B must be reachable via semantic edge"
+    );
+    assert!(
+        !depth_semantic.contains_key(&c),
+        "C must not be reachable when only Semantic edges are traversed"
+    );
+    // At least one edge must be returned (guards against vacuous all())
+    assert!(
+        !edges_semantic.is_empty(),
+        "semantic BFS must return at least one edge"
+    );
+    // Only the semantic edge should be in results
+    assert!(
+        edges_semantic
+            .iter()
+            .all(|e| e.edge_type == EdgeType::Semantic)
+    );
+
+    // BFS with both Semantic and Causal: both B and C must be reachable
+    let (_, _, depth_both) = gs
+        .bfs_typed(a, 2, &[EdgeType::Semantic, EdgeType::Causal])
+        .await
+        .unwrap();
+    assert!(depth_both.contains_key(&b));
+    assert!(depth_both.contains_key(&c));
+}
+
+#[tokio::test]
+async fn bfs_typed_entity_type_filter() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("E_A", "E_A", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let b = gs
+        .upsert_entity("E_B", "E_B", EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    gs.insert_edge_typed(a, b, "is_a", "E_A is_a E_B", 1.0, None, EdgeType::Entity)
+        .await
+        .unwrap();
+
+    // BFS with Entity type filter should find B
+    let (_, _, depth) = gs.bfs_typed(a, 1, &[EdgeType::Entity]).await.unwrap();
+    assert!(
+        depth.contains_key(&b),
+        "B must be reachable via entity edge"
+    );
+
+    // BFS with only Semantic should not find B (no semantic edges exist)
+    let (_, _, depth_sem) = gs.bfs_typed(a, 1, &[EdgeType::Semantic]).await.unwrap();
+    assert!(
+        !depth_sem.contains_key(&b),
+        "B must not be reachable via semantic filter when only entity edge exists"
     );
 }

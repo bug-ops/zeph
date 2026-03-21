@@ -50,12 +50,13 @@ pub use embedding_registry::{
 pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
 pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy, start_eviction_loop};
-pub use graph::{Community, Edge, Entity, EntityType, GraphFact, GraphStore};
+pub use graph::{Community, Edge, EdgeType, Entity, EntityType, GraphFact, GraphStore};
 pub use math::cosine_similarity;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
 pub use router::{
-    HeuristicRouter, MemoryRoute, MemoryRouter, TemporalRange, strip_temporal_keywords,
+    HeuristicRouter, MemoryRoute, MemoryRouter, TemporalRange, classify_graph_subgraph,
+    strip_temporal_keywords,
 };
 pub use semantic::{
     ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
