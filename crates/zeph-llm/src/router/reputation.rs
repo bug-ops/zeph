@@ -406,7 +406,7 @@ mod tests {
         for _ in 0..10 {
             tracker.record_quality("p", false);
         }
-        let (a, b) = tracker.shift_thompson_priors("p", 2.0, 1.0, 0.3);
+        let (_a, b) = tracker.shift_thompson_priors("p", 2.0, 1.0, 0.3);
         assert!(b > 1.0, "beta should increase for low-quality provider");
     }
 
