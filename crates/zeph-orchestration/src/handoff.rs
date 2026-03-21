@@ -379,10 +379,9 @@ pub struct VerificationResult {
     pub errors: Vec<String>,
 }
 
-// ── No-op validation stub (Phase 1) ────────────────────────────────────────
+// ── No-op validator (kept for trait object compatibility) ───────────────────
 
-/// No-op validator returned by `validate_context()` in Phase 1.
-/// Phase 2 replaces this with real rule evaluation.
+/// No-op validator — use `validate_context()` free function for Phase 2 validation.
 pub struct NoopValidator;
 
 impl HandoffValidator for NoopValidator {
@@ -391,22 +390,310 @@ impl HandoffValidator for NoopValidator {
     }
 }
 
+// ── Phase 2: real validation implementation ─────────────────────────────────
+
 /// Validate a `HandoffContext` against all pre-dispatch rules.
 ///
-/// **Phase 1**: always returns an empty list (no-op).
-/// Phase 2 wires in the full rule set.
+/// Returns a list of `ValidationResult` entries. Hard violations must be treated as
+/// blocking by the caller (`DagScheduler`). Soft violations are logged as warnings.
+///
+/// # Rules applied
+///
+/// - `ObjectiveNonEmpty`: objective must be non-empty and ≤ 1000 chars.
+/// - `CriteriaPresent`: at least one acceptance criterion required (MAST invariant).
+/// - `RoleContextComplete`: required fields per `RoleContext` variant must be populated.
+/// - `HandoffRefSupported`: `HandoffRef::ById` is rejected in Phase 1-2.
 #[must_use]
-pub fn validate_context(_ctx: &HandoffContext) -> Vec<ValidationResult> {
-    Vec::new()
+pub fn validate_context(ctx: &HandoffContext) -> Vec<ValidationResult> {
+    let mut results = Vec::new();
+
+    // Rule: ObjectiveNonEmpty
+    if ctx.objective.trim().is_empty() {
+        results.push(ValidationResult {
+            rule_id: "ObjectiveNonEmpty".to_string(),
+            passed: false,
+            message: "objective must not be empty".to_string(),
+            severity: ValidationSeverity::Hard,
+        });
+    } else if ctx.objective.len() > 1000 {
+        results.push(ValidationResult {
+            rule_id: "ObjectiveNonEmpty".to_string(),
+            passed: false,
+            message: format!(
+                "objective exceeds 1000 chars (got {}); truncate before dispatch",
+                ctx.objective.len()
+            ),
+            severity: ValidationSeverity::Soft,
+        });
+    } else {
+        results.push(ValidationResult {
+            rule_id: "ObjectiveNonEmpty".to_string(),
+            passed: true,
+            message: String::new(),
+            severity: ValidationSeverity::Hard,
+        });
+    }
+
+    // Rule: CriteriaPresent
+    if ctx.acceptance_criteria.is_empty() {
+        results.push(ValidationResult {
+            rule_id: "CriteriaPresent".to_string(),
+            passed: false,
+            message: "at least one acceptance criterion is required (MAST invariant)".to_string(),
+            severity: ValidationSeverity::Hard,
+        });
+    } else {
+        results.push(ValidationResult {
+            rule_id: "CriteriaPresent".to_string(),
+            passed: true,
+            message: String::new(),
+            severity: ValidationSeverity::Hard,
+        });
+    }
+
+    // Rule: HandoffRefSupported — reject ById in Phase 1-2.
+    let by_id_error = check_handoff_refs_supported(ctx);
+    results.extend(by_id_error);
+
+    // Rule: RoleContextComplete
+    let role_errors = validate_role_context(&ctx.role_context);
+    results.extend(role_errors);
+
+    results
+}
+
+/// Check that no `HandoffRef::ById` variants are used (unsupported in Phase 1-2).
+fn check_handoff_refs_supported(ctx: &HandoffContext) -> Vec<ValidationResult> {
+    let mut results = Vec::new();
+
+    let has_by_id = match &ctx.role_context {
+        RoleContext::Developer(c) => matches!(c.spec_ref, HandoffRef::ById { .. }),
+        RoleContext::Tester(c) => matches!(c.implementation_ref, HandoffRef::ById { .. }),
+        RoleContext::Critic(c) => matches!(c.artifact_ref, HandoffRef::ById { .. }),
+        RoleContext::Reviewer(c) => c
+            .artifact_refs
+            .iter()
+            .any(|r| matches!(r, HandoffRef::ById { .. })),
+        RoleContext::Architect(_) | RoleContext::Generic(_) => false,
+    };
+
+    if has_by_id {
+        results.push(ValidationResult {
+            rule_id: "HandoffRefSupported".to_string(),
+            passed: false,
+            message: "HandoffRef::ById is not supported in Phase 1-2; use Inline".to_string(),
+            severity: ValidationSeverity::Hard,
+        });
+    } else {
+        results.push(ValidationResult {
+            rule_id: "HandoffRefSupported".to_string(),
+            passed: true,
+            message: String::new(),
+            severity: ValidationSeverity::Hard,
+        });
+    }
+
+    results
+}
+
+/// Validate role-specific required fields per `RoleContext` variant.
+fn validate_role_context(role: &RoleContext) -> Vec<ValidationResult> {
+    let mut errors: Vec<String> = Vec::new();
+
+    match role {
+        RoleContext::Architect(c) => {
+            if c.spec_files.is_empty() {
+                errors.push("Architect.spec_files must have at least 1 entry".to_string());
+            }
+            if c.scope.is_empty() {
+                errors.push("Architect.scope must have at least 1 entry".to_string());
+            }
+        }
+        RoleContext::Developer(c) => {
+            if c.target_files.is_empty() {
+                errors.push("Developer.target_files must have at least 1 entry".to_string());
+            }
+            if c.test_requirements.is_empty() {
+                errors.push("Developer.test_requirements must have at least 1 entry".to_string());
+            }
+            // spec_ref content check for Inline variant
+            if matches!(&c.spec_ref, HandoffRef::Inline { content } if content.trim().is_empty()) {
+                errors.push("Developer.spec_ref Inline content must not be empty".to_string());
+            }
+        }
+        RoleContext::Tester(c) => {
+            if c.test_plan.is_empty() {
+                errors.push("Tester.test_plan must have at least 1 entry".to_string());
+            }
+            if matches!(&c.implementation_ref, HandoffRef::Inline { content } if content.trim().is_empty())
+            {
+                errors
+                    .push("Tester.implementation_ref Inline content must not be empty".to_string());
+            }
+        }
+        RoleContext::Critic(c) => {
+            if c.review_dimensions.is_empty() {
+                errors.push("Critic.review_dimensions must have at least 1 entry".to_string());
+            }
+            if matches!(&c.artifact_ref, HandoffRef::Inline { content } if content.trim().is_empty())
+            {
+                errors.push("Critic.artifact_ref Inline content must not be empty".to_string());
+            }
+        }
+        RoleContext::Reviewer(c) => {
+            if c.artifact_refs.is_empty() {
+                errors.push("Reviewer.artifact_refs must have at least 1 entry".to_string());
+            }
+            if c.checklist.is_empty() {
+                errors.push("Reviewer.checklist must have at least 1 entry".to_string());
+            }
+        }
+        RoleContext::Generic(_) => {
+            // Generic context has no required fields beyond objective/criteria (checked above).
+        }
+    }
+
+    if errors.is_empty() {
+        vec![ValidationResult {
+            rule_id: "RoleContextComplete".to_string(),
+            passed: true,
+            message: String::new(),
+            severity: ValidationSeverity::Hard,
+        }]
+    } else {
+        vec![ValidationResult {
+            rule_id: "RoleContextComplete".to_string(),
+            passed: false,
+            message: errors.join("; "),
+            severity: ValidationSeverity::Hard,
+        }]
+    }
 }
 
 /// Verify a `HandoffOutput` against the originating `HandoffContext`.
 ///
-/// **Phase 1**: always returns an empty list (no-op).
-/// Phase 3 wires in full criteria coverage and artifact checks.
+/// Checks:
+/// - `criteria_results` covers at least one `acceptance_criteria` entry.
+/// - No criterion result references a criterion not present in the context.
+/// - Overall `VerificationStatus` is derived from per-criterion outcomes.
+///
+/// Returns a list of `ValidationResult` entries (informational; caller decides action).
 #[must_use]
-pub fn verify_output(_ctx: &HandoffContext, _output: &HandoffOutput) -> Vec<ValidationResult> {
-    Vec::new()
+pub fn verify_output(ctx: &HandoffContext, output: &HandoffOutput) -> Vec<ValidationResult> {
+    let mut results = Vec::new();
+
+    // Check: at least one criterion result present.
+    if output.criteria_results.is_empty() {
+        results.push(ValidationResult {
+            rule_id: "CriteriaResultsPresent".to_string(),
+            passed: false,
+            message: "HandoffOutput.criteria_results is empty; no verification possible"
+                .to_string(),
+            severity: ValidationSeverity::Soft,
+        });
+        return results;
+    }
+
+    // Check: each criterion result must reference a criterion from context.
+    let ctx_criteria: std::collections::HashSet<&str> =
+        ctx.acceptance_criteria.iter().map(String::as_str).collect();
+
+    for cr in &output.criteria_results {
+        if !ctx_criteria.contains(cr.criterion.as_str()) {
+            results.push(ValidationResult {
+                rule_id: "CriteriaMatch".to_string(),
+                passed: false,
+                message: format!(
+                    "criterion_result references unknown criterion: {:?}",
+                    cr.criterion
+                ),
+                severity: ValidationSeverity::Soft,
+            });
+        }
+    }
+
+    // Coverage: fraction of context criteria covered by results.
+    let covered = output
+        .criteria_results
+        .iter()
+        .filter(|cr| ctx_criteria.contains(cr.criterion.as_str()))
+        .count();
+    let total = ctx.acceptance_criteria.len();
+
+    // Check: all criteria have a result (soft warning if incomplete).
+    if covered < total {
+        results.push(ValidationResult {
+            rule_id: "CriteriaCoverage".to_string(),
+            passed: false,
+            message: format!("only {covered}/{total} acceptance criteria have results"),
+            severity: ValidationSeverity::Soft,
+        });
+    } else {
+        results.push(ValidationResult {
+            rule_id: "CriteriaCoverage".to_string(),
+            passed: true,
+            message: format!("all {total} criteria covered"),
+            severity: ValidationSeverity::Soft,
+        });
+    }
+
+    // Check: no hard failures among criteria results.
+    let failed_count = output
+        .criteria_results
+        .iter()
+        .filter(|cr| matches!(cr.status, CriterionStatus::Fail))
+        .count();
+
+    if failed_count > 0 {
+        results.push(ValidationResult {
+            rule_id: "CriteriaOutcome".to_string(),
+            passed: false,
+            message: format!("{failed_count} criterion(ia) have Fail status"),
+            severity: ValidationSeverity::Hard,
+        });
+    } else {
+        results.push(ValidationResult {
+            rule_id: "CriteriaOutcome".to_string(),
+            passed: true,
+            message: String::new(),
+            severity: ValidationSeverity::Hard,
+        });
+    }
+
+    results
+}
+
+/// Derive `VerificationStatus` from a `verify_output()` result list.
+///
+/// Used by `DagScheduler` to decide whether to mark a task `Completed` or flag it.
+#[must_use]
+pub fn derive_verification_status(
+    output: &HandoffOutput,
+    results: &[ValidationResult],
+) -> VerificationStatus {
+    // If no criteria results at all → Unverified.
+    if output.criteria_results.is_empty() {
+        return VerificationStatus::Unverified;
+    }
+
+    // Hard failure among rules → Failed.
+    let hard_fail = results
+        .iter()
+        .any(|r| !r.passed && matches!(r.severity, ValidationSeverity::Hard));
+    if hard_fail {
+        return VerificationStatus::Failed;
+    }
+
+    // All criteria pass → Verified; any Partial/Skipped → PartiallyVerified.
+    let all_pass = output
+        .criteria_results
+        .iter()
+        .all(|cr| matches!(cr.status, CriterionStatus::Pass));
+    if all_pass {
+        VerificationStatus::Verified
+    } else {
+        VerificationStatus::PartiallyVerified
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -631,20 +918,141 @@ mod tests {
         assert!(matches!(restored, HandoffRef::ById { .. }));
     }
 
-    // ── Backward compatibility: no-op validation ────────────────────────────
+    // ── Phase 2: validate_context ───────────────────────────────────────────
 
     #[test]
-    fn validate_context_is_noop() {
+    fn validate_context_valid_architect_passes() {
         let ctx = architect_ctx();
         let results = validate_context(&ctx);
+        let failures: Vec<&ValidationResult> = results.iter().filter(|r| !r.passed).collect();
         assert!(
-            results.is_empty(),
-            "Phase 1: validate_context must return empty vec"
+            failures.is_empty(),
+            "valid architect context must produce no failures: {failures:?}"
         );
     }
 
     #[test]
-    fn verify_output_is_noop() {
+    fn validate_context_empty_objective_is_hard_fail() {
+        let mut ctx = architect_ctx();
+        ctx.objective = String::new();
+        let results = validate_context(&ctx);
+        let hard_fail = results.iter().find(|r| {
+            r.rule_id == "ObjectiveNonEmpty"
+                && !r.passed
+                && matches!(r.severity, ValidationSeverity::Hard)
+        });
+        assert!(hard_fail.is_some(), "empty objective must be a hard fail");
+    }
+
+    #[test]
+    fn validate_context_no_criteria_is_hard_fail() {
+        let mut ctx = architect_ctx();
+        ctx.acceptance_criteria.clear();
+        let results = validate_context(&ctx);
+        let hard_fail = results.iter().find(|r| {
+            r.rule_id == "CriteriaPresent"
+                && !r.passed
+                && matches!(r.severity, ValidationSeverity::Hard)
+        });
+        assert!(hard_fail.is_some(), "missing criteria must be a hard fail");
+    }
+
+    #[test]
+    fn validate_context_empty_spec_files_is_hard_fail() {
+        let mut ctx = architect_ctx();
+        if let RoleContext::Architect(ref mut ac) = ctx.role_context {
+            ac.spec_files.clear();
+        }
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty spec_files must trigger RoleContextComplete fail"
+        );
+    }
+
+    #[test]
+    fn validate_context_developer_empty_target_files_is_hard_fail() {
+        let mut ctx = developer_ctx();
+        if let RoleContext::Developer(ref mut dc) = ctx.role_context {
+            dc.target_files.clear();
+        }
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty target_files must trigger RoleContextComplete fail"
+        );
+    }
+
+    #[test]
+    fn validate_context_by_id_ref_is_hard_fail() {
+        let mut ctx = developer_ctx();
+        if let RoleContext::Developer(ref mut dc) = ctx.role_context {
+            dc.spec_ref = HandoffRef::ById {
+                handoff_id: "hoff-001".to_string(),
+            };
+        }
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "HandoffRefSupported" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "ById ref must be rejected in Phase 1-2"
+        );
+    }
+
+    #[test]
+    fn validate_context_valid_developer_passes() {
+        let ctx = developer_ctx();
+        let results = validate_context(&ctx);
+        let failures: Vec<&ValidationResult> = results.iter().filter(|r| !r.passed).collect();
+        assert!(
+            failures.is_empty(),
+            "valid developer context must produce no failures: {failures:?}"
+        );
+    }
+
+    // ── Phase 2: verify_output ──────────────────────────────────────────────
+
+    #[test]
+    fn verify_output_all_pass_is_verified() {
+        let ctx = architect_ctx();
+        let output = HandoffOutput {
+            handoff_id: "hoff-001".to_string(),
+            summary: "done".to_string(),
+            criteria_results: vec![
+                CriterionResult {
+                    criterion: "Schema covers all 5 agent roles".to_string(),
+                    status: CriterionStatus::Pass,
+                    evidence: "all variants present".to_string(),
+                },
+                CriterionResult {
+                    criterion: "Output saved to spec.md".to_string(),
+                    status: CriterionStatus::Pass,
+                    evidence: "file exists".to_string(),
+                },
+            ],
+            artifacts: Vec::new(),
+            test_delta: None,
+            risks: Vec::new(),
+            next_steps: Vec::new(),
+        };
+        let results = verify_output(&ctx, &output);
+        let status = derive_verification_status(&output, &results);
+        assert!(
+            matches!(status, VerificationStatus::Verified),
+            "all-pass output must be Verified, got {status:?}"
+        );
+    }
+
+    #[test]
+    fn verify_output_empty_criteria_results_is_unverified() {
         let ctx = architect_ctx();
         let output = HandoffOutput {
             handoff_id: "hoff-001".to_string(),
@@ -656,9 +1064,154 @@ mod tests {
             next_steps: Vec::new(),
         };
         let results = verify_output(&ctx, &output);
+        let status = derive_verification_status(&output, &results);
         assert!(
-            results.is_empty(),
-            "Phase 1: verify_output must return empty vec"
+            matches!(status, VerificationStatus::Unverified),
+            "empty criteria_results must be Unverified"
+        );
+    }
+
+    #[test]
+    fn verify_output_fail_criterion_is_failed() {
+        let ctx = architect_ctx();
+        let output = HandoffOutput {
+            handoff_id: "hoff-001".to_string(),
+            summary: "partial".to_string(),
+            criteria_results: vec![CriterionResult {
+                criterion: "Schema covers all 5 agent roles".to_string(),
+                status: CriterionStatus::Fail,
+                evidence: "missing Tester variant".to_string(),
+            }],
+            artifacts: Vec::new(),
+            test_delta: None,
+            risks: Vec::new(),
+            next_steps: Vec::new(),
+        };
+        let results = verify_output(&ctx, &output);
+        let status = derive_verification_status(&output, &results);
+        assert!(
+            matches!(status, VerificationStatus::Failed),
+            "Fail criterion must yield Failed verification status"
+        );
+    }
+
+    #[test]
+    fn verify_output_partial_criterion_is_partially_verified() {
+        let ctx = architect_ctx();
+        let output = HandoffOutput {
+            handoff_id: "hoff-001".to_string(),
+            summary: "partial".to_string(),
+            criteria_results: vec![
+                CriterionResult {
+                    criterion: "Schema covers all 5 agent roles".to_string(),
+                    status: CriterionStatus::Partial,
+                    evidence: "4/5 variants".to_string(),
+                },
+                CriterionResult {
+                    criterion: "Output saved to spec.md".to_string(),
+                    status: CriterionStatus::Pass,
+                    evidence: "file exists".to_string(),
+                },
+            ],
+            artifacts: Vec::new(),
+            test_delta: None,
+            risks: Vec::new(),
+            next_steps: Vec::new(),
+        };
+        let results = verify_output(&ctx, &output);
+        let status = derive_verification_status(&output, &results);
+        assert!(
+            matches!(status, VerificationStatus::PartiallyVerified),
+            "Partial criterion must yield PartiallyVerified"
+        );
+    }
+
+    #[test]
+    fn validate_context_tester_empty_test_plan_is_hard_fail() {
+        let mut ctx = HandoffContext {
+            handoff_id: "hoff-tester".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-2".to_string()),
+            objective: "Test handoff implementation".to_string(),
+            acceptance_criteria: vec!["tests pass".to_string()],
+            role_context: RoleContext::Tester(TesterContext {
+                implementation_ref: HandoffRef::Inline {
+                    content: "impl done".to_string(),
+                },
+                test_plan: vec!["run nextest".to_string()],
+                expected_test_delta: None,
+                requires_live_test: false,
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        };
+        if let RoleContext::Tester(ref mut tc) = ctx.role_context {
+            tc.test_plan.clear();
+        }
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty test_plan must trigger RoleContextComplete fail"
+        );
+    }
+
+    #[test]
+    fn validate_context_critic_empty_review_dimensions_is_hard_fail() {
+        let ctx = HandoffContext {
+            handoff_id: "hoff-critic".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-3".to_string()),
+            objective: "Review implementation".to_string(),
+            acceptance_criteria: vec!["review complete".to_string()],
+            role_context: RoleContext::Critic(CriticContext {
+                artifact_ref: HandoffRef::Inline {
+                    content: "artifact".to_string(),
+                },
+                review_dimensions: Vec::new(), // empty — must fail
+                known_risks: Vec::new(),
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        };
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty review_dimensions must trigger RoleContextComplete fail"
+        );
+    }
+
+    #[test]
+    fn validate_context_reviewer_empty_artifact_refs_is_hard_fail() {
+        let ctx = HandoffContext {
+            handoff_id: "hoff-reviewer".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-4".to_string()),
+            objective: "Final review before merge".to_string(),
+            acceptance_criteria: vec!["approved".to_string()],
+            role_context: RoleContext::Reviewer(ReviewerContext {
+                artifact_refs: Vec::new(), // empty — must fail
+                checklist: vec!["tests pass".to_string()],
+                is_merge_gate: true,
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        };
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty artifact_refs must trigger RoleContextComplete fail"
         );
     }
 
