@@ -61,11 +61,18 @@ pub fn provision_bundled_skills(managed_dir: &Path) -> Result<ProvisionReport, s
 
     let mut report = ProvisionReport::default();
 
-    for skill_dir in BUNDLED_SKILLS_DIR.dirs() {
+    for entry in BUNDLED_SKILLS_DIR.entries() {
+        let include_dir::DirEntry::Dir(skill_dir) = entry else {
+            continue; // skip top-level files (e.g. README.md)
+        };
+
         let skill_name = skill_dir.path().to_string_lossy().into_owned();
+        // In include_dir 0.7, get_file() takes a path relative to the embedded
+        // root, not relative to the Dir itself.
+        let skill_md_path = format!("{skill_name}/SKILL.md");
 
         // Filter: only process entries that contain a SKILL.md file.
-        if skill_dir.get_file("SKILL.md").is_none() {
+        if BUNDLED_SKILLS_DIR.get_file(&skill_md_path).is_none() {
             debug!(skill = %skill_name, "skipping embedded entry without SKILL.md");
             continue;
         }
@@ -139,18 +146,13 @@ pub fn provision_bundled_skills(managed_dir: &Path) -> Result<ProvisionReport, s
 
 // --- helpers -----------------------------------------------------------------
 
-/// Write all files from an embedded skill dir to `target_dir`, then write the
-/// `.bundled` marker last (two-phase: files first, marker last).
+/// Write all files from an embedded skill dir to `target_dir` atomically.
 ///
-/// If interrupted before the marker is written, the skill dir will exist without
-/// a `.bundled` marker — it will be treated as a partial install and re-provisioned
-/// on the next startup (because it has no marker, not because it is user-owned;
-/// the absence check happens before the marker check).
-///
-/// Wait — actually, per the decision matrix, a dir with no `.bundled` is
-/// treated as *user-owned* (skip). To handle partial installs safely the target
-/// dir is written to a temp dir and renamed atomically, so the marker write is
-/// part of an atomic rename rather than a separate step.
+/// All files (including the `.bundled` marker) are first written to a sibling
+/// temp directory, then the temp directory is renamed into place in a single
+/// `fs::rename` call. Because the rename is atomic on the same filesystem,
+/// a process killed mid-write leaves no partial `target_dir` — the absent
+/// directory is re-provisioned on the next startup.
 fn write_skill(
     skill_dir: &include_dir::Dir<'_>,
     target_dir: &Path,
@@ -242,7 +244,9 @@ fn read_marker_version(marker_path: &Path) -> MarkerState {
 /// Extract the `version` field from the embedded SKILL.md frontmatter.
 /// Falls back to `"1.0"` if the field is absent or cannot be parsed.
 fn extract_embedded_version(skill_dir: &include_dir::Dir<'_>) -> String {
-    let Some(skill_file) = skill_dir.get_file("SKILL.md") else {
+    // In include_dir 0.7, get_file() takes a path relative to the embedded root.
+    let skill_md_path = format!("{}/SKILL.md", skill_dir.path().display());
+    let Some(skill_file) = BUNDLED_SKILLS_DIR.get_file(&skill_md_path) else {
         return "1.0".to_owned();
     };
     let Ok(content) = std::str::from_utf8(skill_file.contents()) else {
@@ -343,5 +347,44 @@ mod tests {
             read_marker_version(&path),
             MarkerState::Version(v) if v == "1.5"
         ));
+    }
+
+    /// Provision to an empty managed dir: all bundled skills are installed and
+    /// each gets a `.bundled` marker file containing the skill version.
+    #[test]
+    fn provision_to_empty_dir_installs_all_skills() {
+        let tmp = TempDir::new().unwrap();
+        let managed = tmp.path();
+
+        let report = provision_bundled_skills(managed).expect("provision should succeed");
+
+        // Every bundled skill must be installed (none were pre-existing).
+        assert!(
+            report.failed.is_empty(),
+            "unexpected failures: {:?}",
+            report.failed
+        );
+        assert!(report.skipped.is_empty(), "no skills should be skipped");
+        assert!(report.updated.is_empty(), "no skills should be updated");
+        assert!(
+            !report.installed.is_empty(),
+            "at least one skill must be installed"
+        );
+
+        // Each installed skill must have a SKILL.md and a .bundled marker.
+        for name in &report.installed {
+            let skill_dir = managed.join(name);
+            assert!(
+                skill_dir.join("SKILL.md").exists(),
+                "{name}: SKILL.md missing"
+            );
+            let marker = skill_dir.join(".bundled");
+            assert!(marker.exists(), "{name}: .bundled marker missing");
+            let version = fs::read_to_string(&marker).unwrap();
+            assert!(
+                !version.trim().is_empty(),
+                "{name}: .bundled marker is empty"
+            );
+        }
     }
 }
