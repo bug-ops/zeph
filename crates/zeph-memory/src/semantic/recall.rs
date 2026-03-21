@@ -363,6 +363,37 @@ impl SemanticMemory {
             }
         }
 
+        // Apply tier boost: semantic-tier messages receive an additive bonus so distilled facts
+        // rank above episodic messages with the same base score. Additive (not multiplicative)
+        // so the effect is consistent regardless of base score magnitude.
+        if (self.tier_boost_semantic - 1.0).abs() > f64::EPSILON && !ranked.is_empty() {
+            let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
+            match self.sqlite.fetch_tiers(&ids).await {
+                Ok(tiers) => {
+                    let bonus = self.tier_boost_semantic - 1.0;
+                    let mut boosted = false;
+                    for (msg_id, score) in &mut ranked {
+                        if tiers.get(msg_id).map(String::as_str) == Some("semantic") {
+                            *score += bonus;
+                            boosted = true;
+                        }
+                    }
+                    if boosted {
+                        ranked.sort_by(|a, b| {
+                            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        tracing::debug!(
+                            tier_boost = %self.tier_boost_semantic,
+                            "recall: semantic tier boost applied"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("tier boost: failed to fetch tiers: {e:#}");
+                }
+            }
+        }
+
         let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
 
         if !ids.is_empty()

@@ -45,6 +45,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         community_detection_failures: Arc::new(AtomicU64::new(0)),
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
     }
 }
 
@@ -392,6 +393,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         community_detection_failures: Arc::new(AtomicU64::new(0)),
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
     };
 
     memory

@@ -243,6 +243,7 @@ async fn summarize_fails_when_provider_chat_fails() {
         community_detection_failures: Arc::new(AtomicU64::new(0)),
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -302,6 +303,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         community_detection_failures: Arc::new(AtomicU64::new(0)),
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

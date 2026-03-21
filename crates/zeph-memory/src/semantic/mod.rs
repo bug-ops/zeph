@@ -48,6 +48,9 @@ pub struct SemanticMemory {
     pub(crate) mmr_lambda: f32,
     pub(crate) importance_enabled: bool,
     pub(crate) importance_weight: f64,
+    /// Multiplicative score boost for semantic-tier messages in recall ranking.
+    /// Default: `1.3`. Disabled when set to `1.0`.
+    pub(crate) tier_boost_semantic: f64,
     pub token_counter: Arc<TokenCounter>,
     pub graph_store: Option<Arc<crate::graph::GraphStore>>,
     pub(crate) community_detection_failures: Arc<AtomicU64>,
@@ -144,6 +147,7 @@ impl SemanticMemory {
             mmr_lambda: 0.7,
             importance_enabled: false,
             importance_weight: 0.15,
+            tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
@@ -186,6 +190,7 @@ impl SemanticMemory {
             mmr_lambda: 0.7,
             importance_enabled: false,
             importance_weight: 0.15,
+            tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
@@ -249,6 +254,15 @@ impl SemanticMemory {
         self
     }
 
+    /// Configure the multiplicative score boost applied to semantic-tier messages during recall.
+    ///
+    /// Set to `1.0` to disable the boost. Default: `1.3`.
+    #[must_use]
+    pub fn with_tier_boost(mut self, boost: f64) -> Self {
+        self.tier_boost_semantic = boost;
+        self
+    }
+
     /// Construct a `SemanticMemory` from pre-built parts.
     ///
     /// Intended for tests that need full control over the backing stores.
@@ -275,6 +289,7 @@ impl SemanticMemory {
             mmr_lambda: 0.7,
             importance_enabled: false,
             importance_weight: 0.15,
+            tier_boost_semantic: 1.3,
             token_counter,
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
@@ -336,6 +351,7 @@ impl SemanticMemory {
             mmr_lambda: 0.7,
             importance_enabled: false,
             importance_weight: 0.15,
+            tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),

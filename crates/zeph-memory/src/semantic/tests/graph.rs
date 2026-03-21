@@ -322,6 +322,7 @@ async fn memory_with_in_memory_vector_store() -> (
         community_detection_failures: Arc::new(AtomicU64::new(0)),
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
     };
 
     (memory, embedding_store)

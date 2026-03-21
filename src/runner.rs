@@ -659,6 +659,30 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         )
     };
 
+    let _tier_promotion_handle = {
+        let tier_cancel = zeph_memory::CancellationToken::new();
+        let tier_cancel_clone = tier_cancel.clone();
+        let mut shutdown_for_tiers = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = shutdown_for_tiers.changed().await;
+            tier_cancel_clone.cancel();
+        });
+        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+        let tier_cfg = zeph_memory::TierPromotionConfig {
+            enabled: config.memory.tiers.enabled,
+            promotion_min_sessions: config.memory.tiers.promotion_min_sessions,
+            similarity_threshold: config.memory.tiers.similarity_threshold,
+            sweep_interval_secs: config.memory.tiers.sweep_interval_secs,
+            sweep_batch_size: config.memory.tiers.sweep_batch_size,
+        };
+        zeph_memory::start_tier_promotion_loop(
+            sqlite_store,
+            provider.clone(),
+            tier_cfg,
+            tier_cancel,
+        )
+    };
+
     #[cfg(feature = "compression-guidelines")]
     let _guidelines_handle = if config.memory.compression_guidelines.enabled {
         let guidelines_cancel = zeph_memory::CancellationToken::new();

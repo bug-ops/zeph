@@ -102,6 +102,9 @@ pub(crate) struct WizardState {
     pub(crate) sidequest_enabled: bool,
     pub(crate) sidequest_interval_turns: u32,
     pub(crate) pruning_strategy: String,
+    // AOI three-layer memory tiers
+    pub(crate) memory_tiers_enabled: bool,
+    pub(crate) memory_tiers_promotion_min_sessions: u32,
     // Server-side compaction
     pub(crate) gemini_thinking_level: Option<GeminiThinkingLevel>,
     pub(crate) server_compaction_enabled: bool,
@@ -231,6 +234,8 @@ impl Default for WizardState {
             sidequest_enabled: false,
             sidequest_interval_turns: 4,
             pruning_strategy: "reactive".into(),
+            memory_tiers_enabled: false,
+            memory_tiers_promotion_min_sessions: 3,
             gemini_thinking_level: None,
             server_compaction_enabled: false,
             mcpls_enabled: false,
@@ -779,6 +784,21 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
             .interact_text()?;
     }
 
+    state.memory_tiers_enabled = Confirm::new()
+        .with_prompt(
+            "Enable AOI three-layer memory tiers? (episodic -> semantic promotion via LLM)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.memory_tiers_enabled {
+        state.memory_tiers_promotion_min_sessions = Input::new()
+            .with_prompt("Minimum sessions before episodic fact is promoted to semantic")
+            .default(state.memory_tiers_promotion_min_sessions)
+            .validate_with(|v: &u32| if *v >= 2 { Ok(()) } else { Err("must be >= 2") })
+            .interact_text()?;
+    }
+
     state.sidequest_enabled = Confirm::new()
         .with_prompt("Enable SideQuest eviction? (LLM-driven tool output eviction)")
         .default(false)
@@ -1144,6 +1164,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.sidequest.enabled = state.sidequest_enabled;
     if state.sidequest_enabled {
         config.memory.sidequest.interval_turns = state.sidequest_interval_turns;
+    }
+    config.memory.tiers.enabled = state.memory_tiers_enabled;
+    if state.memory_tiers_enabled {
+        config.memory.tiers.promotion_min_sessions = state.memory_tiers_promotion_min_sessions;
     }
     config.memory.compression.pruning_strategy = match state.pruning_strategy.as_str() {
         "task_aware" => PruningStrategy::TaskAware,

@@ -140,6 +140,13 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Memory,
         feature_gate: None,
     },
+    SlashCommandInfo {
+        name: "/memory",
+        args: "[tiers|promote <id>...]",
+        description: "Show memory tier stats or manually promote messages to semantic tier",
+        category: SlashCategory::Memory,
+        feature_gate: None,
+    },
     #[cfg(feature = "compression-guidelines")]
     SlashCommandInfo {
         name: "/guidelines",

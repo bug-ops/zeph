@@ -263,6 +263,8 @@ pub struct MetricsSnapshot {
     pub tool_cache_hits: u64,
     pub tool_cache_misses: u64,
     pub tool_cache_entries: usize,
+    /// Number of semantic-tier facts in memory (0 when tier promotion disabled).
+    pub semantic_fact_count: u64,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.

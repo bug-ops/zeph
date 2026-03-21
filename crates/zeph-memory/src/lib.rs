@@ -7,6 +7,7 @@ pub mod anchored_summary;
 pub mod compaction_probe;
 pub mod compression_guidelines;
 pub mod document;
+pub mod tiers;
 
 pub mod embedding_registry;
 pub mod embedding_store;
@@ -68,8 +69,10 @@ pub use sqlite::compression_guidelines::CompressionFailurePair;
 pub use sqlite::corrections::UserCorrectionRow;
 #[cfg(feature = "experiments")]
 pub use sqlite::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
+pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;
+pub use types::MemoryTier;
 pub use types::{ConversationId, MessageId};
 pub use vector_store::{
     FieldCondition, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,

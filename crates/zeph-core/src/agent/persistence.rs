@@ -279,12 +279,31 @@ impl<C: Channel> Agent<C> {
             if skipped > 0 {
                 tracing::warn!("skipped {skipped} empty/orphaned message(s) from history");
             }
+
+            if loaded > 0 {
+                // Increment session counts so tier promotion can track cross-session access.
+                // Errors are non-fatal — promotion will simply use stale counts.
+                let _ = memory
+                    .sqlite()
+                    .increment_session_counts_for_conversation(cid)
+                    .await
+                    .inspect_err(|e| {
+                        tracing::warn!(error = %e, "failed to increment tier session counts");
+                    });
+            }
         }
 
         if let Ok(count) = memory.message_count(cid).await {
             let count_u64 = u64::try_from(count).unwrap_or(0);
             self.update_metrics(|m| {
                 m.sqlite_message_count = count_u64;
+            });
+        }
+
+        if let Ok(count) = memory.sqlite().count_semantic_facts().await {
+            let count_u64 = u64::try_from(count).unwrap_or(0);
+            self.update_metrics(|m| {
+                m.semantic_fact_count = count_u64;
             });
         }
 
@@ -680,6 +699,86 @@ mod tests {
         agent.load_history().await.unwrap();
         // No messages added — empty history
         assert_eq!(agent.msg.messages.len(), messages_before);
+    }
+
+    #[tokio::test]
+    async fn load_history_increments_session_count_for_existing_messages() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Save two messages — they start with session_count = 0.
+        let id1 = memory
+            .sqlite()
+            .save_message(cid, "user", "hello")
+            .await
+            .unwrap();
+        let id2 = memory
+            .sqlite()
+            .save_message(cid, "assistant", "hi")
+            .await
+            .unwrap();
+
+        let memory_arc = std::sync::Arc::new(memory);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory_arc.clone(),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        agent.load_history().await.unwrap();
+
+        // Both episodic messages must have session_count = 1 after restore.
+        let counts: Vec<i64> =
+            sqlx::query_scalar("SELECT session_count FROM messages WHERE id IN (?, ?) ORDER BY id")
+                .bind(id1)
+                .bind(id2)
+                .fetch_all(memory_arc.sqlite().pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            counts,
+            vec![1, 1],
+            "session_count must be 1 after first restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_history_does_not_increment_session_count_for_new_conversation() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // No messages saved — empty conversation.
+        let memory_arc = std::sync::Arc::new(memory);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory_arc.clone(),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        agent.load_history().await.unwrap();
+
+        // No rows → no session_count increments → query returns empty.
+        let counts: Vec<i64> =
+            sqlx::query_scalar("SELECT session_count FROM messages WHERE conversation_id = ?")
+                .bind(cid)
+                .fetch_all(memory_arc.sqlite().pool())
+                .await
+                .unwrap();
+        assert!(counts.is_empty(), "new conversation must have no messages");
     }
 
     #[tokio::test]

@@ -217,6 +217,108 @@ fn default_shutdown_summary_timeout_secs() -> u64 {
     10
 }
 
+fn validate_tier_similarity_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "similarity_threshold must be a finite number",
+        ));
+    }
+    if !(0.5..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "similarity_threshold must be in [0.5, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_tier_promotion_min_sessions<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value < 2 {
+        return Err(serde::de::Error::custom(
+            "promotion_min_sessions must be >= 2",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_tier_sweep_batch_size<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom("sweep_batch_size must be >= 1"));
+    }
+    Ok(value)
+}
+
+fn default_tier_promotion_min_sessions() -> u32 {
+    3
+}
+
+fn default_tier_similarity_threshold() -> f32 {
+    0.92
+}
+
+fn default_tier_sweep_interval_secs() -> u64 {
+    3600
+}
+
+fn default_tier_sweep_batch_size() -> usize {
+    100
+}
+
+/// Configuration for the AOI three-layer memory tier promotion system (`[memory.tiers]`).
+///
+/// When `enabled = true`, a background sweep promotes frequently-accessed episodic messages
+/// to semantic tier by clustering near-duplicates and distilling them via an LLM call.
+///
+/// # Validation
+///
+/// Constraints enforced at deserialization time:
+/// - `similarity_threshold` in `[0.5, 1.0]`
+/// - `promotion_min_sessions >= 2`
+/// - `sweep_batch_size >= 1`
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct TierConfig {
+    /// Enable the tier promotion system. When `false`, all messages remain episodic.
+    /// Default: `false`.
+    pub enabled: bool,
+    /// Minimum number of distinct sessions a fact must appear in before promotion.
+    /// Must be `>= 2`. Default: `3`.
+    #[serde(deserialize_with = "validate_tier_promotion_min_sessions")]
+    pub promotion_min_sessions: u32,
+    /// Cosine similarity threshold for clustering near-duplicate facts during sweep.
+    /// Must be in `[0.5, 1.0]`. Default: `0.92`.
+    #[serde(deserialize_with = "validate_tier_similarity_threshold")]
+    pub similarity_threshold: f32,
+    /// How often the background promotion sweep runs, in seconds. Default: `3600`.
+    pub sweep_interval_secs: u64,
+    /// Maximum number of messages to evaluate per sweep cycle. Must be `>= 1`. Default: `100`.
+    #[serde(deserialize_with = "validate_tier_sweep_batch_size")]
+    pub sweep_batch_size: usize,
+}
+
+impl Default for TierConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            promotion_min_sessions: default_tier_promotion_min_sessions(),
+            similarity_threshold: default_tier_similarity_threshold(),
+            sweep_interval_secs: default_tier_sweep_interval_secs(),
+            sweep_batch_size: default_tier_sweep_batch_size(),
+        }
+    }
+}
+
 fn validate_temporal_decay_rate<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -504,6 +606,12 @@ pub struct MemoryConfig {
     /// to produce valid JSON. Default: `false`.
     #[serde(default)]
     pub structured_summaries: bool,
+    /// AOI three-layer memory tier promotion system.
+    ///
+    /// When `tiers.enabled = true`, a background sweep promotes frequently-accessed episodic
+    /// messages to a semantic tier by clustering near-duplicates and distilling via LLM.
+    #[serde(default)]
+    pub tiers: TierConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -929,6 +1037,34 @@ mod tests {
             toml::from_str::<Wrapper>(toml).is_err(),
             "unknown strategy must produce an error"
         );
+    }
+
+    #[test]
+    fn tier_config_defaults_are_correct() {
+        let cfg = TierConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.promotion_min_sessions, 3);
+        assert!((cfg.similarity_threshold - 0.92).abs() < f32::EPSILON);
+        assert_eq!(cfg.sweep_interval_secs, 3600);
+        assert_eq!(cfg.sweep_batch_size, 100);
+    }
+
+    #[test]
+    fn tier_config_rejects_min_sessions_below_2() {
+        let toml = "promotion_min_sessions = 1";
+        assert!(toml::from_str::<TierConfig>(toml).is_err());
+    }
+
+    #[test]
+    fn tier_config_rejects_similarity_threshold_below_0_5() {
+        let toml = "similarity_threshold = 0.4";
+        assert!(toml::from_str::<TierConfig>(toml).is_err());
+    }
+
+    #[test]
+    fn tier_config_rejects_zero_sweep_batch_size() {
+        let toml = "sweep_batch_size = 0";
+        assert!(toml::from_str::<TierConfig>(toml).is_err());
     }
 
     fn deserialize_importance_weight(toml_val: &str) -> Result<SemanticConfig, toml::de::Error> {

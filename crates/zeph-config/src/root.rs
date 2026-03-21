@@ -19,7 +19,7 @@ use crate::learning::LearningConfig;
 use crate::logging::LoggingConfig;
 use crate::memory::{
     CompressionConfig, DocumentConfig, GraphConfig, MemoryConfig, RoutingConfig, SemanticConfig,
-    SessionsConfig, SidequestConfig, VectorBackend,
+    SessionsConfig, SidequestConfig, TierConfig, VectorBackend,
 };
 use crate::providers::{
     LlmConfig, ProviderKind, get_default_embedding_model, get_default_response_cache_ttl_secs,
@@ -200,6 +200,7 @@ impl Default for Config {
                 shutdown_summary_max_messages: 20,
                 shutdown_summary_timeout_secs: 10,
                 structured_summaries: false,
+                tiers: TierConfig::default(),
             },
             telegram: None,
             discord: None,

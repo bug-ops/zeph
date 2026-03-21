@@ -85,6 +85,12 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         }
     }
 
+    if metrics.semantic_fact_count > 0 {
+        mem_lines.push(Line::from(format!(
+            "  Semantic facts: {}",
+            metrics.semantic_fact_count,
+        )));
+    }
     if metrics.guidelines_version > 0 {
         mem_lines.push(Line::from(format!(
             "  Guidelines: v{} ({})",

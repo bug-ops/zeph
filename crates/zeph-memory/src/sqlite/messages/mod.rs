@@ -798,6 +798,229 @@ impl SqliteStore {
         q.execute(&self.pool).await?;
         Ok(())
     }
+
+    // ── Tier promotion helpers ─────────────────────────────────────────────────
+
+    /// Return episodic messages with `session_count >= min_sessions`, ordered by
+    /// session count descending then importance score descending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn find_promotion_candidates(
+        &self,
+        min_sessions: u32,
+        batch_size: usize,
+    ) -> Result<Vec<PromotionCandidate>, MemoryError> {
+        let limit = i64::try_from(batch_size).unwrap_or(i64::MAX);
+        let min = i64::from(min_sessions);
+        let rows: Vec<(MessageId, String, i64, f64)> = sqlx::query_as(
+            "SELECT id, content, session_count, importance_score \
+             FROM messages \
+             WHERE tier = 'episodic' AND session_count >= ? AND deleted_at IS NULL \
+             ORDER BY session_count DESC, importance_score DESC \
+             LIMIT ?",
+        )
+        .bind(min)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, content, session_count, importance_score)| PromotionCandidate {
+                    id,
+                    content,
+                    session_count: session_count.try_into().unwrap_or(0),
+                    importance_score,
+                },
+            )
+            .collect())
+    }
+
+    /// Count messages per tier (episodic, semantic) that are not deleted.
+    ///
+    /// Returns `(episodic_count, semantic_count)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn count_messages_by_tier(&self) -> Result<(i64, i64), MemoryError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT tier, COUNT(*) FROM messages \
+             WHERE deleted_at IS NULL AND tier IN ('episodic', 'semantic') \
+             GROUP BY tier",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut episodic = 0i64;
+        let mut semantic = 0i64;
+        for (tier, count) in rows {
+            match tier.as_str() {
+                "episodic" => episodic = count,
+                "semantic" => semantic = count,
+                _ => {}
+            }
+        }
+        Ok((episodic, semantic))
+    }
+
+    /// Count semantic facts (tier='semantic', not deleted).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn count_semantic_facts(&self) -> Result<i64, MemoryError> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM messages WHERE tier = 'semantic' AND deleted_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// Promote a set of episodic messages to semantic tier in a single transaction.
+    ///
+    /// Within one transaction:
+    /// 1. Inserts a new message with `tier='semantic'` and `promotion_timestamp=unixepoch()`.
+    /// 2. Soft-deletes the original episodic messages and marks them `qdrant_cleaned=0`
+    ///    so the eviction sweep picks up their Qdrant vectors.
+    ///
+    /// Returns the `MessageId` of the new semantic message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction fails.
+    pub async fn promote_to_semantic(
+        &self,
+        conversation_id: ConversationId,
+        merged_content: &str,
+        original_ids: &[MessageId],
+    ) -> Result<MessageId, MemoryError> {
+        if original_ids.is_empty() {
+            return Err(MemoryError::Other(
+                "promote_to_semantic: original_ids must not be empty".into(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        // Insert the new semantic fact.
+        let row: (MessageId,) = sqlx::query_as(
+            "INSERT INTO messages \
+             (conversation_id, role, content, parts, agent_visible, user_visible, \
+              tier, promotion_timestamp) \
+             VALUES (?, 'assistant', ?, '[]', 1, 0, 'semantic', unixepoch()) \
+             RETURNING id",
+        )
+        .bind(conversation_id)
+        .bind(merged_content)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let new_id = row.0;
+
+        // Soft-delete originals and reset qdrant_cleaned so eviction sweep removes vectors.
+        for &id in original_ids {
+            sqlx::query(
+                "UPDATE messages \
+                 SET deleted_at = datetime('now'), qdrant_cleaned = 0 \
+                 WHERE id = ? AND deleted_at IS NULL",
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(new_id)
+    }
+
+    /// Manually promote a set of messages to semantic tier without merging.
+    ///
+    /// Sets `tier='semantic'` and `promotion_timestamp=unixepoch()` for the given IDs.
+    /// Does NOT soft-delete the originals — use this for direct user-requested promotion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn manual_promote(&self, ids: &[MessageId]) -> Result<usize, MemoryError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut count = 0usize;
+        for &id in ids {
+            let result = sqlx::query(
+                "UPDATE messages \
+                 SET tier = 'semantic', promotion_timestamp = unixepoch() \
+                 WHERE id = ? AND deleted_at IS NULL AND tier = 'episodic'",
+            )
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+            count += usize::try_from(result.rows_affected()).unwrap_or(0);
+        }
+        Ok(count)
+    }
+
+    /// Increment `session_count` for all episodic messages in a conversation.
+    ///
+    /// Called when a session restores an existing conversation to mark that messages
+    /// were accessed in a new session. Only episodic (non-deleted) messages are updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database update fails.
+    pub async fn increment_session_counts_for_conversation(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<(), MemoryError> {
+        sqlx::query(
+            "UPDATE messages SET session_count = session_count + 1 \
+             WHERE conversation_id = ? AND tier = 'episodic' AND deleted_at IS NULL",
+        )
+        .bind(conversation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch the tier string for each of the given message IDs.
+    ///
+    /// Messages not found or already deleted are omitted from the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn fetch_tiers(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, String>, MemoryError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT id, tier FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+        );
+        let mut q = sqlx::query_as::<_, (MessageId, String)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().collect())
+    }
+}
+
+/// A candidate message for tier promotion, returned by [`SqliteStore::find_promotion_candidates`].
+#[derive(Debug, Clone)]
+pub struct PromotionCandidate {
+    pub id: MessageId,
+    pub content: String,
+    pub session_count: u32,
+    pub importance_score: f64,
 }
 
 #[cfg(test)]

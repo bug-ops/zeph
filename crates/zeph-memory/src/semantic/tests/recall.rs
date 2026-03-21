@@ -62,6 +62,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         community_detection_failures: Arc::new(AtomicU64::new(0)),
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

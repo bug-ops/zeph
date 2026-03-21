@@ -1,6 +1,48 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+/// Memory tier classification for the AOI three-layer architecture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryTier {
+    /// Current conversation window. Virtual tier — not stored in the DB.
+    Working,
+    /// Session-bound messages. Default tier for all persisted messages.
+    Episodic,
+    /// Cross-session distilled facts. Promoted from Episodic when a fact
+    /// appears in `promotion_min_sessions`+ distinct sessions.
+    Semantic,
+}
+
+impl MemoryTier {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::Episodic => "episodic",
+            Self::Semantic => "semantic",
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for MemoryTier {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "working" => Ok(Self::Working),
+            "episodic" => Ok(Self::Episodic),
+            "semantic" => Ok(Self::Semantic),
+            other => Err(format!("unknown memory tier: {other}")),
+        }
+    }
+}
+
 /// Strongly typed wrapper for conversation row IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
 #[sqlx(transparent)]
@@ -26,6 +68,33 @@ impl std::fmt::Display for MessageId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_tier_round_trip() {
+        for tier in [
+            MemoryTier::Working,
+            MemoryTier::Episodic,
+            MemoryTier::Semantic,
+        ] {
+            let s = tier.as_str();
+            let parsed: MemoryTier = s.parse().expect("should parse");
+            assert_eq!(parsed, tier);
+            assert_eq!(format!("{tier}"), s);
+        }
+    }
+
+    #[test]
+    fn memory_tier_unknown_string_errors() {
+        assert!("unknown".parse::<MemoryTier>().is_err());
+    }
+
+    #[test]
+    fn memory_tier_serde_round_trip() {
+        let json = serde_json::to_string(&MemoryTier::Semantic).unwrap();
+        assert_eq!(json, "\"semantic\"");
+        let parsed: MemoryTier = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, MemoryTier::Semantic);
+    }
 
     #[test]
     fn conversation_id_display() {

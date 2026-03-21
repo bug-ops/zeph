@@ -23,6 +23,7 @@ mod log_commands;
 #[cfg(feature = "lsp-context")]
 mod lsp_commands;
 mod mcp;
+mod memory_commands;
 mod message_queue;
 mod persistence;
 #[cfg(feature = "policy-enforcer")]
@@ -2733,6 +2734,10 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/graph" || trimmed.starts_with("/graph ") {
             handled!(self.handle_graph_command(trimmed).await);
+        }
+
+        if trimmed == "/memory" || trimmed.starts_with("/memory ") {
+            handled!(self.handle_memory_command(trimmed).await);
         }
 
         #[cfg(feature = "compression-guidelines")]

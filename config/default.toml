@@ -810,3 +810,15 @@ max_files = 7
 # max_questions = 3
 # # Timeout for the entire probe (both LLM calls) in seconds
 # timeout_secs = 15
+
+[memory.tiers]
+# Enable AOI three-layer memory tier promotion (episodic -> semantic).
+enabled = false
+# Minimum distinct sessions a fact must appear in before promotion. Must be >= 2.
+promotion_min_sessions = 3
+# Cosine similarity threshold for near-duplicate clustering. Range: [0.5, 1.0].
+similarity_threshold = 0.92
+# How often the background promotion sweep runs, in seconds.
+sweep_interval_secs = 3600
+# Maximum messages evaluated per sweep cycle. Must be >= 1.
+sweep_batch_size = 100

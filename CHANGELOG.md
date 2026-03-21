@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(memory): AOI three-layer memory architecture (#1839) — adds `Working` (virtual, current context window), `Episodic` (default, session-bound), and `Semantic` (promoted, cross-session distilled facts) tiers to the message store; SQLite migration 042 adds `tier`, `promotion_timestamp`, and `session_count` columns; background `start_tier_promotion_loop()` sweep clusters near-duplicate episodic messages (greedy nearest-neighbor, cosine similarity threshold) and distills them via LLM into semantic facts with merge-output validation (non-empty, similarity >= 0.7 to originals); semantic-tier messages receive an additive recall boost in `recall_merge_and_rank()`; `/memory tiers` shows per-tier counts; `/memory promote <id>...` manually promotes messages; TUI memory panel shows semantic fact count; `[memory.tiers]` TOML config with validation (`similarity_threshold in [0.5,1.0]`, `promotion_min_sessions >= 2`, `sweep_batch_size >= 1`); `--init` wizard step; `--migrate-config` picks up new section from `config/default.toml`; addresses CRIT-1 (idempotent session counting, no O(n*m) startup scan), CRIT-2 (validated merge before promoting), IMP-2 (soft-deleted originals set `qdrant_cleaned=0` for eviction sweep pickup), IMP-3 (additive boost for consistent effect), IMP-4 (config validation), IMP-5 (disabled by default, tiers.enabled=false)
+
 ### Fixed
 
 - fix(skills): convert unsupported `>-` YAML block scalar modifier to `>` in all 19 skill files in `.zeph/skills/` — resolves silent load failures for all rewritten skills; 9 new skills (archive, cron, database, json-yaml, network, process-management, qdrant, regex, ssh-remote, text-processing) were completely unavailable (#2087)
