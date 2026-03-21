@@ -428,6 +428,100 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Get all active edges for a batch of entity IDs, with optional MAGMA edge type filtering.
+    ///
+    /// Fetches all currently-active edges (`valid_to IS NULL`) where either endpoint
+    /// is in `entity_ids`. Traversal is always current-time only (no `at_timestamp` support
+    /// in v1 — see `bfs_at_timestamp` for historical traversal).
+    ///
+    /// # `SQLite` bind limit safety
+    ///
+    /// `SQLite` limits the number of bind parameters to `SQLITE_MAX_VARIABLE_NUMBER` (999 by
+    /// default). Each entity ID requires two bind slots (source OR target), so batches are
+    /// chunked at `MAX_BATCH_ENTITIES = 490` to stay safely under the limit regardless of
+    /// compile-time `SQLite` configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn edges_for_entities(
+        &self,
+        entity_ids: &[i64],
+        edge_types: &[super::types::EdgeType],
+    ) -> Result<Vec<Edge>, MemoryError> {
+        // Safe margin under SQLite SQLITE_MAX_VARIABLE_NUMBER (999):
+        // each entity ID uses 2 bind slots (source_entity_id OR target_entity_id).
+        // 490 * 2 = 980, leaving headroom for future query additions.
+        const MAX_BATCH_ENTITIES: usize = 490;
+
+        let mut all_edges: Vec<Edge> = Vec::new();
+
+        for chunk in entity_ids.chunks(MAX_BATCH_ENTITIES) {
+            let edges = self.query_batch_edges(chunk, edge_types).await?;
+            all_edges.extend(edges);
+        }
+
+        Ok(all_edges)
+    }
+
+    /// Query active edges for a single chunk of entity IDs (internal helper).
+    ///
+    /// Caller is responsible for ensuring `entity_ids.len() <= MAX_BATCH_ENTITIES`.
+    async fn query_batch_edges(
+        &self,
+        entity_ids: &[i64],
+        edge_types: &[super::types::EdgeType],
+    ) -> Result<Vec<Edge>, MemoryError> {
+        if entity_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build a parameterized IN clause: (?1, ?2, ..., ?N).
+        // We cannot use sqlx's query_as! macro here because the placeholder count is dynamic.
+        let placeholders: String = (1..=entity_ids.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = if edge_types.is_empty() {
+            format!(
+                "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                        edge_type
+                 FROM graph_edges
+                 WHERE valid_to IS NULL
+                   AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders}))"
+            )
+        } else {
+            let type_placeholders: String = (entity_ids.len() + 1
+                ..=entity_ids.len() + edge_types.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
+                        valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
+                        edge_type
+                 FROM graph_edges
+                 WHERE valid_to IS NULL
+                   AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders}))
+                   AND edge_type IN ({type_placeholders})"
+            )
+        };
+
+        // Bind entity IDs once — ?1..?N are reused for both IN clauses via ?NNN syntax.
+        let mut query = sqlx::query_as::<_, EdgeRow>(&sql);
+        for id in entity_ids {
+            query = query.bind(*id);
+        }
+        for et in edge_types {
+            query = query.bind(et.as_str());
+        }
+
+        let rows: Vec<EdgeRow> = query.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(edge_from_row).collect())
+    }
+
     /// Get all active edges where entity is source or target.
     ///
     /// # Errors

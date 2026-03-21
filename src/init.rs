@@ -93,6 +93,7 @@ pub(crate) struct WizardState {
     // Graph memory settings
     pub(crate) graph_memory_enabled: bool,
     pub(crate) graph_extract_model: Option<String>,
+    pub(crate) graph_spreading_activation_enabled: bool,
     // ACON failure-driven compression guidelines
     pub(crate) compression_guidelines_enabled: bool,
     // Context compression: Focus Agent + SideQuest + pruning strategy
@@ -223,6 +224,7 @@ impl Default for WizardState {
             debug_dump_format: zeph_core::debug_dump::DumpFormat::Json,
             graph_memory_enabled: false,
             graph_extract_model: None,
+            graph_spreading_activation_enabled: false,
             compression_guidelines_enabled: false,
             focus_enabled: false,
             focus_compression_interval: 12,
@@ -712,6 +714,15 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         if !model.is_empty() {
             state.graph_extract_model = Some(model);
         }
+
+        state.graph_spreading_activation_enabled = Confirm::new()
+            .with_prompt(
+                "Enable SYNAPSE spreading activation for graph recall? \
+                 (replaces BFS; uses temporal decay + lateral inhibition; recommended defaults: \
+                 decay_lambda=0.85, max_hops=3)",
+            )
+            .default(false)
+            .interact()?;
     }
 
     state.compression_guidelines_enabled = Confirm::new()
@@ -1124,6 +1135,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     if let Some(ref m) = state.graph_extract_model {
         config.memory.graph.extract_model.clone_from(m);
     }
+    config.memory.graph.spreading_activation.enabled = state.graph_spreading_activation_enabled;
     config.memory.compression_guidelines.enabled = state.compression_guidelines_enabled;
     config.agent.focus.enabled = state.focus_enabled;
     if state.focus_enabled {

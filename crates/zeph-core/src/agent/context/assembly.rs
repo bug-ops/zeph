@@ -96,40 +96,95 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         };
         let recall_limit = memory_state.graph_config.recall_limit;
-        let max_hops = memory_state.graph_config.max_hops;
         let temporal_decay_rate = memory_state.graph_config.temporal_decay_rate;
         let edge_types = zeph_memory::classify_graph_subgraph(query);
-        let facts = memory
-            .recall_graph(
-                query,
-                recall_limit,
-                max_hops,
-                None,
-                temporal_decay_rate,
-                &edge_types,
-            )
-            .await
-            .map_err(|e| {
-                tracing::warn!("graph recall failed: {e:#}");
-                super::super::error::AgentError::Memory(e)
-            })?;
-        if facts.is_empty() {
-            return Ok(None);
-        }
+        let sa_config = &memory_state.graph_config.spreading_activation;
 
         let mut body = String::from(GRAPH_FACTS_PREFIX);
         let mut tokens_so_far = tc.count_tokens(&body);
-        for f in &facts {
-            // Strip newlines and angle-brackets from stored entity names/relations
-            // to prevent graph-stored injection strings from escaping into the prompt.
-            let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-            let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-            let line_tokens = tc.count_tokens(&line);
-            if tokens_so_far + line_tokens > budget_tokens {
-                break;
+
+        if sa_config.enabled {
+            // Build SpreadingActivationParams from config (zeph-memory has no zeph-config dep).
+            let sa_params = zeph_memory::graph::SpreadingActivationParams {
+                decay_lambda: sa_config.decay_lambda,
+                max_hops: sa_config.max_hops,
+                activation_threshold: sa_config.activation_threshold,
+                inhibition_threshold: sa_config.inhibition_threshold,
+                max_activated_nodes: sa_config.max_activated_nodes,
+                temporal_decay_rate,
+            };
+            // Spreading activation path: wrap in a 500ms timeout to bound latency.
+            let recall_fut =
+                memory.recall_graph_activated(query, recall_limit, sa_params, &edge_types);
+            let activated_facts =
+                match tokio::time::timeout(std::time::Duration::from_millis(500), recall_fut).await
+                {
+                    Ok(Ok(facts)) => facts,
+                    Ok(Err(e)) => {
+                        tracing::warn!("spreading activation recall failed: {e:#}");
+                        Vec::new()
+                    }
+                    Err(_) => {
+                        tracing::warn!("spreading activation recall timed out (500ms)");
+                        Vec::new()
+                    }
+                };
+
+            if activated_facts.is_empty() {
+                return Ok(None);
             }
-            body.push_str(&line);
-            tokens_so_far += line_tokens;
+
+            for f in &activated_facts {
+                let fact_text = f.edge.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!(
+                    "- {} (confidence: {:.2}, activation: {:.2})\n",
+                    fact_text, f.edge.confidence, f.activation_score
+                );
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
+        } else {
+            // BFS path (default when spreading_activation.enabled = false).
+            let max_hops = memory_state.graph_config.max_hops;
+            let facts = memory
+                .recall_graph(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    None,
+                    temporal_decay_rate,
+                    &edge_types,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::warn!("graph recall failed: {e:#}");
+                    super::super::error::AgentError::Memory(e)
+                })?;
+
+            if facts.is_empty() {
+                return Ok(None);
+            }
+
+            for f in &facts {
+                // Strip newlines and angle-brackets from stored entity names/relations
+                // to prevent graph-stored injection strings from escaping into the prompt.
+                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
+        }
+
+        if body == GRAPH_FACTS_PREFIX {
+            return Ok(None);
         }
 
         Ok(Some(Message::from_legacy(Role::System, body)))

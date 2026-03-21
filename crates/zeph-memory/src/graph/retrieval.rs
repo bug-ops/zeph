@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::MemoryError;
 
+use super::activation::{ActivatedFact, SpreadingActivation, SpreadingActivationParams};
 use super::store::GraphStore;
 use super::types::{EdgeType, GraphFact};
 
@@ -43,37 +44,12 @@ pub async fn graph_recall(
     temporal_decay_rate: f64,
     edge_types: &[EdgeType],
 ) -> Result<Vec<GraphFact>, MemoryError> {
-    // Cap at MAX_WORDS to bound the number of sequential full-table-scan LIKE queries.
-    const MAX_WORDS: usize = 5;
-
     if limit == 0 {
         return Ok(Vec::new());
     }
 
-    // Step 1: fuzzy search per query word (avoids full-sentence LIKE misses).
-    // Fall back to the full query string when all words are too short (len < 3).
-    let filtered: Vec<&str> = query
-        .split_whitespace()
-        .filter(|w| w.len() >= 3)
-        .take(MAX_WORDS)
-        .collect();
-    let words: Vec<&str> = if filtered.is_empty() && !query.is_empty() {
-        vec![query]
-    } else {
-        filtered
-    };
-
-    let mut entity_scores: HashMap<i64, f32> = HashMap::new();
-
-    for word in &words {
-        let matches = store.find_entities_fuzzy(word, limit * 2).await?;
-        for entity in matches {
-            entity_scores
-                .entry(entity.id)
-                .and_modify(|s| *s = s.max(1.0))
-                .or_insert(1.0);
-        }
-    }
+    // Step 1: fuzzy search per query word — shared helper (DRY with graph_recall_activated).
+    let entity_scores = find_seed_entities(store, query, limit).await?;
 
     if entity_scores.is_empty() {
         return Ok(Vec::new());
@@ -169,6 +145,111 @@ pub async fn graph_recall(
     all_facts.truncate(limit);
 
     Ok(all_facts)
+}
+
+/// Find seed entities by fuzzy-matching query words against the entity store.
+///
+/// Returns a map of `entity_id -> match_score`. Match score is always `1.0` (fuzzy search
+/// returns binary match/no-match; seeds are query anchors per SYNAPSE semantics).
+///
+/// Shared by [`graph_recall`] and [`graph_recall_activated`] to avoid duplication (SUGGEST-04).
+///
+/// # Errors
+///
+/// Returns an error if any database query fails.
+async fn find_seed_entities(
+    store: &GraphStore,
+    query: &str,
+    limit: usize,
+) -> Result<HashMap<i64, f32>, MemoryError> {
+    const MAX_WORDS: usize = 5;
+
+    let filtered: Vec<&str> = query
+        .split_whitespace()
+        .filter(|w| w.len() >= 3)
+        .take(MAX_WORDS)
+        .collect();
+    let words: Vec<&str> = if filtered.is_empty() && !query.is_empty() {
+        vec![query]
+    } else {
+        filtered
+    };
+
+    let mut entity_scores: HashMap<i64, f32> = HashMap::new();
+    for word in &words {
+        let matches = store.find_entities_fuzzy(word, limit * 2).await?;
+        for entity in matches {
+            entity_scores
+                .entry(entity.id)
+                .and_modify(|s| *s = s.max(1.0))
+                .or_insert(1.0);
+        }
+    }
+
+    Ok(entity_scores)
+}
+
+/// Retrieve graph facts via SYNAPSE spreading activation from seed entities.
+///
+/// Algorithm:
+/// 1. Find seed entities via fuzzy word search (same as [`graph_recall`]).
+/// 2. Run spreading activation from seeds using `config`.
+/// 3. Return `ActivatedFact` records (edges collected during propagation) sorted by
+///    activation score descending, truncated to `limit`.
+///
+/// Edge type filtering via `edge_types` ensures MAGMA subgraph scoping is preserved
+/// (mirrors [`graph_recall`]'s `bfs_typed` path, MAJOR-05 fix).
+///
+/// # Errors
+///
+/// Returns an error if any database query fails.
+pub async fn graph_recall_activated(
+    store: &GraphStore,
+    query: &str,
+    limit: usize,
+    params: SpreadingActivationParams,
+    edge_types: &[EdgeType],
+) -> Result<Vec<ActivatedFact>, MemoryError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let entity_scores = find_seed_entities(store, query, limit).await?;
+
+    if entity_scores.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    tracing::debug!(
+        seeds = entity_scores.len(),
+        "spreading activation: starting recall"
+    );
+
+    let sa = SpreadingActivation::new(params);
+    let (_, mut facts) = sa.spread(store, entity_scores, edge_types).await?;
+
+    // Sort by activation score descending and truncate to limit.
+    facts.sort_by(|a, b| b.activation_score.total_cmp(&a.activation_score));
+
+    // Deduplicate by (source, relation, target, edge_type) keeping highest activation.
+    let mut seen: HashSet<(i64, String, i64, EdgeType)> = HashSet::new();
+    facts.retain(|f| {
+        seen.insert((
+            f.edge.source_entity_id,
+            f.edge.relation.clone(),
+            f.edge.target_entity_id,
+            f.edge.edge_type,
+        ))
+    });
+
+    facts.truncate(limit);
+
+    tracing::debug!(
+        result_count = facts.len(),
+        "spreading activation: recall complete"
+    );
+
+    Ok(facts)
 }
 
 #[cfg(test)]

@@ -545,6 +545,44 @@ impl SemanticMemory {
         Ok(results)
     }
 
+    /// Retrieve graph facts via SYNAPSE spreading activation.
+    ///
+    /// Delegates to [`crate::graph::retrieval::graph_recall_activated`].
+    /// Used in place of [`recall_graph`] when `spreading_activation.enabled = true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying graph query fails.
+    pub async fn recall_graph_activated(
+        &self,
+        query: &str,
+        limit: usize,
+        params: crate::graph::SpreadingActivationParams,
+        edge_types: &[crate::graph::EdgeType],
+    ) -> Result<Vec<crate::graph::activation::ActivatedFact>, MemoryError> {
+        let Some(store) = &self.graph_store else {
+            return Ok(Vec::new());
+        };
+
+        tracing::debug!(
+            query_len = query.len(),
+            limit,
+            "spreading activation: starting graph recall"
+        );
+
+        let results = crate::graph::retrieval::graph_recall_activated(
+            store, query, limit, params, edge_types,
+        )
+        .await?;
+
+        tracing::debug!(
+            result_count = results.len(),
+            "spreading activation: graph recall complete"
+        );
+
+        Ok(results)
+    }
+
     /// Increment access count and update `last_accessed` for a batch of message IDs.
     ///
     /// Skips the update if `message_ids` is empty to avoid an invalid `IN ()` clause.

@@ -169,6 +169,26 @@ fn default_graph_edge_history_limit() -> usize {
     100
 }
 
+fn default_spreading_activation_decay_lambda() -> f32 {
+    0.85
+}
+
+fn default_spreading_activation_max_hops() -> u32 {
+    3
+}
+
+fn default_spreading_activation_activation_threshold() -> f32 {
+    0.1
+}
+
+fn default_spreading_activation_inhibition_threshold() -> f32 {
+    0.8
+}
+
+fn default_spreading_activation_max_activated_nodes() -> usize {
+    50
+}
+
 fn default_note_linking_similarity_threshold() -> f32 {
     0.85
 }
@@ -256,6 +276,96 @@ where
 
 fn default_importance_weight() -> f64 {
     0.15
+}
+
+/// Configuration for SYNAPSE spreading activation retrieval over the entity graph.
+///
+/// When `enabled = true`, spreading activation replaces BFS-based graph recall.
+/// Seeds are initialized from fuzzy entity matches, then activation propagates
+/// hop-by-hop with exponential decay and lateral inhibition.
+///
+/// # Validation
+///
+/// Constraints enforced at deserialization time:
+/// - `0.0 < decay_lambda <= 1.0`
+/// - `max_hops >= 1`
+/// - `activation_threshold < inhibition_threshold`
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SpreadingActivationConfig {
+    /// Enable spreading activation (replaces BFS in graph recall when `true`). Default: `false`.
+    pub enabled: bool,
+    /// Per-hop activation decay factor. Range: `(0.0, 1.0]`. Default: `0.85`.
+    #[serde(deserialize_with = "validate_decay_lambda")]
+    pub decay_lambda: f32,
+    /// Maximum propagation depth. Must be `>= 1`. Default: `3`.
+    #[serde(deserialize_with = "validate_max_hops")]
+    pub max_hops: u32,
+    /// Minimum activation score to include a node in results. Default: `0.1`.
+    pub activation_threshold: f32,
+    /// Activation level at which a node stops receiving more activation. Default: `0.8`.
+    pub inhibition_threshold: f32,
+    /// Cap on total activated nodes per spread pass. Default: `50`.
+    pub max_activated_nodes: usize,
+}
+
+fn validate_decay_lambda<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "decay_lambda must be a finite number",
+        ));
+    }
+    if !(value > 0.0 && value <= 1.0) {
+        return Err(serde::de::Error::custom(
+            "decay_lambda must be in (0.0, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_max_hops<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom("max_hops must be >= 1"));
+    }
+    Ok(value)
+}
+
+impl SpreadingActivationConfig {
+    /// Validate cross-field constraints that cannot be expressed in per-field validators.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if `activation_threshold >= inhibition_threshold`.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.activation_threshold >= self.inhibition_threshold {
+            return Err(format!(
+                "activation_threshold ({}) must be < inhibition_threshold ({})",
+                self.activation_threshold, self.inhibition_threshold
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for SpreadingActivationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            decay_lambda: default_spreading_activation_decay_lambda(),
+            max_hops: default_spreading_activation_max_hops(),
+            activation_threshold: default_spreading_activation_activation_threshold(),
+            inhibition_threshold: default_spreading_activation_inhibition_threshold(),
+            max_activated_nodes: default_spreading_activation_max_activated_nodes(),
+        }
+    }
 }
 
 /// Configuration for A-MEM dynamic note linking.
@@ -731,6 +841,12 @@ pub struct GraphConfig {
     /// (`qdrant` or `sqlite` vector backend) to be configured.
     #[serde(default)]
     pub note_linking: NoteLinkingConfig,
+    /// SYNAPSE spreading activation retrieval configuration.
+    ///
+    /// When `spreading_activation.enabled = true`, graph recall uses spreading activation
+    /// with lateral inhibition and temporal decay instead of BFS.
+    #[serde(default)]
+    pub spreading_activation: SpreadingActivationConfig,
 }
 
 impl Default for GraphConfig {
@@ -755,6 +871,7 @@ impl Default for GraphConfig {
             temporal_decay_rate: default_graph_temporal_decay_rate(),
             edge_history_limit: default_graph_edge_history_limit(),
             note_linking: NoteLinkingConfig::default(),
+            spreading_activation: SpreadingActivationConfig::default(),
         }
     }
 }

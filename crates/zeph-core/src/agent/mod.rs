@@ -3436,6 +3436,21 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Graph memory status: show recall mode when graph memory is enabled.
+        let gc = &self.memory_state.graph_config;
+        if gc.enabled {
+            let _ = writeln!(out);
+            if gc.spreading_activation.enabled {
+                let _ = writeln!(
+                    out,
+                    "Graph recall: spreading activation (lambda={:.2}, hops={})",
+                    gc.spreading_activation.decay_lambda, gc.spreading_activation.max_hops,
+                );
+            } else {
+                let _ = writeln!(out, "Graph recall: BFS (hops={})", gc.max_hops,);
+            }
+        }
+
         self.channel.send(out.trim_end()).await?;
         Ok(())
     }
