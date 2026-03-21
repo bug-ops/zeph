@@ -80,6 +80,18 @@ fn default_cascade_window_size() -> usize {
     50
 }
 
+fn default_reputation_decay_factor() -> f64 {
+    0.95
+}
+
+fn default_reputation_weight() -> f64 {
+    0.3
+}
+
+fn default_reputation_min_observations() -> u64 {
+    5
+}
+
 #[must_use]
 pub fn default_stt_provider() -> String {
     "whisper".into()
@@ -352,6 +364,40 @@ pub struct RouterConfig {
     /// Cascade routing configuration. Only used when `strategy = "cascade"`.
     #[serde(default)]
     pub cascade: Option<CascadeConfig>,
+    /// Bayesian reputation scoring configuration (RAPS). Disabled by default.
+    #[serde(default)]
+    pub reputation: Option<ReputationConfig>,
+}
+
+/// Configuration for Bayesian reputation scoring (RAPS — Reputation-Adjusted Provider Selection).
+///
+/// When enabled, quality outcomes from tool execution shift the routing scores over time,
+/// giving an advantage to providers that consistently produce valid tool arguments.
+///
+/// Default: disabled. Set `enabled = true` to activate.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReputationConfig {
+    /// Enable reputation scoring. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Session-level decay factor applied on each load. Range: (0.0, 1.0]. Default: 0.95.
+    /// Lower values make reputation forget faster; 1.0 = no decay.
+    #[serde(default = "default_reputation_decay_factor")]
+    pub decay_factor: f64,
+    /// Weight of reputation in routing score blend. Range: [0.0, 1.0]. Default: 0.3.
+    ///
+    /// **Warning**: values above 0.5 can aggressively suppress low-reputation providers.
+    /// At `weight = 1.0` with `rep_factor = 0.0` (all failures), the routing score
+    /// drops to zero — the provider becomes unreachable for that session. Stick to
+    /// the default (0.3) unless you intentionally want strong reputation gating.
+    #[serde(default = "default_reputation_weight")]
+    pub weight: f64,
+    /// Minimum quality observations before reputation influences routing. Default: 5.
+    #[serde(default = "default_reputation_min_observations")]
+    pub min_observations: u64,
+    /// Path for persisting reputation state. Defaults to `~/.config/zeph/router_reputation_state.json`.
+    #[serde(default)]
+    pub state_path: Option<String>,
 }
 
 /// Configuration for cascade routing (`strategy = "cascade"`).

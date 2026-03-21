@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(router): RAPS Bayesian reputation scoring for `AgentRouter` (#1886) — per-provider `Beta(quality_alpha, quality_beta)` distributions track tool execution quality outcomes (invalid argument failures) separate from API availability; `ReputationTracker` with session-level decay (`decay_factor = 0.95`), minimum observation threshold (`min_observations = 5`), `prune()` and `save/load` with atomic rename + 0o600 permissions; **CRIT-3 fix**: Thompson Sampling priors are shifted by quality reputation parameters before sampling (not blended as a convex combination of two Beta samples), preserving single-distribution sampling guarantees; **CRIT-2 fix**: EMA blending uses multiplicative adjustment `ema_score * (1 + weight * (rep_factor - 0.5) * 2)` (not additive), keeping score magnitude bounded; **CRIT-1 fix**: per-provider Beta mean computed independently for each provider (not a single shared sample); Cascade strategy is a no-op (skips reputation entirely); only `InvalidParams` tool errors count as quality failures (network/transient/timeout errors excluded); active sub-provider tracked via `last_active_provider` for correct quality attribution; `[llm.router.reputation]` config section (`enabled = false`, `decay_factor`, `weight`, `min_observations`, `state_path`); `RouterProvider::reputation_stats()` for diagnostics; `AnyProvider::record_quality_outcome()` delegates to router; state persisted to `~/.config/zeph/router_reputation_state.json`; +19 unit tests
+
 ### Fixed
 
 - fix(skills): convert unsupported `>-` YAML block scalar modifier to `>` in all 19 skill files in `.zeph/skills/` — resolves silent load failures for all rewritten skills; 9 new skills (archive, cron, database, json-yaml, network, process-management, qdrant, regex, ssh-remote, text-processing) were completely unavailable (#2087)

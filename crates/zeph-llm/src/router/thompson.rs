@@ -109,6 +109,64 @@ impl ThompsonState {
         })
     }
 
+    /// Sample all providers using caller-supplied alpha/beta overrides and return the selection.
+    ///
+    /// For each provider in `overrides`, the supplied `(alpha, beta)` replaces the stored
+    /// distribution for this sampling call only. Used by RAPS to apply reputation-shifted
+    /// priors without modifying the availability distribution.
+    ///
+    /// Providers absent from `overrides` use their stored distributions as-is.
+    /// Returns `None` if `providers` is empty.
+    #[must_use]
+    pub fn select_with_priors(
+        &mut self,
+        providers: &[String],
+        overrides: &std::collections::HashMap<String, (f64, f64)>,
+    ) -> Option<ThompsonSelection> {
+        if providers.is_empty() {
+            return None;
+        }
+        let rng = self
+            .rng
+            .get_or_insert_with(|| rand::rngs::SmallRng::from_rng(&mut rand::rng()));
+        let (best, _) = providers
+            .iter()
+            .map(|name| {
+                let (alpha, beta) = overrides.get(name).copied().unwrap_or_else(|| {
+                    let dist = self.distributions.get(name).cloned().unwrap_or_default();
+                    (dist.alpha, dist.beta)
+                });
+                let dist = BetaDist {
+                    alpha: alpha.max(1e-6),
+                    beta: beta.max(1e-6),
+                };
+                let sample = dist.sample(rng);
+                (name.clone(), sample)
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+        let stored = self.distributions.get(&best).cloned().unwrap_or_default();
+        // Use the effective (shifted) alpha/beta for the exploit diagnostic so the log reflects
+        // the actual distribution used for selection, not the unshifted stored distribution.
+        let (eff_alpha, eff_beta) = overrides
+            .get(&best)
+            .copied()
+            .unwrap_or((stored.alpha, stored.beta));
+        let best_mean = eff_alpha / (eff_alpha + eff_beta);
+        let exploit = providers.iter().all(|name| {
+            let (a, b) = overrides.get(name).copied().unwrap_or_else(|| {
+                let d = self.distributions.get(name).cloned().unwrap_or_default();
+                (d.alpha, d.beta)
+            });
+            best_mean >= a / (a + b)
+        });
+        Some(ThompsonSelection {
+            provider: best,
+            alpha: eff_alpha,
+            beta: eff_beta,
+            exploit,
+        })
+    }
+
     /// Update the Beta distribution for `provider` based on the outcome.
     pub fn update(&mut self, provider: &str, success: bool) {
         let dist = self.distributions.entry(provider.to_owned()).or_default();
@@ -140,6 +198,15 @@ impl ThompsonState {
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".zeph")
             .join("router_thompson_state.json")
+    }
+
+    /// Return the Beta distribution for `provider`, or the default prior if not tracked.
+    #[must_use]
+    pub fn get_distribution(&self, provider: &str) -> BetaDist {
+        self.distributions
+            .get(provider)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Remove distribution entries for providers not in `known`.

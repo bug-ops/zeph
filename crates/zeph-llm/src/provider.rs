@@ -542,6 +542,13 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
+    /// Record a quality outcome from tool execution for reputation-based routing (RAPS).
+    ///
+    /// Only `RouterProvider` has a non-trivial implementation; all other providers are no-ops.
+    /// Must only be called for semantic failures (invalid tool arguments, parse errors).
+    /// Do NOT call for network errors, rate limits, or transient I/O failures.
+    fn record_quality_outcome(&self, _provider_name: &str, _success: bool) {}
+
     /// Return the request payload that will be sent to the provider, for debug dumps.
     ///
     /// Implementations should mirror the provider's request body as closely as practical.

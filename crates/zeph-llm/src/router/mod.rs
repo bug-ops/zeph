@@ -10,6 +10,7 @@
 //! on Unix. Do not store the state file in world-writable directories.
 
 pub mod cascade;
+pub mod reputation;
 pub mod thompson;
 
 use std::path::Path;
@@ -21,6 +22,7 @@ use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
 use cascade::{CascadeState, ClassifierMode, heuristic_score};
+use reputation::ReputationTracker;
 use thompson::ThompsonState;
 
 /// Routing strategy used by [`RouterProvider`].
@@ -83,6 +85,15 @@ pub struct RouterProvider {
     cascade_state: Option<Arc<Mutex<CascadeState>>>,
     /// Cascade routing configuration.
     cascade_config: Option<CascadeRouterConfig>,
+    /// Bayesian reputation tracker (RAPS). None when disabled.
+    reputation: Option<Arc<Mutex<ReputationTracker>>>,
+    /// Path for persisting reputation state.
+    reputation_state_path: Option<std::path::PathBuf>,
+    /// Reputation weight in [0.0, 1.0] for routing score blend.
+    reputation_weight: f64,
+    /// Name of the sub-provider that served the most recent successful tool call.
+    /// Used by `record_quality_outcome` to attribute quality to the right provider.
+    last_active_provider: Arc<Mutex<Option<String>>>,
 }
 
 impl RouterProvider {
@@ -99,6 +110,10 @@ impl RouterProvider {
             thompson_state_path: None,
             cascade_state: None,
             cascade_config: None,
+            reputation: None,
+            reputation_state_path: None,
+            reputation_weight: 0.3,
+            last_active_provider: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -125,6 +140,103 @@ impl RouterProvider {
         self.thompson = Some(Arc::new(Mutex::new(state)));
         self.thompson_state_path = Some(path);
         self
+    }
+
+    /// Enable Bayesian reputation scoring (RAPS).
+    ///
+    /// Loads existing state from `state_path` (or the default path), applies session-level
+    /// decay, and prunes stale provider entries.
+    ///
+    /// No-op for Cascade routing (reputation is not used for cost-tier ordering).
+    #[must_use]
+    pub fn with_reputation(
+        mut self,
+        decay_factor: f64,
+        weight: f64,
+        min_observations: u64,
+        state_path: Option<&Path>,
+    ) -> Self {
+        let path = state_path.map_or_else(ReputationTracker::default_path, Path::to_path_buf);
+        // Load persisted state, apply decay, and prune orphaned providers.
+        let mut tracker = ReputationTracker::load(&path);
+        let known: std::collections::HashSet<String> =
+            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        tracker.apply_decay();
+        tracker.prune(&known);
+        // Overwrite config params (decay/min_obs may differ from the persisted defaults).
+        let tracker = {
+            let stats = tracker.stats();
+            let mut t = ReputationTracker::new(decay_factor, min_observations);
+            for (name, alpha, beta, _, obs) in stats {
+                t.models.insert(
+                    name,
+                    reputation::ReputationEntry {
+                        dist: thompson::BetaDist { alpha, beta },
+                        observations: obs,
+                    },
+                );
+            }
+            t
+        };
+        self.reputation = Some(Arc::new(Mutex::new(tracker)));
+        self.reputation_state_path = Some(path);
+        self.reputation_weight = weight.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Record a quality outcome for the last active sub-provider (tool execution result).
+    ///
+    /// Call only for semantic failures (invalid tool args, parse errors).
+    /// Do NOT call for network errors, rate limits, or transient I/O failures.
+    /// No-op when reputation scoring is disabled, strategy is Cascade, or no tool call
+    /// has been made yet in this session.
+    ///
+    /// The `_provider_name` parameter is ignored — quality is attributed to the sub-provider
+    /// that served the most recent `chat_with_tools` call, tracked via `last_active_provider`.
+    pub fn record_quality_outcome(&self, _provider_name: &str, success: bool) {
+        if self.strategy == RouterStrategy::Cascade {
+            return;
+        }
+        let Some(ref reputation) = self.reputation else {
+            return;
+        };
+        let active = self
+            .last_active_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(provider_name) = active else {
+            return;
+        };
+        let mut tracker = reputation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tracker.record_quality(&provider_name, success);
+    }
+
+    /// Persist current reputation state to disk. No-op if reputation is disabled.
+    pub fn save_reputation_state(&self) {
+        let (Some(reputation), Some(path)) = (&self.reputation, &self.reputation_state_path) else {
+            return;
+        };
+        let state = reputation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(e) = state.save(path) {
+            tracing::warn!(error = %e, "failed to save reputation state");
+        }
+    }
+
+    /// Return reputation stats for all tracked providers: (name, alpha, beta, mean, observations).
+    #[must_use]
+    pub fn reputation_stats(&self) -> Vec<(String, f64, f64, f64, u64)> {
+        let Some(ref reputation) = self.reputation else {
+            return vec![];
+        };
+        let tracker = reputation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tracker.stats()
     }
 
     /// Enable Cascade routing strategy.
@@ -216,23 +328,54 @@ impl RouterProvider {
             .provider_order
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ordered: Vec<AnyProvider> = order
+        let mut ordered: Vec<AnyProvider> = order
             .iter()
             .filter_map(|&i| self.providers.get(i).cloned())
             .collect();
-        if let Some(first) = ordered.first() {
-            let latency_ema_ms = self
-                .ema
-                .as_ref()
-                .and_then(|ema| {
-                    let snap = ema.snapshot();
-                    snap.get(first.name()).map(|s| s.latency_ema_ms)
+
+        // CRIT-2 fix: apply reputation as a multiplicative adjustment to the EMA score,
+        // not an additive term. This avoids unbounded score inflation.
+        //
+        // Adjustment formula: ema_score * (1 + weight * (rep_factor - 0.5) * 2)
+        // where rep_factor in [0,1]: 0.5 = neutral, >0.5 = positive, <0.5 = negative.
+        // CRIT-1 fix: reputation factor is sampled per-provider (each has its own Beta mean).
+        if let Some(ref reputation) = self.reputation
+            && let Some(ref ema) = self.ema
+        {
+            let rep = reputation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let w = self.reputation_weight;
+            let snap = ema.snapshot();
+            let mut scored: Vec<(usize, f64)> = ordered
+                .iter()
+                .enumerate()
+                .map(|(idx, p)| {
+                    let ema_score = snap
+                        .get(p.name())
+                        .map_or(0.0, |s| s.success_ema - s.latency_ema_ms / 10_000.0);
+                    let score = if let Some(rep_factor) = rep.ema_reputation_factor(p.name()) {
+                        // Multiplicative blend: neutral at rep_factor=0.5, range ±weight.
+                        let adjustment = 1.0 + w * (rep_factor - 0.5) * 2.0;
+                        ema_score * adjustment
+                    } else {
+                        ema_score
+                    };
+                    (idx, score)
                 })
-                .unwrap_or(500.0);
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let reordered: Vec<AnyProvider> = scored
+                .into_iter()
+                .filter_map(|(idx, _)| ordered.get(idx).cloned())
+                .collect();
+            ordered = reordered;
+        }
+
+        if let Some(first) = ordered.first() {
             tracing::debug!(
                 provider = %first.name(),
                 strategy = "ema",
-                latency_ema_ms = latency_ema_ms,
                 "selected provider"
             );
         }
@@ -247,7 +390,30 @@ impl RouterProvider {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
-        let selected = state.select(&names);
+
+        // CRIT-3 fix: shift Thompson Beta priors using quality reputation rather than
+        // blending two separate samples. This preserves Thompson's single-distribution
+        // sampling property and its theoretical guarantees.
+        let selected = if let Some(ref reputation) = self.reputation {
+            let rep = reputation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let w = self.reputation_weight;
+            let overrides: std::collections::HashMap<String, (f64, f64)> = names
+                .iter()
+                .map(|name| {
+                    let base = state.get_distribution(name);
+                    let (a, b) = rep.shift_thompson_priors(name, base.alpha, base.beta, w);
+                    (name.clone(), (a, b))
+                })
+                .collect();
+            // Drop rep lock before locking state (already held above via state).
+            drop(rep);
+            state.select_with_priors(&names, &overrides)
+        } else {
+            state.select(&names)
+        };
+
         if let Some(ref sel) = selected {
             tracing::debug!(
                 provider = %sel.provider,
@@ -619,6 +785,12 @@ impl LlmProvider for RouterProvider {
                             true,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
+                        // Track which sub-provider served this tool call for reputation attribution.
+                        *router
+                            .last_active_provider
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(p.name().to_owned());
                         return Ok(r);
                     }
                     Err(e) => {

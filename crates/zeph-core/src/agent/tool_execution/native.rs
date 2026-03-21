@@ -1255,9 +1255,13 @@ impl<C: Channel> Agent<C> {
             let started_at = &tool_started_ats[idx];
             let tool_result = std::mem::replace(&mut tool_results[idx], Ok(None));
             let anomaly_outcome;
+            // True only for InvalidParams errors — semantic failures attributable to model quality.
+            // Network, transient, timeout, and policy errors are excluded.
+            let is_quality_failure;
             let (output, is_error, diff, inline_stats, _, kept_lines, locations) = match tool_result
             {
                 Ok(Some(out)) => {
+                    is_quality_failure = false;
                     anomaly_outcome =
                         if out.summary.contains("[error]") || out.summary.contains("[stderr]") {
                             AnomalyOutcome::Error
@@ -1287,6 +1291,7 @@ impl<C: Channel> Agent<C> {
                     )
                 }
                 Ok(None) => {
+                    is_quality_failure = false;
                     anomaly_outcome = AnomalyOutcome::Success;
                     (
                         "(no output)".to_owned(),
@@ -1299,6 +1304,9 @@ impl<C: Channel> Agent<C> {
                     )
                 }
                 Err(ref e) => {
+                    // Only InvalidParams is a semantic failure attributable to model quality.
+                    // Transient I/O, timeout, blocked, and sandbox errors are not.
+                    is_quality_failure = matches!(e, zeph_tools::ToolError::InvalidParams { .. });
                     anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
                         AnomalyOutcome::Blocked
                     } else {
@@ -1352,6 +1360,13 @@ impl<C: Channel> Agent<C> {
                 let kind = FailureKind::from_error(&output);
                 self.record_skill_outcomes("tool_failure", Some(&output), Some(kind.as_str()))
                     .await;
+                // Record quality failure for reputation scoring only when the model produced
+                // invalid tool arguments (semantic failure). Network errors and transient
+                // failures are not attributable to model quality.
+                if is_quality_failure {
+                    self.provider
+                        .record_quality_outcome(self.provider.name(), false);
+                }
                 // Sanitize before passing to self_reflection: tool output from native calls can
                 // contain untrusted content with injection patterns. Use ToolResult (ExternalUntrusted)
                 // as the appropriate source kind for native tool call output.
@@ -1509,6 +1524,9 @@ impl<C: Channel> Agent<C> {
                 }
             } else {
                 self.record_skill_outcomes("success", None, None).await;
+                // Record quality success for reputation scoring.
+                self.provider
+                    .record_quality_outcome(self.provider.name(), true);
             }
             self.record_anomaly_outcome(anomaly_outcome).await?;
 

@@ -1096,6 +1096,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             } else {
                 None
             },
+            reputation: None,
         }),
         stt: None,
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
