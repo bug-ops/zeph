@@ -203,6 +203,12 @@ pub(crate) struct OrchestrationState {
     pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
     pub(crate) subagent_config: crate::config::SubAgentConfig,
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
+    /// Lazily initialized plan template cache. `None` until first use or when
+    /// memory (`SQLite`) is unavailable.
+    pub(crate) plan_cache: Option<crate::orchestration::PlanCache>,
+    /// Goal embedding from the most recent `plan_with_cache()` call. Consumed by
+    /// `finalize_plan_execution()` to cache the completed plan template.
+    pub(crate) pending_goal_embedding: Option<Vec<f32>>,
 }
 
 /// Groups instruction hot-reload state.

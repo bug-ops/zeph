@@ -198,6 +198,7 @@ mod tests {
                 duration_ms: 100,
                 agent_id: None,
                 agent_def: None,
+                handoff_output: None,
             });
             graph.tasks.push(node);
         }

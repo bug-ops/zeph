@@ -30,7 +30,7 @@ impl TaskHandler for CustomTaskHandler {
         let raw = config
             .get("task")
             .and_then(|v| v.as_str())
-            .unwrap_or("Scheduled custom task triggered.");
+            .unwrap_or("Execute the following scheduled task now: check status");
         let prompt = sanitize_task_prompt(raw);
         let tx = self.tx.clone();
         Box::pin(async move {
@@ -62,7 +62,7 @@ mod tests {
         let handler = CustomTaskHandler::new(tx);
         handler.execute(&serde_json::Value::Null).await.unwrap();
         let msg = rx.recv().await.unwrap();
-        assert!(msg.contains("triggered"));
+        assert!(msg.contains("Execute the following scheduled task now:"));
     }
 
     #[tokio::test]

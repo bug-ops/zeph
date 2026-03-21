@@ -303,6 +303,161 @@ If a single chunk fits all messages, or if chunked summarization fails, the syst
 
 Both tiers are idempotent and run automatically during the agent loop.
 
+### Post-Compression Validation (Compaction Probe)
+
+After hard-tier LLM compaction produces a candidate summary, an optional
+validation step can verify that the summary preserves critical facts before
+committing it. The compaction probe generates factual questions from the
+original messages, answers them using only the summary, and scores the
+answers. The probe runs only during hard-tier compaction events — soft-tier
+pruning and deferred summaries are not validated.
+
+The feature is disabled by default (`[memory.compression.probe] enabled = false`).
+On errors or timeouts, the probe fails open — compaction proceeds without
+validation.
+
+#### How It Works
+
+1. After `summarize_messages()` produces a summary, the probe generates up to
+   `max_questions` factual questions from the original messages. Tool output
+   bodies are truncated to 500 characters to focus on decisions and outcomes.
+2. Questions target concrete details: file paths, function/struct names,
+   architectural decisions, config values, error messages, and action items.
+3. A second LLM call answers the questions using ONLY the summary text.
+   If information is absent from the summary, the model answers "UNKNOWN".
+4. Answers are scored against expected values using token-set-ratio similarity
+   (Jaccard-based with substring boost). Refusal patterns ("unknown",
+   "not mentioned", "n/a", etc.) score 0.0.
+5. The average score determines the verdict.
+
+If the probe generates fewer than 2 questions (e.g., very short conversations
+with insufficient factual content), the probe is skipped and compaction
+proceeds without validation.
+
+#### Verdict Behavior
+
+| Verdict | Score Range (defaults) | Action | Metric incremented |
+|---------|----------------------|--------|-------------------|
+| Pass | >= 0.60 | Commit summary | `compaction_probe_passes` |
+| SoftFail | [0.35, 0.60) | Commit summary + WARN log | `compaction_probe_soft_failures` |
+| HardFail | < 0.35 | Block compaction, preserve original messages | `compaction_probe_failures` |
+| Error | N/A (LLM/timeout) | Non-blocking, proceed with compaction | `compaction_probe_errors` |
+
+When HardFail blocks compaction, the outcome is `ProbeRejected`. This sets an
+internal cooldown but does NOT trigger the `Exhausted` state — the compactor
+can retry on a later turn with new messages.
+
+#### User-Facing Messages
+
+- **During probe**: status indicator shows "Validating compaction quality..."
+- **HardFail** (via `/compact`): "Compaction rejected: summary quality below
+  threshold. Original context preserved."
+- **SoftFail**: warning in logs only; user sees normal "Context compacted
+  successfully."
+- **Pass**: normal "Context compacted successfully."
+
+#### Configuration
+
+```toml
+[memory.compression.probe]
+enabled = false           # Enable compaction probe validation (default: false)
+model = ""                # Model for probe LLM calls (empty = summary provider)
+threshold = 0.6           # Minimum score to pass without warnings
+hard_fail_threshold = 0.35 # Score below this blocks compaction (HardFail)
+max_questions = 3         # Maximum factual questions per probe
+timeout_secs = 15         # Timeout for the entire probe (both LLM calls)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable probe validation after each hard compaction |
+| `model` | string | `""` | Model override for probe LLM calls. Empty = use summary provider. Non-Haiku models increase cost (~10x) |
+| `threshold` | float | `0.6` | Minimum average score for Pass verdict |
+| `hard_fail_threshold` | float | `0.35` | Score below this triggers HardFail (blocks compaction) |
+| `max_questions` | integer | `3` | Number of factual questions generated per probe |
+| `timeout_secs` | integer | `15` | Timeout for both LLM calls combined |
+
+**Threshold tuning:**
+
+- Decrease `threshold` to 0.45-0.50 for creative or conversational sessions
+  where verbatim detail preservation matters less.
+- Raise `threshold` to 0.75-0.80 for coding sessions where file paths and
+  architectural decisions must survive compaction.
+- Keep a gap of at least 0.15-0.20 between `hard_fail_threshold` and
+  `threshold` to maintain a meaningful SoftFail range.
+- `max_questions = 3` balances probe accuracy against latency and cost.
+  Increase to 5 for higher statistical power at the expense of slower probes.
+
+#### Debug Dump Output
+
+When [debug dump](debug-dump.md) is enabled, each probe writes a
+`{id:04}-compaction-probe.json` file with the full probe result:
+
+```json
+{
+  "score": 0.75,
+  "threshold": 0.6,
+  "hard_fail_threshold": 0.35,
+  "verdict": "Pass",
+  "model": "claude-haiku-4-5-20251001",
+  "duration_ms": 2340,
+  "questions": [
+    {
+      "question": "What file was modified to fix the auth bug?",
+      "expected": "crates/zeph-core/src/auth.rs",
+      "actual": "The file crates/zeph-core/src/auth.rs was modified",
+      "score": 1.0
+    }
+  ]
+}
+```
+
+The `questions` array merges question text, expected answer, actual LLM answer,
+and per-question score into a single object per question for easy inspection.
+
+#### Troubleshooting
+
+**Frequent HardFail verdicts**
+
+- The summary model may be too small for the conversation complexity.
+  Try a larger model via `model = "claude-sonnet-4-5-20250514"` (higher cost).
+- Lower `hard_fail_threshold` if false negatives are common (probe is too strict).
+- Increase `max_questions` to 5 for more statistical power (increases latency).
+
+**Probe always returns SoftFail**
+
+- Check debug dump: if per-question scores show one strong and one weak answer,
+  the summary may be partially lossy. This is expected behavior — SoftFail
+  means "good enough" and does not block compaction.
+- Consider enabling [Failure-Driven Compression Guidelines](#failure-driven-compression-guidelines)
+  to teach the summarizer what to preserve.
+
+**Probe timeout warnings**
+
+- Default 15s should be sufficient for most models. Increase `timeout_secs`
+  for slow providers (e.g., local Ollama with large models).
+- On timeout, compaction proceeds without validation (fail-open).
+
+**Performance considerations**
+
+- Each probe makes 2 LLM calls (question generation + answer verification).
+- With Haiku: ~$0.001-0.003 per probe, 1-3 seconds latency.
+- With Sonnet: ~$0.01-0.03 per probe, 2-5 seconds latency.
+- Probes run only during hard compaction events, not on every turn.
+- The probe timeout does not affect the main agent loop — it only gates
+  whether the compaction summary is committed.
+
+#### Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `compaction_probe_passes` | Total Pass verdicts |
+| `compaction_probe_soft_failures` | Total SoftFail verdicts |
+| `compaction_probe_failures` | Total HardFail verdicts (compaction blocked) |
+| `compaction_probe_errors` | Total Error verdicts (LLM/timeout, non-blocking) |
+| `last_probe_verdict` | Most recent verdict (Pass/SoftFail/HardFail/Error) |
+| `last_probe_score` | Most recent probe score in [0.0, 1.0] |
+
 ### Compaction Loop Prevention
 
 `maybe_compact()` tracks whether compaction is making progress. The `compaction_exhausted` flag is set permanently when any of the following conditions are detected after a hard-tier attempt:

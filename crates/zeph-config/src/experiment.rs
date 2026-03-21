@@ -3,6 +3,49 @@
 
 use serde::{Deserialize, Serialize};
 
+// HandoffConfig is defined in zeph-orchestration but mirrored here to keep
+// config parsing self-contained (zeph-config must not depend on zeph-orchestration).
+
+fn default_handoff_validate_context() -> bool {
+    true
+}
+
+fn default_handoff_verify_output() -> bool {
+    true
+}
+
+/// Configuration for handoff context validation (`[orchestration.handoff]` TOML section).
+// Four independent boolean flags per spec §6.4 — state machine would add accidental complexity.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HandoffConfig {
+    /// Enable pre-dispatch context validation. Default: true.
+    #[serde(default = "default_handoff_validate_context")]
+    pub validate_context: bool,
+    /// Enable post-completion output verification. Default: true.
+    #[serde(default = "default_handoff_verify_output")]
+    pub verify_output: bool,
+    /// Hard-fail on soft validation warnings (for debugging). Default: false.
+    #[serde(default)]
+    pub strict_mode: bool,
+    /// Auto-generate acceptance criteria via LLM when missing. Default: false.
+    /// WARNING: can hallucinate requirements — opt-in only.
+    #[serde(default)]
+    pub auto_criteria: bool,
+}
+
+impl Default for HandoffConfig {
+    fn default() -> Self {
+        Self {
+            validate_context: default_handoff_validate_context(),
+            verify_output: default_handoff_verify_output(),
+            strict_mode: false,
+            auto_criteria: false,
+        }
+    }
+}
+
 fn default_planner_max_tokens() -> u32 {
     4096
 }
@@ -152,6 +195,9 @@ pub struct OrchestrationConfig {
     /// Plan template caching configuration.
     #[serde(default)]
     pub plan_cache: PlanCacheConfig,
+    /// Handoff context validation configuration.
+    #[serde(default)]
+    pub handoff: HandoffConfig,
 }
 
 impl Default for OrchestrationConfig {
@@ -170,6 +216,7 @@ impl Default for OrchestrationConfig {
             aggregator_max_tokens: default_aggregator_max_tokens(),
             deferral_backoff_ms: default_deferral_backoff_ms(),
             plan_cache: PlanCacheConfig::default(),
+            handoff: HandoffConfig::default(),
         }
     }
 }
@@ -282,5 +329,54 @@ impl ExperimentConfig {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handoff_config_defaults() {
+        let cfg = HandoffConfig::default();
+        assert!(cfg.validate_context);
+        assert!(cfg.verify_output);
+        assert!(!cfg.strict_mode);
+        assert!(!cfg.auto_criteria);
+    }
+
+    #[test]
+    fn handoff_config_roundtrip_toml() {
+        let cfg = HandoffConfig::default();
+        let toml_str = toml::to_string(&cfg).expect("serialize to toml");
+        let restored: HandoffConfig = toml::from_str(&toml_str).expect("deserialize from toml");
+        assert_eq!(cfg.validate_context, restored.validate_context);
+        assert_eq!(cfg.verify_output, restored.verify_output);
+        assert_eq!(cfg.strict_mode, restored.strict_mode);
+        assert_eq!(cfg.auto_criteria, restored.auto_criteria);
+    }
+
+    #[test]
+    fn orchestration_config_contains_handoff_section() {
+        let cfg = OrchestrationConfig::default();
+        assert!(cfg.handoff.validate_context);
+        assert!(cfg.handoff.verify_output);
+        assert!(!cfg.handoff.strict_mode);
+        assert!(!cfg.handoff.auto_criteria);
+    }
+
+    #[test]
+    fn orchestration_config_handoff_parsed_from_toml() {
+        let toml_str = r#"
+            [handoff]
+            validate_context = false
+            verify_output = true
+            strict_mode = true
+            auto_criteria = false
+        "#;
+        let cfg: OrchestrationConfig = toml::from_str(toml_str).expect("parse toml");
+        assert!(!cfg.handoff.validate_context);
+        assert!(cfg.handoff.verify_output);
+        assert!(cfg.handoff.strict_mode);
     }
 }

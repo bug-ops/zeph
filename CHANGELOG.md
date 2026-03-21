@@ -6,9 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- Add compaction probe documentation to context engineering guide (#2050)
+
+### Changed
+
+- docs: document `semantic_cache_max_candidates` and `semantic_cache_threshold` recall-vs-performance tradeoff with detailed doc comments and tuning guidance; add DEBUG-level diagnostic logs for semantic cache lookup lifecycle (candidate count, per-candidate scores, hit/miss verdicts) (#2031)
+
 ### Added
 
 - feat(memory): MAGMA multi-graph memory — typed edges (semantic/temporal/causal/entity) for the knowledge graph (#1821); `EdgeType` enum with `Default=Semantic`, `Display`, `FromStr`, and serde support; `insert_edge_typed()` stores explicit edge type with dedup key `(source, target, relation, edge_type)` — same entity pair may now have both `Semantic` and `Causal` edges; `bfs_typed()` traverses only specified edge subgraphs for scoped retrieval; `classify_graph_subgraph()` pure heuristic in `router.rs` maps query keywords to relevant `EdgeType` sets (shared marker constants prevent drift with `HeuristicRouter`); `graph_recall()` and `recall_graph()` accept `edge_types: &[EdgeType]` (empty = all types, backward compatible); dedup key in `graph_recall` includes `edge_type` (critic mitigation); LLM extraction prompt updated with `edge_type` classification instructions, `ExtractedEdge.edge_type` field with `serde(default)` for backward compat; context assembly calls `classify_graph_subgraph` per query; `/graph stats` shows per-type edge distribution; `/graph facts` and `/graph history` display edge type in relation arrow (`--[relation/type]-->`); DB migration 041 adds `edge_type TEXT NOT NULL DEFAULT 'semantic' CHECK(...)`, drops old `uq_graph_edges_active` index, creates new uniqueness constraint on `(source, target, relation, edge_type)` plus two performance indexes
+- feat(orchestration): add HandoffContext schema (Phase 1, types only) (#2023) — typed `HandoffContext`, `RoleContext` (Architect/Developer/Tester/Critic/Reviewer/Generic), `HandoffOutput`, `DependencyOutput`, `HandoffMetrics`, and validation stubs in `zeph-orchestration::handoff`; `HandoffConfig` in `[orchestration.handoff]` TOML section with `validate_context`, `verify_output`, `strict_mode`, `auto_criteria`; optional `handoff_context: Option<HandoffContext>` on `TaskNode` and `handoff_output: Option<HandoffOutput>` on `TaskResult` for backward-compatible wiring in Phase 2; no behavior change — all validation methods are no-ops in Phase 1
 
 - feat(orchestration): plan template caching for LLM planner cost reduction (#1856) — `PlanCache` stores completed `TaskGraph` plans as reusable `PlanTemplate` skeletons in SQLite with BLOB-encoded embeddings; cosine similarity computed in-process (no Qdrant dependency); cache lookup returns the closest template if similarity >= threshold, then uses a lightweight LLM adaptation call instead of full decomposition; `PlanCacheConfig` in `[orchestration.plan_cache]` with `enabled` (default: false), `similarity_threshold` (0.90), `ttl_days` (30), `max_templates` (100); goal normalization (trim + collapse whitespace + lowercase) and BLAKE3 hash for deduplication; `INSERT OR REPLACE ON CONFLICT(goal_hash)` prevents duplicate templates; stale embeddings NULLed on model change; two-phase eviction: TTL sweep + LRU size cap; graceful degradation: any cache failure falls back to full `planner.plan()` without blocking; DB migration 040
 
@@ -35,6 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(core): multi-language `FeedbackDetector` — add regex patterns for Russian, Spanish, German, French, Chinese (Simplified), and Japanese across all three correction kinds (`ExplicitRejection`, `AlternativeRequest`, `SelfCorrection`); dual anchoring strategy (anchored base confidence, unanchored -0.10); per-pattern `(Regex, f32)` tuples replace the hardcoded per-category confidence; 137 tests covering positive/negative/edge cases per language (#1424)
 
 - refactor(memory): wrap `ResponseCache::cleanup()` DELETE and UPDATE operations in a single SQLite transaction for atomicity (closes #2032)
+
+### Fixed
+
+- fix(scheduler): make task injection format explicit about execution intent (#2073) — replace ambiguous `[Scheduled task] <task>` prefix with `Execute the following scheduled task now: <task>` to prevent LLM from cancelling bash tasks instead of executing them
 
 ### Changed
 

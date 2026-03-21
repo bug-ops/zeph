@@ -2531,6 +2531,7 @@ mod compaction_e2e {
                 duration_ms: 0,
                 agent_id: None,
                 agent_def: None,
+                handoff_output: None,
             });
             if status == GraphStatus::Completed {
                 node.status = TaskStatus::Completed;
@@ -2630,6 +2631,7 @@ mod compaction_e2e {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
         graph.tasks.push(node);
         graph.status = GraphStatus::Running;
@@ -2874,6 +2876,7 @@ mod compaction_e2e {
             duration_ms: 1,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
         graph.tasks.push(node);
         graph.status = GraphStatus::Running;
@@ -3026,6 +3029,7 @@ mod compaction_e2e {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
         let mut canceled = TaskNode::new(1, "task-canceled", "was running");
         canceled.status = TaskStatus::Canceled;
@@ -3360,6 +3364,7 @@ mod compaction_e2e {
             duration_ms: 5,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
         let mut skipped = TaskNode::new(1, "task-skip", "desc");
         skipped.status = TaskStatus::Skipped;
@@ -3413,6 +3418,7 @@ mod compaction_e2e {
             duration_ms: 100,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
         let mut cancelled = TaskNode::new(1, "cancelled-task", "never ran");
         cancelled.status = TaskStatus::Canceled;
@@ -4485,5 +4491,13 @@ mod shutdown_summary_tests {
         );
         assert_eq!(rows[0].correction_kind, "explicit_rejection");
         assert_eq!(rows[0].correction_text, "no that's wrong");
+    }
+
+    #[test]
+    fn test_scheduled_task_injection_format() {
+        let prompt = "bash -c 'echo hello'";
+        let text = format!("{}{prompt}", super::super::SCHEDULED_TASK_PREFIX);
+        assert!(text.starts_with(super::super::SCHEDULED_TASK_PREFIX));
+        assert!(text.contains(prompt));
     }
 }

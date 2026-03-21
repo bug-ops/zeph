@@ -534,20 +534,22 @@ impl<C: Channel> Agent<C> {
         // Semantic fallback: embed once, search by similarity.
         if self.runtime.semantic_cache_enabled && self.provider.supports_embeddings() {
             use zeph_llm::provider::LlmProvider as _;
+            let threshold = self.runtime.semantic_cache_threshold;
+            let max_candidates = self.runtime.semantic_cache_max_candidates;
+            tracing::debug!(
+                max_candidates,
+                threshold,
+                "semantic cache lookup: examining up to {max_candidates} candidates",
+            );
             match self.provider.embed(&content).await {
                 Ok(embedding) => {
                     let embed_model = self.skill_state.embedding_model.clone();
                     match cache
-                        .get_semantic(
-                            &embedding,
-                            &embed_model,
-                            self.runtime.semantic_cache_threshold,
-                            self.runtime.semantic_cache_max_candidates,
-                        )
+                        .get_semantic(&embedding, &embed_model, threshold, max_candidates)
                         .await
                     {
                         Ok(Some((response, score))) => {
-                            tracing::debug!(score, "response cache hit (semantic)");
+                            tracing::debug!(score, max_candidates, "response cache hit (semantic)",);
                             let cleaned = self.scan_output_and_warn(&response);
                             if !cleaned.is_empty() {
                                 let display = self.maybe_redact(&cleaned);
@@ -556,6 +558,11 @@ impl<C: Channel> Agent<C> {
                             return Ok(CacheCheckResult::Hit(cleaned));
                         }
                         Ok(None) => {
+                            tracing::debug!(
+                                max_candidates,
+                                threshold,
+                                "semantic cache miss: no candidate met threshold",
+                            );
                             // Semantic miss — pass embedding through to store path.
                             return Ok(CacheCheckResult::Miss {
                                 query_embedding: Some(embedding),

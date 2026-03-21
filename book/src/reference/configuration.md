@@ -32,6 +32,10 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `memory.graph.temporal_decay_rate` | finite, in [0.0, 10.0]; NaN and Inf rejected at deserialization |
 | `memory.compression.threshold_tokens` | >= 1,000 (proactive only) |
 | `memory.compression.max_summary_tokens` | >= 128 (proactive only) |
+| `memory.compression.probe.threshold` | (0.0, 1.0], must be > `hard_fail_threshold` |
+| `memory.compression.probe.hard_fail_threshold` | [0.0, 1.0), must be < `threshold` |
+| `memory.compression.probe.max_questions` | >= 1 |
+| `memory.compression.probe.timeout_secs` | >= 1 |
 | `memory.token_safety_margin` | > 0.0 |
 | `agent.max_tool_iterations` | <= 100 |
 | `a2a.rate_limit` | > 0 |
@@ -58,7 +62,7 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 | `[agent]` | `max_tool_iterations` |
 | `[skills]` | `max_active_skills` |
 
-**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config (including `[acp.lsp]`), agents config, skill paths, LSP context injection config (`[agent.lsp]`).
+**Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config (including `[acp.lsp]`), agents config, skill paths, LSP context injection config (`[agent.lsp]`), compaction probe config (`[memory.compression.probe]`).
 
 ## Configuration File
 
@@ -248,6 +252,14 @@ strategy = "reactive"         # "reactive" (default) or "proactive"
 # threshold_tokens = 80000   # Fire compression when context exceeds this token count (>= 1000)
 # max_summary_tokens = 4000  # Cap for the compressed summary (>= 128)
 # model = ""                 # Reserved — currently unused
+
+[memory.compression.probe]
+# enabled = false           # Enable compaction probe validation (default: false)
+# model = ""                # Model for probe LLM calls; empty = summary provider (default: "")
+# threshold = 0.6           # Minimum score for Pass verdict (default: 0.6)
+# hard_fail_threshold = 0.35 # Score below this blocks compaction (default: 0.35)
+# max_questions = 3         # Factual questions per probe (default: 3)
+# timeout_secs = 15         # Timeout for both LLM calls in seconds (default: 15)
 
 [memory.compression_guidelines]
 enabled = false                # Enable failure-driven compression guidelines (default: false)

@@ -621,6 +621,7 @@ mod tests {
             duration_ms: 1234,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
         graph.tasks.push(task);
         graph.status = GraphStatus::Failed;
@@ -662,6 +663,7 @@ mod tests {
             duration_ms: 0,
             agent_id: None,
             agent_def: None,
+            handoff_output: None,
         });
         graph.tasks.push(task);
 

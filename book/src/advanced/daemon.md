@@ -112,7 +112,7 @@ One-shot tasks fire once at a specified time and are removed automatically after
 | Relative shorthand | `+2m`, `+1h30m`, `+3d` |
 | Natural language | `in 5 minutes`, `today 14:00`, `tomorrow 09:30` |
 
-For `custom` kind deferred tasks, the `task` field content is injected as `[Scheduled task] <task>` into the agent loop at fire time. Use `"Remind the user to X"` for user notifications, or a direct instruction for agent-executed actions.
+For `custom` kind deferred tasks, the `task` field content is injected as `Execute the following scheduled task now: <task>` into the agent loop at fire time. Use `"Remind the user to X"` for user notifications, or a direct instruction for agent-executed actions.
 
 ### Persistence
 

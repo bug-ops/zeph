@@ -182,6 +182,9 @@ pub struct TaskResult {
     pub duration_ms: u64,
     pub agent_id: Option<String>,
     pub agent_def: Option<String>,
+    /// Structured handoff output (Phase 1: always `None`; populated in Phase 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_output: Option<super::handoff::HandoffOutput>,
 }
 
 /// A single node in the task DAG.
@@ -200,6 +203,9 @@ pub struct TaskNode {
     /// Per-task override; `None` means use graph default.
     pub failure_strategy: Option<FailureStrategy>,
     pub max_retries: Option<u32>,
+    /// Typed handoff context for this task (Phase 1: always `None`; populated in Phase 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_context: Option<super::handoff::HandoffContext>,
 }
 
 impl TaskNode {
@@ -218,6 +224,7 @@ impl TaskNode {
             retry_count: 0,
             failure_strategy: None,
             max_retries: None,
+            handoff_context: None,
         }
     }
 }
@@ -521,6 +528,7 @@ mod tests {
             duration_ms: 500,
             agent_id: Some("agent-1".to_string()),
             agent_def: None,
+            handoff_output: None,
         };
         let json = serde_json::to_string(&result).expect("serialize");
         let restored: TaskResult = serde_json::from_str(&json).expect("deserialize");

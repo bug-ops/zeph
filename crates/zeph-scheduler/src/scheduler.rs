@@ -313,11 +313,10 @@ impl Scheduler {
                     // prompt directly into the agent loop through `custom_task_tx` for cases
                     // where no handler was registered (e.g. scheduler created without one).
                     if let (TaskKind::Custom(_), Some(tx)) = (&task.kind, &self.custom_task_tx) {
-                        let raw = task
-                            .config
-                            .get("task")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Scheduled task triggered.");
+                        let raw =
+                            task.config.get("task").and_then(|v| v.as_str()).unwrap_or(
+                                "Execute the following scheduled task now: check status",
+                            );
                         let prompt = sanitize_task_prompt(raw);
                         let _ = tx.try_send(prompt);
                         if let Err(e) = self.store.mark_done(&task.name).await {
