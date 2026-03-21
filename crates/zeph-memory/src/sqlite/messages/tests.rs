@@ -908,3 +908,365 @@ async fn migration_039_default_importance_score_for_preexisting_rows() {
         row.0
     );
 }
+
+// ── Tier DB method tests (#2094) ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn fetch_tiers_empty_input_returns_empty_map() {
+    let store = test_store().await;
+    let result = store.fetch_tiers(&[]).await.unwrap();
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_tiers_new_messages_default_to_episodic() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id1 = store.save_message(cid, "user", "hello").await.unwrap();
+    let id2 = store.save_message(cid, "assistant", "hi").await.unwrap();
+
+    let tiers = store.fetch_tiers(&[id1, id2]).await.unwrap();
+    assert_eq!(tiers.len(), 2);
+    assert_eq!(tiers.get(&id1).map(String::as_str), Some("episodic"));
+    assert_eq!(tiers.get(&id2).map(String::as_str), Some("episodic"));
+}
+
+#[tokio::test]
+async fn fetch_tiers_nonexistent_ids_omitted() {
+    let store = test_store().await;
+    let tiers = store.fetch_tiers(&[MessageId(999)]).await.unwrap();
+    assert!(tiers.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_tiers_returns_semantic_after_manual_promote() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store
+        .save_message(cid, "user", "remember this")
+        .await
+        .unwrap();
+
+    store.manual_promote(&[id]).await.unwrap();
+
+    let tiers = store.fetch_tiers(&[id]).await.unwrap();
+    assert_eq!(tiers.get(&id).map(String::as_str), Some("semantic"));
+}
+
+#[tokio::test]
+async fn count_messages_by_tier_empty_db_returns_zeros() {
+    let store = test_store().await;
+    let (episodic, semantic) = store.count_messages_by_tier().await.unwrap();
+    assert_eq!(episodic, 0);
+    assert_eq!(semantic, 0);
+}
+
+#[tokio::test]
+async fn count_messages_by_tier_all_episodic_initially() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    store.save_message(cid, "user", "msg1").await.unwrap();
+    store.save_message(cid, "assistant", "msg2").await.unwrap();
+
+    let (episodic, semantic) = store.count_messages_by_tier().await.unwrap();
+    assert_eq!(episodic, 2);
+    assert_eq!(semantic, 0);
+}
+
+#[tokio::test]
+async fn count_messages_by_tier_reflects_manual_promotion() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id1 = store.save_message(cid, "user", "fact one").await.unwrap();
+    let _id2 = store
+        .save_message(cid, "assistant", "response")
+        .await
+        .unwrap();
+    let id3 = store.save_message(cid, "user", "fact two").await.unwrap();
+
+    store.manual_promote(&[id1, id3]).await.unwrap();
+
+    let (episodic, semantic) = store.count_messages_by_tier().await.unwrap();
+    assert_eq!(semantic, 2);
+    assert_eq!(episodic, 1);
+}
+
+#[tokio::test]
+async fn count_messages_by_tier_excludes_deleted() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store.save_message(cid, "user", "to delete").await.unwrap();
+    store.soft_delete_messages(&[id]).await.unwrap();
+
+    let (episodic, _) = store.count_messages_by_tier().await.unwrap();
+    assert_eq!(episodic, 0, "soft-deleted messages must not be counted");
+}
+
+#[tokio::test]
+async fn find_promotion_candidates_empty_when_no_messages() {
+    let store = test_store().await;
+    let candidates = store.find_promotion_candidates(1, 100).await.unwrap();
+    assert!(candidates.is_empty());
+}
+
+#[tokio::test]
+async fn find_promotion_candidates_empty_when_session_count_too_low() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    store
+        .save_message(cid, "user", "low count msg")
+        .await
+        .unwrap();
+    // session_count defaults to 0; min_sessions=1 → no candidates.
+    let candidates = store.find_promotion_candidates(1, 100).await.unwrap();
+    assert!(candidates.is_empty());
+}
+
+#[tokio::test]
+async fn find_promotion_candidates_returns_rows_meeting_threshold() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store
+        .save_message(cid, "user", "cross-session fact")
+        .await
+        .unwrap();
+
+    // Simulate the fact appearing in 2 sessions by incrementing session_count directly.
+    sqlx::query("UPDATE messages SET session_count = 2 WHERE id = ?")
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+    let candidates = store.find_promotion_candidates(2, 100).await.unwrap();
+    assert!(candidates.iter().any(|c| c.id == id));
+}
+
+#[tokio::test]
+async fn find_promotion_candidates_excludes_already_semantic_rows() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store
+        .save_message(cid, "user", "already promoted")
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE messages SET session_count = 3, tier = 'semantic' WHERE id = ?")
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+    let candidates = store.find_promotion_candidates(1, 100).await.unwrap();
+    assert!(
+        !candidates.iter().any(|c| c.id == id),
+        "semantic rows must not appear as candidates"
+    );
+}
+
+#[tokio::test]
+async fn find_promotion_candidates_respects_batch_size() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    for i in 0..5 {
+        let id = store
+            .save_message(cid, "user", &format!("fact {i}"))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE messages SET session_count = 5 WHERE id = ?")
+            .bind(id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+    }
+
+    let candidates = store.find_promotion_candidates(1, 3).await.unwrap();
+    assert_eq!(candidates.len(), 3, "batch_size must cap the result count");
+}
+
+#[tokio::test]
+async fn promote_to_semantic_creates_semantic_message_and_deletes_originals() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id1 = store.save_message(cid, "user", "fact a").await.unwrap();
+    let id2 = store.save_message(cid, "user", "fact b").await.unwrap();
+
+    let new_id = store
+        .promote_to_semantic(cid, "merged: fact a and fact b", &[id1, id2])
+        .await
+        .unwrap();
+
+    // The new message must be in the semantic tier.
+    let tiers = store.fetch_tiers(&[new_id]).await.unwrap();
+    assert_eq!(tiers.get(&new_id).map(String::as_str), Some("semantic"));
+
+    // Originals must be soft-deleted (excluded from fetch_tiers).
+    let orig_tiers = store.fetch_tiers(&[id1, id2]).await.unwrap();
+    assert!(
+        orig_tiers.is_empty(),
+        "original messages must be soft-deleted after promotion"
+    );
+}
+
+#[tokio::test]
+async fn promote_to_semantic_returns_new_message_id_greater_than_originals() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id1 = store.save_message(cid, "user", "episodic a").await.unwrap();
+    let id2 = store.save_message(cid, "user", "episodic b").await.unwrap();
+
+    let new_id = store
+        .promote_to_semantic(cid, "semantic merged", &[id1, id2])
+        .await
+        .unwrap();
+
+    assert!(
+        new_id > id2,
+        "new semantic message id must be greater than the original ids"
+    );
+}
+
+#[tokio::test]
+async fn promote_to_semantic_empty_ids_returns_error() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let result = store.promote_to_semantic(cid, "should fail", &[]).await;
+    assert!(result.is_err(), "empty original_ids must return an error");
+}
+
+#[tokio::test]
+async fn promote_to_semantic_updates_tier_count() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store.save_message(cid, "user", "promote me").await.unwrap();
+
+    let (before_e, before_s) = store.count_messages_by_tier().await.unwrap();
+    assert_eq!(before_e, 1);
+    assert_eq!(before_s, 0);
+
+    store
+        .promote_to_semantic(cid, "semantic version", &[id])
+        .await
+        .unwrap();
+
+    let (after_e, after_s) = store.count_messages_by_tier().await.unwrap();
+    // Original deleted (not counted), one new semantic inserted.
+    assert_eq!(after_e, 0);
+    assert_eq!(after_s, 1);
+}
+
+#[tokio::test]
+async fn manual_promote_empty_input_is_no_op() {
+    let store = test_store().await;
+    let count = store.manual_promote(&[]).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn manual_promote_sets_tier_to_semantic() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store
+        .save_message(cid, "user", "direct promote")
+        .await
+        .unwrap();
+
+    let count = store.manual_promote(&[id]).await.unwrap();
+    assert_eq!(count, 1);
+
+    let tiers = store.fetch_tiers(&[id]).await.unwrap();
+    assert_eq!(tiers.get(&id).map(String::as_str), Some("semantic"));
+}
+
+#[tokio::test]
+async fn manual_promote_does_not_delete_originals() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store.save_message(cid, "user", "keep me").await.unwrap();
+
+    store.manual_promote(&[id]).await.unwrap();
+
+    // Message still present (not soft-deleted) — just tier changed.
+    let msg = store.message_by_id(id).await.unwrap();
+    assert!(
+        msg.is_some(),
+        "manual_promote must not soft-delete the original"
+    );
+}
+
+#[tokio::test]
+async fn manual_promote_is_idempotent() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store
+        .save_message(cid, "user", "already semantic")
+        .await
+        .unwrap();
+
+    store.manual_promote(&[id]).await.unwrap();
+    // Second call: already semantic, rows_affected = 0 but no error.
+    let count = store.manual_promote(&[id]).await.unwrap();
+    assert_eq!(
+        count, 0,
+        "second call on already-semantic row must affect 0 rows"
+    );
+
+    let tiers = store.fetch_tiers(&[id]).await.unwrap();
+    assert_eq!(tiers.get(&id).map(String::as_str), Some("semantic"));
+}
+
+#[tokio::test]
+async fn manual_promote_skips_nonexistent_ids() {
+    let store = test_store().await;
+    let count = store.manual_promote(&[MessageId(9999)]).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn migration_042_default_tier_for_preexisting_rows() {
+    // Directly INSERT without the tier column to verify the schema DEFAULT applies.
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
+         VALUES (?, 'user', 'legacy row', '[]', 1, 1)",
+    )
+    .bind(cid)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    let row: (String,) = sqlx::query_as("SELECT tier FROM messages WHERE content = 'legacy row'")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        row.0, "episodic",
+        "legacy rows must default to 'episodic' tier"
+    );
+}
+
+#[tokio::test]
+async fn migration_042_default_session_count_for_preexisting_rows() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
+         VALUES (?, 'user', 'session count row', '[]', 1, 1)",
+    )
+    .bind(cid)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    let row: (i64,) =
+        sqlx::query_as("SELECT session_count FROM messages WHERE content = 'session count row'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+
+    assert_eq!(row.0, 0, "legacy rows must default to session_count = 0");
+}
