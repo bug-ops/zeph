@@ -2555,9 +2555,7 @@ mod tests {
     // ── Handoff validation integration ──────────────────────────────────────
 
     fn make_handoff_ctx_hard_fail() -> super::super::handoff::HandoffContext {
-        use super::super::handoff::{
-            ArchitectContext, HandoffContext, RoleContext, ValidationSeverity,
-        };
+        use super::super::handoff::{ArchitectContext, HandoffContext, RoleContext};
         // Empty objective → ObjectiveNonEmpty hard fail.
         HandoffContext {
             handoff_id: "hoff-hard-fail".to_string(),
