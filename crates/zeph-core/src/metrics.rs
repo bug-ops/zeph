@@ -131,6 +131,14 @@ pub struct OrchestrationMetrics {
     pub tasks_completed: u64,
     pub tasks_failed: u64,
     pub tasks_skipped: u64,
+    /// Handoffs that passed pre-dispatch validation without hard violations.
+    pub handoff_validation_pass: u64,
+    /// Handoffs blocked by hard validation failures (dispatch blocked).
+    pub handoff_validation_fail: u64,
+    /// Completed handoffs whose output passed `verify_output()` (`Verified` or `PartiallyVerified`).
+    pub handoff_verification_pass: u64,
+    /// Completed handoffs whose output failed `verify_output()` (`Failed` or `Unverified`).
+    pub handoff_verification_fail: u64,
 }
 
 /// Bayesian confidence data for a single skill, used by TUI confidence bar.

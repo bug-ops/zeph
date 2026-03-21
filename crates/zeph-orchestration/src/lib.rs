@@ -26,7 +26,8 @@ pub use handoff::{
     DependencyStatus, DeveloperContext, GenericContext, HandoffContext, HandoffMetrics,
     HandoffOutput, HandoffRef, HandoffValidationError, HandoffValidator, NoopValidator,
     ReviewerContext, RoleContext, TestDelta, TesterContext, ValidationResult, ValidationRule,
-    ValidationSeverity, VerificationResult, VerificationStatus, validate_context, verify_output,
+    ValidationSeverity, VerificationResult, VerificationStatus, derive_verification_status,
+    validate_context, verify_output,
 };
 pub use plan_cache::{
     PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
