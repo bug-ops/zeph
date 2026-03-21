@@ -8,7 +8,6 @@ pub mod command;
 pub mod dag;
 pub mod error;
 pub mod graph;
-pub mod handoff;
 pub mod plan_cache;
 pub mod planner;
 pub mod router;
@@ -20,14 +19,6 @@ pub use error::OrchestrationError;
 pub use graph::{
     FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId, TaskNode,
     TaskResult, TaskStatus,
-};
-pub use handoff::{
-    ArchitectContext, CriterionResult, CriterionStatus, CriticContext, DependencyOutput,
-    DependencyStatus, DeveloperContext, GenericContext, HandoffContext, HandoffMetrics,
-    HandoffOutput, HandoffRef, HandoffValidationError, HandoffValidator, NoopValidator,
-    ReviewerContext, RoleContext, TestDelta, TesterContext, ValidationResult, ValidationRule,
-    ValidationSeverity, VerificationResult, VerificationStatus, derive_verification_status,
-    validate_context, verify_output,
 };
 pub use plan_cache::{
     PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,

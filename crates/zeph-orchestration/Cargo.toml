@@ -32,7 +32,6 @@ zeph-sanitizer.workspace = true
 zeph-subagent.workspace = true
 
 [dev-dependencies]
-toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

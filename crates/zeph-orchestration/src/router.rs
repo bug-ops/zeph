@@ -134,7 +134,6 @@ mod tests {
             retry_count: 0,
             failure_strategy: None,
             max_retries: None,
-            handoff_context: None,
         }
     }
 

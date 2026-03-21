@@ -13,10 +13,6 @@ use tokio::sync::mpsc;
 use super::dag;
 use super::error::OrchestrationError;
 use super::graph::{GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus};
-use super::handoff::{
-    DependencyOutput, DependencyStatus, HandoffMetrics, ValidationSeverity, VerificationStatus,
-    derive_verification_status, validate_context, verify_output,
-};
 use super::router::AgentRouter;
 use zeph_config::OrchestrationConfig;
 use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
@@ -119,8 +115,6 @@ pub struct DagScheduler {
     deferral_backoff: Duration,
     /// Consecutive spawn failures due to concurrency limits. Used to compute exponential backoff.
     consecutive_spawn_failures: u32,
-    /// Session-level handoff quality metrics.
-    handoff_metrics: HandoffMetrics,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -190,7 +184,6 @@ impl DagScheduler {
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
             deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
             consecutive_spawn_failures: 0,
-            handoff_metrics: HandoffMetrics::default(),
         })
     }
 
@@ -269,7 +262,6 @@ impl DagScheduler {
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
             deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
             consecutive_spawn_failures: 0,
-            handoff_metrics: HandoffMetrics::default(),
         })
     }
 
@@ -292,12 +284,6 @@ impl DagScheduler {
     pub fn into_graph(&self) -> TaskGraph {
         self.graph.clone()
     }
-
-    /// Session-level handoff quality metrics (validation + verification counters).
-    #[must_use]
-    pub fn handoff_metrics(&self) -> &HandoffMetrics {
-        &self.handoff_metrics
-    }
 }
 
 impl Drop for DagScheduler {
@@ -316,7 +302,6 @@ impl DagScheduler {
     /// Process pending events and produce actions for the caller.
     ///
     /// Call `wait_event` after processing all actions to block until the next event.
-    #[allow(clippy::too_many_lines)]
     pub fn tick(&mut self) -> Vec<SchedulerAction> {
         if self.graph.status != GraphStatus::Running {
             return vec![SchedulerAction::Done {
@@ -356,83 +341,6 @@ impl DagScheduler {
 
         for task_id in ready {
             let task = &self.graph.tasks[task_id.index()];
-
-            // Pre-dispatch: validate HandoffContext when present (Phase 2).
-            if let Some(ref hctx) = task.handoff_context {
-                let validation = validate_context(hctx);
-                let hard_fails: Vec<&super::handoff::ValidationResult> = validation
-                    .iter()
-                    .filter(|r| !r.passed && matches!(r.severity, ValidationSeverity::Hard))
-                    .collect();
-                let soft_warns: Vec<&super::handoff::ValidationResult> = validation
-                    .iter()
-                    .filter(|r| !r.passed && matches!(r.severity, ValidationSeverity::Soft))
-                    .collect();
-
-                // Update per-rule violation counts.
-                for fail in &hard_fails {
-                    *self
-                        .handoff_metrics
-                        .rule_violations
-                        .entry(fail.rule_id.clone())
-                        .or_insert(0) += 1;
-                }
-
-                if !hard_fails.is_empty() {
-                    let messages: Vec<&str> =
-                        hard_fails.iter().map(|r| r.message.as_str()).collect();
-                    tracing::error!(
-                        task_id = %task_id,
-                        handoff_id = %hctx.handoff_id,
-                        violations = ?messages,
-                        "handoff validation hard fail — blocking dispatch"
-                    );
-                    self.handoff_metrics.total_dispatched += 1;
-                    self.handoff_metrics.blocked_dispatches += 1;
-                    *self
-                        .handoff_metrics
-                        .role_counts
-                        .entry(role_name(&hctx.role_context))
-                        .or_insert(0) += 1;
-                    self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
-                    let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
-                    for cancel_task_id in cancel_ids {
-                        if let Some(running) = self.running.remove(&cancel_task_id) {
-                            actions.push(SchedulerAction::Cancel {
-                                agent_handle_id: running.agent_handle_id,
-                            });
-                        }
-                    }
-                    if self.graph.status != GraphStatus::Running {
-                        self.graph.finished_at = Some(super::graph::chrono_now());
-                        actions.push(SchedulerAction::Done {
-                            status: self.graph.status,
-                        });
-                    }
-                    continue;
-                }
-
-                if soft_warns.is_empty() {
-                    self.handoff_metrics.total_dispatched += 1;
-                    self.handoff_metrics.clean_dispatches += 1;
-                } else {
-                    let messages: Vec<&str> =
-                        soft_warns.iter().map(|r| r.message.as_str()).collect();
-                    tracing::warn!(
-                        task_id = %task_id,
-                        handoff_id = %hctx.handoff_id,
-                        warnings = ?messages,
-                        "handoff validation soft warnings — proceeding with dispatch"
-                    );
-                    self.handoff_metrics.total_dispatched += 1;
-                    self.handoff_metrics.warned_dispatches += 1;
-                }
-                *self
-                    .handoff_metrics
-                    .role_counts
-                    .entry(role_name(&hctx.role_context))
-                    .or_insert(0) += 1;
-            }
 
             let Some(agent_def_name) = self.router.route(task, &self.available_agents) else {
                 tracing::debug!(
@@ -707,7 +615,6 @@ impl DagScheduler {
 
 impl DagScheduler {
     /// Process a single `TaskEvent` and return any cancel actions needed.
-    #[allow(clippy::too_many_lines)]
     fn process_event(&mut self, event: TaskEvent) -> Vec<SchedulerAction> {
         let TaskEvent {
             task_id,
@@ -750,50 +657,12 @@ impl DagScheduler {
             TaskOutcome::Completed { output, artifacts } => {
                 self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
                 self.graph.tasks[task_id.index()].result = Some(TaskResult {
-                    output: output.clone(),
+                    output,
                     artifacts,
                     duration_ms,
                     agent_id: Some(agent_handle_id),
                     agent_def: agent_def_name,
-                    handoff_output: None,
                 });
-
-                // Post-completion: verify HandoffOutput when HandoffContext is present (Phase 2).
-                // Verification is informational — does not block task completion, only logs and
-                // updates metrics. Phase 3 will add structured HandoffOutput parsing.
-                if let Some(ref hctx) = self.graph.tasks[task_id.index()].handoff_context.clone() {
-                    // Phase 2: construct a minimal HandoffOutput from raw output text for
-                    // basic structural verification. Criteria results are empty because
-                    // structured output parsing is not yet implemented (Phase 3).
-                    let minimal_output = super::handoff::HandoffOutput {
-                        handoff_id: hctx.handoff_id.clone(),
-                        summary: output.lines().next().unwrap_or("").to_string(),
-                        criteria_results: Vec::new(),
-                        artifacts: Vec::new(),
-                        test_delta: None,
-                        risks: Vec::new(),
-                        next_steps: Vec::new(),
-                    };
-                    let vresults = verify_output(hctx, &minimal_output);
-                    let vstatus = derive_verification_status(&minimal_output, &vresults);
-                    tracing::debug!(
-                        task_id = %task_id,
-                        handoff_id = %hctx.handoff_id,
-                        status = ?vstatus,
-                        "post-completion handoff verification"
-                    );
-                    match vstatus {
-                        VerificationStatus::Verified | VerificationStatus::PartiallyVerified => {
-                            self.handoff_metrics.verified_completions += 1;
-                        }
-                        VerificationStatus::Failed => {
-                            self.handoff_metrics.failed_completions += 1;
-                        }
-                        VerificationStatus::Unverified => {
-                            self.handoff_metrics.unverified_completions += 1;
-                        }
-                    }
-                }
 
                 // Mark newly unblocked tasks as Ready.
                 let newly_ready = dag::ready_tasks(&self.graph);
@@ -889,25 +758,10 @@ impl DagScheduler {
 
     /// Build the task prompt with dependency context injection (Section 14).
     ///
-    /// When `handoff_context.dependency_outputs` is populated, uses structured
-    /// `DependencyOutput` summaries instead of raw task result text. This produces
-    /// more focused context: summary + artifacts, not the full raw output blob.
-    ///
-    /// Falls back to raw task result injection when no structured outputs are present.
-    ///
+    /// Uses char-boundary-safe truncation (S1 fix) to avoid panics on multi-byte UTF-8.
     /// Dependency output is sanitized (SEC-ORCH-01) and titles are XML-escaped to prevent
-    /// prompt injection via crafted task outputs. Char-boundary-safe truncation (S1 fix).
+    /// prompt injection via crafted task outputs.
     fn build_task_prompt(&self, task: &TaskNode) -> String {
-        // If structured DependencyOutput entries are available, use them.
-        if let Some(hctx) = task
-            .handoff_context
-            .as_ref()
-            .filter(|h| !h.dependency_outputs.is_empty())
-        {
-            return self.build_prompt_from_structured_deps(task, &hctx.dependency_outputs);
-        }
-
-        // Fallback: raw dependency context injection (original behavior).
         if task.depends_on.is_empty() {
             return task.description.clone();
         }
@@ -985,79 +839,6 @@ impl DagScheduler {
         context_block.push_str("</completed-dependencies>\n\n");
         format!("{context_block}Your task: {}", task.description)
     }
-
-    /// Build task prompt using structured `DependencyOutput` entries.
-    ///
-    /// Produces focused context: status + summary + artifacts per dependency.
-    /// Output is sanitized (SEC-ORCH-01) with budget-per-dep truncation (S1).
-    fn build_prompt_from_structured_deps(
-        &self,
-        task: &TaskNode,
-        dep_outputs: &[DependencyOutput],
-    ) -> String {
-        let budget_per_dep = self
-            .dependency_context_budget
-            .checked_div(dep_outputs.len())
-            .unwrap_or(self.dependency_context_budget);
-
-        let mut context_block = String::from("<completed-dependencies>\n");
-
-        for dep in dep_outputs {
-            let escaped_id = xml_escape(&dep.task_id);
-            let escaped_title = xml_escape(&dep.title);
-            let status_label = match &dep.status {
-                DependencyStatus::Completed => "completed".to_string(),
-                DependencyStatus::Skipped => "skipped".to_string(),
-                DependencyStatus::PartiallyCompleted { reason } => {
-                    format!("partially completed ({})", xml_escape(reason))
-                }
-            };
-            let _ = writeln!(
-                context_block,
-                "## Task \"{escaped_id}\": \"{escaped_title}\" ({status_label})",
-            );
-
-            // SEC-ORCH-01: sanitize summary before injection.
-            let source = ContentSource::new(ContentSourceKind::A2aMessage);
-            let sanitized = self.sanitizer.sanitize(&dep.summary, source);
-            let safe_summary = sanitized.body;
-
-            let char_count = safe_summary.chars().count();
-            if char_count > budget_per_dep {
-                let truncated: String = safe_summary.chars().take(budget_per_dep).collect();
-                let _ = write!(
-                    context_block,
-                    "{truncated}...\n[truncated: {char_count} chars total]"
-                );
-            } else {
-                context_block.push_str(&safe_summary);
-            }
-
-            if !dep.artifacts.is_empty() {
-                context_block.push_str("\nArtifacts: ");
-                context_block.push_str(&dep.artifacts.join(", "));
-            }
-            if dep.truncated {
-                context_block.push_str("\n[output was truncated at source]");
-            }
-            context_block.push('\n');
-        }
-
-        context_block.push_str("</completed-dependencies>\n\n");
-        format!("{context_block}Your task: {}", task.description)
-    }
-}
-
-/// Return a stable string label for a `RoleContext` variant (used in metrics maps).
-fn role_name(role: &super::handoff::RoleContext) -> String {
-    match role {
-        super::handoff::RoleContext::Architect(_) => "architect".to_string(),
-        super::handoff::RoleContext::Developer(_) => "developer".to_string(),
-        super::handoff::RoleContext::Tester(_) => "tester".to_string(),
-        super::handoff::RoleContext::Critic(_) => "critic".to_string(),
-        super::handoff::RoleContext::Reviewer(_) => "reviewer".to_string(),
-        super::handoff::RoleContext::Generic(_) => "generic".to_string(),
-    }
 }
 
 /// Escape XML special characters in a string to prevent tag injection.
@@ -1132,7 +913,6 @@ mod tests {
             aggregator_max_tokens: 4096,
             deferral_backoff_ms: 250,
             plan_cache: zeph_config::PlanCacheConfig::default(),
-            handoff: zeph_config::HandoffConfig::default(),
         }
     }
 
@@ -1774,7 +1554,6 @@ mod tests {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
-            handoff_output: None,
         });
 
         let config = zeph_config::OrchestrationConfig {
@@ -1845,7 +1624,6 @@ mod tests {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
-            handoff_output: None,
         });
 
         // Budget large enough to hold the spotlighting wrapper + some Japanese chars.
@@ -1950,7 +1728,6 @@ mod tests {
             duration_ms: 10,
             agent_id: None,
             agent_def: None,
-            handoff_output: None,
         });
 
         let config = zeph_config::OrchestrationConfig {
@@ -2550,130 +2327,5 @@ mod tests {
             "no Done action expected when a task is running; got: {actions:?}"
         );
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
-    }
-
-    // ── Handoff validation integration ──────────────────────────────────────
-
-    fn make_handoff_ctx_hard_fail() -> super::super::handoff::HandoffContext {
-        use super::super::handoff::{ArchitectContext, HandoffContext, RoleContext};
-        // Empty objective → ObjectiveNonEmpty hard fail.
-        HandoffContext {
-            handoff_id: "hoff-hard-fail".to_string(),
-            parent_handoff_id: None,
-            task_id: Some("task-0".to_string()),
-            objective: String::new(), // triggers ObjectiveNonEmpty hard fail
-            acceptance_criteria: vec!["criterion".to_string()],
-            role_context: RoleContext::Architect(ArchitectContext {
-                spec_files: vec!["spec.md".to_string()],
-                system_constraints: Vec::new(),
-                scope: vec!["crates/zeph-orchestration".to_string()],
-            }),
-            dependency_outputs: Vec::new(),
-            constraints: Vec::new(),
-            max_output_chars: None,
-        }
-    }
-
-    fn make_handoff_ctx_soft_warn() -> super::super::handoff::HandoffContext {
-        use super::super::handoff::{ArchitectContext, HandoffContext, RoleContext};
-        // Objective slightly over 1000 chars → ObjectiveNonEmpty soft warn.
-        HandoffContext {
-            handoff_id: "hoff-soft-warn".to_string(),
-            parent_handoff_id: None,
-            task_id: Some("task-0".to_string()),
-            objective: "x".repeat(1001), // triggers ObjectiveNonEmpty soft warn
-            acceptance_criteria: vec!["criterion".to_string()],
-            role_context: RoleContext::Architect(ArchitectContext {
-                spec_files: vec!["spec.md".to_string()],
-                system_constraints: Vec::new(),
-                scope: vec!["crates/zeph-orchestration".to_string()],
-            }),
-            dependency_outputs: Vec::new(),
-            constraints: Vec::new(),
-            max_output_chars: None,
-        }
-    }
-
-    #[test]
-    fn test_handoff_hard_fail_blocks_dispatch() {
-        let mut node = make_node(0, &[]);
-        node.handoff_context = Some(make_handoff_ctx_hard_fail());
-        let graph = graph_from_nodes(vec![node]);
-        let mut scheduler = make_scheduler_with_router(graph, Box::new(FirstRouter));
-
-        let actions = scheduler.tick();
-
-        // No Spawn or RunInline should be produced — hard fail blocks dispatch.
-        let spawns: Vec<_> = actions
-            .iter()
-            .filter(|a| {
-                matches!(
-                    a,
-                    SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. }
-                )
-            })
-            .collect();
-        assert!(
-            spawns.is_empty(),
-            "hard validation fail must not produce Spawn/RunInline; got {actions:?}"
-        );
-
-        // Task must be Failed.
-        assert_eq!(
-            scheduler.graph.tasks[0].status,
-            TaskStatus::Failed,
-            "task must be Failed after hard validation fail"
-        );
-
-        // Metrics: exactly 1 blocked dispatch.
-        assert_eq!(
-            scheduler.handoff_metrics().blocked_dispatches,
-            1,
-            "blocked_dispatches must be 1"
-        );
-        assert_eq!(
-            scheduler.handoff_metrics().clean_dispatches,
-            0,
-            "clean_dispatches must be 0"
-        );
-
-        // Rule violation recorded.
-        let violations = &scheduler.handoff_metrics().rule_violations;
-        assert_eq!(
-            violations.get("ObjectiveNonEmpty").copied().unwrap_or(0),
-            1,
-            "ObjectiveNonEmpty violation must be counted"
-        );
-    }
-
-    #[test]
-    fn test_handoff_soft_warn_allows_dispatch() {
-        let mut node = make_node(0, &[]);
-        node.handoff_context = Some(make_handoff_ctx_soft_warn());
-        let graph = graph_from_nodes(vec![node]);
-        let mut scheduler = make_scheduler_with_router(graph, Box::new(FirstRouter));
-
-        let actions = scheduler.tick();
-
-        // At least one Spawn must be produced — soft warn does not block.
-        let has_spawn = actions
-            .iter()
-            .any(|a| matches!(a, SchedulerAction::Spawn { .. }));
-        assert!(
-            has_spawn,
-            "soft validation warn must still produce Spawn; got {actions:?}"
-        );
-
-        // Metrics: exactly 1 warned dispatch, 0 blocked.
-        assert_eq!(
-            scheduler.handoff_metrics().warned_dispatches,
-            1,
-            "warned_dispatches must be 1"
-        );
-        assert_eq!(
-            scheduler.handoff_metrics().blocked_dispatches,
-            0,
-            "blocked_dispatches must be 0"
-        );
     }
 }
