@@ -4,6 +4,8 @@
 //! SKILL.md loader, skill registry, and prompt formatter.
 
 pub mod bm25;
+#[cfg(feature = "bundled-skills")]
+pub mod bundled;
 pub mod error;
 pub mod evolution;
 pub mod loader;
