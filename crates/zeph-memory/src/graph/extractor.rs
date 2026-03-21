@@ -21,8 +21,9 @@ configuration files, JSON/TOML/YAML data, code snippets, or error messages. \
 If the message is structured data or raw command output, return empty arrays.
 3. Do NOT extract structural data: config keys, file paths, tool names, TOML/JSON keys, \
 programming keywords, or single-letter identifiers.
-4. Entity types must be one of: person, project, technology, organization, concept. \
-\"technology\" covers programming languages, frameworks, tools, and software. \
+4. Entity types must be one of: person, project, tool, language, organization, concept. \
+\"tool\" covers frameworks, software tools, and libraries. \
+\"language\" covers programming and natural languages. \
 \"concept\" covers abstract ideas, methodologies, and practices.
 5. Only extract entities with clear semantic meaning about people, projects, or domain knowledge.
 6. Entity names must be at least 3 characters long. Reject single characters, two-letter \
@@ -47,7 +48,7 @@ phone numbers, physical addresses, SSNs, or API keys. Use generic references ins
 Output JSON schema:
 {
   \"entities\": [
-    {\"name\": \"string\", \"type\": \"person|project|technology|organization|concept\", \"summary\": \"optional string\"}
+    {\"name\": \"string\", \"type\": \"person|project|tool|language|organization|concept\", \"summary\": \"optional string\"}
   ],
   \"edges\": [
     {\"source\": \"entity name\", \"target\": \"entity name\", \"relation\": \"verb phrase\", \"fact\": \"human-readable sentence\", \"temporal_hint\": \"optional string\", \"edge_type\": \"semantic|temporal|causal|entity\"}

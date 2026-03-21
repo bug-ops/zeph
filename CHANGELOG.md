@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(memory): align MAGMA entity extraction prompt taxonomy with EntityType enum — replace `technology` with `tool` and `language` as separate types with clarifying descriptions; prevents "unknown entity type, falling back to Concept" resolver warnings for programming languages and frameworks (#2079)
+
 ### Documentation
 
 - Add compaction probe documentation to context engineering guide (#2050)
