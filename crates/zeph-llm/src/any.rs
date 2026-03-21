@@ -121,6 +121,18 @@ impl AnyProvider {
     pub fn save_router_state(&self) {
         if let Self::Router(p) = self {
             p.save_thompson_state();
+            p.save_reputation_state();
+        }
+    }
+
+    /// Record a quality outcome for reputation-based routing (RAPS).
+    ///
+    /// Delegates to `RouterProvider::record_quality_outcome`; no-op for all other variants.
+    /// Must only be called for semantic failures (bad tool arguments, parse errors),
+    /// never for network errors or transient failures.
+    pub fn record_quality_outcome(&self, provider_name: &str, success: bool) {
+        if let Self::Router(p) = self {
+            p.record_quality_outcome(provider_name, success);
         }
     }
 

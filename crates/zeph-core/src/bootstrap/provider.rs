@@ -113,6 +113,8 @@ pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
             } else {
                 RouterProvider::new(providers)
             };
+            // Apply reputation scoring if enabled (works with any strategy except Cascade).
+            let router = apply_reputation_if_enabled(router, router_cfg);
             Ok(AnyProvider::Router(Box::new(router)))
         }
         #[cfg(not(feature = "candle"))]
@@ -957,6 +959,36 @@ fn is_local_endpoint(base_url: &str) -> bool {
     {
         host.ends_with(".local") || host.ends_with(".internal")
     }
+}
+
+/// Apply reputation scoring to `router` if `[llm.router.reputation]` is enabled.
+///
+/// No-op for Cascade strategy (fixed cost tiers, reputation not used for ordering).
+fn apply_reputation_if_enabled(
+    router: zeph_llm::router::RouterProvider,
+    router_cfg: &crate::config::RouterConfig,
+) -> zeph_llm::router::RouterProvider {
+    let Some(ref rep_cfg) = router_cfg.reputation else {
+        return router;
+    };
+    if !rep_cfg.enabled {
+        return router;
+    }
+    // Cascade uses fixed cost tiers; reputation is not used for ordering.
+    if router_cfg.strategy == crate::config::RouterStrategyConfig::Cascade {
+        tracing::debug!("reputation scoring is not used in cascade mode; skipping");
+        return router;
+    }
+    let state_path = rep_cfg.state_path.as_deref().map(std::path::Path::new);
+    let decay = rep_cfg.decay_factor.clamp(f64::MIN_POSITIVE, 1.0);
+    let weight = rep_cfg.weight.clamp(0.0, 1.0);
+    tracing::info!(
+        decay_factor = decay,
+        weight = weight,
+        min_observations = rep_cfg.min_observations,
+        "reputation scoring enabled"
+    );
+    router.with_reputation(decay, weight, rep_cfg.min_observations, state_path)
 }
 
 #[cfg(test)]
