@@ -1126,6 +1126,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_context_tester_empty_test_plan_is_hard_fail() {
+        let mut ctx = HandoffContext {
+            handoff_id: "hoff-tester".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-2".to_string()),
+            objective: "Test handoff implementation".to_string(),
+            acceptance_criteria: vec!["tests pass".to_string()],
+            role_context: RoleContext::Tester(TesterContext {
+                implementation_ref: HandoffRef::Inline {
+                    content: "impl done".to_string(),
+                },
+                test_plan: vec!["run nextest".to_string()],
+                expected_test_delta: None,
+                requires_live_test: false,
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        };
+        if let RoleContext::Tester(ref mut tc) = ctx.role_context {
+            tc.test_plan.clear();
+        }
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty test_plan must trigger RoleContextComplete fail"
+        );
+    }
+
+    #[test]
+    fn validate_context_critic_empty_review_dimensions_is_hard_fail() {
+        let ctx = HandoffContext {
+            handoff_id: "hoff-critic".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-3".to_string()),
+            objective: "Review implementation".to_string(),
+            acceptance_criteria: vec!["review complete".to_string()],
+            role_context: RoleContext::Critic(CriticContext {
+                artifact_ref: HandoffRef::Inline {
+                    content: "artifact".to_string(),
+                },
+                review_dimensions: Vec::new(), // empty — must fail
+                known_risks: Vec::new(),
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        };
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty review_dimensions must trigger RoleContextComplete fail"
+        );
+    }
+
+    #[test]
+    fn validate_context_reviewer_empty_artifact_refs_is_hard_fail() {
+        let ctx = HandoffContext {
+            handoff_id: "hoff-reviewer".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-4".to_string()),
+            objective: "Final review before merge".to_string(),
+            acceptance_criteria: vec!["approved".to_string()],
+            role_context: RoleContext::Reviewer(ReviewerContext {
+                artifact_refs: Vec::new(), // empty — must fail
+                checklist: vec!["tests pass".to_string()],
+                is_merge_gate: true,
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        };
+        let results = validate_context(&ctx);
+        let hard_fail = results
+            .iter()
+            .find(|r| r.rule_id == "RoleContextComplete" && !r.passed);
+        assert!(
+            hard_fail.is_some(),
+            "empty artifact_refs must trigger RoleContextComplete fail"
+        );
+    }
+
     // ── HandoffMetrics defaults ─────────────────────────────────────────────
 
     #[test]

@@ -2551,4 +2551,131 @@ mod tests {
         );
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
     }
+
+    // ── Handoff validation integration ──────────────────────────────────────
+
+    fn make_handoff_ctx_hard_fail() -> super::super::handoff::HandoffContext {
+        use super::super::handoff::{
+            ArchitectContext, HandoffContext, RoleContext, ValidationSeverity,
+        };
+        // Empty objective → ObjectiveNonEmpty hard fail.
+        HandoffContext {
+            handoff_id: "hoff-hard-fail".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-0".to_string()),
+            objective: String::new(), // triggers ObjectiveNonEmpty hard fail
+            acceptance_criteria: vec!["criterion".to_string()],
+            role_context: RoleContext::Architect(ArchitectContext {
+                spec_files: vec!["spec.md".to_string()],
+                system_constraints: Vec::new(),
+                scope: vec!["crates/zeph-orchestration".to_string()],
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        }
+    }
+
+    fn make_handoff_ctx_soft_warn() -> super::super::handoff::HandoffContext {
+        use super::super::handoff::{ArchitectContext, HandoffContext, RoleContext};
+        // Objective slightly over 1000 chars → ObjectiveNonEmpty soft warn.
+        HandoffContext {
+            handoff_id: "hoff-soft-warn".to_string(),
+            parent_handoff_id: None,
+            task_id: Some("task-0".to_string()),
+            objective: "x".repeat(1001), // triggers ObjectiveNonEmpty soft warn
+            acceptance_criteria: vec!["criterion".to_string()],
+            role_context: RoleContext::Architect(ArchitectContext {
+                spec_files: vec!["spec.md".to_string()],
+                system_constraints: Vec::new(),
+                scope: vec!["crates/zeph-orchestration".to_string()],
+            }),
+            dependency_outputs: Vec::new(),
+            constraints: Vec::new(),
+            max_output_chars: None,
+        }
+    }
+
+    #[test]
+    fn test_handoff_hard_fail_blocks_dispatch() {
+        let mut node = make_node(0, &[]);
+        node.handoff_context = Some(make_handoff_ctx_hard_fail());
+        let graph = graph_from_nodes(vec![node]);
+        let mut scheduler = make_scheduler_with_router(graph, Box::new(FirstRouter));
+
+        let actions = scheduler.tick();
+
+        // No Spawn or RunInline should be produced — hard fail blocks dispatch.
+        let spawns: Vec<_> = actions
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a,
+                    SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. }
+                )
+            })
+            .collect();
+        assert!(
+            spawns.is_empty(),
+            "hard validation fail must not produce Spawn/RunInline; got {actions:?}"
+        );
+
+        // Task must be Failed.
+        assert_eq!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Failed,
+            "task must be Failed after hard validation fail"
+        );
+
+        // Metrics: exactly 1 blocked dispatch.
+        assert_eq!(
+            scheduler.handoff_metrics().blocked_dispatches,
+            1,
+            "blocked_dispatches must be 1"
+        );
+        assert_eq!(
+            scheduler.handoff_metrics().clean_dispatches,
+            0,
+            "clean_dispatches must be 0"
+        );
+
+        // Rule violation recorded.
+        let violations = &scheduler.handoff_metrics().rule_violations;
+        assert_eq!(
+            violations.get("ObjectiveNonEmpty").copied().unwrap_or(0),
+            1,
+            "ObjectiveNonEmpty violation must be counted"
+        );
+    }
+
+    #[test]
+    fn test_handoff_soft_warn_allows_dispatch() {
+        let mut node = make_node(0, &[]);
+        node.handoff_context = Some(make_handoff_ctx_soft_warn());
+        let graph = graph_from_nodes(vec![node]);
+        let mut scheduler = make_scheduler_with_router(graph, Box::new(FirstRouter));
+
+        let actions = scheduler.tick();
+
+        // At least one Spawn must be produced — soft warn does not block.
+        let has_spawn = actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Spawn { .. }));
+        assert!(
+            has_spawn,
+            "soft validation warn must still produce Spawn; got {actions:?}"
+        );
+
+        // Metrics: exactly 1 warned dispatch, 0 blocked.
+        assert_eq!(
+            scheduler.handoff_metrics().warned_dispatches,
+            1,
+            "warned_dispatches must be 1"
+        );
+        assert_eq!(
+            scheduler.handoff_metrics().blocked_dispatches,
+            0,
+            "blocked_dispatches must be 0"
+        );
+    }
 }
