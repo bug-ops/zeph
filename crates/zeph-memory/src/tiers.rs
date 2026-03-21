@@ -168,6 +168,10 @@ async fn run_promotion_sweep(
     for cluster in clusters {
         if cluster.len() < 2 {
             // Single-member cluster — no merge needed, skip to avoid unnecessary LLM calls.
+            tracing::debug!(
+                cluster_size = cluster.len(),
+                "tier promotion: singleton cluster skipped"
+            );
             continue;
         }
 
