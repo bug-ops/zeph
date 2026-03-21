@@ -284,3 +284,21 @@ impl ExperimentConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_cache_similarity_threshold_above_one_is_rejected() {
+        let cfg = PlanCacheConfig {
+            similarity_threshold: 1.1,
+            ..PlanCacheConfig::default()
+        };
+        let result = cfg.validate();
+        assert!(
+            result.is_err(),
+            "similarity_threshold = 1.1 must return a validation error"
+        );
+    }
+}
