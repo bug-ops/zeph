@@ -322,6 +322,33 @@ impl AppBuilder {
     }
 
     pub fn build_registry(&self) -> SkillRegistry {
+        #[cfg(feature = "bundled-skills")]
+        {
+            let managed = managed_skills_dir();
+            match zeph_skills::bundled::provision_bundled_skills(&managed) {
+                Ok(report) => {
+                    if !report.installed.is_empty() {
+                        tracing::info!(
+                            skills = ?report.installed,
+                            "provisioned new bundled skills"
+                        );
+                    }
+                    if !report.updated.is_empty() {
+                        tracing::info!(
+                            skills = ?report.updated,
+                            "updated bundled skills"
+                        );
+                    }
+                    for (name, err) in &report.failed {
+                        tracing::warn!(skill = %name, error = %err, "failed to provision bundled skill");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "bundled skill provisioning failed");
+                }
+            }
+        }
+
         let skill_paths: Vec<PathBuf> =
             self.config.skills.paths.iter().map(PathBuf::from).collect();
         let registry = SkillRegistry::load(&skill_paths);

@@ -44,6 +44,7 @@ hf-hub = { version = "0.5", default-features = false }
 http = "1.4"
 http-body-util = "0.1"
 ignore = "0.4"
+include_dir = { version = "0.7", features = ["glob"] }
 indoc = "2"
 insta = "1.46.3"
 notify = "8"
@@ -157,7 +158,7 @@ description = "Lightweight AI agent with hybrid inference, skills-first architec
 readme = "README.md"
 
 [features]
-default = []
+default = ["bundled-skills"]
 
 # === Use-case bundles ===
 desktop = ["tui", "scheduler", "compression-guidelines", "context-compression"]
@@ -165,7 +166,8 @@ ide     = ["acp", "acp-http", "lsp-context"]
 server  = ["gateway", "a2a", "scheduler", "otel"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf", "stt"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "guardrail", "policy-enforcer", "context-compression"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "guardrail", "policy-enforcer", "context-compression", "bundled-skills"]
+bundled-skills = ["zeph-skills/bundled-skills", "zeph-core/bundled-skills"]
 
 # === Individual feature flags ===
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]

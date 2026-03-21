@@ -26,6 +26,7 @@ mock = ["zeph-vault/mock"]
 policy-enforcer = ["zeph-tools/policy-enforcer", "zeph-config/policy-enforcer"]
 scheduler = []
 context-compression = []
+bundled-skills = ["zeph-skills/bundled-skills"]
 
 [dependencies]
 async-trait.workspace = true

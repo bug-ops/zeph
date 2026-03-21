@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(skills): auto-provision bundled skills to managed dir on startup (#2089) — on every startup, bundled skills embedded at compile time via `include_dir!` are copied to `~/.config/zeph/skills/` if missing or if the embedded version differs from the previously provisioned version; user-installed skills (no `.bundled` marker file) are never overwritten; provisioning uses atomic rename (temp dir → target) so interrupted writes are re-provisioned on next startup; gated behind `bundled-skills` feature flag (included in `default` and `full`); `build.rs` guard emits a clear error when `.zeph/skills/` is absent at compile time
+
 ### Fixed
 
 - fix(skills): convert unsupported `>-` YAML block scalar modifier to `>` in all 19 skill files in `.zeph/skills/` — resolves silent load failures for all rewritten skills; 9 new skills (archive, cron, database, json-yaml, network, process-management, qdrant, regex, ssh-remote, text-processing) were completely unavailable (#2087)
