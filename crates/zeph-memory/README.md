@@ -11,11 +11,19 @@ Semantic memory with SQLite and Qdrant for Zeph agent.
 
 Provides durable conversation storage via SQLite and semantic retrieval through Qdrant vector search (or embedded SQLite vector backend). The `SemanticMemory` orchestrator combines both backends, enabling the agent to recall relevant context from past conversations using embedding similarity.
 
-Recall quality is enhanced by MMR (Maximal Marginal Relevance) re-ranking for result diversity and temporal decay scoring for recency bias. Both are configurable via `SemanticConfig`.
+Recall quality is enhanced by MMR (Maximal Marginal Relevance) re-ranking for result diversity, temporal decay scoring for recency bias, and write-time importance scoring for content-aware ranking. All are configurable via `SemanticConfig`.
 
 Query-aware memory routing (`MemoryRouter` trait, `HeuristicRouter` default) classifies each query as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid and dispatches accordingly. Configure via `[memory.routing]`.
 
 Includes a document ingestion subsystem for loading, chunking, and storing user documents (text, Markdown, PDF) into Qdrant for RAG workflows.
+
+**SYNAPSE spreading activation** enables multi-hop graph retrieval: seed entities are activated, then energy propagates through the entity graph with hop-by-hop decay (configurable lambda), lateral inhibition, and edge-type filtering. Configure via `[memory.graph.spreading_activation]`.
+
+**MAGMA multi-graph memory** provides typed edges (`EdgeType` enum: uses, related_to, part_of, depends_on, created_by, authored, manages, contains) for fine-grained relationship tracking and edge-type-aware traversal.
+
+**Structured anchored summarization** preserves factual anchors (entities, relationships, key decisions) during compaction, producing summaries that maintain cross-session recall fidelity.
+
+**Compaction probe validation** verifies compaction quality by generating probe questions from pre-compaction content and scoring the post-compaction text against them, detecting information loss before it becomes permanent.
 
 ## Key modules
 
@@ -35,6 +43,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `sqlite_vector` | `SqliteVectorStore` — embedded SQLite-backed vector search as zero-dependency Qdrant alternative |
 | `snapshot` | `MemorySnapshot`, `export_snapshot()`, `import_snapshot()` — portable memory export/import |
 | `response_cache` | `ResponseCache` — SQLite-backed LLM response cache with blake3 key hashing and TTL expiry |
+| `semantic::importance` | `compute_importance` — write-time importance scoring for messages; scores are blended into recall ranking when `importance_enabled = true` |
 | `embedding_store` | `EmbeddingStore` — high-level embedding CRUD |
 | `embeddable` | `Embeddable` trait and `EmbeddingRegistry<T>` — generic Qdrant sync/search for any embeddable type |
 | `types` | `ConversationId`, `MessageId`, shared types |
@@ -43,12 +52,15 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `sqlite::overflow` | `tool_overflow` SQLite table (migration 031) — stores large tool outputs keyed by UUID; `SqliteStore::save_overflow` / `SqliteStore::cleanup_overflow` replace the old filesystem backend; `ON DELETE CASCADE` removes overflow rows when the parent conversation is deleted |
 | `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization |
 | `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction |
+| `graph::activation` | `SpreadingActivation` — SYNAPSE spreading activation engine: hop-by-hop energy decay (lambda), edge-type filtering, lateral inhibition, configurable timeout; `ActivatedNode`, `ActivatedFact`, `SpreadingActivationParams` |
 | `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession |
-| `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching (including aliases), BFS from seed entities, composite scoring, canonical-name deduplication |
+| `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching (including aliases), BFS from seed entities, composite scoring, canonical-name deduplication; spreading activation path via `SpreadingActivation` when enabled |
+| `anchored_summary` | `AnchoredSummary` — structured summarization that preserves factual anchors (entities, relationships, decisions) during compaction |
+| `compaction_probe` | `CompactionProbeConfig`, `validate_compaction` — post-compaction quality validation via probe question generation and answer scoring |
 | `sqlite::experiments` | `ExperimentResultRow`, `NewExperimentResult`, `SessionSummaryRow` — SQLite persistence for experiment results and session summaries (feature-gated: `experiments`) |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`, `AnchoredSummary`, `CompactionProbeConfig`, `validate_compaction`
 
 ## Document RAG
 
@@ -136,6 +148,7 @@ At context-build time, the top-K most similar corrections are retrieved by embed
 The `graph` module provides SQLite-backed entity-relationship tracking:
 
 - **Entities** — named nodes with 8 types (person, tool, concept, project, language, file, config, organization)
+- **Typed edges** — 8 relationship types (uses, related_to, part_of, depends_on, created_by, authored, manages, contains) enabling edge-type-aware traversal and filtering
 - **Entity canonicalization** — `canonical_name` + alias table prevents duplicates from name variations ("Rust", "rust-lang", "Rust language" resolve to one entity). Alias-first resolution with deterministic first-registered-wins semantics
 - **Edges** — directed relationships with bi-temporal timestamps (`valid_from`/`valid_to` for fact validity, `created_at`/`expired_at` for ingestion); `edges_at_timestamp()` returns edges valid at a given point in time, `edge_history()` returns all versions of an edge ordered by `valid_from DESC`, migration 030 adds partial indexes for temporal range queries
 - **Communities** — groups of related entities detected via label propagation (petgraph) with LLM-generated summaries
@@ -166,7 +179,23 @@ expired_edge_retention_days = 90    # Days to retain superseded edges
 max_entities = 0                    # Max entities cap (0 = unlimited)
 temporal_decay_rate = 0.0           # Decay rate for scoring older facts (0.0 = disabled); validated: must be in [0.0, 10.0], not NaN or Inf
 edge_history_limit = 100            # Max edge versions returned by edge_history()
+
+[memory.graph.spreading_activation]
+enabled = false                     # Enable SYNAPSE spreading activation retrieval
+lambda = 0.85                       # Decay factor per hop (energy × lambda at each step)
+max_hops = 3                        # Maximum traversal depth from seed entities
+max_activated = 50                  # Maximum nodes activated before stopping
+timeout_ms = 500                    # Activation timeout to prevent runaway traversal
 ```
+
+## Importance scoring
+
+Messages are scored at write time via `compute_importance()`. The score is stored in the `importance_score` column (default 0.5 for legacy rows). When `importance_enabled = true` on `SemanticMemory`, recall results are blended with importance scores for content-aware ranking.
+
+| Config field | Type | Default | Description |
+|---|---|---|---|
+| `importance_enabled` | bool | `false` | Enable importance-blended recall ranking |
+| `importance_weight` | f64 | `0.3` | Weight of importance score in the final blend |
 
 ## Features
 

@@ -75,3 +75,55 @@ pub enum AnyChannel {
 - Telegram channel must handle Telegram rate limits internally — agent loop must not see rate-limit errors as fatal
 - MCP child process stderr must be suppressed when using `TuiChannel`
 - `send_chunk` and `send` both must be implemented — streaming fallback is not acceptable for CLI
+
+---
+
+## Channel Feature Parity
+
+Epic #1978. `crates/zeph-channels/`, `crates/zeph-core/src/channel.rs`.
+
+### Overview
+
+Channel feature parity ensures all `AnyChannel` variants and `AppChannel` forward every method defined in the `Channel` trait. Previously, four methods fell through to no-op trait defaults in some dispatch paths, silently dropping events. The parity initiative enforces full method forwarding and behavioral consistency across channels.
+
+### Methods That Must Be Forwarded
+
+The `Channel` trait defines 16 methods. All must be explicitly dispatched in `AnyChannel` and `AppChannel`:
+
+Previously dropped (CHAN-01 fix):
+- `send_thinking_chunk` — streams extended thinking tokens
+- `send_stop_hint` — signals LLM stop reason to channel
+- `send_usage` — delivers token usage stats to channel
+- `send_tool_start` — notifies channel of tool execution start
+
+These four now have explicit dispatch in `AnyChannel` and `AppChannel`, matching the existing dispatch for `send`, `send_chunk`, `send_typing`, `send_status`, `send_tool_output`, `recv`, `supports_exit`, and others.
+
+### Timeout Consistency (CHAN-02)
+
+All channel `confirm()` implementations must deny after 30 seconds (matching Telegram behavior). Previously, Discord and Slack `confirm()` blocked indefinitely. Shared `CONFIRM_TIMEOUT` constant (30s) defined in `zeph-channels` crate; all three implementations reference it.
+
+### Discord Slash Commands (CHAN-05)
+
+Discord channel registers slash commands (`/reset`, `/skills`, `/agent`) at startup via fire-and-forget background task. Uses `PUT /applications/{id}/commands` (idempotent). Failure is non-fatal.
+
+### Channel Capability Matrix
+
+| Method | CLI | Telegram | Discord | Slack | TUI |
+|---|---|---|---|---|---|
+| `send` | Full | Full | Full | Full | Full |
+| `send_chunk` | Streaming | Batched (1s/512B debounce) | Supported | Supported | Full |
+| `send_typing` | No-op | Bot typing indicator | No-op | No-op | Spinner |
+| `send_status` | Inline text | No-op | No-op | No-op | Status bar |
+| `send_tool_start` | Forwarded | Forwarded | Forwarded | Forwarded | Spinner |
+| `send_tool_output` | Forwarded | Forwarded | Forwarded | Forwarded | Forwarded |
+| `send_thinking_chunk` | Forwarded | Forwarded | Forwarded | Forwarded | Forwarded |
+| `confirm` | Interactive | Inline button (30s timeout) | Slash cmd (30s timeout) | Interactive (30s timeout) | Dialog |
+
+### Key Invariants
+
+- `AnyChannel` `dispatch_channel!` macro must include ALL 16 `Channel` trait methods — no method may fall through to a default
+- `CONFIRM_TIMEOUT` (30s) is the canonical timeout for all channel `confirm()` implementations — never hardcode different values per channel
+- Discord slash command registration is fire-and-forget — startup must not fail if registration fails
+- `send_thinking_chunk` must be forwarded even if the channel renders it as a no-op — the event must reach the channel impl
+- NEVER add a new `Channel` trait method without updating `AnyChannel`, `AppChannel`, and all channel implementations
+- Behavioral differences between channels (e.g. Telegram batching) are acceptable — method dropping is not

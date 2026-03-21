@@ -9,7 +9,7 @@ Cron-based periodic and one-shot task scheduler with SQLite persistence for Zeph
 
 ## Overview
 
-Manages recurring and deferred background tasks. Periodic tasks run on a cron schedule; one-shot tasks fire at a specific point in time. All job state, next-run timestamps, and task mode are persisted in SQLite. The scheduler is controlled at runtime via an `mpsc` channel — tasks can be added or cancelled without restarting the agent. When combined with the `experiments` feature flag, the scheduler can run autonomous experiment sessions on a cron schedule via `TaskKind::Experiment`. Feature-gated behind `scheduler`.
+Manages recurring and deferred background tasks. Periodic tasks run on a cron schedule; one-shot tasks fire at a specific point in time. All job state, next-run timestamps, and task mode are persisted in SQLite. The scheduler is controlled at runtime via an `mpsc` channel — tasks can be added or cancelled without restarting the agent. When combined with the `experiments` feature flag, the scheduler can run autonomous experiment sessions on a cron schedule via `TaskKind::Experiment`. Task prompts are injected with an explicit execution prefix for unambiguous agent-loop recognition. Feature-gated behind `scheduler`.
 
 ## Key Modules
 

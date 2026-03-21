@@ -9,7 +9,7 @@ SKILL.md parser, registry, embedding matcher, and hot-reload for Zeph.
 
 ## Overview
 
-Parses SKILL.md files (YAML frontmatter + markdown body) from the `.zeph/skills/` directory, maintains an in-memory registry with hot-reload support, and formats selected skills into LLM system prompts. Supports semantic matching via Qdrant embeddings and self-learning skill evolution with trust scoring.
+Parses SKILL.md files (YAML frontmatter + markdown body) from the `.zeph/skills/` directory, maintains an in-memory registry with hot-reload support, and formats selected skills into LLM system prompts. Supports semantic matching via Qdrant embeddings and self-learning skill evolution with trust scoring. Multi-language feedback detection (7 languages) drives trust transitions across all skills.
 
 ## Key modules
 
@@ -47,6 +47,8 @@ Skills accumulate outcomes over time. After each use, the Wilson score lower-bou
 - Repeated failures or rejections → demote toward `Quarantined`
 
 The `/skill reject <name> <reason>` command records a typed `FailureKind` rejection immediately, persisting it to the `outcome_detail` column (migration 018).
+
+Feedback signals are detected by `FeedbackDetector` in `zeph-core`, which now supports 7 languages (English, Russian, Spanish, German, French, Portuguese, Chinese). Multi-language implicit correction detection drives skill trust transitions regardless of the user's language.
 
 ## Hybrid search configuration
 

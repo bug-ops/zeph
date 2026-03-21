@@ -273,6 +273,7 @@ The TUI dashboard displays real-time metrics collected from the agent loop via `
 | **Skills** | Active/total skill count, matched skill names per query |
 | **Memory** | SQLite message count, conversation ID, Qdrant status, embeddings generated, summaries count, tool output prunes |
 | **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name, prompt cache read/write tokens, filter stats |
+| **Compaction** | Compaction probe verdicts (Pass/SoftFail/HardFail/Error counts), last probe score, subgoal registry state (when orchestration active) |
 | **Security** | Sanitizer runs/flags/truncations, quarantine calls/failures, exfiltration blocks (images/URLs/memory), recent event log. Shown in place of sub-agents panel when events are recent (< 60s) |
 
 Metrics are updated at key instrumentation points in the agent loop:

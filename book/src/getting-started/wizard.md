@@ -141,7 +141,19 @@ Configure the self-learning feedback detector:
   - **judge** — LLM-backed classifier for borderline cases; you can specify a dedicated model
 - **Correction confidence threshold** — Jaccard overlap threshold (default: 0.7)
 
-## Step 15: Debug Dump
+## Step 15: Compaction Probe
+
+Configure post-compression context integrity validation:
+
+- **Enable compaction probe** — validate summary quality after each hard compaction event (default: disabled)
+- **Probe model** — model for probe LLM calls; leave empty to use the summary provider (default: empty)
+- **Pass threshold** — minimum score for the Pass verdict (default: 0.6)
+- **Hard fail threshold** — score below this blocks compaction entirely (default: 0.35)
+- **Max questions** — number of factual questions generated per probe (default: 3)
+
+When enabled, each hard compaction is followed by a quality check. If the summary fails to preserve critical facts (HardFail), compaction is blocked and original messages are preserved. See [Context Engineering — Compaction Probe](../advanced/context.md#post-compression-validation-compaction-probe) for tuning guidance.
+
+## Step 16: Debug Dump
 
 Enable debug dump at startup:
 
@@ -149,7 +161,7 @@ Enable debug dump at startup:
 
 Debug dump is intended for context debugging — use it when you need to inspect exactly what is sent to the LLM and what comes back. See [Debug Dump](../advanced/debug-dump.md) for details.
 
-## Step 16: Security
+## Step 17: Security
 
 Configure security features:
 
@@ -161,7 +173,7 @@ Configure security features:
   - Shell tools checked by default: `bash`, `shell`, `terminal` (configurable in `config.toml` via `security.pre_execution_verify.destructive_commands.shell_tools`)
 - **Guardrail** (requires `guardrail` feature) — LLM-based prompt injection pre-screening via a dedicated safety model (e.g. `llama-guard-3:1b`)
 
-## Step 17: Review and Save
+## Step 18: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 

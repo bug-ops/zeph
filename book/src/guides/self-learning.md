@@ -38,6 +38,12 @@ correction_min_similarity = 0.75
 
 Corrections are stored in both SQLite and the `zeph_corrections` Qdrant collection. The top-3 most similar corrections are injected into the system prompt on relevant queries.
 
+### Multi-Language Support
+
+`FeedbackDetector` matches correction patterns across 7 languages: English, Russian, Spanish, German, French, Chinese (Simplified), and Japanese. Each language uses dual anchoring: anchored patterns (message starts with the phrase) and unanchored patterns (phrase embedded mid-sentence). No per-language configuration is needed — all patterns are compiled into a single flat list at startup.
+
+Mixed-language inputs are supported: "That's неправильно" (Russian correction embedded in English) matches correctly. For unsupported languages (Korean, Arabic, etc.), the regex detector returns no signal; enable the judge detector (`detector_mode = "judge"`) to handle these cases via LLM classification.
+
 ## Step 2b — Enable LLM-Backed Judge (Optional)
 
 By default, correction detection uses regex patterns only. If you want higher recall for ambiguous or non-English corrections, enable the judge detector:

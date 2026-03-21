@@ -112,3 +112,61 @@ Per-provider EMA (exponential moving average) latency:
 - JudgeDetector verdict confidence must be clamped [0.0, 1.0] — LLM can return out-of-range
 - Trust transitions are one-step-at-a-time — no skipping levels
 - `set_effective_trust()` must be called before each turn's tool execution
+
+---
+
+## Multi-Language FeedbackDetector
+
+Issue #1424. `crates/zeph-core/src/agent/feedback_detector.rs`.
+
+### Overview
+
+`FeedbackDetector` detects implicit correction signals across 7 languages without LLM calls. All patterns are compiled once into a flat `Vec<(Regex, f32)>` per correction kind — no per-language routing. A single regex scan covers all languages simultaneously.
+
+### Supported Languages
+
+English, Russian, Spanish, German, French, Chinese (Simplified), Japanese.
+
+### Dual Anchoring Strategy
+
+Each language uses two pattern tiers:
+
+| Tier | Anchor | Confidence |
+|---|---|---|
+| Anchored | `^` (message start) | Base confidence (e.g. 0.85 for `ExplicitRejection`) |
+| Unanchored | Mid-sentence | Base confidence − 0.10 (more ambiguous position) |
+
+Exception: English unanchored patterns retain base confidence because they are already multi-word, highly specific phrases ("don't do that", "that didn't work") that do not suffer from mid-sentence ambiguity.
+
+### Pattern Registry (`LangPatterns`)
+
+Compiled once into `LazyLock<LangPatterns>`:
+
+```
+rejection:       Vec<(Regex, f32)>  — per pattern, base confidence
+alternative:     Vec<(Regex, f32)>
+self_correction: Vec<(Regex, f32)>
+```
+
+Pattern matching: iterate the full flat list; take the **first** (highest-priority) match. Priority order within each kind is defined by list order, not confidence value.
+
+### Known Limitations
+
+- **CJK repetition gap**: `token_overlap()` uses whitespace tokenization; Chinese/Japanese text is not segmented by whitespace → CJK repetition detection falls through to JudgeDetector
+- **CJK false-positive risk**: 2+ character patterns used for unanchored CJK to mitigate substring matches inside longer compounds
+- **Unsupported languages** (Korean, Arabic, etc.): regex returns `None` → every message triggers a JudgeDetector call, rate-limited to 5/min
+
+### Adding a New Language
+
+1. Add anchored and unanchored patterns to `build_rejection_patterns()`, `build_alternative_patterns()`, `build_self_correction_patterns()`
+2. Anchored pattern: base confidence; unanchored pattern: base confidence − 0.10 (except English)
+3. Add test cases to the 137-test suite: positive (correct detection), negative (no false positive), edge cases (punctuation, capitalization)
+
+### Key Invariants
+
+- All patterns are compiled at program start via `LazyLock` — no runtime compilation
+- English unanchored patterns are NOT reduced by 0.10 — only non-English unanchored patterns apply the reduction
+- Pattern list order determines priority for the same correction kind — anchored patterns before unanchored
+- CJK repetition falls through to JudgeDetector — this is intentional, not a bug
+- NEVER route patterns by language before matching — the flat list approach is intentional for simplicity
+- NEVER add patterns shorter than 2 characters for unanchored CJK to avoid false positives

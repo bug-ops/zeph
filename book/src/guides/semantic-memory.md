@@ -120,6 +120,32 @@ zeph memory import conversations.json
 
 See [CLI Reference — `zeph memory`](../reference/cli.md#zeph-memory) for details.
 
+## Semantic Response Caching
+
+Complement exact-match response caching with embedding-based similarity matching:
+
+```toml
+[llm]
+response_cache_enabled = true
+semantic_cache_enabled = true          # Enable semantic cache (default: false)
+semantic_cache_threshold = 0.95        # Cosine similarity for cache hit (default: 0.95)
+semantic_cache_max_candidates = 10     # Max entries examined per lookup (default: 10)
+```
+
+Lower the threshold (e.g., 0.92) for more cache hits with slightly less precise matching. Increase `semantic_cache_max_candidates` for better recall at the cost of lookup latency.
+
+## Write-Time Importance Scoring
+
+Score messages by decision-relevance at write time to improve recall quality:
+
+```toml
+[memory.semantic]
+importance_enabled = true         # Enable importance scoring (default: false)
+importance_weight = 0.15          # Blend weight in recall ranking (default: 0.15)
+```
+
+Messages with high importance scores (architectural decisions, key constraints, user preferences) receive a recall boost proportional to `importance_weight`. The score is computed by an LLM classifier at message persist time and stored in the `importance_score` column (migration 039).
+
 ## Storage Architecture
 
 | Store | Purpose |

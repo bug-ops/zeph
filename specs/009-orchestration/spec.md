@@ -86,3 +86,74 @@ Pending → Queued → Running → Completed
 - `TaskGraph` must be a true DAG — cycles are a hard error, not a warning
 - `DagScheduler` is tick-based (not event-driven) — tick interval is configurable
 - Sub-agent results are merged by `LlmAggregator`, not concatenated — aggregation is an LLM call
+
+---
+
+## Plan Template Caching
+
+`crates/zeph-orchestration/src/plan_cache.rs`. Issue #1856.
+
+### Overview
+
+`PlanCache` stores completed `TaskGraph` plans as reusable `PlanTemplate` skeletons in SQLite. On subsequent semantically similar goals, the cache returns the closest template and uses a lightweight LLM adaptation call instead of full goal decomposition, reducing planner cost.
+
+### `PlanTemplate` Structure
+
+Stripped of all runtime state (status, results, retry_count, assigned_agent, timestamps):
+
+```
+PlanTemplate {
+    goal: String,              // normalized goal text (trim + collapse whitespace + lowercase)
+    tasks: Vec<TemplateTask>,  // structural skeleton
+}
+
+TemplateTask {
+    title, description, agent_hint, depends_on, failure_strategy, task_id
+}
+```
+
+`task_id`: stable kebab-case slug generated from title + position for `depends_on` reconstruction.
+
+### Cache Lookup
+
+1. Normalize goal: trim + collapse whitespace + lowercase
+2. BLAKE3 hash of normalized goal → dedup key for `INSERT OR REPLACE ON CONFLICT(goal_hash)`
+3. Cosine similarity computed in-process (no Qdrant) between query embedding and stored template embeddings
+4. Return closest template if `similarity >= similarity_threshold` (default 0.90)
+5. Lightweight LLM adaptation call: adapts template to the specific goal without full decomposition
+6. Any cache failure → graceful degradation to full `planner.plan()` — cache never blocks planning
+
+### Eviction
+
+Two-phase eviction:
+1. TTL sweep: delete rows where `created_at < now - ttl_days * 86400`
+2. LRU size cap: if `count > max_templates`, delete oldest by `last_used_at`
+
+Stale embeddings: NULLed when embedding model changes (same pattern as `ResponseCache`).
+
+### Config
+
+```toml
+[orchestration.plan_cache]
+enabled = false           # opt-in
+similarity_threshold = 0.90
+ttl_days = 30
+max_templates = 100
+```
+
+### Key Invariants
+
+- Cache failure (DB error, embedding error) always falls back to `planner.plan()` — never surface cache errors to user
+- Goal normalization (trim + collapse + lowercase) is mandatory for dedup — never hash un-normalized goal
+- Cosine similarity uses in-process math — never depends on Qdrant being available
+- `INSERT OR REPLACE ON CONFLICT(goal_hash)` prevents duplicate templates
+- Adaptation call is always an LLM call — never return template directly without adaptation
+- NEVER block plan execution on cache write — write is best-effort
+
+---
+
+## Inter-Agent Handoff
+
+Inter-agent context propagation uses a skill-based YAML protocol defined in the `rust-agent-handoff` skill. See `specs/handoff-skill-system/spec.md` for the full specification.
+
+There are no typed Rust structs or compile-time validation for handoff content in the orchestration crate. The skill documentation is the contract. Typed validation (PRs #2076, #2078) was attempted and reverted (#2082).

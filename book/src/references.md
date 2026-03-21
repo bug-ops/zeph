@@ -53,8 +53,16 @@ Research on tracking fact evolution over time in agent knowledge graphs. Backgro
 <https://arxiv.org/abs/2504.19413>
 
 **MAGMA: Multi-Graph Agentic Memory Architecture** (Jan 2026)\
-Represents each memory item across four orthogonal relation graphs (semantic, temporal, causal, entity) and frames retrieval as policy-guided graph traversal. Dual-stream write handles fast synchronous ingestion and async background consolidation. Outperforms A-MEM (0.58) and MemoryOS (0.55) on LoCoMo with 0.70. Research target for Zeph's multi-edge-type graph memory upgrade ([#1821](https://github.com/bug-ops/zeph/issues/1821)).\
+Represents each memory item across four orthogonal relation graphs (semantic, temporal, causal, entity) and frames retrieval as policy-guided graph traversal. Dual-stream write handles fast synchronous ingestion and async background consolidation. Outperforms A-MEM (0.58) and MemoryOS (0.55) on LoCoMo with 0.70. Implemented in Zeph as MAGMA typed edges with five `EdgeType` variants (Semantic, Temporal, Causal, CoOccurrence, Hierarchical) and `bfs_typed()` traversal ([#1821](https://github.com/bug-ops/zeph/issues/1821), [PR #2077](https://github.com/bug-ops/zeph/pull/2077)).\
 <https://arxiv.org/abs/2601.03236>
+
+**SYNAPSE: Episodic-Semantic Memory via Spreading Activation** (Jan 2026)\
+Models agent memory as a dynamic graph where retrieval activates a seed node and propagation spreads through edges with decay factor λ^depth. Lateral inhibition suppresses already-activated neighbors to prevent echo-chamber retrieval. Triple Hybrid Retrieval fuses vector similarity, spreading activation, and BM25 keyword match. Implemented in Zeph's `graph::activation` module with configurable decay (λ=0.85), max hops (3), edge-type filtering, and 500ms timeout ([#1888](https://github.com/bug-ops/zeph/issues/1888), [PR #2080](https://github.com/bug-ops/zeph/pull/2080)).\
+<https://arxiv.org/abs/2601.02744>
+
+**MemOS: A Memory OS for AI Systems** (EMNLP 2025 oral)\
+Cross-attention memory retrieval with importance weighting. Assigns explicit importance scores at write time combining recency, reference frequency, and content salience. Implemented in Zeph as write-time importance scoring with weighted markers (50%), density (30%), and role (20%) blended into hybrid recall score ([#2021](https://github.com/bug-ops/zeph/issues/2021), [PR #2062](https://github.com/bug-ops/zeph/pull/2062)).\
+<https://arxiv.org/abs/2507.03724>
 
 ---
 
@@ -73,12 +81,16 @@ Production study finding that LLM summarization causes 13–15% trajectory elong
 <https://blog.jetbrains.com/research/2025/12/efficient-context-management/>
 
 **Structured Anchored Summarization** (Factory.ai, 2025)\
-Proposes typed summary schemas with mandatory sections (goal, decisions, open questions, next steps) to prevent LLM compressors from silently dropping critical facts. Influenced Zeph's structured compaction prompt design ([#1607](https://github.com/bug-ops/zeph/issues/1607)).\
+Proposes typed summary schemas with mandatory sections (goal, decisions, open questions, next steps) to prevent LLM compressors from silently dropping critical facts. Implemented in Zeph as `AnchoredSummary` with 5-section schema (session intent, files modified, decisions, open questions, next steps) and fallback-to-prose guarantee ([#1607](https://github.com/bug-ops/zeph/issues/1607), [PR #2037](https://github.com/bug-ops/zeph/pull/2037)).\
 <https://factory.ai/news/compressing-context>
 
 **Evaluating Context Compression** (Factory.ai / ICLR 2025)\
-Function-first metric: inject the summary as context, ask factual questions derived from the original turns, measure answer accuracy. Background for Zeph's compaction probe design ([#1609](https://github.com/bug-ops/zeph/issues/1609)).\
+Function-first metric: inject the summary as context, ask factual questions derived from the original turns, measure answer accuracy. Implemented in Zeph as compaction probe validation with Q&A pipeline, three-tier verdict (Pass/SoftFail/HardFail), and `--init` wizard step ([#1609](https://github.com/bug-ops/zeph/issues/1609), [PR #2047](https://github.com/bug-ops/zeph/pull/2047)).\
 <https://factory.ai/news/evaluating-compression> · <https://arxiv.org/abs/2410.10347>
+
+**HiAgent: Hierarchical Working Memory for Long-Horizon Agent Tasks** (ACL 2025)\
+Tracks current subgoal and compresses only information no longer relevant to it, achieving 2× success rate improvement and 3.8× step reduction on long-horizon benchmarks. Implemented in Zeph as subgoal-aware compaction with `SubgoalRegistry`, three eviction tiers (Active/Completed/Outdated), and two-phase fire-and-forget subgoal refresh ([#2022](https://github.com/bug-ops/zeph/issues/2022), [PR #2061](https://github.com/bug-ops/zeph/pull/2061)).\
+<https://aclanthology.org/2025.acl-long.1575.pdf>
 
 **Claude Context Management & Compaction API** (Anthropic, 2026)\
 Reference for Zeph's integration with Claude's server-side `compact-2026-01-12` beta and prompt caching strategy ([#1626](https://github.com/bug-ops/zeph/issues/1626)).\
@@ -127,6 +139,34 @@ Evaluation framework for characterizing agent behavior under adversarial probing
 **Promptfoo: Automated Agent Red-Teaming** (open source)\
 CLI tool for automated agent security testing with 50+ vulnerability classes. Evaluated as a black-box test harness against Zeph's ACP HTTP+SSE transport ([#1523](https://github.com/bug-ops/zeph/issues/1523)).\
 <https://github.com/promptfoo/promptfoo> · <https://www.promptfoo.dev/docs/red-team/agents/>
+
+---
+
+## Tool Intelligence
+
+**Think-Augmented Function Calling (TAFC)** (arXiv, Jan 2026)\
+Adds an optional `think` parameter to tool schemas, allowing the model to reason about parameter values before committing. Average win rate of 69.6% vs 18.2% for standard function calling on ToolBench. Implemented in Zeph with `_tafc_think` field injection for complex schemas (complexity > τ), strip-before-execution guarantee, and configurable threshold ([#1861](https://github.com/bug-ops/zeph/issues/1861), [PR #2038](https://github.com/bug-ops/zeph/pull/2038)).\
+<https://arxiv.org/abs/2601.18282>
+
+**Less is More: Better Reasoning with Fewer Tools** (arXiv, Nov 2024)\
+Demonstrates that filtering which tool schemas are included in the prompt per-turn significantly improves function-calling accuracy. Implemented in Zeph as dynamic tool schema filtering with embedding-based relevance scoring, always-on tool list, and dependency graph gating ([#2020](https://github.com/bug-ops/zeph/issues/2020), [PR #2026](https://github.com/bug-ops/zeph/pull/2026)).\
+<https://arxiv.org/abs/2411.15399>
+
+**Speculative Tool Calls** (arXiv, Dec 2025)\
+Analyzes redundant tool executions within agent sessions and proposes caching strategies. Implemented in Zeph as per-session tool result cache with TTL expiration, deny list for side-effecting tools, and lazy eviction ([#2027](https://github.com/bug-ops/zeph/issues/2027), [PR #2027](https://github.com/bug-ops/zeph/pull/2027)).\
+<https://arxiv.org/abs/2512.15834>
+
+---
+
+## Orchestration
+
+**Agentic Plan Caching (APC)** (arXiv, Jun 2025)\
+Extracts structured plan templates from completed executions and stores them indexed by goal embedding. On similar requests, adapts the cached template rather than replanning from scratch. Reduces planning cost by 50% and latency by 27%. Implemented in Zeph's `LlmPlanner` with similarity lookup, lightweight adaptation call, and two-phase eviction (TTL + LRU) ([#1856](https://github.com/bug-ops/zeph/issues/1856), [PR #2068](https://github.com/bug-ops/zeph/pull/2068)).\
+<https://arxiv.org/abs/2506.14852>
+
+**MAST: Why Do Multi-Agent LLM Systems Fail?** (UC Berkeley, Mar 2025)\
+Analysis of 1,642 execution traces finding coordination breakdowns account for 36.9% of all failures. Identifies 14 failure modes across system design, inter-agent misalignment, and task verification. Informed Zeph's handoff hardening research; initial implementation (PRs #2076, #2078) was reverted (#2082) for redesign ([#2023](https://github.com/bug-ops/zeph/issues/2023)).\
+<https://arxiv.org/abs/2503.13657>
 
 ---
 
@@ -186,7 +226,7 @@ Referenced when debugging graph memory extraction schema compatibility ([#1656](
 <https://platform.openai.com/docs/guides/structured-outputs>
 
 **Redis AI Agent Architecture** — Multi-tier caching patterns for LLM API cost reduction.\
-Background for Zeph's semantic response caching research ([#1521](https://github.com/bug-ops/zeph/issues/1521)).\
+Informed Zeph's semantic response caching with embedding similarity matching, dual-mode lookup (exact key + cosine similarity), and model-change invalidation ([#1521](https://github.com/bug-ops/zeph/issues/1521), [PR #2029](https://github.com/bug-ops/zeph/pull/2029)).\
 <https://redis.io/blog/ai-agent-architecture/>
 
 ---

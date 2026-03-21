@@ -100,6 +100,51 @@ When the `scheduler` feature is enabled, three tools are injected into the LLM t
 
 These tools are backed by `SchedulerExecutor`, which forwards requests over an mpsc channel to the background scheduler loop. See [Scheduler](scheduler.md) for the full reference.
 
+## Think-Augmented Function Calling (TAFC)
+
+TAFC enriches tool schemas for complex tools by injecting a `thinking` field that encourages the LLM to reason about parameter selection before committing to values. Tools with a complexity score above `complexity_threshold` (default: 0.6) are augmented automatically.
+
+```toml
+[tools.tafc]
+enabled = true                # Enable TAFC schema augmentation (default: false)
+complexity_threshold = 0.6    # Tools with complexity >= this are augmented (default: 0.6)
+```
+
+Complexity is computed from the number of required parameters, nesting depth, and enum cardinality. TAFC does not modify the tool's behavior — it only changes the JSON Schema presented to the LLM, adding a `thinking` string field where the model can reason step-by-step before selecting parameter values.
+
+## Tool Schema Filtering
+
+`ToolSchemaFilter` dynamically selects which tool definitions are included in the LLM context based on embedding similarity to the current query. Instead of sending all tool schemas on every turn (consuming tokens), only the most relevant tools are presented.
+
+The filter integrates with the dependency graph: tools whose hard prerequisites have not yet been satisfied are excluded regardless of relevance score.
+
+## Tool Result Cache
+
+Idempotent tool calls within a session are cached to avoid redundant execution. The cache is keyed by tool name and a hash of the arguments. Non-cacheable tools (those with side effects like `bash`, `write`, `memory_save`, and all MCP tools) are excluded automatically.
+
+```toml
+[tools.result_cache]
+enabled = true     # Enable tool result caching (default: true)
+ttl_secs = 300     # Cache entry lifetime in seconds, 0 = no expiry (default: 300)
+```
+
+## Tool Dependency Graph
+
+Configure sequential tool availability based on prerequisites. A tool with hard dependencies (`requires`) is hidden from the LLM until all prerequisites have completed successfully in the current session. Soft dependencies (`prefers`) add a similarity boost when satisfied.
+
+```toml
+[tools.dependencies]
+enabled = true            # Enable dependency gating (default: false)
+boost_per_dep = 0.15      # Similarity boost per satisfied soft dependency (default: 0.15)
+max_total_boost = 0.2     # Maximum total boost from soft dependencies (default: 0.2)
+
+[tools.dependencies.rules.deploy]
+requires = ["build", "test"]   # Hard gate: deploy hidden until build and test complete
+prefers = ["lint"]             # Soft boost: deploy scores higher if lint ran
+```
+
+This is useful for multi-step workflows where tool order matters (e.g., `read` before `edit`, `build` before `deploy`).
+
 ## Deep Dives
 
 - [Tool System](../advanced/tools.md) — full reference with filter pipeline, native tool use, iteration control

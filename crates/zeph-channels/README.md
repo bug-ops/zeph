@@ -9,7 +9,7 @@ Multi-channel I/O adapters (CLI, Telegram, Discord, Slack) for Zeph.
 
 ## Overview
 
-Implements I/O channel adapters that connect the agent to different frontends. Ships with a CLI channel, Telegram adapter with streaming support, and optional Discord and Slack adapters. The `AnyChannel` enum provides unified dispatch across all channel variants.
+Implements I/O channel adapters that connect the agent to different frontends. Ships with a CLI channel, Telegram adapter with streaming support, and optional Discord and Slack adapters. The `AnyChannel` enum provides unified dispatch across all channel variants. All channels implement full feature parity for the `Channel` trait: streaming, attachments, and slash commands work identically regardless of the active frontend.
 
 ## Key modules
 

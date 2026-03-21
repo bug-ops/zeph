@@ -36,6 +36,14 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `memory.compression.probe.hard_fail_threshold` | [0.0, 1.0), must be < `threshold` |
 | `memory.compression.probe.max_questions` | >= 1 |
 | `memory.compression.probe.timeout_secs` | >= 1 |
+| `memory.semantic.importance_weight` | finite, in [0.0, 1.0] |
+| `memory.graph.spreading_activation.decay_lambda` | in (0.0, 1.0] |
+| `memory.graph.spreading_activation.activation_threshold` | < `inhibition_threshold` |
+| `memory.graph.spreading_activation.inhibition_threshold` | > `activation_threshold` |
+| `llm.semantic_cache_threshold` | finite, in [0.0, 1.0] |
+| `orchestration.plan_cache.similarity_threshold` | in [0.5, 1.0] |
+| `orchestration.plan_cache.max_templates` | in [1, 10000] |
+| `orchestration.plan_cache.ttl_days` | in [1, 365] |
 | `memory.token_safety_margin` | > 0.0 |
 | `agent.max_tool_iterations` | <= 100 |
 | `a2a.rate_limit` | > 0 |
@@ -114,6 +122,9 @@ embedding_model = "qwen3-embedding"  # Model for text embeddings
 # vision_model = "llava:13b"        # Ollama only: dedicated model for image requests
 # response_cache_enabled = false     # SQLite-backed LLM response cache (default: false)
 # response_cache_ttl_secs = 3600     # Cache TTL in seconds (default: 3600)
+# semantic_cache_enabled = false     # Embedding-based similarity cache (default: false)
+# semantic_cache_threshold = 0.95    # Cosine similarity for cache hit (default: 0.95)
+# semantic_cache_max_candidates = 10 # Max entries to examine per lookup (default: 10)
 
 # Dedicated provider for tool-pair summarization and context compaction (optional).
 # String shorthand — pick one format, or use [llm.summary_provider] below.
@@ -242,6 +253,8 @@ temporal_decay_enabled = false        # Attenuate scores by message age (default
 temporal_decay_half_life_days = 30    # Half-life for temporal decay in days (default: 30)
 mmr_enabled = false                   # MMR re-ranking for result diversity (default: false)
 mmr_lambda = 0.7                      # MMR relevance-diversity trade-off, 0.0-1.0 (default: 0.7)
+importance_enabled = false            # Write-time importance scoring for recall boost (default: false)
+importance_weight = 0.15              # Blend weight for importance in ranking, [0.0, 1.0] (default: 0.15)
 
 [memory.routing]
 strategy = "heuristic"        # Routing strategy for memory backend selection (default: "heuristic")
@@ -284,6 +297,14 @@ recall_limit = 10                      # Max graph facts injected into context (
 temporal_decay_rate = 0.0              # Recency boost for graph recall; 0.0 = disabled (default: 0.0)
                                        # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
 edge_history_limit = 100               # Max historical edge versions per source+predicate pair (default: 100)
+
+[memory.graph.spreading_activation]
+# enabled = false                     # Replace BFS with spreading activation (default: false)
+# decay_lambda = 0.85                 # Per-hop decay factor, (0.0, 1.0] (default: 0.85)
+# max_hops = 3                        # Maximum propagation depth (default: 3)
+# activation_threshold = 0.1          # Minimum activation for inclusion (default: 0.1)
+# inhibition_threshold = 0.8          # Lateral inhibition threshold (default: 0.8)
+# max_activated_nodes = 50            # Cap on activated nodes (default: 50)
 
 [tools]
 enabled = true
@@ -363,6 +384,22 @@ enabled = true              # Enable smart output filtering for tool results
 # effect = "allow"
 # tool = "shell"
 # paths = ["/tmp/*"]
+
+[tools.result_cache]
+# enabled = true             # Enable tool result caching (default: true)
+# ttl_secs = 300             # Cache entry lifetime in seconds, 0 = no expiry (default: 300)
+
+[tools.tafc]
+# enabled = false            # Enable TAFC schema augmentation (default: false)
+# complexity_threshold = 0.6 # Complexity threshold for augmentation (default: 0.6)
+
+[tools.dependencies]
+# enabled = false            # Enable dependency gating (default: false)
+# boost_per_dep = 0.15       # Boost per satisfied soft dependency (default: 0.15)
+# max_total_boost = 0.2      # Maximum total soft boost (default: 0.2)
+# [tools.dependencies.rules.deploy]
+# requires = ["build", "test"]
+# prefers = ["lint"]
 
 [tools.overflow]
 threshold = 50000           # Offload output larger than N chars to SQLite overflow table (default: 50000)
@@ -472,6 +509,12 @@ dependency_context_budget = 16384       # Character budget for cross-task contex
 confirm_before_execute = true           # Show task summary and require /plan confirm before executing (default: true)
 aggregator_max_tokens = 4096            # Token budget for the aggregation LLM call (default: 4096)
 
+[orchestration.plan_cache]
+# enabled = false                       # Enable plan template caching (default: false)
+# similarity_threshold = 0.90           # Min cosine similarity for cache hit (default: 0.90)
+# ttl_days = 30                         # Days since last access before eviction (default: 30)
+# max_templates = 100                    # Maximum cached templates (default: 100)
+
 [gateway]
 enabled = false
 bind = "127.0.0.1"
@@ -555,6 +598,9 @@ Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`)
 | `ZEPH_MEMORY_TOOL_CALL_CUTOFF` | Max visible tool pairs before oldest is summarized (default: 6) |
 | `ZEPH_LLM_RESPONSE_CACHE_ENABLED` | Enable SQLite-backed LLM response cache (default: false) |
 | `ZEPH_LLM_RESPONSE_CACHE_TTL_SECS` | Response cache TTL in seconds (default: 3600) |
+| `ZEPH_LLM_SEMANTIC_CACHE_ENABLED` | Enable semantic similarity-based response caching (default: false) |
+| `ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD` | Cosine similarity threshold for semantic cache hit (default: 0.95) |
+| `ZEPH_LLM_SEMANTIC_CACHE_MAX_CANDIDATES` | Max entries examined per semantic cache lookup (default: 10) |
 | `ZEPH_MEMORY_SQLITE_POOL_SIZE` | SQLite connection pool size (default: 5) |
 | `ZEPH_MEMORY_RESPONSE_CACHE_CLEANUP_INTERVAL_SECS` | Interval for purging expired LLM response cache entries in seconds (default: 3600) |
 | `ZEPH_MEMORY_SEMANTIC_ENABLED` | Enable semantic memory (default: false) |

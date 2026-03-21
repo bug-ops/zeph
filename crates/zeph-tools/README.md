@@ -9,7 +9,7 @@ Tool executor trait with shell, web scrape, and composite executors for Zeph.
 
 ## Overview
 
-Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concrete executors for shell commands, file operations, and web scraping. The `CompositeExecutor` chains multiple backends with output filtering, permission checks, trust gating, anomaly detection, and audit logging.
+Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concrete executors for shell commands, file operations, and web scraping. The `CompositeExecutor` chains multiple backends with output filtering, permission checks, trust gating, anomaly detection, audit logging, and TAFC (Think-Augmented Function Calling) for reasoning-enhanced tool selection.
 
 ## Key modules
 
@@ -27,10 +27,13 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `trust_level` | `TrustLevel` enum — four-tier trust model (`Trusted`, `Verified`, `Quarantined`, `Blocked`) with severity ordering and `min_trust` helper |
 | `trust_gate` | Trust-based tool access control |
 | `anomaly` | `AnomalyDetector` — sliding-window failure rate detection; integrated into the agent tool execution pipeline — records every tool outcome, emits `Severity::Critical` when the failure rate exceeds `failure_threshold` in the last `window_size` executions, and auto-blocks the tool via the trust system |
+| `schema_filter` | `ToolSchemaFilter` — dynamic tool schema filtering via embedding similarity; selects top-K relevant tools per query. `ToolDependencyGraph` — dependency graph with `requirements_met()` gate preventing tool execution until prerequisites are completed; `DependencyExclusion` marks tools excluded by unmet deps |
+| `cache` | `ToolResultCache` — in-memory LRU cache for deterministic tool results with TTL expiry; `CacheKey` hashes tool name + args; `is_cacheable()` whitelist for safe-to-cache tools |
+| `tool_filter` | `ToolFilter<E>` — executor wrapper that suppresses specified tools from the LLM tool set |
 | `overflow` | (removed — overflow storage migrated to SQLite in `zeph-memory`) |
-| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block) |
+| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block); `TafcConfig` for `[tools.tafc]` section; `ResultCacheConfig` for `[tools.result_cache]`; `DependencyConfig` + `ToolDependency` for `[tools.dependencies]` |
 
-**Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`
+**Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`, `ToolResultCache`, `CacheKey`, `ToolSchemaFilter`, `ToolDependencyGraph`, `ToolFilter`
 
 ## Security
 
@@ -77,6 +80,22 @@ window_size = 20
 failure_threshold = 0.7
 auto_block = true
 ```
+
+## TAFC (Think-Augmented Function Calling)
+
+TAFC injects a reasoning step before tool selection, allowing the LLM to evaluate which tools are appropriate for the current task. Configure via `[tools.tafc]` in `config.toml`.
+
+## Dynamic tool schema filtering
+
+`ToolSchemaFilter` uses embedding similarity to select only the top-K most relevant tools for each query, reducing the tool catalog size in the LLM context. Tools marked as `always_on` bypass filtering and are always included.
+
+## Tool result cache
+
+`ToolResultCache` caches results of deterministic tools (those on the `is_cacheable()` whitelist) in memory with configurable TTL. Cache keys are computed by hashing tool name and arguments. The `/status` command reports cache hit/miss rates and tool filter state.
+
+## Tool dependency graph
+
+`ToolDependencyGraph` enforces execution ordering: a tool with declared `requires` dependencies cannot execute until all prerequisites have completed. Unmet dependencies produce a `DependencyExclusion` that gates the tool from the LLM tool set until requirements are satisfied. Configure via `[tools.dependencies]`.
 
 ## Features
 

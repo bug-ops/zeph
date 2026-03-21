@@ -297,7 +297,33 @@ planner_max_tokens = 4096           # Max tokens for planner response (default: 
 dependency_context_budget = 16384   # Character budget for cross-task context (default: 16384)
 confirm_before_execute = true       # Show confirmation before executing a plan (default: true)
 aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call (default: 4096)
+
+[orchestration.plan_cache]
+enabled = false                     # Enable plan template caching (default: false)
+similarity_threshold = 0.90         # Min cosine similarity for cache hit (default: 0.90)
+ttl_days = 30                       # Days since last access before eviction (default: 30)
+max_templates = 100                  # Maximum cached templates (default: 100)
 ```
+
+## Plan Template Caching
+
+When `[orchestration.plan_cache]` is enabled, successful plan decompositions are cached as templates. On subsequent `/plan` invocations, the planner first searches for a cached template with cosine similarity above `similarity_threshold` (default: 0.90). If a match is found, the cached task graph structure is reused — skipping the LLM planning call entirely.
+
+```toml
+[orchestration.plan_cache]
+enabled = true                # Enable plan template caching (default: false)
+similarity_threshold = 0.90   # Min cosine similarity for a cache hit (default: 0.90)
+ttl_days = 30                 # Days since last access before eviction (default: 30)
+max_templates = 100            # Maximum cached templates (default: 100)
+```
+
+Templates are stored in SQLite (migration `040_plan_cache.sql`) and embedded for similarity search. The cache is keyed by the goal embedding, so semantically equivalent goals (e.g., "deploy staging" and "deploy the staging environment") can share the same template.
+
+## Subgoal-Aware Compaction
+
+When task orchestration is active, the context compaction system tracks subgoal boundaries within the conversation. The `SubgoalRegistry` records which message ranges belong to each subgoal and their completion state (Active, Completed, Abandoned).
+
+During hard compaction, the summarizer preserves messages associated with active subgoals while aggressively compacting completed subgoal ranges. This prevents compaction from destroying the context that an in-progress orchestration task depends on.
 
 ## Limitations
 

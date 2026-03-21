@@ -99,6 +99,18 @@ Long conversations accumulate tool outputs that consume significant context spac
 
 When hard-tier LLM compaction itself hits a context length error, progressive middle-out tool response removal reduces the input at 10/20/50/100% tiers before retrying. If all LLM attempts fail, a metadata-only fallback produces a summary without any LLM call. LLM calls in the agent loop also reactively intercept context length errors — compacting and retrying up to 2 times before propagating the error. See [Context Engineering](../advanced/context.md#two-tier-reactive-compaction) for details.
 
+### Compaction Probe Validation
+
+After hard-tier compaction produces a candidate summary, an optional compaction probe validates that critical facts survived compression. The probe generates factual questions from the original messages, answers them using only the summary, and scores the answers. Verdicts range from Pass (commit summary) through SoftFail (commit with warning) to HardFail (block compaction, preserve originals). See [Context Engineering — Compaction Probe](../advanced/context.md#post-compression-validation-compaction-probe) for configuration.
+
+### Structured Anchored Summarization
+
+The anchored summarization path replaces free-form prose summaries with structured `AnchoredSummary` objects containing five sections: session intent, files modified, decisions made, open questions, and next steps. The structured format preserves actionable detail more reliably than prose, reducing the rate of compaction probe HardFail verdicts.
+
+### Subgoal-Aware Compaction
+
+When task orchestration is active, the `SubgoalRegistry` prevents compaction from destroying context that active subgoals depend on. Messages within active subgoal ranges are preserved; completed subgoal ranges are aggressively compacted. This makes long multi-step orchestration sessions feasible within bounded context windows.
+
 ### Message Dual-Visibility
 
 Every `Message` carries a `MessageMetadata` struct with two boolean flags — `agent_visible` and `user_visible` — that control whether the message is included in the LLM context window, the UI history, or both. By default both flags are `true`.

@@ -437,6 +437,79 @@ The `tools.file.allowed_paths` setting controls which directories `FileExecutor`
 |----------|-------------|
 | `ZEPH_AGENT_MAX_TOOL_ITERATIONS` | Max tool loop iterations (default: 10) |
 
+## Think-Augmented Function Calling (TAFC)
+
+TAFC augments the JSON Schema of complex tools with a `thinking` field that encourages step-by-step reasoning before the LLM selects parameter values. This reduces parameter selection errors for tools with many required parameters, deeply nested schemas, or large enum cardinalities.
+
+### How It Works
+
+1. Each tool definition is scored for complexity based on: number of required parameters, nesting depth, and enum cardinality.
+2. Tools with complexity >= `complexity_threshold` (default: 0.6) have their JSON Schema augmented with a `thinking` string property.
+3. The LLM fills the `thinking` field first (reasoning about the task), then fills the actual parameters. The `thinking` value is discarded before execution.
+
+### Configuration
+
+```toml
+[tools.tafc]
+enabled = true                # Enable TAFC augmentation (default: false)
+complexity_threshold = 0.6    # Complexity score threshold (default: 0.6)
+```
+
+The threshold is validated and clamped to [0.0, 1.0]; NaN and Infinity are reset to 0.6.
+
+## Tool Schema Filtering
+
+`ToolSchemaFilter` dynamically selects which tool definitions are included in the LLM context on each turn. Instead of sending all tool schemas every time, only tools with embedding similarity above a threshold to the current query are included. This significantly reduces token usage when many tools are registered.
+
+The filter integrates with the tool dependency graph: tools whose hard prerequisites (`requires`) have not been satisfied are excluded from the filtered set regardless of relevance score. The `DependencyExclusion` metadata is attached to each filtered-out tool for observability.
+
+## Tool Result Cache
+
+The tool result cache stores outputs of idempotent tool calls within a session. When the same tool is called with identical arguments, the cached result is returned immediately without re-execution.
+
+### Cacheability Rules
+
+- **Always non-cacheable:** `bash` (side effects), `write` (file mutation), `memory_save` (state mutation), `scheduler` (task creation), and all MCP tools (`mcp_` prefix, opaque third-party)
+- **Non-cacheable by exclusion:** `memory_search` (results may change after `memory_save`)
+- **Cacheable:** `read`, `edit`, `grep`, `find_path`, `list_directory`, `web_scrape`, `fetch`, `diagnostics`, `search_code`
+
+### Configuration
+
+```toml
+[tools.result_cache]
+enabled = true     # Enable result caching (default: true)
+ttl_secs = 300     # Cache entry lifetime in seconds, 0 = no expiry (default: 300)
+```
+
+Cache entries are keyed by `(tool_name, hash(args))` and expire after `ttl_secs`. The cache is in-memory only — it does not persist across session restarts.
+
+## Tool Dependency Graph
+
+The tool dependency graph controls tool availability based on prerequisites. Two dependency types are supported:
+
+| Type | Behavior |
+|------|----------|
+| `requires` (hard) | Tool is **hidden** from the LLM until all listed tools have completed successfully |
+| `prefers` (soft) | Tool receives a **similarity boost** when listed tools have completed |
+
+### Configuration
+
+```toml
+[tools.dependencies]
+enabled = true            # Enable dependency gating (default: false)
+boost_per_dep = 0.15      # Boost per satisfied soft dependency (default: 0.15)
+max_total_boost = 0.2     # Maximum total soft boost (default: 0.2)
+
+[tools.dependencies.rules.deploy]
+requires = ["build", "test"]
+prefers = ["lint"]
+
+[tools.dependencies.rules.edit]
+requires = ["read"]
+```
+
+When a hard dependency is not yet satisfied, the tool is excluded from the `ToolSchemaFilter` output and does not appear in the LLM's tool catalog. The `DependencyExclusion` metadata records which dependency was unsatisfied, visible in debug logs.
+
 ## Anomaly detection
 
 `AnomalyDetector` monitors tool failure rates in a sliding window. When the fraction of failed executions in the last `window_size` calls exceeds `failure_threshold`, a `Severity::Critical` alert is raised and the tool is automatically blocked via the trust system — no manual intervention required.

@@ -92,6 +92,24 @@ The judge call runs in a background `tokio::spawn` task and does not block the a
 - User message content is XML-escaped to mitigate prompt injection via `</user_message>` tags.
 - Response is parsed as structured JSON (`JudgeVerdict`) with confidence clamping to `[0.0, 1.0]`.
 
+### Multi-Language Support
+
+`FeedbackDetector` matches correction patterns across 7 languages:
+
+| Language | Example rejection | Example alternative |
+|----------|-------------------|---------------------|
+| English | "that's wrong", "bad answer" | "try a different approach" |
+| Russian | "неправильно", "неверно" | "попробуй по-другому" |
+| Spanish | "eso esta mal", "incorrecto" | "intenta de otra manera" |
+| German | "das ist falsch", "stimmt nicht" | "versuch es anders" |
+| French | "c'est faux", "incorrect" | "essaie autrement" |
+| Chinese | "错了", "不对" | "换个方法" |
+| Japanese | "違います", "間違い" | "別の方法で" |
+
+Each language uses **dual anchoring**: anchored patterns (`^`) for messages starting with the feedback phrase, and unanchored patterns for mid-sentence feedback. Confidence values are assigned per pattern: explicit rejections score 0.85, alternatives 0.70.
+
+Mixed-language inputs are supported. CJK patterns use 2+ character minimums for unanchored matching to reduce false positives from substring matches. Unsupported languages (Korean, Arabic, etc.) produce no regex signal, causing every message to trigger a judge call (rate-limited to 5/min).
+
 ### Storage
 
 Detected corrections are stored as `UserCorrection` records in:

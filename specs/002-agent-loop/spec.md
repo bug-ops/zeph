@@ -76,3 +76,72 @@ Agent<C: Channel> {
 - LLM errors: transient (retry with backoff) vs permanent (surface to user)
 - Tool errors: `ToolError::kind()` → `Transient` / `Permanent`
 - Channel errors abort the current turn but do not exit the loop (unless `ChannelError::Fatal`)
+
+---
+
+## HiAgent Subgoal-Aware Compaction
+
+`crates/zeph-core/src/agent/compaction_strategy.rs`, `crates/zeph-core/src/agent/mod.rs`. Issue #2022.
+
+### Overview
+
+HiAgent-inspired pruning strategies (`subgoal` and `subgoal_mig`) track the agent's current subgoal via fire-and-forget LLM extraction and partition tool outputs into three eviction tiers. This preserves active working context across hard compaction events while aggressively evicting stale outputs from completed or abandoned subgoals.
+
+### Eviction Tiers
+
+| Tier | Relevance Score | Description |
+|---|---|---|
+| Active | 1.0 | Currently-being-worked subgoal — never evicted by scoring |
+| Completed | 0.3 | Finished subgoal — candidate for summarization |
+| Outdated | 0.1 | Before any subgoal or between completed subgoals — highest priority for eviction |
+
+### `SubgoalRegistry`
+
+In-memory data structure with:
+- `subgoals`: list of tracked subgoals, each with `SubgoalState (Active|Completed)` and message span `[start, end)`
+- `extend_active(new_msgs)`: incremental O(new_msgs) update; on first subgoal creation, retroactively tags pre-extraction messages (S4 fix)
+- `rebuild_after_compaction(offset)`: repairs index maps after drain/reinsert — uses offset arithmetic, not fragile index assumptions (S1 fix)
+- `active_subgoal()`: returns the current active subgoal for `/status` display
+- `subgoal_state(msg_index)`: returns tier for scoring
+
+### Subgoal Lifecycle
+
+`maybe_refresh_subgoal()` two-phase fire-and-forget:
+1. Uses last 6 agent-visible messages as context (M2 fix)
+2. LLM extracts current subgoal description
+3. If LLM returns `COMPLETED:` signal → current Active subgoal transitions to Completed (S3 fix)
+4. New subgoal auto-completes any existing Active subgoal as defense-in-depth (M3 fix)
+
+### Compaction Integration
+
+`compact_context()` with `subgoal`/`subgoal_mig` strategies:
+1. Extracts active-subgoal messages before drain
+2. Runs standard compaction (drain + summarize)
+3. Re-inserts active-subgoal messages after pinned messages (S2 fix)
+4. Index repair after `apply_deferred_summaries` insertions (S5 fix)
+
+### `subgoal_mig` Variant
+
+Combines subgoal tier relevance with MIG (Marginal Information Gain) pairwise redundancy scoring:
+`score = subgoal_relevance − max_redundancy_with_any_higher_scored_block`
+
+Active subgoal messages (tier 1.0) have their MIG reduction capped so they are never evicted.
+
+### Constraints
+
+- `subgoal` and `SideQuest` eviction strategies are **mutually exclusive** — hard startup error if both enabled
+- Config: `pruning_strategy = "subgoal"` or `"subgoal_mig"` in `[memory.compression]`
+
+### Debug Output
+
+`{N}-subgoal-registry.txt` written at pruning time when `--debug-dump` is active. `/status` shows active subgoal description when strategy is `subgoal` or `subgoal_mig`.
+
+### Key Invariants
+
+- Subgoal extraction is always fire-and-forget — never block the agent turn on subgoal LLM call
+- Active subgoal messages are extracted before compaction drain and re-inserted after — never lost in compaction
+- `rebuild_after_compaction` uses offset arithmetic (not index scanning) — never recalculate by iterating messages
+- Index repair must run after `apply_deferred_summaries` insertions — deferred summaries can shift indices
+- `subgoal` and `SideQuest` strategies must never be active simultaneously — hard error at startup
+- NEVER evict Active-tier messages by scoring — their relevance is 1.0 (protected)
+- NEVER run subgoal extraction synchronously in the tool loop — only between turns

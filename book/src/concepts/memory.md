@@ -142,6 +142,32 @@ response_cache_cleanup_interval_secs = 3600  # Interval for purging expired cach
 
 A periodic background task purges expired entries. The cleanup interval is configurable via `[memory] response_cache_cleanup_interval_secs` (default: 3600 seconds). Streaming responses bypass the cache entirely — only non-streaming completions are cached.
 
+### Semantic Response Caching
+
+In addition to exact-match caching, Zeph supports embedding-based similarity matching for cache lookups. When `semantic_cache_enabled = true`, the system embeds incoming message context and searches for cached responses with cosine similarity above `semantic_cache_threshold` (default: 0.95). This allows cache hits even when messages are paraphrased or slightly different.
+
+```toml
+[llm]
+response_cache_enabled = true
+semantic_cache_enabled = true          # Enable semantic similarity matching (default: false)
+semantic_cache_threshold = 0.95        # Cosine similarity threshold for cache hit (default: 0.95)
+semantic_cache_max_candidates = 10     # Max entries to examine per lookup (default: 10)
+```
+
+The threshold controls the tradeoff between hit rate and relevance: lower values (0.92) produce more hits but risk returning less relevant cached responses; higher values (0.98) are more conservative. `semantic_cache_max_candidates` controls how many entries are examined per query — increase to 50+ for better recall at the cost of latency.
+
+## Write-Time Importance Scoring
+
+When `importance_enabled = true`, each message receives an importance score (0.0-1.0) at write time. The score is computed by an LLM classifier that evaluates how decision-relevant the message content is. During semantic recall, the importance score is blended with the similarity score using `importance_weight` (default: 0.15), boosting recall of architecturally significant decisions and key facts.
+
+```toml
+[memory.semantic]
+importance_enabled = true         # Enable write-time importance scoring (default: false)
+importance_weight = 0.15          # Blend weight for importance in recall ranking (default: 0.15)
+```
+
+The weight controls how much importance influences the final recall ranking: `0.0` disables importance entirely (pure similarity), `1.0` makes importance the dominant signal. The default `0.15` provides a subtle boost to high-importance messages without disrupting similarity-based ranking.
+
 ## Native Memory Tools
 
 When a memory backend is configured, Zeph registers two native tools that the model can invoke explicitly during a conversation, in addition to automatic recall that runs at context-build time.
@@ -287,6 +313,18 @@ shutdown_summary_max_messages = 20  # cap LLM input to the last N messages
 The LLM call is bounded by a 5-second timeout (10 seconds worst-case if the structured output
 call times out and falls back to plain text). Errors are logged as warnings and never propagate
 to the caller — shutdown completes regardless.
+
+## Structured Anchored Summarization
+
+When hard compaction fires, the summarizer can produce structured summaries anchored to specific information categories. The `AnchoredSummary` format replaces free-form prose with five mandatory sections:
+
+1. **Session Intent** — what the user is trying to accomplish
+2. **Files Modified** — file paths, function names, structs referenced
+3. **Decisions Made** — architectural or implementation decisions with rationale
+4. **Open Questions** — unresolved items or ambiguities
+5. **Next Steps** — concrete actions to take immediately
+
+Anchored summaries are validated for completeness (`session_intent` and `next_steps` must be non-empty) and rendered as Markdown with `[anchored summary]` headers for context injection. This structured format reduces information loss during compaction compared to unstructured prose summaries.
 
 ## Deep Dives
 

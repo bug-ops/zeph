@@ -9,7 +9,7 @@ DAG-based task orchestration with failure propagation, LLM planning, and SQLite 
 
 ## Overview
 
-Implements the multi-agent task orchestration pipeline extracted from `zeph-core`. Decomposes high-level goals into directed acyclic graphs of sub-tasks, executes them via a tick-based scheduler, routes tasks to sub-agents, aggregates results through a final LLM synthesis call, and persists graph state in SQLite for resume and retry.
+Implements the multi-agent task orchestration pipeline extracted from `zeph-core`. Decomposes high-level goals into directed acyclic graphs of sub-tasks, executes them via a tick-based scheduler, routes tasks to sub-agents, aggregates results through a final LLM synthesis call, and persists graph state in SQLite for resume and retry. Includes plan template caching for repeated goals.
 
 ## Key modules
 
@@ -21,6 +21,7 @@ Implements the multi-agent task orchestration pipeline extracted from `zeph-core
 | `planner` | `Planner` trait + `LlmPlanner` — goal decomposition via `chat_typed` structured output; maps string task IDs to `TaskId` |
 | `aggregator` | `Aggregator` trait + `LlmAggregator` — synthesizes completed task outputs; per-task character budget; content-sanitized before injection |
 | `router` | `AgentRouter` trait + `RuleBasedRouter` — 3-step fallback task-to-agent routing |
+| `plan_cache` | `PlanCache` — caches plan templates by normalized goal hash; `PlanTemplate` captures task structure from a `TaskGraph` for reuse; `normalize_goal` + `goal_hash` for deterministic cache keys |
 | `command` | `PlanCommand` parser for `/plan` CLI slash commands |
 | `error` | `OrchestrationError` unified error type |
 
@@ -59,6 +60,10 @@ aggregator_max_tokens = 4096       # token budget for LlmAggregator synthesis ca
 | `Retry` | Re-queue the failed task up to `max_retries` times |
 | `Skip` | Mark the task skipped and continue with dependents |
 | `Ask` | Pause the graph and wait for `/plan resume` from the user |
+
+## Plan template caching
+
+When a goal is decomposed into a task graph, the resulting structure is cached as a `PlanTemplate` keyed by a normalized goal hash. Subsequent requests with semantically equivalent goals reuse the cached template instead of invoking the LLM planner, reducing latency and token costs for repeated orchestration patterns.
 
 ## Integration points
 

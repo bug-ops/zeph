@@ -71,14 +71,14 @@ zeph (binary)
 | `zeph-config` | 1 | All configuration structs, TOML loader, env overrides, migration |
 | `zeph-vault` | 1 | `VaultProvider` trait + `EnvVaultProvider` and `AgeVaultProvider` backends |
 | `zeph-llm` | 2 | `LlmProvider` trait, all LLM backends, model orchestrator, embeddings |
-| `zeph-memory` | 2 | SQLite persistence, Qdrant vector search, document loaders, token counter |
-| `zeph-tools` | 2 | Tool execution framework, shell sandbox, file executor, trust model |
+| `zeph-memory` | 2 | SQLite persistence, Qdrant vector search, document loaders, token counter, semantic response cache, anchored summarization, MAGMA typed edges, SYNAPSE spreading activation, write-time importance scoring |
+| `zeph-tools` | 2 | Tool execution framework, shell sandbox, file executor, trust model, TAFC schema augmentation, tool result cache, tool dependency graph, tool schema filtering |
 | `zeph-skills` | 2 | SKILL.md parser, skill registry, embedding matcher, hot-reload |
 | `zeph-sanitizer` | 3 | Content sanitization, injection detection, PII filtering, exfiltration guard |
 | `zeph-experiments` | 3 | Autonomous experiment engine, hyperparameter search, LLM-as-judge evaluation |
 | `zeph-subagent` | 3 | Subagent spawning, capability grants, transcripts, lifecycle hooks |
-| `zeph-orchestration` | 3 | DAG task graph, DagScheduler, AgentRouter, LlmPlanner, LlmAggregator |
-| `zeph-core` | 4 | Agent loop, `AppBuilder`, context engineering, metrics, channel trait |
+| `zeph-orchestration` | 3 | DAG task graph, DagScheduler, AgentRouter, LlmPlanner, LlmAggregator, plan template caching |
+| `zeph-core` | 4 | Agent loop, `AppBuilder`, context engineering, metrics, channel trait, multi-language FeedbackDetector, subgoal-aware compaction |
 | `zeph-channels` | 5 | Telegram, CLI, Discord, Slack channel adapters |
 | `zeph-index` | 5 | AST-based code indexing, hybrid retrieval, repo map generation |
 | `zeph-mcp` | 5 | MCP client for external tool servers (optional) |

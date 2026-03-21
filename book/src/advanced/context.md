@@ -475,6 +475,30 @@ Consider increasing [memory] context_budget_tokens or starting a new session.
 
 This prevents infinite compaction loops when the configured budget is smaller than the minimum required for the system prompt and response reservation combined.
 
+### Structured Anchored Summarization
+
+When hard compaction fires, the summarizer can produce structured `AnchoredSummary` objects with five mandatory sections:
+
+| Section | Content |
+|---------|---------|
+| `session_intent` | What the user is trying to accomplish |
+| `files_modified` | File paths, function names, structs touched |
+| `decisions_made` | Architectural decisions with rationale |
+| `open_questions` | Unresolved items or ambiguities |
+| `next_steps` | Concrete actions to take immediately |
+
+Anchored summaries are validated for completeness (`session_intent` and `next_steps` must be non-empty) and rendered as Markdown with `[anchored summary]` headers. This structured format reduces information loss compared to the free-form 9-section prompt below.
+
+### Subgoal-Aware Compaction
+
+When task orchestration is active, the `SubgoalRegistry` tracks which messages belong to each subgoal and their state (Active, Completed, Abandoned). During hard compaction:
+
+- Messages in **active** subgoal ranges are preserved unconditionally
+- Messages in **completed** subgoal ranges are aggressively compacted
+- The registry state is dumped alongside each compaction event when debug dump is enabled (`{id:04}-subgoal-registry.txt`)
+
+This prevents compaction from destroying the context that an in-progress orchestration task depends on.
+
 ### Structured Compaction Prompt
 
 Compaction summaries use a 9-section structured prompt designed for self-consumption. The LLM is instructed to produce exactly these sections:

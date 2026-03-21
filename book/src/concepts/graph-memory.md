@@ -47,14 +47,29 @@ The entity resolver checks aliases before creating a new entity:
 
 This prevents duplicate entities caused by trivial name variations.
 
-### Edges
+### Edges (MAGMA Typed Edges)
 
 Directed relationships between entities. Each edge carries:
 
 - **relation** — verb describing the relationship (`prefers`, `uses`, `works_on`)
+- **edge type** — one of five typed categories (see below)
 - **fact** — human-readable sentence ("User prefers neovim for Rust development")
 - **confidence** — 0.0 to 1.0 score
 - **bi-temporal timestamps** — `valid_from`/`valid_until` for fact validity, `created_at`/`expired_at` for ingestion time
+
+#### Edge Types
+
+MAGMA (Multi-graph Attribute-typed Graph Memory Architecture) classifies edges into five semantic types, enabling type-aware traversal and filtering:
+
+| Edge Type | Description | Example |
+|-----------|-------------|---------|
+| `Causal` | One entity caused or led to another | "Refactoring X caused bug Y" |
+| `Temporal` | Time-ordered sequence or succession | "Vim was replaced by neovim" |
+| `Semantic` | Meaning-based association | "Rust is related to memory safety" |
+| `CoOccurrence` | Entities appeared together in context | "Docker and Kubernetes co-occur" |
+| `Hierarchical` | Parent-child or part-whole relationship | "auth.rs belongs to the auth module" |
+
+Edge types are extracted by the LLM during background extraction and stored alongside the relation string. Type-aware queries can filter or weight edges by type during retrieval.
 
 When a fact changes (e.g., user switches from vim to neovim), the old edge is invalidated (`valid_until` and `expired_at` set) and a new edge is created. Both are preserved for temporal queries.
 
@@ -118,6 +133,42 @@ Graph recall uses breadth-first search to find relevant facts:
 4. Score facts using `composite_score = entity_match * (1 / (1 + hop_distance)) * confidence`
 
 The BFS implementation is cycle-safe and uses at most `max_hops + 2` SQLite queries regardless of graph size.
+
+## SYNAPSE Spreading Activation
+
+SYNAPSE (SYNaptic Activation and Propagation for Semantic Exploration) is an alternative retrieval strategy that replaces BFS with biologically inspired spreading activation over the entity graph. When enabled, it provides richer multi-hop recall with natural decay and lateral inhibition.
+
+### How It Works
+
+1. **Seed activation** — matched entities receive activation level 1.0
+2. **Propagation** — activation spreads along edges, decaying by `decay_lambda` per hop: `activation(hop) = parent_activation * decay_lambda`
+3. **Lateral inhibition** — when an entity's activation exceeds `inhibition_threshold` (default: 0.8), it suppresses activation of neighboring entities. This prevents highly connected hub nodes from dominating results
+4. **Threshold gating** — entities with activation below `activation_threshold` (default: 0.1) are excluded from results
+5. **Timeout** — the entire activation process is bounded by a 500ms timeout to prevent runaway computation on large graphs
+
+### Edge-Type Filtering
+
+SYNAPSE leverages MAGMA typed edges during propagation. Activation flows preferentially along `Causal` and `Semantic` edges, with reduced flow along `CoOccurrence` edges. This produces more semantically coherent activation patterns compared to untyped BFS.
+
+### Configuration
+
+```toml
+[memory.graph.spreading_activation]
+enabled = true                  # Replace BFS with spreading activation (default: false)
+decay_lambda = 0.85             # Per-hop decay factor, (0.0, 1.0] (default: 0.85)
+max_hops = 3                    # Maximum propagation depth (default: 3)
+activation_threshold = 0.1      # Minimum activation to include in results (default: 0.1)
+inhibition_threshold = 0.8      # Activation level triggering lateral inhibition (default: 0.8)
+max_activated_nodes = 50        # Cap on activated nodes to return (default: 50)
+```
+
+| Field | Default | Constraint |
+|-------|---------|------------|
+| `decay_lambda` | 0.85 | Must be in (0.0, 1.0] |
+| `activation_threshold` | 0.1 | Must be < `inhibition_threshold` |
+| `inhibition_threshold` | 0.8 | Must be > `activation_threshold` |
+
+When `spreading_activation.enabled = false` (the default), graph recall uses BFS as described above.
 
 ### Temporal Queries
 
@@ -239,6 +290,14 @@ max_entities = 0                  # Entity cap (0 = unlimited)
 temporal_decay_rate = 0.0         # Recency boost for graph recall; 0.0 = disabled (default)
                                   # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
 edge_history_limit = 100          # Max versions returned by edge_history() per source+predicate pair
+
+[memory.graph.spreading_activation]
+enabled = false                   # Replace BFS with spreading activation (default: false)
+decay_lambda = 0.85               # Per-hop decay factor (default: 0.85)
+max_hops = 3                      # Maximum propagation depth (default: 3)
+activation_threshold = 0.1        # Minimum activation for inclusion (default: 0.1)
+inhibition_threshold = 0.8        # Lateral inhibition threshold (default: 0.8)
+max_activated_nodes = 50          # Cap on returned nodes (default: 50)
 ```
 
 ## Schema

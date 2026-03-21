@@ -7,7 +7,7 @@ Content sanitization, exfiltration guard, PII filtering, and quarantine for Zeph
 
 ## Overview
 
-Implements a multi-stage security pipeline that processes all external data before it enters the LLM context window. The pipeline detects prompt injection patterns, wraps content in spotlighting XML delimiters, optionally routes high-risk sources through an isolated quarantine LLM call, and guards outbound paths against data exfiltration.
+Implements a multi-stage security pipeline that processes all external data before it enters the LLM context window. The pipeline detects prompt injection patterns, wraps content in spotlighting XML delimiters, optionally routes high-risk sources through an isolated quarantine LLM call, and guards outbound paths against data exfiltration. Memory retrieval sources are classified via `MemorySourceHint` to suppress false positive injection flags on recalled user conversations and LLM-generated summaries.
 
 > [!NOTE]
 > This crate is marked `publish = false`. It is an internal workspace crate not published to crates.io.
@@ -23,6 +23,8 @@ Implements a multi-stage security pipeline that processes all external data befo
 | `InjectionFlag` | Detected injection pattern with matched text |
 | `QuarantinedSummarizer` | Dual LLM pattern — routes high-risk content through an isolated, tool-less LLM call |
 | `ExfiltrationGuard` | Three outbound guards: markdown image tracking, tool URL cross-validation, memory write suppression |
+| `ContentSource` | Source metadata with `ContentSourceKind` and optional `MemorySourceHint` for memory retrieval classification |
+| `MemorySourceHint` | `ConversationHistory` / `LlmSummary` / `ExternalDocument` — classifies memory retrieval sources to suppress false positive injection flags on recalled user text and LLM-generated summaries |
 
 ## Sanitization pipeline
 
