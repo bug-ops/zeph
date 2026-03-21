@@ -1,6 +1,6 @@
 ---
 name: docker
-description: >-
+description: >
   Manage Docker containers, images, volumes, networks, and Compose stacks.
   Use when the user asks to build, run, stop, restart, remove, inspect, or debug
   containers; pull, push, tag, or delete images; manage volumes and networks;

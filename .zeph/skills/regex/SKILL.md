@@ -1,6 +1,6 @@
 ---
 name: regex
-description: >-
+description: >
   Write, test, and debug regular expressions for pattern matching, search, and
   text extraction across programming languages. Use when the user asks to match
   patterns in text, validate input formats (email, URL, IP, phone, date),

@@ -1,6 +1,6 @@
 ---
 name: system-info
-description: >-
+description: >
   System diagnostics and resource monitoring — retrieve OS version and kernel
   info, check CPU load and core count, inspect memory and swap usage, analyze
   disk space and filesystem mounts, list running processes sorted by resource

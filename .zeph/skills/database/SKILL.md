@@ -1,6 +1,6 @@
 ---
 name: database
-description: >-
+description: >
   Query and manage SQLite, PostgreSQL, and MySQL databases from the command
   line. Use when the user asks to run SQL queries, inspect database schemas,
   create or alter tables, import or export data, manage indexes, analyze query

@@ -1,6 +1,6 @@
 ---
 name: qdrant
-description: >-
+description: >
   Manage Qdrant vector database via REST API. Use when the user asks to create
   or delete collections, upsert or search vectors, inspect points, filter by
   payload fields, manage snapshots, check cluster status, or debug semantic

@@ -1,6 +1,6 @@
 ---
 name: json-yaml
-description: >-
+description: >
   Parse, query, transform, validate, and convert JSON and YAML data using jq
   and fy (fast-yaml). Use when the user asks to filter JSON arrays, extract
   nested fields, reshape data structures, convert between JSON and YAML formats,

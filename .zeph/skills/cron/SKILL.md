@@ -1,6 +1,6 @@
 ---
 name: cron
-description: >-
+description: >
   Schedule recurring and one-time tasks using cron, crontab, at, and launchd.
   Use when the user asks to set up scheduled jobs, configure crontab entries,
   write cron expressions, schedule one-time tasks with at, create launchd

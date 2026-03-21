@@ -1,6 +1,6 @@
 ---
 name: archive
-description: >-
+description: >
   Create, extract, list, and convert compressed archives using tar, zip, gzip,
   bzip2, xz, zstd, and 7z. Use when the user asks to compress files, extract
   archives, list archive contents, split large archives, create backups,

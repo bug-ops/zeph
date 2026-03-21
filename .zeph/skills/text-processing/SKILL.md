@@ -1,6 +1,6 @@
 ---
 name: text-processing
-description: >-
+description: >
   Transform, filter, sort, and analyze text using sed, awk, sort, uniq, cut,
   tr, wc, and other text processing tools. Use when the user asks to find and
   replace text in files, extract columns from data, count lines or words, sort

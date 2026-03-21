@@ -1,6 +1,6 @@
 ---
 name: network
-description: >-
+description: >
   Network diagnostics, DNS lookup, port scanning, and connectivity testing.
   Use when the user asks to check if a host is reachable, trace network routes,
   resolve DNS records, inspect open ports, debug HTTP requests, check SSL/TLS

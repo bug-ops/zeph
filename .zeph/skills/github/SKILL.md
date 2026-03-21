@@ -1,6 +1,6 @@
 ---
 name: github
-description: >-
+description: >
   GitHub CLI (gh) for repository management, issues, pull requests, releases,
   workflows, search, gists, and API access. Use when the user asks about any
   GitHub operation — creating repos, forking, cloning, PR workflows, issue
