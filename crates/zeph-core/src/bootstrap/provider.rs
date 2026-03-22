@@ -657,11 +657,7 @@ pub fn build_provider_from_entry(
                 .base_url
                 .as_deref()
                 .unwrap_or("http://localhost:11434");
-            let model = entry
-                .model
-                .as_deref()
-                .unwrap_or("qwen3:8b")
-                .to_owned();
+            let model = entry.model.as_deref().unwrap_or("qwen3:8b").to_owned();
             let embed = entry
                 .embedding_model
                 .clone()
@@ -679,9 +675,7 @@ pub fn build_provider_from_entry(
                 .claude_api_key
                 .as_ref()
                 .ok_or_else(|| {
-                    BootstrapError::Provider(
-                        "ZEPH_CLAUDE_API_KEY not found in vault".into(),
-                    )
+                    BootstrapError::Provider("ZEPH_CLAUDE_API_KEY not found in vault".into())
                 })?
                 .expose()
                 .to_owned();
@@ -704,9 +698,7 @@ pub fn build_provider_from_entry(
                 .openai_api_key
                 .as_ref()
                 .ok_or_else(|| {
-                    BootstrapError::Provider(
-                        "ZEPH_OPENAI_API_KEY not found in vault".into(),
-                    )
+                    BootstrapError::Provider("ZEPH_OPENAI_API_KEY not found in vault".into())
                 })?
                 .expose()
                 .to_owned();
@@ -737,9 +729,7 @@ pub fn build_provider_from_entry(
                 .gemini_api_key
                 .as_ref()
                 .ok_or_else(|| {
-                    BootstrapError::Provider(
-                        "ZEPH_GEMINI_API_KEY not found in vault".into(),
-                    )
+                    BootstrapError::Provider("ZEPH_GEMINI_API_KEY not found in vault".into())
                 })?
                 .expose()
                 .to_owned();
@@ -849,10 +839,7 @@ pub fn build_provider_from_entry(
 /// Logs a warning and falls back to the next available entry if the selected one fails.
 fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapError> {
     let pool = &config.llm.providers;
-    let primary_idx = pool
-        .iter()
-        .position(|e| e.default)
-        .unwrap_or(0);
+    let primary_idx = pool.iter().position(|e| e.default).unwrap_or(0);
     let primary = &pool[primary_idx];
     match build_provider_from_entry(primary, config) {
         Ok(p) => Ok(p),
