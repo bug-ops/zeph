@@ -311,4 +311,11 @@ mod tests {
         assert!(tracker.check_budget().is_ok());
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
     }
+
+    #[test]
+    fn check_budget_unlimited_when_max_daily_cents_is_zero() {
+        let tracker = CostTracker::new(true, 0.0);
+        tracker.record_usage("claude-opus-4-20250514", 100_000, 100_000);
+        assert!(tracker.check_budget().is_ok());
+    }
 }
