@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tui): remove duplicate ToolStart/ToolOutput events from `forward_tool_events_to_tui` bridge (#2116) — `ToolEvent::Started` and `ToolEvent::Completed` are now skipped in the bridge; `TuiChannel::send_tool_start` / `send_tool_output` (called via the `Channel` trait) are the sole source of these events
 - fix(memory): AOI tier promotion FOREIGN KEY constraint violation (#2102) — `run_promotion_sweep()` used `ConversationId(0)` as a sentinel for promoted semantic facts, but `conversations` uses `AUTOINCREMENT` starting at 1 so id=0 never exists; replaced with the real `conversation_id` from the highest-ranked candidate in the cluster; `PromotionCandidate` now carries `conversation_id` propagated from `find_promotion_candidates()` SELECT; added FK regression guard test and `find_promotion_candidates` conversation_id assertion test
 - fix(skills): convert unsupported `>-` YAML block scalar modifier to `>` in all 19 skill files in `.zeph/skills/` — resolves silent load failures for all rewritten skills; 9 new skills (archive, cron, database, json-yaml, network, process-management, qdrant, regex, ssh-remote, text-processing) were completely unavailable (#2087)
 

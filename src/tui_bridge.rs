@@ -207,10 +207,13 @@ pub(crate) async fn forward_tool_events_to_tui(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
+    // Only forward streaming chunks. ToolStart and ToolOutput are already sent via
+    // TuiChannel::send_tool_start / send_tool_output from the Channel trait — forwarding
+    // Started and Completed here would duplicate those events in the TUI.
     while let Some(event) = rx.recv().await {
         let agent_event = match event {
-            zeph_tools::ToolEvent::Started { tool_name, command } => {
-                zeph_tui::AgentEvent::ToolStart { tool_name, command }
+            zeph_tools::ToolEvent::Started { .. } | zeph_tools::ToolEvent::Completed { .. } => {
+                continue;
             }
             zeph_tools::ToolEvent::OutputChunk {
                 tool_name,
@@ -221,36 +224,64 @@ pub(crate) async fn forward_tool_events_to_tui(
                 command,
                 chunk: zeph_tools::strip_ansi(&chunk),
             },
-            zeph_tools::ToolEvent::Completed {
-                tool_name,
-                command,
-                output,
-                success,
-                diff,
-                filter_stats,
-            } => {
-                let stats_line = filter_stats.as_ref().and_then(|fs| {
-                    (fs.filtered_chars < fs.raw_chars)
-                        .then(|| format!("{:.1}% filtered", fs.savings_pct()))
-                });
-                let kept = filter_stats
-                    .as_ref()
-                    .filter(|fs| !fs.kept_lines.is_empty())
-                    .map(|fs| fs.kept_lines.clone());
-                zeph_tui::AgentEvent::ToolOutput {
-                    tool_name,
-                    command,
-                    output,
-                    success,
-                    diff,
-                    filter_stats: stats_line,
-                    kept_lines: kept,
-                }
-            }
         };
         if tx.send(agent_event).await.is_err() {
             break;
         }
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn forward_tool_events_skips_started_and_completed() {
+        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<zeph_tools::ToolEvent>();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
+
+        tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx));
+
+        tool_tx
+            .send(zeph_tools::ToolEvent::Started {
+                tool_name: "shell".into(),
+                command: "ls".into(),
+            })
+            .unwrap();
+        tool_tx
+            .send(zeph_tools::ToolEvent::OutputChunk {
+                tool_name: "shell".into(),
+                command: "ls".into(),
+                chunk: "file.txt\n".into(),
+            })
+            .unwrap();
+        tool_tx
+            .send(zeph_tools::ToolEvent::Completed {
+                tool_name: "shell".into(),
+                command: "ls".into(),
+                output: "file.txt\n".into(),
+                success: true,
+                diff: None,
+                filter_stats: None,
+            })
+            .unwrap();
+        drop(tool_tx);
+
+        let mut received = Vec::new();
+        while let Some(ev) = agent_rx.recv().await {
+            received.push(ev);
+        }
+
+        assert_eq!(
+            received.len(),
+            1,
+            "expected exactly one event (OutputChunk)"
+        );
+        assert!(
+            matches!(received[0], zeph_tui::AgentEvent::ToolOutputChunk { .. }),
+            "expected ToolOutputChunk, got {:?}",
+            received[0]
+        );
     }
 }
 
