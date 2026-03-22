@@ -98,13 +98,25 @@ pub struct FileExecutor {
     allowed_paths: Vec<PathBuf>,
 }
 
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s
+        .strip_prefix("~/")
+        .or_else(|| if s == "~" { Some("") } else { None })
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
+    }
+    path
+}
+
 impl FileExecutor {
     #[must_use]
     pub fn new(allowed_paths: Vec<PathBuf>) -> Self {
         let paths = if allowed_paths.is_empty() {
             vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
         } else {
-            allowed_paths
+            allowed_paths.into_iter().map(expand_tilde).collect()
         };
         Self {
             allowed_paths: paths
@@ -1324,5 +1336,52 @@ mod tests {
             .unwrap();
         assert!(result.summary.contains("[symlink] link"));
         assert!(result.summary.contains("[file] target.txt"));
+    }
+
+    #[test]
+    fn tilde_path_is_expanded() {
+        let exec = FileExecutor::new(vec![PathBuf::from("~/nonexistent_subdir_for_test")]);
+        assert!(
+            !exec.allowed_paths[0].to_string_lossy().starts_with('~'),
+            "tilde was not expanded: {:?}",
+            exec.allowed_paths[0]
+        );
+    }
+
+    #[test]
+    fn absolute_path_unchanged() {
+        let exec = FileExecutor::new(vec![PathBuf::from("/tmp")]);
+        // On macOS /tmp is a symlink to /private/tmp; canonicalize resolves it.
+        // The invariant is that the result is absolute and tilde-free.
+        let p = exec.allowed_paths[0].to_string_lossy();
+        assert!(
+            p.starts_with('/'),
+            "expected absolute path, got: {:?}",
+            exec.allowed_paths[0]
+        );
+        assert!(
+            !p.starts_with('~'),
+            "tilde must not appear in result: {:?}",
+            exec.allowed_paths[0]
+        );
+    }
+
+    #[test]
+    fn tilde_only_expands_to_home() {
+        let exec = FileExecutor::new(vec![PathBuf::from("~")]);
+        assert!(
+            !exec.allowed_paths[0].to_string_lossy().starts_with('~'),
+            "bare tilde was not expanded: {:?}",
+            exec.allowed_paths[0]
+        );
+    }
+
+    #[test]
+    fn empty_allowed_paths_uses_cwd() {
+        let exec = FileExecutor::new(vec![]);
+        assert!(
+            !exec.allowed_paths.is_empty(),
+            "expected cwd fallback, got empty allowed_paths"
+        );
     }
 }

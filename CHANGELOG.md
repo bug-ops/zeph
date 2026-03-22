@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tools): `FileExecutor` now expands `~` in `allowed_paths` before canonicalization, preventing silent sandbox violations when config contains tilde-prefixed paths (#2115)
 - fix(memory): AOI tier promotion FOREIGN KEY constraint violation (#2102) — `run_promotion_sweep()` used `ConversationId(0)` as a sentinel for promoted semantic facts, but `conversations` uses `AUTOINCREMENT` starting at 1 so id=0 never exists; replaced with the real `conversation_id` from the highest-ranked candidate in the cluster; `PromotionCandidate` now carries `conversation_id` propagated from `find_promotion_candidates()` SELECT; added FK regression guard test and `find_promotion_candidates` conversation_id assertion test
 - fix(skills): convert unsupported `>-` YAML block scalar modifier to `>` in all 19 skill files in `.zeph/skills/` — resolves silent load failures for all rewritten skills; 9 new skills (archive, cron, database, json-yaml, network, process-management, qdrant, regex, ssh-remote, text-processing) were completely unavailable (#2087)
 
