@@ -588,7 +588,13 @@ impl App {
             .rposition(|m| m.role == MessageRole::Tool && m.streaming)
         {
             // Finalize existing streaming tool message (shell or native path with ToolStart).
+            // Replace content after the header line ("$ cmd\n") with the canonical body_display
+            // from ToolOutputEvent. Streaming chunks (Path B) may already occupy that space;
+            // appending would duplicate the output. Truncating to the header and re-writing
+            // body_display produces exactly one copy regardless of whether chunks arrived.
             debug!("finalizing existing streaming Tool message");
+            let header_end = self.messages[pos].content.find('\n').map_or(0, |i| i + 1);
+            self.messages[pos].content.truncate(header_end);
             self.messages[pos].content.push_str(&output);
             self.messages[pos].streaming = false;
             self.messages[pos].diff_data = diff;
@@ -3354,5 +3360,65 @@ mod tests {
         assert_eq!(app.metrics.graph_communities_total, 3);
 
         drop(tx);
+    }
+
+    // Regression tests for #2126: tool output must not be duplicated when streaming chunks
+    // arrive before the final ToolOutput event.
+
+    #[test]
+    fn tool_output_with_prior_tool_start_no_chunks_appends_output() {
+        let (mut app, _rx, _tx) = make_app();
+        // Path A: ToolStart creates message with header only.
+        app.handle_agent_event(AgentEvent::ToolStart {
+            tool_name: "bash".into(),
+            command: "ls -la".into(),
+        });
+        // Path C: ToolOutput arrives with no prior chunks.
+        app.handle_agent_event(AgentEvent::ToolOutput {
+            tool_name: "bash".into(),
+            command: "ls -la".into(),
+            output: "file1\nfile2\n".into(),
+            success: true,
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+        });
+
+        assert_eq!(app.messages().len(), 1);
+        let msg = &app.messages()[0];
+        assert_eq!(msg.content, "$ ls -la\nfile1\nfile2\n");
+        assert!(!msg.streaming);
+    }
+
+    #[test]
+    fn tool_output_with_prior_tool_start_and_chunks_does_not_duplicate() {
+        let (mut app, _rx, _tx) = make_app();
+        // Path A: ToolStart.
+        app.handle_agent_event(AgentEvent::ToolStart {
+            tool_name: "bash".into(),
+            command: "echo hello".into(),
+        });
+        // Path B: streaming chunks arrive.
+        app.handle_agent_event(AgentEvent::ToolOutputChunk {
+            tool_name: "bash".into(),
+            command: "echo hello".into(),
+            chunk: "hello\n".into(),
+        });
+        // Path C: ToolOutput with canonical body_display (same content as chunks).
+        app.handle_agent_event(AgentEvent::ToolOutput {
+            tool_name: "bash".into(),
+            command: "echo hello".into(),
+            output: "hello\n".into(),
+            success: true,
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+        });
+
+        assert_eq!(app.messages().len(), 1);
+        let msg = &app.messages()[0];
+        // Must contain exactly one copy of "hello\n", not two.
+        assert_eq!(msg.content, "$ echo hello\nhello\n");
+        assert!(!msg.streaming);
     }
 }
