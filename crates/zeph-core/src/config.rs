@@ -100,6 +100,18 @@ impl SecretResolver for Config {
                 }
             }
         }
+        for entry in &self.llm.providers {
+            if entry.provider_type == crate::config::ProviderKind::Compatible
+                && let Some(ref name) = entry.name
+            {
+                let env_key = format!("ZEPH_COMPATIBLE_{}_API_KEY", name.to_uppercase());
+                if let Some(val) = vault.get_secret(&env_key).await? {
+                    self.secrets
+                        .compatible_api_keys
+                        .insert(name.clone(), Secret::new(val));
+                }
+            }
+        }
         if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
             self.gateway.auth_token = Some(val);
         }

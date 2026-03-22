@@ -253,7 +253,7 @@ pub struct LlmConfig {
     pub summary_model: Option<String>,
     /// Structured provider config for summarization. Takes precedence over `summary_model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary_provider: Option<OrchestratorProviderConfig>,
+    pub summary_provider: Option<ProviderEntry>,
 }
 
 fn default_embedding_model_opt() -> String {
@@ -308,16 +308,17 @@ impl LlmConfig {
         use crate::error::ConfigError;
 
         let has_new = !self.providers.is_empty();
+        // [llm.orchestrator] is not yet fully migrated to [[llm.providers]] — exclude
+        // it from legacy detection to avoid false positives on orchestrator configs.
         let has_legacy = self.provider.is_some()
             || self.cloud.is_some()
             || self.openai.is_some()
             || self.gemini.is_some()
-            || self.orchestrator.is_some()
             || self.router.is_some();
 
         if has_new && has_legacy {
             return Err(ConfigError::Validation(
-                "cannot mix legacy [llm.cloud]/[llm.openai]/[llm.orchestrator]/[llm.router] \
+                "cannot mix legacy [llm.cloud]/[llm.openai]/[llm.router] \
                  with [[llm.providers]]. Run `zeph --migrate-config` to convert your config."
                     .into(),
             ));
@@ -325,7 +326,7 @@ impl LlmConfig {
 
         if has_legacy {
             return Err(ConfigError::Validation(
-                "legacy LLM config format detected (provider/cloud/openai/orchestrator/router). \
+                "legacy LLM config format detected (provider/cloud/openai/router). \
                  Run `zeph --migrate-config` to convert to [[llm.providers]] format."
                     .into(),
             ));
@@ -975,4 +976,286 @@ pub fn validate_pool(entries: &[ProviderEntry]) -> Result<(), crate::error::Conf
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ollama_entry() -> ProviderEntry {
+        ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            name: Some("ollama".into()),
+            model: Some("qwen3:8b".into()),
+            ..Default::default()
+        }
+    }
+
+    fn claude_entry() -> ProviderEntry {
+        ProviderEntry {
+            provider_type: ProviderKind::Claude,
+            name: Some("claude".into()),
+            model: Some("claude-sonnet-4-6".into()),
+            max_tokens: Some(8192),
+            ..Default::default()
+        }
+    }
+
+    // ─── ProviderEntry::validate ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_ollama_valid() {
+        assert!(ollama_entry().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_claude_valid() {
+        assert!(claude_entry().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_compatible_without_name_errors() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Compatible,
+            name: None,
+            ..Default::default()
+        };
+        let err = entry.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("compatible"),
+            "error should mention compatible: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_compatible_with_name_ok() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Compatible,
+            name: Some("my-proxy".into()),
+            base_url: Some("http://localhost:8080".into()),
+            model: Some("gpt-4o".into()),
+            max_tokens: Some(4096),
+            ..Default::default()
+        };
+        assert!(entry.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_openai_valid() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::OpenAi,
+            name: Some("openai".into()),
+            model: Some("gpt-4o".into()),
+            max_tokens: Some(4096),
+            ..Default::default()
+        };
+        assert!(entry.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_gemini_valid() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Gemini,
+            name: Some("gemini".into()),
+            model: Some("gemini-2.0-flash".into()),
+            ..Default::default()
+        };
+        assert!(entry.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_router_valid() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Router,
+            name: Some("router".into()),
+            ..Default::default()
+        };
+        assert!(entry.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_orchestrator_valid() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Orchestrator,
+            name: Some("orchestrator".into()),
+            ..Default::default()
+        };
+        assert!(entry.validate().is_ok());
+    }
+
+    // ─── validate_pool ───────────────────────────────────────────────────────
+
+    #[test]
+    fn validate_pool_empty_errors() {
+        let err = validate_pool(&[]).unwrap_err();
+        assert!(err.to_string().contains("at least one"), "{err}");
+    }
+
+    #[test]
+    fn validate_pool_single_entry_ok() {
+        assert!(validate_pool(&[ollama_entry()]).is_ok());
+    }
+
+    #[test]
+    fn validate_pool_duplicate_names_errors() {
+        let a = ollama_entry();
+        let b = ollama_entry(); // same effective name "ollama"
+        let err = validate_pool(&[a, b]).unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "{err}");
+    }
+
+    #[test]
+    fn validate_pool_multiple_defaults_errors() {
+        let mut a = ollama_entry();
+        let mut b = claude_entry();
+        a.default = true;
+        b.default = true;
+        let err = validate_pool(&[a, b]).unwrap_err();
+        assert!(err.to_string().contains("default"), "{err}");
+    }
+
+    #[test]
+    fn validate_pool_two_different_providers_ok() {
+        assert!(validate_pool(&[ollama_entry(), claude_entry()]).is_ok());
+    }
+
+    #[test]
+    fn validate_pool_propagates_entry_error() {
+        let bad = ProviderEntry {
+            provider_type: ProviderKind::Compatible,
+            name: None, // invalid: compatible without name
+            ..Default::default()
+        };
+        assert!(validate_pool(&[bad]).is_err());
+    }
+
+    // ─── LlmConfig::check_legacy_format ──────────────────────────────────────
+
+    // Parse a complete TOML snippet that includes the [llm] header.
+    fn parse_llm(toml: &str) -> LlmConfig {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            llm: LlmConfig,
+        }
+        toml::from_str::<Wrapper>(toml).unwrap().llm
+    }
+
+    #[test]
+    fn check_legacy_format_new_format_ok() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "ollama"
+model = "qwen3:8b"
+"#,
+        );
+        assert!(cfg.check_legacy_format().is_ok());
+    }
+
+    #[test]
+    fn check_legacy_format_detects_legacy_provider_field() {
+        let cfg = parse_llm("[llm]\nprovider = \"ollama\"\n");
+        let err = cfg.check_legacy_format().unwrap_err();
+        assert!(
+            err.to_string().contains("legacy"),
+            "expected 'legacy' in error: {err}"
+        );
+    }
+
+    #[test]
+    fn check_legacy_format_detects_cloud_field() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+provider = "claude"
+
+[llm.cloud]
+model = "claude-sonnet-4-6"
+max_tokens = 8192
+"#,
+        );
+        let err = cfg.check_legacy_format().unwrap_err();
+        assert!(err.to_string().contains("legacy"), "{err}");
+    }
+
+    #[test]
+    fn check_legacy_format_detects_mixed_formats() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+provider = "ollama"
+
+[[llm.providers]]
+type = "ollama"
+model = "qwen3:8b"
+"#,
+        );
+        let err = cfg.check_legacy_format().unwrap_err();
+        assert!(err.to_string().contains("mix"), "{err}");
+    }
+
+    #[test]
+    fn check_legacy_format_empty_providers_no_legacy_ok() {
+        // No providers, no legacy fields — passes (empty [llm] is acceptable here)
+        let cfg = parse_llm("[llm]\n");
+        assert!(cfg.check_legacy_format().is_ok());
+    }
+
+    // ─── LlmConfig::effective_* helpers ──────────────────────────────────────
+
+    #[test]
+    fn effective_provider_falls_back_to_ollama_when_no_providers() {
+        let cfg = parse_llm("[llm]\n");
+        assert_eq!(cfg.effective_provider(), ProviderKind::Ollama);
+    }
+
+    #[test]
+    fn effective_provider_reads_from_providers_first() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "claude"
+model = "claude-sonnet-4-6"
+"#,
+        );
+        assert_eq!(cfg.effective_provider(), ProviderKind::Claude);
+    }
+
+    #[test]
+    fn effective_model_reads_from_providers_first() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "ollama"
+model = "qwen3:8b"
+"#,
+        );
+        assert_eq!(cfg.effective_model(), "qwen3:8b");
+    }
+
+    #[test]
+    fn effective_base_url_default_when_absent() {
+        let cfg = parse_llm("[llm]\n");
+        assert_eq!(cfg.effective_base_url(), "http://localhost:11434");
+    }
+
+    #[test]
+    fn effective_base_url_from_providers_entry() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "ollama"
+base_url = "http://myhost:11434"
+"#,
+        );
+        assert_eq!(cfg.effective_base_url(), "http://myhost:11434");
+    }
 }
