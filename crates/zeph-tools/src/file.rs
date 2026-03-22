@@ -134,7 +134,8 @@ impl FileExecutor {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(path)
         };
-        let canonical = resolve_via_ancestors(&resolved);
+        let normalized = normalize_path(&resolved);
+        let canonical = resolve_via_ancestors(&normalized);
         if !self.allowed_paths.iter().any(|a| canonical.starts_with(a)) {
             return Err(ToolError::SandboxViolation {
                 path: canonical.display().to_string(),
@@ -588,6 +589,40 @@ impl ToolExecutor for FileExecutor {
             },
         ]
     }
+}
+
+/// Lexically normalize a path by collapsing `.` and `..` components without
+/// any filesystem access. This prevents `..` components from bypassing the
+/// sandbox check inside `validate_path`.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut stack: Vec<std::ffi::OsString> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                stack.pop();
+            }
+            Component::Normal(name) => stack.push(name.to_owned()),
+            Component::RootDir => {
+                stack.clear();
+                stack.push(std::ffi::OsString::from("/"));
+            }
+            Component::Prefix(prefix) => {
+                stack.clear();
+                stack.push(prefix.as_os_str().to_owned());
+            }
+        }
+    }
+    let mut result = PathBuf::new();
+    for (i, part) in stack.iter().enumerate() {
+        if i == 0 && part == "/" {
+            result.push("/");
+        } else {
+            result.push(part);
+        }
+    }
+    result
 }
 
 /// Canonicalize a path by walking up to the nearest existing ancestor.
@@ -1383,5 +1418,98 @@ mod tests {
             !exec.allowed_paths.is_empty(),
             "expected cwd fallback, got empty allowed_paths"
         );
+    }
+
+    // --- normalize_path tests ---
+
+    #[test]
+    fn normalize_path_normal_path() {
+        assert_eq!(
+            normalize_path(Path::new("/tmp/sandbox/file.txt")),
+            PathBuf::from("/tmp/sandbox/file.txt")
+        );
+    }
+
+    #[test]
+    fn normalize_path_collapses_dot() {
+        assert_eq!(
+            normalize_path(Path::new("/tmp/sandbox/./file.txt")),
+            PathBuf::from("/tmp/sandbox/file.txt")
+        );
+    }
+
+    #[test]
+    fn normalize_path_collapses_dotdot() {
+        assert_eq!(
+            normalize_path(Path::new("/tmp/sandbox/nonexistent/../../etc/passwd")),
+            PathBuf::from("/tmp/etc/passwd")
+        );
+    }
+
+    #[test]
+    fn normalize_path_nested_dotdot() {
+        assert_eq!(
+            normalize_path(Path::new("/tmp/sandbox/a/b/../../../etc/passwd")),
+            PathBuf::from("/tmp/etc/passwd")
+        );
+    }
+
+    #[test]
+    fn normalize_path_at_sandbox_boundary() {
+        assert_eq!(
+            normalize_path(Path::new("/tmp/sandbox")),
+            PathBuf::from("/tmp/sandbox")
+        );
+    }
+
+    // --- validate_path dotdot bypass tests ---
+
+    #[test]
+    fn validate_path_dotdot_bypass_nonexistent_blocked() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        // /sandbox/nonexistent/../../etc/passwd normalizes to /etc/passwd — must be blocked
+        let escape = format!("{}/nonexistent/../../etc/passwd", dir.path().display());
+        let params = make_params(&[("path", serde_json::json!(escape))]);
+        let result = exec.execute_file_tool("read", &params);
+        assert!(
+            matches!(result, Err(ToolError::SandboxViolation { .. })),
+            "expected SandboxViolation for dotdot bypass, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn validate_path_dotdot_nested_bypass_blocked() {
+        let dir = temp_dir();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let escape = format!("{}/a/b/../../../etc/shadow", dir.path().display());
+        let params = make_params(&[("path", serde_json::json!(escape))]);
+        let result = exec.execute_file_tool("read", &params);
+        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    }
+
+    #[test]
+    fn validate_path_inside_sandbox_passes() {
+        let dir = temp_dir();
+        let file = dir.path().join("allowed.txt");
+        fs::write(&file, "ok").unwrap();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("read", &params);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_path_dot_components_inside_sandbox_passes() {
+        let dir = temp_dir();
+        let file = dir.path().join("sub/file.txt");
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(&file, "ok").unwrap();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let dotpath = format!("{}/sub/./file.txt", dir.path().display());
+        let params = make_params(&[("path", serde_json::json!(dotpath))]);
+        let result = exec.execute_file_tool("read", &params);
+        assert!(result.is_ok());
     }
 }

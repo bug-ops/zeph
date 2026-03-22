@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tools): normalize `..` components in `resolve_via_ancestors` to prevent sandbox bypass (#2125)
 - fix(policy): `PolicyGateExecutor::set_effective_trust` now updates `PolicyContext.trust_level` so trust_level-based policy rules are evaluated against the actual invoking skill trust tier instead of the hardcoded `Trusted` default (#2112)
 
 ### Testing
