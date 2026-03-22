@@ -559,6 +559,35 @@ impl AppBuilder {
             }
         }
     }
+
+    /// Build a dedicated provider for experiment evaluation when `experiments.eval_model` is set.
+    ///
+    /// Returns `None` when `eval_model` is not configured (primary provider is used as judge).
+    /// Emits a `tracing::warn` on resolution failure (primary provider used as fallback).
+    ///
+    /// `eval_model` uses the same `provider/model` format as `llm.summary_model`:
+    /// - `ollama/qwen3:1.7b`
+    /// - `claude` or `claude/claude-opus-4-6`
+    /// - `openai` or `openai/gpt-4o`
+    /// - `compatible/<name>`
+    #[cfg(feature = "experiments")]
+    pub fn build_eval_provider(&self) -> Option<AnyProvider> {
+        let model_spec = self.config.experiments.eval_model.as_deref()?;
+        match create_summary_provider(model_spec, &self.config) {
+            Ok(p) => {
+                tracing::info!(eval_model = %model_spec, "experiment eval provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    eval_model = %model_spec,
+                    error = %e,
+                    "failed to create eval provider — primary provider will be used as judge"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]

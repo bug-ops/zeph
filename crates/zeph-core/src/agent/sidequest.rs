@@ -103,30 +103,43 @@ impl SidequestState {
                 continue;
             }
             for (part_index, part) in msg.parts.iter().enumerate() {
-                if let MessagePart::ToolOutput {
-                    body,
-                    tool_name,
-                    compacted_at,
-                    ..
-                } = part
-                {
-                    // Skip already-compacted outputs and empty bodies
-                    if compacted_at.is_some() || body.is_empty() {
-                        continue;
+                let (body, tool_name) = match part {
+                    MessagePart::ToolOutput {
+                        body,
+                        tool_name,
+                        compacted_at,
+                        ..
+                    } => {
+                        // Skip already-compacted outputs and empty bodies
+                        if compacted_at.is_some() || body.is_empty() {
+                            continue;
+                        }
+                        (body.as_str(), tool_name.as_str())
                     }
-                    let token_count = tc.count_tokens(body);
-                    if token_count < self.config.min_cursor_tokens {
-                        continue;
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        if content == "[evicted by sidequest]" || content.is_empty() {
+                            continue;
+                        }
+                        (content.as_str(), tool_use_id.as_str())
                     }
-                    let preview = body.chars().take(120).collect::<String>();
-                    self.tool_output_cursors.push(ToolOutputCursor {
-                        msg_index,
-                        part_index,
-                        tool_name: tool_name.clone(),
-                        token_count,
-                        preview,
-                    });
+                    _ => continue,
+                };
+                let token_count = tc.count_tokens(body);
+                if token_count < self.config.min_cursor_tokens {
+                    continue;
                 }
+                let preview = body.chars().take(120).collect::<String>();
+                self.tool_output_cursors.push(ToolOutputCursor {
+                    msg_index,
+                    part_index,
+                    tool_name: tool_name.to_string(),
+                    token_count,
+                    preview,
+                });
             }
         }
 
@@ -202,17 +215,27 @@ impl SidequestState {
             let Some(part) = msg.parts.get_mut(part_index) else {
                 continue;
             };
-            if let MessagePart::ToolOutput {
-                body, compacted_at, ..
-            } = part
-            {
-                if compacted_at.is_some() {
-                    continue; // already compacted
+            match part {
+                MessagePart::ToolOutput {
+                    body, compacted_at, ..
+                } => {
+                    if compacted_at.is_some() {
+                        continue; // already compacted
+                    }
+                    freed += tc.count_tokens(body);
+                    *body = "[evicted by sidequest]".to_string();
+                    *compacted_at = Some(now);
+                    freed -= tc.count_tokens(body);
                 }
-                freed += tc.count_tokens(body);
-                *body = "[evicted by sidequest]".to_string();
-                *compacted_at = Some(now);
-                freed -= tc.count_tokens(body);
+                MessagePart::ToolResult { content, .. } => {
+                    if content == "[evicted by sidequest]" {
+                        continue;
+                    }
+                    freed += tc.count_tokens(content);
+                    *content = "[evicted by sidequest]".to_string();
+                    freed -= tc.count_tokens(content);
+                }
+                _ => {}
             }
         }
 
@@ -443,6 +466,72 @@ mod tests {
             counts, sorted,
             "cursors must be sorted descending by token count"
         );
+    }
+
+    #[test]
+    fn rebuild_cursors_includes_tool_result() {
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+        use zeph_memory::TokenCounter;
+
+        let mut state = SidequestState::new(make_config());
+        let tc = TokenCounter::default();
+
+        let big_content = "some big content ".repeat(20);
+        let mut msg = Message {
+            role: Role::User,
+            content: big_content.clone(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "toolu_abc".into(),
+                content: big_content,
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        msg.rebuild_content();
+
+        let messages = vec![Message::from_legacy(Role::System, "sys"), msg];
+        state.rebuild_cursors(&messages, &tc);
+
+        assert_eq!(
+            state.tool_output_cursors.len(),
+            1,
+            "ToolResult must be included in cursors"
+        );
+        assert_eq!(state.tool_output_cursors[0].tool_name, "toolu_abc");
+    }
+
+    #[test]
+    fn apply_eviction_handles_tool_result() {
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+        use zeph_memory::TokenCounter;
+
+        let mut state = SidequestState::new(make_config());
+        let tc = TokenCounter::default();
+
+        let big_content = "some big content ".repeat(20);
+        let mut msg = Message {
+            role: Role::User,
+            content: big_content.clone(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "toolu_xyz".into(),
+                content: big_content,
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        msg.rebuild_content();
+
+        let mut messages = vec![Message::from_legacy(Role::System, "sys"), msg];
+        state.rebuild_cursors(&messages, &tc);
+        assert_eq!(state.tool_output_cursors.len(), 1);
+
+        state.apply_eviction(&mut messages, &[0], &tc);
+
+        if let MessagePart::ToolResult { content, .. } = &messages[1].parts[0] {
+            assert_eq!(content, "[evicted by sidequest]");
+        } else {
+            panic!("expected ToolResult part");
+        }
     }
 
     // SEC-CC-02: eviction prompt must contain untrusted-content boundary.

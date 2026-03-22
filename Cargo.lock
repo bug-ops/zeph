@@ -9787,6 +9787,7 @@ dependencies = [
 name = "zeph-tools"
 version = "0.16.1"
 dependencies = [
+ "dirs",
  "glob",
  "insta",
  "proptest",

@@ -765,6 +765,17 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set a dedicated judge provider for experiment evaluation.
+    ///
+    /// When set, the evaluator uses this provider instead of the agent's primary provider,
+    /// eliminating self-judge bias. Corresponds to `experiments.eval_model` in config.
+    #[cfg(feature = "experiments")]
+    #[must_use]
+    pub fn with_eval_provider(mut self, provider: AnyProvider) -> Self {
+        self.experiments.eval_provider = Some(provider);
+        self
+    }
+
     /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
     /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
     #[must_use]

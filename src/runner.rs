@@ -1111,9 +1111,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "experiments")]
     let agent = {
         let baseline = zeph_core::experiments::ConfigSnapshot::from_config(config);
-        agent
+        let agent = agent
             .with_experiment_config(config.experiments.clone())
-            .with_experiment_baseline(baseline)
+            .with_experiment_baseline(baseline);
+        if let Some(ep) = app.build_eval_provider() {
+            agent.with_eval_provider(ep)
+        } else {
+            agent
+        }
     };
 
     #[cfg(all(feature = "scheduler", feature = "tui"))]
@@ -1421,12 +1426,12 @@ async fn run_experiment_session(
         .map_err(|e| anyhow::anyhow!("failed to load benchmark: {e}"))?;
 
     let provider_arc = Arc::new(provider);
-    let evaluator = Evaluator::new(
-        Arc::clone(&provider_arc),
-        benchmark,
-        config.experiments.eval_budget_tokens,
-    )
-    .map_err(|e| anyhow::anyhow!("failed to create evaluator: {e}"))?;
+    // Use a dedicated eval provider when `eval_model` is configured to avoid self-judge bias.
+    let judge_arc = app
+        .build_eval_provider()
+        .map_or_else(|| Arc::clone(&provider_arc), Arc::new);
+    let evaluator = Evaluator::new(judge_arc, benchmark, config.experiments.eval_budget_tokens)
+        .map_err(|e| anyhow::anyhow!("failed to create evaluator: {e}"))?;
 
     let generator = Box::new(GridStep::new(SearchSpace::default()));
     let baseline = ConfigSnapshot::from_config(config);
