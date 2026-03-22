@@ -1,6 +1,6 @@
 # Feature Flags
 
-Zeph uses Cargo feature flags to control optional functionality. Twelve previously optional features are now always-on and compiled into every build. The remaining optional features are organized into **use-case bundles** for common deployment scenarios, with individual flags available for fine-grained control.
+Zeph uses Cargo feature flags to control optional functionality. The remaining optional features are organized into **use-case bundles** for common deployment scenarios, with individual flags available for fine-grained control.
 
 ## Use-Case Bundles
 
@@ -33,22 +33,24 @@ cargo build --release --features full,ml          # everything including local i
 
 > **No `cli` bundle**: the default build (`cargo build --release`, no features) already represents the minimal CLI use case. A separate `cli` bundle would be a no-op alias.
 
-## Always-On (compiled unconditionally)
+## Built-In Capabilities (always compiled, no feature flag required)
 
-| Feature | Description |
-|---------|-------------|
-| `openai` | OpenAI-compatible provider (GPT, Together, Groq, Fireworks, etc.) |
-| `compatible` | `CompatibleProvider` for OpenAI-compatible third-party APIs |
-| `orchestrator` | Multi-model routing with task-based classification and fallback chains |
-| `router` | `RouterProvider` for chaining multiple providers with fallback |
-| `self-learning` | Skill evolution via failure detection, self-reflection, and LLM-generated improvements |
-| `qdrant` | Qdrant-backed vector storage for skill matching and MCP tool registry |
-| `vault-age` | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
-| `mcp` | MCP client for external tool servers via stdio/HTTP transport |
-| `mock` | Mock providers and channels for integration testing |
-| `daemon` | Daemon supervisor with component lifecycle, PID file, and health monitoring |
-| `orchestration` | Task orchestration with DAG-based execution, failure strategies, and SQLite persistence |
-| `graph-memory` | SQLite-based knowledge graph with entity-relationship tracking and BFS traversal |
+The following capabilities compile unconditionally into every build. They are **not** Cargo feature flags — there is no `#[cfg(feature)]` gate and no way to disable them. They are listed here for reference only.
+
+| Capability | Description |
+|------------|-------------|
+| OpenAI provider | OpenAI-compatible provider (GPT, Together, Groq, Fireworks, etc.) |
+| Compatible provider | `CompatibleProvider` for OpenAI-compatible third-party APIs |
+| Multi-model orchestrator | Multi-model routing with task-based classification and fallback chains |
+| Router provider | `RouterProvider` for chaining multiple providers with fallback |
+| Self-learning | Skill evolution via failure detection, self-reflection, and LLM-generated improvements |
+| Qdrant integration | Qdrant-backed vector storage for skill matching and MCP tool registry |
+| Age vault | Age-encrypted vault backend for file-based secret storage ([age](https://age-encryption.org/)) |
+| MCP client | MCP client for external tool servers via stdio/HTTP transport |
+| Mock providers | Mock providers and channels for integration testing |
+| Daemon supervisor | Daemon supervisor with component lifecycle, PID file, and health monitoring |
+| Task orchestration | DAG-based execution with failure strategies and SQLite persistence |
+| Graph memory | SQLite-based knowledge graph with entity-relationship tracking and BFS traversal |
 
 ## Optional Features
 

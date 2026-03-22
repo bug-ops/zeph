@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - test(memory): add unit tests for `SqliteStore` tier DB methods (#2094) — covers `fetch_tiers`, `count_messages_by_tier`, `find_promotion_candidates`, `manual_promote`, `promote_to_semantic`, and migration 042 schema defaults; 29 new tests across happy path, edge cases (empty input, already-promoted rows, soft-deleted rows, nonexistent IDs), and idempotency invariants
 
+### Documentation
+
+- docs: remove dead feature gate references — clarify that 8 capabilities (`openai`, `compatible`, `orchestrator`, `router`, `self-learning`, `qdrant`, `vault-age`, `graph-memory`) are built-in and not Cargo feature flags; update feature-flags.md, CLAUDE.md (#2098)
+
 ### Fixed
 
 - fix(skills): convert unsupported `>-` YAML block scalar modifier to `>` in all 19 skill files in `.zeph/skills/` — resolves silent load failures for all rewritten skills; 9 new skills (archive, cron, database, json-yaml, network, process-management, qdrant, regex, ssh-remote, text-processing) were completely unavailable (#2087)
