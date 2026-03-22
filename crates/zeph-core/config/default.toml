@@ -478,7 +478,7 @@ health_interval_secs = 30
 max_restart_backoff_secs = 60
 
 [scheduler]
-# Enable cron scheduler (feature-gated: --features scheduler)
+# Enable cron scheduler (included in default features)
 enabled = true
 # Example task definitions:
 # [[scheduler.tasks]]

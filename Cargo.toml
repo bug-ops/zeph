@@ -158,15 +158,15 @@ description = "Lightweight AI agent with hybrid inference, skills-first architec
 readme = "README.md"
 
 [features]
-default = ["bundled-skills"]
+default = ["bundled-skills", "scheduler", "guardrail"]
 
 # === Use-case bundles ===
-desktop = ["tui", "scheduler", "compression-guidelines", "context-compression"]
+desktop = ["tui", "compression-guidelines", "context-compression"]
 ide     = ["acp", "acp-http", "lsp-context"]
-server  = ["gateway", "a2a", "scheduler", "otel"]
+server  = ["gateway", "a2a", "otel"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf", "stt"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "guardrail", "policy-enforcer", "context-compression", "bundled-skills"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "guardrail", "policy-enforcer", "context-compression", "bundled-skills", "scheduler"]
 bundled-skills = ["zeph-skills/bundled-skills", "zeph-core/bundled-skills"]
 
 # === Individual feature flags ===

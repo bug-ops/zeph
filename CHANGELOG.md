@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - docs: remove dead feature gate references — clarify that 8 capabilities (`openai`, `compatible`, `orchestrator`, `router`, `self-learning`, `qdrant`, `vault-age`, `graph-memory`) are built-in and not Cargo feature flags; update feature-flags.md, CLAUDE.md (#2098)
 
+### Changed
+
+- Promote `scheduler` and `guardrail` features to the default feature set; users with `default-features = false` are unaffected
+
 ### Fixed
 
 - fix(memory): AOI tier promotion FOREIGN KEY constraint violation (#2102) — `run_promotion_sweep()` used `ConversationId(0)` as a sentinel for promoted semantic facts, but `conversations` uses `AUTOINCREMENT` starting at 1 so id=0 never exists; replaced with the real `conversation_id` from the highest-ranked candidate in the cluster; `PromotionCandidate` now carries `conversation_id` propagated from `find_promotion_candidates()` SELECT; added FK regression guard test and `find_promotion_candidates` conversation_id assertion test
