@@ -89,7 +89,7 @@ fn default_anomaly_critical_threshold() -> f64 {
 /// Configuration for the sliding-window anomaly detector.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnomalyConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_anomaly_window")]
     pub window_size: usize,
@@ -102,7 +102,7 @@ pub struct AnomalyConfig {
 impl Default for AnomalyConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             window_size: default_anomaly_window(),
             error_threshold: default_anomaly_error_threshold(),
             critical_threshold: default_anomaly_critical_threshold(),
@@ -284,7 +284,7 @@ pub struct ShellConfig {
 /// Configuration for audit logging of tool executions.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AuditConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_audit_destination")]
     pub destination: String,
@@ -327,7 +327,7 @@ impl Default for ShellConfig {
 impl Default for AuditConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             destination: default_audit_destination(),
         }
     }
@@ -401,7 +401,7 @@ mod tests {
         assert!(config.summarize_output);
         assert_eq!(config.shell.timeout, 30);
         assert!(config.shell.blocked_commands.is_empty());
-        assert!(!config.audit.enabled);
+        assert!(config.audit.enabled);
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
         assert!(!config.shell.confirm_patterns.is_empty());
         assert_eq!(config.scrape.timeout, 15);
         assert_eq!(config.scrape.max_body_bytes, 4_194_304);
-        assert!(!config.audit.enabled);
+        assert!(config.audit.enabled);
         assert_eq!(config.audit.destination, "stdout");
         assert!(config.summarize_output);
     }
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn default_audit_config() {
         let config = AuditConfig::default();
-        assert!(!config.enabled);
+        assert!(config.enabled);
         assert_eq!(config.destination, "stdout");
     }
 

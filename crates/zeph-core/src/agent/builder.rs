@@ -1229,7 +1229,8 @@ mod tests {
     fn apply_session_config_skips_anomaly_detector_when_disabled() {
         use crate::config::Config;
 
-        let config = Config::default(); // anomaly.enabled defaults to false
+        let mut config = Config::default();
+        config.tools.anomaly.enabled = false; // explicitly disable to test the disabled path
         let session_cfg = AgentSessionConfig::from_config(&config, 100_000);
         assert!(!session_cfg.anomaly_config.enabled);
 

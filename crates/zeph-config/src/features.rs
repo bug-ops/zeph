@@ -56,7 +56,7 @@ fn default_vault_backend() -> String {
 }
 
 fn default_max_daily_cents() -> u32 {
-    500
+    0
 }
 
 fn default_otlp_endpoint() -> String {
@@ -180,7 +180,7 @@ impl Default for VaultConfig {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CostConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_max_daily_cents")]
     pub max_daily_cents: u32,
@@ -189,7 +189,7 @@ pub struct CostConfig {
 impl Default for CostConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             max_daily_cents: default_max_daily_cents(),
         }
     }

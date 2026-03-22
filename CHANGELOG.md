@@ -23,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- config: enable temporal decay, MMR, and importance scoring by default in semantic memory; existing configs with explicit `enabled = false` are unaffected (#2101)
+- config: change default vector backend from Qdrant to SQLite — zero-dependency out-of-box experience; set `vector_backend = "qdrant"` to revert (#2101)
+- config: enable anomaly detection, audit logging, and cost tracking by default; `max_daily_cents = 0` (unlimited) — cost is tracked but not capped (#2101)
+- config: enable `autosave_assistant` by default (`min_length = 20`); assistant responses are now persisted to semantic memory unless explicitly disabled (#2101)
+
 - refactor(zeph-llm): remove redundant `schema` feature gate — `schemars` is now a mandatory dependency of `zeph-llm`; all `#[cfg(feature = "schema")]` / `#[cfg_attr(feature = "schema", ...)]` annotations removed; `chat_typed`, `chat_typed_erased`, structured output types, and the `extractor` module are always compiled (#2100)
 - Promote `scheduler` and `guardrail` features to the default feature set; users with `default-features = false` are unaffected
 

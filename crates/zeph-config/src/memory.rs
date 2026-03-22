@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::defaults::default_sqlite_path_field;
+use crate::defaults::{default_sqlite_path_field, default_true};
 
 fn default_sqlite_pool_size() -> u32 {
     5
@@ -504,8 +504,8 @@ impl Default for NoteLinkingConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VectorBackend {
-    #[default]
     Qdrant,
+    #[default]
     Sqlite,
 }
 
@@ -558,7 +558,7 @@ pub struct MemoryConfig {
     pub token_safety_margin: f32,
     #[serde(default = "default_redact_credentials")]
     pub redact_credentials: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub autosave_assistant: bool,
     #[serde(default = "default_autosave_min_length")]
     pub autosave_min_length: usize,
@@ -674,15 +674,15 @@ pub struct SemanticConfig {
     pub vector_weight: f64,
     #[serde(default = "default_keyword_weight")]
     pub keyword_weight: f64,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub temporal_decay_enabled: bool,
     #[serde(default = "default_temporal_decay_half_life_days")]
     pub temporal_decay_half_life_days: u32,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub mmr_enabled: bool,
     #[serde(default = "default_mmr_lambda")]
     pub mmr_lambda: f32,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub importance_enabled: bool,
     #[serde(
         default = "default_importance_weight",
@@ -698,11 +698,11 @@ impl Default for SemanticConfig {
             recall_limit: default_recall_limit(),
             vector_weight: default_vector_weight(),
             keyword_weight: default_keyword_weight(),
-            temporal_decay_enabled: false,
+            temporal_decay_enabled: true,
             temporal_decay_half_life_days: default_temporal_decay_half_life_days(),
-            mmr_enabled: false,
+            mmr_enabled: true,
             mmr_lambda: default_mmr_lambda(),
-            importance_enabled: false,
+            importance_enabled: true,
             importance_weight: default_importance_weight(),
         }
     }

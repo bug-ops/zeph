@@ -183,7 +183,7 @@ impl Default for Config {
                 vector_backend: VectorBackend::default(),
                 token_safety_margin: 1.0,
                 redact_credentials: true,
-                autosave_assistant: false,
+                autosave_assistant: true,
                 autosave_min_length: 20,
                 tool_call_cutoff: 6,
                 sqlite_pool_size: 5,

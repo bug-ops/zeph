@@ -227,13 +227,13 @@ prune_protect_tokens = 40000
 # Minimum relevance score for cross-session memory results (0.0-1.0)
 cross_session_score_threshold = 0.35
 # Vector backend: "qdrant" (external) or "sqlite" (embedded, zero-dependency)
-# vector_backend = "qdrant"
+vector_backend = "sqlite"
 # Token safety margin multiplier for compaction budget (must be > 0)
 # token_safety_margin = 1.0
 # Redact credentials from LLM context before sending
 # redact_credentials = true
 # Auto-save assistant responses to semantic memory
-# autosave_assistant = false
+autosave_assistant = true
 # Minimum character length for autosave (shorter responses skip embedding)
 # autosave_min_length = 20
 # Store a lightweight session summary on shutdown when no hard compaction fired
@@ -270,14 +270,14 @@ recall_limit = 5
 vector_weight = 0.7
 keyword_weight = 0.3
 # Temporal decay: penalize older memories by age
-# temporal_decay_enabled = false
+temporal_decay_enabled = true
 # temporal_decay_half_life_days = 30
 # MMR re-ranking: diversify recall results
-# mmr_enabled = false
+mmr_enabled = true
 # mmr_lambda = 0.7
 # Write-time importance scoring: boost recall rank for messages with explicit markers (#2021)
-# importance_enabled = false
-# importance_weight = 0.15
+importance_enabled = true
+importance_weight = 0.15
 
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant for semantic retrieval; tree-sitter grammars are always available
@@ -364,9 +364,9 @@ max_dynamic_servers = 10
 
 [cost]
 # Track LLM API costs and enforce daily budget
-enabled = false
+enabled = true
 # Maximum daily spend in cents (0 = unlimited)
-max_daily_cents = 500
+max_daily_cents = 0
 
 [observability]
 # Tracing exporter: "" (disabled) or "otlp" (requires otel feature)
@@ -462,7 +462,7 @@ max_overflow_bytes = 10485760
 
 [tools.audit]
 # Enable audit logging for tool executions
-enabled = false
+enabled = true
 # Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
 destination = "stdout"
 
@@ -487,7 +487,7 @@ default_effect = "deny"
 
 [tools.anomaly]
 # Enable sliding-window anomaly detection for tool execution errors
-enabled = false
+enabled = true
 # Number of recent tool calls to track in the window
 window_size = 10
 # Error ratio threshold for warning alerts (0.0-1.0)

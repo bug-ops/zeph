@@ -204,7 +204,7 @@ impl CostTracker {
             state.spent_cents = 0.0;
             state.day = today;
         }
-        if state.spent_cents >= self.max_daily_cents {
+        if self.max_daily_cents > 0.0 && state.spent_cents >= self.max_daily_cents {
             return Err(BudgetExhausted {
                 spent_cents: state.spent_cents,
                 budget_cents: self.max_daily_cents,
