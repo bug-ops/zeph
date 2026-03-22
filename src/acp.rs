@@ -779,7 +779,7 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
 
     let mut models: Vec<String> = Vec::new();
 
-    if config.llm.provider == zeph_core::config::ProviderKind::Orchestrator {
+    if config.llm.effective_provider() == zeph_core::config::ProviderKind::Orchestrator {
         // Orchestrator: enumerate sub-providers and use their own cache/fallback.
         if let Some(ref orch) = config.llm.orchestrator {
             for sub in orch.providers.values() {
@@ -790,12 +790,12 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
         }
     } else {
         // Single provider — use top-level llm section.
-        models.extend(expand_from_cache("ollama", &config.llm.model));
+        models.extend(expand_from_cache("ollama", config.llm.effective_model()));
     }
 
     // Claude — always add when API key present, even under orchestrator.
     if config.secrets.claude_api_key.is_some()
-        && config.llm.provider != zeph_core::config::ProviderKind::Orchestrator
+        && config.llm.effective_provider() != zeph_core::config::ProviderKind::Orchestrator
     {
         let fallback = config
             .llm
@@ -806,7 +806,7 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
     }
 
     // OpenAI — only when API key and config section are present (non-orchestrator).
-    if config.llm.provider != zeph_core::config::ProviderKind::Orchestrator
+    if config.llm.effective_provider() != zeph_core::config::ProviderKind::Orchestrator
         && let (Some(_), Some(openai_cfg)) = (&config.secrets.openai_api_key, &config.llm.openai)
     {
         models.extend(expand_from_cache("openai", &openai_cfg.model));
@@ -950,7 +950,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
 
     // Ollama
     snapshots.push(ProviderSnapshot::Ollama {
-        base_url: config.llm.base_url.clone(),
+        base_url: config.llm.effective_base_url().to_owned(),
         embed: config.llm.embedding_model.clone(),
     });
 

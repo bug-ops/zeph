@@ -917,9 +917,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let (instruction_reload_tx, instruction_reload_rx) = tokio::sync::mpsc::channel(1);
 
     // Collect sub-provider kinds for Router/Orchestrator so detection_paths() works.
-    let mut provider_kinds: Vec<zeph_core::config::ProviderKind> = vec![config.llm.provider];
+    let mut provider_kinds: Vec<zeph_core::config::ProviderKind> =
+        vec![config.llm.effective_provider()];
     if matches!(
-        config.llm.provider,
+        config.llm.effective_provider(),
         zeph_core::config::ProviderKind::Orchestrator
     ) && let Some(ref orch) = config.llm.orchestrator
     {
@@ -1246,7 +1247,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
     metrics_tx.send_modify(|m| {
-        m.model_name.clone_from(&config.llm.model);
+        config.llm.effective_model().clone_into(&mut m.model_name);
     });
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();

@@ -165,27 +165,46 @@ impl std::fmt::Display for ProviderKind {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LlmConfig {
-    pub provider: ProviderKind,
-    pub base_url: String,
-    pub model: String,
-    #[serde(default = "default_embedding_model")]
+    // ─── New unified format ───────────────────────────────────────────────────
+    /// Provider pool (new format). First entry is default unless one is marked `default = true`.
+    /// When non-empty, this takes precedence over legacy fields below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<ProviderEntry>,
+
+    /// Routing strategy for multi-provider configs (new format).
+    #[serde(default, skip_serializing_if = "is_routing_none")]
+    pub routing: LlmRoutingStrategy,
+
+    /// Task-based routes (only used when `routing = "task"`).
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub routes: std::collections::HashMap<String, Vec<String>>,
+
+    // ─── Legacy fields (deprecated, kept for migration error detection) ───────
+    #[serde(default)]
+    pub provider: Option<ProviderKind>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_embedding_model_opt")]
     pub embedding_model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud: Option<CloudLlmConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai: Option<OpenAiConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini: Option<GeminiConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candle: Option<CandleConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<OrchestratorConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compatible: Option<Vec<CompatibleConfig>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub router: Option<RouterConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama: Option<OllamaConfig>,
+    #[serde(default)]
     pub stt: Option<SttConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision_model: Option<String>,
@@ -233,9 +252,75 @@ pub struct LlmConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_model: Option<String>,
     /// Structured provider config for summarization. Takes precedence over `summary_model`.
-    /// Same format as `[llm.orchestrator.providers.*]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_provider: Option<OrchestratorProviderConfig>,
+}
+
+fn default_embedding_model_opt() -> String {
+    default_embedding_model()
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_routing_none(s: &LlmRoutingStrategy) -> bool {
+    *s == LlmRoutingStrategy::None
+}
+
+impl LlmConfig {
+    /// Effective provider kind for legacy bootstrap code.
+    ///
+    /// Returns the `provider` field or `Ollama` as the fallback default.
+    #[must_use]
+    pub fn effective_provider(&self) -> ProviderKind {
+        self.provider.unwrap_or(ProviderKind::Ollama)
+    }
+
+    /// Effective base URL for legacy bootstrap code.
+    #[must_use]
+    pub fn effective_base_url(&self) -> &str {
+        self.base_url.as_deref().unwrap_or("http://localhost:11434")
+    }
+
+    /// Effective model for legacy bootstrap code.
+    #[must_use]
+    pub fn effective_model(&self) -> &str {
+        self.model.as_deref().unwrap_or("qwen3:8b")
+    }
+
+    /// Check for legacy format and return an error pointing users to --migrate-config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Validation` when old-format keys are present alongside
+    /// the new `[[llm.providers]]` array, or when both formats are absent (empty config).
+    pub fn check_legacy_format(&self) -> Result<(), crate::error::ConfigError> {
+        use crate::error::ConfigError;
+
+        let has_new = !self.providers.is_empty();
+        let has_legacy = self.provider.is_some()
+            || self.cloud.is_some()
+            || self.openai.is_some()
+            || self.gemini.is_some()
+            || self.orchestrator.is_some()
+            || self.router.is_some();
+
+        if has_new && has_legacy {
+            return Err(ConfigError::Validation(
+                "cannot mix legacy [llm.cloud]/[llm.openai]/[llm.orchestrator]/[llm.router] \
+                 with [[llm.providers]]. Run `zeph --migrate-config` to convert your config."
+                    .into(),
+            ));
+        }
+
+        if has_legacy {
+            return Err(ConfigError::Validation(
+                "legacy LLM config format detected (provider/cloud/openai/orchestrator/router). \
+                 Run `zeph --migrate-config` to convert to [[llm.providers]] format."
+                    .into(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

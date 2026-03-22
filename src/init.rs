@@ -1036,12 +1036,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     };
 
     config.llm = LlmConfig {
-        provider,
-        base_url: state
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "http://localhost:11434".into()),
-        model: state.model.clone().unwrap_or_else(|| "qwen3:8b".into()),
+        providers: Vec::new(),
+        routing: zeph_core::config::LlmRoutingStrategy::None,
+        routes: std::collections::HashMap::new(),
+        provider: Some(provider),
+        base_url: state.base_url.clone(),
+        model: state.model.clone(),
         embedding_model: state
             .embedding_model
             .clone()
@@ -2404,7 +2404,7 @@ mod tests {
     fn build_config_orchestrator_sets_provider() {
         let state = orchestrator_state();
         let config = build_config(&state);
-        assert_eq!(config.llm.provider, ProviderKind::Orchestrator);
+        assert_eq!(config.llm.provider, Some(ProviderKind::Orchestrator));
     }
 
     #[test]

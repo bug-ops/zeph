@@ -34,9 +34,9 @@ use zeph_llm::router::{CascadeRouterConfig, RouterProvider};
 use crate::config::{Config, ProviderKind};
 
 pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
-    match config.llm.provider {
+    match config.llm.effective_provider() {
         ProviderKind::Ollama | ProviderKind::Claude => {
-            create_named_provider(config.llm.provider.as_str(), config)
+            create_named_provider(config.llm.effective_provider().as_str(), config)
         }
         ProviderKind::OpenAi => create_named_provider("openai", config),
         ProviderKind::Gemini => create_named_provider("gemini", config),
@@ -53,7 +53,7 @@ pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
                     path: std::path::PathBuf::from(&candle_cfg.local_path),
                 },
                 _ => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
-                    repo_id: config.llm.model.clone(),
+                    repo_id: config.llm.effective_model().to_owned(),
                     filename: candle_cfg.filename.clone(),
                 },
             };
@@ -195,8 +195,8 @@ fn build_cascade_router_config(
 fn named_ollama(config: &Config) -> AnyProvider {
     let tool_use = config.llm.ollama.as_ref().is_some_and(|c| c.tool_use);
     let mut provider = OllamaProvider::new(
-        &config.llm.base_url,
-        config.llm.model.clone(),
+        config.llm.effective_base_url(),
+        config.llm.effective_model().to_owned(),
         config.llm.embedding_model.clone(),
     )
     .with_tool_use(tool_use);
@@ -359,7 +359,7 @@ pub fn create_summary_provider(
                 )
             })?;
             Ok(AnyProvider::Ollama(OllamaProvider::new(
-                &config.llm.base_url,
+                config.llm.effective_base_url(),
                 model.to_owned(),
                 String::new(),
             )))
@@ -387,7 +387,7 @@ pub fn create_summary_provider(
                     path: std::path::PathBuf::from(&candle_cfg.local_path),
                 },
                 _ => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
-                    repo_id: config.llm.model.clone(),
+                    repo_id: config.llm.effective_model().to_owned(),
                     filename: candle_cfg.filename.clone(),
                 },
             };
@@ -577,8 +577,14 @@ pub fn create_provider_from_config(
 ) -> Result<AnyProvider, BootstrapError> {
     match pcfg.provider_type.as_str() {
         "ollama" => {
-            let base_url = pcfg.base_url.as_deref().unwrap_or(&config.llm.base_url);
-            let model = pcfg.model.as_deref().unwrap_or(&config.llm.model);
+            let base_url = pcfg
+                .base_url
+                .as_deref()
+                .unwrap_or(config.llm.effective_base_url());
+            let model = pcfg
+                .model
+                .as_deref()
+                .unwrap_or(config.llm.effective_model());
             let embed = pcfg
                 .embedding_model
                 .clone()
@@ -615,7 +621,7 @@ pub fn create_provider_from_config(
                     repo_id: pcfg
                         .model
                         .clone()
-                        .unwrap_or_else(|| config.llm.model.clone()),
+                        .unwrap_or_else(|| config.llm.effective_model().to_owned()),
                     filename: candle_cfg.filename.clone(),
                 },
             };
@@ -742,8 +748,14 @@ fn build_sub_provider(
     use zeph_llm::orchestrator::SubProvider;
     match pcfg.provider_type.as_str() {
         "ollama" => {
-            let base_url = pcfg.base_url.as_deref().unwrap_or(&config.llm.base_url);
-            let model = pcfg.model.as_deref().unwrap_or(&config.llm.model);
+            let base_url = pcfg
+                .base_url
+                .as_deref()
+                .unwrap_or(config.llm.effective_base_url());
+            let model = pcfg
+                .model
+                .as_deref()
+                .unwrap_or(config.llm.effective_model());
             let embed = pcfg
                 .embedding_model
                 .clone()
@@ -870,7 +882,7 @@ fn build_sub_provider(
                     repo_id: pcfg
                         .model
                         .clone()
-                        .unwrap_or_else(|| config.llm.model.clone()),
+                        .unwrap_or_else(|| config.llm.effective_model().to_owned()),
                     filename: candle_cfg.filename.clone(),
                 },
             };

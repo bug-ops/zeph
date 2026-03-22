@@ -8,21 +8,21 @@
 
 // Re-export Config types from zeph-config for internal use.
 pub use zeph_config::{
-    AcpConfig, AcpLspConfig, AcpTransport, AgentConfig, CandleConfig, CascadeClassifierMode,
-    CascadeConfig, CloudLlmConfig, CompatibleConfig, CompressionConfig, CompressionStrategy,
-    Config, ConfigError, CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig,
-    DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig,
-    GeminiConfig, GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig,
-    LearningConfig, LlmConfig, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig,
-    McpOAuthConfig, McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig,
-    OAuthTokenStorage, ObservabilityConfig, OllamaConfig, OpenAiConfig, OrchestrationConfig,
-    OrchestratorConfig, OrchestratorProviderConfig, PermissionMode, ProviderKind, PruningStrategy,
-    RateLimitConfig, ResolvedSecrets, RouterConfig, RouterStrategyConfig, RoutingConfig,
-    RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SecurityConfig,
-    SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig,
-    SlackConfig, SttConfig, SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks, TelegramConfig,
-    TimeoutConfig, ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig,
-    VectorBackend,
+    AcpConfig, AcpLspConfig, AcpTransport, AgentConfig, CandleConfig, CandleInlineConfig,
+    CascadeClassifierMode, CascadeConfig, CloudLlmConfig, CompatibleConfig, CompressionConfig,
+    CompressionStrategy, Config, ConfigError, CostConfig, DaemonConfig, DebugConfig, DetectorMode,
+    DiscordConfig, DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule, FocusConfig,
+    GatewayConfig, GeminiConfig, GenerationParams, GraphConfig, HookDef, HookMatcher, HookType,
+    IndexConfig, LearningConfig, LlmConfig, LlmRoutingStrategy, LogRotation, LoggingConfig,
+    MAX_TOKENS_CAP, McpConfig, McpOAuthConfig, McpServerConfig, MemoryConfig, MemoryScope,
+    NoteLinkingConfig, OAuthTokenStorage, ObservabilityConfig, OllamaConfig, OpenAiConfig,
+    OrchestrationConfig, OrchestratorConfig, OrchestratorProviderConfig, PermissionMode,
+    ProviderEntry, ProviderKind, PruningStrategy, RateLimitConfig, ResolvedSecrets, RouterConfig,
+    RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind,
+    SchedulerConfig, SecurityConfig, SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter,
+    SkillPromptMode, SkillsConfig, SlackConfig, SttConfig, SubAgentConfig, SubAgentLifecycleHooks,
+    SubagentHooks, TelegramConfig, TimeoutConfig, ToolFilterConfig, ToolPolicy, TraceConfig,
+    TrustConfig, TuiConfig, VaultConfig, VectorBackend,
 };
 
 #[cfg(feature = "lsp-context")]
@@ -45,7 +45,9 @@ pub use zeph_config::{
     is_legacy_default_sqlite_path,
 };
 
-pub use zeph_config::providers::{default_stt_language, default_stt_model, default_stt_provider};
+pub use zeph_config::providers::{
+    default_stt_language, default_stt_model, default_stt_provider, validate_pool,
+};
 
 pub mod migrate {
     pub use zeph_config::migrate::*;

@@ -22,7 +22,7 @@ use crate::memory::{
     SessionsConfig, SidequestConfig, TierConfig, VectorBackend,
 };
 use crate::providers::{
-    LlmConfig, ProviderKind, get_default_embedding_model, get_default_response_cache_ttl_secs,
+    LlmConfig, get_default_embedding_model, get_default_response_cache_ttl_secs,
     get_default_router_ema_alpha, get_default_router_reorder_interval,
 };
 use crate::security::TrustConfig;
@@ -130,9 +130,12 @@ impl Default for Config {
                 tool_filter: crate::agent::ToolFilterConfig::default(),
             },
             llm: LlmConfig {
-                provider: ProviderKind::Ollama,
-                base_url: "http://localhost:11434".into(),
-                model: "qwen3:8b".into(),
+                providers: Vec::new(),
+                routing: crate::providers::LlmRoutingStrategy::None,
+                routes: std::collections::HashMap::new(),
+                provider: None,
+                base_url: None,
+                model: None,
                 embedding_model: get_default_embedding_model(),
                 cloud: None,
                 ollama: None,
