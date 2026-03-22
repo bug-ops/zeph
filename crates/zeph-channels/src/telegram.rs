@@ -181,6 +181,29 @@ impl TelegramChannel {
         Ok(self)
     }
 
+    /// Creates a `TelegramChannel` with an injectable sender for unit tests.
+    ///
+    /// The returned `Sender` allows injecting `IncomingMessage` values directly
+    /// without a real Telegram bot token or live API access. The bot is
+    /// initialized with a dummy token and `chat_id` is left unset; tests that
+    /// exercise paths which call the bot API (e.g. `send()`, `confirm()`) must
+    /// either avoid those code paths or configure a mock HTTP server via
+    /// `Bot::set_api_url`.
+    #[cfg(test)]
+    fn new_test(allowed_users: Vec<String>) -> (Self, mpsc::Sender<IncomingMessage>) {
+        let (tx, rx) = mpsc::channel(64);
+        let channel = Self {
+            bot: Bot::new("test_token"),
+            chat_id: None,
+            rx,
+            allowed_users,
+            accumulated: String::new(),
+            last_edit: None,
+            message_id: None,
+        };
+        (channel, tx)
+    }
+
     fn is_command(text: &str) -> Option<&str> {
         let cmd = text.split_whitespace().next()?;
         if cmd.starts_with('/') {
@@ -450,7 +473,67 @@ impl Channel for TelegramChannel {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
     use super::*;
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    /// Minimal valid Telegram `sendMessage` / `editMessageText` response.
+    fn tg_ok_message() -> serde_json::Value {
+        serde_json::json!({
+            "ok": true,
+            "result": {
+                "message_id": 42,
+                "date": 1_700_000_000_i64,
+                "chat": {"id": 1, "type": "private"}
+            }
+        })
+    }
+
+    /// Creates a `TelegramChannel` whose bot is pointed at `server` so that
+    /// any API call the channel makes is intercepted rather than going to the
+    /// real Telegram endpoint.
+    async fn make_mocked_channel(
+        server: &MockServer,
+        allowed_users: Vec<String>,
+    ) -> (TelegramChannel, mpsc::Sender<IncomingMessage>) {
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(tg_ok_message()))
+            .mount(server)
+            .await;
+
+        let api_url = reqwest::Url::parse(&server.uri()).unwrap();
+        let bot = Bot::new("test_token").set_api_url(api_url);
+        let (tx, rx) = mpsc::channel(64);
+        let channel = TelegramChannel {
+            bot,
+            chat_id: Some(ChatId(1)),
+            rx,
+            allowed_users,
+            accumulated: String::new(),
+            last_edit: None,
+            message_id: None,
+        };
+        (channel, tx)
+    }
+
+    fn plain_message(text: &str) -> IncomingMessage {
+        IncomingMessage {
+            chat_id: ChatId(1),
+            text: text.to_string(),
+            attachments: vec![],
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Pure-function unit tests (no async, no network)
+    // ---------------------------------------------------------------------------
 
     #[test]
     fn is_command_detection() {
@@ -462,53 +545,23 @@ mod tests {
 
     #[test]
     fn should_send_update_first_chunk() {
-        let token = "test_token".to_string();
-        let allowed_users = Vec::new();
-        let channel = TelegramChannel::new(token, allowed_users);
+        let channel = TelegramChannel::new("test_token".to_string(), Vec::new());
         assert!(channel.should_send_update());
     }
 
     #[test]
     fn should_send_update_time_threshold() {
-        let token = "test_token".to_string();
-        let allowed_users = Vec::new();
-        let mut channel = TelegramChannel::new(token, allowed_users);
+        let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new());
         channel.accumulated = "test".to_string();
-        // Set last_edit to 11 seconds ago (threshold is 10 seconds)
         channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(11)).unwrap());
         assert!(channel.should_send_update());
     }
 
-    #[tokio::test]
-    async fn send_chunk_accumulates() {
-        let token = "test_token".to_string();
-        let allowed_users = Vec::new();
-        let mut channel = TelegramChannel::new(token, allowed_users);
-
-        // Manually set chat_id to avoid send_or_edit failure
-        // In real tests, this would be set by recv()
-        channel.accumulated.push_str("hello");
-        channel.accumulated.push(' ');
-        channel.accumulated.push_str("world");
-
-        assert_eq!(channel.accumulated, "hello world");
-    }
-
-    #[tokio::test]
-    async fn flush_chunks_clears_state() {
-        let token = "test_token".to_string();
-        let allowed_users = Vec::new();
-        let mut channel = TelegramChannel::new(token, allowed_users);
-
-        channel.accumulated = "test".to_string();
-        channel.last_edit = Some(Instant::now());
-        // Do not set message_id to avoid triggering send_or_edit()
-
-        channel.flush_chunks().await.unwrap();
-
-        assert!(channel.accumulated.is_empty());
-        assert!(channel.last_edit.is_none());
-        assert!(channel.message_id.is_none());
+    #[test]
+    fn should_not_send_update_within_threshold() {
+        let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new());
+        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+        assert!(!channel.should_send_update());
     }
 
     #[test]
@@ -518,33 +571,178 @@ mod tests {
 
     #[test]
     fn photo_size_limit_enforcement() {
-        // Mirrors the guard in the photo extraction handler:
-        // photos.iter().max_by_key(|p| p.file.size) followed by
-        // if photo.file.size > MAX_IMAGE_BYTES { skip } else { download }
-        let size_within_limit: u32 = MAX_IMAGE_BYTES - 1;
-        let size_at_limit: u32 = MAX_IMAGE_BYTES;
-        let size_over_limit: u32 = MAX_IMAGE_BYTES + 1;
-
-        assert!(size_within_limit <= MAX_IMAGE_BYTES);
-        assert!(size_at_limit <= MAX_IMAGE_BYTES);
-        assert!(size_over_limit > MAX_IMAGE_BYTES);
-    }
-
-    #[test]
-    fn should_not_send_update_within_threshold() {
-        let token = "test_token".to_string();
-        let allowed_users = Vec::new();
-        let mut channel = TelegramChannel::new(token, allowed_users);
-        // Set last_edit to 1 second ago (well within the 10-second threshold)
-        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
-        assert!(!channel.should_send_update());
+        assert!(MAX_IMAGE_BYTES - 1 <= MAX_IMAGE_BYTES);
+        assert!(MAX_IMAGE_BYTES <= MAX_IMAGE_BYTES);
+        assert!(MAX_IMAGE_BYTES + 1 > MAX_IMAGE_BYTES);
     }
 
     #[test]
     fn start_rejects_empty_allowed_users() {
-        let channel = TelegramChannel::new("test_token".to_string(), Vec::new());
-        let result = channel.start();
+        let result = TelegramChannel::new("test_token".to_string(), Vec::new()).start();
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ChannelError::Other(_)));
+    }
+
+    // ---------------------------------------------------------------------------
+    // recv() — injectable sender tests (no network calls)
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn recv_returns_channel_message_when_injected() {
+        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        tx.send(plain_message("hello world")).await.unwrap();
+        let msg = channel.recv().await.unwrap().unwrap();
+        assert_eq!(msg.text, "hello world");
+        assert!(msg.attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recv_reset_command_routed_correctly() {
+        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        tx.send(plain_message("/reset")).await.unwrap();
+        let msg = channel.recv().await.unwrap().unwrap();
+        assert_eq!(msg.text, "/reset");
+    }
+
+    #[tokio::test]
+    async fn recv_skills_command_routed_correctly() {
+        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        tx.send(plain_message("/skills")).await.unwrap();
+        let msg = channel.recv().await.unwrap().unwrap();
+        assert_eq!(msg.text, "/skills");
+    }
+
+    #[tokio::test]
+    async fn recv_unknown_command_passed_through() {
+        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        tx.send(plain_message("/unknown_cmd arg")).await.unwrap();
+        let msg = channel.recv().await.unwrap().unwrap();
+        assert_eq!(msg.text, "/unknown_cmd arg");
+    }
+
+    #[tokio::test]
+    async fn recv_returns_none_when_sender_dropped() {
+        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        drop(tx);
+        let result = channel.recv().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // send_chunk() / flush_chunks() — accumulation (no network calls)
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn send_chunk_accumulates_text_without_api_call() {
+        let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
+        // Suppress the API call by setting last_edit within the 10-second threshold.
+        channel.last_edit = Some(Instant::now());
+
+        channel.send_chunk("hello").await.unwrap();
+        channel.send_chunk(" world").await.unwrap();
+
+        assert_eq!(channel.accumulated, "hello world");
+    }
+
+    #[tokio::test]
+    async fn flush_chunks_clears_state_when_no_message_id() {
+        let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
+        channel.accumulated = "some text".to_string();
+        channel.last_edit = Some(Instant::now());
+        // message_id is None, so flush_chunks does not call send_or_edit.
+
+        channel.flush_chunks().await.unwrap();
+
+        assert!(channel.accumulated.is_empty());
+        assert!(channel.last_edit.is_none());
+        assert!(channel.message_id.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // recv(/start) — mock HTTP server required to intercept the welcome send()
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn recv_start_consumed_internally_without_returning_to_caller() {
+        let server = MockServer::start().await;
+        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+
+        // /start is consumed; recv() loops and waits for the next message.
+        tx.send(plain_message("/start")).await.unwrap();
+        tx.send(plain_message("hello after start")).await.unwrap();
+
+        let msg = channel.recv().await.unwrap().unwrap();
+        assert_eq!(msg.text, "hello after start");
+    }
+
+    // ---------------------------------------------------------------------------
+    // flush_chunks() with message_id set — mock HTTP server required
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn flush_chunks_calls_edit_and_clears_state_when_message_id_set() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        channel.accumulated = "partial response".to_string();
+        channel.last_edit = Some(Instant::now());
+        channel.message_id = Some(teloxide::types::MessageId(42));
+
+        channel.flush_chunks().await.unwrap();
+
+        assert!(channel.accumulated.is_empty());
+        assert!(channel.last_edit.is_none());
+        assert!(channel.message_id.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // confirm() timeout / close / yes — tested at the rx+timeout level in
+    // isolation (the same logic confirm() delegates to), avoiding the
+    // send() REST call.  Full confirm() round-trips are covered by live
+    // agent testing with a real (or mock) Telegram bot.
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn confirm_timeout_logic_denies_on_timeout() {
+        tokio::time::pause();
+        let (_tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        let timeout_fut = tokio::time::timeout(crate::CONFIRM_TIMEOUT, rx.recv());
+        tokio::time::advance(crate::CONFIRM_TIMEOUT + Duration::from_millis(1)).await;
+        let result = timeout_fut.await;
+        assert!(result.is_err(), "expected timeout Err, got recv result");
+    }
+
+    #[tokio::test]
+    async fn confirm_close_logic_denies_on_channel_close() {
+        let (tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        drop(tx);
+        let result = tokio::time::timeout(crate::CONFIRM_TIMEOUT, rx.recv()).await;
+        assert!(result.is_ok(), "should not time out");
+        assert!(
+            result.unwrap().is_none(),
+            "closed channel should yield None"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirm_yes_logic_accepts_yes_response() {
+        let (tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        tx.send(plain_message("yes")).await.unwrap();
+        let result = tokio::time::timeout(crate::CONFIRM_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.text.trim().eq_ignore_ascii_case("yes"));
+    }
+
+    #[tokio::test]
+    async fn confirm_no_logic_denies_non_yes_response() {
+        let (tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        tx.send(plain_message("no")).await.unwrap();
+        let result = tokio::time::timeout(crate::CONFIRM_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!result.text.trim().eq_ignore_ascii_case("yes"));
     }
 }
