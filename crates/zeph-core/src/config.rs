@@ -80,11 +80,9 @@ impl SecretResolver for Config {
         if let Some(val) = vault.get_secret("ZEPH_GEMINI_API_KEY").await? {
             self.secrets.gemini_api_key = Some(Secret::new(val));
         }
-        if let Some(val) = vault.get_secret("ZEPH_TELEGRAM_TOKEN").await? {
-            let tg = self.telegram.get_or_insert(TelegramConfig {
-                token: None,
-                allowed_users: Vec::new(),
-            });
+        if let Some(val) = vault.get_secret("ZEPH_TELEGRAM_TOKEN").await?
+            && let Some(tg) = self.telegram.as_mut()
+        {
             tg.token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_A2A_AUTH_TOKEN").await? {
@@ -103,14 +101,9 @@ impl SecretResolver for Config {
         if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
             self.gateway.auth_token = Some(val);
         }
-        if let Some(val) = vault.get_secret("ZEPH_DISCORD_TOKEN").await? {
-            let dc = self.discord.get_or_insert(DiscordConfig {
-                token: None,
-                application_id: None,
-                allowed_user_ids: Vec::new(),
-                allowed_role_ids: Vec::new(),
-                allowed_channel_ids: Vec::new(),
-            });
+        if let Some(val) = vault.get_secret("ZEPH_DISCORD_TOKEN").await?
+            && let Some(dc) = self.discord.as_mut()
+        {
             dc.token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_DISCORD_APP_ID").await?
@@ -118,15 +111,9 @@ impl SecretResolver for Config {
         {
             dc.application_id = Some(val);
         }
-        if let Some(val) = vault.get_secret("ZEPH_SLACK_BOT_TOKEN").await? {
-            let sl = self.slack.get_or_insert(SlackConfig {
-                bot_token: None,
-                signing_secret: None,
-                webhook_host: "127.0.0.1".into(),
-                port: 3000,
-                allowed_user_ids: Vec::new(),
-                allowed_channel_ids: Vec::new(),
-            });
+        if let Some(val) = vault.get_secret("ZEPH_SLACK_BOT_TOKEN").await?
+            && let Some(sl) = self.slack.as_mut()
+        {
             sl.bot_token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_SLACK_SIGNING_SECRET").await?

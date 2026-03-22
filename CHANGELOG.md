@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(config): vault token resolution no longer auto-creates channel configs — `ZEPH_TELEGRAM_TOKEN`, `ZEPH_DISCORD_TOKEN`, and `ZEPH_SLACK_BOT_TOKEN` are now only injected if the corresponding `[telegram]`/`[discord]`/`[slack]` section already exists in the config file; previously `get_or_insert` would create a bare config with empty `allowed_users`, causing immediate startup failure (#2132)
 - fix(tools): normalize `..` components in `resolve_via_ancestors` to prevent sandbox bypass (#2125)
 - fix(tui): tool output content no longer duplicated within a single entry (#2126) — `handle_tool_output_event` now truncates streaming chunks accumulated during ToolStart/ToolOutputChunk and replaces them with the canonical `body_display` from ToolOutput; streaming chunks served as a live preview and are discarded when the final output arrives, eliminating the double `$ cmd\noutput` appearance
 - fix(policy): `PolicyGateExecutor::set_effective_trust` now updates `PolicyContext.trust_level` so trust_level-based policy rules are evaluated against the actual invoking skill trust tier instead of the hardcoded `Trusted` default (#2112)
