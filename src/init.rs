@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    AcpConfig, CascadeConfig, CloudLlmConfig, CompatibleConfig, Config, DiscordConfig, LlmConfig,
-    McpOAuthConfig, McpServerConfig, MemoryConfig, OAuthTokenStorage, OrchestrationConfig,
-    OrchestratorConfig, OrchestratorProviderConfig, ProviderKind, PruningStrategy, RouterConfig,
-    RouterStrategyConfig, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
+    AcpConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy, McpOAuthConfig,
+    McpServerConfig, MemoryConfig, OAuthTokenStorage, OrchestrationConfig, OrchestratorConfig,
+    OrchestratorProviderConfig, ProviderEntry, ProviderKind, PruningStrategy, SemanticConfig,
+    SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -1035,89 +1035,58 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         None
     };
 
-    config.llm = LlmConfig {
-        providers: Vec::new(),
-        routing: zeph_core::config::LlmRoutingStrategy::None,
-        routes: std::collections::HashMap::new(),
-        provider: Some(provider),
-        base_url: state.base_url.clone(),
+    // Build a unified ProviderEntry for the primary provider.
+    let primary_entry = ProviderEntry {
+        provider_type: provider,
+        name: state.compatible_name.clone(),
         model: state.model.clone(),
+        base_url: state.base_url.clone(),
+        max_tokens: match provider {
+            ProviderKind::Claude => Some(8096),
+            ProviderKind::Gemini => Some(8192),
+            _ => None,
+        },
+        embedding_model: state.embedding_model.clone(),
+        thinking: state.thinking.clone(),
+        server_compaction: state.server_compaction_enabled,
+        enable_extended_context: state.enable_extended_context,
+        thinking_level: state.gemini_thinking_level,
+        vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
+        ..ProviderEntry::default()
+    };
+
+    let routing = state
+        .router_strategy
+        .as_deref()
+        .map_or(LlmRoutingStrategy::None, |s| match s {
+            "thompson" => LlmRoutingStrategy::Thompson,
+            "cascade" => LlmRoutingStrategy::Cascade,
+            _ => LlmRoutingStrategy::Ema,
+        });
+
+    config.llm = LlmConfig {
+        providers: if provider == ProviderKind::Orchestrator {
+            Vec::new()
+        } else {
+            vec![primary_entry]
+        },
+        routing,
+        routes: std::collections::HashMap::new(),
+        provider: None,
+        base_url: None,
+        model: None,
         embedding_model: state
             .embedding_model
             .clone()
             .unwrap_or_else(|| "qwen3-embedding".into()),
-        cloud: if provider == ProviderKind::Claude {
-            Some(CloudLlmConfig {
-                model: state
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "claude-sonnet-4-5-20250929".into()),
-                max_tokens: 8096,
-                thinking: state.thinking.clone(),
-                server_compaction: state.server_compaction_enabled,
-                enable_extended_context: state.enable_extended_context,
-            })
-        } else {
-            None
-        },
+        cloud: None,
         ollama: None,
         openai: None,
-        gemini: if provider == ProviderKind::Gemini {
-            Some(zeph_core::config::GeminiConfig {
-                model: state
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "gemini-2.0-flash".into()),
-                max_tokens: 8192,
-                base_url: "https://generativelanguage.googleapis.com".into(),
-                embedding_model: None,
-                thinking_level: state.gemini_thinking_level,
-                thinking_budget: None,
-                include_thoughts: None,
-            })
-        } else {
-            None
-        },
+        gemini: None,
         candle: None,
         orchestrator,
-        compatible: if provider == ProviderKind::Compatible {
-            Some(vec![CompatibleConfig {
-                name: state
-                    .compatible_name
-                    .clone()
-                    .unwrap_or_else(|| "custom".into()),
-                base_url: state.base_url.clone().unwrap_or_default(),
-                model: state.model.clone().unwrap_or_default(),
-                max_tokens: 4096,
-                embedding_model: None,
-                api_key: None,
-            }])
-        } else {
-            None
-        },
-        router: state.router_strategy.as_deref().map(|s| RouterConfig {
-            chain: vec![],
-            strategy: match s {
-                "thompson" => RouterStrategyConfig::Thompson,
-                "cascade" => RouterStrategyConfig::Cascade,
-                _ => RouterStrategyConfig::Ema,
-            },
-            thompson_state_path: state.router_thompson_state_path.clone(),
-            cascade: if s == "cascade" {
-                let mut cfg = CascadeConfig::default();
-                if let Some(t) = state.router_cascade_quality_threshold {
-                    cfg.quality_threshold = t;
-                }
-                if let Some(e) = state.router_cascade_max_escalations {
-                    cfg.max_escalations = e;
-                }
-                cfg.cost_tiers.clone_from(&state.router_cascade_cost_tiers);
-                Some(cfg)
-            } else {
-                None
-            },
-            reputation: None,
-        }),
+        compatible: None,
+        router: None,
         stt: None,
         vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
         response_cache_enabled: false,
@@ -2404,7 +2373,9 @@ mod tests {
     fn build_config_orchestrator_sets_provider() {
         let state = orchestrator_state();
         let config = build_config(&state);
-        assert_eq!(config.llm.provider, Some(ProviderKind::Orchestrator));
+        // Orchestrator uses llm.orchestrator section, not the providers pool.
+        assert!(config.llm.orchestrator.is_some());
+        assert!(config.llm.providers.is_empty());
     }
 
     #[test]

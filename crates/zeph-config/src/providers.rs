@@ -271,18 +271,30 @@ impl LlmConfig {
     /// Returns the `provider` field or `Ollama` as the fallback default.
     #[must_use]
     pub fn effective_provider(&self) -> ProviderKind {
+        if let Some(entry) = self.providers.first() {
+            return entry.provider_type;
+        }
         self.provider.unwrap_or(ProviderKind::Ollama)
     }
 
     /// Effective base URL for legacy bootstrap code.
     #[must_use]
     pub fn effective_base_url(&self) -> &str {
+        if let Some(entry) = self.providers.first() {
+            return entry
+                .base_url
+                .as_deref()
+                .unwrap_or("http://localhost:11434");
+        }
         self.base_url.as_deref().unwrap_or("http://localhost:11434")
     }
 
     /// Effective model for legacy bootstrap code.
     #[must_use]
     pub fn effective_model(&self) -> &str {
+        if let Some(entry) = self.providers.first() {
+            return entry.model.as_deref().unwrap_or("qwen3:8b");
+        }
         self.model.as_deref().unwrap_or("qwen3:8b")
     }
 
@@ -782,6 +794,33 @@ pub struct ProviderEntry {
     /// Provider-specific instruction file.
     #[serde(default)]
     pub instruction_file: Option<std::path::PathBuf>,
+}
+
+impl Default for ProviderEntry {
+    fn default() -> Self {
+        Self {
+            provider_type: ProviderKind::Ollama,
+            name: None,
+            model: None,
+            base_url: None,
+            max_tokens: None,
+            embedding_model: None,
+            embed: false,
+            default: false,
+            thinking: None,
+            server_compaction: false,
+            enable_extended_context: false,
+            reasoning_effort: None,
+            thinking_level: None,
+            thinking_budget: None,
+            include_thoughts: None,
+            tool_use: false,
+            api_key: None,
+            candle: None,
+            vision_model: None,
+            instruction_file: None,
+        }
+    }
 }
 
 impl ProviderEntry {
