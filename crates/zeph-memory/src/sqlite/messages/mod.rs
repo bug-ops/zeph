@@ -814,8 +814,8 @@ impl SqliteStore {
     ) -> Result<Vec<PromotionCandidate>, MemoryError> {
         let limit = i64::try_from(batch_size).unwrap_or(i64::MAX);
         let min = i64::from(min_sessions);
-        let rows: Vec<(MessageId, String, i64, f64)> = sqlx::query_as(
-            "SELECT id, content, session_count, importance_score \
+        let rows: Vec<(MessageId, ConversationId, String, i64, f64)> = sqlx::query_as(
+            "SELECT id, conversation_id, content, session_count, importance_score \
              FROM messages \
              WHERE tier = 'episodic' AND session_count >= ? AND deleted_at IS NULL \
              ORDER BY session_count DESC, importance_score DESC \
@@ -829,11 +829,14 @@ impl SqliteStore {
         Ok(rows
             .into_iter()
             .map(
-                |(id, content, session_count, importance_score)| PromotionCandidate {
-                    id,
-                    content,
-                    session_count: session_count.try_into().unwrap_or(0),
-                    importance_score,
+                |(id, conversation_id, content, session_count, importance_score)| {
+                    PromotionCandidate {
+                        id,
+                        conversation_id,
+                        content,
+                        session_count: session_count.try_into().unwrap_or(0),
+                        importance_score,
+                    }
                 },
             )
             .collect())
@@ -1018,6 +1021,7 @@ impl SqliteStore {
 #[derive(Debug, Clone)]
 pub struct PromotionCandidate {
     pub id: MessageId,
+    pub conversation_id: ConversationId,
     pub content: String,
     pub session_count: u32,
     pub importance_score: f64,

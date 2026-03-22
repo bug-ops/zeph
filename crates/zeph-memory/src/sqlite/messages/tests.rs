@@ -1270,3 +1270,43 @@ async fn migration_042_default_session_count_for_preexisting_rows() {
 
     assert_eq!(row.0, 0, "legacy rows must default to session_count = 0");
 }
+
+#[tokio::test]
+async fn promote_to_semantic_with_sentinel_zero_fails() {
+    // Regression guard: ConversationId(0) must never be used as the FK value —
+    // conversations uses AUTOINCREMENT starting at 1, so id=0 never exists.
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store.save_message(cid, "user", "fact x").await.unwrap();
+
+    let result = store
+        .promote_to_semantic(ConversationId(0), "merged", &[id])
+        .await;
+    assert!(
+        result.is_err(),
+        "promote_to_semantic with ConversationId(0) must fail FK constraint"
+    );
+}
+
+#[tokio::test]
+async fn find_promotion_candidates_returns_conversation_id() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store
+        .save_message(cid, "user", "cross-session fact")
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE messages SET session_count = 3 WHERE id = ?")
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+    let candidates = store.find_promotion_candidates(2, 100).await.unwrap();
+    let candidate = candidates.iter().find(|c| c.id == id).unwrap();
+    assert_eq!(
+        candidate.conversation_id, cid,
+        "find_promotion_candidates must return the source conversation_id"
+    );
+}

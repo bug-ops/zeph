@@ -177,11 +177,9 @@ async fn run_promotion_sweep(
 
         stats.clusters_formed += 1;
 
-        // Use a sentinel conversation_id for cross-session semantic facts.
-        // ConversationId(0) is used as the "no specific session" sentinel.
-        let sentinel_conv_id = ConversationId(0);
+        let source_conv_id = cluster[0].0.conversation_id;
 
-        match merge_cluster_and_promote(store, provider, &cluster, sentinel_conv_id).await {
+        match merge_cluster_and_promote(store, provider, &cluster, source_conv_id).await {
             Ok(()) => stats.promotions_completed += 1,
             Err(e) => {
                 tracing::warn!(
@@ -375,6 +373,7 @@ mod tests {
     fn make_candidate(id: i64) -> PromotionCandidate {
         PromotionCandidate {
             id: crate::types::MessageId(id),
+            conversation_id: ConversationId(1),
             content: format!("content {id}"),
             session_count: 3,
             importance_score: 0.5,
