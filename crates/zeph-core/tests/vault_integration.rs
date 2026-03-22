@@ -56,8 +56,34 @@ async fn age_encrypt_decrypt_resolve_secrets_roundtrip() {
         config.secrets.claude_api_key.as_ref().unwrap().expose(),
         "sk-ant-test-123"
     );
-    let tg = config.telegram.unwrap();
-    assert_eq!(tg.token.as_deref(), Some("tg-token-456"));
+    // No [telegram] section in config → vault token must NOT auto-create the config.
+    assert!(
+        config.telegram.is_none(),
+        "vault token must not create TelegramConfig when no [telegram] section exists"
+    );
+}
+
+#[tokio::test]
+async fn age_vault_injects_token_into_existing_telegram_config() {
+    let identity = age::x25519::Identity::generate();
+    let json = serde_json::json!({ "ZEPH_TELEGRAM_TOKEN": "tg-injected-789" });
+    let encrypted = encrypt_json(&identity, &json);
+    let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+    let vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
+    let mut config =
+        zeph_core::config::Config::load(Path::new("/nonexistent/config.toml")).unwrap();
+    // Pre-populate the telegram section (simulates an explicit [telegram] block in TOML).
+    config.telegram = Some(zeph_core::config::TelegramConfig {
+        token: None,
+        allowed_users: vec!["test_user".to_owned()],
+    });
+    config.resolve_secrets(&vault).await.unwrap();
+
+    let tg = config
+        .telegram
+        .expect("telegram config must still be present");
+    assert_eq!(tg.token.as_deref(), Some("tg-injected-789"));
 }
 
 // Suppress unused import warning when age is not in scope (satisfies clippy)
