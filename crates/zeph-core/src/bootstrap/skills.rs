@@ -41,7 +41,7 @@ pub async fn create_skill_matcher(
 }
 
 pub fn effective_embedding_model(config: &Config) -> String {
-    match config.llm.provider {
+    match config.llm.effective_provider() {
         ProviderKind::OpenAi => {
             if let Some(m) = config
                 .llm

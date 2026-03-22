@@ -19,17 +19,32 @@ impl Config {
 
     fn apply_env_overrides_core_1(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
-            if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
-                self.llm.provider = kind;
+            // New format: set providers[0].type; legacy format: set provider field.
+            if !self.llm.providers.is_empty() {
+                if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
+                    self.llm.providers[0].provider_type = kind;
+                } else {
+                    tracing::warn!("ignoring invalid ZEPH_LLM_PROVIDER value: {v}");
+                }
+            } else if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
+                self.llm.provider = Some(kind);
             } else {
                 tracing::warn!("ignoring invalid ZEPH_LLM_PROVIDER value: {v}");
             }
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_BASE_URL") {
-            self.llm.base_url = v;
+            if self.llm.providers.is_empty() {
+                self.llm.base_url = Some(v);
+            } else {
+                self.llm.providers[0].base_url = Some(v);
+            }
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_MODEL") {
-            self.llm.model = v;
+            if self.llm.providers.is_empty() {
+                self.llm.model = Some(v);
+            } else {
+                self.llm.providers[0].model = Some(v);
+            }
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_EMBEDDING_MODEL") {
             self.llm.embedding_model = v;

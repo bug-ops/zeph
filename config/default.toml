@@ -11,44 +11,16 @@ max_tool_iterations = 10
 # instruction_files = ["custom-instructions.md"]
 
 [llm]
-# LLM provider: "ollama", "claude", "openai", "candle", "orchestrator", "compatible", "router"
-provider = "ollama"
-# Base URL for Ollama server
-base_url = "http://localhost:11434"
-# Primary model for chat completions
-model = "qwen3:8b"
-# Model for generating embeddings (semantic memory)
-embedding_model = "qwen3-embedding"
-# Provider-specific instruction file to inject into the system prompt (optional)
-# instruction_file = "llm-instructions.md"
+# Routing strategy for multi-provider configs: "none" (default), "ema", "thompson", "cascade", "task"
+# routing = "none"
 
 # Dedicated provider for tool-pair summarization and context compaction (optional).
 # Falls back to the primary provider when unset.
-# String shorthand (summary_model) or structured table ([llm.summary_provider]) — pick one.
-# summary_model = "ollama/qwen3:1.7b"   # ollama/<model> | claude[/<model>] | openai[/<model>] | compatible/<name> | candle
+# String shorthand or structured table — pick one.
+# summary_model = "ollama/qwen3:1.7b"   # ollama/<model> | claude[/<model>] | openai[/<model>] | compatible/<name>
 # [llm.summary_provider]
-# type = "claude"                          # claude, openai, compatible, ollama, candle
-# model = "claude-haiku-4-5-20251001"     # model override (or [[llm.compatible]] entry name for compatible)
-
-[llm.cloud]
-# Claude API model (used when provider = "claude")
-model = "claude-sonnet-4-5-20250929"
-# Maximum tokens for Claude responses
-max_tokens = 4096
-# Enable Claude server-side context compaction (compact-2026-01-12 beta).
-# When enabled, the API automatically summarizes long conversations; client-side compaction is skipped.
-# server_compaction = false
-# Enable 1M token extended context window (Opus 4.6 / Sonnet 4.6 only).
-# Tokens above 200K use long-context pricing — see https://www.anthropic.com/pricing
-# enable_extended_context = false
-
-# OpenAI-compatible API (GPT-5.2, Together, Groq, Fireworks, etc.)
-# [llm.openai]
-# base_url = "https://api.openai.com/v1"
-# model = "gpt-5.2"
-# max_tokens = 4096
-# embedding_model = "text-embedding-3-small"
-# reasoning_effort = "medium"  # low, medium, high (for reasoning models)
+# type = "claude"
+# model = "claude-haiku-4-5-20251001"
 
 # LLM response cache (SQLite-backed, blake3 key hashing)
 # response_cache_enabled = false
@@ -59,102 +31,90 @@ max_tokens = 4096
 # provider = "whisper"
 # model = "whisper-1"
 
-# Vision model for image understanding
-# vision_model = "llava:7b"
+# Provider pool: each [[llm.providers]] entry defines one backend.
+# The first entry (or the one with default = true) is the primary chat provider.
+[[llm.providers]]
+# Provider backend type: ollama, claude, openai, gemini, compatible, candle
+type = "ollama"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+# base_url = "http://localhost:11434"   # default for ollama
+# embed = true                          # mark as embedding provider (default: first with embedding_model)
+# default = true                        # mark as primary chat provider (default: first entry)
+# tool_use = false                      # enable native tool_use (llama3.1, qwen2.5, etc.)
+# vision_model = "llava:7b"             # vision model override
+# instruction_file = "llm-instructions.md"
 
-# Candle local inference (feature-gated: --features candle)
-# [llm.candle]
-# source = "huggingface"  # "local" or "huggingface"
-# filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
-# local_path = ""          # used when source = "local"
-# chat_template = "chatml"  # llama3, chatml, mistral, phi3, raw
-# device = "cpu"           # auto, cpu, metal, cuda
-# embedding_repo = "sentence-transformers/all-MiniLM-L6-v2"
-# [llm.candle.generation]
-# temperature = 0.7
-# top_p = 0.9
-# top_k = 40
-# max_tokens = 2048
-# seed = 42
-# repeat_penalty = 1.1
-# repeat_last_n = 64
-
-# Model orchestrator (enabled by default)
-# Routes tasks to different providers with fallback chains
-# [llm.orchestrator]
-# default = "ollama"
-# embed = "ollama"
-# [llm.orchestrator.providers.ollama]
-# type = "ollama"
-# model = "qwen3:8b"          # optional: override model
-# base_url = "http://localhost:11434"  # optional: override base URL
-# embedding_model = "qwen3-embedding"  # optional: override embedding model
-# [llm.orchestrator.providers.claude]
+# Cloud provider (Claude)
+# [[llm.providers]]
 # type = "claude"
-# model = "claude-sonnet-4-5-20250929"  # optional: override [llm.cloud].model
-# [llm.orchestrator.providers.candle]
-# type = "candle"
-# filename = "model.gguf"       # optional: GGUF filename
-# device = "metal"              # optional: cpu, metal, cuda
-# [llm.orchestrator.routes]
-# coding = ["claude", "ollama"]
-# creative = ["claude", "ollama"]
-# general = ["ollama"]
+# model = "claude-sonnet-4-6"
+# max_tokens = 4096
+# default = true
+# server_compaction = false             # Claude compact-2026-01-12 beta
+# enable_extended_context = false       # 1M token window (Opus 4.6 / Sonnet 4.6)
+# thinking = { type = "enabled", budget_tokens = 10000 }
 
-# OpenAI-compatible providers (Groq, Together, Mistral, local vLLM, etc.)
-# Set provider = "<name>" and ZEPH_COMPATIBLE_<NAME>_API_KEY env var to use.
-# [[llm.compatible]]
+# OpenAI / Azure
+# [[llm.providers]]
+# type = "openai"
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o-mini"
+# max_tokens = 4096
+# embedding_model = "text-embedding-3-small"
+# reasoning_effort = "medium"           # low, medium, high (for o-series models)
+
+# Google Gemini
+# [[llm.providers]]
+# type = "gemini"
+# model = "gemini-2.0-flash"
+# max_tokens = 8192
+# embedding_model = "text-embedding-004"
+# thinking_level = "low"                # minimal, low, medium, high (Gemini 3+)
+# thinking_budget = 1024                # token budget (Gemini 2.5 models)
+
+# Compatible provider (Groq, Together, Mistral, local vLLM, etc.)
+# name is required for compatible providers; ZEPH_COMPATIBLE_<NAME>_API_KEY vault secret is used for auth.
+# [[llm.providers]]
 # name = "groq"
+# type = "compatible"
 # base_url = "https://api.groq.com/openai/v1"
 # model = "llama-3.3-70b-versatile"
 # max_tokens = 4096
-# # embedding_model = "..."  # optional
 
-# Router provider: sequential fallback across multiple providers.
-# Set provider = "router" to use.
-# [llm.router]
-# chain = ["groq", "openai", "ollama"]
+# Candle local inference (feature-gated: --features candle)
+# [[llm.providers]]
+# type = "candle"
+# [llm.providers.candle]
+# source = "huggingface"                # "local" or "huggingface"
+# filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+# local_path = ""                       # used when source = "local"
+# chat_template = "chatml"              # llama3, chatml, mistral, phi3, raw
+# device = "cpu"                        # auto, cpu, metal, cuda
 
-# --- Full orchestrator example with cloud + local + STT ---
-# The orchestrator routes tasks to different providers with fallback chains.
-# Sub-providers inherit from parent sections:
-#   - "ollama" sub-provider uses [llm].base_url, [llm].model, [llm].embedding_model as defaults
-#   - "claude" sub-provider requires [llm.cloud] section + ZEPH_CLAUDE_API_KEY
-#   - "openai" sub-provider requires [llm.openai] section + ZEPH_OPENAI_API_KEY
-#   - "candle" sub-provider requires [llm.candle] section
-# Per-provider `model` overrides the inherited default.
+# Multi-provider with task-based routing example:
 #
 # [llm]
-# provider = "orchestrator"
-# base_url = "http://localhost:11434"      # used by ollama sub-provider
-# model = "qwen3:8b"                     # fallback model for sub-providers without explicit model
-# embedding_model = "qwen3-embedding"      # used by ollama sub-provider for embeddings
+# routing = "task"
 #
-# [llm.cloud]
-# model = "claude-sonnet-4-5-20250929"
-# max_tokens = 4096
+# [llm.routes]
+# coding = ["claude", "ollama"]
+# creative = ["claude"]
+# general = ["ollama", "claude"]
 #
-# [llm.stt]
-# provider = "whisper"
-# model = "whisper-1"
-#
-# [llm.orchestrator]
-# default = "ollama/qwen3:8b"            # "provider_name/model" or just "provider_name"
-# embed = "qwen3-embedding"                # embedding model name or "provider_name/model"
-#
-# [llm.orchestrator.providers.ollama]
+# [[llm.providers]]
+# name = "ollama"
 # type = "ollama"
-# model = "qwen3:8b"                     # optional: overrides [llm].model
-# base_url = "http://localhost:11434"      # optional: overrides [llm].base_url
-# embedding_model = "qwen3-embedding"      # optional: overrides [llm].embedding_model
+# model = "qwen3:8b"
+# embedding_model = "qwen3-embedding"
+# embed = true
 #
-# [llm.orchestrator.providers.claude]
+# [[llm.providers]]
+# name = "claude"
 # type = "claude"
-# model = "claude-sonnet-4-5-20250929"     # optional: overrides [llm.cloud].model
-#
-# [llm.orchestrator.routes]
-# chat = ["ollama", "claude"]              # fallback chain: try ollama first, then claude
-# embed = ["ollama/qwen3-embedding"]       # "provider_name/model" format
+# model = "claude-sonnet-4-6"
+# max_tokens = 4096
+# default = true
 
 [skills]
 # Directories to scan for SKILL.md files

@@ -113,7 +113,7 @@ impl AgentSessionConfig {
             permission_policy: config
                 .tools
                 .permission_policy(config.security.autonomy_level),
-            model_name: config.llm.model.clone(),
+            model_name: config.llm.effective_model().to_owned(),
             embed_model: crate::bootstrap::effective_embedding_model(config),
             semantic_cache_enabled: config.llm.semantic_cache_enabled,
             semantic_cache_threshold: config.llm.semantic_cache_threshold,
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(sc.tool_repeat_threshold, config.agent.tool_repeat_threshold);
         assert_eq!(sc.tool_summarization, config.tools.summarize_output);
         assert_eq!(sc.tool_call_cutoff, config.memory.tool_call_cutoff);
-        assert_eq!(sc.model_name, config.llm.model);
+        assert_eq!(sc.model_name, config.llm.effective_model());
         assert_eq!(
             sc.embed_model,
             crate::bootstrap::effective_embedding_model(&config)

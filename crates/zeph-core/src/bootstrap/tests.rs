@@ -118,7 +118,7 @@ fn create_provider_ollama() {
 #[test]
 fn create_provider_claude_without_cloud_config_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Claude;
+    config.llm.provider = Some(ProviderKind::Claude);
     config.llm.cloud = None;
     let result = create_provider(&config);
     assert!(result.is_err());
@@ -133,7 +133,7 @@ fn create_provider_claude_without_cloud_config_errors() {
 #[test]
 fn create_provider_claude_without_api_key_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Claude;
+    config.llm.provider = Some(ProviderKind::Claude);
     config.llm.cloud = Some(crate::config::CloudLlmConfig {
         model: "claude-sonnet-4-6".into(),
         max_tokens: 4096,
@@ -178,7 +178,7 @@ fn effective_embedding_model_defaults_to_llm() {
 #[test]
 fn effective_embedding_model_uses_openai_when_set() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::OpenAi;
+    config.llm.provider = Some(ProviderKind::OpenAi);
     config.llm.openai = Some(crate::config::OpenAiConfig {
         base_url: "https://api.openai.com/v1".into(),
         model: "gpt-5.2".into(),
@@ -192,7 +192,7 @@ fn effective_embedding_model_uses_openai_when_set() {
 #[test]
 fn effective_embedding_model_falls_back_when_openai_embed_missing() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::OpenAi;
+    config.llm.provider = Some(ProviderKind::OpenAi);
     config.llm.openai = Some(crate::config::OpenAiConfig {
         base_url: "https://api.openai.com/v1".into(),
         model: "gpt-5.2".into(),
@@ -206,7 +206,7 @@ fn effective_embedding_model_falls_back_when_openai_embed_missing() {
 #[test]
 fn create_provider_openai_missing_config_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::OpenAi;
+    config.llm.provider = Some(ProviderKind::OpenAi);
     config.llm.openai = None;
     let result = create_provider(&config);
     assert!(result.is_err());
@@ -221,7 +221,7 @@ fn create_provider_openai_missing_config_errors() {
 #[test]
 fn create_provider_openai_missing_api_key_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::OpenAi;
+    config.llm.provider = Some(ProviderKind::OpenAi);
     config.llm.openai = Some(crate::config::OpenAiConfig {
         base_url: "https://api.openai.com/v1".into(),
         model: "gpt-4o".into(),
@@ -286,7 +286,7 @@ fn select_device_auto_fallback() {
 #[test]
 fn create_provider_candle_without_config_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Candle;
+    config.llm.provider = Some(ProviderKind::Candle);
     config.llm.candle = None;
     let result = create_provider(&config);
     assert!(result.is_err());
@@ -301,7 +301,7 @@ fn create_provider_candle_without_config_errors() {
 #[test]
 fn create_provider_orchestrator_without_config_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
     config.llm.orchestrator = None;
     let result = create_provider(&config);
     assert!(result.is_err());
@@ -319,7 +319,7 @@ fn build_orchestrator_with_unknown_provider_errors() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
 
     let mut providers = HashMap::new();
     providers.insert(
@@ -359,7 +359,7 @@ fn build_orchestrator_claude_without_cloud_config_errors() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
     config.llm.cloud = None;
 
     let mut providers = HashMap::new();
@@ -400,7 +400,7 @@ fn build_orchestrator_claude_sub_without_api_key_errors() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
     config.llm.cloud = Some(crate::config::CloudLlmConfig {
         model: "claude-sonnet-4-6".into(),
         max_tokens: 4096,
@@ -449,7 +449,7 @@ fn build_orchestrator_candle_without_config_errors() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
     config.llm.candle = None;
 
     let mut providers = HashMap::new();
@@ -490,7 +490,7 @@ fn build_orchestrator_with_ollama_sub_provider() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
 
     let mut providers = HashMap::new();
     providers.insert(
@@ -524,8 +524,8 @@ fn build_orchestrator_ollama_per_provider_base_url() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
-    config.llm.base_url = "http://localhost:11434".into();
+    config.llm.provider = Some(ProviderKind::Orchestrator);
+    config.llm.base_url = Some("http://localhost:11434".into());
 
     let mut providers = HashMap::new();
     providers.insert(
@@ -559,7 +559,7 @@ fn build_orchestrator_ollama_per_provider_embedding_model() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
 
     let mut providers = HashMap::new();
     providers.insert(
@@ -593,7 +593,7 @@ fn effective_embedding_model_reads_orchestrator_sub_provider() {
     use std::collections::HashMap;
 
     let mut config = Config::default();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
     config.llm.embedding_model = "default-embed".into();
 
     let mut providers = HashMap::new();
@@ -627,7 +627,7 @@ fn build_orchestrator_routes_parsing() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
 
     let mut providers = HashMap::new();
     providers.insert(
@@ -666,7 +666,7 @@ fn build_orchestrator_with_candle_local_source() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = ProviderKind::Orchestrator;
+    config.llm.provider = Some(ProviderKind::Orchestrator);
     config.llm.candle = Some(crate::config::CandleConfig {
         source: "local".into(),
         local_path: "/tmp/model.gguf".into(),

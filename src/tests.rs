@@ -76,7 +76,7 @@ fn config_loading_from_default_toml() {
 #[test]
 fn config_loading_nonexistent_uses_defaults() {
     let config = Config::load(Path::new("/does/not/exist.toml")).unwrap();
-    assert_eq!(config.llm.provider, ProviderKind::Ollama);
+    assert_eq!(config.llm.effective_provider(), ProviderKind::Ollama);
     assert_eq!(config.agent.name, "Zeph");
 }
 
@@ -258,8 +258,8 @@ fn build_config_ollama_defaults() {
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert_eq!(config.llm.provider, ProviderKind::Ollama);
-    assert_eq!(config.llm.model, "llama3");
+    assert_eq!(config.llm.provider, Some(ProviderKind::Ollama));
+    assert_eq!(config.llm.effective_model(), "llama3");
     assert!(config.telegram.is_none());
 }
 
@@ -274,7 +274,7 @@ fn build_config_claude_provider() {
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert_eq!(config.llm.provider, ProviderKind::Claude);
+    assert_eq!(config.llm.provider, Some(ProviderKind::Claude));
 }
 
 #[test]

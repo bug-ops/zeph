@@ -319,16 +319,16 @@ fn config_defaults_and_env_overrides() {
     clear_env();
 
     let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
-    assert_eq!(config.llm.provider, ProviderKind::Ollama);
-    assert_eq!(config.llm.base_url, "http://localhost:11434");
-    assert_eq!(config.llm.model, "qwen3:8b");
+    assert_eq!(config.llm.effective_provider(), ProviderKind::Ollama);
+    assert_eq!(config.llm.effective_base_url(), "http://localhost:11434");
+    assert_eq!(config.llm.effective_model(), "qwen3:8b");
     assert_eq!(config.agent.name, "Zeph");
     assert_eq!(config.memory.history_limit, 50);
 
     unsafe { std::env::set_var("ZEPH_LLM_MODEL", "test-model") };
     let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
     unsafe { std::env::remove_var("ZEPH_LLM_MODEL") };
-    assert_eq!(config.llm.model, "test-model");
+    assert_eq!(config.llm.effective_model(), "test-model");
 }
 
 // -- Skills tests --

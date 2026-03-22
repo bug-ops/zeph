@@ -53,7 +53,7 @@ impl ConfigSnapshot {
         let (temperature, top_p, top_k) = config.llm.candle.as_ref().map_or_else(
             || {
                 tracing::debug!(
-                    provider = %config.llm.provider,
+                    provider = ?config.llm.provider,
                     "LLM generation params not available for this provider; \
                     using defaults for experiment baseline (temperature=0.7, top_p=0.9, top_k=40)"
                 );
