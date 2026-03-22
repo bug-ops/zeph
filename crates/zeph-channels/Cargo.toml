@@ -43,6 +43,8 @@ harness = false
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+wiremock.workspace = true
 
 [lints]
 workspace = true

@@ -228,6 +228,10 @@ pub(crate) struct ExperimentState {
     /// Pre-built config snapshot used as the experiment baseline (agent path).
     #[cfg(feature = "experiments")]
     pub(crate) baseline: crate::experiments::ConfigSnapshot,
+    /// Dedicated judge provider for evaluation. When `Some`, the evaluator uses this provider
+    /// instead of the agent's primary provider, eliminating self-judge bias.
+    #[cfg(feature = "experiments")]
+    pub(crate) eval_provider: Option<AnyProvider>,
     /// Receives completion/error messages from the background experiment engine task.
     /// Always present so the select! branch compiles unconditionally.
     pub(crate) notify_rx: Option<tokio::sync::mpsc::Receiver<String>>,
