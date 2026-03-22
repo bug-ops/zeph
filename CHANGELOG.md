@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Testing
 
+- chore(testing): add canonical `config/testing.toml` with `provider = "router"` to enable RAPS/reputation scoring in CI sessions (#2104) — previously `.local/config/testing.toml` used `provider = "openai"` which silently ignored `[llm.router]` and `[llm.router.reputation]`; the new tracked reference config uses `provider = "router"` with `chain = ["openai"]` keeping identical LLM behavior while activating RAPS; copy to `.local/config/testing.toml` before use
 - test(memory): add unit tests for `SqliteStore` tier DB methods (#2094) — covers `fetch_tiers`, `count_messages_by_tier`, `find_promotion_candidates`, `manual_promote`, `promote_to_semantic`, and migration 042 schema defaults; 29 new tests across happy path, edge cases (empty input, already-promoted rows, soft-deleted rows, nonexistent IDs), and idempotency invariants
 
 ### Documentation
