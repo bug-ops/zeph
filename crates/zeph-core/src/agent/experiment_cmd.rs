@@ -112,15 +112,15 @@ impl<C: Channel> Agent<C> {
             .map_err(|e| format!("Failed to load benchmark: {e}"))?;
 
         let provider_arc = Arc::new(self.provider.clone());
-        // TODO(#eval-model): eval_model config field is not yet wired to evaluator construction.
-        // Both the agent path and runner.rs use the agent's own provider as the judge.
-        // Wire eval_model to create a separate judge provider in a follow-up PR.
-        let evaluator = Evaluator::new(
-            Arc::clone(&provider_arc),
-            benchmark,
-            config.eval_budget_tokens,
-        )
-        .map_err(|e| format!("Failed to create evaluator: {e}"))?;
+        // Use a dedicated eval provider when `eval_model` is configured, so the judge is
+        // independent from the agent under test. Fall back to the primary provider otherwise.
+        let judge_arc = self
+            .experiments
+            .eval_provider
+            .as_ref()
+            .map_or_else(|| Arc::clone(&provider_arc), |p| Arc::new(p.clone()));
+        let evaluator = Evaluator::new(judge_arc, benchmark, config.eval_budget_tokens)
+            .map_err(|e| format!("Failed to create evaluator: {e}"))?;
 
         let generator = Box::new(GridStep::new(SearchSpace::default()));
         // Use the pre-built baseline snapshot that reflects actual runtime config values.

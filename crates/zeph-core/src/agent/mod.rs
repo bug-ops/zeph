@@ -370,6 +370,8 @@ impl<C: Channel> Agent<C> {
                 cancel: None,
                 #[cfg(feature = "experiments")]
                 baseline: crate::experiments::ConfigSnapshot::default(),
+                #[cfg(feature = "experiments")]
+                eval_provider: None,
                 notify_rx: Some(exp_notify_rx),
                 #[cfg(feature = "experiments")]
                 notify_tx: exp_notify_tx,

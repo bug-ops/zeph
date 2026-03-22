@@ -39,6 +39,8 @@ fn make_experiment_state() -> ExperimentState {
         cancel: None,
         #[cfg(feature = "experiments")]
         baseline: crate::experiments::ConfigSnapshot::default(),
+        #[cfg(feature = "experiments")]
+        eval_provider: None,
         notify_rx: Some(notify_rx),
         #[cfg(feature = "experiments")]
         notify_tx,
