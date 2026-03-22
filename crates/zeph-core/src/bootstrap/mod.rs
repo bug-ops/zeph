@@ -82,6 +82,7 @@ impl AppBuilder {
         let config_path = resolve_config_path(config_override);
         let mut config = Config::load(&config_path)?;
         config.validate()?;
+        config.llm.check_legacy_format()?;
 
         let vault_args = parse_vault_args(
             &config,

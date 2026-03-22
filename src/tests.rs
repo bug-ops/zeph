@@ -258,7 +258,7 @@ fn build_config_ollama_defaults() {
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert_eq!(config.llm.provider, Some(ProviderKind::Ollama));
+    assert_eq!(config.llm.effective_provider(), ProviderKind::Ollama);
     assert_eq!(config.llm.effective_model(), "llama3");
     assert!(config.telegram.is_none());
 }
@@ -274,7 +274,7 @@ fn build_config_claude_provider() {
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert_eq!(config.llm.provider, Some(ProviderKind::Claude));
+    assert_eq!(config.llm.effective_provider(), ProviderKind::Claude);
 }
 
 #[test]
@@ -289,9 +289,8 @@ fn build_config_compatible_provider() {
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert!(config.llm.compatible.is_some());
-    let compat = config.llm.compatible.unwrap();
-    assert_eq!(compat[0].name, "groq");
+    assert_eq!(config.llm.effective_provider(), ProviderKind::Compatible);
+    assert_eq!(config.llm.providers[0].name.as_deref(), Some("groq"));
 }
 
 #[test]
