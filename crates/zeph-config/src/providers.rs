@@ -491,7 +491,7 @@ pub struct CandleConfig {
     pub generation: GenerationParams,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GenerationParams {
     #[serde(default = "default_temperature")]
     pub temperature: f64,
@@ -563,4 +563,292 @@ pub struct OrchestratorProviderConfig {
     /// Provider-specific instruction file to inject into the system prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_file: Option<std::path::PathBuf>,
+}
+
+// ─── New unified config types (Phase 1) ──────────────────────────────────────
+
+/// Routing strategy for the `[[llm.providers]]` pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LlmRoutingStrategy {
+    /// Single provider or first-in-pool (default).
+    #[default]
+    None,
+    /// Exponential moving average latency-aware ordering.
+    Ema,
+    /// Thompson Sampling with Beta distributions.
+    Thompson,
+    /// Cascade: try cheapest provider first, escalate on degenerate output.
+    Cascade,
+    /// Task-based routing using `[llm.routes]` map.
+    Task,
+}
+
+/// Inline candle config for use inside `ProviderEntry`.
+/// Re-uses the generation params from `CandleConfig`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CandleInlineConfig {
+    #[serde(default = "default_candle_source")]
+    pub source: String,
+    #[serde(default)]
+    pub local_path: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default = "default_chat_template")]
+    pub chat_template: String,
+    #[serde(default = "default_candle_device")]
+    pub device: String,
+    #[serde(default)]
+    pub embedding_repo: Option<String>,
+    #[serde(default)]
+    pub generation: GenerationParams,
+}
+
+impl Default for CandleInlineConfig {
+    fn default() -> Self {
+        Self {
+            source: default_candle_source(),
+            local_path: String::new(),
+            filename: None,
+            chat_template: default_chat_template(),
+            device: default_candle_device(),
+            embedding_repo: None,
+            generation: GenerationParams::default(),
+        }
+    }
+}
+
+/// Unified provider entry: one struct replaces `CloudLlmConfig`, `OpenAiConfig`,
+/// `GeminiConfig`, `OllamaConfig`, `CompatibleConfig`, and `OrchestratorProviderConfig`.
+///
+/// Provider-specific fields use `#[serde(default)]` and are ignored by backends
+/// that do not use them (flat-union pattern).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ProviderEntry {
+    /// Required: provider backend type.
+    #[serde(rename = "type")]
+    pub provider_type: ProviderKind,
+
+    /// Optional name for multi-provider configs. Auto-generated from type if absent.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Model identifier. Required for most types.
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// API base URL. Each type has its own default.
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    /// Max output tokens.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+
+    /// Embedding model. When set, this provider supports `embed()` calls.
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+
+    /// Mark this entry as the embedding provider (handles `embed()` calls).
+    #[serde(default)]
+    pub embed: bool,
+
+    /// Mark this entry as the default chat provider (overrides position-based default).
+    #[serde(default)]
+    pub default: bool,
+
+    // --- Claude-specific ---
+    #[serde(default)]
+    pub thinking: Option<ThinkingConfig>,
+    #[serde(default)]
+    pub server_compaction: bool,
+    #[serde(default)]
+    pub enable_extended_context: bool,
+
+    // --- OpenAI-specific ---
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+
+    // --- Gemini-specific ---
+    #[serde(default)]
+    pub thinking_level: Option<GeminiThinkingLevel>,
+    #[serde(default)]
+    pub thinking_budget: Option<i32>,
+    #[serde(default)]
+    pub include_thoughts: Option<bool>,
+
+    // --- Ollama-specific ---
+    #[serde(default)]
+    pub tool_use: bool,
+
+    // --- Compatible-specific: optional inline api_key ---
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    // --- Candle-specific ---
+    #[serde(default)]
+    pub candle: Option<CandleInlineConfig>,
+
+    // --- Vision ---
+    #[serde(default)]
+    pub vision_model: Option<String>,
+
+    /// Provider-specific instruction file.
+    #[serde(default)]
+    pub instruction_file: Option<std::path::PathBuf>,
+}
+
+impl ProviderEntry {
+    /// Resolve the effective name: explicit `name` field or type string.
+    #[must_use]
+    pub fn effective_name(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| self.provider_type.as_str().to_owned())
+    }
+
+    /// Validate this entry for cross-field consistency.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` when a fatal invariant is violated (e.g. compatible provider
+    /// without a name).
+    pub fn validate(&self) -> Result<(), crate::error::ConfigError> {
+        use crate::error::ConfigError;
+
+        // B2: compatible provider MUST have name set.
+        if self.provider_type == ProviderKind::Compatible && self.name.is_none() {
+            return Err(ConfigError::Validation(
+                "[[llm.providers]] entry with type=\"compatible\" must set `name`".into(),
+            ));
+        }
+
+        // B1: warn on irrelevant fields.
+        match self.provider_type {
+            ProviderKind::Ollama => {
+                if self.thinking.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `thinking` is only used by Claude providers"
+                    );
+                }
+                if self.reasoning_effort.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `reasoning_effort` is only used by OpenAI providers"
+                    );
+                }
+                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
+                    );
+                }
+            }
+            ProviderKind::Claude => {
+                if self.reasoning_effort.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `reasoning_effort` is only used by OpenAI providers"
+                    );
+                }
+                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
+                    );
+                }
+                if self.tool_use {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `tool_use` is only used by Ollama providers"
+                    );
+                }
+            }
+            ProviderKind::OpenAi => {
+                if self.thinking.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `thinking` is only used by Claude providers"
+                    );
+                }
+                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
+                    );
+                }
+                if self.tool_use {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `tool_use` is only used by Ollama providers"
+                    );
+                }
+            }
+            ProviderKind::Gemini => {
+                if self.thinking.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `thinking` is only used by Claude providers"
+                    );
+                }
+                if self.reasoning_effort.is_some() {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `reasoning_effort` is only used by OpenAI providers"
+                    );
+                }
+                if self.tool_use {
+                    tracing::warn!(
+                        provider = self.effective_name(),
+                        "field `tool_use` is only used by Ollama providers"
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// Validate a pool of `ProviderEntry` items.
+///
+/// # Errors
+///
+/// Returns `ConfigError` for fatal validation failures:
+/// - Empty pool
+/// - Duplicate names
+/// - Multiple entries marked `default = true`
+/// - Individual entry validation errors
+pub fn validate_pool(entries: &[ProviderEntry]) -> Result<(), crate::error::ConfigError> {
+    use crate::error::ConfigError;
+    use std::collections::HashSet;
+
+    if entries.is_empty() {
+        return Err(ConfigError::Validation(
+            "at least one LLM provider must be configured in [[llm.providers]]".into(),
+        ));
+    }
+
+    let default_count = entries.iter().filter(|e| e.default).count();
+    if default_count > 1 {
+        return Err(ConfigError::Validation(
+            "only one [[llm.providers]] entry can be marked `default = true`".into(),
+        ));
+    }
+
+    let mut seen_names: HashSet<String> = HashSet::new();
+    for entry in entries {
+        let name = entry.effective_name();
+        if !seen_names.insert(name.clone()) {
+            return Err(ConfigError::Validation(format!(
+                "duplicate provider name \"{name}\" in [[llm.providers]]"
+            )));
+        }
+        entry.validate()?;
+    }
+
+    Ok(())
 }
