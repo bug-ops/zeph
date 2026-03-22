@@ -31,7 +31,7 @@ use zeph_llm::openai::OpenAiProvider;
 use zeph_llm::router::cascade::ClassifierMode;
 use zeph_llm::router::{CascadeRouterConfig, RouterProvider};
 
-use crate::config::{Config, ProviderEntry, ProviderKind};
+use crate::config::{Config, LlmRoutingStrategy, ProviderEntry, ProviderKind};
 
 pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
     if !config.llm.providers.is_empty() {
@@ -835,10 +835,99 @@ pub fn build_provider_from_entry(
 
 /// Build the primary `AnyProvider` from the new `[[llm.providers]]` pool.
 ///
-/// Selects the provider marked `default = true`, or the first entry if none is marked.
-/// Logs a warning and falls back to the next available entry if the selected one fails.
+/// When `[llm] routing` is set to a non-None strategy, all providers in the pool are
+/// initialized and wrapped in a `RouterProvider` with the appropriate strategy.
+/// When routing is `None`, selects the provider marked `default = true` (or the first
+/// entry) and falls back to subsequent entries on initialization failure.
+#[allow(clippy::too_many_lines)]
 fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapError> {
     let pool = &config.llm.providers;
+
+    match config.llm.routing {
+        LlmRoutingStrategy::None => build_single_provider_from_pool(pool, config),
+        LlmRoutingStrategy::Ema => {
+            let providers = build_all_pool_providers(pool, config)?;
+            let raw_alpha = config.llm.router_ema_alpha;
+            let alpha = raw_alpha.clamp(f64::MIN_POSITIVE, 1.0);
+            if (alpha - raw_alpha).abs() > f64::EPSILON {
+                tracing::warn!(
+                    raw_alpha,
+                    clamped = alpha,
+                    "router_ema_alpha out of range [MIN_POSITIVE, 1.0], clamped"
+                );
+            }
+            Ok(AnyProvider::Router(Box::new(
+                RouterProvider::new(providers).with_ema(alpha, config.llm.router_reorder_interval),
+            )))
+        }
+        LlmRoutingStrategy::Thompson => {
+            let providers = build_all_pool_providers(pool, config)?;
+            let state_path = config
+                .llm
+                .router
+                .as_ref()
+                .and_then(|r| r.thompson_state_path.as_deref())
+                .map(std::path::Path::new);
+            Ok(AnyProvider::Router(Box::new(
+                RouterProvider::new(providers).with_thompson(state_path),
+            )))
+        }
+        LlmRoutingStrategy::Cascade => {
+            let providers = build_all_pool_providers(pool, config)?;
+            let cascade_cfg = config
+                .llm
+                .router
+                .as_ref()
+                .and_then(|r| r.cascade.clone())
+                .unwrap_or_default();
+            let router_cascade_cfg = build_cascade_router_config(&cascade_cfg, config);
+            Ok(AnyProvider::Router(Box::new(
+                RouterProvider::new(providers).with_cascade(router_cascade_cfg),
+            )))
+        }
+        LlmRoutingStrategy::Task => {
+            // Task routing uses the orchestrator path; fall back to single provider for now.
+            tracing::warn!(
+                "routing = \"task\" requires [llm.orchestrator] config; \
+                 falling back to single provider from pool"
+            );
+            build_single_provider_from_pool(pool, config)
+        }
+    }
+}
+
+/// Initialize all providers in the pool, skipping those that fail with a warning.
+/// Returns an error if no provider could be initialized.
+fn build_all_pool_providers(
+    pool: &[ProviderEntry],
+    config: &Config,
+) -> Result<Vec<AnyProvider>, BootstrapError> {
+    let mut providers = Vec::new();
+    for entry in pool {
+        match build_provider_from_entry(entry, config) {
+            Ok(p) => providers.push(p),
+            Err(e) => {
+                tracing::warn!(
+                    provider = entry.name.as_deref().unwrap_or("?"),
+                    error = %e,
+                    "skipping pool provider during routing initialization"
+                );
+            }
+        }
+    }
+    if providers.is_empty() {
+        return Err(BootstrapError::Provider(
+            "routing enabled but no providers in [[llm.providers]] could be initialized".into(),
+        ));
+    }
+    Ok(providers)
+}
+
+/// Pick the default (or first) provider from the pool with fallback on failure.
+fn build_single_provider_from_pool(
+    pool: &[ProviderEntry],
+    config: &Config,
+) -> Result<AnyProvider, BootstrapError> {
     let primary_idx = pool.iter().position(|e| e.default).unwrap_or(0);
     let primary = &pool[primary_idx];
     match build_provider_from_entry(primary, config) {

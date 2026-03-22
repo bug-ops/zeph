@@ -576,6 +576,12 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
                 {
                     block.push_str("enable_extended_context = true\n");
                 }
+                // H1: migrate thinking config as TOML inline table
+                if let Some(thinking) = cloud.get("thinking").and_then(toml_edit::Item::as_table) {
+                    let pairs: Vec<String> =
+                        thinking.iter().map(|(k, v)| format!("{k} = {v}")).collect();
+                    block.push_str(&format!("thinking = {{ {} }}\n", pairs.join(", ")));
+                }
             } else if let Some(ref m) = model {
                 block.push_str(&format!("model = \"{m}\"\n"));
             }
@@ -601,6 +607,15 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
                 copy_int_field(gemini, "max_tokens", &mut block);
                 copy_str_field(gemini, "base_url", &mut block);
                 copy_str_field(gemini, "embedding_model", &mut block);
+                // H2: migrate thinking_level, thinking_budget, include_thoughts
+                copy_str_field(gemini, "thinking_level", &mut block);
+                copy_int_field(gemini, "thinking_budget", &mut block);
+                if let Some(v) = gemini
+                    .get("include_thoughts")
+                    .and_then(toml_edit::Item::as_bool)
+                {
+                    block.push_str(&format!("include_thoughts = {v}\n"));
+                }
             } else if let Some(ref m) = model {
                 block.push_str(&format!("model = \"{m}\"\n"));
             }
@@ -1197,6 +1212,193 @@ redact_secrets = true
         assert!(
             reference.contains("hard_fail_threshold"),
             "probe section must include hard_fail_threshold default"
+        );
+    }
+
+    // ─── migrate_llm_to_providers ─────────────────────────────────────────────
+
+    #[test]
+    fn migrate_llm_no_llm_section_is_noop() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_llm_already_new_format_is_noop() {
+        let src = r#"
+[llm]
+[[llm.providers]]
+type = "ollama"
+model = "qwen3:8b"
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+    }
+
+    #[test]
+    fn migrate_llm_ollama_produces_providers_block() {
+        let src = r#"
+[llm]
+provider = "ollama"
+model = "qwen3:8b"
+base_url = "http://localhost:11434"
+embedding_model = "nomic-embed-text"
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert!(
+            result.output.contains("[[llm.providers]]"),
+            "should contain [[llm.providers]]:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("type = \"ollama\""),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("model = \"qwen3:8b\""),
+            "{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_llm_claude_produces_providers_block() {
+        let src = r#"
+[llm]
+provider = "claude"
+
+[llm.cloud]
+model = "claude-sonnet-4-6"
+max_tokens = 8192
+server_compaction = true
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert!(
+            result.output.contains("[[llm.providers]]"),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("type = \"claude\""),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("model = \"claude-sonnet-4-6\""),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("server_compaction = true"),
+            "{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_llm_openai_copies_fields() {
+        let src = r#"
+[llm]
+provider = "openai"
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+max_tokens = 4096
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert!(
+            result.output.contains("type = \"openai\""),
+            "{}",
+            result.output
+        );
+        assert!(
+            result
+                .output
+                .contains("base_url = \"https://api.openai.com/v1\""),
+            "{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_llm_gemini_copies_fields() {
+        let src = r#"
+[llm]
+provider = "gemini"
+
+[llm.gemini]
+model = "gemini-2.0-flash"
+max_tokens = 8192
+base_url = "https://generativelanguage.googleapis.com"
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert!(
+            result.output.contains("type = \"gemini\""),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("model = \"gemini-2.0-flash\""),
+            "{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_llm_compatible_copies_multiple_entries() {
+        let src = r#"
+[llm]
+provider = "compatible"
+
+[[llm.compatible]]
+name = "proxy-a"
+base_url = "http://proxy-a:8080/v1"
+model = "llama3"
+max_tokens = 4096
+
+[[llm.compatible]]
+name = "proxy-b"
+base_url = "http://proxy-b:8080/v1"
+model = "mistral"
+max_tokens = 2048
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        // Both compatible entries should be emitted.
+        let count = result.output.matches("[[llm.providers]]").count();
+        assert_eq!(
+            count, 2,
+            "expected 2 [[llm.providers]] blocks:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("name = \"proxy-a\""),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("name = \"proxy-b\""),
+            "{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_llm_mixed_format_errors() {
+        // Legacy + new format together should produce an error.
+        let src = r#"
+[llm]
+provider = "ollama"
+
+[[llm.providers]]
+type = "ollama"
+"#;
+        assert!(
+            migrate_llm_to_providers(src).is_err(),
+            "mixed format must return error"
         );
     }
 }
