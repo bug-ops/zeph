@@ -162,6 +162,13 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
     }
 
     fn set_effective_trust(&self, level: crate::TrustLevel) {
+        match self.context.write() {
+            Ok(mut ctx) => ctx.trust_level = level,
+            Err(poisoned) => {
+                tracing::warn!("PolicyContext RwLock poisoned on trust update; overwriting");
+                poisoned.into_inner().trust_level = level;
+            }
+        }
         self.inner.set_effective_trust(level);
     }
 
@@ -385,5 +392,61 @@ mod tests {
         let result = gate.execute("```bash\necho hi\n```").await;
         // MockExecutor always returns None for execute().
         assert!(result.is_ok());
+    }
+
+    // GAP-06: set_effective_trust must update PolicyContext.trust_level so trust_level rules
+    // are evaluated against the actual invoking skill trust, not the hardcoded Trusted default.
+    #[tokio::test]
+    async fn set_effective_trust_quarantined_blocks_verified_threshold_rule() {
+        // Rule: allow shell when trust_level = Verified (threshold severity=1).
+        // Context set to Quarantined (severity=2) via set_effective_trust.
+        // Expected: context.severity(2) > threshold.severity(1) → rule does not fire → Deny.
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Deny,
+            rules: vec![PolicyRuleConfig {
+                effect: PolicyEffect::Allow,
+                tool: "shell".to_owned(),
+                paths: vec![],
+                env: vec![],
+                trust_level: Some(TrustLevel::Verified),
+                args_match: None,
+            }],
+            policy_file: None,
+        };
+        let gate = make_gate(config);
+        gate.set_effective_trust(TrustLevel::Quarantined);
+        let result = gate.execute_tool_call(&make_call("shell")).await;
+        assert!(
+            matches!(result, Err(ToolError::Blocked { .. })),
+            "Quarantined context must not satisfy a Verified trust threshold allow rule"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_effective_trust_trusted_satisfies_verified_threshold_rule() {
+        // Rule: allow shell when trust_level = Verified (threshold severity=1).
+        // Context set to Trusted (severity=0) via set_effective_trust.
+        // Expected: context.severity(0) <= threshold.severity(1) → rule fires → Allow.
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Deny,
+            rules: vec![PolicyRuleConfig {
+                effect: PolicyEffect::Allow,
+                tool: "shell".to_owned(),
+                paths: vec![],
+                env: vec![],
+                trust_level: Some(TrustLevel::Verified),
+                args_match: None,
+            }],
+            policy_file: None,
+        };
+        let gate = make_gate(config);
+        gate.set_effective_trust(TrustLevel::Trusted);
+        let result = gate.execute_tool_call(&make_call("shell")).await;
+        assert!(
+            result.is_ok(),
+            "Trusted context must satisfy a Verified trust threshold allow rule"
+        );
     }
 }
