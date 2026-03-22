@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(zeph-llm): remove redundant `schema` feature gate — `schemars` is now a mandatory dependency of `zeph-llm`; all `#[cfg(feature = "schema")]` / `#[cfg_attr(feature = "schema", ...)]` annotations removed; `chat_typed`, `chat_typed_erased`, structured output types, and the `extractor` module are always compiled (#2100)
 - Promote `scheduler` and `guardrail` features to the default feature set; users with `default-features = false` are unaffected
 
 ### Fixed

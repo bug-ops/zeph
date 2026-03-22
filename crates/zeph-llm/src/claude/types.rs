@@ -569,7 +569,6 @@ pub(super) struct AnthropicTool<'a> {
     pub input_schema: &'a serde_json::Value,
 }
 
-#[cfg(feature = "schema")]
 #[derive(Serialize)]
 pub(super) struct TypedToolRequestBody<'a> {
     pub model: &'a str,
@@ -589,7 +588,6 @@ pub(super) struct TypedToolRequestBody<'a> {
     pub context_management: Option<ContextManagement>,
 }
 
-#[cfg(feature = "schema")]
 #[derive(Serialize)]
 pub(super) struct ToolChoice<'a> {
     pub r#type: &'a str,

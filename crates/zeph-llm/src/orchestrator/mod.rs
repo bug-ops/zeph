@@ -182,7 +182,6 @@ impl ModelOrchestrator {
             .expect("default provider must exist")
     }
 
-    #[cfg(feature = "schema")]
     async fn try_llm_routing(&self, messages: &[Message]) -> Option<String> {
         if !self.llm_routing {
             return None;
@@ -223,12 +222,6 @@ impl ModelOrchestrator {
                 None
             }
         }
-    }
-
-    #[cfg(not(feature = "schema"))]
-    #[allow(clippy::unused_async)]
-    async fn try_llm_routing(&self, _messages: &[Message]) -> Option<String> {
-        None
     }
 
     async fn chat_with_fallback(&self, messages: &[Message]) -> Result<String, LlmError> {

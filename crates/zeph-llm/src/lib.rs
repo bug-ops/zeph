@@ -12,7 +12,6 @@ pub mod claude;
 pub mod compatible;
 pub mod ema;
 pub mod error;
-#[cfg(feature = "schema")]
 pub mod extractor;
 pub mod gemini;
 pub mod http;
@@ -35,7 +34,6 @@ pub mod whisper;
 
 pub use claude::{ThinkingConfig, ThinkingEffort};
 pub use error::LlmError;
-#[cfg(feature = "schema")]
 pub use extractor::Extractor;
 pub use gemini::ThinkingLevel as GeminiThinkingLevel;
 pub use provider::{ChatStream, LlmProvider, StreamChunk, ThinkingBlock};

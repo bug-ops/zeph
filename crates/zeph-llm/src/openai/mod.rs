@@ -552,7 +552,6 @@ impl LlmProvider for OpenAiProvider {
         true
     }
 
-    #[cfg(feature = "schema")]
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
         T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
@@ -1150,7 +1149,6 @@ struct EmbeddingData {
     embedding: Vec<f32>,
 }
 
-#[cfg(feature = "schema")]
 #[derive(Serialize)]
 struct TypedChatRequest<'a> {
     model: &'a str,
@@ -1179,14 +1177,12 @@ impl CompletionTokens {
     }
 }
 
-#[cfg(feature = "schema")]
 #[derive(Serialize)]
 struct ResponseFormat<'a> {
     r#type: &'a str,
     json_schema: JsonSchemaFormat<'a>,
 }
 
-#[cfg(feature = "schema")]
 #[derive(Serialize)]
 struct JsonSchemaFormat<'a> {
     name: &'a str,

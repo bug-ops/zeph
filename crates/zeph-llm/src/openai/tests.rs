@@ -238,7 +238,6 @@ fn vision_chat_request_serialization_uses_gpt5_completion_tokens() {
     assert!(!json.contains("\"max_tokens\":55"));
 }
 
-#[cfg(feature = "schema")]
 #[test]
 fn typed_chat_request_serialization_uses_gpt5_completion_tokens() {
     let msgs = [ApiMessage {
