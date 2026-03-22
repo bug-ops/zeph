@@ -1,0 +1,80 @@
+name: telegram-e2e
+
+# Runs Telethon-based E2E tests against the Zeph Telegram channel on Test DC.
+# Gated by repository secrets — skipped automatically when secrets are absent.
+# Runs only on push to main (not on PRs) to avoid flakiness from external services.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  telegram-e2e:
+    name: Telegram E2E (Test DC)
+    runs-on: ubuntu-latest
+    # Skip if the required secrets are not configured in the repository
+    if: >
+      secrets.ZEPH_TELEGRAM_TEST_TOKEN != '' &&
+      secrets.TELEGRAM_TEST_API_ID != '' &&
+      secrets.TELEGRAM_TEST_API_HASH != '' &&
+      secrets.TELEGRAM_TEST_SESSION != '' &&
+      secrets.TELEGRAM_TEST_BOT_USERNAME != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Telethon
+        run: pip install -r scripts/telegram-e2e/requirements.txt
+
+      - name: Restore Telethon session
+        # TELEGRAM_TEST_SESSION is the base64-encoded content of test_session.session
+        run: |
+          mkdir -p .local/testing
+          echo "${{ secrets.TELEGRAM_TEST_SESSION }}" | base64 -d > .local/testing/test_session.session
+
+      - name: Build Zeph (telegram feature)
+        run: cargo build --features full --bin zeph
+
+      - name: Write Zeph config
+        env:
+          ZEPH_TELEGRAM_TEST_TOKEN: ${{ secrets.ZEPH_TELEGRAM_TEST_TOKEN }}
+        run: |
+          mkdir -p .local/config .local/testing/data .local/testing/debug
+          cp config/telegram-test.toml .local/config/telegram-test.toml
+          # Patch allowed_users and use env-backend token for CI (no vault available)
+          sed -i 's|token = { vault = "ZEPH_TELEGRAM_TEST_TOKEN" }|token = { env = "ZEPH_TELEGRAM_TEST_TOKEN" }|' \
+            .local/config/telegram-test.toml
+          sed -i 's|allowed_users = \["your_test_username"\]|allowed_users = ["${{ secrets.TELEGRAM_TEST_ACCOUNT_USERNAME }}"]|' \
+            .local/config/telegram-test.toml
+          sed -i 's|backend = "age"|backend = "env"|' \
+            .local/config/telegram-test.toml
+
+      - name: Start Zeph (background)
+        env:
+          ZEPH_TELEGRAM_TEST_TOKEN: ${{ secrets.ZEPH_TELEGRAM_TEST_TOKEN }}
+        run: |
+          ./target/debug/zeph --config .local/config/telegram-test.toml --channel telegram \
+            2>.local/testing/debug/telegram-session.log &
+          # Give the bot 8s to connect and start long-polling
+          sleep 8
+
+      - name: Run E2E scenarios
+        env:
+          TG_API_ID: ${{ secrets.TELEGRAM_TEST_API_ID }}
+          TG_API_HASH: ${{ secrets.TELEGRAM_TEST_API_HASH }}
+          TG_BOT_USERNAME: ${{ secrets.TELEGRAM_TEST_BOT_USERNAME }}
+          TG_SESSION_PATH: .local/testing/test_session.session
+        run: python3 scripts/telegram-e2e/telegram_e2e.py
+
+      - name: Upload debug log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-session-log
+          path: .local/testing/debug/telegram-session.log
+          retention-days: 7

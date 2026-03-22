@@ -13,3 +13,4 @@ data/
 book/book/
 *.log
 zeph.log
+*.session
