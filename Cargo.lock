@@ -3444,9 +3444,9 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "iri-string"
-version = "0.7.10"
+version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c91338f0783edbd6195decb37bae672fd3b165faffb89bf7b9e6942f8b1a731a"
+checksum = "d8e7418f59cc01c88316161279a7f665217ae316b388e58a0d10e29f54f1e5eb"
 dependencies = [
  "memchr",
  "serde",
@@ -3500,7 +3500,7 @@ dependencies = [
  "cesu8",
  "cfg-if",
  "combine",
- "jni-sys",
+ "jni-sys 0.3.1",
  "log",
  "thiserror 1.0.69",
  "walkdir",
@@ -3509,9 +3509,31 @@ dependencies = [
 
 [[package]]
 name = "jni-sys"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eaf4bc02d17cbdd7ff4c7438cafcdf7fb9a4613313ad11b4f8fefe7d3fa0130"
+checksum = "41a652e1f9b6e0275df1f15b32661cf0d4b78d4d87ddec5e0c3c20f097433258"
+dependencies = [
+ "jni-sys 0.4.1",
+]
+
+[[package]]
+name = "jni-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6377a88cb3910bee9b0fa88d4f42e1d2da8e79915598f65fb0c7ee14c878af2"
+dependencies = [
+ "jni-sys-macros",
+]
+
+[[package]]
+name = "jni-sys-macros"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
+dependencies = [
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "jobserver"
@@ -4994,9 +5016,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.2"
+version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14104c5a24d9bcf7eb2c24753e0f49fe14555d8bd565ea3d38e4b4303267259d"
+checksum = "7c3a14896dfa883796f1cb410461aef38810ea05f2b2c33c5aded3649095fdad"
 dependencies = [
  "bitflags 2.11.0",
  "getopts",
@@ -7960,9 +7982,9 @@ dependencies = [
 
 [[package]]
 name = "type1-encoding-parser"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3d6cc09e1a99c7e01f2afe4953789311a1c50baebbdac5b477ecf78e2e92a5b"
+checksum = "fa10c302f5a53b7ad27fd42a3996e23d096ba39b5b8dd6d9e683a05b01bee749"
 dependencies = [
  "pom",
 ]
@@ -9282,7 +9304,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9331,7 +9353,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-a2a"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "axum 0.8.8",
  "blake3",
@@ -9357,7 +9379,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-acp"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -9395,7 +9417,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "axum 0.8.8",
  "criterion",
@@ -9420,7 +9442,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-common"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -9436,7 +9458,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-config"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "dirs",
  "insta",
@@ -9457,7 +9479,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "age",
  "async-trait",
@@ -9510,7 +9532,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-experiments"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "futures",
  "ordered-float 5.1.0",
@@ -9533,7 +9555,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-gateway"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "axum 0.8.8",
  "blake3",
@@ -9550,7 +9572,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-index"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "blake3",
  "ignore",
@@ -9581,7 +9603,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "async-stream",
  "audioadapter-buffers",
@@ -9617,7 +9639,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-mcp"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -9644,7 +9666,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -9675,7 +9697,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-orchestration"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "blake3",
  "schemars 1.2.1",
@@ -9696,7 +9718,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-sanitizer"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "proptest",
  "regex",
@@ -9716,7 +9738,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-scheduler"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "cron",
@@ -9733,7 +9755,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -9760,7 +9782,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-subagent"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "dirs",
  "indoc",
@@ -9786,7 +9808,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "dirs",
  "glob",
@@ -9822,7 +9844,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tui"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "crossterm",
@@ -9855,7 +9877,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-vault"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "age",
  "proptest",
