@@ -14,6 +14,10 @@ exclude = [
   "https://platform.claude.com/.*",
   # Requires GitHub auth
   "https://github.com/.*/security/advisories/.*",
+  # Gist — intermittently returns 404 in CI
+  "https://gist.github.com/egmontkob/.*",
+  # VS Marketplace — blocks CI user-agents
+  "https://marketplace.visualstudio.com/.*",
 ]
 
 # Skip URLs that require authentication

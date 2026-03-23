@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-03-23
+
 ### Added
 
 - feat(llm): complexity triage routing (#2141) — new `LlmRoutingStrategy::Triage` routing mode that classifies each request into `Simple`, `Medium`, `Complex`, or `Expert` complexity tiers using a configurable classifier provider before dispatching to a tier-specific provider; `TriageRouter` in `zeph-llm` implements `LlmProvider` using `Box::pin` to break the recursive `AnyProvider` type cycle; classifier calls are wrapped in a configurable timeout (default 5 s) with fallback to the default tier on timeout or parse failure; context-window auto-escalation skips when `context_window()` returns `None`; `AtomicU64` metrics track classification counts and latencies per tier without locks; `[llm.complexity_routing]` TOML config with `triage_provider`, `tiers.*`, `triage_timeout_secs`, `fallback_strategy`; `AnyProvider::Triage` variant added; agent loop emits "Evaluating complexity..." status indicator during triage
@@ -2603,7 +2605,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/bug-ops/zeph/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/bug-ops/zeph/compare/v0.16.0...v0.16.1
 [0.15.3]: https://github.com/bug-ops/zeph/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/bug-ops/zeph/compare/v0.15.1...v0.15.2
