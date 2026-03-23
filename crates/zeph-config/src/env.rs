@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::providers::{SttConfig, default_stt_language, default_stt_model, default_stt_provider};
+use crate::providers::{
+    ProviderEntry, SttConfig, default_stt_language, default_stt_model, default_stt_provider,
+};
 use crate::root::Config;
 
 impl Config {
@@ -18,30 +20,31 @@ impl Config {
     }
 
     fn apply_env_overrides_core_1(&mut self) {
-        if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
-            if let Some(entry) = self.llm.providers.first_mut() {
-                if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
-                    entry.provider_type = kind;
-                } else {
-                    tracing::warn!("ignoring invalid ZEPH_LLM_PROVIDER value: {v}");
-                }
+        let has_provider_env = std::env::var("ZEPH_LLM_PROVIDER").is_ok()
+            || std::env::var("ZEPH_LLM_BASE_URL").is_ok()
+            || std::env::var("ZEPH_LLM_MODEL").is_ok();
+        if has_provider_env && self.llm.providers.is_empty() {
+            self.llm.providers.push(ProviderEntry::default());
+        }
+
+        if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER")
+            && let Some(entry) = self.llm.providers.first_mut()
+        {
+            if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
+                entry.provider_type = kind;
             } else {
-                tracing::warn!("ZEPH_LLM_PROVIDER ignored: no [[llm.providers]] configured");
+                tracing::warn!("ignoring invalid ZEPH_LLM_PROVIDER value: {v}");
             }
         }
-        if let Ok(v) = std::env::var("ZEPH_LLM_BASE_URL") {
-            if let Some(entry) = self.llm.providers.first_mut() {
-                entry.base_url = Some(v);
-            } else {
-                tracing::warn!("ZEPH_LLM_BASE_URL ignored: no [[llm.providers]] configured");
-            }
+        if let Ok(v) = std::env::var("ZEPH_LLM_BASE_URL")
+            && let Some(entry) = self.llm.providers.first_mut()
+        {
+            entry.base_url = Some(v);
         }
-        if let Ok(v) = std::env::var("ZEPH_LLM_MODEL") {
-            if let Some(entry) = self.llm.providers.first_mut() {
-                entry.model = Some(v);
-            } else {
-                tracing::warn!("ZEPH_LLM_MODEL ignored: no [[llm.providers]] configured");
-            }
+        if let Ok(v) = std::env::var("ZEPH_LLM_MODEL")
+            && let Some(entry) = self.llm.providers.first_mut()
+        {
+            entry.model = Some(v);
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_EMBEDDING_MODEL") {
             self.llm.embedding_model = v;
