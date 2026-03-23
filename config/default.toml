@@ -499,6 +499,24 @@ redact_secrets = true
 # Tool access level: "readonly" (observe only), "supervised" (default, with confirmations), "full" (all tools, no confirmations)
 autonomy_level = "supervised"
 
+[security.guardrail]
+# Enable the LLM-based guardrail content classifier (default: false)
+enabled = false
+# Provider for guardrail LLM calls (e.g. "ollama", "claude")
+# provider = "ollama"
+# Model to use for classification (e.g. "llama-guard-3:1b")
+# model = "llama-guard-3:1b"
+# Timeout for each guardrail LLM call in milliseconds (default: 500)
+timeout_ms = 500
+# Action on flagged content: "block" or "warn" (default: block)
+action = "block"
+# Behaviour on timeout or LLM error: "open" (allow) or "closed" (block, default)
+fail_strategy = "closed"
+# Also scan tool outputs before they enter message history (default: false)
+scan_tool_output = false
+# Maximum characters sent to the guard model (default: 4096)
+max_input_chars = 4096
+
 [security.content_isolation]
 # Enable the 4-step sanitization pipeline for untrusted content (default: true)
 enabled = true
