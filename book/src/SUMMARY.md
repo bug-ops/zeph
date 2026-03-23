@@ -44,6 +44,7 @@
 
 - [Model Orchestrator](advanced/orchestrator.md)
 - [Adaptive Inference](advanced/adaptive-inference.md)
+- [Complexity Triage Routing](advanced/complexity-triage.md)
 - [Self-Learning Skills](advanced/self-learning.md)
 - [Skill Trust & Security](advanced/skill-trust.md)
 - [Policy Enforcer](advanced/policy-enforcer.md)

@@ -37,6 +37,7 @@ embedding_model = "qwen3-embedding"
 | `ToolsConfig` | `[tools]` | Shell executor, web scrape, audit logging, anomaly detection |
 | `McpConfig` | `[mcp]` | MCP server list and transport settings |
 | `OrchestrationConfig` | `[orchestration]` | DAG planner, aggregator, confirmation flow |
+| `ComplexityRoutingConfig` | `[llm.complexity_routing]` | Per-tier provider pools for complexity triage routing |
 | `SecurityConfig` | `[security]` | Content isolation, exfiltration guard, quarantine |
 | `DebugConfig` | `[debug]` | Debug dump path and format |
 | `LoggingConfig` | `[logging]` | Log file path, level, rotation, retention |

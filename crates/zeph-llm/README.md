@@ -94,6 +94,26 @@ cost_tiers = ["ollama", "claude", "openai"]  # optional: explicit cheapest-first
 
 `cost_tiers` reorders providers once at construction time (zero per-request cost). Providers absent from the list are appended after listed ones in original chain order. Unknown names are silently ignored.
 
+## Complexity triage routing
+
+The triage strategy classifies each request into a complexity tier before inference and routes it to the provider pool configured for that tier. This avoids sending simple queries to expensive models and reserves high-capability models for genuinely complex tasks.
+
+```toml
+[llm.router]
+strategy = "triage"
+
+[llm.complexity_routing]
+simple_providers  = ["ollama"]
+medium_providers  = ["ollama", "openai"]
+complex_providers = ["claude", "openai"]
+expert_providers  = ["claude"]
+```
+
+Tier assignment uses a lightweight classifier (`TriageClassifier`) that runs before the primary LLM call. The classifier dispatches to `LlmRoutingStrategy::Triage` on the `RouterProvider`.
+
+> [!TIP]
+> Use `ClassifierMode::Judge` to route classification through a separate LLM call when heuristic scoring is insufficient for your workload.
+
 ## Claude extended thinking
 
 `ClaudeProvider` supports two thinking modes via `ThinkingConfig`:

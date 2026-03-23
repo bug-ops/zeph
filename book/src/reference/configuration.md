@@ -117,7 +117,7 @@ correction_recall_limit = 3           # Max corrections injected into system pro
 correction_min_similarity = 0.75      # Min cosine similarity for correction recall from Qdrant (default: 0.75)
 
 [llm]
-# routing = "none"      # none (default), ema, thompson, cascade, task
+# routing = "none"      # none (default), ema, thompson, cascade, task, triage
 # router_ema_enabled = false         # EMA-based provider latency routing (default: false)
 # router_ema_alpha = 0.1             # EMA smoothing factor, 0.0–1.0 (default: 0.1)
 # router_reorder_interval = 10       # Re-order providers every N requests (default: 10)
@@ -152,6 +152,20 @@ correction_min_similarity = 0.75      # Min cosine similarity for correction rec
 # classifier_mode = "heuristic"       # "heuristic" (default) or "judge" (LLM-backed)
 # max_cascade_tokens = 0              # Cumulative token cap across escalation levels; 0 = unlimited
 # cost_tiers = ["ollama", "claude"]   # Explicit cost ordering (cheapest first)
+
+# Complexity triage routing options (when routing = "triage").
+# [llm.complexity_routing]
+# triage_provider = "fast"            # Provider name used for classification (required)
+# bypass_single_provider = true       # Skip triage when all tiers map to the same provider (default: true)
+# triage_timeout_secs = 5             # Triage call timeout; falls back to simple tier on expiry (default: 5)
+# max_triage_tokens = 50              # Max tokens in triage response (default: 50)
+# fallback_strategy = "cascade"       # Optional hybrid mode: triage + quality escalation ("cascade" only)
+#
+# [llm.complexity_routing.tiers]
+# simple  = "fast"                    # Provider name for trivial requests; also used as triage fallback
+# medium  = "default"                 # Provider name for moderate requests
+# complex = "smart"                   # Provider name for multi-step / code-heavy requests
+# expert  = "expert"                  # Provider name for research-grade requests
 
 # Provider list — each [[llm.providers]] entry defines one LLM backend.
 [[llm.providers]]
@@ -578,7 +592,7 @@ Each `[[llm.providers]]` entry supports:
 | `filename` | string? | GGUF filename (Candle only) |
 | `device` | string? | Compute device: `cpu`, `metal`, `cuda` (Candle only) |
 
-See [Model Orchestrator](../advanced/orchestrator.md) for multi-provider routing examples.
+See [Model Orchestrator](../advanced/orchestrator.md) for multi-provider routing examples and [Complexity Triage Routing](../advanced/complexity-triage.md) for pre-inference classification routing.
 
 ## Environment Variables
 

@@ -7,6 +7,7 @@ When multiple providers are configured and `routing` is set in `[llm]`, Zeph rou
 | **EMA** (default) | `"ema"` | Latency-weighted exponential moving average. Reorders providers every N requests based on observed response times |
 | **Thompson Sampling** | `"thompson"` | Bayesian exploration/exploitation via Beta distributions. Tracks per-provider success/failure counts and samples to choose the best provider |
 | **Cascade** | `"cascade"` | Cost-escalation routing. Tries providers cheapest-first; escalates to the next provider only when the response is classified as degenerate (empty, repetitive, incoherent) |
+| **Complexity Triage** | `"triage"` | Pre-inference classification routing. A cheap triage model classifies each request as `simple`, `medium`, `complex`, or `expert` and delegates to the matching tier provider. See [Complexity Triage Routing](complexity-triage.md) |
 
 ## Thompson Sampling
 
