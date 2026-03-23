@@ -26,7 +26,7 @@ use std::path::Path;
 use include_dir::{Dir, include_dir};
 use tracing::{debug, info, warn};
 
-static BUNDLED_SKILLS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../.zeph/skills");
+static BUNDLED_SKILLS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/skills");
 
 /// Summary of a single provisioning run.
 #[derive(Debug, Default)]
