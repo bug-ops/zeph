@@ -37,8 +37,14 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
 
     let filter_segment = build_filter_segment(metrics);
 
+    let channel_segment = if metrics.active_channel.is_empty() {
+        String::new()
+    } else {
+        format!(" | ch:{}", metrics.active_channel)
+    };
+
     let main_text = format!(
-        " [{mode}]{model}{plan_mode_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
+        " [{mode}]{model}{channel_segment}{plan_mode_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
         model = if metrics.model_name.is_empty() {
             String::new()
         } else {

@@ -197,7 +197,7 @@ mod tests {
             embedding_model: "nomic-embed-text".into(),
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(35, 10, |frame, area| {
+        let output = render_to_string(35, 30, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert!(
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn resources_omits_embedding_model_when_empty() {
         let metrics = MetricsSnapshot::default();
-        let output = render_to_string(35, 10, |frame, area| {
+        let output = render_to_string(35, 30, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert!(
@@ -224,7 +224,7 @@ mod tests {
             token_budget: Some(200_000),
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(35, 10, |frame, area| {
+        let output = render_to_string(35, 30, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert!(
@@ -239,7 +239,7 @@ mod tests {
             self_learning_enabled: true,
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(35, 10, |frame, area| {
+        let output = render_to_string(35, 30, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert!(
