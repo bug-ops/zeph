@@ -53,7 +53,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
-      - uses: taiki-e/install-action@56720d582cf58295f40f53e94c01dfddeab22f1d # cross
+      - uses: taiki-e/install-action@879e9c8ba9a16a9dde5253c07a5826b902ca048c # cross
       - name: Build binary (cross)
         if: matrix.use_cross
         run: cross build --release --features full --target ${{ matrix.target }}
