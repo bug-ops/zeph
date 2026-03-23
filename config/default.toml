@@ -518,6 +518,24 @@ sources = ["web_scrape", "a2a_message"]
 # (e.g. "claude", "ollama", "openai", or a compatible entry name)
 model = "claude"
 
+[security.guardrail]
+# Enable LLM-based input guardrail classification (default: false, requires guardrail feature)
+enabled = false
+# Provider to use for guardrail classification (e.g. "ollama", "claude")
+# provider = "ollama"
+# Model to use for guardrail (e.g. "llama-guard-3:1b")
+# model = "llama-guard-3:1b"
+# Timeout for each guardrail LLM call in milliseconds (default: 500)
+timeout_ms = 500
+# Action when a message is flagged: "block" or "warn" (default: "block")
+action = "block"
+# What to do on timeout or LLM error: "closed" (block) or "open" (allow) (default: "closed")
+fail_strategy = "closed"
+# Also scan tool outputs before they enter message history (default: false)
+scan_tool_output = false
+# Maximum characters to send to the guard model (default: 4096)
+max_input_chars = 4096
+
 # [telegram]
 # token = "your-bot-token"
 # Allowed usernames (empty = allow all except for /start command)
