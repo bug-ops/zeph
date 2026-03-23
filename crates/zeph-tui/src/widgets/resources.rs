@@ -192,6 +192,7 @@ mod tests {
         assert_snapshot!(output);
     }
 
+    #[test]
     fn resources_shows_embedding_model_when_set() {
         let metrics = MetricsSnapshot {
             embedding_model: "nomic-embed-text".into(),

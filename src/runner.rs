@@ -1268,32 +1268,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
-    // Determine active channel name for metrics.
-    #[cfg(feature = "tui")]
-    let active_channel_name = if tui_active {
-        "tui"
-    } else if config
-        .telegram
-        .as_ref()
-        .and_then(|t| t.token.as_ref())
-        .is_some()
-    {
-        "telegram"
-    } else {
-        "cli"
-    };
-    #[cfg(not(feature = "tui"))]
-    let active_channel_name = if config
-        .telegram
-        .as_ref()
-        .and_then(|t| t.token.as_ref())
-        .is_some()
-    {
-        "telegram"
-    } else {
-        "cli"
-    };
-
     {
         let stt_model = config.llm.stt.as_ref().map(|s| s.model.clone());
         let compaction_model = config.llm.summary_model.clone();
