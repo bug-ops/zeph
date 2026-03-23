@@ -127,6 +127,8 @@ pub(crate) struct SecurityState {
     /// LLM-based prompt injection pre-screener (opt-in).
     #[cfg(feature = "guardrail")]
     pub(crate) guardrail: Option<zeph_sanitizer::guardrail::GuardrailFilter>,
+    /// Post-LLM response verification layer.
+    pub(crate) response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).

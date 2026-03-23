@@ -15,6 +15,7 @@ pub mod guardrail;
 pub mod memory_validation;
 pub mod pii;
 pub mod quarantine;
+pub mod response_verifier;
 
 use std::sync::LazyLock;
 

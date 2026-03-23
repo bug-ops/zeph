@@ -460,6 +460,10 @@ impl<C: Channel> Agent<C> {
         }
         self.tool_orchestrator.pre_execution_verifiers = verifiers;
 
+        self.security.response_verifier = zeph_sanitizer::response_verifier::ResponseVerifier::new(
+            security.response_verification.clone(),
+        );
+
         self.runtime.security = security;
         self.runtime.timeouts = timeouts;
         self

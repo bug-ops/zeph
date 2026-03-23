@@ -10,6 +10,7 @@ use crate::defaults::default_true;
 use crate::rate_limit::RateLimitConfig;
 use crate::sanitizer::{
     ContentIsolationConfig, ExfiltrationGuardConfig, MemoryWriteValidationConfig, PiiFilterConfig,
+    ResponseVerificationConfig,
 };
 
 #[cfg(feature = "guardrail")]
@@ -103,6 +104,9 @@ pub struct SecurityConfig {
     #[cfg(feature = "guardrail")]
     #[serde(default)]
     pub guardrail: GuardrailConfig,
+    /// Post-LLM response verification layer (enabled by default).
+    #[serde(default)]
+    pub response_verification: ResponseVerificationConfig,
 }
 
 impl Default for SecurityConfig {
@@ -118,6 +122,7 @@ impl Default for SecurityConfig {
             pre_execution_verify: PreExecutionVerifierConfig::default(),
             #[cfg(feature = "guardrail")]
             guardrail: GuardrailConfig::default(),
+            response_verification: ResponseVerificationConfig::default(),
         }
     }
 }

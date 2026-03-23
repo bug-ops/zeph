@@ -171,6 +171,7 @@ fn append_event_items<'a>(
             }
             SecurityEventCategory::PreExecutionBlock => ("[pexb] ", block_style),
             SecurityEventCategory::PreExecutionWarn => ("[pexw] ", flag_style),
+            SecurityEventCategory::ResponseVerification => ("[rver] ", flag_style),
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![

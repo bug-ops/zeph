@@ -65,7 +65,7 @@ pub use providers::{default_stt_language, default_stt_model, default_stt_provide
 pub use rate_limit::RateLimitConfig;
 pub use sanitizer::{
     ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
-    PiiFilterConfig, QuarantineConfig,
+    PiiFilterConfig, QuarantineConfig, ResponseVerificationConfig,
 };
 #[cfg(feature = "guardrail")]
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};

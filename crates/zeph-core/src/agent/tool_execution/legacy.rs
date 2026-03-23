@@ -404,6 +404,14 @@ impl<C: Channel> Agent<C> {
         // Redact secrets from the full accumulated response before it is persisted to
         // history. Per-chunk redaction is applied during streaming (see send_chunk above).
         let redacted = self.maybe_redact(&raw).into_owned();
+        // RV-1: response verification on accumulated streaming response.
+        if self.run_response_verification(&redacted) {
+            let _ = self
+                .channel
+                .send("[security] Response blocked by injection detection.")
+                .await;
+            return Ok(None);
+        }
         // S2: scan accumulated streaming response. Per-chunk scanning not feasible
         // (markdown may split across chunk boundaries); persistence is guarded here.
         let cleaned = self.scan_output_and_warn(&redacted);
@@ -450,6 +458,14 @@ impl<C: Channel> Agent<C> {
                 });
                 self.record_cache_usage();
                 self.record_cost(final_prompt, final_completion);
+                // RV-1: response verification before delivery.
+                if self.run_response_verification(&resp) {
+                    let _ = self
+                        .channel
+                        .send("[security] Response blocked by injection detection.")
+                        .await;
+                    return Ok(None);
+                }
                 // S2: scan for markdown image exfiltration in non-streaming path.
                 let cleaned = self.scan_output_and_warn(&resp);
                 if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {

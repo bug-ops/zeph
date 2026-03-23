@@ -67,6 +67,46 @@ pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Patterns for scanning LLM *output* (response verification layer).
+///
+/// These are intentionally separate from [`RAW_INJECTION_PATTERNS`] (which target untrusted
+/// *input*). Output patterns must have very low false-positive rate on normal LLM responses.
+/// Patterns here detect cases where an LLM response itself contains injected instructions
+/// that could cause the agent to behave incorrectly.
+///
+/// Note: `markdown_image_exfil` is intentionally absent — it is already handled by
+/// `scan_output_and_warn`/`ExfiltrationGuard`.
+pub const RAW_RESPONSE_PATTERNS: &[(&str, &str)] = &[
+    (
+        "autonomy_override",
+        r"(?i)\bset\s+(autonomy|trust)\s*(level|mode)\s*to\b",
+    ),
+    (
+        "memory_write_instruction",
+        r"(?i)\b(now\s+)?(store|save|remember|write)\s+this\s+(to|in)\s+(memory|vault|database)\b",
+    ),
+    (
+        "instruction_override",
+        r"(?i)\b(from\s+now\s+on|henceforth)\b.{0,80}\b(always|never|must)\b",
+    ),
+    (
+        "config_manipulation",
+        r"(?i)\b(change|modify|update)\s+your\s+(config|configuration|settings)\b",
+    ),
+    (
+        "ignore_instructions_response",
+        r"(?i)\bignore\s+(all\s+|any\s+|your\s+)?(previous\s+|prior\s+)?(instructions?|rules?|constraints?)\b",
+    ),
+    (
+        "override_directives_response",
+        r"(?i)\boverride\s+(your\s+)?(directives?|instructions?|rules?|constraints?)\b",
+    ),
+    (
+        "disregard_system",
+        r"(?i)\bdisregard\s+(your\s+|the\s+)?(system\s+prompt|instructions?|guidelines?)\b",
+    ),
+];
+
 /// Strip Unicode format (Cf) characters and ASCII control characters (except tab/newline)
 /// from `text` before injection pattern matching.
 ///
@@ -155,6 +195,17 @@ mod tests {
             assert!(
                 Regex::new(pattern).is_ok(),
                 "pattern '{name}' failed to compile"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_response_patterns_all_compile() {
+        use regex::Regex;
+        for (name, pattern) in RAW_RESPONSE_PATTERNS {
+            assert!(
+                Regex::new(pattern).is_ok(),
+                "response pattern '{name}' failed to compile"
             );
         }
     }

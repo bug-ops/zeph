@@ -339,3 +339,35 @@ impl Default for GuardrailConfig {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ResponseVerificationConfig
+// ---------------------------------------------------------------------------
+
+/// Configuration for post-LLM response verification, nested under
+/// `[security.response_verification]` in the agent config file.
+///
+/// Scans LLM responses for injected instruction patterns before tool dispatch.
+/// This is defense-in-depth layer 3 (after input sanitization and pre-execution verification).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ResponseVerificationConfig {
+    /// Enable post-LLM response verification (default: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Block tool dispatch when injection patterns are detected (default: false).
+    ///
+    /// When `false`, flagged responses are logged and shown in the TUI SEC panel
+    /// but still delivered. When `true`, the response is suppressed and the user
+    /// is notified.
+    #[serde(default)]
+    pub block_on_detection: bool,
+}
+
+impl Default for ResponseVerificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            block_on_detection: false,
+        }
+    }
+}
