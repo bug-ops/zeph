@@ -485,9 +485,9 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
             )))
         }
         LlmRoutingStrategy::Task => {
-            // Task routing uses the orchestrator path; fall back to single provider for now.
+            // Task-based routing is not yet implemented; fall back to single provider.
             tracing::warn!(
-                "routing = \"task\" requires [llm.orchestrator] config; \
+                "routing = \"task\" is not yet implemented; \
                  falling back to single provider from pool"
             );
             build_single_provider_from_pool(pool, config)
