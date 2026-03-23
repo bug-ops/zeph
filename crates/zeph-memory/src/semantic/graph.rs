@@ -387,6 +387,8 @@ pub async fn extract_and_store(
         }
     }
 
+    store.checkpoint_wal().await?;
+
     let new_entity_ids: Vec<i64> = entity_name_to_id.into_values().collect();
 
     Ok(ExtractionResult {
@@ -514,6 +516,50 @@ mod tests {
         assert!(
             entity.qdrant_point_id.is_none(),
             "qdrant_point_id must remain None when no embedding_store is provided"
+        );
+    }
+
+    /// Regression test for #2166: FTS5 entity writes must be visible to a new connection pool
+    /// opened after extraction completes. Without `checkpoint_wal()` in `extract_and_store`,
+    /// a fresh pool sees stale FTS5 shadow tables and `find_entities_fuzzy` returns empty.
+    #[tokio::test]
+    async fn extract_and_store_fts5_cross_session_visibility() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = file.path().to_str().expect("valid path").to_string();
+
+        // Session A: run extract_and_store on a file DB (not :memory:) so WAL is used.
+        {
+            let sqlite = crate::sqlite::SqliteStore::new(&path).await.unwrap();
+            let extraction_json = r#"{"entities":[{"name":"Ferris","type":"concept","summary":"Rust mascot"}],"edges":[]}"#;
+            let mock =
+                zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+            let provider = AnyProvider::Mock(mock);
+            let config = GraphExtractionConfig {
+                max_entities: 10,
+                max_edges: 10,
+                extraction_timeout_secs: 10,
+                ..Default::default()
+            };
+            extract_and_store(
+                "Ferris is the Rust mascot.".to_owned(),
+                vec![],
+                provider,
+                sqlite.pool().clone(),
+                config,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Session B: new pool — FTS5 must see the entity extracted in session A.
+        let sqlite_b = crate::sqlite::SqliteStore::new(&path).await.unwrap();
+        let gs_b = crate::graph::GraphStore::new(sqlite_b.pool().clone());
+        let results = gs_b.find_entities_fuzzy("Ferris", 10).await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "FTS5 cross-session (#2166): entity extracted in session A must be visible in session B"
         );
     }
 }

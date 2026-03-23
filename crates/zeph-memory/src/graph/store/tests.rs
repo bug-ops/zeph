@@ -2793,3 +2793,34 @@ async fn bfs_typed_entity_type_filter() {
         "B must not be reachable via semantic filter when only entity edge exists"
     );
 }
+
+/// Regression test for FTS5+WAL cross-session visibility (issue #2166).
+///
+/// Entities inserted via `upsert_entity` in one pool must be found by `find_entities_fuzzy`
+/// in a new pool opened on the same file after the first pool is dropped.
+/// Without `checkpoint_wal`, FTS5 shadow table writes buffered in the WAL are not visible
+/// to a fresh connection, causing SYNAPSE to return zero seeds.
+#[tokio::test]
+async fn fts5_cross_session_visibility_after_checkpoint() {
+    let file = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = file.path().to_str().expect("valid path").to_string();
+
+    // Session A: open store, insert entity, checkpoint, drop pool.
+    {
+        let store_a = SqliteStore::new(&path).await.unwrap();
+        let gs_a = GraphStore::new(store_a.pool().clone());
+        gs_a.upsert_entity("Rust", "rust", EntityType::Concept, None)
+            .await
+            .unwrap();
+        gs_a.checkpoint_wal().await.unwrap();
+    }
+
+    // Session B: new pool on same file — entity must be visible via FTS5.
+    let store_b = SqliteStore::new(&path).await.unwrap();
+    let gs_b = GraphStore::new(store_b.pool().clone());
+    let results = gs_b.find_entities_fuzzy("Rust", 10).await.unwrap();
+    assert!(
+        !results.is_empty(),
+        "FTS5 cross-session: entity inserted in session A must be visible in session B after WAL checkpoint"
+    );
+}

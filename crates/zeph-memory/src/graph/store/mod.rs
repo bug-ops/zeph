@@ -203,6 +203,22 @@ impl GraphStore {
             .collect::<Result<Vec<_>, _>>()
     }
 
+    /// Flush the `SQLite` WAL to the main database file.
+    ///
+    /// Runs `PRAGMA wal_checkpoint(PASSIVE)`. Safe to call at any time; does not block active
+    /// readers or writers. Call after bulk entity inserts to ensure FTS5 shadow table writes are
+    /// visible to connections opened in future sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PRAGMA execution fails.
+    pub async fn checkpoint_wal(&self) -> Result<(), MemoryError> {
+        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Stream all entities from the database incrementally (true cursor, no full-table load).
     pub fn all_entities_stream(&self) -> impl Stream<Item = Result<Entity, MemoryError>> + '_ {
         use futures::StreamExt as _;

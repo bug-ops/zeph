@@ -78,6 +78,12 @@ impl SqliteStore {
 
         sqlx::migrate!("./migrations").run(&pool).await?;
 
+        if path != ":memory:" {
+            sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                .execute(&pool)
+                .await?;
+        }
+
         Ok(Self { pool })
     }
 
