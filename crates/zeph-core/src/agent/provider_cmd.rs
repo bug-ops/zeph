@@ -199,3 +199,190 @@ impl<C: Channel> Agent<C> {
         self.instructions.blocks = new_blocks;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::Agent;
+    use crate::agent::state::ProviderConfigSnapshot;
+    use crate::agent::tests::agent_tests::{
+        MockChannel, MockToolExecutor, QuickTestAgent, create_test_registry, mock_provider,
+    };
+    use zeph_config::{ProviderEntry, ProviderKind};
+
+    fn make_entry(name: &str, kind: ProviderKind, model: Option<&str>) -> ProviderEntry {
+        ProviderEntry {
+            name: Some(name.to_owned()),
+            provider_type: kind,
+            model: model.map(str::to_owned),
+            ..ProviderEntry::default()
+        }
+    }
+
+    fn ollama_snapshot() -> ProviderConfigSnapshot {
+        ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: Default::default(),
+            llm_request_timeout_secs: 30,
+            embedding_model: "nomic-embed-text".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_list_empty_pool() {
+        let mut qa = QuickTestAgent::minimal("ok");
+        qa.agent.handle_provider_command("/provider").await;
+        let msgs = qa.sent_messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].contains("No providers configured"));
+    }
+
+    #[tokio::test]
+    async fn provider_list_shows_all_with_active_marker() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        let entry_b = make_entry(
+            "claude",
+            ProviderKind::Claude,
+            Some("claude-haiku-4-5-20251001"),
+        );
+        agent.providers.provider_pool = vec![entry_a, entry_b];
+
+        agent.handle_provider_command("/provider").await;
+        let msgs = agent.channel.sent_messages();
+        assert_eq!(msgs.len(), 1);
+        let out = &msgs[0];
+        assert!(out.contains("ollama"), "should list ollama");
+        assert!(out.contains("claude"), "should list claude");
+        // Active provider is MockProvider; neither entry matches — no (active) marker expected.
+        assert!(out.contains("Configured providers:"));
+    }
+
+    #[tokio::test]
+    async fn provider_list_marks_active_provider() {
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        let snapshot = ollama_snapshot();
+        let new_provider = crate::bootstrap::build_provider_for_switch(&entry, &snapshot).unwrap();
+
+        let mut agent = Agent::new(new_provider, channel, registry, None, 5, executor);
+        agent.providers.provider_pool = vec![entry];
+        agent.providers.provider_config_snapshot = Some(snapshot);
+
+        agent.handle_provider_command("/provider").await;
+        let msgs = agent.channel.sent_messages();
+        assert!(msgs[0].contains("(active)"), "active entry must be marked");
+    }
+
+    #[tokio::test]
+    async fn provider_switch_unknown_name_returns_error() {
+        let mut qa = QuickTestAgent::minimal("ok");
+        let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        qa.agent.providers.provider_pool = vec![entry];
+        qa.agent
+            .handle_provider_command("/provider nonexistent")
+            .await;
+        let msgs = qa.sent_messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].contains("Unknown provider 'nonexistent'"));
+        assert!(msgs[0].contains("ollama"));
+    }
+
+    #[tokio::test]
+    async fn provider_switch_already_active_warns() {
+        let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        let snapshot = ollama_snapshot();
+        let provider = crate::bootstrap::build_provider_for_switch(&entry, &snapshot).unwrap();
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.providers.provider_pool = vec![entry];
+        agent.providers.provider_config_snapshot = Some(snapshot);
+
+        agent.handle_provider_command("/provider ollama").await;
+        let msgs = agent.channel.sent_messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].contains("already active"));
+    }
+
+    #[tokio::test]
+    async fn provider_switch_missing_snapshot_returns_error() {
+        let mut qa = QuickTestAgent::minimal("ok");
+        let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        qa.agent.providers.provider_pool = vec![entry];
+        // provider_config_snapshot is None by default
+        qa.agent.handle_provider_command("/provider ollama").await;
+        let msgs = qa.sent_messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].contains("config snapshot missing"));
+    }
+
+    #[tokio::test]
+    async fn provider_switch_success_resets_state() {
+        let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
+        let snapshot = ollama_snapshot();
+        let provider_a = crate::bootstrap::build_provider_for_switch(&entry_a, &snapshot).unwrap();
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider_a, channel, registry, None, 5, executor);
+        agent.providers.provider_pool = vec![entry_a, entry_b];
+        agent.providers.provider_config_snapshot = Some(snapshot);
+        agent.providers.cached_prompt_tokens = 999;
+
+        agent.handle_provider_command("/provider ollama2").await;
+        let msgs = agent.channel.sent_messages();
+        assert_eq!(msgs.len(), 1, "should send success message");
+        assert!(
+            msgs[0].contains("Switched to provider:"),
+            "unexpected: {}",
+            msgs[0]
+        );
+        assert!(msgs[0].contains("llama3.2"));
+        assert_eq!(
+            agent.providers.cached_prompt_tokens, 0,
+            "must be reset on switch"
+        );
+        assert_eq!(agent.runtime.model_name, "llama3.2");
+    }
+
+    #[tokio::test]
+    async fn provider_status_no_metrics() {
+        let mut qa = QuickTestAgent::minimal("ok");
+        qa.agent.runtime.model_name = "test-model".to_owned();
+        qa.agent.handle_provider_command("/provider status").await;
+        let msgs = qa.sent_messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].contains("Current provider:"));
+        assert!(msgs[0].contains("test-model"));
+    }
+
+    #[tokio::test]
+    async fn provider_config_snapshot_fields() {
+        let snap = ProviderConfigSnapshot {
+            claude_api_key: Some("key-claude".to_owned()),
+            openai_api_key: Some("key-openai".to_owned()),
+            gemini_api_key: None,
+            compatible_api_keys: Default::default(),
+            llm_request_timeout_secs: 60,
+            embedding_model: "nomic-embed-text".to_owned(),
+        };
+        assert_eq!(snap.claude_api_key.as_deref(), Some("key-claude"));
+        assert_eq!(snap.openai_api_key.as_deref(), Some("key-openai"));
+        assert!(snap.gemini_api_key.is_none());
+        assert_eq!(snap.llm_request_timeout_secs, 60);
+    }
+}
