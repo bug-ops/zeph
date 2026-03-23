@@ -190,7 +190,7 @@ impl TriageRouter {
     }
 
     /// Propagate a status sender to all tier providers.
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: &StatusTx) {
         for (_, provider) in &mut self.tier_providers {
             provider.set_status_tx(tx.clone());
         }

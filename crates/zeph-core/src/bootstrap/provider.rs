@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::LlmProvider as _;
 use zeph_llm::router::triage::{ComplexityTier, TriageRouter};
 
 /// Error type for bootstrap / provider construction failures.
@@ -596,16 +595,17 @@ fn build_triage_provider(
     }
 
     // bypass_single_provider: if all tiers reference the same config entry name, skip triage.
-    if cr.bypass_single_provider {
-        if let Some(first_name) = tier_config_names.first().copied() {
-            if tier_config_names.iter().all(|n| *n == first_name) {
-                tracing::debug!(
-                    provider = first_name,
-                    "triage routing: all tiers map to same config entry, bypassing triage"
-                );
-                return build_single_provider_from_pool(pool, config);
-            }
-        }
+    if cr.bypass_single_provider
+        && let Some(first_name) = tier_config_names
+            .first()
+            .copied()
+            .filter(|&n| tier_config_names.iter().all(|m| *m == n))
+    {
+        tracing::debug!(
+            provider = first_name,
+            "triage routing: all tiers map to same config entry, bypassing triage"
+        );
+        return build_single_provider_from_pool(pool, config);
     }
 
     let router = TriageRouter::new(

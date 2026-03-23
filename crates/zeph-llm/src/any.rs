@@ -256,7 +256,7 @@ impl AnyProvider {
                 p.set_status_tx(tx);
             }
             Self::Triage(p) => {
-                p.set_status_tx(tx);
+                p.set_status_tx(&tx);
             }
             Self::Ollama(_) => {}
             #[cfg(feature = "candle")]
