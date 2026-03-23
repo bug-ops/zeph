@@ -34,3 +34,4 @@ See `constitution.md` for project-wide non-negotiable rules.
 | `020-config-loading/spec.md` | Config resolution order, mode-agnostic defaults | `zeph-core` |
 | `021-architecture-audit/spec.md` | Post-PR#1972 comprehensive audit: type safety, DRY, dead code, abstractions, channels | cross-cutting |
 | `handoff-skill-system/spec.md` | Skill-based YAML handoff protocol for inter-agent communication | `zeph-orchestration` |
+| `023-complexity-triage-routing/spec.md` | Pre-inference complexity classification routing: ComplexityTier, TriageRouter, context escalation, metrics | `zeph-llm`, `zeph-config`, `zeph-core` |
