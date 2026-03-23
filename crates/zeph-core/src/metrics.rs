@@ -267,6 +267,24 @@ pub struct MetricsSnapshot {
     pub tool_cache_entries: usize,
     /// Number of semantic-tier facts in memory (0 when tier promotion disabled).
     pub semantic_fact_count: u64,
+    /// STT model name (e.g. "whisper-1"). `None` when STT is not configured.
+    pub stt_model: Option<String>,
+    /// Model used for context compaction/summarization. `None` when no summary provider is set.
+    pub compaction_model: Option<String>,
+    /// Temperature of the active provider when using Candle. `None` for API providers.
+    pub provider_temperature: Option<f32>,
+    /// Top-p of the active provider when using Candle. `None` for API providers.
+    pub provider_top_p: Option<f32>,
+    /// Active I/O channel name: `"cli"`, `"telegram"`, `"tui"`, `"discord"`, `"slack"`.
+    pub active_channel: String,
+    /// Embedding model name (e.g. `"nomic-embed-text"`). Empty when embeddings are disabled.
+    pub embedding_model: String,
+    /// Token budget for context window. `None` when not configured.
+    pub token_budget: Option<u64>,
+    /// Whether self-learning (skill evolution) is enabled.
+    pub self_learning_enabled: bool,
+    /// Whether the semantic response cache is enabled.
+    pub semantic_cache_enabled: bool,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.
@@ -377,6 +395,42 @@ mod tests {
         assert_eq!(m.mcp_server_count, 0);
         assert!(m.provider_name.is_empty());
         assert_eq!(m.summaries_count, 0);
+        // Phase 2 fields
+        assert!(m.stt_model.is_none());
+        assert!(m.compaction_model.is_none());
+        assert!(m.provider_temperature.is_none());
+        assert!(m.provider_top_p.is_none());
+        assert!(m.active_channel.is_empty());
+        assert!(m.embedding_model.is_empty());
+        assert!(m.token_budget.is_none());
+        assert!(!m.self_learning_enabled);
+        assert!(!m.semantic_cache_enabled);
+    }
+
+    #[test]
+    fn metrics_collector_update_phase2_fields() {
+        let (collector, rx) = MetricsCollector::new();
+        collector.update(|m| {
+            m.stt_model = Some("whisper-1".into());
+            m.compaction_model = Some("haiku".into());
+            m.provider_temperature = Some(0.7);
+            m.provider_top_p = Some(0.95);
+            m.active_channel = "tui".into();
+            m.embedding_model = "nomic-embed-text".into();
+            m.token_budget = Some(200_000);
+            m.self_learning_enabled = true;
+            m.semantic_cache_enabled = true;
+        });
+        let s = rx.borrow();
+        assert_eq!(s.stt_model.as_deref(), Some("whisper-1"));
+        assert_eq!(s.compaction_model.as_deref(), Some("haiku"));
+        assert_eq!(s.provider_temperature, Some(0.7));
+        assert_eq!(s.provider_top_p, Some(0.95));
+        assert_eq!(s.active_channel, "tui");
+        assert_eq!(s.embedding_model, "nomic-embed-text");
+        assert_eq!(s.token_budget, Some(200_000));
+        assert!(s.self_learning_enabled);
+        assert!(s.semantic_cache_enabled);
     }
 
     #[test]

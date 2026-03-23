@@ -146,6 +146,27 @@ impl<C: Channel> Agent<C> {
                 // C5: Update instruction file list for the new provider's kind.
                 self.update_provider_instructions(&entry);
 
+                // C6: Reflect provider switch in metrics (model name, temperature, top_p).
+                // Precision loss from f64→f32 is acceptable for display purposes.
+                #[allow(clippy::cast_possible_truncation)]
+                let provider_temperature = entry
+                    .candle
+                    .as_ref()
+                    .map(|c| c.generation.temperature as f32);
+                #[allow(clippy::cast_possible_truncation)]
+                let provider_top_p = entry
+                    .candle
+                    .as_ref()
+                    .and_then(|c| c.generation.top_p.map(|v| v as f32));
+                let switched_model = self.runtime.model_name.clone();
+                let switched_provider = self.provider.name().to_owned();
+                self.update_metrics(|m| {
+                    m.provider_name = switched_provider;
+                    m.model_name = switched_model;
+                    m.provider_temperature = provider_temperature;
+                    m.provider_top_p = provider_top_p;
+                });
+
                 let _ = self
                     .channel
                     .send(&format!(

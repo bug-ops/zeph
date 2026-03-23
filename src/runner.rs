@@ -627,6 +627,31 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         println!("zeph v{}", env!("CARGO_PKG_VERSION"));
     }
 
+    // Determine channel name before channel is consumed by Agent::new.
+    #[cfg(feature = "tui")]
+    let active_channel_name: String = match &channel {
+        AppChannel::Tui(_) => "tui",
+        AppChannel::Standard(c) => match c {
+            AnyChannel::Cli(_) => "cli",
+            AnyChannel::Telegram(_) => "telegram",
+            #[cfg(feature = "discord")]
+            AnyChannel::Discord(_) => "discord",
+            #[cfg(feature = "slack")]
+            AnyChannel::Slack(_) => "slack",
+        },
+    }
+    .to_owned();
+    #[cfg(not(feature = "tui"))]
+    let active_channel_name: String = match &channel {
+        AnyChannel::Cli(_) => "cli",
+        AnyChannel::Telegram(_) => "telegram",
+        #[cfg(feature = "discord")]
+        AnyChannel::Discord(_) => "discord",
+        #[cfg(feature = "slack")]
+        AnyChannel::Slack(_) => "slack",
+    }
+    .to_owned();
+
     let conversation_id = match memory.sqlite().latest_conversation_id().await? {
         Some(id) => id,
         None => memory.sqlite().create_conversation().await?,
@@ -1243,9 +1268,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
-    metrics_tx.send_modify(|m| {
-        config.llm.effective_model().clone_into(&mut m.model_name);
-    });
+    {
+        let stt_model = config.llm.stt.as_ref().map(|s| s.model.clone());
+        let compaction_model = config.llm.summary_model.clone();
+        let semantic_cache_enabled = config.llm.semantic_cache_enabled;
+        let embedding_model = zeph_core::bootstrap::effective_embedding_model(config).clone();
+        let self_learning_enabled = config.skills.learning.enabled;
+        metrics_tx.send_modify(|m| {
+            config.llm.effective_model().clone_into(&mut m.model_name);
+            m.stt_model = stt_model;
+            m.compaction_model = compaction_model;
+            m.semantic_cache_enabled = semantic_cache_enabled;
+            m.embedding_model = embedding_model;
+            m.self_learning_enabled = self_learning_enabled;
+            m.active_channel = active_channel_name.clone();
+        });
+    }
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();
     let extended_context = config

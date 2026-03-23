@@ -23,6 +23,15 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     if metrics.extended_context {
         res_lines.push(Line::from("  Max context: 1M"));
     }
+    if !metrics.embedding_model.is_empty() {
+        res_lines.push(Line::from(format!("  Embed: {}", metrics.embedding_model)));
+    }
+    if let Some(budget) = metrics.token_budget {
+        res_lines.push(Line::from(format!("  Budget: {budget} tok")));
+    }
+    if metrics.self_learning_enabled {
+        res_lines.push(Line::from("  Learning: ON"));
+    }
     if metrics.cache_creation_tokens > 0 || metrics.cache_read_tokens > 0 {
         res_lines.push(Line::from(format!(
             "  Cache write: {}",
@@ -116,5 +125,62 @@ mod tests {
             "resources panel must contain 'Max context: 1M' when extended_context is true; got: {output:?}"
         );
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn resources_shows_embedding_model_when_set() {
+        let metrics = MetricsSnapshot {
+            embedding_model: "nomic-embed-text".into(),
+            ..MetricsSnapshot::default()
+        };
+        let output = render_to_string(35, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("Embed: nomic-embed-text"),
+            "resources panel must contain embedding model; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn resources_omits_embedding_model_when_empty() {
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(35, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            !output.contains("Embed:"),
+            "resources panel must not contain Embed: when embedding_model is empty; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn resources_shows_token_budget_with_compaction_threshold_none() {
+        let metrics = MetricsSnapshot {
+            token_budget: Some(200_000),
+            ..MetricsSnapshot::default()
+        };
+        let output = render_to_string(35, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("Budget: 200000 tok"),
+            "resources panel must show token budget; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn resources_shows_self_learning_flag() {
+        let metrics = MetricsSnapshot {
+            self_learning_enabled: true,
+            ..MetricsSnapshot::default()
+        };
+        let output = render_to_string(35, 10, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("Learning: ON"),
+            "resources panel must show 'Learning: ON' when self_learning_enabled; got: {output:?}"
+        );
     }
 }
