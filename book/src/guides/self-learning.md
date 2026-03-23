@@ -74,10 +74,11 @@ When hybrid search is enabled, the system prompt includes skill health attribute
 
 ## Step 4 — Enable EMA Routing (Multi-Provider Setups)
 
-If you run multiple providers via `provider = "orchestrator"` or `provider = "router"`, EMA routing continuously reorders providers by latency:
+If you run multiple providers via `routing = "ema"` in `[llm]`, EMA routing continuously reorders providers by latency:
 
 ```toml
 [llm]
+routing = "ema"
 router_ema_enabled = true
 router_ema_alpha = 0.1       # lower = more weight on historical latency
 router_reorder_interval = 10 # re-evaluate every 10 requests

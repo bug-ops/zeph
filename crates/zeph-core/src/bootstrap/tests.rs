@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::config::{Config, ProviderKind};
+use crate::config::{Config, ProviderEntry, ProviderKind};
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
 
@@ -116,31 +116,14 @@ fn create_provider_ollama() {
 }
 
 #[test]
-fn create_provider_claude_without_cloud_config_errors() {
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Claude);
-    config.llm.cloud = None;
-    let result = create_provider(&config);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("llm.cloud config section required")
-    );
-}
-
-#[test]
 fn create_provider_claude_without_api_key_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Claude);
-    config.llm.cloud = Some(crate::config::CloudLlmConfig {
-        model: "claude-sonnet-4-6".into(),
-        max_tokens: 4096,
-        thinking: None,
-        server_compaction: false,
-        enable_extended_context: false,
-    });
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::Claude,
+        model: Some("claude-sonnet-4-6".into()),
+        max_tokens: Some(4096),
+        ..ProviderEntry::default()
+    }];
     config.secrets.claude_api_key = None;
 
     let result = create_provider(&config);
@@ -176,59 +159,43 @@ fn effective_embedding_model_defaults_to_llm() {
 }
 
 #[test]
-fn effective_embedding_model_uses_openai_when_set() {
+fn effective_embedding_model_uses_pool_embed_entry() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::OpenAi);
-    config.llm.openai = Some(crate::config::OpenAiConfig {
-        base_url: "https://api.openai.com/v1".into(),
-        model: "gpt-5.2".into(),
-        max_tokens: 4096,
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::OpenAi,
+        model: Some("gpt-5.2".into()),
+        max_tokens: Some(4096),
         embedding_model: Some("text-embedding-3-small".into()),
-        reasoning_effort: None,
-    });
+        embed: true,
+        ..ProviderEntry::default()
+    }];
     assert_eq!(effective_embedding_model(&config), "text-embedding-3-small");
 }
 
 #[test]
-fn effective_embedding_model_falls_back_when_openai_embed_missing() {
+fn effective_embedding_model_falls_back_when_embed_missing() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::OpenAi);
-    config.llm.openai = Some(crate::config::OpenAiConfig {
-        base_url: "https://api.openai.com/v1".into(),
-        model: "gpt-5.2".into(),
-        max_tokens: 4096,
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::OpenAi,
+        model: Some("gpt-5.2".into()),
+        max_tokens: Some(4096),
         embedding_model: None,
-        reasoning_effort: None,
-    });
+        ..ProviderEntry::default()
+    }];
     assert_eq!(effective_embedding_model(&config), "qwen3-embedding");
-}
-
-#[test]
-fn create_provider_openai_missing_config_errors() {
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::OpenAi);
-    config.llm.openai = None;
-    let result = create_provider(&config);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("llm.openai config section required")
-    );
 }
 
 #[test]
 fn create_provider_openai_missing_api_key_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::OpenAi);
-    config.llm.openai = Some(crate::config::OpenAiConfig {
-        base_url: "https://api.openai.com/v1".into(),
-        model: "gpt-4o".into(),
-        max_tokens: 4096,
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::OpenAi,
+        base_url: Some("https://api.openai.com/v1".into()),
+        model: Some("gpt-4o".into()),
+        max_tokens: Some(4096),
         embedding_model: None,
-        reasoning_effort: None,
-    });
+        ..ProviderEntry::default()
+    }];
     config.secrets.openai_api_key = None;
     let result = create_provider(&config);
     assert!(result.is_err());
@@ -286,7 +253,10 @@ fn select_device_auto_fallback() {
 #[test]
 fn create_provider_candle_without_config_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Candle);
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::Candle,
+        ..ProviderEntry::default()
+    }];
     config.llm.candle = None;
     let result = create_provider(&config);
     assert!(result.is_err());
@@ -296,418 +266,6 @@ fn create_provider_candle_without_config_errors() {
             .to_string()
             .contains("llm.candle config section required")
     );
-}
-
-#[test]
-fn create_provider_orchestrator_without_config_errors() {
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-    config.llm.orchestrator = None;
-    let result = create_provider(&config);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("llm.orchestrator config section required")
-    );
-}
-
-#[test]
-fn build_orchestrator_with_unknown_provider_errors() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "test".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "unknown_type".to_string(),
-            model: None,
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "test".to_string(),
-        embed: "test".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("unknown orchestrator sub-provider type")
-    );
-}
-
-#[test]
-fn build_orchestrator_claude_without_cloud_config_errors() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-    config.llm.cloud = None;
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "claude_sub".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "claude".to_string(),
-            model: None,
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "claude_sub".to_string(),
-        embed: "claude_sub".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("llm.cloud config required")
-    );
-}
-
-#[test]
-fn build_orchestrator_claude_sub_without_api_key_errors() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-    config.llm.cloud = Some(crate::config::CloudLlmConfig {
-        model: "claude-sonnet-4-6".into(),
-        max_tokens: 4096,
-        thinking: None,
-        server_compaction: false,
-        enable_extended_context: false,
-    });
-    config.secrets.claude_api_key = None;
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "claude_sub".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "claude".to_string(),
-            model: None,
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "claude_sub".to_string(),
-        embed: "claude_sub".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("ZEPH_CLAUDE_API_KEY required")
-    );
-}
-
-#[cfg(feature = "candle")]
-#[test]
-fn build_orchestrator_candle_without_config_errors() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-    config.llm.candle = None;
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "candle_sub".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "candle".to_string(),
-            model: None,
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "candle_sub".to_string(),
-        embed: "candle_sub".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("llm.candle config required")
-    );
-}
-
-#[test]
-fn build_orchestrator_with_ollama_sub_provider() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "ollama_sub".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "ollama".to_string(),
-            model: Some("llama2".to_string()),
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "ollama_sub".to_string(),
-        embed: "ollama_sub".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn build_orchestrator_ollama_per_provider_base_url() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-    config.llm.base_url = Some("http://localhost:11434".into());
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "ollama_custom".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "ollama".to_string(),
-            model: Some("llama3".to_string()),
-            base_url: Some("http://gpu-server:11434".to_string()),
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "ollama_custom".to_string(),
-        embed: "ollama_custom".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn build_orchestrator_ollama_per_provider_embedding_model() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "ollama_embed".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "ollama".to_string(),
-            model: None,
-            base_url: None,
-            embedding_model: Some("nomic-embed-text".to_string()),
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "ollama_embed".to_string(),
-        embed: "ollama_embed".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn effective_embedding_model_reads_orchestrator_sub_provider() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::default();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-    config.llm.embedding_model = "default-embed".into();
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "ollama_embed".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "ollama".to_string(),
-            model: None,
-            base_url: None,
-            embedding_model: Some("custom-embed".to_string()),
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "ollama_embed".to_string(),
-        embed: "ollama_embed".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    assert_eq!(effective_embedding_model(&config), "custom-embed");
-}
-
-#[test]
-fn build_orchestrator_routes_parsing() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "ollama_sub".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "ollama".to_string(),
-            model: None,
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    let mut routes = HashMap::new();
-    routes.insert("chat".to_string(), vec!["ollama_sub".to_string()]);
-    routes.insert("embed".to_string(), vec!["ollama_sub".to_string()]);
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes,
-        default: "ollama_sub".to_string(),
-        embed: "ollama_sub".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_ok());
-}
-
-#[cfg(feature = "candle")]
-#[test]
-fn build_orchestrator_with_candle_local_source() {
-    use crate::config::OrchestratorProviderConfig;
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.llm.provider = Some(ProviderKind::Orchestrator);
-    config.llm.candle = Some(crate::config::CandleConfig {
-        source: "local".into(),
-        local_path: "/tmp/model.gguf".into(),
-        filename: Some("model.gguf".to_string()),
-        chat_template: "{{ messages[0].content }}".into(),
-        device: "cpu".into(),
-        embedding_repo: Some("embed/model".into()),
-        generation: crate::config::GenerationParams {
-            temperature: 0.7,
-            top_p: Some(0.9),
-            top_k: Some(50),
-            max_tokens: 512,
-            seed: 42,
-            repeat_penalty: 1.1,
-            repeat_last_n: 64,
-        },
-    });
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "candle_local".to_string(),
-        OrchestratorProviderConfig {
-            provider_type: "candle".to_string(),
-            model: Some("local-model".to_string()),
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: Some("cpu".to_string()),
-        },
-    );
-
-    config.llm.orchestrator = Some(crate::config::OrchestratorConfig {
-        providers,
-        routes: HashMap::new(),
-        default: "candle_local".to_string(),
-        embed: "candle_local".to_string(),
-        failure_ttl_secs: None,
-    });
-
-    let result = build_orchestrator(&config);
-    assert!(result.is_err(), "expected error loading nonexistent model");
 }
 
 #[cfg(feature = "candle")]
@@ -742,34 +300,6 @@ async fn health_check_candle_logs_device() {
     }
 }
 
-#[tokio::test]
-async fn health_check_orchestrator_logs_providers() {
-    use std::collections::HashMap;
-    use zeph_llm::orchestrator::{ModelOrchestrator, SubProvider};
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "ollama_local".to_string(),
-        SubProvider::Ollama(OllamaProvider::new(
-            "http://localhost:11434",
-            "test".into(),
-            "embed".into(),
-        )),
-    );
-
-    let routes = HashMap::new();
-    let orch = ModelOrchestrator::new(
-        routes,
-        providers,
-        "ollama_local".to_string(),
-        "ollama_local".to_string(),
-    )
-    .unwrap();
-
-    let provider = AnyProvider::Orchestrator(Box::new(orch));
-    health_check(&provider).await;
-}
-
 #[test]
 fn create_mcp_manager_with_http_transport() {
     use std::collections::HashMap;
@@ -790,163 +320,4 @@ fn create_mcp_manager_with_http_transport() {
     let manager = create_mcp_manager(&config, false);
     let debug = format!("{manager:?}");
     assert!(debug.contains("server_count: 1"));
-}
-
-#[test]
-fn create_mcp_manager_with_stdio_transport() {
-    use std::collections::HashMap;
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.mcp.servers = vec![crate::config::McpServerConfig {
-        id: "test".into(),
-        url: None,
-        command: Some("node".into()),
-        args: vec!["server.js".into()],
-        env: HashMap::new(),
-        headers: HashMap::new(),
-        oauth: None,
-        timeout: 30,
-        policy: Default::default(),
-    }];
-
-    let manager = create_mcp_manager(&config, false);
-    let debug = format!("{manager:?}");
-    assert!(debug.contains("server_count: 1"));
-}
-
-#[test]
-fn create_mcp_manager_empty_servers() {
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.mcp.servers = vec![];
-
-    let manager = create_mcp_manager(&config, false);
-    let debug = format!("{manager:?}");
-    assert!(debug.contains("server_count: 0"));
-}
-
-#[tokio::test]
-async fn create_mcp_registry_when_semantic_disabled() {
-    let config_path = Path::new("/nonexistent");
-    let mut config = Config::load(config_path).unwrap();
-    config.memory.semantic.enabled = false;
-
-    let provider = AnyProvider::Ollama(OllamaProvider::new(
-        "http://localhost:11434",
-        "test".into(),
-        "embed".into(),
-    ));
-
-    let mcp_tools = vec![];
-    let registry = create_mcp_registry(&config, &provider, &mcp_tools, "test-model", None).await;
-    assert!(registry.is_none());
-}
-
-#[test]
-fn managed_skills_dir_returns_skills_subdir() {
-    let dir = managed_skills_dir();
-    assert!(
-        dir.ends_with("skills"),
-        "managed_skills_dir should end in 'skills', got: {dir:?}"
-    );
-}
-
-#[test]
-fn app_builder_managed_skills_dir_matches_free_fn() {
-    assert_eq!(AppBuilder::managed_skills_dir(), managed_skills_dir());
-}
-
-#[test]
-fn skill_paths_includes_managed_dir() {
-    let config = Config::load(Path::new("/nonexistent")).unwrap();
-    let builder = AppBuilder {
-        config,
-        config_path: PathBuf::from("/nonexistent/config.toml"),
-        vault: Box::new(EnvVaultProvider),
-        age_vault: None,
-        qdrant_ops: None,
-    };
-    let paths = builder.skill_paths();
-    let managed = managed_skills_dir();
-    assert!(
-        paths.contains(&managed),
-        "skill_paths() should include managed_skills_dir, got: {paths:?}"
-    );
-}
-
-#[test]
-fn skill_paths_does_not_duplicate_managed_dir() {
-    let managed = managed_skills_dir();
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.skills.paths = vec![managed.to_string_lossy().into_owned()];
-    let builder = AppBuilder {
-        config,
-        config_path: PathBuf::from("/nonexistent/config.toml"),
-        vault: Box::new(EnvVaultProvider),
-        age_vault: None,
-        qdrant_ops: None,
-    };
-    let paths = builder.skill_paths();
-    let count = paths.iter().filter(|p| p == &&managed).count();
-    assert_eq!(
-        count, 1,
-        "managed dir should appear exactly once, got: {paths:?}"
-    );
-}
-
-#[tokio::test]
-async fn create_skill_matcher_when_semantic_disabled() {
-    let tmp = std::env::temp_dir().join("zeph_test_skill_matcher_bootstrap.db");
-    let _ = std::fs::remove_file(&tmp);
-    let tmp_path = tmp.to_string_lossy().to_string();
-
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.memory.semantic.enabled = false;
-    config.memory.sqlite_path = tmp_path.clone();
-
-    let provider = AnyProvider::Ollama(OllamaProvider::new(
-        "http://localhost:11434",
-        "test".into(),
-        "embed".into(),
-    ));
-
-    let memory = SemanticMemory::with_sqlite_backend_and_pool_size(
-        &tmp_path,
-        provider.clone(),
-        &config.llm.embedding_model,
-        config.memory.semantic.vector_weight,
-        config.memory.semantic.keyword_weight,
-        1,
-    )
-    .await
-    .unwrap();
-
-    let meta: Vec<&SkillMeta> = vec![];
-    let result = create_skill_matcher(&config, &provider, &meta, &memory, "test-model", None).await;
-    assert!(result.is_none());
-
-    let _ = std::fs::remove_file(&tmp);
-}
-
-#[test]
-fn appbuilder_qdrant_ops_invalid_url_returns_err() {
-    // Verify the CRIT-04 hard-error path: VectorBackend::Qdrant with an invalid URL
-    // must produce an error, not silently yield None.
-    // This mirrors the logic inside AppBuilder::new() without the vault/config-file overhead.
-    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.memory.vector_backend = crate::config::VectorBackend::Qdrant;
-    config.memory.qdrant_url = "not a valid url".into();
-
-    let result = zeph_memory::QdrantOps::new(&config.memory.qdrant_url);
-    assert!(
-        result.is_err(),
-        "QdrantOps::new with invalid URL must fail (CRIT-04)"
-    );
-}
-
-#[test]
-fn appbuilder_qdrant_ops_valid_url_succeeds() {
-    // Complement: a well-formed URL must succeed even without a live server
-    // (connection is lazy — only established on first RPC).
-    let result = zeph_memory::QdrantOps::new("http://localhost:6334");
-    assert!(result.is_ok(), "QdrantOps::new with valid URL must succeed");
 }

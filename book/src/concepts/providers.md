@@ -11,7 +11,7 @@ Zeph supports multiple LLM backends. Choose based on your needs:
 | Compatible | Cloud | Varies | Varies | Varies | Together AI, Groq, Fireworks |
 | Candle | Local | No | No | No | Minimal footprint |
 
-Claude does not support embeddings natively. Use the [orchestrator](../advanced/orchestrator.md) to combine it with Ollama embeddings. Gemini supports embeddings via the `text-embedding-004` model — set `embedding_model` in `[llm.gemini]` to enable.
+Claude does not support embeddings natively. Use a multi-provider setup with `embed = true` on an Ollama or OpenAI provider entry to combine Claude chat with local embeddings. Gemini supports embeddings via the `text-embedding-004` model — set `embedding_model` in the Gemini `[[llm.providers]]` entry to enable.
 
 ## Quick Setup
 
@@ -66,9 +66,8 @@ Streaming uses `streamGenerateContent?alt=sse`. Thinking parts (returned with `t
 
 ```toml
 [llm]
-provider = "gemini"
-
-[llm.gemini]
+[[llm.providers]]
+type = "gemini"
 model = "gemini-2.0-flash"           # default; use "gemini-2.5-pro" for extended thinking
 max_tokens = 8192
 # embedding_model = "text-embedding-004"  # enable Gemini embeddings (optional)
@@ -107,10 +106,11 @@ Run `zeph init` and choose Gemini as the provider to have the wizard generate a 
 
 ### Embeddings
 
-Set `embedding_model` in `[llm.gemini]` to enable Gemini embeddings. When set, `supports_embeddings()` returns `true` and Zeph uses `POST /v1beta/models/{model}:embedContent` for semantic memory and skill matching — no Ollama dependency required.
+Set `embedding_model` in the Gemini `[[llm.providers]]` entry to enable Gemini embeddings. When set, `supports_embeddings()` returns `true` and Zeph uses `POST /v1beta/models/{model}:embedContent` for semantic memory and skill matching — no Ollama dependency required.
 
 ```toml
-[llm.gemini]
+[[llm.providers]]
+type = "gemini"
 model = "gemini-2.0-flash"
 embedding_model = "text-embedding-004"
 ```
@@ -129,14 +129,14 @@ Streaming tool use is available on all Gemini models that support function calli
 
 ## Switching Providers
 
-One config change: set `provider` in `[llm]`. All skills, memory, and tools work the same regardless of which provider is active.
+Change the `type` field in the `[[llm.providers]]` entry. All skills, memory, and tools work the same regardless of which provider is active.
 
 ```toml
 [llm]
-provider = "claude"   # ollama, claude, openai, gemini, candle, compatible, orchestrator, router
+[[llm.providers]]
+type = "claude"   # ollama, claude, openai, gemini, candle, compatible
+model = "claude-sonnet-4-6"
 ```
-
-Or via environment variable: `ZEPH_LLM_PROVIDER`.
 
 ## Response Caching
 

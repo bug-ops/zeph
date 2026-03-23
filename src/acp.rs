@@ -779,46 +779,10 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
 
     let mut models: Vec<String> = Vec::new();
 
-    if config.llm.effective_provider() == zeph_core::config::ProviderKind::Orchestrator {
-        // Orchestrator: enumerate sub-providers and use their own cache/fallback.
-        if let Some(ref orch) = config.llm.orchestrator {
-            for sub in orch.providers.values() {
-                let slug = sub.provider_type.as_str();
-                let fallback = sub.model.as_deref().unwrap_or("unknown");
-                models.extend(expand_from_cache(slug, fallback));
-            }
-        }
-    } else {
-        // Single provider — use top-level llm section.
-        models.extend(expand_from_cache("ollama", config.llm.effective_model()));
-    }
-
-    // Claude — always add when API key present, even under orchestrator.
-    if config.secrets.claude_api_key.is_some()
-        && config.llm.effective_provider() != zeph_core::config::ProviderKind::Orchestrator
-    {
-        let fallback = config
-            .llm
-            .cloud
-            .as_ref()
-            .map_or("claude-sonnet-4-5", |c| c.model.as_str());
-        models.extend(expand_from_cache("claude", fallback));
-    }
-
-    // OpenAI — only when API key and config section are present (non-orchestrator).
-    if config.llm.effective_provider() != zeph_core::config::ProviderKind::Orchestrator
-        && let (Some(_), Some(openai_cfg)) = (&config.secrets.openai_api_key, &config.llm.openai)
-    {
-        models.extend(expand_from_cache("openai", &openai_cfg.model));
-    }
-
-    // Compatible providers.
-    if let Some(ref entries) = config.llm.compatible {
-        for entry in entries {
-            if config.secrets.compatible_api_keys.contains_key(&entry.name) {
-                models.extend(expand_from_cache(&entry.name, &entry.model));
-            }
-        }
+    for entry in &config.llm.providers {
+        let slug = entry.provider_type.as_str();
+        let fallback = entry.model.as_deref().unwrap_or("unknown");
+        models.extend(expand_from_cache(slug, fallback));
     }
 
     models.dedup();
@@ -948,43 +912,59 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
 
     let mut snapshots: Vec<ProviderSnapshot> = Vec::new();
 
-    // Ollama
-    snapshots.push(ProviderSnapshot::Ollama {
-        base_url: config.llm.effective_base_url().to_owned(),
-        embed: config.llm.embedding_model.clone(),
-    });
-
-    // Claude
-    if let Some(ref secret) = config.secrets.claude_api_key {
-        snapshots.push(ProviderSnapshot::Claude {
-            api_key: secret.expose().to_owned(),
-            max_tokens: config.llm.cloud.as_ref().map_or(4096, |c| c.max_tokens),
-        });
-    }
-
-    // OpenAI
-    if let (Some(secret), Some(openai_cfg)) = (&config.secrets.openai_api_key, &config.llm.openai) {
-        snapshots.push(ProviderSnapshot::OpenAi {
-            api_key: secret.expose().to_owned(),
-            base_url: openai_cfg.base_url.clone(),
-            max_tokens: openai_cfg.max_tokens,
-            embed: openai_cfg.embedding_model.clone(),
-            reasoning_effort: openai_cfg.reasoning_effort.clone(),
-        });
-    }
-
-    // Compatible providers
-    if let Some(ref entries) = config.llm.compatible {
-        for entry in entries {
-            if let Some(secret) = config.secrets.compatible_api_keys.get(&entry.name) {
-                snapshots.push(ProviderSnapshot::Compatible {
-                    api_key: secret.expose().to_owned(),
-                    base_url: entry.base_url.clone(),
-                    max_tokens: entry.max_tokens,
-                    embed: entry.embedding_model.clone(),
-                    name: entry.name.clone(),
+    for entry in &config.llm.providers {
+        let name = entry.effective_name();
+        match entry.provider_type {
+            zeph_core::config::ProviderKind::Ollama => {
+                snapshots.push(ProviderSnapshot::Ollama {
+                    base_url: entry
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "http://localhost:11434".to_owned()),
+                    embed: config.llm.embedding_model.clone(),
                 });
             }
+            zeph_core::config::ProviderKind::Claude => {
+                if let Some(ref secret) = config.secrets.claude_api_key {
+                    snapshots.push(ProviderSnapshot::Claude {
+                        api_key: secret.expose().to_owned(),
+                        max_tokens: entry.max_tokens.unwrap_or(4096),
+                    });
+                }
+            }
+            zeph_core::config::ProviderKind::OpenAi => {
+                if let Some(ref secret) = config.secrets.openai_api_key {
+                    snapshots.push(ProviderSnapshot::OpenAi {
+                        api_key: secret.expose().to_owned(),
+                        base_url: entry
+                            .base_url
+                            .clone()
+                            .unwrap_or_else(|| "https://api.openai.com/v1".to_owned()),
+                        max_tokens: entry.max_tokens.unwrap_or(4096),
+                        embed: entry.embedding_model.clone(),
+                        reasoning_effort: entry.reasoning_effort.clone(),
+                    });
+                }
+            }
+            zeph_core::config::ProviderKind::Compatible => {
+                let secret = entry.api_key.as_deref().map(|k| k.to_owned()).or_else(|| {
+                    config
+                        .secrets
+                        .compatible_api_keys
+                        .get(&name)
+                        .map(|s| s.expose().to_owned())
+                });
+                if let Some(api_key) = secret {
+                    snapshots.push(ProviderSnapshot::Compatible {
+                        api_key,
+                        base_url: entry.base_url.clone().unwrap_or_default(),
+                        max_tokens: entry.max_tokens.unwrap_or(4096),
+                        embed: entry.embedding_model.clone(),
+                        name,
+                    });
+                }
+            }
+            _ => {}
         }
     }
 

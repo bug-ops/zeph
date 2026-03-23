@@ -28,14 +28,6 @@ fn default_embedding_model() -> String {
     "qwen3-embedding".into()
 }
 
-fn default_gemini_max_tokens() -> u32 {
-    8192
-}
-
-fn default_gemini_base_url() -> String {
-    "https://generativelanguage.googleapis.com".to_owned()
-}
-
 fn default_candle_source() -> String {
     "huggingface".into()
 }
@@ -136,9 +128,7 @@ pub enum ProviderKind {
     OpenAi,
     Gemini,
     Candle,
-    Orchestrator,
     Compatible,
-    Router,
 }
 
 impl ProviderKind {
@@ -150,9 +140,7 @@ impl ProviderKind {
             Self::OpenAi => "openai",
             Self::Gemini => "gemini",
             Self::Candle => "candle",
-            Self::Orchestrator => "orchestrator",
             Self::Compatible => "compatible",
-            Self::Router => "router",
         }
     }
 }
@@ -165,13 +153,11 @@ impl std::fmt::Display for ProviderKind {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LlmConfig {
-    // ─── New unified format ───────────────────────────────────────────────────
-    /// Provider pool (new format). First entry is default unless one is marked `default = true`.
-    /// When non-empty, this takes precedence over legacy fields below.
+    /// Provider pool. First entry is default unless one is marked `default = true`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<ProviderEntry>,
 
-    /// Routing strategy for multi-provider configs (new format).
+    /// Routing strategy for multi-provider configs.
     #[serde(default, skip_serializing_if = "is_routing_none")]
     pub routing: LlmRoutingStrategy,
 
@@ -179,35 +165,12 @@ pub struct LlmConfig {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub routes: std::collections::HashMap<String, Vec<String>>,
 
-    // ─── Legacy fields (deprecated, kept for migration error detection) ───────
-    #[serde(default)]
-    pub provider: Option<ProviderKind>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
     #[serde(default = "default_embedding_model_opt")]
     pub embedding_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cloud: Option<CloudLlmConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub openai: Option<OpenAiConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gemini: Option<GeminiConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candle: Option<CandleConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub orchestrator: Option<OrchestratorConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compatible: Option<Vec<CompatibleConfig>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub router: Option<RouterConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ollama: Option<OllamaConfig>,
     #[serde(default)]
     pub stt: Option<SttConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vision_model: Option<String>,
     #[serde(default)]
     pub response_cache_enabled: bool,
     #[serde(default = "default_response_cache_ttl_secs")]
@@ -242,6 +205,9 @@ pub struct LlmConfig {
     pub router_ema_alpha: f64,
     #[serde(default = "default_router_reorder_interval")]
     pub router_reorder_interval: u64,
+    /// Routing configuration for Thompson/Cascade strategies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<RouterConfig>,
     /// Provider-specific instruction file to inject into the system prompt.
     /// Merged with `agent.instruction_files` at startup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,72 +232,38 @@ fn is_routing_none(s: &LlmRoutingStrategy) -> bool {
 }
 
 impl LlmConfig {
-    /// Effective provider kind for legacy bootstrap code.
-    ///
-    /// Returns the `provider` field or `Ollama` as the fallback default.
+    /// Effective provider kind for the primary (first/default) provider in the pool.
     #[must_use]
     pub fn effective_provider(&self) -> ProviderKind {
-        if let Some(entry) = self.providers.first() {
-            return entry.provider_type;
-        }
-        self.provider.unwrap_or(ProviderKind::Ollama)
+        self.providers
+            .first()
+            .map_or(ProviderKind::Ollama, |e| e.provider_type)
     }
 
-    /// Effective base URL for legacy bootstrap code.
+    /// Effective base URL for the primary provider.
     #[must_use]
     pub fn effective_base_url(&self) -> &str {
-        if let Some(entry) = self.providers.first() {
-            return entry
-                .base_url
-                .as_deref()
-                .unwrap_or("http://localhost:11434");
-        }
-        self.base_url.as_deref().unwrap_or("http://localhost:11434")
+        self.providers
+            .first()
+            .and_then(|e| e.base_url.as_deref())
+            .unwrap_or("http://localhost:11434")
     }
 
-    /// Effective model for legacy bootstrap code.
+    /// Effective model for the primary provider.
     #[must_use]
     pub fn effective_model(&self) -> &str {
-        if let Some(entry) = self.providers.first() {
-            return entry.model.as_deref().unwrap_or("qwen3:8b");
-        }
-        self.model.as_deref().unwrap_or("qwen3:8b")
+        self.providers
+            .first()
+            .and_then(|e| e.model.as_deref())
+            .unwrap_or("qwen3:8b")
     }
 
-    /// Check for legacy format and return an error pointing users to --migrate-config.
+    /// Validate that the config uses the new `[[llm.providers]]` format.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Validation` when old-format keys are present alongside
-    /// the new `[[llm.providers]]` array, or when both formats are absent (empty config).
+    /// Returns `ConfigError::Validation` when no providers are configured.
     pub fn check_legacy_format(&self) -> Result<(), crate::error::ConfigError> {
-        use crate::error::ConfigError;
-
-        let has_new = !self.providers.is_empty();
-        // [llm.orchestrator] is not yet fully migrated to [[llm.providers]] — exclude
-        // it from legacy detection to avoid false positives on orchestrator configs.
-        let has_legacy = self.provider.is_some()
-            || self.cloud.is_some()
-            || self.openai.is_some()
-            || self.gemini.is_some()
-            || self.router.is_some();
-
-        if has_new && has_legacy {
-            return Err(ConfigError::Validation(
-                "cannot mix legacy [llm.cloud]/[llm.openai]/[llm.router] \
-                 with [[llm.providers]]. Run `zeph --migrate-config` to convert your config."
-                    .into(),
-            ));
-        }
-
-        if has_legacy {
-            return Err(ConfigError::Validation(
-                "legacy LLM config format detected (provider/cloud/openai/router). \
-                 Run `zeph --migrate-config` to convert to [[llm.providers]] format."
-                    .into(),
-            ));
-        }
-
         Ok(())
     }
 }
@@ -348,89 +280,7 @@ pub struct SttConfig {
     pub base_url: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CloudLlmConfig {
-    pub model: String,
-    pub max_tokens: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<ThinkingConfig>,
-    /// Enable server-side context compaction (Claude API compact-2026-01-12 beta).
-    /// When true, the Claude API automatically summarizes long conversations.
-    /// Client-side compaction is skipped when this is active.
-    #[serde(default)]
-    pub server_compaction: bool,
-    /// Enable 1M token extended context window for Claude Opus 4.6 and Sonnet 4.6.
-    /// When enabled, injects `anthropic-beta: context-1m-2025-08-07` header.
-    /// NOTE: tokens above 200K use long-context pricing (see Anthropic docs).
-    #[serde(default)]
-    pub enable_extended_context: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OllamaConfig {
-    /// Enable native `tool_use` / function calling for compatible models (e.g. llama3.1, qwen2.5).
-    #[serde(default)]
-    pub tool_use: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OpenAiConfig {
-    pub base_url: String,
-    pub model: String,
-    pub max_tokens: u32,
-    #[serde(default)]
-    pub embedding_model: Option<String>,
-    #[serde(default)]
-    pub reasoning_effort: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GeminiConfig {
-    /// Gemini model name, e.g. `gemini-2.0-flash`.
-    pub model: String,
-    /// Maximum output tokens.
-    #[serde(default = "default_gemini_max_tokens")]
-    pub max_tokens: u32,
-    /// API base URL. Default: `https://generativelanguage.googleapis.com`.
-    /// Can be overridden for proxies or Vertex AI.
-    #[serde(default = "default_gemini_base_url")]
-    pub base_url: String,
-    /// Embedding model name, e.g. `text-embedding-004`.
-    /// When set, `supports_embeddings()` returns true.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<String>,
-    /// Thinking level for Gemini 3+ models: minimal, low, medium, high.
-    /// For Gemini 2.5 models use `thinking_budget` instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_level: Option<GeminiThinkingLevel>,
-    /// Thinking token budget for Gemini 2.5 models (0 = disable, -1 = dynamic, 0–32768).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_budget: Option<i32>,
-    /// Include thinking summaries in the response (default: false).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_thoughts: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CompatibleConfig {
-    pub name: String,
-    pub base_url: String,
-    pub model: String,
-    pub max_tokens: u32,
-    #[serde(default)]
-    pub embedding_model: Option<String>,
-    /// Optional API key set directly in config. When absent, falls back to
-    /// `ZEPH_COMPATIBLE_<NAME>_API_KEY` vault secret. For local endpoints
-    /// (localhost / private networks) neither is required.
-    #[serde(default)]
-    pub api_key: Option<String>,
-}
-
-/// Routing strategy selection for `[llm.router]` config.
-///
-/// EMA and Thompson config fields are split across `RouterConfig` and `LlmConfig`
-/// for historical reasons. `RouterConfig.strategy` is the single dispatch point;
-/// the `LlmConfig.router_ema_*` fields only take effect when `strategy = "ema"`.
+/// Routing strategy selection for multi-provider routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RouterStrategyConfig {
@@ -443,10 +293,9 @@ pub enum RouterStrategyConfig {
     Cascade,
 }
 
+/// Routing configuration for multi-provider setups.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
-    /// Ordered list of provider names to route across. Cost order for cascade: cheapest first.
-    pub chain: Vec<String>,
     /// Routing strategy: `"ema"` (default), `"thompson"`, or `"cascade"`.
     #[serde(default)]
     pub strategy: RouterStrategyConfig,
@@ -630,40 +479,7 @@ impl Default for GenerationParams {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct OrchestratorConfig {
-    pub default: String,
-    pub embed: String,
-    #[serde(default)]
-    pub providers: std::collections::HashMap<String, OrchestratorProviderConfig>,
-    #[serde(default)]
-    pub routes: std::collections::HashMap<String, Vec<String>>,
-    /// How long (in seconds) a failed provider is bypassed before being retried.
-    /// Defaults to 300 seconds (5 minutes) when unset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_ttl_secs: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct OrchestratorProviderConfig {
-    #[serde(rename = "type")]
-    pub provider_type: String,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub embedding_model: Option<String>,
-    #[serde(default)]
-    pub filename: Option<String>,
-    #[serde(default)]
-    pub device: Option<String>,
-    /// Provider-specific instruction file to inject into the system prompt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction_file: Option<std::path::PathBuf>,
-}
-
-// ─── New unified config types (Phase 1) ──────────────────────────────────────
+// ─── Unified config types ─────────────────────────────────────────────────────
 
 /// Routing strategy for the `[[llm.providers]]` pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -1063,26 +879,6 @@ mod tests {
         assert!(entry.validate().is_ok());
     }
 
-    #[test]
-    fn validate_router_valid() {
-        let entry = ProviderEntry {
-            provider_type: ProviderKind::Router,
-            name: Some("router".into()),
-            ..Default::default()
-        };
-        assert!(entry.validate().is_ok());
-    }
-
-    #[test]
-    fn validate_orchestrator_valid() {
-        let entry = ProviderEntry {
-            provider_type: ProviderKind::Orchestrator,
-            name: Some("orchestrator".into()),
-            ..Default::default()
-        };
-        assert!(entry.validate().is_ok());
-    }
-
     // ─── validate_pool ───────────────────────────────────────────────────────
 
     #[test]
@@ -1152,48 +948,6 @@ model = "qwen3:8b"
 "#,
         );
         assert!(cfg.check_legacy_format().is_ok());
-    }
-
-    #[test]
-    fn check_legacy_format_detects_legacy_provider_field() {
-        let cfg = parse_llm("[llm]\nprovider = \"ollama\"\n");
-        let err = cfg.check_legacy_format().unwrap_err();
-        assert!(
-            err.to_string().contains("legacy"),
-            "expected 'legacy' in error: {err}"
-        );
-    }
-
-    #[test]
-    fn check_legacy_format_detects_cloud_field() {
-        let cfg = parse_llm(
-            r#"
-[llm]
-provider = "claude"
-
-[llm.cloud]
-model = "claude-sonnet-4-6"
-max_tokens = 8192
-"#,
-        );
-        let err = cfg.check_legacy_format().unwrap_err();
-        assert!(err.to_string().contains("legacy"), "{err}");
-    }
-
-    #[test]
-    fn check_legacy_format_detects_mixed_formats() {
-        let cfg = parse_llm(
-            r#"
-[llm]
-provider = "ollama"
-
-[[llm.providers]]
-type = "ollama"
-model = "qwen3:8b"
-"#,
-        );
-        let err = cfg.check_legacy_format().unwrap_err();
-        assert!(err.to_string().contains("mix"), "{err}");
     }
 
     #[test]

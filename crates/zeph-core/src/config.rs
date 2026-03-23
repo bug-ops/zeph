@@ -9,15 +9,14 @@
 // Re-export Config types from zeph-config for internal use.
 pub use zeph_config::{
     AcpConfig, AcpLspConfig, AcpTransport, AgentConfig, CandleConfig, CandleInlineConfig,
-    CascadeClassifierMode, CascadeConfig, CloudLlmConfig, CompatibleConfig, CompressionConfig,
-    CompressionStrategy, Config, ConfigError, CostConfig, DaemonConfig, DebugConfig, DetectorMode,
-    DiscordConfig, DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule, FocusConfig,
-    GatewayConfig, GeminiConfig, GenerationParams, GraphConfig, HookDef, HookMatcher, HookType,
-    IndexConfig, LearningConfig, LlmConfig, LlmRoutingStrategy, LogRotation, LoggingConfig,
-    MAX_TOKENS_CAP, McpConfig, McpOAuthConfig, McpServerConfig, MemoryConfig, MemoryScope,
-    NoteLinkingConfig, OAuthTokenStorage, ObservabilityConfig, OllamaConfig, OpenAiConfig,
-    OrchestrationConfig, OrchestratorConfig, OrchestratorProviderConfig, PermissionMode,
-    ProviderEntry, ProviderKind, PruningStrategy, RateLimitConfig, ResolvedSecrets, RouterConfig,
+    CascadeClassifierMode, CascadeConfig, CompressionConfig, CompressionStrategy, Config,
+    ConfigError, CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig,
+    DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig,
+    GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig, LearningConfig,
+    LlmConfig, LlmRoutingStrategy, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig,
+    McpOAuthConfig, McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig,
+    OAuthTokenStorage, ObservabilityConfig, OrchestrationConfig, PermissionMode, ProviderEntry,
+    ProviderKind, PruningStrategy, RateLimitConfig, ResolvedSecrets, RouterConfig,
     RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind,
     SchedulerConfig, SecurityConfig, SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter,
     SkillPromptMode, SkillsConfig, SlackConfig, SttConfig, SubAgentConfig, SubAgentLifecycleHooks,
@@ -89,16 +88,6 @@ impl SecretResolver for Config {
         }
         if let Some(val) = vault.get_secret("ZEPH_A2A_AUTH_TOKEN").await? {
             self.a2a.auth_token = Some(val);
-        }
-        if let Some(ref entries) = self.llm.compatible {
-            for entry in entries {
-                let env_key = format!("ZEPH_COMPATIBLE_{}_API_KEY", entry.name.to_uppercase());
-                if let Some(val) = vault.get_secret(&env_key).await? {
-                    self.secrets
-                        .compatible_api_keys
-                        .insert(entry.name.clone(), Secret::new(val));
-                }
-            }
         }
         for entry in &self.llm.providers {
             if entry.provider_type == crate::config::ProviderKind::Compatible

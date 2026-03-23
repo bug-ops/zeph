@@ -139,19 +139,19 @@ Summarization runs synchronously between tool iterations. If the LLM call fails,
 
 ### Summary Provider Configuration
 
-By default, tool-pair summarization uses the primary LLM provider. You can dedicate a faster or cheaper model to this task using either the structured `[agent.summary_provider]` section or the `summary_model` string shorthand.
+By default, tool-pair summarization uses the primary LLM provider. You can dedicate a faster or cheaper model to this task using either the structured `[llm.summary_provider]` section or the `summary_model` string shorthand.
 
 #### Structured config (recommended)
 
-`[llm.summary_provider]` uses the same struct as `[llm.orchestrator.providers.*]`:
+`[llm.summary_provider]` uses the same struct as `[[llm.providers]]` entries:
 
 ```toml
-# Claude — model falls back to [llm.cloud].model when omitted
+# Claude — model falls back to the claude provider entry when omitted
 [llm.summary_provider]
 type = "claude"
 model = "claude-haiku-4-5-20251001"
 
-# OpenAI — model/base_url fall back to [llm.openai] when omitted
+# OpenAI — model/base_url fall back to the openai provider entry when omitted
 [llm.summary_provider]
 type = "openai"
 model = "gpt-4o-mini"
@@ -162,15 +162,16 @@ type = "ollama"
 model = "qwen3:1.7b"
 base_url = "http://localhost:11434"
 
-# OpenAI-compatible server — `model` is the entry name in [[llm.compatible]]
-[[llm.compatible]]
+# OpenAI-compatible server — `model` is the entry name in [[llm.providers]]
+[[llm.providers]]
 name = "lm-studio"
+type = "compatible"
 base_url = "http://localhost:8080/v1"
 model = "llama-3.2-1b"
 
 [llm.summary_provider]
 type = "compatible"
-model = "lm-studio"   # matches [[llm.compatible]] name, not the model name
+model = "lm-studio"   # matches [[llm.providers]] name field
 
 # Local candle inference (requires candle feature)
 [llm.summary_provider]
@@ -184,7 +185,7 @@ Fields:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `type` | yes | `claude`, `openai`, `compatible`, `ollama`, or `candle` |
-| `model` | no | Model name override (for `compatible`: the `[[llm.compatible]]` entry name) |
+| `model` | no | Model name override (for `compatible`: the `[[llm.providers]]` entry name) |
 | `base_url` | no | Override endpoint URL (`ollama` and `openai` only) |
 | `embedding_model` | no | Override embedding model (`ollama` and `openai` only) |
 | `device` | no | Inference device: `cpu`, `cuda`, `metal` (`candle` only) |
@@ -195,11 +196,11 @@ Fields:
 
 ```toml
 [llm]
-summary_model = "claude"                              # Claude with model from [llm.cloud]
+summary_model = "claude"                              # Claude with model from the claude provider entry
 summary_model = "claude/claude-haiku-4-5-20251001"   # Claude with explicit model
-summary_model = "openai"                              # OpenAI with model from [llm.openai]
+summary_model = "openai"                              # OpenAI with model from the openai provider entry
 summary_model = "openai/gpt-4o-mini"                 # OpenAI with explicit model
-summary_model = "compatible/my-server"               # OpenAI-compatible using [[llm.compatible]] entry
+summary_model = "compatible/my-server"               # OpenAI-compatible using [[llm.providers]] name
 summary_model = "ollama/qwen3:1.7b"                  # Ollama with explicit model
 summary_model = "candle"                              # Local candle inference
 ```

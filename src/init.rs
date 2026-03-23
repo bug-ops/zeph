@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy, McpOAuthConfig,
-    McpServerConfig, MemoryConfig, OAuthTokenStorage, OrchestrationConfig, OrchestratorConfig,
-    OrchestratorProviderConfig, ProviderEntry, ProviderKind, PruningStrategy, SemanticConfig,
-    SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
+    McpServerConfig, MemoryConfig, OAuthTokenStorage, OrchestrationConfig, ProviderEntry,
+    ProviderKind, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig,
+    VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -17,6 +17,8 @@ use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct WizardState {
     pub(crate) provider: Option<ProviderKind>,
+    /// True when the wizard configured multiple providers (primary + fallback pool).
+    pub(crate) pool_mode: bool,
     pub(crate) base_url: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) embedding_model: Option<String>,
@@ -163,6 +165,7 @@ impl Default for WizardState {
     fn default() -> Self {
         Self {
             provider: None,
+            pool_mode: false,
             base_url: None,
             model: None,
             embedding_model: None,
@@ -590,7 +593,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
             };
         }
         4 => {
-            state.provider = Some(ProviderKind::Orchestrator);
+            state.pool_mode = true;
             println!("\nConfigure primary provider:");
             let (pk, pb, pm, pa, pn) = prompt_provider_config("Primary")?;
             state.orchestrator_primary_provider = Some(pk);
@@ -598,6 +601,7 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
             state.orchestrator_primary_model = Some(pm);
             state.orchestrator_primary_api_key = pa;
             state.orchestrator_primary_compatible_name = pn;
+            state.provider = Some(pk);
 
             println!("\nConfigure fallback provider:");
             let (fk, fb, fm, fa, fn_) = prompt_provider_config("Fallback")?;
@@ -1029,30 +1033,66 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.agent.auto_update_check = state.auto_update_check;
     let provider = state.provider.unwrap_or(ProviderKind::Ollama);
 
-    let orchestrator = if provider == ProviderKind::Orchestrator {
-        build_orchestrator_config(state)
+    // Build the providers pool.
+    let providers = if state.pool_mode {
+        // Multi-provider pool: primary + fallback entries.
+        let mut pool = Vec::new();
+        if let (Some(pk), Some(pm)) = (
+            state.orchestrator_primary_provider,
+            state.orchestrator_primary_model.clone(),
+        ) {
+            pool.push(ProviderEntry {
+                provider_type: pk,
+                name: state.orchestrator_primary_compatible_name.clone(),
+                model: Some(pm),
+                base_url: state.orchestrator_primary_base_url.clone(),
+                max_tokens: match pk {
+                    ProviderKind::Claude => Some(8096),
+                    ProviderKind::Gemini => Some(8192),
+                    _ => None,
+                },
+                default: true,
+                ..ProviderEntry::default()
+            });
+        }
+        if let (Some(fk), Some(fm)) = (
+            state.orchestrator_fallback_provider,
+            state.orchestrator_fallback_model.clone(),
+        ) {
+            pool.push(ProviderEntry {
+                provider_type: fk,
+                name: state.orchestrator_fallback_compatible_name.clone(),
+                model: Some(fm),
+                base_url: state.orchestrator_fallback_base_url.clone(),
+                max_tokens: match fk {
+                    ProviderKind::Claude => Some(8096),
+                    ProviderKind::Gemini => Some(8192),
+                    _ => None,
+                },
+                ..ProviderEntry::default()
+            });
+        }
+        pool
     } else {
-        None
-    };
-
-    // Build a unified ProviderEntry for the primary provider.
-    let primary_entry = ProviderEntry {
-        provider_type: provider,
-        name: state.compatible_name.clone(),
-        model: state.model.clone(),
-        base_url: state.base_url.clone(),
-        max_tokens: match provider {
-            ProviderKind::Claude => Some(8096),
-            ProviderKind::Gemini => Some(8192),
-            _ => None,
-        },
-        embedding_model: state.embedding_model.clone(),
-        thinking: state.thinking.clone(),
-        server_compaction: state.server_compaction_enabled,
-        enable_extended_context: state.enable_extended_context,
-        thinking_level: state.gemini_thinking_level,
-        vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
-        ..ProviderEntry::default()
+        // Single provider.
+        vec![ProviderEntry {
+            provider_type: provider,
+            name: state.compatible_name.clone(),
+            model: state.model.clone(),
+            base_url: state.base_url.clone(),
+            max_tokens: match provider {
+                ProviderKind::Claude => Some(8096),
+                ProviderKind::Gemini => Some(8192),
+                _ => None,
+            },
+            embedding_model: state.embedding_model.clone(),
+            thinking: state.thinking.clone(),
+            server_compaction: state.server_compaction_enabled,
+            enable_extended_context: state.enable_extended_context,
+            thinking_level: state.gemini_thinking_level,
+            vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
+            ..ProviderEntry::default()
+        }]
     };
 
     let routing = state
@@ -1065,30 +1105,16 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         });
 
     config.llm = LlmConfig {
-        providers: if provider == ProviderKind::Orchestrator {
-            Vec::new()
-        } else {
-            vec![primary_entry]
-        },
+        providers,
         routing,
         routes: std::collections::HashMap::new(),
-        provider: None,
-        base_url: None,
-        model: None,
         embedding_model: state
             .embedding_model
             .clone()
             .unwrap_or_else(|| "qwen3-embedding".into()),
-        cloud: None,
-        ollama: None,
-        openai: None,
-        gemini: None,
         candle: None,
-        orchestrator,
-        compatible: None,
         router: None,
         stt: None,
-        vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
         response_cache_enabled: false,
         response_cache_ttl_secs: 3600,
         semantic_cache_enabled: state.semantic_cache_enabled,
@@ -1157,11 +1183,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.memory.compression.probe.hard_fail_threshold = state.probe_hard_fail_threshold;
     }
     config.memory.shutdown_summary = state.shutdown_summary;
-    if state.server_compaction_enabled
-        && let Some(cloud) = config.llm.cloud.as_mut()
-    {
-        cloud.server_compaction = true;
-    }
 
     match state.channel {
         ChannelChoice::Cli => {}
@@ -1343,69 +1364,6 @@ fn apply_acp_config(config: &mut Config, state: &WizardState) {
             ..AcpConfig::default()
         };
     }
-}
-
-fn build_orchestrator_config(state: &WizardState) -> Option<OrchestratorConfig> {
-    let primary_kind = state.orchestrator_primary_provider?;
-    let primary_model = state.orchestrator_primary_model.clone().unwrap_or_default();
-    let fallback_kind = state.orchestrator_fallback_provider?;
-    let fallback_model = state
-        .orchestrator_fallback_model
-        .clone()
-        .unwrap_or_default();
-
-    let primary_name = primary_kind.as_str().to_owned();
-    let fallback_name = if fallback_kind.as_str() == primary_name {
-        format!("{}-fallback", fallback_kind.as_str())
-    } else {
-        fallback_kind.as_str().to_owned()
-    };
-
-    let embed_model = state
-        .embedding_model
-        .clone()
-        .unwrap_or_else(|| "qwen3-embedding".into());
-
-    let default_route = format!("{primary_name}/{primary_model}");
-    let embed_route = format!("{primary_name}/{embed_model}");
-
-    let mut providers = std::collections::HashMap::new();
-    providers.insert(
-        primary_name.clone(),
-        OrchestratorProviderConfig {
-            provider_type: primary_kind.as_str().to_owned(),
-            model: Some(primary_model),
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-    providers.insert(
-        fallback_name.clone(),
-        OrchestratorProviderConfig {
-            provider_type: fallback_kind.as_str().to_owned(),
-            model: Some(fallback_model),
-            base_url: None,
-            embedding_model: None,
-            filename: None,
-            device: None,
-            instruction_file: None,
-        },
-    );
-
-    let mut routes = std::collections::HashMap::new();
-    routes.insert("chat".to_owned(), vec![primary_name, fallback_name]);
-    routes.insert("embed".to_owned(), vec![embed_route]);
-
-    Some(OrchestratorConfig {
-        default: default_route,
-        embed: embed_model,
-        providers,
-        routes,
-        failure_ttl_secs: None,
-    })
 }
 
 fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
@@ -2262,7 +2220,7 @@ fn print_secrets_instructions(state: &WizardState) {
     let use_age = state.vault_backend == "age";
     let mut secrets: Vec<String> = Vec::new();
 
-    if state.provider == Some(ProviderKind::Orchestrator) {
+    if state.pool_mode {
         collect_provider_secret(
             &mut secrets,
             state.orchestrator_primary_provider,
@@ -2352,9 +2310,10 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
 mod tests {
     use super::*;
 
-    fn orchestrator_state() -> WizardState {
+    fn pool_mode_state() -> WizardState {
         WizardState {
-            provider: Some(ProviderKind::Orchestrator),
+            pool_mode: true,
+            provider: Some(ProviderKind::Claude),
             model: Some("claude-sonnet-4-5-20250929".into()),
             embedding_model: Some("qwen3-embedding".into()),
             orchestrator_primary_provider: Some(ProviderKind::Claude),
@@ -2370,82 +2329,22 @@ mod tests {
     }
 
     #[test]
-    fn build_config_orchestrator_sets_provider() {
-        let state = orchestrator_state();
+    fn build_config_pool_mode_creates_provider_pool() {
+        let state = pool_mode_state();
         let config = build_config(&state);
-        // Orchestrator uses llm.orchestrator section, not the providers pool.
-        assert!(config.llm.orchestrator.is_some());
-        assert!(config.llm.providers.is_empty());
-    }
-
-    #[test]
-    fn build_config_orchestrator_generates_orch_config() {
-        let state = orchestrator_state();
-        let config = build_config(&state);
-        let orch = config
-            .llm
-            .orchestrator
-            .expect("orchestrator config present");
-
-        assert!(orch.default.starts_with("claude/"));
-        assert!(orch.providers.contains_key("claude"));
-        assert!(orch.providers.contains_key("ollama"));
-
-        let claude = &orch.providers["claude"];
-        assert_eq!(claude.provider_type, "claude");
-        assert_eq!(claude.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
-
-        let ollama = &orch.providers["ollama"];
-        assert_eq!(ollama.provider_type, "ollama");
-        assert_eq!(ollama.model.as_deref(), Some("qwen3:8b"));
-
-        let chat_route = orch.routes.get("chat").expect("chat route exists");
-        assert!(chat_route.contains(&"claude".to_owned()));
-        assert!(chat_route.contains(&"ollama".to_owned()));
-    }
-
-    #[test]
-    fn build_config_orchestrator_embed_route() {
-        let state = orchestrator_state();
-        let config = build_config(&state);
-        let orch = config
-            .llm
-            .orchestrator
-            .expect("orchestrator config present");
-        assert!(orch.routes.contains_key("embed"));
-        assert_eq!(orch.embed, "qwen3-embedding");
-    }
-
-    #[test]
-    fn build_config_orchestrator_fallback_name_deduplicated() {
-        // When primary and fallback have the same provider kind, fallback gets a suffix
-        let state = WizardState {
-            provider: Some(ProviderKind::Orchestrator),
-            model: Some("qwen3:8b".into()),
-            embedding_model: Some("qwen3-embedding".into()),
-            orchestrator_primary_provider: Some(ProviderKind::Ollama),
-            orchestrator_primary_model: Some("qwen3:8b".into()),
-            orchestrator_primary_base_url: Some("http://localhost:11434".into()),
-            orchestrator_fallback_provider: Some(ProviderKind::Ollama),
-            orchestrator_fallback_model: Some("llama3:8b".into()),
-            orchestrator_fallback_base_url: Some("http://localhost:11435".into()),
-            vault_backend: "env".into(),
-            semantic_enabled: false,
-            ..WizardState::default()
-        };
-        let config = build_config(&state);
-        let orch = config
-            .llm
-            .orchestrator
-            .expect("orchestrator config present");
-        assert!(
-            orch.providers.contains_key("ollama-fallback"),
-            "fallback key should have suffix when same as primary"
+        assert_eq!(config.llm.providers.len(), 2);
+        assert!(config.llm.providers[0].default);
+        assert_eq!(config.llm.providers[0].provider_type, ProviderKind::Claude);
+        assert_eq!(
+            config.llm.providers[0].model.as_deref(),
+            Some("claude-sonnet-4-5-20250929")
         );
+        assert_eq!(config.llm.providers[1].provider_type, ProviderKind::Ollama);
+        assert_eq!(config.llm.providers[1].model.as_deref(), Some("qwen3:8b"));
     }
 
     #[test]
-    fn build_config_non_orchestrator_has_no_orch_config() {
+    fn build_config_single_provider_has_one_entry() {
         let state = WizardState {
             provider: Some(ProviderKind::Ollama),
             model: Some("qwen3:8b".into()),
@@ -2456,7 +2355,8 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!(config.llm.orchestrator.is_none());
+        assert_eq!(config.llm.providers.len(), 1);
+        assert_eq!(config.llm.providers[0].provider_type, ProviderKind::Ollama);
     }
 
     #[test]
@@ -2517,19 +2417,19 @@ mod tests {
     }
 
     #[test]
-    fn build_orchestrator_config_returns_none_without_primary() {
+    fn build_pool_mode_without_primary_yields_empty_pool() {
         let state = WizardState {
-            provider: Some(ProviderKind::Orchestrator),
+            pool_mode: true,
             orchestrator_primary_provider: None,
             orchestrator_fallback_provider: Some(ProviderKind::Ollama),
+            orchestrator_fallback_model: Some("qwen3:8b".into()),
             vault_backend: "env".into(),
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!(
-            config.llm.orchestrator.is_none(),
-            "missing primary provider must yield no OrchestratorConfig"
-        );
+        // Without a primary provider, pool has only the fallback entry.
+        assert_eq!(config.llm.providers.len(), 1);
+        assert_eq!(config.llm.providers[0].provider_type, ProviderKind::Ollama);
     }
 
     #[test]

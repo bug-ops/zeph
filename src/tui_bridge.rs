@@ -66,7 +66,7 @@ pub(crate) async fn run_tui_agent<C: Channel>(
         params.tui_handle.command_rx,
         agent_tx.clone(),
         TuiCommandContext {
-            provider: format!("{:?}", params.config.llm.provider),
+            provider: format!("{:?}", params.config.llm.effective_provider()),
             model: params.config.llm.effective_model().to_owned(),
             agent_name: params.config.agent.name.clone(),
             semantic_enabled: params.config.memory.semantic.enabled,

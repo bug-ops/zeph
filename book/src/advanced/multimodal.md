@@ -20,7 +20,7 @@ provider = "whisper"
 model = "whisper-1"
 ```
 
-When `base_url` is omitted, the provider uses the OpenAI API key from `[llm.openai]` or `ZEPH_OPENAI_API_KEY`. Set `base_url` to point at any OpenAI-compatible server (no API key required for local servers). The `language` field accepts an [ISO-639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) code (e.g. `ru`, `en`, `de`) or `auto` for automatic detection.
+When `base_url` is omitted, the provider uses the OpenAI API key from the `openai` `[[llm.providers]]` entry or `ZEPH_OPENAI_API_KEY`. Set `base_url` to point at any OpenAI-compatible server (no API key required for local servers). The `language` field accepts an [ISO-639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) code (e.g. `ru`, `en`, `de`) or `auto` for automatic detection.
 
 Environment variable overrides: `ZEPH_STT_PROVIDER`, `ZEPH_STT_MODEL`, `ZEPH_STT_LANGUAGE`, `ZEPH_STT_BASE_URL`.
 

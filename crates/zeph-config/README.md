@@ -11,13 +11,27 @@ Pure-data configuration types for Zeph — all TOML config structs with serde de
 
 Central repository for every typed configuration struct used across the Zeph workspace. Loading, parsing, and TOML migration live here; downstream crates pull the types they need without taking a dependency on the full agent stack. Configuration is sourced from a TOML file and can be overridden by `ZEPH_*` environment variables.
 
+> [!WARNING]
+> **v0.17.0 breaking change**: `[llm.cloud]`, `[llm.openai]`, `[llm.orchestrator]`, and `[llm.router]` are replaced by `[[llm.providers]]`. Run `zeph migrate-config --in-place` to upgrade automatically.
+
+The minimal new format:
+
+```toml
+[llm]
+
+[[llm.providers]]
+type = "ollama"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+```
+
 ## Key types
 
 | Type | TOML section | Description |
 |------|-------------|-------------|
 | `Config` | root | Top-level aggregate; resolved by `Config::load()` |
 | `AgentConfig` | `[agent]` | Agent loop settings, instruction files, self-learning |
-| `LlmConfig` | `[llm]` | Provider selection, router, orchestrator, summary provider |
+| `LlmConfig` | `[llm]` + `[[llm.providers]]` | Provider pool, routing strategy, summary provider |
 | `MemoryConfig` | `[memory]` | SQLite pool, vector backend, compaction, graph memory |
 | `SkillsConfig` | `[skills]` | Prompt mode, trust thresholds, hybrid search weights |
 | `ToolsConfig` | `[tools]` | Shell executor, web scrape, audit logging, anomaly detection |
@@ -36,7 +50,7 @@ use zeph_config::Config;
 // Load config from the default path (~/.config/zeph/config.toml)
 let config = Config::load(None)?;
 
-println!("Provider: {}", config.llm.provider);
+println!("Provider: {}", config.llm.effective_provider());
 println!("Max tool iterations: {}", config.agent.max_tool_iterations);
 ```
 
@@ -73,7 +87,7 @@ All configuration fields can be overridden with `ZEPH_`-prefixed environment var
 
 | Variable | Config field |
 |----------|-------------|
-| `ZEPH_LLM_PROVIDER` | `llm.provider` |
+| `ZEPH_LLM_PROVIDER` | `llm.providers[0].type` (overrides first entry type) |
 | `ZEPH_LOG_LEVEL` | `logging.level` |
 | `ZEPH_LOG_FILE` | `logging.file` |
 | `ZEPH_AUTO_UPDATE_CHECK` | `agent.auto_update_check` |

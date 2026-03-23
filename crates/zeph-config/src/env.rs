@@ -19,31 +19,28 @@ impl Config {
 
     fn apply_env_overrides_core_1(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_LLM_PROVIDER") {
-            // New format: set providers[0].type; legacy format: set provider field.
-            if !self.llm.providers.is_empty() {
+            if let Some(entry) = self.llm.providers.first_mut() {
                 if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
-                    self.llm.providers[0].provider_type = kind;
+                    entry.provider_type = kind;
                 } else {
                     tracing::warn!("ignoring invalid ZEPH_LLM_PROVIDER value: {v}");
                 }
-            } else if let Ok(kind) = serde_json::from_value(serde_json::Value::String(v.clone())) {
-                self.llm.provider = Some(kind);
             } else {
-                tracing::warn!("ignoring invalid ZEPH_LLM_PROVIDER value: {v}");
+                tracing::warn!("ZEPH_LLM_PROVIDER ignored: no [[llm.providers]] configured");
             }
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_BASE_URL") {
-            if self.llm.providers.is_empty() {
-                self.llm.base_url = Some(v);
+            if let Some(entry) = self.llm.providers.first_mut() {
+                entry.base_url = Some(v);
             } else {
-                self.llm.providers[0].base_url = Some(v);
+                tracing::warn!("ZEPH_LLM_BASE_URL ignored: no [[llm.providers]] configured");
             }
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_MODEL") {
-            if self.llm.providers.is_empty() {
-                self.llm.model = Some(v);
+            if let Some(entry) = self.llm.providers.first_mut() {
+                entry.model = Some(v);
             } else {
-                self.llm.providers[0].model = Some(v);
+                tracing::warn!("ZEPH_LLM_MODEL ignored: no [[llm.providers]] configured");
             }
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_EMBEDDING_MODEL") {

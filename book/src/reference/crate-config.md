@@ -39,7 +39,7 @@ No runtime logic lives in this crate — it is pure data plus serialization. Vau
 |--------|----------|
 | `root` | Top-level `Config` struct and `ResolvedSecrets` |
 | `agent` | `AgentConfig`, `FocusConfig`, `SubAgentConfig`, `SubAgentLifecycleHooks` |
-| `providers` | All LLM provider configs (`OllamaConfig`, `CloudLlmConfig`, `OpenAiConfig`, etc.) |
+| `providers` | All LLM provider configs — unified `ProviderEntry` list (`[[llm.providers]]`) |
 | `memory` | `MemoryConfig`, `SemanticConfig`, `GraphConfig`, `CompressionConfig` |
 | `features` | Feature-specific configs: `DebugConfig`, `GatewayConfig`, `SchedulerConfig`, `VaultConfig` |
 | `security` | `SecurityConfig`, `TimeoutConfig`, `TrustConfig` |
