@@ -125,6 +125,13 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Model,
         feature_gate: None,
     },
+    SlashCommandInfo {
+        name: "/provider",
+        args: "[name|status]",
+        description: "List configured providers or switch to one by name",
+        category: SlashCategory::Model,
+        feature_gate: None,
+    },
     // --- Memory ---
     SlashCommandInfo {
         name: "/feedback",

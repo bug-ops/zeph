@@ -31,6 +31,7 @@ use zeph_llm::openai::OpenAiProvider;
 use zeph_llm::router::cascade::ClassifierMode;
 use zeph_llm::router::{CascadeRouterConfig, RouterProvider};
 
+use crate::agent::state::ProviderConfigSnapshot;
 use crate::config::{Config, LlmRoutingStrategy, ProviderEntry, ProviderKind};
 
 pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
@@ -227,6 +228,41 @@ fn build_candle_provider(
     )
     .map(AnyProvider::Candle)
     .map_err(|e| BootstrapError::Provider(e.to_string()))
+}
+
+/// Build an `AnyProvider` from a `ProviderEntry` using a runtime config snapshot.
+///
+/// Called by the `/provider <name>` slash command to switch providers at runtime without
+/// requiring the full `Config`. Router and Orchestrator provider kinds are not supported
+/// for runtime switching — they require the full provider pool to be re-initialized.
+///
+/// # Errors
+///
+/// Returns `BootstrapError::Provider` when the provider kind is unsupported for runtime
+/// switching, a required secret is missing, or the entry is misconfigured.
+pub fn build_provider_for_switch(
+    entry: &ProviderEntry,
+    snapshot: &ProviderConfigSnapshot,
+) -> Result<AnyProvider, BootstrapError> {
+    use zeph_common::secret::Secret;
+    // Reconstruct a minimal Config from the snapshot so we can reuse build_provider_from_entry.
+    // Only fields read by build_provider_from_entry are populated; everything else uses defaults.
+    // Secrets are stored as plain strings in the snapshot because Secret does not implement Clone.
+    let mut config = Config::default();
+    config.secrets.claude_api_key = snapshot.claude_api_key.as_deref().map(Secret::new);
+    config.secrets.openai_api_key = snapshot.openai_api_key.as_deref().map(Secret::new);
+    config.secrets.gemini_api_key = snapshot.gemini_api_key.as_deref().map(Secret::new);
+    config.secrets.compatible_api_keys = snapshot
+        .compatible_api_keys
+        .iter()
+        .map(|(k, v)| (k.clone(), Secret::new(v.as_str())))
+        .collect();
+    config.timeouts.llm_request_timeout_secs = snapshot.llm_request_timeout_secs;
+    config
+        .llm
+        .embedding_model
+        .clone_from(&snapshot.embedding_model);
+    build_provider_from_entry(entry, &config)
 }
 
 /// Build an `AnyProvider` from a unified `ProviderEntry` (new `[[llm.providers]]` format).

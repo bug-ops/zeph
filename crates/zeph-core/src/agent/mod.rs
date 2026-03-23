@@ -28,6 +28,7 @@ mod message_queue;
 mod persistence;
 #[cfg(feature = "policy-enforcer")]
 mod policy_commands;
+mod provider_cmd;
 pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
@@ -35,7 +36,7 @@ pub mod session_config;
 pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;
-mod state;
+pub(crate) mod state;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
@@ -407,6 +408,8 @@ impl<C: Channel> Agent<C> {
                 cached_prompt_tokens: initial_prompt_tokens,
                 server_compaction_active: false,
                 stt: None,
+                provider_pool: Vec::new(),
+                provider_config_snapshot: None,
             },
             metrics: MetricsState {
                 metrics_tx: None,
@@ -2290,6 +2293,12 @@ impl<C: Channel> Agent<C> {
 
         if trimmed == "/model" || trimmed.starts_with("/model ") {
             self.handle_model_command(trimmed).await;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/provider" || trimmed.starts_with("/provider ") {
+            self.handle_provider_command(trimmed).await;
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));
         }

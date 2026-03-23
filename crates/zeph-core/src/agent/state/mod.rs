@@ -17,7 +17,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Message;
 use zeph_llm::stt::SpeechToText;
 
-use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
+use crate::config::{ProviderEntry, SecurityConfig, SkillPromptMode, TimeoutConfig};
 use crate::config_watcher::ConfigEvent;
 use crate::context::EnvironmentContext;
 use crate::cost::CostTracker;
@@ -165,6 +165,19 @@ pub(crate) struct LifecycleState {
     pub(crate) custom_task_rx: Option<mpsc::Receiver<String>>,
 }
 
+/// Minimal config snapshot needed to reconstruct a provider at runtime via `/provider <name>`.
+///
+/// Secrets are stored as plain strings because [`Secret`] intentionally does not implement
+/// `Clone`. They are re-wrapped in `Secret` when passed to `build_provider_for_switch`.
+pub struct ProviderConfigSnapshot {
+    pub claude_api_key: Option<String>,
+    pub openai_api_key: Option<String>,
+    pub gemini_api_key: Option<String>,
+    pub compatible_api_keys: std::collections::HashMap<String, String>,
+    pub llm_request_timeout_secs: u64,
+    pub embedding_model: String,
+}
+
 /// Groups provider-related state: alternate providers, runtime switching, and compaction flags.
 pub(crate) struct ProviderState {
     pub(crate) summary_provider: Option<AnyProvider>,
@@ -176,6 +189,10 @@ pub(crate) struct ProviderState {
     /// When true, client-side compaction is skipped.
     pub(crate) server_compaction_active: bool,
     pub(crate) stt: Option<Box<dyn SpeechToText>>,
+    /// Snapshot of `[[llm.providers]]` entries for runtime `/provider` switching.
+    pub(crate) provider_pool: Vec<ProviderEntry>,
+    /// Resolved secrets and timeout settings needed to reconstruct providers at runtime.
+    pub(crate) provider_config_snapshot: Option<ProviderConfigSnapshot>,
 }
 
 /// Groups metrics and cost tracking state.
