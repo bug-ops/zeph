@@ -321,3 +321,157 @@ fn create_mcp_manager_with_http_transport() {
     let debug = format!("{manager:?}");
     assert!(debug.contains("server_count: 1"));
 }
+
+#[test]
+fn create_mcp_manager_with_stdio_transport() {
+    use std::collections::HashMap;
+
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.mcp.servers = vec![crate::config::McpServerConfig {
+        id: "test".into(),
+        url: None,
+        command: Some("node".into()),
+        args: vec!["server.js".into()],
+        env: HashMap::new(),
+        headers: HashMap::new(),
+        oauth: None,
+        timeout: 30,
+        policy: Default::default(),
+    }];
+
+    let manager = create_mcp_manager(&config, false);
+    let debug = format!("{manager:?}");
+    assert!(debug.contains("server_count: 1"));
+}
+
+#[test]
+fn create_mcp_manager_empty_servers() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.mcp.servers = vec![];
+
+    let manager = create_mcp_manager(&config, false);
+    let debug = format!("{manager:?}");
+    assert!(debug.contains("server_count: 0"));
+}
+
+#[tokio::test]
+async fn create_mcp_registry_when_semantic_disabled() {
+    let config_path = Path::new("/nonexistent");
+    let mut config = Config::load(config_path).unwrap();
+    config.memory.semantic.enabled = false;
+
+    let provider = AnyProvider::Ollama(OllamaProvider::new(
+        "http://localhost:11434",
+        "test".into(),
+        "embed".into(),
+    ));
+
+    let mcp_tools = vec![];
+    let registry = create_mcp_registry(&config, &provider, &mcp_tools, "test-model", None).await;
+    assert!(registry.is_none());
+}
+
+#[test]
+fn managed_skills_dir_returns_skills_subdir() {
+    let dir = managed_skills_dir();
+    assert!(
+        dir.ends_with("skills"),
+        "managed_skills_dir should end in 'skills', got: {dir:?}"
+    );
+}
+
+#[test]
+fn app_builder_managed_skills_dir_matches_free_fn() {
+    assert_eq!(AppBuilder::managed_skills_dir(), managed_skills_dir());
+}
+
+#[test]
+fn skill_paths_includes_managed_dir() {
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    let builder = AppBuilder {
+        config,
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        vault: Box::new(EnvVaultProvider),
+        age_vault: None,
+        qdrant_ops: None,
+    };
+    let paths = builder.skill_paths();
+    let managed = managed_skills_dir();
+    assert!(
+        paths.contains(&managed),
+        "skill_paths() should include managed_skills_dir, got: {paths:?}"
+    );
+}
+
+#[test]
+fn skill_paths_does_not_duplicate_managed_dir() {
+    let managed = managed_skills_dir();
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.skills.paths = vec![managed.to_string_lossy().into_owned()];
+    let builder = AppBuilder {
+        config,
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        vault: Box::new(EnvVaultProvider),
+        age_vault: None,
+        qdrant_ops: None,
+    };
+    let paths = builder.skill_paths();
+    let count = paths.iter().filter(|p| p == &&managed).count();
+    assert_eq!(
+        count, 1,
+        "managed dir should appear exactly once, got: {paths:?}"
+    );
+}
+
+#[tokio::test]
+async fn create_skill_matcher_when_semantic_disabled() {
+    let tmp = std::env::temp_dir().join("zeph_test_skill_matcher_bootstrap.db");
+    let _ = std::fs::remove_file(&tmp);
+    let tmp_path = tmp.to_string_lossy().to_string();
+
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.semantic.enabled = false;
+    config.memory.sqlite_path = tmp_path.clone();
+
+    let provider = AnyProvider::Ollama(OllamaProvider::new(
+        "http://localhost:11434",
+        "test".into(),
+        "embed".into(),
+    ));
+
+    let memory = SemanticMemory::with_sqlite_backend_and_pool_size(
+        &tmp_path,
+        provider.clone(),
+        &config.llm.embedding_model,
+        config.memory.semantic.vector_weight,
+        config.memory.semantic.keyword_weight,
+        1,
+    )
+    .await
+    .unwrap();
+
+    let meta: Vec<&SkillMeta> = vec![];
+    let result = create_skill_matcher(&config, &provider, &meta, &memory, "test-model", None).await;
+    assert!(result.is_none());
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn appbuilder_qdrant_ops_invalid_url_returns_err() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.vector_backend = crate::config::VectorBackend::Qdrant;
+    config.memory.qdrant_url = "not a valid url".into();
+
+    let result = zeph_memory::QdrantOps::new(&config.memory.qdrant_url);
+    assert!(
+        result.is_err(),
+        "QdrantOps::new with invalid URL must fail (CRIT-04)"
+    );
+}
+
+#[test]
+fn appbuilder_qdrant_ops_valid_url_succeeds() {
+    let result = zeph_memory::QdrantOps::new("http://localhost:6334");
+    assert!(result.is_ok(), "QdrantOps::new with valid URL must succeed");
+}
