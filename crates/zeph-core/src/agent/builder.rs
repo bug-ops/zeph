@@ -11,9 +11,10 @@ use zeph_llm::provider::LlmProvider;
 
 use super::Agent;
 use super::session_config::{AgentSessionConfig, CONTEXT_BUDGET_RESERVE_RATIO};
+use crate::agent::state::ProviderConfigSnapshot;
 use crate::channel::Channel;
 use crate::config::{
-    CompressionConfig, LearningConfig, RoutingConfig, SecurityConfig, TimeoutConfig,
+    CompressionConfig, LearningConfig, ProviderEntry, RoutingConfig, SecurityConfig, TimeoutConfig,
 };
 use crate::config_watcher::ConfigEvent;
 use crate::context::ContextBudget;
@@ -98,6 +99,18 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
         self.providers.stt = Some(stt);
+        self
+    }
+
+    /// Store the provider pool and config snapshot for runtime `/provider` switching.
+    #[must_use]
+    pub fn with_provider_pool(
+        mut self,
+        pool: Vec<ProviderEntry>,
+        snapshot: ProviderConfigSnapshot,
+    ) -> Self {
+        self.providers.provider_pool = pool;
+        self.providers.provider_config_snapshot = Some(snapshot);
         self
     }
 
