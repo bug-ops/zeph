@@ -738,6 +738,24 @@ impl ProviderEntry {
             .unwrap_or_else(|| self.provider_type.as_str().to_owned())
     }
 
+    /// Resolve the effective model: explicit `model` field or the provider-type default.
+    ///
+    /// Defaults mirror those used in `build_provider_from_entry` so that `runtime.model_name`
+    /// always reflects the actual model being used rather than the provider type string.
+    #[must_use]
+    pub fn effective_model(&self) -> String {
+        if let Some(ref m) = self.model {
+            return m.clone();
+        }
+        match self.provider_type {
+            ProviderKind::Ollama => "qwen3:8b".to_owned(),
+            ProviderKind::Claude => "claude-haiku-4-5-20251001".to_owned(),
+            ProviderKind::OpenAi => "gpt-4o-mini".to_owned(),
+            ProviderKind::Gemini => "gemini-2.0-flash".to_owned(),
+            ProviderKind::Compatible | ProviderKind::Candle => String::new(),
+        }
+    }
+
     /// Validate this entry for cross-field consistency.
     ///
     /// # Errors
@@ -1012,6 +1030,58 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_pool(&[bad]).is_err());
+    }
+
+    // ─── ProviderEntry::effective_model ──────────────────────────────────────
+
+    #[test]
+    fn effective_model_returns_explicit_when_set() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Claude,
+            model: Some("claude-sonnet-4-6".into()),
+            ..Default::default()
+        };
+        assert_eq!(entry.effective_model(), "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn effective_model_ollama_default_when_none() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            model: None,
+            ..Default::default()
+        };
+        assert_eq!(entry.effective_model(), "qwen3:8b");
+    }
+
+    #[test]
+    fn effective_model_claude_default_when_none() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Claude,
+            model: None,
+            ..Default::default()
+        };
+        assert_eq!(entry.effective_model(), "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn effective_model_openai_default_when_none() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::OpenAi,
+            model: None,
+            ..Default::default()
+        };
+        assert_eq!(entry.effective_model(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn effective_model_gemini_default_when_none() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Gemini,
+            model: None,
+            ..Default::default()
+        };
+        assert_eq!(entry.effective_model(), "gemini-2.0-flash");
     }
 
     // ─── LlmConfig::check_legacy_format ──────────────────────────────────────

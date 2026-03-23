@@ -115,11 +115,9 @@ impl<C: Channel> Agent<C> {
 
         match crate::bootstrap::build_provider_for_switch(&entry, snapshot) {
             Ok(new_provider) => {
-                // Resolve actual model name: provider knows its default, entry overrides it.
-                let model_name = entry
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| new_provider.name().to_owned());
+                // Resolve actual model name: use the entry's effective model (explicit or
+                // provider-type default) instead of the provider type string returned by name().
+                let model_name = entry.effective_model();
 
                 self.provider = new_provider;
                 self.runtime.model_name = model_name.clone();
