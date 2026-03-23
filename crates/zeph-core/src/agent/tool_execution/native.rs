@@ -257,6 +257,15 @@ impl<C: Channel> Agent<C> {
         tracing::debug!(iteration, ?chat_result, "native tool loop iteration");
 
         if let ChatResponse::Text(text) = &chat_result {
+            // RV-1: response verification before delivery.
+            if self.run_response_verification(text) {
+                let _ = self
+                    .channel
+                    .send("[security] Response blocked by injection detection.")
+                    .await;
+                self.channel.flush_chunks().await?;
+                return Ok(Some(()));
+            }
             let cleaned = self.scan_output_and_warn(text);
             if !cleaned.is_empty() {
                 let display = self.maybe_redact(&cleaned);

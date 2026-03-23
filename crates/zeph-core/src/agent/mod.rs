@@ -362,6 +362,9 @@ impl<C: Channel> Agent<C> {
                 ),
                 #[cfg(feature = "guardrail")]
                 guardrail: None,
+                response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier::new(
+                    zeph_config::ResponseVerificationConfig::default(),
+                ),
             },
             experiments: ExperimentState {
                 #[cfg(feature = "experiments")]

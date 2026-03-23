@@ -1478,6 +1478,7 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
             SecurityEventCategory::MemoryValidation => "MEM_VALIDATION ",
             SecurityEventCategory::PreExecutionBlock => "PRE_EXEC_BLOCK ",
             SecurityEventCategory::PreExecutionWarn => "PRE_EXEC_WARN  ",
+            SecurityEventCategory::ResponseVerification => "RESP_VERIFY    ",
         };
         lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
     }

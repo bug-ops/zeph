@@ -18,6 +18,7 @@ pub enum SecurityEventCategory {
     MemoryValidation,
     PreExecutionBlock,
     PreExecutionWarn,
+    ResponseVerification,
 }
 
 impl SecurityEventCategory {
@@ -32,6 +33,7 @@ impl SecurityEventCategory {
             Self::MemoryValidation => "memory_validation",
             Self::PreExecutionBlock => "pre_exec_block",
             Self::PreExecutionWarn => "pre_exec_warn",
+            Self::ResponseVerification => "response_verify",
         }
     }
 }

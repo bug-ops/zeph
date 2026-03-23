@@ -461,6 +461,44 @@ impl<C: Channel> Agent<C> {
         cleaned
     }
 
+    /// Scan the LLM response for injection patterns (response verification layer).
+    ///
+    /// Returns `true` when the response was blocked and the caller should return early.
+    pub(super) fn run_response_verification(&mut self, response_text: &str) -> bool {
+        use zeph_sanitizer::response_verifier::{ResponseVerificationResult, VerificationContext};
+
+        if !self.security.response_verifier.is_enabled() {
+            return false;
+        }
+
+        let ctx = VerificationContext { response_text };
+        let result = self.security.response_verifier.verify(&ctx);
+
+        match result {
+            ResponseVerificationResult::Clean => false,
+            ResponseVerificationResult::Flagged { matched } => {
+                let detail = matched.join(", ");
+                tracing::warn!(patterns = %detail, "response verification: injection patterns in LLM output");
+                self.push_security_event(
+                    crate::metrics::SecurityEventCategory::ResponseVerification,
+                    "llm_response",
+                    format!("flagged: {detail}"),
+                );
+                false
+            }
+            ResponseVerificationResult::Blocked { matched } => {
+                let detail = matched.join(", ");
+                tracing::error!(patterns = %detail, "response verification: blocking LLM response");
+                self.push_security_event(
+                    crate::metrics::SecurityEventCategory::ResponseVerification,
+                    "llm_response",
+                    format!("blocked: {detail}"),
+                );
+                true
+            }
+        }
+    }
+
     pub(super) fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
         if self.runtime.security.redact_secrets {
             let redacted = redact_secrets(text);
