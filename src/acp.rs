@@ -947,7 +947,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                 }
             }
             zeph_core::config::ProviderKind::Compatible => {
-                let secret = entry.api_key.as_deref().map(|k| k.to_owned()).or_else(|| {
+                let secret = entry.api_key.as_deref().map(std::borrow::ToOwned::to_owned).or_else(|| {
                     config
                         .secrets
                         .compatible_api_keys
