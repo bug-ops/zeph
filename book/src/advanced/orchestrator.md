@@ -1,59 +1,50 @@
 # Model Orchestrator
 
-> **Tip:** For simple fallback chains with adaptive routing (Thompson Sampling or EMA), use `provider = "router"` instead. See [Adaptive Inference](adaptive-inference.md).
+> **Tip:** For simple fallback chains with adaptive routing (Thompson Sampling or EMA), use `routing = "cascade"` or `routing = "thompson"` in `[llm]` instead. See [Adaptive Inference](adaptive-inference.md).
 
-Route tasks to different LLM providers based on content classification. Each task type maps to a provider chain with automatic fallback. Use the orchestrator to combine local and cloud models — for example, embeddings via Ollama and chat via Claude.
+Route tasks to different LLM providers based on content classification. Each task type maps to a provider chain with automatic fallback. Use a multi-provider setup to combine local and cloud models — for example, embeddings via Ollama and chat via Claude.
 
 ## Configuration
 
 ```toml
 [llm]
-provider = "orchestrator"
+routing = "task"   # task-based routing
 
-[llm.orchestrator]
-default = "claude"
-embed = "ollama"
-
-[llm.orchestrator.providers.ollama]
+[[llm.providers]]
+name = "ollama"
 type = "ollama"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+embed = true        # use this provider for all embedding operations
 
-[llm.orchestrator.providers.claude]
+[[llm.providers]]
+name = "claude"
 type = "claude"
-
-[llm.orchestrator.routes]
-coding = ["claude", "ollama"]       # try Claude first, fallback to Ollama
-creative = ["claude"]               # cloud only
-analysis = ["claude", "ollama"]     # prefer cloud
-general = ["claude"]                # cloud only
+model = "claude-sonnet-4-6"
+max_tokens = 4096
+default = true      # default provider for chat
 ```
 
-## Sub-Provider Fields
+## Provider Entry Fields
 
-Each entry under `[llm.orchestrator.providers.<name>]` supports:
+Each `[[llm.providers]]` entry supports:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | Provider backend: `ollama`, `claude`, `openai`, `candle`, `compatible` |
-| `model` | string? | Override chat model |
-| `base_url` | string? | Override API endpoint (Ollama / Compatible) |
-| `embedding_model` | string? | Override embedding model |
+| `type` | string | Provider backend: `ollama`, `claude`, `openai`, `gemini`, `candle`, `compatible` |
+| `name` | string? | Identifier for routing; required for `type = "compatible"` |
+| `model` | string? | Chat model |
+| `base_url` | string? | API endpoint (Ollama / Compatible) |
+| `embedding_model` | string? | Embedding model |
+| `embed` | bool | Mark as the embedding provider for skill matching and semantic memory |
+| `default` | bool | Mark as the primary chat provider |
 | `filename` | string? | GGUF filename (Candle only) |
 | `device` | string? | Compute device: `cpu`, `metal`, `cuda` (Candle only) |
 
-## Fallback Chain for Provider Fields
+## Provider Selection
 
-Per-sub-provider fields override parent config. Resolution order:
-
-1. **Per-provider field** — e.g. `[llm.orchestrator.providers.ollama].base_url`
-2. **Parent section** — e.g. `[llm].base_url` for Ollama, `[llm.cloud].model` for Claude
-3. **Global default** — compiled-in defaults
-
-This allows a single `[llm]` section to set shared defaults while individual sub-providers override only what differs.
-
-## Provider Keys
-
-- `default` — provider for chat when no specific route matches
-- `embed` — provider for all embedding operations (skill matching, semantic memory)
+- `default = true` — provider used for chat when no other routing rule matches
+- `embed = true` — provider used for all embedding operations (skill matching, semantic memory)
 
 ## Task Classification
 
@@ -87,13 +78,13 @@ coding = ["local", "cloud"]  # try local first, fallback to cloud
 
 ## Interactive Setup
 
-Run `zeph init` and select **Orchestrator** as the LLM provider. The wizard prompts for:
+Run `zeph init` and select **Multi-provider** as the LLM setup. The wizard prompts for:
 
 1. **Primary provider** — select from Ollama, Claude, OpenAI, or Compatible. Provide the model name, base URL, and API key as needed.
 2. **Fallback provider** — same selection. The fallback activates when the primary fails.
 3. **Embedding model** — used for skill matching and semantic memory.
 
-The wizard generates a complete `[llm.orchestrator]` section with provider map, `chat` route (primary + fallback), and `embed` route.
+The wizard generates a complete `[[llm.providers]]` section with named entries and `embed`/`default` markers.
 
 ## Multi-Instance Example
 
@@ -101,26 +92,20 @@ Two Ollama servers on different ports — one for chat, one for embeddings:
 
 ```toml
 [llm]
-provider = "orchestrator"
-base_url = "http://localhost:11434"
-embedding_model = "qwen3-embedding"
 
-[llm.orchestrator]
-default = "ollama-chat"
-embed = "ollama-embed"
-
-[llm.orchestrator.providers.ollama-chat]
+[[llm.providers]]
+name = "ollama-chat"
 type = "ollama"
+base_url = "http://localhost:11434"
 model = "mistral:7b"
-# inherits base_url from [llm].base_url
+default = true
 
-[llm.orchestrator.providers.ollama-embed]
+[[llm.providers]]
+name = "ollama-embed"
 type = "ollama"
 base_url = "http://localhost:11435"       # second Ollama instance
 embedding_model = "nomic-embed-text"      # dedicated embedding model
-
-[llm.orchestrator.routes]
-general = ["ollama-chat"]
+embed = true
 ```
 
 ## Hybrid Setup Example
@@ -129,18 +114,18 @@ Embeddings via free local Ollama, chat via paid Claude API:
 
 ```toml
 [llm]
-provider = "orchestrator"
 
-[llm.orchestrator]
-default = "claude"
-embed = "ollama"
-
-[llm.orchestrator.providers.ollama]
+[[llm.providers]]
+name = "ollama"
 type = "ollama"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+embed = true
 
-[llm.orchestrator.providers.claude]
+[[llm.providers]]
+name = "claude"
 type = "claude"
-
-[llm.orchestrator.routes]
-general = ["claude"]
+model = "claude-sonnet-4-6"
+max_tokens = 4096
+default = true
 ```

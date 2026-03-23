@@ -17,8 +17,8 @@ pub use oauth::VaultCredentialStore;
 #[cfg(feature = "candle")]
 pub use provider::select_device;
 pub use provider::{
-    BootstrapError, build_orchestrator, build_provider_from_entry, create_named_provider,
-    create_provider, create_provider_from_config, create_summary_provider,
+    BootstrapError, build_provider_from_entry, create_named_provider, create_provider,
+    create_summary_provider,
 };
 pub use skills::{create_skill_matcher, effective_embedding_model, managed_skills_dir};
 
@@ -544,7 +544,6 @@ impl AppBuilder {
         }
         if learning.judge_model.is_empty() {
             tracing::warn!(
-                provider = ?self.config.llm.provider,
                 "detector_mode=judge but judge_model is empty — primary provider will be used for judging"
             );
             return None;

@@ -134,11 +134,7 @@ impl AgentSessionConfig {
             result_cache_config: config.tools.result_cache.clone(),
             orchestration_config: config.orchestration.clone(),
             debug_config: config.debug.clone(),
-            server_compaction: config
-                .llm
-                .cloud
-                .as_ref()
-                .is_some_and(|c| c.server_compaction),
+            server_compaction: config.llm.providers.iter().any(|e| e.server_compaction),
             secrets: config
                 .secrets
                 .custom
@@ -238,11 +234,7 @@ mod tests {
         assert_eq!(sc.learning.enabled, config.skills.learning.enabled);
         assert_eq!(
             sc.server_compaction,
-            config
-                .llm
-                .cloud
-                .as_ref()
-                .is_some_and(|c| c.server_compaction)
+            config.llm.providers.iter().any(|e| e.server_compaction)
         );
         assert_eq!(sc.secrets.len(), config.secrets.custom.len());
     }

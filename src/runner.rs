@@ -437,16 +437,20 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         );
     }
 
-    if cli.server_compaction
-        && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
-    {
-        cloud.server_compaction = true;
+    if cli.server_compaction {
+        for entry in &mut app.config_mut().llm.providers {
+            if entry.provider_type == zeph_core::config::ProviderKind::Claude {
+                entry.server_compaction = true;
+            }
+        }
     }
 
-    if cli.extended_context
-        && let Some(cloud) = app.config_mut().llm.cloud.as_mut()
-    {
-        cloud.enable_extended_context = true;
+    if cli.extended_context {
+        for entry in &mut app.config_mut().llm.providers {
+            if entry.provider_type == zeph_core::config::ProviderKind::Claude {
+                entry.enable_extended_context = true;
+            }
+        }
         tracing::warn!(
             "Extended context (1M tokens) enabled via --extended-context. \
              Tokens above 200K use long-context pricing."
@@ -467,8 +471,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     if let Some(ref thinking_str) = cli.thinking {
         let thinking = parse_thinking_arg(thinking_str)?;
-        if let Some(cloud) = app.config_mut().llm.cloud.as_mut() {
-            cloud.thinking = Some(thinking);
+        for entry in &mut app.config_mut().llm.providers {
+            if entry.provider_type == zeph_core::config::ProviderKind::Claude {
+                entry.thinking = Some(thinking.clone());
+            }
         }
     }
 
@@ -907,35 +913,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(ref p) = config.llm.instruction_file {
         explicit_instruction_files.push(p.clone());
     }
-    if let Some(ref orch) = config.llm.orchestrator {
-        for prov in orch.providers.values() {
-            if let Some(ref p) = prov.instruction_file {
-                explicit_instruction_files.push(p.clone());
-            }
+    for entry in &config.llm.providers {
+        if let Some(ref p) = entry.instruction_file {
+            explicit_instruction_files.push(p.clone());
         }
     }
     let (instruction_reload_tx, instruction_reload_rx) = tokio::sync::mpsc::channel(1);
 
-    // Collect sub-provider kinds for Router/Orchestrator so detection_paths() works.
-    let mut provider_kinds: Vec<zeph_core::config::ProviderKind> =
-        vec![config.llm.effective_provider()];
-    if matches!(
-        config.llm.effective_provider(),
-        zeph_core::config::ProviderKind::Orchestrator
-    ) && let Some(ref orch) = config.llm.orchestrator
-    {
-        for pcfg in orch.providers.values() {
-            match pcfg.provider_type.as_str() {
-                "claude" => provider_kinds.push(zeph_core::config::ProviderKind::Claude),
-                "openai" => provider_kinds.push(zeph_core::config::ProviderKind::OpenAi),
-                "ollama" => provider_kinds.push(zeph_core::config::ProviderKind::Ollama),
-                "compatible" => {
-                    provider_kinds.push(zeph_core::config::ProviderKind::Compatible);
-                }
-                "candle" => provider_kinds.push(zeph_core::config::ProviderKind::Candle),
-                _ => {}
-            }
-        }
+    // Collect all pool provider kinds for instruction file detection.
+    let mut provider_kinds: Vec<zeph_core::config::ProviderKind> = config
+        .llm
+        .providers
+        .iter()
+        .map(|e| e.provider_type)
+        .collect();
+    if provider_kinds.is_empty() {
+        provider_kinds.push(config.llm.effective_provider());
     }
     provider_kinds.sort_unstable_by_key(|k| k.as_str());
     provider_kinds.dedup_by_key(|k| k.as_str());
@@ -1232,10 +1225,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = {
         let openai_base_url = config
             .llm
-            .openai
-            .as_ref()
-            .map_or("https://api.openai.com/v1", |o| o.base_url.as_str())
-            .to_owned();
+            .providers
+            .iter()
+            .find(|e| e.provider_type == zeph_core::config::ProviderKind::OpenAi)
+            .map_or("https://api.openai.com/v1".to_owned(), |e| {
+                e.base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_owned())
+            });
         let api_key = config
             .secrets
             .openai_api_key
@@ -1253,9 +1250,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let metrics_tx_for_sched = metrics_tx.clone();
     let extended_context = config
         .llm
-        .cloud
-        .as_ref()
-        .is_some_and(|c| c.enable_extended_context);
+        .providers
+        .iter()
+        .any(|e| e.enable_extended_context);
     let agent = agent
         .with_extended_context(extended_context)
         .with_metrics(metrics_tx)

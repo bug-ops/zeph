@@ -2,6 +2,8 @@
 
 Connect Zeph to Claude, OpenAI, Gemini, or any OpenAI-compatible API instead of local Ollama.
 
+> **Breaking change (v0.17.0):** The old `[llm.cloud]`, `[llm.orchestrator]`, and `[llm.router]` config sections have been removed. Run `zeph --migrate-config` to automatically convert your config file.
+
 ## Claude
 
 ```bash
@@ -12,16 +14,15 @@ Or in config:
 
 ```toml
 [llm]
-provider = "claude"
-
-[llm.cloud]
-model = "claude-sonnet-4-5-20250929"
+[[llm.providers]]
+type = "claude"
+model = "claude-sonnet-4-6"
 max_tokens = 4096
 # server_compaction = true          # Server-side context compaction (Claude API beta)
 # enable_extended_context = true    # 1M token context window (Sonnet/Opus 4.6 only)
 ```
 
-Claude does not support embeddings. Use the [orchestrator](../advanced/orchestrator.md) to combine Claude chat with Ollama embeddings, or use OpenAI embeddings.
+Claude does not support embeddings. Use a multi-provider setup to combine Claude chat with Ollama embeddings, or use OpenAI embeddings.
 
 ### Server-Side Compaction
 
@@ -31,21 +32,20 @@ Enable `server_compaction = true` to let the Claude API manage context length on
 
 ### 1M Extended Context
 
-For Sonnet 4.6 and Opus 4.6, enable `enable_extended_context = true` to unlock the 1M token context window. The `auto_budget` feature scales accordingly. Enable with `--extended-context` CLI flag or in `[llm.cloud]` in config.
+For Sonnet 4.6 and Opus 4.6, enable `enable_extended_context = true` to unlock the 1M token context window. The `auto_budget` feature scales accordingly. Enable with `--extended-context` CLI flag or in the provider entry in config.
 
 ## Gemini
 
 ```bash
-ZEPH_LLM_PROVIDER=gemini ZEPH_GEMINI_API_KEY=AIza... zeph
+ZEPH_GEMINI_API_KEY=AIza... zeph
 ```
 
 Or in config:
 
 ```toml
 [llm]
-provider = "gemini"
-
-[llm.gemini]
+[[llm.providers]]
+type = "gemini"
 model = "gemini-2.0-flash"    # or "gemini-2.5-pro" for extended thinking
 max_tokens = 8192
 # embedding_model = "text-embedding-004"  # enable Gemini-native embeddings
@@ -57,14 +57,13 @@ Gemini supports embeddings natively when `embedding_model` is set — no separat
 ## OpenAI
 
 ```bash
-ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... zeph
+ZEPH_OPENAI_API_KEY=sk-... zeph
 ```
 
 ```toml
 [llm]
-provider = "openai"
-
-[llm.openai]
+[[llm.providers]]
+type = "openai"
 base_url = "https://api.openai.com/v1"
 model = "gpt-5.2"
 max_tokens = 4096
@@ -76,18 +75,26 @@ When `embedding_model` is set, Qdrant subsystems use it automatically for skill 
 
 ## Compatible APIs
 
-Change `base_url` to point to any OpenAI-compatible endpoint:
+Use `type = "compatible"` with the appropriate `base_url`:
 
 ```toml
-# Together AI
-base_url = "https://api.together.xyz/v1"
-
-# Groq
+[llm]
+[[llm.providers]]
+name = "groq"
+type = "compatible"
 base_url = "https://api.groq.com/openai/v1"
-
-# Fireworks
-base_url = "https://api.fireworks.ai/inference/v1"
+model = "llama-3.3-70b-versatile"
+max_tokens = 4096
 ```
+
+Common `base_url` values:
+
+| Provider | `base_url` |
+|---|---|
+| Together AI | `https://api.together.xyz/v1` |
+| Groq | `https://api.groq.com/openai/v1` |
+| Fireworks | `https://api.fireworks.ai/inference/v1` |
+| Local vLLM | `http://localhost:8000/v1` |
 
 ## Hybrid Setup
 
@@ -95,23 +102,24 @@ Embeddings via free local Ollama, chat via paid Claude API:
 
 ```toml
 [llm]
-provider = "orchestrator"
+routing = "cascade"   # try cheapest provider first
 
-[llm.orchestrator]
-default = "claude"
-embed = "ollama"
+[[llm.providers]]
+name = "local"
+type = "ollama"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+embed = true          # use this provider for embeddings
 
-[llm.orchestrator.providers.ollama]
-provider_type = "ollama"
-
-[llm.orchestrator.providers.claude]
-provider_type = "claude"
-
-[llm.orchestrator.routes]
-general = ["claude"]
+[[llm.providers]]
+name = "cloud"
+type = "claude"
+model = "claude-sonnet-4-6"
+max_tokens = 4096
+default = true        # use this provider for chat by default
 ```
 
-See [Model Orchestrator](../advanced/orchestrator.md) for task classification and fallback chain options.
+See [Adaptive Inference](../advanced/adaptive-inference.md) for routing strategy options.
 
 ## Interactive Setup
 

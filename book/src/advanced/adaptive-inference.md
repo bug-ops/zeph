@@ -1,6 +1,6 @@
 # Adaptive Inference
 
-When `provider = "router"`, Zeph routes each LLM request through a fallback chain of providers. The **routing strategy** determines which provider is tried first. Three strategies are available:
+When multiple providers are configured and `routing` is set in `[llm]`, Zeph routes each LLM request through the provider list. The **routing strategy** determines which provider is tried first. Three strategies are available:
 
 | Strategy | Config value | Description |
 |----------|-------------|-------------|
@@ -21,12 +21,23 @@ New providers start with a uniform prior Beta(1, 1). Over time, reliable provide
 
 ```toml
 [llm]
-provider = "router"
-
-[llm.router]
-chain = ["claude", "openai", "ollama"]
-strategy = "thompson"
+routing = "thompson"
 # thompson_state_path = "~/.zeph/router_thompson_state.json"  # optional
+
+[[llm.providers]]
+name = "claude"
+type = "claude"
+model = "claude-sonnet-4-6"
+
+[[llm.providers]]
+name = "openai"
+type = "openai"
+model = "gpt-4o"
+
+[[llm.providers]]
+name = "ollama"
+type = "ollama"
+model = "qwen3:8b"
 ```
 
 ### State Persistence
@@ -41,7 +52,7 @@ Thompson state is saved to disk on agent shutdown and restored on startup. The d
 Override the path:
 
 ```toml
-[llm.router]
+[llm]
 thompson_state_path = "/path/to/custom-state.json"
 ```
 
@@ -81,14 +92,25 @@ The default EMA strategy tracks latency per provider and periodically reorders t
 
 ```toml
 [llm]
-provider = "router"
+routing = "ema"
 router_ema_enabled = true
 router_ema_alpha = 0.1          # smoothing factor, 0.0-1.0
 router_reorder_interval = 10    # re-order every N requests
 
-[llm.router]
-chain = ["claude", "openai", "ollama"]
-strategy = "ema"                # default, can be omitted
+[[llm.providers]]
+name = "claude"
+type = "claude"
+model = "claude-sonnet-4-6"
+
+[[llm.providers]]
+name = "openai"
+type = "openai"
+model = "gpt-4o"
+
+[[llm.providers]]
+name = "ollama"
+type = "ollama"
+model = "qwen3:8b"
 ```
 
 ## Cascade Routing
@@ -99,29 +121,32 @@ The cascade strategy routes requests to the cheapest provider first and escalate
 
 ```toml
 [llm]
-provider = "router"
+routing = "cascade"
 
-[llm.router]
-chain = ["ollama", "claude"]   # cheapest first
-strategy = "cascade"
-
-[llm.router.cascade]
+[llm.cascade]
 quality_threshold = 0.5        # score below this → escalate (default: 0.5)
 max_escalations = 2            # max escalation steps per request (default: 2)
 classifier_mode = "heuristic"  # "heuristic" (default) or "judge" (LLM-backed)
 # max_cascade_tokens = 100000  # cumulative token cap across escalation levels (optional)
 # cost_tiers = ["ollama", "claude"]  # explicit cost ordering (cheapest first)
+
+[[llm.providers]]
+name = "ollama"
+type = "ollama"
+model = "qwen3:8b"
+
+[[llm.providers]]
+name = "claude"
+type = "claude"
+model = "claude-sonnet-4-6"
 ```
 
 #### `cost_tiers`
 
-`cost_tiers` lets you override the escalation order without changing the `chain` list. It is applied once at construction time (no per-request cost). Providers listed in `cost_tiers` are reordered to match that sequence; any provider not mentioned is appended after the listed ones in the original chain order. Unknown names in `cost_tiers` are silently ignored.
+`cost_tiers` lets you override the escalation order without changing the `[[llm.providers]]` list order. It is applied once at construction time (no per-request cost). Providers listed in `cost_tiers` are reordered to match that sequence; any provider not mentioned is appended after the listed ones in the original order. Unknown names in `cost_tiers` are silently ignored.
 
 ```toml
-[llm.router]
-chain = ["claude", "openai", "ollama"]  # default "quality first" order
-
-[llm.router.cascade]
+[llm.cascade]
 cost_tiers = ["ollama", "openai"]  # reorder to cheapest first; claude appended last
 ```
 
@@ -146,15 +171,14 @@ This separates the fallback chain definition (used by all strategies) from the c
 
 ## Configuration Reference
 
-Full `[llm.router]` section:
+`[llm]` routing fields:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `chain` | string[] | required | Ordered list of provider names for fallback |
-| `strategy` | `"ema"`, `"thompson"`, or `"cascade"` | `"ema"` | Routing strategy |
+| `routing` | `"none"`, `"ema"`, `"thompson"`, `"cascade"`, `"task"` | `"none"` | Routing strategy |
 | `thompson_state_path` | string? | `~/.zeph/router_thompson_state.json` | Path for Thompson state persistence |
 
-`[llm.router.cascade]` fields (when `strategy = "cascade"`):
+`[llm.cascade]` fields (when `routing = "cascade"`):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -163,7 +187,7 @@ Full `[llm.router]` section:
 | `classifier_mode` | string | `"heuristic"` | `"heuristic"` or `"judge"` |
 | `window_size` | int? | unset | Sliding window size for repetition detection |
 | `max_cascade_tokens` | int? | unset | Cumulative token budget across escalation levels |
-| `cost_tiers` | string[]? | unset | Explicit cost ordering (cheapest first); providers not listed are appended after listed ones in original chain order |
+| `cost_tiers` | string[]? | unset | Explicit cost ordering (cheapest first); providers not listed are appended after listed ones in original order |
 
 EMA-specific fields live in `[llm]`:
 

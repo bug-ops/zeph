@@ -72,6 +72,8 @@ Zeph watches the config file for changes and applies runtime-safe fields without
 
 **Not reloadable** (require restart): LLM provider/model, SQLite path, Qdrant URL, vector backend, Telegram token, MCP servers, A2A config, ACP config (including `[acp.lsp]`), agents config, skill paths, LSP context injection config (`[agent.lsp]`), compaction probe config (`[memory.compression.probe]`).
 
+> **Breaking change (v0.17.0):** The old `[llm.cloud]`, `[llm.orchestrator]`, and `[llm.router]` config sections have been removed. Run `zeph --migrate-config` to automatically convert your config file.
+
 ## Configuration File
 
 ```toml
@@ -115,11 +117,11 @@ correction_recall_limit = 3           # Max corrections injected into system pro
 correction_min_similarity = 0.75      # Min cosine similarity for correction recall from Qdrant (default: 0.75)
 
 [llm]
-provider = "ollama"  # ollama, claude, openai, candle, compatible, orchestrator, router
-base_url = "http://localhost:11434"
-model = "qwen3:8b"
-embedding_model = "qwen3-embedding"  # Model for text embeddings
-# vision_model = "llava:13b"        # Ollama only: dedicated model for image requests
+# routing = "none"      # none (default), ema, thompson, cascade, task
+# router_ema_enabled = false         # EMA-based provider latency routing (default: false)
+# router_ema_alpha = 0.1             # EMA smoothing factor, 0.0–1.0 (default: 0.1)
+# router_reorder_interval = 10       # Re-order providers every N requests (default: 10)
+# thompson_state_path = "~/.zeph/router_thompson_state.json"  # Thompson state persistence path
 # response_cache_enabled = false     # SQLite-backed LLM response cache (default: false)
 # response_cache_ttl_secs = 3600     # Cache TTL in seconds (default: 3600)
 # semantic_cache_enabled = false     # Embedding-based similarity cache (default: false)
@@ -129,65 +131,74 @@ embedding_model = "qwen3-embedding"  # Model for text embeddings
 # Dedicated provider for tool-pair summarization and context compaction (optional).
 # String shorthand — pick one format, or use [llm.summary_provider] below.
 # summary_model = "ollama/qwen3:1.7b"              # ollama/<model>
-# summary_model = "claude"                         # Claude, model from [llm.cloud]
+# summary_model = "claude"                         # Claude, model from the claude provider entry
 # summary_model = "claude/claude-haiku-4-5-20251001"
 # summary_model = "openai/gpt-4o-mini"
-# summary_model = "compatible/<name>"              # [[llm.compatible]] entry name
+# summary_model = "compatible/<name>"              # [[llm.providers]] entry name for compatible type
 # summary_model = "candle"
 
-# Structured summary provider (same format as [llm.orchestrator.providers.*]).
-# Takes precedence over summary_model when both are set.
+# Structured summary provider. Takes precedence over summary_model when both are set.
 # [llm.summary_provider]
 # type = "claude"                        # claude, openai, compatible, ollama, candle
-# model = "claude-haiku-4-5-20251001"   # model override (for compatible: [[llm.compatible]] entry name)
+# model = "claude-haiku-4-5-20251001"   # model override
 # base_url = "..."                       # endpoint override (ollama / openai only)
 # embedding_model = "..."               # embedding model override (ollama / openai only)
 # device = "cpu"                         # cpu, cuda, metal (candle only)
 
-[llm.cloud]
-model = "claude-sonnet-4-5-20250929"
-max_tokens = 4096
+# Cascade routing options (when routing = "cascade").
+# [llm.cascade]
+# quality_threshold = 0.5             # Score below which response is degenerate (default: 0.5)
+# max_escalations = 2                 # Max escalation steps per request (default: 2)
+# classifier_mode = "heuristic"       # "heuristic" (default) or "judge" (LLM-backed)
+# max_cascade_tokens = 0              # Cumulative token cap across escalation levels; 0 = unlimited
+# cost_tiers = ["ollama", "claude"]   # Explicit cost ordering (cheapest first)
 
-# [llm.openai]
+# Provider list — each [[llm.providers]] entry defines one LLM backend.
+[[llm.providers]]
+type = "ollama"                        # ollama, claude, openai, gemini, candle, compatible
+# name = "local"                       # optional: identifier for multi-provider routing; required for compatible
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"    # model for text embeddings
+# vision_model = "llava:13b"          # Ollama only: dedicated model for image requests
+# embed = true                         # mark as embedding provider for skill matching and semantic memory
+# default = true                       # mark as primary chat provider
+# tool_use = false                     # Ollama only: enable native tool calling (default: false)
+
+# Additional provider examples:
+# [[llm.providers]]
+# name = "cloud"
+# type = "claude"
+# model = "claude-sonnet-4-6"
+# max_tokens = 4096
+# server_compaction = false            # Enable Claude server-side context compaction (compact-2026-01-12 beta)
+# enable_extended_context = false      # Enable Claude 1M context window (context-1m-2025-08-07 beta, Sonnet/Opus 4.6)
+# default = true
+
+# [[llm.providers]]
+# type = "openai"
 # base_url = "https://api.openai.com/v1"
 # model = "gpt-5.2"
 # max_tokens = 4096
 # embedding_model = "text-embedding-3-small"
 # reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
-# [llm.ollama]
-# tool_use = false  # Enable Ollama native tool calling (default: false)
-#                   # Requires a model with function-calling support (e.g. qwen3:8b, llama3.1)
-
-router_ema_enabled = false         # EMA-based provider latency routing (default: false)
-router_ema_alpha = 0.1             # EMA smoothing factor, 0.0–1.0 (default: 0.1)
-router_reorder_interval = 10       # Re-order providers every N requests (default: 10)
-
-# [llm.gemini]
-# model = "gemini-2.0-flash"            # default model
+# [[llm.providers]]
+# type = "gemini"
+# model = "gemini-2.0-flash"
 # max_tokens = 8192
 # embedding_model = "text-embedding-004"  # enable Gemini embeddings (optional)
 # thinking_level = "medium"             # minimal, low, medium, high (Gemini 2.5+ only)
 # thinking_budget = 8192               # token budget; -1 = dynamic, 0 = disabled (Gemini 2.5+ only)
 # include_thoughts = true              # surface thinking chunks in TUI
-# base_url = "https://generativelanguage.googleapis.com/v1beta"  # default
+# base_url = "https://generativelanguage.googleapis.com/v1beta"
 
-# [llm.cloud]
-# server_compaction = false            # Enable Claude server-side context compaction (compact-2026-01-12 beta)
-# enable_extended_context = false      # Enable Claude 1M context window (context-1m-2025-08-07 beta, Sonnet/Opus 4.6)
-
-# [llm.router]
-# chain = ["claude", "openai", "ollama"]  # Ordered fallback chain (required when provider = "router")
-# strategy = "ema"                        # "ema" (default), "thompson", or "cascade"
-# thompson_state_path = "~/.zeph/router_thompson_state.json"  # Thompson state persistence path
-#
-# [llm.router.cascade]                 # Required when strategy = "cascade"
-# quality_threshold = 0.5             # Score below which response is degenerate (default: 0.5)
-# max_escalations = 2                 # Max escalation steps per request (default: 2)
-# classifier_mode = "heuristic"       # "heuristic" (default) or "judge" (LLM-backed)
-# max_cascade_tokens = 0              # Cumulative token cap across escalation levels; 0 = unlimited
-# cost_tiers = ["ollama", "claude"]   # Explicit cost ordering (cheapest first); providers not listed
-#                                     # are appended after listed ones in original chain order
+# [[llm.providers]]
+# name = "groq"
+# type = "compatible"
+# base_url = "https://api.groq.com/openai/v1"
+# model = "llama-3.3-70b-versatile"
+# max_tokens = 4096
 
 [llm.stt]
 provider = "whisper"
@@ -195,7 +206,7 @@ model = "whisper-1"
 # base_url = "http://127.0.0.1:8080/v1"  # optional: OpenAI-compatible server
 # language = "en"                          # optional: ISO-639-1 code or "auto"
 # Requires `stt` feature. When base_url is set, targets a local server (no API key needed).
-# When omitted, uses the OpenAI API key from [llm.openai] or ZEPH_OPENAI_API_KEY.
+# When omitted, uses the OpenAI API key from the openai [[llm.providers]] entry or ZEPH_OPENAI_API_KEY.
 
 [skills]
 # Defaults to the user config dir when omitted
@@ -551,22 +562,23 @@ output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the pla
 # max_wall_time_secs = 1800               # Wall-time cap per run (default: 1800)
 ```
 
-### Orchestrator Sub-Providers
+### Provider Entry Fields
 
-When `provider = "orchestrator"`, each sub-provider under `[llm.orchestrator.providers.<name>]` accepts:
+Each `[[llm.providers]]` entry supports:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | Provider backend (`ollama`, `claude`, `openai`, `candle`, `compatible`) |
-| `model` | string? | Override chat model for this provider |
-| `base_url` | string? | Override API endpoint (Ollama / Compatible) |
-| `embedding_model` | string? | Override embedding model for this provider |
+| `type` | string | Provider backend (`ollama`, `claude`, `openai`, `gemini`, `candle`, `compatible`) |
+| `name` | string? | Identifier for routing; required for `compatible` type |
+| `model` | string? | Chat model |
+| `base_url` | string? | API endpoint (Ollama / Compatible) |
+| `embedding_model` | string? | Embedding model |
+| `embed` | bool | Mark as the embedding provider for skill matching and semantic memory |
+| `default` | bool | Mark as the primary chat provider |
 | `filename` | string? | GGUF filename (Candle only) |
-| `device` | string? | Compute device (Candle only) |
+| `device` | string? | Compute device: `cpu`, `metal`, `cuda` (Candle only) |
 
-Field resolution: per-provider value → parent section (`[llm]`, `[llm.cloud]`) → global default. See [Orchestrator](../advanced/orchestrator.md) for details and examples.
-
-> **Note:** The TOML key is `type`, not `provider_type`. The Rust struct uses `#[serde(rename = "type")]`.
+See [Model Orchestrator](../advanced/orchestrator.md) for multi-provider routing examples.
 
 ## Environment Variables
 

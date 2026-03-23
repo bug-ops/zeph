@@ -260,9 +260,6 @@ fn detection_paths(kind: ProviderKind, base: &Path) -> Vec<PathBuf> {
         | ProviderKind::Gemini => {
             vec![base.join("AGENTS.md")]
         }
-        // Router and Orchestrator delegate to their sub-providers; detection
-        // is handled by the caller collecting sub-provider kinds separately.
-        ProviderKind::Router | ProviderKind::Orchestrator => vec![],
     }
 }
 
@@ -469,13 +466,6 @@ mod tests {
             assert_eq!(paths.len(), 1);
             assert_eq!(paths[0].file_name().unwrap(), "AGENTS.md");
         }
-    }
-
-    #[test]
-    fn detection_paths_router_and_orchestrator_empty() {
-        let dir = TempDir::new().unwrap();
-        assert!(detection_paths(ProviderKind::Router, dir.path()).is_empty());
-        assert!(detection_paths(ProviderKind::Orchestrator, dir.path()).is_empty());
     }
 
     #[test]

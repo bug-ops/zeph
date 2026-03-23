@@ -36,7 +36,8 @@ zeph --config config.toml
 
 ```toml
 [llm]
-provider = "ollama"
+[[llm.providers]]
+type = "ollama"
 base_url = "http://localhost:11434"
 model = "qwen3:8b"
 embedding_model = "qwen3-embedding"  # for semantic skill matching
@@ -65,12 +66,11 @@ See [LLM Providers](../concepts/providers.md) for other Ollama-compatible models
 
 ```toml
 [llm]
-provider = "claude"
 # Claude does not provide embeddings; skill matching uses keyword fallback.
 # For semantic memory, combine with an Ollama embedding model (see recipe #5).
-
-[llm.cloud]
-model = "claude-sonnet-4-5-20250929"
+[[llm.providers]]
+type = "claude"
+model = "claude-sonnet-4-6"
 max_tokens = 8192
 # server_compaction = true  # let Claude API manage context instead of client-side compaction
 
@@ -98,14 +98,12 @@ See [Use a Cloud Provider](cloud-provider.md) and [Model Orchestrator](../advanc
 
 ```toml
 [llm]
-provider = "openai"
-embedding_model = "text-embedding-3-small"  # used for skill matching and semantic memory
-
-[llm.openai]
+[[llm.providers]]
+type = "openai"
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 max_tokens = 4096
-embedding_model = "text-embedding-3-small"
+embedding_model = "text-embedding-3-small"  # used for skill matching and semantic memory
 
 [vault]
 backend = "env"  # reads ZEPH_OPENAI_API_KEY from environment
@@ -129,10 +127,9 @@ history_limit = 50
 
 ```toml
 [llm]
-provider = "groq"  # must match the `name` field in [[llm.compatible]] below
-
-[[llm.compatible]]
+[[llm.providers]]
 name = "groq"
+type = "compatible"
 base_url = "https://api.groq.com/openai/v1"
 model = "llama-3.3-70b-versatile"
 max_tokens = 4096
@@ -166,18 +163,22 @@ To switch providers, change `name`, `base_url`, and `model`. Common base URLs:
 
 ```toml
 [llm]
-provider = "router"
-base_url = "http://localhost:11434"     # used by the ollama sub-provider
-model = "qwen3:8b"                      # ollama model
-embedding_model = "qwen3-embedding"     # local embeddings — always available offline
+routing = "cascade"   # try cheapest first; fall back on failure
 
-[llm.cloud]
+[[llm.providers]]
+name = "ollama"
+type = "ollama"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"     # local embeddings — always available offline
+embed = true
+
+[[llm.providers]]
+name = "claude"
+type = "claude"
 model = "claude-haiku-4-5-20251001"    # fast + cheap fallback
 max_tokens = 4096
-
-[llm.router]
-# Try ollama first; on connection error or timeout, fall back to claude.
-chain = ["ollama", "claude"]
+default = true
 
 [vault]
 backend = "env"
@@ -200,26 +201,22 @@ See [Adaptive Inference](../advanced/adaptive-inference.md) for Thompson Samplin
 
 ```toml
 [llm]
-provider = "orchestrator"
+routing = "task"   # route by task type
+
+[[llm.providers]]
+name = "planner"
+type = "ollama"
 base_url = "http://localhost:11434"
-model = "qwen3:8b"
-embedding_model = "qwen3-embedding"
-
-[llm.orchestrator]
-default = "ollama/qwen3:8b"    # default provider for unclassified tasks
-embed = "qwen3-embedding"       # embedding model for semantic memory
-
-[llm.orchestrator.providers.planner]
-type = "ollama"
 model = "qwen3:14b"            # larger model for planning and goal decomposition
+embedding_model = "qwen3-embedding"
+embed = true
 
-[llm.orchestrator.providers.executor]
+[[llm.providers]]
+name = "executor"
 type = "ollama"
+base_url = "http://localhost:11434"
 model = "qwen3:8b"             # smaller model for tool execution steps
-
-[llm.orchestrator.routes]
-coding = ["planner", "executor"]    # plan with large model, execute with small
-general = ["executor"]              # general chat: use the smaller model directly
+default = true
 
 [orchestration]
 enabled = true            # enable /plan commands and task graph execution
@@ -231,8 +228,8 @@ confirm_before_execute = true
 backend = "env"
 ```
 
-> **Note:** `[orchestration]` (lowercase) enables `/plan` CLI commands. `[llm.orchestrator]`
-> routes LLM calls between models. The two sections are independent.
+> **Note:** `[orchestration]` (lowercase) enables `/plan` CLI commands. `routing = "task"` in `[llm]`
+> routes LLM calls between providers by task type. The two settings are independent.
 
 See [Task Orchestration](../concepts/task-orchestration.md) and [Model Orchestrator](../advanced/orchestrator.md).
 
@@ -248,7 +245,8 @@ See [Task Orchestration](../concepts/task-orchestration.md) and [Model Orchestra
 
 ```toml
 [llm]
-provider = "ollama"
+[[llm.providers]]
+type = "ollama"
 base_url = "http://localhost:11434"
 model = "qwen3:8b"
 embedding_model = "qwen3-embedding"
@@ -294,10 +292,9 @@ See [LSP Code Intelligence](../guides/lsp.md) and [Code Indexing](../advanced/co
 
 ```toml
 [llm]
-provider = "claude"
-
-[llm.cloud]
-model = "claude-sonnet-4-5-20250929"
+[[llm.providers]]
+type = "claude"
+model = "claude-sonnet-4-6"
 max_tokens = 4096
 
 [vault]
@@ -336,7 +333,8 @@ See [Run via Telegram](telegram.md) and [Daemon Mode](daemon-mode.md).
 
 ```toml
 [llm]
-provider = "ollama"
+[[llm.providers]]
+type = "ollama"
 base_url = "http://localhost:11434"
 model = "qwen3:8b"
 embedding_model = "qwen3-embedding"
