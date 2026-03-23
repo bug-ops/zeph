@@ -1243,8 +1243,47 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+    // Determine active channel name for metrics.
+    #[cfg(feature = "tui")]
+    let active_channel_name = if tui_active {
+        "tui"
+    } else if config
+        .telegram
+        .as_ref()
+        .and_then(|t| t.token.as_ref())
+        .is_some()
+    {
+        "telegram"
+    } else {
+        "cli"
+    };
+    #[cfg(not(feature = "tui"))]
+    let active_channel_name = if config
+        .telegram
+        .as_ref()
+        .and_then(|t| t.token.as_ref())
+        .is_some()
+    {
+        "telegram"
+    } else {
+        "cli"
+    };
+
     metrics_tx.send_modify(|m| {
         config.llm.effective_model().clone_into(&mut m.model_name);
+        embed_model.clone_into(&mut m.embedding_model);
+        m.token_budget = u32::try_from(budget_tokens).ok();
+        m.compaction_threshold = u32::try_from(budget_tokens).ok().map(|b| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let threshold =
+                (f64::from(b) * f64::from(config.memory.soft_compaction_threshold)) as u32;
+            threshold
+        });
+        config.vault.backend.clone_into(&mut m.vault_backend);
+        active_channel_name.clone_into(&mut m.active_channel);
+        m.self_learning_enabled = config.skills.learning.enabled;
+        m.cache_enabled = config.llm.semantic_cache_enabled;
+        m.autosave_enabled = config.memory.autosave_assistant;
     });
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();

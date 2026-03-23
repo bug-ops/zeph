@@ -21,23 +21,7 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
 
     let uptime = format_uptime(metrics.uptime_seconds);
 
-    let panel = if app.show_side_panels() { "ON" } else { "OFF" };
-
-    // MF3: show current side-panel mode when a plan graph is active.
-    let plan_mode_segment = if metrics
-        .orchestration_graph
-        .as_ref()
-        .is_some_and(|s| !s.is_stale())
-    {
-        if app.plan_view_active() {
-            " | [Agents]"
-        } else {
-            " | [Plan]"
-        }
-    } else {
-        ""
-    };
-
+    let plan_mode_segment = plan_mode_segment(app, metrics);
     let cancel_hint = if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
         " | [Esc to cancel]"
     } else {
@@ -50,8 +34,62 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         String::new()
     };
 
-    #[allow(clippy::cast_precision_loss)]
-    let filter_segment = if metrics.filter_applications > 0 {
+    let filter_segment = build_filter_segment(metrics);
+
+    let main_text = format!(
+        " [{mode}]{model}{plan_mode_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
+        model = if metrics.model_name.is_empty() {
+            String::new()
+        } else {
+            format!(" | {}", metrics.model_name)
+        },
+        active = metrics.active_skills.len(),
+        total = metrics.total_skills,
+        tok = format_tokens(metrics.total_tokens),
+    );
+
+    let mut spans: Vec<Span<'_>> = vec![Span::styled(main_text, theme.status_bar)];
+    append_security_spans(&mut spans, metrics, &theme);
+
+    if metrics.server_compaction_events > 0 {
+        spans.push(Span::styled(" | ", theme.status_bar));
+        spans.push(Span::styled(
+            format!("[SC: {}]", metrics.server_compaction_events),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+
+    let suffix = format!(
+        " | API: {api} | {uptime}{cancel_hint}",
+        api = metrics.api_calls
+    );
+    spans.push(Span::styled(suffix, theme.status_bar));
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line).style(theme.status_bar);
+    frame.render_widget(paragraph, area);
+}
+
+fn plan_mode_segment<'a>(app: &App, metrics: &MetricsSnapshot) -> &'a str {
+    // MF3: show current side-panel mode when a plan graph is active.
+    if metrics
+        .orchestration_graph
+        .as_ref()
+        .is_some_and(|s| !s.is_stale())
+    {
+        if app.plan_view_active() {
+            " | [Agents]"
+        } else {
+            " | [Plan]"
+        }
+    } else {
+        ""
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn build_filter_segment(metrics: &MetricsSnapshot) -> String {
+    if metrics.filter_applications > 0 {
         let savings = if metrics.filter_raw_tokens > 0 {
             metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
         } else {
@@ -63,17 +101,10 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         )
     } else {
         String::new()
-    };
+    }
+}
 
-    let main_text = format!(
-        " [{mode}] | Panel: {panel}{plan_mode_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
-        active = metrics.active_skills.len(),
-        total = metrics.total_skills,
-        tok = format_tokens(metrics.total_tokens),
-    );
-
-    let mut spans: Vec<Span<'_>> = vec![Span::styled(main_text, theme.status_bar)];
-
+fn append_security_spans(spans: &mut Vec<Span<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
     let injection_flags = metrics.sanitizer_injection_flags;
     let exfil_total = metrics.exfiltration_images_blocked
         + metrics.exfiltration_tool_urls_flagged
@@ -108,24 +139,6 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         };
         spans.push(Span::styled(label, Style::default().fg(color)));
     }
-
-    if metrics.server_compaction_events > 0 {
-        spans.push(Span::styled(" | ", theme.status_bar));
-        spans.push(Span::styled(
-            format!("[SC: {}]", metrics.server_compaction_events),
-            Style::default().fg(Color::Cyan),
-        ));
-    }
-
-    let suffix = format!(
-        " | API: {api} | {uptime}{cancel_hint}",
-        api = metrics.api_calls,
-    );
-    spans.push(Span::styled(suffix, theme.status_bar));
-
-    let line = Line::from(spans);
-    let paragraph = Paragraph::new(line).style(theme.status_bar);
-    frame.render_widget(paragraph, area);
 }
 
 #[allow(clippy::cast_precision_loss)]

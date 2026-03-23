@@ -9,59 +9,133 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
+#[allow(clippy::too_many_lines)]
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
 
-    let mut res_lines = vec![
-        Line::from(format!("  Provider: {}", metrics.provider_name)),
-        Line::from(format!("  Model: {}", metrics.model_name)),
-        Line::from(format!("  Context: {}", metrics.context_tokens)),
-        Line::from(format!("  Session: {}", metrics.total_tokens)),
-        Line::from(format!("  API calls: {}", metrics.api_calls)),
-        Line::from(format!("  Latency: {}ms", metrics.last_llm_latency_ms)),
-    ];
+    let collapsed = area.height < 30;
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // LLM section
+    lines.push(Line::from("  LLM"));
+    lines.push(Line::from(format!(
+        "    Provider: {}",
+        metrics.provider_name
+    )));
+    lines.push(Line::from(format!("    Model: {}", metrics.model_name)));
+    if !metrics.embedding_model.is_empty() {
+        lines.push(Line::from(format!(
+            "    Embed: {}",
+            metrics.embedding_model
+        )));
+    }
+    lines.push(Line::from(format!(
+        "    Context: {} | Latency: {}ms",
+        metrics.context_tokens, metrics.last_llm_latency_ms
+    )));
     if metrics.extended_context {
-        res_lines.push(Line::from("  Max context: 1M"));
+        lines.push(Line::from("    Max context: 1M"));
     }
-    if metrics.cache_creation_tokens > 0 || metrics.cache_read_tokens > 0 {
-        res_lines.push(Line::from(format!(
-            "  Cache write: {}",
-            metrics.cache_creation_tokens
+
+    // Session section
+    if collapsed {
+        lines.push(Line::from(format!(
+            "  Session: {} tok | {} calls",
+            metrics.total_tokens, metrics.api_calls
         )));
-        res_lines.push(Line::from(format!(
-            "  Cache read: {}",
-            metrics.cache_read_tokens
+    } else {
+        lines.push(Line::from("  Session"));
+        lines.push(Line::from(format!(
+            "    Tokens: {} | API: {}",
+            metrics.total_tokens, metrics.api_calls
         )));
+        if let Some(budget) = metrics.token_budget {
+            if let Some(threshold) = metrics.compaction_threshold {
+                lines.push(Line::from(format!(
+                    "    Budget: {budget} | Compact: {threshold}"
+                )));
+            } else {
+                lines.push(Line::from(format!("    Budget: {budget}")));
+            }
+        }
+        if metrics.cache_creation_tokens > 0 || metrics.cache_read_tokens > 0 {
+            lines.push(Line::from(format!(
+                "    Cache W:{} R:{}",
+                metrics.cache_creation_tokens, metrics.cache_read_tokens
+            )));
+        }
+        if metrics.filter_applications > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let hit_pct = if metrics.filter_total_commands > 0 {
+                metrics.filter_filtered_commands as f64 / metrics.filter_total_commands as f64
+                    * 100.0
+            } else {
+                0.0
+            };
+            lines.push(Line::from(format!(
+                "    Filter: {}/{} ({hit_pct:.0}% hit)",
+                metrics.filter_filtered_commands, metrics.filter_total_commands,
+            )));
+            #[allow(clippy::cast_precision_loss)]
+            let pct = if metrics.filter_raw_tokens > 0 {
+                metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
+            } else {
+                0.0
+            };
+            lines.push(Line::from(format!(
+                "    Filter saved: {} tok ({pct:.0}%)",
+                metrics.filter_saved_tokens,
+            )));
+        }
     }
-    if metrics.filter_applications > 0 {
-        #[allow(clippy::cast_precision_loss)]
-        let hit_pct = if metrics.filter_total_commands > 0 {
-            metrics.filter_filtered_commands as f64 / metrics.filter_total_commands as f64 * 100.0
-        } else {
-            0.0
-        };
-        res_lines.push(Line::from(format!(
-            "  Filter: {}/{} commands ({hit_pct:.0}% hit rate)",
-            metrics.filter_filtered_commands, metrics.filter_total_commands,
-        )));
-        #[allow(clippy::cast_precision_loss)]
-        let pct = if metrics.filter_raw_tokens > 0 {
-            metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
-        } else {
-            0.0
-        };
-        res_lines.push(Line::from(format!(
-            "  Filter saved: {} tok ({pct:.0}%)",
-            metrics.filter_saved_tokens,
-        )));
-        res_lines.push(Line::from(format!(
-            "  Confidence: F/{} P/{} B/{}",
-            metrics.filter_confidence_full,
-            metrics.filter_confidence_partial,
-            metrics.filter_confidence_fallback,
-        )));
+
+    // Infra section
+    if collapsed {
+        let mut infra_parts: Vec<String> = Vec::new();
+        if !metrics.vault_backend.is_empty() {
+            infra_parts.push(format!("vault:{}", metrics.vault_backend));
+        }
+        if !metrics.active_channel.is_empty() {
+            infra_parts.push(format!("ch:{}", metrics.active_channel));
+        }
+        if !infra_parts.is_empty() {
+            lines.push(Line::from(format!("  Infra: {}", infra_parts.join(" | "))));
+        }
+    } else {
+        lines.push(Line::from("  Infra"));
+        match (
+            metrics.vault_backend.as_str(),
+            metrics.active_channel.as_str(),
+        ) {
+            ("", "") => {}
+            (v, "") => lines.push(Line::from(format!("    Vault: {v}"))),
+            ("", c) => lines.push(Line::from(format!("    Channel: {c}"))),
+            (v, c) => lines.push(Line::from(format!("    Vault: {v} | Channel: {c}"))),
+        }
+
+        let mut flags: Vec<&str> = Vec::new();
+        if metrics.self_learning_enabled {
+            flags.push("Learning: ON");
+        }
+        if metrics.cache_enabled {
+            flags.push("Cache: ON");
+        }
+        if metrics.autosave_enabled {
+            flags.push("Autosave: ON");
+        }
+        if !flags.is_empty() {
+            lines.push(Line::from(format!("    {}", flags.join(" | "))));
+        }
+        if metrics.mcp_server_count > 0 {
+            lines.push(Line::from(format!(
+                "    MCP: {} servers, {} tools",
+                metrics.mcp_server_count, metrics.mcp_tool_count
+            )));
+        }
     }
-    let resources = Paragraph::new(res_lines).block(
+
+    let resources = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(theme.panel_border)
@@ -89,7 +163,7 @@ mod tests {
             ..MetricsSnapshot::default()
         };
 
-        let output = render_to_string(35, 10, |frame, area| {
+        let output = render_to_string(35, 12, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert_snapshot!(output);
@@ -108,7 +182,7 @@ mod tests {
             ..MetricsSnapshot::default()
         };
 
-        let output = render_to_string(35, 11, |frame, area| {
+        let output = render_to_string(35, 13, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert!(
@@ -116,5 +190,64 @@ mod tests {
             "resources panel must contain 'Max context: 1M' when extended_context is true; got: {output:?}"
         );
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn resources_with_full_infra() {
+        let metrics = MetricsSnapshot {
+            provider_name: "claude".into(),
+            model_name: "claude-sonnet-4-6".into(),
+            context_tokens: 10000,
+            total_tokens: 15000,
+            api_calls: 7,
+            last_llm_latency_ms: 180,
+            embedding_model: "nomic-embed-text".into(),
+            token_budget: Some(200_000),
+            compaction_threshold: Some(120_000),
+            vault_backend: "age".into(),
+            active_channel: "tui".into(),
+            self_learning_enabled: true,
+            cache_enabled: true,
+            autosave_enabled: true,
+            mcp_server_count: 2,
+            mcp_tool_count: 14,
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(40, 30, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("Vault: age"),
+            "expected vault backend; got: {output:?}"
+        );
+        assert!(
+            output.contains("Channel: tui"),
+            "expected channel; got: {output:?}"
+        );
+        assert!(
+            output.contains("Learning: ON"),
+            "expected learning flag; got: {output:?}"
+        );
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn resources_collapsed_when_small_height() {
+        let metrics = MetricsSnapshot {
+            provider_name: "claude".into(),
+            model_name: "claude-sonnet-4-6".into(),
+            vault_backend: "age".into(),
+            active_channel: "tui".into(),
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(40, 20, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("vault:age"),
+            "collapsed mode should show vault inline; got: {output:?}"
+        );
     }
 }

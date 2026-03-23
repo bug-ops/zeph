@@ -267,6 +267,24 @@ pub struct MetricsSnapshot {
     pub tool_cache_entries: usize,
     /// Number of semantic-tier facts in memory (0 when tier promotion disabled).
     pub semantic_fact_count: u64,
+
+    // --- Phase 1: dynamic config metrics ---
+    /// Embedding model name (e.g. "nomic-embed-text"). Empty when not configured.
+    pub embedding_model: String,
+    /// Configured max token budget for the context window.
+    pub token_budget: Option<u32>,
+    /// Token threshold that triggers soft compaction (0.0–1.0 ratio × budget).
+    pub compaction_threshold: Option<u32>,
+    /// Vault backend identifier: "age", "env", or "none".
+    pub vault_backend: String,
+    /// Active I/O channel: "cli", "telegram", or "tui".
+    pub active_channel: String,
+    /// Whether the self-learning engine is enabled for this session.
+    pub self_learning_enabled: bool,
+    /// Whether semantic response caching is enabled.
+    pub cache_enabled: bool,
+    /// Whether assistant messages are auto-saved to memory.
+    pub autosave_enabled: bool,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.

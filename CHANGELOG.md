@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(tui): Phase 1 dynamic metrics in TUI — 8 new fields in `MetricsSnapshot` (`embedding_model`, `token_budget`, `compaction_threshold`, `vault_backend`, `active_channel`, `self_learning_enabled`, `cache_enabled`, `autosave_enabled`); Resources panel redesigned with LLM/Session/Infra grouped sections and overflow collapse at height < 30; status bar shows active model name replacing the low-value Panel toggle indicator
+
 ### Fixed
 
 - ci: increase publish-crates timeout from 20 to 60 minutes and add `no-verify: true` to skip recompilation during publish (workspace has 21 crates; sequential publish with 15 s delays exceeded the previous limit)
