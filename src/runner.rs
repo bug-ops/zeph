@@ -1274,6 +1274,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let semantic_cache_enabled = config.llm.semantic_cache_enabled;
         let embedding_model = zeph_core::bootstrap::effective_embedding_model(config).clone();
         let self_learning_enabled = config.skills.learning.enabled;
+        let token_budget = u64::try_from(budget_tokens).ok();
         metrics_tx.send_modify(|m| {
             config.llm.effective_model().clone_into(&mut m.model_name);
             m.stt_model = stt_model;
@@ -1282,6 +1283,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             m.embedding_model = embedding_model;
             m.self_learning_enabled = self_learning_enabled;
             m.active_channel = active_channel_name.clone();
+            m.token_budget = token_budget;
         });
     }
     #[cfg(all(feature = "tui", feature = "scheduler"))]

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(tui): Phase 2 dynamic metrics — add `stt_model`, `compaction_model`, `provider_temperature`, `provider_top_p`, `active_channel`, `embedding_model`, `token_budget`, `self_learning_enabled`, `semantic_cache_enabled` to `MetricsSnapshot`; status bar shows active model name and `ch:<channel>` segment; resources panel shows embedding model, token budget, and learning flag; `/provider` switch updates `provider_temperature`/`provider_top_p` in real time for Candle providers (#2160)
+
 ### Fixed
 
 - fix(config): add `[security.guardrail]` stub to `default.toml` so `--migrate-config` injects commented guardrail defaults for configs that have `[security]` but no `[security.guardrail]` (#2158)
