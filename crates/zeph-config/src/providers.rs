@@ -220,6 +220,10 @@ pub struct LlmConfig {
     /// Structured provider config for summarization. Takes precedence over `summary_model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_provider: Option<ProviderEntry>,
+
+    /// Complexity triage routing configuration. Required when `routing = "triage"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity_routing: Option<ComplexityRoutingConfig>,
 }
 
 fn default_embedding_model_opt() -> String {
@@ -496,6 +500,91 @@ pub enum LlmRoutingStrategy {
     Cascade,
     /// Task-based routing using `[llm.routes]` map.
     Task,
+    /// Complexity triage routing: pre-classify each request, delegate to appropriate tier.
+    Triage,
+}
+
+fn default_triage_timeout_secs() -> u64 {
+    5
+}
+
+fn default_max_triage_tokens() -> u32 {
+    50
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Tier-to-provider name mapping for complexity routing.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TierMapping {
+    pub simple: Option<String>,
+    pub medium: Option<String>,
+    pub complex: Option<String>,
+    pub expert: Option<String>,
+}
+
+/// Configuration for complexity-based triage routing (`routing = "triage"`).
+///
+/// When `[llm] routing = "triage"` is set, a cheap triage model classifies each request
+/// and routes it to the appropriate tier provider. Requires at least one tier mapping.
+///
+/// # Example
+///
+/// ```toml
+/// [llm]
+/// routing = "triage"
+///
+/// [llm.complexity_routing]
+/// triage_provider = "local-fast"
+///
+/// [llm.complexity_routing.tiers]
+/// simple = "local-fast"
+/// medium = "haiku"
+/// complex = "sonnet"
+/// expert = "opus"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ComplexityRoutingConfig {
+    /// Provider name from `[[llm.providers]]` used for triage classification.
+    #[serde(default)]
+    pub triage_provider: Option<String>,
+
+    /// Skip triage when all tiers map to the same provider.
+    #[serde(default = "default_true")]
+    pub bypass_single_provider: bool,
+
+    /// Tier-to-provider name mapping.
+    #[serde(default)]
+    pub tiers: TierMapping,
+
+    /// Max output tokens for the triage classification call. Default: 50.
+    #[serde(default = "default_max_triage_tokens")]
+    pub max_triage_tokens: u32,
+
+    /// Timeout in seconds for the triage classification call. Default: 5.
+    /// On timeout, falls back to the default (first) tier provider.
+    #[serde(default = "default_triage_timeout_secs")]
+    pub triage_timeout_secs: u64,
+
+    /// Optional fallback strategy when triage misclassifies.
+    /// Only `"cascade"` is currently supported (Phase 4).
+    #[serde(default)]
+    pub fallback_strategy: Option<String>,
+}
+
+impl Default for ComplexityRoutingConfig {
+    fn default() -> Self {
+        Self {
+            triage_provider: None,
+            bypass_single_provider: true,
+            tiers: TierMapping::default(),
+            max_triage_tokens: default_max_triage_tokens(),
+            triage_timeout_secs: default_triage_timeout_secs(),
+            fallback_strategy: None,
+        }
+    }
 }
 
 /// Inline candle config for use inside `ProviderEntry`.
@@ -1011,5 +1100,90 @@ base_url = "http://myhost:11434"
 "#,
         );
         assert_eq!(cfg.effective_base_url(), "http://myhost:11434");
+    }
+
+    // ─── ComplexityRoutingConfig / LlmRoutingStrategy::Triage TOML parsing ──
+
+    #[test]
+    fn complexity_routing_defaults() {
+        let cr = ComplexityRoutingConfig::default();
+        assert!(
+            cr.bypass_single_provider,
+            "bypass_single_provider must default to true"
+        );
+        assert_eq!(cr.triage_timeout_secs, 5);
+        assert_eq!(cr.max_triage_tokens, 50);
+        assert!(cr.triage_provider.is_none());
+        assert!(cr.tiers.simple.is_none());
+    }
+
+    #[test]
+    fn complexity_routing_toml_round_trip() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+routing = "triage"
+
+[llm.complexity_routing]
+triage_provider = "fast"
+bypass_single_provider = false
+triage_timeout_secs = 10
+max_triage_tokens = 100
+
+[llm.complexity_routing.tiers]
+simple = "fast"
+medium = "medium"
+complex = "large"
+expert = "opus"
+"#,
+        );
+        assert!(matches!(cfg.routing, LlmRoutingStrategy::Triage));
+        let cr = cfg
+            .complexity_routing
+            .expect("complexity_routing must be present");
+        assert_eq!(cr.triage_provider.as_deref(), Some("fast"));
+        assert!(!cr.bypass_single_provider);
+        assert_eq!(cr.triage_timeout_secs, 10);
+        assert_eq!(cr.max_triage_tokens, 100);
+        assert_eq!(cr.tiers.simple.as_deref(), Some("fast"));
+        assert_eq!(cr.tiers.medium.as_deref(), Some("medium"));
+        assert_eq!(cr.tiers.complex.as_deref(), Some("large"));
+        assert_eq!(cr.tiers.expert.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn complexity_routing_partial_tiers_toml() {
+        // Only simple + complex configured; medium and expert are None.
+        let cfg = parse_llm(
+            r#"
+[llm]
+routing = "triage"
+
+[llm.complexity_routing.tiers]
+simple = "haiku"
+complex = "sonnet"
+"#,
+        );
+        let cr = cfg
+            .complexity_routing
+            .expect("complexity_routing must be present");
+        assert_eq!(cr.tiers.simple.as_deref(), Some("haiku"));
+        assert!(cr.tiers.medium.is_none());
+        assert_eq!(cr.tiers.complex.as_deref(), Some("sonnet"));
+        assert!(cr.tiers.expert.is_none());
+        // Defaults still applied.
+        assert!(cr.bypass_single_provider);
+        assert_eq!(cr.triage_timeout_secs, 5);
+    }
+
+    #[test]
+    fn routing_strategy_triage_deserialized() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+routing = "triage"
+"#,
+        );
+        assert!(matches!(cfg.routing, LlmRoutingStrategy::Triage));
     }
 }

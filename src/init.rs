@@ -1126,6 +1126,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         instruction_file: None,
         summary_model: None,
         summary_provider: None,
+        complexity_routing: None,
     };
 
     config.memory = MemoryConfig {

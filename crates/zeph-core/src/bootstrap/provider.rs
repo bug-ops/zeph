@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::LlmProvider as _;
+use zeph_llm::router::triage::{ComplexityTier, TriageRouter};
 
 /// Error type for bootstrap / provider construction failures.
 ///
@@ -492,6 +494,7 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
             );
             build_single_provider_from_pool(pool, config)
         }
+        LlmRoutingStrategy::Triage => build_triage_provider(pool, config),
     }
 }
 
@@ -520,6 +523,98 @@ fn build_all_pool_providers(
         ));
     }
     Ok(providers)
+}
+
+/// Build a `TriageRouter`-backed `AnyProvider` from the pool.
+///
+/// Reads `[llm.complexity_routing]` config and constructs tier providers by name lookup.
+/// If `bypass_single_provider = true` and all configured tiers resolve to the same provider,
+/// returns a single provider instead of wrapping in a `TriageRouter`.
+fn build_triage_provider(
+    pool: &[crate::config::ProviderEntry],
+    config: &crate::config::Config,
+) -> Result<AnyProvider, BootstrapError> {
+    let cr = config.llm.complexity_routing.as_ref().ok_or_else(|| {
+        BootstrapError::Provider(
+            "routing = \"triage\" requires [llm.complexity_routing] section".into(),
+        )
+    })?;
+
+    // Resolve triage classification provider.
+    let default_triage_name = pool
+        .first()
+        .map(crate::config::ProviderEntry::effective_name)
+        .unwrap_or_default();
+    let triage_prov_name = cr
+        .triage_provider
+        .as_deref()
+        .unwrap_or(default_triage_name.as_str());
+    let triage_provider = create_named_provider(triage_prov_name, config).map_err(|e| {
+        BootstrapError::Provider(format!(
+            "triage_provider '{triage_prov_name}' not found in [[llm.providers]]: {e}"
+        ))
+    })?;
+
+    // Build tier provider list. Tiers not configured in the mapping are skipped.
+    let tier_config: [(ComplexityTier, Option<&str>); 4] = [
+        (ComplexityTier::Simple, cr.tiers.simple.as_deref()),
+        (ComplexityTier::Medium, cr.tiers.medium.as_deref()),
+        (ComplexityTier::Complex, cr.tiers.complex.as_deref()),
+        (ComplexityTier::Expert, cr.tiers.expert.as_deref()),
+    ];
+
+    // Collect (tier, config_name, provider) triples.
+    // Bypass detection compares config names (not provider.name()) to correctly distinguish
+    // two pool entries using the same provider type (e.g., two Claude configs for Haiku + Opus).
+    let mut tier_providers: Vec<(ComplexityTier, AnyProvider)> = Vec::new();
+    let mut tier_config_names: Vec<&str> = Vec::new();
+    for (tier, maybe_name) in &tier_config {
+        let Some(name) = maybe_name else { continue };
+        match create_named_provider(name, config) {
+            Ok(p) => {
+                tier_providers.push((*tier, p));
+                tier_config_names.push(name);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    tier = tier.as_str(),
+                    provider = name,
+                    error = %e,
+                    "triage: skipping tier provider (not found in pool)"
+                );
+            }
+        }
+    }
+
+    if tier_providers.is_empty() {
+        // No tiers configured — fall through to single provider.
+        tracing::warn!(
+            "triage routing: no tier providers configured, \
+             falling back to single provider"
+        );
+        return build_single_provider_from_pool(pool, config);
+    }
+
+    // bypass_single_provider: if all tiers reference the same config entry name, skip triage.
+    if cr.bypass_single_provider {
+        if let Some(first_name) = tier_config_names.first().copied() {
+            if tier_config_names.iter().all(|n| *n == first_name) {
+                tracing::debug!(
+                    provider = first_name,
+                    "triage routing: all tiers map to same config entry, bypassing triage"
+                );
+                return build_single_provider_from_pool(pool, config);
+            }
+        }
+    }
+
+    let router = TriageRouter::new(
+        triage_provider,
+        tier_providers,
+        cr.triage_timeout_secs,
+        cr.max_triage_tokens,
+    );
+    Ok(AnyProvider::Triage(Box::new(router)))
 }
 
 /// Pick the default (or first) provider from the pool with fallback on failure.

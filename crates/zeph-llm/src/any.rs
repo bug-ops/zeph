@@ -17,6 +17,7 @@ use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx, ToolDefinition,
 };
 use crate::router::RouterProvider;
+use crate::router::triage::TriageRouter;
 
 /// Generates a match over all `AnyProvider` variants, binding the inner provider
 /// and evaluating the given closure for each arm.
@@ -32,6 +33,7 @@ macro_rules! delegate_provider {
             AnyProvider::Compatible($p) => $expr,
             AnyProvider::Orchestrator($p) => $expr,
             AnyProvider::Router($p) => $expr,
+            AnyProvider::Triage($p) => $expr,
             AnyProvider::Mock($p) => $expr,
         }
     };
@@ -48,6 +50,8 @@ pub enum AnyProvider {
     Compatible(CompatibleProvider),
     Orchestrator(Box<ModelOrchestrator>),
     Router(Box<RouterProvider>),
+    /// Complexity triage router: pre-classifies each request and delegates to the appropriate tier.
+    Triage(Box<TriageRouter>),
     Mock(MockProvider),
 }
 
@@ -106,6 +110,20 @@ impl AnyProvider {
                     .collect())
             }
             AnyProvider::Orchestrator(p) => p.list_models_remote().await,
+            // Triage delegates list_models to the first tier provider (best effort).
+            AnyProvider::Triage(p) => Ok(p
+                .name()
+                .split(':')
+                .next()
+                .map(|_| {
+                    vec![crate::model_cache::RemoteModelInfo {
+                        display_name: p.name().to_owned(),
+                        id: p.name().to_owned(),
+                        context_window: p.context_window(),
+                        created_at: None,
+                    }]
+                })
+                .unwrap_or_default()),
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
             AnyProvider::Mock(p) => Ok(p.models.clone()),
@@ -163,7 +181,7 @@ impl AnyProvider {
                 tracing::warn!("generation overrides not supported for Candle provider");
                 Self::Candle(p)
             }
-            Self::Orchestrator(_) | Self::Router(_) => {
+            Self::Orchestrator(_) | Self::Router(_) | Self::Triage(_) => {
                 tracing::warn!("generation overrides not supported for this provider variant");
                 self
             }
@@ -235,6 +253,9 @@ impl AnyProvider {
                 p.set_status_tx(tx);
             }
             Self::Gemini(p) => {
+                p.set_status_tx(tx);
+            }
+            Self::Triage(p) => {
                 p.set_status_tx(tx);
             }
             Self::Ollama(_) => {}

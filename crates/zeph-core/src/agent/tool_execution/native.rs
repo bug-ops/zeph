@@ -245,7 +245,12 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        let _ = self.channel.send_status("thinking...").await;
+        // Show triage status indicator before inference when triage routing is active.
+        if matches!(self.provider, zeph_llm::any::AnyProvider::Triage(_)) {
+            let _ = self.channel.send_status("Evaluating complexity...").await;
+        } else {
+            let _ = self.channel.send_status("thinking...").await;
+        }
         let chat_result = self.call_chat_with_tools_retry(tool_defs, 2).await?;
         let _ = self.channel.send_status("").await;
 

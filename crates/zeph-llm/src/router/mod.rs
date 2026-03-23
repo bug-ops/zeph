@@ -12,6 +12,7 @@
 pub mod cascade;
 pub mod reputation;
 pub mod thompson;
+pub mod triage;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
