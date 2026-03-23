@@ -166,7 +166,7 @@ jobs:
         with:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@9786bf093d06fe2c715bc12b6ff3b97a491cab4f # nextest
+      - uses: taiki-e/install-action@6ee2d1f3a2f8ca91cc2bf3180c6ec89fb3a109ad # nextest
       - name: Build and archive tests
         run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --tests --archive-file nextest-archive.tar.zst
         env:
@@ -198,7 +198,7 @@ jobs:
         partition: ["1/4", "2/4", "3/4", "4/4"]
     steps:
       - uses: actions/checkout@v6
-      - uses: taiki-e/install-action@9786bf093d06fe2c715bc12b6ff3b97a491cab4f # nextest
+      - uses: taiki-e/install-action@6ee2d1f3a2f8ca91cc2bf3180c6ec89fb3a109ad # nextest
       - name: Download test archive
         uses: actions/download-artifact@v7
         with:
@@ -220,7 +220,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: taiki-e/install-action@9786bf093d06fe2c715bc12b6ff3b97a491cab4f # nextest
+      - uses: taiki-e/install-action@6ee2d1f3a2f8ca91cc2bf3180c6ec89fb3a109ad # nextest
       - name: Download test archive
         uses: actions/download-artifact@v7
         with:
@@ -243,15 +243,15 @@ jobs:
         with:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@cc19c700fe6a7d5586ed0f40851f53637847e8dc # cargo-llvm-cov
-      - uses: taiki-e/install-action@9786bf093d06fe2c715bc12b6ff3b97a491cab4f # nextest
+      - uses: taiki-e/install-action@cff9fdfca2088e53d33015e47b75d0653d76aa25 # cargo-llvm-cov
+      - uses: taiki-e/install-action@6ee2d1f3a2f8ca91cc2bf3180c6ec89fb3a109ad # nextest
       - name: Generate coverage
         run: cargo llvm-cov nextest --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --lcov --output-path lcov.info
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
       - name: Upload coverage
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
@@ -297,7 +297,7 @@ jobs:
           exit-code: '1'
           limit-severities-for-sarif: true
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98 # v4
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
         if: always()
         with:
           sarif_file: trivy-results.sarif
