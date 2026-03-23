@@ -1268,6 +1268,32 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+    // Determine active channel name for metrics.
+    #[cfg(feature = "tui")]
+    let active_channel_name = if tui_active {
+        "tui"
+    } else if config
+        .telegram
+        .as_ref()
+        .and_then(|t| t.token.as_ref())
+        .is_some()
+    {
+        "telegram"
+    } else {
+        "cli"
+    };
+    #[cfg(not(feature = "tui"))]
+    let active_channel_name = if config
+        .telegram
+        .as_ref()
+        .and_then(|t| t.token.as_ref())
+        .is_some()
+    {
+        "telegram"
+    } else {
+        "cli"
+    };
+
     {
         let stt_model = config.llm.stt.as_ref().map(|s| s.model.clone());
         let compaction_model = config.llm.summary_model.clone();
@@ -1275,15 +1301,25 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let embedding_model = zeph_core::bootstrap::effective_embedding_model(config).clone();
         let self_learning_enabled = config.skills.learning.enabled;
         let token_budget = u64::try_from(budget_tokens).ok();
+        let compaction_threshold = u32::try_from(budget_tokens).ok().map(|b| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let threshold =
+                (f64::from(b) * f64::from(config.memory.soft_compaction_threshold)) as u32;
+            threshold
+        });
         metrics_tx.send_modify(|m| {
             config.llm.effective_model().clone_into(&mut m.model_name);
             m.stt_model = stt_model;
             m.compaction_model = compaction_model;
             m.semantic_cache_enabled = semantic_cache_enabled;
+            m.cache_enabled = semantic_cache_enabled;
             m.embedding_model = embedding_model;
             m.self_learning_enabled = self_learning_enabled;
-            m.active_channel = active_channel_name.clone();
+            active_channel_name.clone_into(&mut m.active_channel);
             m.token_budget = token_budget;
+            m.compaction_threshold = compaction_threshold;
+            config.vault.backend.clone_into(&mut m.vault_backend);
+            m.autosave_enabled = config.memory.autosave_assistant;
         });
     }
     #[cfg(all(feature = "tui", feature = "scheduler"))]

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - feat(tui): Phase 2 dynamic metrics — add `stt_model`, `compaction_model`, `provider_temperature`, `provider_top_p`, `active_channel`, `embedding_model`, `token_budget`, `self_learning_enabled`, `semantic_cache_enabled` to `MetricsSnapshot`; status bar shows active model name and `ch:<channel>` segment; resources panel shows embedding model, token budget, and learning flag; `/provider` switch updates `provider_temperature`/`provider_top_p` in real time for Candle providers (#2160)
+- feat(tui): Phase 1 dynamic metrics in TUI — 8 new fields in `MetricsSnapshot` (`embedding_model`, `token_budget`, `compaction_threshold`, `vault_backend`, `active_channel`, `self_learning_enabled`, `cache_enabled`, `autosave_enabled`); Resources panel redesigned with LLM/Session/Infra grouped sections and overflow collapse at height < 30; status bar shows active model name replacing the low-value Panel toggle indicator
 
 ### Fixed
 

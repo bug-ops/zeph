@@ -275,16 +275,24 @@ pub struct MetricsSnapshot {
     pub provider_temperature: Option<f32>,
     /// Top-p of the active provider when using Candle. `None` for API providers.
     pub provider_top_p: Option<f32>,
-    /// Active I/O channel name: `"cli"`, `"telegram"`, `"tui"`, `"discord"`, `"slack"`.
-    pub active_channel: String,
     /// Embedding model name (e.g. `"nomic-embed-text"`). Empty when embeddings are disabled.
     pub embedding_model: String,
     /// Token budget for context window. `None` when not configured.
     pub token_budget: Option<u64>,
+    /// Token threshold that triggers soft compaction. `None` when not configured.
+    pub compaction_threshold: Option<u32>,
+    /// Vault backend identifier: "age", "env", or "none".
+    pub vault_backend: String,
+    /// Active I/O channel name: `"cli"`, `"telegram"`, `"tui"`, `"discord"`, `"slack"`.
+    pub active_channel: String,
     /// Whether self-learning (skill evolution) is enabled.
     pub self_learning_enabled: bool,
     /// Whether the semantic response cache is enabled.
     pub semantic_cache_enabled: bool,
+    /// Whether semantic response caching is enabled (alias for `semantic_cache_enabled`).
+    pub cache_enabled: bool,
+    /// Whether assistant messages are auto-saved to memory.
+    pub autosave_enabled: bool,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.
