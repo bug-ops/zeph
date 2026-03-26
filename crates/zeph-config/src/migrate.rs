@@ -49,6 +49,10 @@ pub enum MigrateError {
     /// Failed to parse the embedded reference config (should never happen in practice).
     #[error("failed to parse reference config: {0}")]
     Reference(toml_edit::TomlError),
+    /// The document structure is inconsistent (e.g. `[llm.stt].model` exists but `[llm]` table
+    /// cannot be obtained as a mutable table — can happen when `[llm]` is absent or not a table).
+    #[error("migration failed: invalid TOML structure — {0}")]
+    InvalidStructure(&'static str),
 }
 
 /// Result of a migration operation.
@@ -946,6 +950,201 @@ fn replace_llm_section(toml_str: &str, new_llm_section: &str) -> String {
     out
 }
 
+/// Migrate an old `[llm.stt]` section (with `model` / `base_url` fields) to the new format
+/// where those fields live on a `[[llm.providers]]` entry via `stt_model`.
+///
+/// Transformations:
+/// - `[llm.stt].model` → `stt_model` on the matching or new `[[llm.providers]]` entry
+/// - `[llm.stt].base_url` → `base_url` on that entry (skipped when already present)
+/// - `[llm.stt].provider` is updated to the provider name; the entry is assigned an explicit
+///   `name` when it lacked one (W2 guard).
+/// - Old `model` and `base_url` keys are stripped from `[llm.stt]`.
+///
+/// If `[llm.stt]` is absent or already uses the new format (no `model` / `base_url`), the
+/// input is returned unchanged.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the input TOML is invalid.
+/// Returns `MigrateError::InvalidStructure` if `[llm.stt].model` is present but the `[llm]`
+/// key is absent or not a table, making mutation impossible.
+#[allow(clippy::too_many_lines)]
+pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    // Extract fields from [llm.stt] if present.
+    let stt_model = doc
+        .get("llm")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|llm| llm.get("stt"))
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|stt| stt.get("model"))
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned);
+
+    let stt_base_url = doc
+        .get("llm")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|llm| llm.get("stt"))
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|stt| stt.get("base_url"))
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned);
+
+    let stt_provider_hint = doc
+        .get("llm")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|llm| llm.get("stt"))
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|stt| stt.get("provider"))
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+
+    // Nothing to migrate if [llm.stt] does not exist or already lacks the old fields.
+    if stt_model.is_none() && stt_base_url.is_none() {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let stt_model = stt_model.unwrap_or_else(|| "whisper-1".to_owned());
+
+    // Determine the target provider type based on provider hint.
+    let target_type = match stt_provider_hint.as_str() {
+        "candle-whisper" | "candle" => "candle",
+        _ => "openai",
+    };
+
+    // Find or create a [[llm.providers]] entry to attach stt_model to.
+    // Priority: entry whose effective name matches the hint, else first entry of matching type.
+    let providers = doc
+        .get("llm")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|llm| llm.get("providers"))
+        .and_then(toml_edit::Item::as_array_of_tables);
+
+    let matching_idx = providers.and_then(|arr| {
+        arr.iter().enumerate().find_map(|(i, t)| {
+            let name = t
+                .get("name")
+                .and_then(toml_edit::Item::as_str)
+                .unwrap_or("");
+            let ptype = t
+                .get("type")
+                .and_then(toml_edit::Item::as_str)
+                .unwrap_or("");
+            // Match by explicit name hint or by type when hint is a legacy backend string.
+            let name_match = !stt_provider_hint.is_empty()
+                && (name == stt_provider_hint || ptype == stt_provider_hint);
+            let type_match = ptype == target_type;
+            if name_match || type_match {
+                Some(i)
+            } else {
+                None
+            }
+        })
+    });
+
+    // Determine the final provider name to write into [llm.stt].provider.
+    let resolved_provider_name: String;
+
+    if let Some(idx) = matching_idx {
+        // Attach stt_model to the existing entry.
+        let llm_mut = doc
+            .get_mut("llm")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or(MigrateError::InvalidStructure(
+                "[llm] table not accessible for mutation",
+            ))?;
+        let providers_mut = llm_mut
+            .get_mut("providers")
+            .and_then(toml_edit::Item::as_array_of_tables_mut)
+            .ok_or(MigrateError::InvalidStructure(
+                "[[llm.providers]] array not accessible for mutation",
+            ))?;
+        let entry = providers_mut
+            .iter_mut()
+            .nth(idx)
+            .ok_or(MigrateError::InvalidStructure(
+                "[[llm.providers]] entry index out of range during mutation",
+            ))?;
+
+        // W2: ensure explicit name.
+        let existing_name = entry
+            .get("name")
+            .and_then(toml_edit::Item::as_str)
+            .map(ToOwned::to_owned);
+        let entry_name = existing_name.unwrap_or_else(|| {
+            let t = entry
+                .get("type")
+                .and_then(toml_edit::Item::as_str)
+                .unwrap_or("openai");
+            format!("{t}-stt")
+        });
+        entry.insert("name", toml_edit::value(entry_name.clone()));
+        entry.insert("stt_model", toml_edit::value(stt_model.clone()));
+        if stt_base_url.is_some() && entry.get("base_url").is_none() {
+            entry.insert(
+                "base_url",
+                toml_edit::value(stt_base_url.as_deref().unwrap_or_default()),
+            );
+        }
+        resolved_provider_name = entry_name;
+    } else {
+        // No matching entry — append a new [[llm.providers]] block.
+        let new_name = if target_type == "candle" {
+            "local-whisper".to_owned()
+        } else {
+            "openai-stt".to_owned()
+        };
+        let mut new_entry = toml_edit::Table::new();
+        new_entry.insert("name", toml_edit::value(new_name.clone()));
+        new_entry.insert("type", toml_edit::value(target_type));
+        new_entry.insert("stt_model", toml_edit::value(stt_model.clone()));
+        if let Some(ref url) = stt_base_url {
+            new_entry.insert("base_url", toml_edit::value(url.clone()));
+        }
+        // Ensure [[llm.providers]] array exists.
+        let llm_mut = doc
+            .get_mut("llm")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or(MigrateError::InvalidStructure(
+                "[llm] table not accessible for mutation",
+            ))?;
+        if let Some(item) = llm_mut.get_mut("providers") {
+            if let Some(arr) = item.as_array_of_tables_mut() {
+                arr.push(new_entry);
+            }
+        } else {
+            let mut arr = toml_edit::ArrayOfTables::new();
+            arr.push(new_entry);
+            llm_mut.insert("providers", toml_edit::Item::ArrayOfTables(arr));
+        }
+        resolved_provider_name = new_name;
+    }
+
+    // Update [llm.stt]: set provider name, remove old fields.
+    if let Some(stt_table) = doc
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|llm| llm.get_mut("stt"))
+        .and_then(toml_edit::Item::as_table_mut)
+    {
+        stt_table.insert("provider", toml_edit::value(resolved_provider_name.clone()));
+        stt_table.remove("model");
+        stt_table.remove("base_url");
+    }
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["llm.providers.stt_model".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -1168,10 +1367,7 @@ name = "Test"
     // for a pre-guardrail config that has [security] but no [security.guardrail].
     #[test]
     fn security_without_guardrail_gets_guardrail_commented() {
-        let user = r#"
-[security]
-redact_secrets = true
-"#;
+        let user = "[security]\nredact_secrets = true\n";
         let migrator = ConfigMigrator::new();
         let result = migrator.migrate(user).expect("migrate");
         // The generic diff mechanism must add guardrail keys as commented defaults.
@@ -1399,6 +1595,200 @@ type = "ollama"
         assert!(
             migrate_llm_to_providers(src).is_err(),
             "mixed format must return error"
+        );
+    }
+
+    // ─── migrate_stt_to_provider ──────────────────────────────────────────────
+
+    #[test]
+    fn stt_migration_no_stt_section_returns_unchanged() {
+        let src = "[llm]\n\n[[llm.providers]]\ntype = \"openai\"\nname = \"quality\"\nmodel = \"gpt-5.4\"\n";
+        let result = migrate_stt_to_provider(src).unwrap();
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn stt_migration_no_model_or_base_url_returns_unchanged() {
+        let src = "[llm]\n\n[[llm.providers]]\ntype = \"openai\"\nname = \"quality\"\n\n[llm.stt]\nprovider = \"quality\"\nlanguage = \"en\"\n";
+        let result = migrate_stt_to_provider(src).unwrap();
+        assert_eq!(result.added_count, 0);
+    }
+
+    #[test]
+    fn stt_migration_moves_model_to_provider_entry() {
+        let src = r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+model = "gpt-5.4"
+
+[llm.stt]
+provider = "quality"
+model = "gpt-4o-mini-transcribe"
+language = "en"
+"#;
+        let result = migrate_stt_to_provider(src).unwrap();
+        assert_eq!(result.added_count, 1);
+        // stt_model should appear in providers entry.
+        assert!(
+            result.output.contains("stt_model"),
+            "stt_model must be in output"
+        );
+        // model should be removed from [llm.stt].
+        // The output should parse cleanly.
+        let doc: toml_edit::DocumentMut = result.output.parse().unwrap();
+        let stt = doc
+            .get("llm")
+            .and_then(toml_edit::Item::as_table)
+            .and_then(|l| l.get("stt"))
+            .and_then(toml_edit::Item::as_table)
+            .unwrap();
+        assert!(
+            stt.get("model").is_none(),
+            "model must be removed from [llm.stt]"
+        );
+        assert_eq!(
+            stt.get("provider").and_then(toml_edit::Item::as_str),
+            Some("quality")
+        );
+    }
+
+    #[test]
+    fn stt_migration_creates_new_provider_when_no_match() {
+        let src = r#"
+[llm]
+
+[[llm.providers]]
+type = "ollama"
+name = "local"
+model = "qwen3:8b"
+
+[llm.stt]
+provider = "whisper"
+model = "whisper-1"
+base_url = "https://api.openai.com/v1"
+language = "en"
+"#;
+        let result = migrate_stt_to_provider(src).unwrap();
+        assert!(
+            result.output.contains("openai-stt"),
+            "new entry name must be openai-stt"
+        );
+        assert!(
+            result.output.contains("stt_model"),
+            "stt_model must be in output"
+        );
+    }
+
+    #[test]
+    fn stt_migration_candle_whisper_creates_candle_entry() {
+        let src = r#"
+[llm]
+
+[llm.stt]
+provider = "candle-whisper"
+model = "openai/whisper-tiny"
+language = "auto"
+"#;
+        let result = migrate_stt_to_provider(src).unwrap();
+        assert!(
+            result.output.contains("local-whisper"),
+            "candle entry name must be local-whisper"
+        );
+        assert!(result.output.contains("candle"), "type must be candle");
+    }
+
+    #[test]
+    fn stt_migration_w2_assigns_explicit_name() {
+        // Provider has no explicit name (type = "openai") — migration must assign one.
+        let src = r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+model = "gpt-5.4"
+
+[llm.stt]
+provider = "openai"
+model = "whisper-1"
+language = "auto"
+"#;
+        let result = migrate_stt_to_provider(src).unwrap();
+        let doc: toml_edit::DocumentMut = result.output.parse().unwrap();
+        let providers = doc
+            .get("llm")
+            .and_then(toml_edit::Item::as_table)
+            .and_then(|l| l.get("providers"))
+            .and_then(toml_edit::Item::as_array_of_tables)
+            .unwrap();
+        let entry = providers
+            .iter()
+            .find(|t| t.get("stt_model").is_some())
+            .unwrap();
+        // Must have an explicit `name` field (W2).
+        assert!(
+            entry.get("name").is_some(),
+            "migrated entry must have explicit name"
+        );
+    }
+
+    #[test]
+    fn stt_migration_removes_base_url_from_stt_table() {
+        // MEDIUM: verify that base_url is stripped from [llm.stt] after migration.
+        let src = r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+model = "gpt-5.4"
+
+[llm.stt]
+provider = "quality"
+model = "whisper-1"
+base_url = "https://api.openai.com/v1"
+language = "en"
+"#;
+        let result = migrate_stt_to_provider(src).unwrap();
+        let doc: toml_edit::DocumentMut = result.output.parse().unwrap();
+        let stt = doc
+            .get("llm")
+            .and_then(toml_edit::Item::as_table)
+            .and_then(|l| l.get("stt"))
+            .and_then(toml_edit::Item::as_table)
+            .unwrap();
+        assert!(
+            stt.get("model").is_none(),
+            "model must be removed from [llm.stt]"
+        );
+        assert!(
+            stt.get("base_url").is_none(),
+            "base_url must be removed from [llm.stt]"
+        );
+    }
+
+    #[test]
+    fn migrate_error_invalid_structure_formats_correctly() {
+        // HIGH: verify that MigrateError::InvalidStructure exists, matches correctly, and
+        // produces a human-readable message. The error path is triggered when the [llm] item
+        // is present but cannot be obtained as a mutable table (defensive guard replacing the
+        // previous .expect() calls that would have panicked).
+        let err = MigrateError::InvalidStructure("test sentinel");
+        assert!(
+            matches!(err, MigrateError::InvalidStructure(_)),
+            "variant must match"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid TOML structure"),
+            "error message must mention 'invalid TOML structure', got: {msg}"
+        );
+        assert!(
+            msg.contains("test sentinel"),
+            "message must include reason: {msg}"
         );
     }
 }

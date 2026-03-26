@@ -61,7 +61,7 @@ pub use providers::{
     ProviderEntry, ProviderKind, RouterConfig, RouterStrategyConfig, SttConfig, TierMapping,
     validate_pool,
 };
-pub use providers::{default_stt_language, default_stt_model, default_stt_provider};
+pub use providers::{default_stt_language, default_stt_provider};
 pub use rate_limit::RateLimitConfig;
 pub use sanitizer::{
     ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,

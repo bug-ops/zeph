@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(config): unify STT provider under `[[llm.providers]]` (#2175) — `SttConfig` now holds only `provider` (name reference) and `language`; `model` and `base_url` move to a `stt_model` field on `ProviderEntry` (mirrors `embedding_model` pattern); `LlmConfig::stt_provider_entry()` resolves the active STT entry by name with auto-detect fallback to the first entry with `stt_model`; `LlmConfig::validate_stt()` checks cross-reference consistency; `migrate_stt_to_provider()` auto-converts old `[llm.stt]` `model`/`base_url` fields to `stt_model` on the matching provider entry (W2: forces explicit `name` on migrated entries); env vars `ZEPH_STT_MODEL` and `ZEPH_STT_BASE_URL` removed (log deprecation warning); unified dispatch in `runner.rs` respects `#[cfg(feature = "candle")]` and `#[cfg(feature = "stt")]` gates with explicit error log when feature is absent; TUI metrics `stt_model` now read from resolved `ProviderEntry`
+
+### Breaking Changes
+
+- `[llm.stt].model` and `[llm.stt].base_url` fields removed from `SttConfig`; move them to `stt_model` / `base_url` on the corresponding `[[llm.providers]]` entry. Run `zeph --migrate-config --in-place` to auto-convert.
+- `ZEPH_STT_MODEL` and `ZEPH_STT_BASE_URL` environment variables no longer applied; use provider-level config instead.
+
 - feat(tui): Phase 2 dynamic metrics — add `stt_model`, `compaction_model`, `provider_temperature`, `provider_top_p`, `active_channel`, `embedding_model`, `token_budget`, `self_learning_enabled`, `semantic_cache_enabled` to `MetricsSnapshot`; status bar shows active model name and `ch:<channel>` segment; resources panel shows embedding model, token budget, and learning flag; `/provider` switch updates `provider_temperature`/`provider_top_p` in real time for Candle providers (#2160)
 - feat(tui): Phase 1 dynamic metrics in TUI — 8 new fields in `MetricsSnapshot` (`embedding_model`, `token_budget`, `compaction_threshold`, `vault_backend`, `active_channel`, `self_learning_enabled`, `cache_enabled`, `autosave_enabled`); Resources panel redesigned with LLM/Session/Infra grouped sections and overflow collapse at height < 30; status bar shows active model name replacing the low-value Panel toggle indicator
 

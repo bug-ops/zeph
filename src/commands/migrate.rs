@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
-use zeph_core::config::migrate::ConfigMigrator;
+use zeph_core::config::migrate::{ConfigMigrator, migrate_stt_to_provider};
 
 /// Handle the `zeph migrate-config` command.
 ///
@@ -23,11 +23,19 @@ pub(crate) fn handle_migrate_config(
         String::new()
     };
 
+    // Step 1: migrate [llm.stt] model/base_url fields to [[llm.providers]] stt_model.
+    let stt_result = migrate_stt_to_provider(&input)?;
+    let after_stt = stt_result.output;
+
+    // Step 2: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&input)?;
+    let result = migrator.migrate(&after_stt)?;
 
     if diff {
         print_diff(&input, &result.output);
+        if stt_result.added_count > 0 {
+            eprintln!("STT migration: moved model/base_url to [[llm.providers]] entry.");
+        }
         eprintln!(
             "Migration would add {} entries ({} sections).",
             result.added_count,

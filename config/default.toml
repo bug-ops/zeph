@@ -26,10 +26,16 @@ max_tool_iterations = 10
 # response_cache_enabled = false
 # response_cache_ttl_secs = 3600
 
-# Speech-to-text provider (Whisper API)
+# Speech-to-text: set stt_model on a [[llm.providers]] entry to enable STT.
+# Then reference that provider name in [llm.stt].
+# [[llm.providers]]
+# name = "openai-stt"
+# type = "openai"
+# stt_model = "whisper-1"
+#
 # [llm.stt]
-# provider = "whisper"
-# model = "whisper-1"
+# provider = "openai-stt"
+# language = "auto"
 
 # Provider pool: each [[llm.providers]] entry defines one backend.
 # The first entry (or the one with default = true) is the primary chat provider.

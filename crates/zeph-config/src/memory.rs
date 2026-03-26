@@ -1081,13 +1081,13 @@ mod tests {
     #[test]
     fn importance_weight_valid_zero() {
         let cfg = deserialize_importance_weight("0.0").unwrap();
-        assert_eq!(cfg.importance_weight, 0.0);
+        assert!((cfg.importance_weight - 0.0_f64).abs() < f64::EPSILON);
     }
 
     #[test]
     fn importance_weight_valid_one() {
         let cfg = deserialize_importance_weight("1.0").unwrap();
-        assert_eq!(cfg.importance_weight, 1.0);
+        assert!((cfg.importance_weight - 1.0_f64).abs() < f64::EPSILON);
     }
 
     #[test]

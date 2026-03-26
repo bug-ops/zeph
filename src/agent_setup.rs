@@ -687,13 +687,10 @@ fn resolve_search_lsp_server_id(config: &Config) -> Option<String> {
 #[cfg(feature = "candle")]
 pub(crate) fn apply_candle_stt<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
-    stt_config: Option<&zeph_core::config::SttConfig>,
+    entry: &zeph_core::config::ProviderEntry,
+    language: &str,
 ) -> zeph_core::agent::Agent<C> {
-    if !stt_config.is_some_and(|s| s.provider == "candle-whisper") {
-        return agent;
-    }
-    let model = stt_config.map_or("openai/whisper-tiny", |s| s.model.as_str());
-    let language = stt_config.map_or("auto", |s| s.language.as_str());
+    let model = entry.stt_model.as_deref().unwrap_or("openai/whisper-tiny");
     match zeph_llm::candle_whisper::CandleWhisperProvider::load(model, None, language) {
         Ok(provider) => {
             tracing::info!("STT enabled via candle-whisper (model: {model})");
@@ -709,29 +706,23 @@ pub(crate) fn apply_candle_stt<C: Channel>(
 #[cfg(feature = "stt")]
 pub(crate) fn apply_whisper_stt<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
-    stt_config: Option<&zeph_core::config::SttConfig>,
-    openai_base_url: &str,
+    entry: &zeph_core::config::ProviderEntry,
+    language: &str,
     api_key: String,
 ) -> zeph_core::agent::Agent<C> {
-    let Some(stt_cfg) = stt_config else {
-        return agent;
-    };
-    if stt_cfg.provider == "candle-whisper" {
-        return agent;
-    }
-    let base_url = stt_cfg.base_url.as_deref().unwrap_or(openai_base_url);
+    let model = entry.stt_model.as_deref().unwrap_or("whisper-1");
+    let base_url = entry
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.openai.com/v1");
     let whisper = zeph_llm::whisper::WhisperProvider::new(
         zeph_core::http::default_client(),
         api_key,
         base_url,
-        &stt_cfg.model,
+        model,
     )
-    .with_language(&stt_cfg.language);
-    tracing::info!(
-        model = stt_cfg.model,
-        base_url,
-        "STT enabled via Whisper API"
-    );
+    .with_language(language);
+    tracing::info!(model, base_url, "STT enabled via Whisper API");
     agent.with_stt(Box::new(whisper))
 }
 

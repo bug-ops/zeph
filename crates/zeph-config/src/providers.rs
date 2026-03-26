@@ -86,12 +86,7 @@ fn default_reputation_min_observations() -> u64 {
 
 #[must_use]
 pub fn default_stt_provider() -> String {
-    "whisper".into()
-}
-
-#[must_use]
-pub fn default_stt_model() -> String {
-    "whisper-1".into()
+    String::new()
 }
 
 #[must_use]
@@ -262,6 +257,25 @@ impl LlmConfig {
             .unwrap_or("qwen3:8b")
     }
 
+    /// Find the provider entry designated for STT.
+    ///
+    /// Resolution priority:
+    /// 1. `[llm.stt].provider` matches `[[llm.providers]].name` and the entry has `stt_model`
+    /// 2. `[llm.stt].provider` is empty — fall through to auto-detect
+    /// 3. First provider with `stt_model` set (auto-detect fallback)
+    /// 4. `None` — STT disabled
+    #[must_use]
+    pub fn stt_provider_entry(&self) -> Option<&ProviderEntry> {
+        let name_hint = self.stt.as_ref().map_or("", |s| s.provider.as_str());
+        if name_hint.is_empty() {
+            self.providers.iter().find(|p| p.stt_model.is_some())
+        } else {
+            self.providers
+                .iter()
+                .find(|p| p.effective_name() == name_hint && p.stt_model.is_some())
+        }
+    }
+
     /// Validate that the config uses the new `[[llm.providers]]` format.
     ///
     /// # Errors
@@ -270,18 +284,53 @@ impl LlmConfig {
     pub fn check_legacy_format(&self) -> Result<(), crate::error::ConfigError> {
         Ok(())
     }
+
+    /// Validate STT config cross-references.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Validation` when the referenced STT provider does not exist.
+    pub fn validate_stt(&self) -> Result<(), crate::error::ConfigError> {
+        use crate::error::ConfigError;
+
+        let Some(stt) = &self.stt else {
+            return Ok(());
+        };
+        if stt.provider.is_empty() {
+            return Ok(());
+        }
+        let found = self
+            .providers
+            .iter()
+            .find(|p| p.effective_name() == stt.provider);
+        match found {
+            None => {
+                return Err(ConfigError::Validation(format!(
+                    "[llm.stt].provider = {:?} does not match any [[llm.providers]] entry",
+                    stt.provider
+                )));
+            }
+            Some(entry) if entry.stt_model.is_none() => {
+                tracing::warn!(
+                    provider = stt.provider,
+                    "[[llm.providers]] entry exists but has no `stt_model` — STT will not be activated"
+                );
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SttConfig {
+    /// Provider name from `[[llm.providers]]`. Empty string means auto-detect first provider
+    /// with `stt_model` set.
     #[serde(default = "default_stt_provider")]
     pub provider: String,
-    #[serde(default = "default_stt_model")]
-    pub model: String,
+    /// Language hint for transcription (e.g. `"en"`, `"auto"`).
     #[serde(default = "default_stt_language")]
     pub language: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
 }
 
 /// Routing strategy selection for multi-provider routing.
@@ -653,6 +702,11 @@ pub struct ProviderEntry {
     #[serde(default)]
     pub embedding_model: Option<String>,
 
+    /// STT model. When set, this provider supports speech-to-text via the Whisper API or
+    /// Candle-local inference.
+    #[serde(default)]
+    pub stt_model: Option<String>,
+
     /// Mark this entry as the embedding provider (handles `embed()` calls).
     #[serde(default)]
     pub embed: bool,
@@ -711,6 +765,7 @@ impl Default for ProviderEntry {
             base_url: None,
             max_tokens: None,
             embedding_model: None,
+            stt_model: None,
             embed: false,
             default: false,
             thinking: None,
@@ -855,6 +910,16 @@ impl ProviderEntry {
                 }
             }
             _ => {}
+        }
+
+        // W6: Candle STT-only provider (stt_model set, no model) is valid — no warning needed.
+        // Warn if Ollama has stt_model set (Ollama does not support Whisper API).
+        if self.stt_model.is_some() && self.provider_type == ProviderKind::Ollama {
+            tracing::warn!(
+                provider = self.effective_name(),
+                "field `stt_model` is set on an Ollama provider; Ollama does not support the \
+                 Whisper STT API — use OpenAI, compatible, or candle instead"
+            );
         }
 
         Ok(())
@@ -1255,5 +1320,198 @@ routing = "triage"
 "#,
         );
         assert!(matches!(cfg.routing, LlmRoutingStrategy::Triage));
+    }
+
+    // ─── stt_provider_entry ───────────────────────────────────────────────────
+
+    #[test]
+    fn stt_provider_entry_by_name_match() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+model = "gpt-5.4"
+stt_model = "gpt-4o-mini-transcribe"
+
+[llm.stt]
+provider = "quality"
+"#,
+        );
+        let entry = cfg.stt_provider_entry().expect("should find stt provider");
+        assert_eq!(entry.effective_name(), "quality");
+        assert_eq!(entry.stt_model.as_deref(), Some("gpt-4o-mini-transcribe"));
+    }
+
+    #[test]
+    fn stt_provider_entry_auto_detect_when_provider_empty() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "openai-stt"
+stt_model = "whisper-1"
+
+[llm.stt]
+provider = ""
+"#,
+        );
+        let entry = cfg.stt_provider_entry().expect("should auto-detect");
+        assert_eq!(entry.effective_name(), "openai-stt");
+    }
+
+    #[test]
+    fn stt_provider_entry_auto_detect_no_stt_section() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "openai-stt"
+stt_model = "whisper-1"
+"#,
+        );
+        // No [llm.stt] section — should still find first provider with stt_model.
+        let entry = cfg.stt_provider_entry().expect("should auto-detect");
+        assert_eq!(entry.effective_name(), "openai-stt");
+    }
+
+    #[test]
+    fn stt_provider_entry_none_when_no_stt_model() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+model = "gpt-5.4"
+"#,
+        );
+        assert!(cfg.stt_provider_entry().is_none());
+    }
+
+    #[test]
+    fn stt_provider_entry_name_mismatch_falls_back_to_none() {
+        // Named provider exists but has no stt_model; another unnamed has stt_model.
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+model = "gpt-5.4"
+
+[[llm.providers]]
+type = "openai"
+name = "openai-stt"
+stt_model = "whisper-1"
+
+[llm.stt]
+provider = "quality"
+"#,
+        );
+        // "quality" has no stt_model — returns None for name-based lookup.
+        assert!(cfg.stt_provider_entry().is_none());
+    }
+
+    #[test]
+    fn stt_config_deserializes_new_slim_format() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+stt_model = "whisper-1"
+
+[llm.stt]
+provider = "quality"
+language = "en"
+"#,
+        );
+        let stt = cfg.stt.as_ref().expect("stt section present");
+        assert_eq!(stt.provider, "quality");
+        assert_eq!(stt.language, "en");
+    }
+
+    #[test]
+    fn stt_config_default_provider_is_empty() {
+        // Verify that W4 fix: default_stt_provider() returns "" not "whisper".
+        assert_eq!(default_stt_provider(), "");
+    }
+
+    #[test]
+    fn validate_stt_missing_provider_ok() {
+        let cfg = parse_llm("[llm]\n");
+        assert!(cfg.validate_stt().is_ok());
+    }
+
+    #[test]
+    fn validate_stt_valid_reference() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+stt_model = "whisper-1"
+
+[llm.stt]
+provider = "quality"
+"#,
+        );
+        assert!(cfg.validate_stt().is_ok());
+    }
+
+    #[test]
+    fn validate_stt_nonexistent_provider_errors() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+model = "gpt-5.4"
+
+[llm.stt]
+provider = "nonexistent"
+"#,
+        );
+        assert!(cfg.validate_stt().is_err());
+    }
+
+    #[test]
+    fn validate_stt_provider_exists_but_no_stt_model_returns_ok_with_warn() {
+        // MEDIUM: provider is found but has no stt_model — should return Ok (warn path, not error).
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "openai"
+name = "quality"
+model = "gpt-5.4"
+
+[llm.stt]
+provider = "quality"
+"#,
+        );
+        // validate_stt must succeed (only a tracing::warn is emitted — not an error).
+        assert!(cfg.validate_stt().is_ok());
+        // stt_provider_entry must return None because no stt_model is set.
+        assert!(
+            cfg.stt_provider_entry().is_none(),
+            "stt_provider_entry must be None when provider has no stt_model"
+        );
     }
 }

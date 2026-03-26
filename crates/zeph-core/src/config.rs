@@ -44,9 +44,7 @@ pub use zeph_config::{
     is_legacy_default_sqlite_path,
 };
 
-pub use zeph_config::providers::{
-    default_stt_language, default_stt_model, default_stt_provider, validate_pool,
-};
+pub use zeph_config::providers::{default_stt_language, default_stt_provider, validate_pool};
 
 pub mod migrate {
     pub use zeph_config::migrate::*;

@@ -229,6 +229,24 @@ fn warn_if_acp_enabled_but_unavailable(config: &Config) {
     }
 }
 
+/// Resolve the API key for the STT provider entry.
+///
+/// `OpenAI` and Candle use the `OpenAI` key; Compatible providers use their own inline key or the
+/// compatible-provider key from the vault.
+#[cfg(feature = "stt")]
+fn resolve_stt_api_key(config: &Config, entry: &zeph_core::config::ProviderEntry) -> String {
+    use zeph_core::config::ProviderKind;
+    match entry.provider_type {
+        ProviderKind::OpenAi => config
+            .secrets
+            .openai_api_key
+            .as_ref()
+            .map_or(String::new(), |k| k.expose().to_string()),
+        ProviderKind::Compatible => entry.api_key.clone().unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
 #[allow(clippy::too_many_lines, clippy::large_futures)]
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Load logging config early (sync, cheap) so every code path gets file logging.
@@ -1247,33 +1265,62 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone());
     }
 
-    #[cfg(feature = "candle")]
-    let agent = agent_setup::apply_candle_stt(agent, config.llm.stt.as_ref());
-
-    #[cfg(feature = "stt")]
+    #[allow(unused_variables)]
     let agent = {
-        let openai_base_url = config
+        let language = config
             .llm
-            .providers
-            .iter()
-            .find(|e| e.provider_type == zeph_core::config::ProviderKind::OpenAi)
-            .map_or("https://api.openai.com/v1".to_owned(), |e| {
-                e.base_url
-                    .clone()
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_owned())
-            });
-        let api_key = config
-            .secrets
-            .openai_api_key
+            .stt
             .as_ref()
-            .map_or(String::new(), |k| k.expose().to_string());
-        agent_setup::apply_whisper_stt(agent, config.llm.stt.as_ref(), &openai_base_url, api_key)
+            .map_or("auto", |s| s.language.as_str());
+        if let Some(stt_entry) = config.llm.stt_provider_entry() {
+            match stt_entry.provider_type {
+                #[cfg(feature = "candle")]
+                zeph_core::config::ProviderKind::Candle => {
+                    agent_setup::apply_candle_stt(agent, stt_entry, language)
+                }
+                #[cfg(not(feature = "candle"))]
+                zeph_core::config::ProviderKind::Candle => {
+                    tracing::error!(
+                        provider = stt_entry.effective_name(),
+                        "STT provider is type candle but the `candle` feature is not enabled; \
+                         STT disabled"
+                    );
+                    agent
+                }
+                #[cfg(feature = "stt")]
+                _ => {
+                    let api_key = resolve_stt_api_key(config, stt_entry);
+                    agent_setup::apply_whisper_stt(agent, stt_entry, language, api_key)
+                }
+                #[cfg(not(feature = "stt"))]
+                _ => {
+                    tracing::error!(
+                        provider = stt_entry.effective_name(),
+                        "STT provider configured but the `stt` feature is not enabled; \
+                         STT disabled"
+                    );
+                    agent
+                }
+            }
+        } else {
+            if config.llm.stt.is_some() {
+                tracing::warn!(
+                    provider = config.llm.stt.as_ref().map_or("", |s| s.provider.as_str()),
+                    "[[llm.stt]] is configured but no matching [[llm.providers]] entry with \
+                     `stt_model` was found; STT disabled"
+                );
+            }
+            agent
+        }
     };
 
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
     {
-        let stt_model = config.llm.stt.as_ref().map(|s| s.model.clone());
+        let stt_model = config
+            .llm
+            .stt_provider_entry()
+            .and_then(|e| e.stt_model.clone());
         let compaction_model = config.llm.summary_model.clone();
         let semantic_cache_enabled = config.llm.semantic_cache_enabled;
         let embedding_model = zeph_core::bootstrap::effective_embedding_model(config).clone();
