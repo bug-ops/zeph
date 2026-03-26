@@ -431,7 +431,10 @@ impl LlmProvider for TriageRouter {
     }
 
     fn supports_embeddings(&self) -> bool {
-        false
+        self.tier_providers
+            .iter()
+            .any(|(_, p)| p.supports_embeddings())
+            || self.triage_provider.supports_embeddings()
     }
 
     fn supports_structured_output(&self) -> bool {
@@ -450,10 +453,29 @@ impl LlmProvider for TriageRouter {
 
     fn embed(
         &self,
-        _text: &str,
+        text: &str,
     ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+        // Delegate to the first embedding-capable tier provider, then to the triage provider,
+        // so that tool schema filter initialization works when routing = "triage".
+        let embed_provider = self
+            .tier_providers
+            .iter()
+            .find(|(_, p)| p.supports_embeddings())
+            .map(|(_, p)| p.clone())
+            .or_else(|| {
+                self.triage_provider
+                    .supports_embeddings()
+                    .then(|| self.triage_provider.clone())
+            });
+
         let name = self.name.clone();
-        Box::pin(async move { Err(LlmError::EmbedUnsupported { provider: name }) })
+        let text = text.to_owned();
+        Box::pin(async move {
+            match embed_provider {
+                Some(p) => p.embed(&text).await,
+                None => Err(LlmError::EmbedUnsupported { provider: name }),
+            }
+        })
     }
 
     /// Classify + delegate: each method independently performs triage (MF-2).
@@ -844,6 +866,74 @@ mod tests {
         );
         assert_eq!(router.last_usage(), None);
         assert_eq!(router.last_cache_usage(), None);
+    }
+
+    // ── embed delegation through tier providers ───────────────────────────────
+
+    fn mock_with_embedding(embedding: Vec<f32>) -> AnyProvider {
+        let mut p = MockProvider::default();
+        p.supports_embeddings = true;
+        p.embedding = embedding;
+        AnyProvider::Mock(p)
+    }
+
+    #[test]
+    fn supports_embeddings_false_when_no_tier_supports_it() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("a")),
+                (ComplexityTier::Expert, mock_provider("b")),
+            ],
+            5,
+            50,
+        );
+        assert!(!router.supports_embeddings());
+    }
+
+    #[test]
+    fn supports_embeddings_true_when_tier_supports_it() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("no-embed")),
+                (ComplexityTier::Expert, mock_with_embedding(vec![0.1, 0.2])),
+            ],
+            5,
+            50,
+        );
+        assert!(router.supports_embeddings());
+    }
+
+    #[tokio::test]
+    async fn embed_delegates_to_first_embedding_capable_tier() {
+        let expected = vec![1.0_f32, 2.0, 3.0];
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("no-embed")),
+                (
+                    ComplexityTier::Expert,
+                    mock_with_embedding(expected.clone()),
+                ),
+            ],
+            5,
+            50,
+        );
+        let result = router.embed("test query").await.unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[tokio::test]
+    async fn embed_returns_error_when_no_tier_supports_embeddings() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, mock_provider("no-embed"))],
+            5,
+            50,
+        );
+        let err = router.embed("test").await.unwrap_err();
+        assert!(err.to_string().contains("embedding not supported"));
     }
 
     // ── supports_streaming any-tier ───────────────────────────────────────────
