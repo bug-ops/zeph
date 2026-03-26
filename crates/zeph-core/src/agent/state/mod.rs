@@ -187,6 +187,9 @@ pub(crate) struct ProviderState {
     /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
     pub(crate) provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
     pub(crate) judge_provider: Option<AnyProvider>,
+    /// Dedicated provider for compaction probe LLM calls. Falls back to `summary_provider`
+    /// (or primary) when `None`.
+    pub(crate) probe_provider: Option<AnyProvider>,
     pub(crate) cached_prompt_tokens: u64,
     /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
     /// When true, client-side compaction is skipped.

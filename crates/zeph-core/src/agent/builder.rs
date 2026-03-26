@@ -393,6 +393,12 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    #[must_use]
+    pub fn with_probe_provider(mut self, provider: AnyProvider) -> Self {
+        self.providers.probe_provider = Some(provider);
+        self
+    }
+
     /// Enable server-side compaction mode (Claude compact-2026-01-12 beta).
     ///
     /// When active, client-side reactive and proactive compaction are skipped.
@@ -547,6 +553,14 @@ impl<C: Channel> Agent<C> {
         self.providers
             .summary_provider
             .as_ref()
+            .unwrap_or(&self.provider)
+    }
+
+    pub(super) fn probe_or_summary_provider(&self) -> &AnyProvider {
+        self.providers
+            .probe_provider
+            .as_ref()
+            .or(self.providers.summary_provider.as_ref())
             .unwrap_or(&self.provider)
     }
 

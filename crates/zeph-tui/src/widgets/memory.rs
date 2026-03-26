@@ -7,8 +7,74 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::metrics::{MetricsSnapshot, ProbeVerdict};
+use crate::metrics::{MetricsSnapshot, ProbeCategory, ProbeVerdict};
 use crate::theme::Theme;
+
+fn cat_label(cat: ProbeCategory) -> &'static str {
+    match cat {
+        ProbeCategory::Recall => "Rec",
+        ProbeCategory::Artifact => "Art",
+        ProbeCategory::Continuation => "Con",
+        ProbeCategory::Decision => "Dec",
+    }
+}
+
+fn render_probe_last_line<'a>(metrics: &'a MetricsSnapshot, lines: &mut Vec<Line<'a>>) {
+    let Some(verdict) = &metrics.last_probe_verdict else {
+        return;
+    };
+    let (label, color) = match verdict {
+        ProbeVerdict::Pass => ("Pass", Color::Green),
+        ProbeVerdict::SoftFail => ("SoftFail", Color::Yellow),
+        ProbeVerdict::HardFail => ("HardFail", Color::Red),
+        ProbeVerdict::Error => ("Error", Color::Gray),
+    };
+    let score_str = metrics
+        .last_probe_score
+        .map_or_else(String::new, |sc| format!(" ({sc:.2})"));
+
+    if let Some(ref cat_scores) = metrics.last_probe_category_scores {
+        let threshold = metrics.compaction_probe_threshold;
+        let hard_fail = metrics.compaction_probe_hard_fail_threshold;
+        let cat_color = |score: f32| -> Color {
+            if score >= threshold {
+                Color::Green
+            } else if score >= hard_fail {
+                Color::Yellow
+            } else {
+                Color::Red
+            }
+        };
+
+        let mut spans: Vec<Span<'_>> = vec![
+            Span::raw("  Last: "),
+            Span::styled(format!("{label}{score_str}"), Style::default().fg(color)),
+        ];
+        for cat in [
+            ProbeCategory::Recall,
+            ProbeCategory::Artifact,
+            ProbeCategory::Continuation,
+            ProbeCategory::Decision,
+        ] {
+            spans.push(Span::raw(" "));
+            let lbl = cat_label(cat);
+            if let Some(cs) = cat_scores.iter().find(|cs| cs.category == cat) {
+                spans.push(Span::styled(
+                    format!("{lbl}:{:.2}", cs.score),
+                    Style::default().fg(cat_color(cs.score)),
+                ));
+            } else {
+                spans.push(Span::raw(format!("{lbl}:--")));
+            }
+        }
+        lines.push(Line::from(spans));
+    } else {
+        lines.push(Line::from(vec![
+            Span::raw("  Last: "),
+            Span::styled(format!("{label}{score_str}"), Style::default().fg(color)),
+        ]));
+    }
+}
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
@@ -68,21 +134,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         let e = pct(metrics.compaction_probe_errors);
         mem_lines.push(Line::from(format!("  Probe: P {p}% S {s}% H {h}% E {e}%")));
 
-        if let Some(verdict) = &metrics.last_probe_verdict {
-            let (label, color) = match verdict {
-                ProbeVerdict::Pass => ("Pass", Color::Green),
-                ProbeVerdict::SoftFail => ("SoftFail", Color::Yellow),
-                ProbeVerdict::HardFail => ("HardFail", Color::Red),
-                ProbeVerdict::Error => ("Error", Color::Gray),
-            };
-            let score_str = metrics
-                .last_probe_score
-                .map_or_else(String::new, |sc| format!(" ({sc:.2})"));
-            mem_lines.push(Line::from(vec![
-                Span::raw("  Last: "),
-                Span::styled(format!("{label}{score_str}"), Style::default().fg(color)),
-            ]));
-        }
+        render_probe_last_line(metrics, &mut mem_lines);
     }
 
     if metrics.semantic_fact_count > 0 {
@@ -110,7 +162,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
 mod tests {
     use insta::assert_snapshot;
 
-    use crate::metrics::{MetricsSnapshot, ProbeVerdict};
+    use crate::metrics::{CategoryScore, MetricsSnapshot, ProbeCategory, ProbeVerdict};
     use crate::test_utils::render_to_string;
 
     #[test]
@@ -159,6 +211,46 @@ mod tests {
         };
 
         let output = render_to_string(50, 12, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn probe_lines_with_category_scores() {
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 5,
+            compaction_probe_passes: 1,
+            last_probe_verdict: Some(ProbeVerdict::Pass),
+            last_probe_score: Some(0.72),
+            compaction_probe_threshold: 0.6,
+            compaction_probe_hard_fail_threshold: 0.35,
+            last_probe_category_scores: Some(vec![
+                CategoryScore {
+                    category: ProbeCategory::Recall,
+                    score: 0.90,
+                    probes_run: 2,
+                },
+                CategoryScore {
+                    category: ProbeCategory::Artifact,
+                    score: 0.50,
+                    probes_run: 1,
+                },
+                CategoryScore {
+                    category: ProbeCategory::Continuation,
+                    score: 0.80,
+                    probes_run: 1,
+                },
+                CategoryScore {
+                    category: ProbeCategory::Decision,
+                    score: 0.60,
+                    probes_run: 1,
+                },
+            ]),
+            ..MetricsSnapshot::default()
+        };
+
+        let output = render_to_string(70, 14, |frame, area| {
             super::render(&metrics, frame, area);
         });
         assert_snapshot!(output);

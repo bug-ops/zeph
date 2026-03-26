@@ -53,6 +53,7 @@ proptest.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+toml.workspace = true
 zeph-llm.workspace = true
 
 [lints]

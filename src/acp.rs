@@ -119,6 +119,7 @@ struct SharedAgentDeps {
     // Optional runtime providers (contain HTTP client pools; excluded from session_config)
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     judge_provider: Option<zeph_llm::any::AnyProvider>,
+    probe_provider: Option<zeph_llm::any::AnyProvider>,
     quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
     #[cfg(feature = "guardrail")]
     guardrail_provider: Option<(
@@ -437,6 +438,7 @@ async fn build_acp_deps(
         mcp_config: config.mcp.clone(),
         summary_provider,
         judge_provider: app.build_judge_provider(),
+        probe_provider: app.build_probe_provider(),
         quarantine_provider: app.build_quarantine_provider(),
         #[cfg(feature = "guardrail")]
         guardrail_provider: app.build_guardrail_provider(),
@@ -523,6 +525,7 @@ async fn spawn_acp_agent(
     let mcp_config = d.mcp_config.clone();
     let summary_provider = d.summary_provider.clone();
     let judge_provider = d.judge_provider.clone();
+    let probe_provider = d.probe_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
     #[cfg(feature = "guardrail")]
     let guardrail_provider = d.guardrail_provider.clone();
@@ -712,6 +715,10 @@ async fn spawn_acp_agent(
 
     if let Some(jp) = judge_provider {
         agent = agent.with_judge_provider(jp);
+    }
+
+    if let Some(pp) = probe_provider {
+        agent = agent.with_probe_provider(pp);
     }
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);

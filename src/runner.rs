@@ -1052,6 +1052,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent =
         agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
+    let probe_provider = app.build_probe_provider();
+    let agent = if let Some(pp) = probe_provider {
+        agent.with_probe_provider(pp)
+    } else {
+        agent
+    };
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     #[cfg(feature = "guardrail")]
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());

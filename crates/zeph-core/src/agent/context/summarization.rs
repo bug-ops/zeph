@@ -1495,7 +1495,7 @@ impl<C: Channel> Agent<C> {
                 .send_status("Validating compaction quality...")
                 .await;
             let probe_result = match zeph_memory::validate_compaction(
-                self.summary_or_primary_provider(),
+                self.probe_or_summary_provider(),
                 &to_compact,
                 &summary,
                 &self.context_manager.compression.probe,
@@ -1509,6 +1509,7 @@ impl<C: Channel> Agent<C> {
                         m.compaction_probe_errors += 1;
                         m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Error);
                         m.last_probe_score = None;
+                        m.last_probe_category_scores = None;
                     });
                     None
                 }
@@ -1519,6 +1520,9 @@ impl<C: Channel> Agent<C> {
                     d.dump_compaction_probe(result);
                 }
 
+                let cat_scores = result.category_scores.clone();
+                let probe_threshold = result.threshold;
+                let probe_hard_fail_threshold = result.hard_fail_threshold;
                 match result.verdict {
                     zeph_memory::ProbeVerdict::HardFail => {
                         tracing::warn!(
@@ -1530,6 +1534,9 @@ impl<C: Channel> Agent<C> {
                             m.compaction_probe_failures += 1;
                             m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::HardFail);
                             m.last_probe_score = Some(result.score);
+                            m.last_probe_category_scores = Some(cat_scores.clone());
+                            m.compaction_probe_threshold = probe_threshold;
+                            m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
                         });
                         return Ok(CompactionOutcome::ProbeRejected);
                     }
@@ -1543,6 +1550,9 @@ impl<C: Channel> Agent<C> {
                             m.compaction_probe_soft_failures += 1;
                             m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::SoftFail);
                             m.last_probe_score = Some(result.score);
+                            m.last_probe_category_scores = Some(cat_scores.clone());
+                            m.compaction_probe_threshold = probe_threshold;
+                            m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
                         });
                     }
                     zeph_memory::ProbeVerdict::Pass => {
@@ -1551,6 +1561,9 @@ impl<C: Channel> Agent<C> {
                             m.compaction_probe_passes += 1;
                             m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Pass);
                             m.last_probe_score = Some(result.score);
+                            m.last_probe_category_scores = Some(cat_scores.clone());
+                            m.compaction_probe_threshold = probe_threshold;
+                            m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
                         });
                     }
                     zeph_memory::ProbeVerdict::Error => {

@@ -204,11 +204,24 @@ impl DebugDumper {
                     "expected": scrub_content(&q.expected_answer),
                     "actual": scrub_content(a),
                     "score": s,
+                    "category": format!("{:?}", q.category),
+                })
+            })
+            .collect();
+        let category_scores: Vec<serde_json::Value> = result
+            .category_scores
+            .iter()
+            .map(|cs| {
+                serde_json::json!({
+                    "category": format!("{:?}", cs.category),
+                    "score": cs.score,
+                    "probes_run": cs.probes_run,
                 })
             })
             .collect();
         let payload = serde_json::json!({
             "score": result.score,
+            "category_scores": category_scores,
             "threshold": result.threshold,
             "hard_fail_threshold": result.hard_fail_threshold,
             "verdict": format!("{:?}", result.verdict),

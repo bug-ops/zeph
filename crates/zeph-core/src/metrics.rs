@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use tokio::sync::watch;
 
-pub use zeph_memory::ProbeVerdict;
+pub use zeph_memory::{CategoryScore, ProbeCategory, ProbeVerdict};
 
 /// Category of a security event for TUI display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +206,12 @@ pub struct MetricsSnapshot {
     /// Last compaction probe score in [0.0, 1.0]. `None` before the first probe
     /// completes or after an Error verdict (errors produce no score).
     pub last_probe_score: Option<f32>,
+    /// Per-category scores from the last completed probe.
+    pub last_probe_category_scores: Option<Vec<zeph_memory::CategoryScore>>,
+    /// Configured pass threshold for the compaction probe. Used by TUI for category color-coding.
+    pub compaction_probe_threshold: f32,
+    /// Configured hard-fail threshold for the compaction probe.
+    pub compaction_probe_hard_fail_threshold: f32,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,

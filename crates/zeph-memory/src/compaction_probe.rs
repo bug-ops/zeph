@@ -8,6 +8,7 @@
 //! Returns a [`CompactionProbeResult`] that the caller uses to decide whether to
 //! commit or reject the summary.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use schemars::JsonSchema;
@@ -19,6 +20,30 @@ use crate::error::MemoryError;
 
 // --- Data structures ---
 
+/// Functional category of a probe question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeCategory {
+    /// Did specific facts survive? (file paths, function names, values, decisions)
+    Recall,
+    /// Does the agent know which files/tools/URLs it used?
+    Artifact,
+    /// Can it pick up mid-task? (current step, next steps, blockers, open questions)
+    Continuation,
+    /// Are past reasoning traces intact? (why X over Y, trade-offs, constraints)
+    Decision,
+}
+
+/// Per-category scoring breakdown from a compaction probe run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryScore {
+    pub category: ProbeCategory,
+    /// Average score of all questions in this category, in [0.0, 1.0].
+    pub score: f32,
+    /// Number of questions generated for this category.
+    pub probes_run: u32,
+}
+
 /// A single factual question with the expected answer.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProbeQuestion {
@@ -26,6 +51,23 @@ pub struct ProbeQuestion {
     pub question: String,
     /// Expected correct answer extractable from the original messages.
     pub expected_answer: String,
+    /// Functional category of this question.
+    #[serde(default = "default_probe_category")]
+    pub category: ProbeCategory,
+}
+
+fn default_probe_category() -> ProbeCategory {
+    ProbeCategory::Recall
+}
+
+impl Default for ProbeQuestion {
+    fn default() -> Self {
+        Self {
+            question: String::new(),
+            expected_answer: String::new(),
+            category: ProbeCategory::Recall,
+        }
+    }
 }
 
 /// Three-tier verdict for compaction probe quality.
@@ -47,6 +89,9 @@ pub enum ProbeVerdict {
 pub struct CompactionProbeResult {
     /// Overall score in [0.0, 1.0].
     pub score: f32,
+    /// Per-category breakdown. Categories with 0 questions are omitted.
+    #[serde(default)]
+    pub category_scores: Vec<CategoryScore>,
     /// Per-question breakdown.
     pub questions: Vec<ProbeQuestion>,
     /// LLM answers to the questions (positionally aligned with `questions`).
@@ -69,6 +114,72 @@ pub struct CompactionProbeResult {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ProbeQuestionsOutput {
     questions: Vec<ProbeQuestion>,
+}
+
+// --- Category scoring ---
+
+/// Group per-question scores by category and compute per-category averages.
+///
+/// Categories with no questions are excluded from the returned list.
+#[must_use]
+fn compute_category_scores(
+    questions: &[ProbeQuestion],
+    per_question_scores: &[f32],
+    category_weights: Option<&HashMap<ProbeCategory, f32>>,
+) -> (Vec<CategoryScore>, f32) {
+    // Group scores by category.
+    let mut by_cat: HashMap<ProbeCategory, Vec<f32>> = HashMap::new();
+    for (q, &s) in questions.iter().zip(per_question_scores.iter()) {
+        by_cat.entry(q.category).or_default().push(s);
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let category_scores: Vec<CategoryScore> = by_cat
+        .into_iter()
+        .map(|(category, scores)| {
+            let avg = scores.iter().sum::<f32>() / scores.len() as f32;
+            CategoryScore {
+                category,
+                score: avg,
+                #[allow(clippy::cast_possible_truncation)]
+                probes_run: scores.len() as u32,
+            }
+        })
+        .collect();
+
+    if category_scores.is_empty() {
+        return (category_scores, 0.0);
+    }
+
+    // Compute weighted overall score. Default: equal weights.
+    let mut weighted_sum = 0.0_f32;
+    let mut weight_total = 0.0_f32;
+    for cs in &category_scores {
+        let raw_w = category_weights
+            .and_then(|m| m.get(&cs.category).copied())
+            .unwrap_or(1.0);
+        if raw_w < 0.0 {
+            tracing::warn!(
+                category = ?cs.category,
+                weight = raw_w,
+                "category_weights contains a negative value — treating as 0.0 (category excluded from scoring)"
+            );
+        }
+        let w = raw_w.max(0.0);
+        weighted_sum += cs.score * w;
+        weight_total += w;
+    }
+
+    let overall = if weight_total > 0.0 {
+        weighted_sum / weight_total
+    } else {
+        // All weights are 0 — fall back to equal weighting.
+        #[allow(clippy::cast_precision_loss)]
+        let n = category_scores.len() as f32;
+        category_scores.iter().map(|cs| cs.score).sum::<f32>() / n
+    };
+
+    (category_scores, overall)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -245,11 +356,18 @@ pub async fn generate_probe_questions(
         "Given the following conversation excerpt, generate {max_questions} factual questions \
          that test whether a summary preserves the most important concrete details.\n\
          \n\
-         Focus on:\n\
-         - File paths, function names, struct/enum names that were modified or discussed\n\
-         - Architectural or implementation decisions with their rationale\n\
-         - Config values, API endpoints, error messages that were significant\n\
-         - Action items or next steps agreed upon\n\
+         You MUST generate at least one question per category when max_questions >= 4. \
+         If the conversation lacks information for a category, generate a question noting that absence.\n\
+         \n\
+         Categories:\n\
+         - recall: Specific facts that survived (file paths, function names, values). \
+           Example: \"What file was modified?\"\n\
+         - artifact: Which files/tools/URLs the agent used. \
+           Example: \"Which tool was executed?\"\n\
+         - continuation: Next steps, blockers, open questions. \
+           Example: \"What is the next step?\"\n\
+         - decision: Past reasoning traces (why X over Y, trade-offs). \
+           Example: \"Why was X chosen over Y?\"\n\
          \n\
          Do NOT generate questions about:\n\
          - Raw tool output content (compiler warnings, test output line numbers)\n\
@@ -261,7 +379,7 @@ pub async fn generate_probe_questions(
          Conversation:\n{history}\n\
          \n\
          Respond in JSON with schema: {{\"questions\": [{{\"question\": \"...\", \
-         \"expected_answer\": \"...\"}}]}}"
+         \"expected_answer\": \"...\", \"category\": \"recall|artifact|continuation|decision\"}}]}}"
     );
 
     let msgs = [Message {
@@ -331,31 +449,35 @@ pub async fn answer_probe_questions(
 pub struct CompactionProbeConfig {
     /// Enable compaction probe validation. Default: `false`.
     pub enabled: bool,
-    /// Model override for probe LLM calls. Empty string = use the summary provider.
-    ///
-    /// WARNING: non-Haiku models significantly increase cost per probe.
-    /// With Sonnet: ~$0.01–0.03 per probe vs ~$0.001–0.003 with Haiku.
-    pub model: String,
+    /// Provider name from `[[llm.providers]]` for probe LLM calls.
+    /// Empty string = use the summary provider.
+    pub probe_provider: String,
     /// Minimum score to pass without warnings. Default: `0.6`.
     /// Scores in [`hard_fail_threshold`, `threshold`) trigger `SoftFail` (warn + proceed).
     pub threshold: f32,
     /// Score below this triggers `HardFail` (block compaction). Default: `0.35`.
     pub hard_fail_threshold: f32,
-    /// Maximum number of probe questions to generate. Default: `3`.
+    /// Maximum number of probe questions to generate. Default: `5`.
     pub max_questions: usize,
     /// Timeout for the entire probe (both LLM calls) in seconds. Default: `15`.
     pub timeout_secs: u64,
+    /// Optional per-category weight multipliers for the overall score.
+    /// When `None` or empty, all categories are weighted equally.
+    /// Example: `{ recall = 1.5, artifact = 1.0, continuation = 1.0, decision = 0.8 }`
+    #[serde(default)]
+    pub category_weights: Option<HashMap<ProbeCategory, f32>>,
 }
 
 impl Default for CompactionProbeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            model: String::new(),
+            probe_provider: String::new(),
             threshold: 0.6,
             hard_fail_threshold: 0.35,
-            max_questions: 3,
+            max_questions: 5,
             timeout_secs: 15,
+            category_weights: None,
         }
     }
 }
@@ -415,6 +537,14 @@ async fn run_probe(
     summary: &str,
     config: &CompactionProbeConfig,
 ) -> Result<Option<CompactionProbeResult>, MemoryError> {
+    if summary.len() < 10 {
+        tracing::warn!(
+            len = summary.len(),
+            "compaction probe: summary too short — skipping probe"
+        );
+        return Ok(None);
+    }
+
     let questions = generate_probe_questions(provider, messages, config.max_questions).await?;
 
     if questions.len() < 2 {
@@ -425,9 +555,34 @@ async fn run_probe(
         return Ok(None);
     }
 
+    // Warn if any category is missing when we expected full coverage.
+    if config.max_questions >= 4 {
+        use std::collections::HashSet;
+        let covered: HashSet<_> = questions.iter().map(|q| q.category).collect();
+        for cat in [
+            ProbeCategory::Recall,
+            ProbeCategory::Artifact,
+            ProbeCategory::Continuation,
+            ProbeCategory::Decision,
+        ] {
+            if !covered.contains(&cat) {
+                tracing::warn!(
+                    category = ?cat,
+                    "compaction probe: LLM did not generate questions for category"
+                );
+            }
+        }
+    }
+
     let answers = answer_probe_questions(provider, summary, &questions).await?;
 
-    let (per_question_scores, score) = score_answers(&questions, &answers);
+    let (per_question_scores, _simple_avg) = score_answers(&questions, &answers);
+
+    let (category_scores, score) = compute_category_scores(
+        &questions,
+        &per_question_scores,
+        config.category_weights.as_ref(),
+    );
 
     let verdict = if score >= config.threshold {
         ProbeVerdict::Pass
@@ -441,6 +596,7 @@ async fn run_probe(
 
     Ok(Some(CompactionProbeResult {
         score,
+        category_scores,
         questions,
         answers,
         per_question_scores,
@@ -463,6 +619,7 @@ mod tests {
         let q = vec![ProbeQuestion {
             question: "What crate is used?".into(),
             expected_answer: "thiserror".into(),
+            category: ProbeCategory::Recall,
         }];
         let a = vec!["thiserror".into()];
         let (scores, avg) = score_answers(&q, &a);
@@ -475,6 +632,7 @@ mod tests {
         let q = vec![ProbeQuestion {
             question: "What file was modified?".into(),
             expected_answer: "src/auth.rs".into(),
+            ..Default::default()
         }];
         let a = vec!["definitely not in the summary".into()];
         let (scores, avg) = score_answers(&q, &a);
@@ -488,6 +646,7 @@ mod tests {
         let q = vec![ProbeQuestion {
             question: "What was the decision?".into(),
             expected_answer: "Use thiserror for typed errors".into(),
+            ..Default::default()
         }];
         for refusal in &[
             "UNKNOWN",
@@ -509,6 +668,7 @@ mod tests {
         let q = vec![ProbeQuestion {
             question: "What error handling crate was chosen?".into(),
             expected_answer: "Use thiserror for typed errors in library crates".into(),
+            ..Default::default()
         }];
         let a = vec!["thiserror was chosen for error types in library crates".into()];
         let (_, avg) = score_answers(&q, &a);
@@ -520,6 +680,7 @@ mod tests {
         let q = vec![ProbeQuestion {
             question: "What?".into(),
             expected_answer: String::new(),
+            ..Default::default()
         }];
         let a = vec![String::new()];
         let (scores, avg) = score_answers(&q, &a);
@@ -543,6 +704,7 @@ mod tests {
         let q = vec![ProbeQuestion {
             question: "Which file was modified?".into(),
             expected_answer: "crates/zeph-memory/src/compaction_probe.rs".into(),
+            ..Default::default()
         }];
         let a = vec!["The file crates/zeph-memory/src/compaction_probe.rs was modified.".into()];
         let (_, avg) = score_answers(&q, &a);
@@ -558,6 +720,7 @@ mod tests {
         let q = vec![ProbeQuestion {
             question: "Что было изменено?".into(),
             expected_answer: "файл config.toml".into(),
+            ..Default::default()
         }];
         let a = vec!["config.toml был изменён".into()];
         // Just verify no panic; score may vary.
@@ -611,11 +774,12 @@ mod tests {
     fn config_defaults() {
         let c = CompactionProbeConfig::default();
         assert!(!c.enabled);
-        assert!(c.model.is_empty());
+        assert!(c.probe_provider.is_empty());
         assert!((c.threshold - 0.6).abs() < 0.001);
         assert!((c.hard_fail_threshold - 0.35).abs() < 0.001);
-        assert_eq!(c.max_questions, 3);
+        assert_eq!(c.max_questions, 5);
         assert_eq!(c.timeout_secs, 15);
+        assert!(c.category_weights.is_none());
     }
 
     // --- serde round-trip ---
@@ -624,16 +788,17 @@ mod tests {
     fn config_serde_round_trip() {
         let original = CompactionProbeConfig {
             enabled: true,
-            model: "claude-haiku-4-5-20251001".into(),
+            probe_provider: "fast".into(),
             threshold: 0.65,
             hard_fail_threshold: 0.4,
             max_questions: 5,
             timeout_secs: 20,
+            category_weights: None,
         };
         let json = serde_json::to_string(&original).expect("serialize");
         let restored: CompactionProbeConfig = serde_json::from_str(&json).expect("deserialize");
         assert!(restored.enabled);
-        assert_eq!(restored.model, "claude-haiku-4-5-20251001");
+        assert_eq!(restored.probe_provider, "fast");
         assert!((restored.threshold - 0.65).abs() < 0.001);
     }
 
@@ -641,9 +806,15 @@ mod tests {
     fn probe_result_serde_round_trip() {
         let result = CompactionProbeResult {
             score: 0.75,
+            category_scores: vec![CategoryScore {
+                category: ProbeCategory::Recall,
+                score: 0.75,
+                probes_run: 1,
+            }],
             questions: vec![ProbeQuestion {
                 question: "What?".into(),
                 expected_answer: "thiserror".into(),
+                category: ProbeCategory::Recall,
             }],
             answers: vec!["thiserror".into()],
             per_question_scores: vec![1.0],
@@ -657,6 +828,15 @@ mod tests {
         let restored: CompactionProbeResult = serde_json::from_str(&json).expect("deserialize");
         assert!((restored.score - 0.75).abs() < 0.001);
         assert_eq!(restored.verdict, ProbeVerdict::Pass);
+        assert_eq!(restored.category_scores.len(), 1);
+    }
+
+    #[test]
+    fn probe_result_backward_compat_no_category_scores() {
+        // Old JSON without category_scores field must deserialize with empty vec.
+        let json = r#"{"score":0.75,"questions":[],"answers":[],"per_question_scores":[],"verdict":"Pass","threshold":0.6,"hard_fail_threshold":0.35,"model":"haiku","duration_ms":0}"#;
+        let restored: CompactionProbeResult = serde_json::from_str(json).expect("deserialize");
+        assert!(restored.category_scores.is_empty());
     }
 
     // --- fewer answers than questions (LLM returned truncated list) ---
@@ -667,14 +847,17 @@ mod tests {
             ProbeQuestion {
                 question: "What crate?".into(),
                 expected_answer: "thiserror".into(),
+                ..Default::default()
             },
             ProbeQuestion {
                 question: "What file?".into(),
                 expected_answer: "src/lib.rs".into(),
+                ..Default::default()
             },
             ProbeQuestion {
                 question: "What decision?".into(),
                 expected_answer: "use async traits".into(),
+                ..Default::default()
             },
         ];
         // LLM only returned 1 answer for 3 questions.
@@ -766,10 +949,10 @@ mod tests {
         let c: CompactionProbeConfig =
             serde_json::from_str(json).expect("deserialize partial json");
         assert!(c.enabled);
-        assert!(c.model.is_empty());
+        assert!(c.probe_provider.is_empty());
         assert!((c.threshold - 0.6).abs() < 0.001);
         assert!((c.hard_fail_threshold - 0.35).abs() < 0.001);
-        assert_eq!(c.max_questions, 3);
+        assert_eq!(c.max_questions, 5);
         assert_eq!(c.timeout_secs, 15);
     }
 
@@ -777,6 +960,218 @@ mod tests {
     fn config_empty_json_uses_all_defaults() {
         let c: CompactionProbeConfig = serde_json::from_str("{}").expect("deserialize empty json");
         assert!(!c.enabled);
-        assert!(c.model.is_empty());
+        assert!(c.probe_provider.is_empty());
+    }
+
+    // --- ProbeCategory serde ---
+
+    #[test]
+    fn probe_category_serde_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ProbeCategory::Recall).unwrap(),
+            r#""recall""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProbeCategory::Artifact).unwrap(),
+            r#""artifact""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProbeCategory::Continuation).unwrap(),
+            r#""continuation""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProbeCategory::Decision).unwrap(),
+            r#""decision""#
+        );
+        let cat: ProbeCategory = serde_json::from_str(r#""recall""#).unwrap();
+        assert_eq!(cat, ProbeCategory::Recall);
+    }
+
+    // --- category_weights TOML compat ---
+
+    #[test]
+    fn category_weights_toml_round_trip() {
+        let toml_str = r#"
+enabled = true
+probe_provider = "fast"
+threshold = 0.6
+hard_fail_threshold = 0.35
+max_questions = 5
+timeout_secs = 15
+[category_weights]
+recall = 1.5
+artifact = 1.0
+continuation = 1.0
+decision = 0.8
+"#;
+        let c: CompactionProbeConfig = toml::from_str(toml_str).expect("deserialize toml");
+        let weights = c.category_weights.as_ref().unwrap();
+        assert!((weights[&ProbeCategory::Recall] - 1.5).abs() < 0.001);
+        assert!((weights[&ProbeCategory::Decision] - 0.8).abs() < 0.001);
+    }
+
+    // --- compute_category_scores ---
+
+    #[test]
+    fn category_scores_equal_weights() {
+        let questions = vec![
+            ProbeQuestion {
+                question: "Q1".into(),
+                expected_answer: "A1".into(),
+                category: ProbeCategory::Recall,
+            },
+            ProbeQuestion {
+                question: "Q2".into(),
+                expected_answer: "A2".into(),
+                category: ProbeCategory::Artifact,
+            },
+        ];
+        let scores = [1.0_f32, 0.0_f32];
+        let (cats, overall) = compute_category_scores(&questions, &scores, None);
+        assert_eq!(cats.len(), 2);
+        // Equal weight: (1.0 + 0.0) / 2 = 0.5
+        assert!((overall - 0.5).abs() < 0.001, "overall={overall}");
+    }
+
+    #[test]
+    fn category_scores_missing_category_excluded() {
+        // Only Recall and Decision present; Artifact/Continuation absent.
+        let questions = vec![
+            ProbeQuestion {
+                question: "Q1".into(),
+                expected_answer: "A1".into(),
+                category: ProbeCategory::Recall,
+            },
+            ProbeQuestion {
+                question: "Q2".into(),
+                expected_answer: "A2".into(),
+                category: ProbeCategory::Decision,
+            },
+        ];
+        let scores = [1.0_f32, 0.6_f32];
+        let (cats, _overall) = compute_category_scores(&questions, &scores, None);
+        assert_eq!(cats.len(), 2, "only categories with questions present");
+        let categories: Vec<_> = cats.iter().map(|c| c.category).collect();
+        assert!(!categories.contains(&ProbeCategory::Artifact));
+        assert!(!categories.contains(&ProbeCategory::Continuation));
+    }
+
+    #[test]
+    fn category_scores_custom_weights() {
+        let questions = vec![
+            ProbeQuestion {
+                question: "Q1".into(),
+                expected_answer: "A1".into(),
+                category: ProbeCategory::Recall,
+            },
+            ProbeQuestion {
+                question: "Q2".into(),
+                expected_answer: "A2".into(),
+                category: ProbeCategory::Decision,
+            },
+        ];
+        let scores = [1.0_f32, 0.0_f32];
+        let mut weights = HashMap::new();
+        weights.insert(ProbeCategory::Recall, 2.0_f32);
+        weights.insert(ProbeCategory::Decision, 1.0_f32);
+        let (_, overall) = compute_category_scores(&questions, &scores, Some(&weights));
+        // (1.0*2 + 0.0*1) / (2+1) = 0.666..
+        assert!(
+            (overall - 2.0 / 3.0).abs() < 0.001,
+            "expected ~0.667, got {overall}"
+        );
+    }
+
+    #[test]
+    fn category_scores_all_zero_weights_fallback() {
+        let questions = vec![
+            ProbeQuestion {
+                question: "Q1".into(),
+                expected_answer: "A1".into(),
+                category: ProbeCategory::Recall,
+            },
+            ProbeQuestion {
+                question: "Q2".into(),
+                expected_answer: "A2".into(),
+                category: ProbeCategory::Artifact,
+            },
+        ];
+        let scores = [1.0_f32, 0.0_f32];
+        let mut weights = HashMap::new();
+        weights.insert(ProbeCategory::Recall, 0.0_f32);
+        weights.insert(ProbeCategory::Artifact, 0.0_f32);
+        let (_, overall) = compute_category_scores(&questions, &scores, Some(&weights));
+        // Fallback to equal weighting: (1.0 + 0.0) / 2 = 0.5
+        assert!((overall - 0.5).abs() < 0.001, "overall={overall}");
+    }
+
+    #[test]
+    fn category_scores_empty_questions() {
+        let (cats, overall) = compute_category_scores(&[], &[], None);
+        assert!(cats.is_empty());
+        assert!((overall - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn category_scores_multi_probe_single_category_averages() {
+        // Three Recall questions with scores 1.0, 0.0, 0.5 → average 0.5.
+        let questions = vec![
+            ProbeQuestion {
+                question: "Q1".into(),
+                expected_answer: "A1".into(),
+                category: ProbeCategory::Recall,
+            },
+            ProbeQuestion {
+                question: "Q2".into(),
+                expected_answer: "A2".into(),
+                category: ProbeCategory::Recall,
+            },
+            ProbeQuestion {
+                question: "Q3".into(),
+                expected_answer: "A3".into(),
+                category: ProbeCategory::Recall,
+            },
+        ];
+        let scores = [1.0_f32, 0.0_f32, 0.5_f32];
+        let (cats, overall) = compute_category_scores(&questions, &scores, None);
+        assert_eq!(cats.len(), 1, "only one category present");
+        assert_eq!(cats[0].category, ProbeCategory::Recall);
+        assert_eq!(cats[0].probes_run, 3);
+        assert!(
+            (cats[0].score - 0.5).abs() < 0.001,
+            "cat score={}",
+            cats[0].score
+        );
+        // With one category, overall equals that category's average.
+        assert!((overall - 0.5).abs() < 0.001, "overall={overall}");
+    }
+
+    #[test]
+    fn probe_question_serde_default_category() {
+        // Old JSON without `category` field must deserialize to Recall via #[serde(default)].
+        let json = r#"{"question":"What file?","expected_answer":"src/lib.rs"}"#;
+        let q: ProbeQuestion = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(q.category, ProbeCategory::Recall);
+        assert_eq!(q.question, "What file?");
+        assert_eq!(q.expected_answer, "src/lib.rs");
+    }
+
+    #[test]
+    fn probe_question_serde_all_categories_round_trip() {
+        for cat in [
+            ProbeCategory::Recall,
+            ProbeCategory::Artifact,
+            ProbeCategory::Continuation,
+            ProbeCategory::Decision,
+        ] {
+            let q = ProbeQuestion {
+                question: "test?".into(),
+                expected_answer: "answer".into(),
+                category: cat,
+            };
+            let json = serde_json::to_string(&q).expect("serialize");
+            let restored: ProbeQuestion = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(restored.category, cat);
+        }
     }
 }

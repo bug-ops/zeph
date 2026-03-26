@@ -406,6 +406,7 @@ impl<C: Channel> Agent<C> {
                 summary_provider: None,
                 provider_override: None,
                 judge_provider: None,
+                probe_provider: None,
                 cached_prompt_tokens: initial_prompt_tokens,
                 server_compaction_active: false,
                 stt: None,

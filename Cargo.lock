@@ -9689,6 +9689,7 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "tokio-util",
+ "toml 1.1.0+spec-1.1.0",
  "tracing",
  "uuid",
  "zeph-common",

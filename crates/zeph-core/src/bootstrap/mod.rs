@@ -560,16 +560,31 @@ impl AppBuilder {
         }
     }
 
-    /// Build a dedicated provider for experiment evaluation when `experiments.eval_model` is set.
+    /// Build a dedicated provider for compaction probe LLM calls.
     ///
-    /// Returns `None` when `eval_model` is not configured (primary provider is used as judge).
-    /// Emits a `tracing::warn` on resolution failure (primary provider used as fallback).
-    ///
-    /// `eval_model` uses the same `provider/model` format as `llm.summary_model`:
-    /// - `ollama/qwen3:1.7b`
-    /// - `claude` or `claude/claude-opus-4-6`
-    /// - `openai` or `openai/gpt-4o`
-    /// - `compatible/<name>`
+    /// Returns `None` when `probe_provider` is empty (falls back to summary provider at call site).
+    /// Emits a `tracing::warn` on resolution failure (summary/primary provider used as fallback).
+    pub fn build_probe_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.compression.probe.probe_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "compaction probe provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "probe provider resolution failed — summary/primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     #[cfg(feature = "experiments")]
     pub fn build_eval_provider(&self) -> Option<AnyProvider> {
         let model_spec = self.config.experiments.eval_model.as_deref()?;

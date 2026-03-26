@@ -155,7 +155,7 @@ pub(crate) struct WizardState {
     pub(crate) semantic_cache_threshold: f32,
     // Compaction probe (#2048)
     pub(crate) probe_enabled: bool,
-    pub(crate) probe_model: Option<String>,
+    pub(crate) probe_provider: Option<String>,
     pub(crate) probe_threshold: f32,
     pub(crate) probe_hard_fail_threshold: f32,
 }
@@ -278,7 +278,7 @@ impl Default for WizardState {
             semantic_cache_enabled: false,
             semantic_cache_threshold: 0.95,
             probe_enabled: false,
-            probe_model: None,
+            probe_provider: None,
             probe_threshold: 0.6,
             probe_hard_fail_threshold: 0.35,
         }
@@ -855,12 +855,15 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
 
     if state.probe_enabled {
-        let model: String = Input::new()
-            .with_prompt("Model for probe LLM calls (empty = same as summary provider)")
+        let provider: String = Input::new()
+            .with_prompt(
+                "Provider name for probe LLM calls from [[llm.providers]] \
+                 (empty = same as summary provider)",
+            )
             .default(String::new())
             .interact_text()?;
-        if !model.is_empty() {
-            state.probe_model = Some(model);
+        if !provider.is_empty() {
+            state.probe_provider = Some(provider);
         }
 
         state.probe_threshold = Input::new()
@@ -1176,8 +1179,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.soft_compaction_threshold = state.soft_compaction_threshold;
     config.memory.hard_compaction_threshold = state.hard_compaction_threshold;
     config.memory.compression.probe.enabled = state.probe_enabled;
-    if let Some(ref m) = state.probe_model {
-        config.memory.compression.probe.model.clone_from(m);
+    if let Some(ref p) = state.probe_provider {
+        config.memory.compression.probe.probe_provider.clone_from(p);
     }
     if state.probe_enabled {
         config.memory.compression.probe.threshold = state.probe_threshold;
@@ -2860,27 +2863,27 @@ mod tests {
     }
 
     #[test]
-    fn build_config_probe_model_set() {
+    fn build_config_probe_provider_set() {
         let state = WizardState {
             vault_backend: "env".into(),
             probe_enabled: true,
-            probe_model: Some("haiku".into()),
+            probe_provider: Some("fast".into()),
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.compression.probe.model, "haiku");
+        assert_eq!(config.memory.compression.probe.probe_provider, "fast");
     }
 
     #[test]
-    fn build_config_probe_model_none_leaves_default() {
+    fn build_config_probe_provider_none_leaves_default() {
         let state = WizardState {
             vault_backend: "env".into(),
             probe_enabled: true,
-            probe_model: None,
+            probe_provider: None,
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.compression.probe.model, "");
+        assert_eq!(config.memory.compression.probe.probe_provider, "");
     }
 
     #[test]

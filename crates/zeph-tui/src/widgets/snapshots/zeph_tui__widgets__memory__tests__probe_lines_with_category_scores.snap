@@ -1,0 +1,18 @@
+---
+source: crates/zeph-tui/src/widgets/memory.rs
+expression: output
+---
+┌ Memory ────────────────────────────────────────────────────────────┐
+│  SQLite: 5 msgs                                                    │
+│  Conv ID: ---                                                      │
+│  Embeddings: 0                                                     │
+│  Graph: 0 entities, 0 edges, 0 communities                         │
+│  Graph extractions: 0 ok, 0 failed                                 │
+│  Probe: P 100% S 0% H 0% E 0%                                      │
+│  Last: Pass (0.72) Rec:0.90 Art:0.50 Con:0.80 Dec:0.60             │
+│                                                                    │
+│                                                                    │
+│                                                                    │
+│                                                                    │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
