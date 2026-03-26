@@ -134,6 +134,7 @@ mod tests {
             retry_count: 0,
             failure_strategy: None,
             max_retries: None,
+            execution_mode: crate::graph::ExecutionMode::default(),
         }
     }
 

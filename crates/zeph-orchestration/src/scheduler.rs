@@ -12,8 +12,11 @@ use tokio::sync::mpsc;
 
 use super::dag;
 use super::error::OrchestrationError;
-use super::graph::{GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus};
+use super::graph::{
+    ExecutionMode, GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus,
+};
 use super::router::AgentRouter;
+use super::topology::{Topology, TopologyClassifier};
 use zeph_config::OrchestrationConfig;
 use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_subagent::{SubAgentDef, SubAgentError};
@@ -115,6 +118,8 @@ pub struct DagScheduler {
     deferral_backoff: Duration,
     /// Consecutive spawn failures due to concurrency limits. Used to compute exponential backoff.
     consecutive_spawn_failures: u32,
+    /// Classified topology of the graph. `None` when `topology_selection` is disabled.
+    topology: Option<Topology>,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -125,6 +130,7 @@ impl std::fmt::Debug for DagScheduler {
             .field("running_count", &self.running.len())
             .field("max_parallel", &self.max_parallel)
             .field("task_timeout_secs", &self.task_timeout.as_secs())
+            .field("topology", &self.topology)
             .finish_non_exhaustive()
     }
 }
@@ -170,9 +176,21 @@ impl DagScheduler {
             Duration::from_secs(600)
         };
 
+        let topology = TopologyClassifier::classify(&graph);
+        let max_parallel = TopologyClassifier::suggest_max_parallel(topology, config)
+            .unwrap_or(config.max_parallel as usize);
+
+        if config.topology_selection {
+            tracing::debug!(
+                topology = ?topology,
+                max_parallel,
+                "topology-aware concurrency limit applied"
+            );
+        }
+
         Ok(Self {
             graph,
-            max_parallel: config.max_parallel as usize,
+            max_parallel,
             running: HashMap::new(),
             event_rx,
             event_tx,
@@ -184,6 +202,11 @@ impl DagScheduler {
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
             deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
             consecutive_spawn_failures: 0,
+            topology: if config.topology_selection {
+                Some(topology)
+            } else {
+                None
+            },
         })
     }
 
@@ -248,9 +271,13 @@ impl DagScheduler {
             Duration::from_secs(600)
         };
 
+        let topology = TopologyClassifier::classify(&graph);
+        let max_parallel = TopologyClassifier::suggest_max_parallel(topology, config)
+            .unwrap_or(config.max_parallel as usize);
+
         Ok(Self {
             graph,
-            max_parallel: config.max_parallel as usize,
+            max_parallel,
             running,
             event_rx,
             event_tx,
@@ -262,6 +289,11 @@ impl DagScheduler {
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
             deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
             consecutive_spawn_failures: 0,
+            topology: if config.topology_selection {
+                Some(topology)
+            } else {
+                None
+            },
         })
     }
 
@@ -283,6 +315,12 @@ impl DagScheduler {
     #[must_use]
     pub fn into_graph(&self) -> TaskGraph {
         self.graph.clone()
+    }
+
+    /// Classified topology of the graph. `None` when `topology_selection` is disabled.
+    #[must_use]
+    pub fn topology(&self) -> Option<Topology> {
+        self.topology
     }
 }
 
@@ -333,14 +371,40 @@ impl DagScheduler {
             return actions;
         }
 
-        // Dispatch ALL ready tasks. Concurrency is enforced by SubAgentManager::spawn()
-        // which returns ConcurrencyLimit when active + reserved >= max_concurrent.
+        // Dispatch ready tasks up to max_parallel slots. Concurrency is pre-enforced here
+        // (topology-aware cap) and also enforced by SubAgentManager::spawn() returning
+        // ConcurrencyLimit when active + reserved >= max_concurrent.
         // Non-transient spawn failures are handled by record_spawn_failure(); optimistic
         // Running marks are reverted to Ready for ConcurrencyLimit errors.
         let ready = dag::ready_tasks(&self.graph);
 
+        // Available dispatch slots for this tick.
+        let mut slots = self.max_parallel.saturating_sub(self.running.len());
+
+        // For sequential dispatch: track whether we already scheduled one sequential task
+        // this tick AND whether any sequential task is currently running.
+        let mut sequential_spawned_this_tick = false;
+        let has_running_sequential = self
+            .running
+            .keys()
+            .any(|tid| self.graph.tasks[tid.index()].execution_mode == ExecutionMode::Sequential);
+
         for task_id in ready {
+            if slots == 0 {
+                break;
+            }
+
             let task = &self.graph.tasks[task_id.index()];
+
+            // Sequential tasks: only one may run at a time within the scheduler.
+            // Independent sequential tasks in separate DAG branches are still
+            // serialized here (they share exclusive-resource intent by annotation).
+            if task.execution_mode == ExecutionMode::Sequential {
+                if sequential_spawned_this_tick || has_running_sequential {
+                    continue;
+                }
+                sequential_spawned_this_tick = true;
+            }
 
             let Some(agent_def_name) = self.router.route(task, &self.available_agents) else {
                 tracing::debug!(
@@ -351,6 +415,7 @@ impl DagScheduler {
                 let prompt = self.build_task_prompt(task);
                 self.graph.tasks[task_id.index()].status = TaskStatus::Running;
                 actions.push(SchedulerAction::RunInline { task_id, prompt });
+                slots -= 1;
                 continue;
             };
 
@@ -364,6 +429,7 @@ impl DagScheduler {
                 agent_def_name,
                 prompt,
             });
+            slots -= 1;
         }
 
         // Check for completion or deadlock.
@@ -913,6 +979,7 @@ mod tests {
             aggregator_max_tokens: 4096,
             deferral_backoff_ms: 250,
             plan_cache: zeph_config::PlanCacheConfig::default(),
+            topology_selection: false,
         }
     }
 
@@ -993,9 +1060,8 @@ mod tests {
 
     #[test]
     fn test_tick_dispatches_all_regardless_of_max_parallel() {
-        // With parallel dispatch, tick() emits Spawn for ALL ready tasks.
-        // max_parallel no longer caps the number of Spawn actions per tick;
-        // concurrency is enforced by SubAgentManager.
+        // tick() enforces max_parallel as a pre-dispatch cap.
+        // With 5 independent tasks and max_parallel=2, only 2 are dispatched per tick.
         let graph = graph_from_nodes(vec![
             make_node(0, &[]),
             make_node(1, &[]),
@@ -1012,7 +1078,10 @@ mod tests {
             .iter()
             .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
             .count();
-        assert_eq!(spawn_count, 5, "all 5 ready tasks must be dispatched");
+        assert_eq!(
+            spawn_count, 2,
+            "max_parallel=2 caps dispatched tasks per tick"
+        );
     }
 
     #[test]
@@ -1425,10 +1494,10 @@ mod tests {
 
     #[test]
     fn test_max_concurrent_zero_no_infinite_loop() {
-        // max_parallel=0 is a degenerate config. With parallel dispatch, tick() still
-        // emits Spawn for all ready tasks — concurrency enforcement is in SubAgentManager.
-        // After the caller calls record_spawn_failure(ConcurrencyLimit), the task reverts
-        // to Ready and the graph stays Running (no deadlock).
+        // max_parallel=0 is a degenerate config. tick() uses saturating_sub so slots=0,
+        // and no tasks are dispatched. The graph does not deadlock because ready tasks
+        // still exist — the caller must increase max_parallel or handle this externally.
+        // After max_parallel is increased and a new tick fires, tasks will be dispatched.
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
         let config = zeph_config::OrchestrationConfig {
             max_parallel: 0,
@@ -1443,12 +1512,12 @@ mod tests {
         .unwrap();
 
         let actions1 = scheduler.tick();
-        // tick() dispatches all ready tasks regardless of max_parallel.
+        // No Spawn: slots = max_parallel(0) - running(0) = 0.
         assert!(
             actions1
                 .iter()
-                .any(|a| matches!(a, SchedulerAction::Spawn { .. })),
-            "Spawn expected — parallel dispatch ignores max_parallel cap in tick()"
+                .all(|a| !matches!(a, SchedulerAction::Spawn { .. })),
+            "no Spawn expected when max_parallel=0"
         );
         assert!(
             actions1
@@ -1458,28 +1527,18 @@ mod tests {
         );
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
 
-        // Simulate caller receiving ConcurrencyLimit from SubAgentManager.
-        scheduler.graph.tasks[0].status = TaskStatus::Running;
-        let error = SubAgentError::ConcurrencyLimit { active: 0, max: 0 };
-        let extra = scheduler.record_spawn_failure(TaskId(0), &error);
-        assert!(
-            extra.is_empty(),
-            "ConcurrencyLimit must not produce cancel/done actions"
-        );
-        assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Ready);
-
-        // Second tick must also dispatch (not deadlock).
+        // Second tick also dispatches nothing (still max_parallel=0, ready task exists).
         let actions2 = scheduler.tick();
         assert!(
             actions2
                 .iter()
                 .all(|a| !matches!(a, SchedulerAction::Done { .. })),
-            "second tick must not emit Done(Failed)"
+            "second tick must not emit Done(Failed) — ready tasks still exist"
         );
         assert_eq!(
             scheduler.graph.status,
             GraphStatus::Running,
-            "graph must remain Running after two ticks"
+            "graph must remain Running"
         );
     }
 
@@ -2078,8 +2137,8 @@ mod tests {
 
     #[test]
     fn test_parallel_dispatch_all_ready() {
-        // tick() must emit Spawn for ALL ready tasks, not just max_parallel.
-        // Here 6 independent tasks with max_parallel=2.
+        // tick() enforces max_parallel as a pre-dispatch cap. With 6 independent tasks
+        // and max_parallel=2, only 2 tasks are dispatched per tick.
         let nodes: Vec<_> = (0..6).map(|i| make_node(i, &[])).collect();
         let graph = graph_from_nodes(nodes);
         let config = zeph_config::OrchestrationConfig {
@@ -2099,7 +2158,10 @@ mod tests {
             .iter()
             .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
             .count();
-        assert_eq!(spawn_count, 6, "all 6 ready tasks must be dispatched");
+        assert_eq!(
+            spawn_count, 2,
+            "only max_parallel=2 tasks dispatched per tick"
+        );
 
         let running_count = scheduler
             .graph
@@ -2107,7 +2169,7 @@ mod tests {
             .iter()
             .filter(|t| t.status == TaskStatus::Running)
             .count();
-        assert_eq!(running_count, 6, "all 6 tasks must be marked Running");
+        assert_eq!(running_count, 2, "only 2 tasks marked Running");
     }
 
     #[test]
@@ -2327,5 +2389,168 @@ mod tests {
             "no Done action expected when a task is running; got: {actions:?}"
         );
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
+    }
+
+    // --- topology_selection tests ---
+
+    #[test]
+    fn topology_linear_chain_limits_parallelism_to_one() {
+        // LinearChain topology with topology_selection=true → max_parallel overridden to 1.
+        // tick() must dispatch exactly 1 task even though 1 root task is ready.
+        let graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[1]),
+        ]);
+        let config = zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            scheduler.topology(),
+            Some(crate::topology::Topology::LinearChain)
+        );
+        assert_eq!(scheduler.max_parallel, 1);
+
+        let actions = scheduler.tick();
+        let spawn_count = actions
+            .iter()
+            .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+            .count();
+        assert_eq!(spawn_count, 1, "linear chain: only 1 task dispatched");
+    }
+
+    #[test]
+    fn topology_all_parallel_dispatches_all_ready() {
+        // AllParallel topology with topology_selection=true → max_parallel unchanged.
+        // tick() dispatches all 4 independent tasks in one go.
+        let graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[]),
+            make_node(3, &[]),
+        ]);
+        let config = zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            scheduler.topology(),
+            Some(crate::topology::Topology::AllParallel)
+        );
+
+        let actions = scheduler.tick();
+        let spawn_count = actions
+            .iter()
+            .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+            .count();
+        assert_eq!(spawn_count, 4, "all-parallel: all 4 tasks dispatched");
+    }
+
+    #[test]
+    fn sequential_dispatch_one_at_a_time_parallel_unblocked() {
+        // Three ready tasks: A(sequential), B(sequential), C(parallel).
+        // tick() must dispatch A + C, hold B (another sequential already scheduled this tick).
+        use crate::graph::ExecutionMode;
+
+        let mut a = make_node(0, &[]);
+        a.execution_mode = ExecutionMode::Sequential;
+        let mut b = make_node(1, &[]);
+        b.execution_mode = ExecutionMode::Sequential;
+        let mut c = make_node(2, &[]);
+        c.execution_mode = ExecutionMode::Parallel;
+
+        let graph = graph_from_nodes(vec![a, b, c]);
+        let config = zeph_config::OrchestrationConfig {
+            max_parallel: 4,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        let actions = scheduler.tick();
+        let spawned: Vec<TaskId> = actions
+            .iter()
+            .filter_map(|a| {
+                if let SchedulerAction::Spawn { task_id, .. } = a {
+                    Some(*task_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // A (seq, idx=0) and C (par, idx=2) dispatched; B (seq, idx=1) held.
+        assert!(
+            spawned.contains(&TaskId(0)),
+            "A(sequential) must be dispatched"
+        );
+        assert!(
+            spawned.contains(&TaskId(2)),
+            "C(parallel) must be dispatched"
+        );
+        assert!(!spawned.contains(&TaskId(1)), "B(sequential) must be held");
+        assert_eq!(spawned.len(), 2);
+    }
+
+    #[test]
+    fn resume_from_preserves_topology_classification() {
+        // resume_from() must also apply topology classification (fix H3).
+        let mut graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[1]),
+        ]);
+        // Put graph in Paused state so resume_from accepts it.
+        graph.status = GraphStatus::Paused;
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Pending;
+        graph.tasks[2].status = TaskStatus::Pending;
+
+        let config = zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            ..make_config()
+        };
+        let scheduler = DagScheduler::resume_from(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            scheduler.topology(),
+            Some(crate::topology::Topology::LinearChain),
+            "resume_from must classify topology"
+        );
+        assert_eq!(
+            scheduler.max_parallel, 1,
+            "resume_from must apply topology limit"
+        );
     }
 }

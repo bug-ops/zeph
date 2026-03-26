@@ -12,13 +12,14 @@ pub mod plan_cache;
 pub mod planner;
 pub mod router;
 pub mod scheduler;
+pub mod topology;
 
 pub use aggregator::{Aggregator, LlmAggregator};
 pub use command::PlanCommand;
 pub use error::OrchestrationError;
 pub use graph::{
-    FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId, TaskNode,
-    TaskResult, TaskStatus,
+    ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId,
+    TaskNode, TaskResult, TaskStatus,
 };
 pub use plan_cache::{
     PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
@@ -26,3 +27,4 @@ pub use plan_cache::{
 pub use planner::{LlmPlanner, Planner};
 pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};
+pub use topology::{Topology, TopologyClassifier};

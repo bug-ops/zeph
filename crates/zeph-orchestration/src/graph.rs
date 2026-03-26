@@ -184,6 +184,20 @@ pub struct TaskResult {
     pub agent_def: Option<String>,
 }
 
+/// Execution mode annotation from the LLM planner.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    /// Task can run in parallel with others at the same DAG level.
+    #[default]
+    Parallel,
+    /// Task is globally serialized: at most one `Sequential` task runs at a time across
+    /// the entire graph (e.g. deploy, exclusive-resource access, shared-state mutation).
+    Sequential,
+}
+
 /// A single node in the task DAG.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
@@ -200,6 +214,10 @@ pub struct TaskNode {
     /// Per-task override; `None` means use graph default.
     pub failure_strategy: Option<FailureStrategy>,
     pub max_retries: Option<u32>,
+    /// LLM planner annotation. Old SQLite-stored JSON without this field
+    /// deserializes to the default (`Parallel`).
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
 }
 
 impl TaskNode {
@@ -218,6 +236,7 @@ impl TaskNode {
             retry_count: 0,
             failure_strategy: None,
             max_retries: None,
+            execution_mode: ExecutionMode::default(),
         }
     }
 }
@@ -597,5 +616,42 @@ mod tests {
         // The check itself lives in GraphPersistence::save(), exercised by
         // the async persistence tests in zeph-memory; here we verify the constant.
         assert_eq!(MAX_GOAL_LEN, 1024);
+    }
+
+    #[test]
+    fn test_task_node_missing_execution_mode_deserializes_as_parallel() {
+        // Old SQLite-stored JSON blobs lack the execution_mode field.
+        // #[serde(default)] must make them deserialize to Parallel without error.
+        let json = r#"{
+            "id": 0,
+            "title": "t",
+            "description": "d",
+            "agent_hint": null,
+            "status": "pending",
+            "depends_on": [],
+            "result": null,
+            "assigned_agent": null,
+            "retry_count": 0,
+            "failure_strategy": null,
+            "max_retries": null
+        }"#;
+        let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
+        assert_eq!(node.execution_mode, ExecutionMode::Parallel);
+    }
+
+    #[test]
+    fn test_execution_mode_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ExecutionMode::Parallel).unwrap(),
+            "\"parallel\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ExecutionMode::Sequential).unwrap(),
+            "\"sequential\""
+        );
+        let p: ExecutionMode = serde_json::from_str("\"parallel\"").unwrap();
+        assert_eq!(p, ExecutionMode::Parallel);
+        let s: ExecutionMode = serde_json::from_str("\"sequential\"").unwrap();
+        assert_eq!(s, ExecutionMode::Sequential);
     }
 }

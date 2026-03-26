@@ -10,7 +10,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use super::dag;
 use super::error::OrchestrationError;
-use super::graph::{FailureStrategy, TaskGraph, TaskId, TaskNode};
+use super::graph::{ExecutionMode, FailureStrategy, TaskGraph, TaskId, TaskNode};
 use zeph_config::OrchestrationConfig;
 use zeph_subagent::{SubAgentDef, ToolPolicy};
 
@@ -75,6 +75,9 @@ pub(crate) struct PlannedTask {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub failure_strategy: Option<String>,
+    /// LLM-annotated execution mode. Absent or `null` defaults to `Parallel`.
+    #[serde(default)]
+    pub execution_mode: Option<ExecutionMode>,
 }
 
 impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
@@ -140,15 +143,18 @@ fn build_prompt(goal: &str, agents: &[SubAgentDef], max_tasks: u32) -> Vec<Messa
          - Maximize parallelism: only add a dependency when the output is truly needed.\n\
          - Do not create more than {max_tasks} tasks.\n\
          - Assign agent_hint when a specific agent is clearly appropriate.\n\
-         - failure_strategy is optional: \"abort\", \"retry\", \"skip\", \"ask\", or omit for default.\n\n\
+         - failure_strategy is optional: \"abort\", \"retry\", \"skip\", \"ask\", or omit for default.\n\
+         - For each task, specify execution_mode: \"parallel\" (can run concurrently with sibling \
+           tasks) or \"sequential\" (must run alone at its DAG level, e.g. deploy, shared-state \
+           mutation, exclusive resource access). Default to \"parallel\" when unsure.\n\n\
          Example (2-task plan):\n\
          {{\"tasks\": [\
            {{\"task_id\": \"fetch-data\", \"title\": \"Fetch raw data\", \
              \"description\": \"Download the dataset from source.\", \
-             \"depends_on\": []}},\
-           {{\"task_id\": \"process-data\", \"title\": \"Process dataset\", \
-             \"description\": \"Transform and clean the downloaded data.\", \
-             \"depends_on\": [\"fetch-data\"]}}\
+             \"depends_on\": [], \"execution_mode\": \"parallel\"}},\
+           {{\"task_id\": \"deploy\", \"title\": \"Deploy service\", \
+             \"description\": \"Deploy the processed artifact to production.\", \
+             \"depends_on\": [\"fetch-data\"], \"execution_mode\": \"sequential\"}}\
          ]}}"
     );
 
@@ -290,6 +296,10 @@ fn convert_response(
             }
         }
 
+        if let Some(mode) = pt.execution_mode {
+            node.execution_mode = mode;
+        }
+
         graph.tasks.push(node);
     }
 
@@ -333,6 +343,7 @@ mod tests {
             agent_hint: agent_hint.map(std::string::ToString::to_string),
             depends_on: deps.iter().map(std::string::ToString::to_string).collect(),
             failure_strategy: None,
+            execution_mode: None,
         }
     }
 
@@ -470,6 +481,7 @@ mod tests {
                     agent_hint: None,
                     depends_on: vec![],
                     failure_strategy: None,
+                    execution_mode: None,
                 }],
             };
             let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
@@ -498,6 +510,7 @@ mod tests {
                 agent_hint: None,
                 depends_on: vec![],
                 failure_strategy: Some("explode".to_string()),
+                execution_mode: None,
             }],
         };
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();
@@ -561,6 +574,65 @@ mod tests {
         assert!(
             text.contains("depends_on"),
             "example should show depends_on field"
+        );
+    }
+
+    // --- execution_mode tests ---
+
+    #[test]
+    fn convert_execution_mode_parallel() {
+        let response = PlannerResponse {
+            tasks: vec![PlannedTask {
+                task_id: "t1".to_string(),
+                title: "T1".to_string(),
+                description: "d".to_string(),
+                agent_hint: None,
+                depends_on: vec![],
+                failure_strategy: None,
+                execution_mode: Some(ExecutionMode::Parallel),
+            }],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
+    }
+
+    #[test]
+    fn convert_execution_mode_sequential() {
+        let response = PlannerResponse {
+            tasks: vec![PlannedTask {
+                task_id: "t1".to_string(),
+                title: "T1".to_string(),
+                description: "d".to_string(),
+                agent_hint: None,
+                depends_on: vec![],
+                failure_strategy: None,
+                execution_mode: Some(ExecutionMode::Sequential),
+            }],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Sequential);
+    }
+
+    #[test]
+    fn convert_execution_mode_missing_defaults_parallel() {
+        let response = PlannerResponse {
+            tasks: vec![make_planned("t1", "T1", &[], None)],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
+    }
+
+    #[test]
+    fn build_prompt_includes_execution_mode() {
+        let msgs = build_prompt("goal", &agents(), 20);
+        let text = &msgs[0].content;
+        assert!(
+            text.contains("execution_mode"),
+            "prompt must mention execution_mode field"
+        );
+        assert!(
+            text.contains("sequential"),
+            "prompt must mention sequential option"
         );
     }
 
@@ -653,6 +725,35 @@ mod tests {
             let (graph, _usage) = planner.plan("simple task", &agents()).await.unwrap();
             assert_eq!(graph.tasks.len(), 1);
             assert!(graph.tasks[0].depends_on.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_plan_execution_mode_from_json() {
+            let json = r#"{"tasks": [
+                {"task_id": "t1", "title": "T1", "description": "d", "depends_on": [],
+                 "execution_mode": "parallel"},
+                {"task_id": "t2", "title": "T2", "description": "d", "depends_on": ["t1"],
+                 "execution_mode": "sequential"}
+            ]}"#
+            .to_string();
+            let provider = MockProvider::with_responses(vec![json]);
+            let planner = LlmPlanner::new(provider, &make_config());
+            let (graph, _usage) = planner.plan("goal", &agents()).await.unwrap();
+            assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
+            assert_eq!(graph.tasks[1].execution_mode, ExecutionMode::Sequential);
+        }
+
+        #[tokio::test]
+        async fn test_plan_execution_mode_null_defaults_parallel() {
+            let json = r#"{"tasks": [
+                {"task_id": "t1", "title": "T1", "description": "d", "depends_on": [],
+                 "execution_mode": null}
+            ]}"#
+            .to_string();
+            let provider = MockProvider::with_responses(vec![json]);
+            let planner = LlmPlanner::new(provider, &make_config());
+            let (graph, _usage) = planner.plan("goal", &agents()).await.unwrap();
+            assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
         }
     }
 }

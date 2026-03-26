@@ -152,6 +152,10 @@ pub struct OrchestrationConfig {
     /// Plan template caching configuration.
     #[serde(default)]
     pub plan_cache: PlanCacheConfig,
+    /// Enable topology-aware concurrency selection. When true, `TopologyClassifier`
+    /// adjusts `max_parallel` based on the DAG structure. Default: false (opt-in).
+    #[serde(default)]
+    pub topology_selection: bool,
 }
 
 impl Default for OrchestrationConfig {
@@ -170,6 +174,7 @@ impl Default for OrchestrationConfig {
             aggregator_max_tokens: default_aggregator_max_tokens(),
             deferral_backoff_ms: default_deferral_backoff_ms(),
             plan_cache: PlanCacheConfig::default(),
+            topology_selection: false,
         }
     }
 }
