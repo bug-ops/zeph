@@ -29,12 +29,20 @@ impl<C: Channel> Agent<C> {
                 .await;
             return;
         }
-        let current = self.provider.name().to_owned();
+        let current = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
         let mut lines = vec!["Configured providers:".to_string()];
         for (i, entry) in pool.iter().enumerate() {
             let name = entry.effective_name();
             let model = entry.model.as_deref().unwrap_or("(default)");
-            let marker = if name == current { " (active)" } else { "" };
+            let marker = if name.eq_ignore_ascii_case(&current) {
+                " (active)"
+            } else {
+                ""
+            };
             lines.push(format!(
                 "  {}. {} [{}] model={}{}",
                 i + 1,
@@ -49,7 +57,12 @@ impl<C: Channel> Agent<C> {
 
     async fn handle_provider_status(&mut self) {
         let mut out = String::from("Current provider:\n\n");
-        let _ = writeln!(out, "Name:  {}", self.provider.name());
+        let display_name = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
+        let _ = writeln!(out, "Name:  {display_name}");
         let _ = writeln!(out, "Model: {}", self.runtime.model_name);
         if let Some(ref tx) = self.metrics.metrics_tx {
             let m = tx.borrow();
@@ -94,13 +107,15 @@ impl<C: Channel> Agent<C> {
         };
 
         // Warn if the provider is already active.
-        if self.provider.name().eq_ignore_ascii_case(name) {
+        let current_name = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
+        if current_name.eq_ignore_ascii_case(name) {
             let _ = self
                 .channel
-                .send(&format!(
-                    "Provider '{}' is already active.",
-                    self.provider.name()
-                ))
+                .send(&format!("Provider '{current_name}' is already active."))
                 .await;
             return;
         }
@@ -118,9 +133,12 @@ impl<C: Channel> Agent<C> {
                 // Resolve actual model name: use the entry's effective model (explicit or
                 // provider-type default) instead of the provider type string returned by name().
                 let model_name = entry.effective_model();
+                // Use the configured name from [[llm.providers]] for display and metrics.
+                let configured_name = entry.effective_name();
 
                 self.provider = new_provider;
                 self.runtime.model_name = model_name.clone();
+                self.runtime.active_provider_name = configured_name.clone();
 
                 // Reset state that is provider-specific.
                 self.providers.cached_prompt_tokens = 0;
@@ -131,7 +149,7 @@ impl<C: Channel> Agent<C> {
 
                 // C2: Log provider switch in metrics for cost-tracking boundary awareness.
                 tracing::info!(
-                    provider = self.provider.name(),
+                    provider = configured_name,
                     model = model_name,
                     "provider switched via /provider command"
                 );
@@ -159,9 +177,8 @@ impl<C: Channel> Agent<C> {
                     .as_ref()
                     .and_then(|c| c.generation.top_p.map(|v| v as f32));
                 let switched_model = self.runtime.model_name.clone();
-                let switched_provider = self.provider.name().to_owned();
                 self.update_metrics(|m| {
-                    m.provider_name = switched_provider;
+                    m.provider_name.clone_from(&configured_name);
                     m.model_name = switched_model;
                     m.provider_temperature = provider_temperature;
                     m.provider_top_p = provider_top_p;
@@ -171,8 +188,7 @@ impl<C: Channel> Agent<C> {
                     .channel
                     .send(&format!(
                         "Switched to provider: {} (model: {})",
-                        self.provider.name(),
-                        self.runtime.model_name
+                        configured_name, self.runtime.model_name
                     ))
                     .await;
             }

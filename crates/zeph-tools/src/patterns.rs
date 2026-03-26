@@ -34,7 +34,7 @@ pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
     ("role_override", r"(?i)you\s+are\s+now"),
     (
         "new_directive",
-        r"(?i)new\s+(instructions?|directives?|roles?|personas?)",
+        r"(?i)new\s+(instructions?|directives?)\s*:",
     ),
     ("developer_mode", r"(?i)developer\s+mode"),
     ("system_prompt_leak", r"(?i)system\s+prompt"),

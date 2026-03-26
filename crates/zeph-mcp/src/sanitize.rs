@@ -812,6 +812,23 @@ mod tests {
         assert_eq!(result, "[sanitized]");
     }
 
+    // Regression for #2170: "new persona" in legitimate Todoist API tool descriptions must NOT
+    // trigger injection detection — only "new instructions:" / "new directives:" syntax should.
+    #[test]
+    fn new_persona_in_tool_description_not_flagged() {
+        let result = sanitize_string(
+            "add-labels: Add labels to a task. Use this to assign a new persona label or category.",
+            "todoist",
+            "add-labels",
+            "description",
+            MAX_TOOL_DESCRIPTION_BYTES,
+        );
+        assert_ne!(
+            result, "[sanitized]",
+            "'new persona' in legitimate tool description must not be flagged as injection"
+        );
+    }
+
     #[test]
     fn developer_mode_detected() {
         let result = sanitize_string(

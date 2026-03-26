@@ -871,6 +871,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         tool_executor,
     )
     .apply_session_config(session_config)
+    .with_active_provider_name(config.llm.providers.first().map_or_else(
+        || provider.name().to_owned(),
+        zeph_core::config::ProviderEntry::effective_name,
+    ))
     .with_disambiguation_threshold(config.skills.disambiguation_threshold)
     .with_skill_reload(skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())

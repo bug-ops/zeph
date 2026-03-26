@@ -308,6 +308,7 @@ impl<C: Channel> Agent<C> {
                 security: SecurityConfig::default(),
                 timeouts: TimeoutConfig::default(),
                 model_name: String::new(),
+                active_provider_name: String::new(),
                 permission_policy: zeph_tools::PermissionPolicy::default(),
                 redact_credentials: true,
                 rate_limiter: rate_limiter::ToolRateLimiter::new(

@@ -636,6 +636,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the configured provider name (from `[[llm.providers]]` `name` field).
+    ///
+    /// Used by the TUI metrics panel and `/provider status` to display the logical name
+    /// instead of the provider type string returned by `LlmProvider::name()`.
+    #[must_use]
+    pub fn with_active_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.runtime.active_provider_name = name.into();
+        self
+    }
+
     #[must_use]
     pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
         let path = path.into();
@@ -683,7 +693,11 @@ impl<C: Channel> Agent<C> {
     /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
-        let provider_name = self.provider.name().to_string();
+        let provider_name = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
         let model_name = self.runtime.model_name.clone();
         let total_skills = self
             .skill_state

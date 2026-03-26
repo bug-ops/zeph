@@ -100,6 +100,9 @@ pub(crate) struct RuntimeConfig {
     pub(crate) security: SecurityConfig,
     pub(crate) timeouts: TimeoutConfig,
     pub(crate) model_name: String,
+    /// Configured name from `[[llm.providers]]` (the `name` field), set at startup and on
+    /// `/provider` switch. Falls back to the provider type string when empty.
+    pub(crate) active_provider_name: String,
     pub(crate) permission_policy: zeph_tools::PermissionPolicy,
     pub(crate) redact_credentials: bool,
     pub(crate) rate_limiter: super::rate_limiter::ToolRateLimiter,
