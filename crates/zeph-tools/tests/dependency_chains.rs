@@ -319,7 +319,7 @@ fn cycle_self_loop_tool_released() {
 // ---------------------------------------------------------------------------
 
 /// Tool with base score 0.35 + 3 satisfied `prefers` at 0.15 each = 0.45 boost,
-/// but capped at max_total_boost=0.20 → final boost = 0.20, not 0.45.
+/// but capped at `max_total_boost=0.20` → final boost = 0.20, not 0.45.
 #[test]
 fn preference_boost_capped_at_max_total_boost() {
     let graph = build_graph(&[("format", &[], &["dep_a", "dep_b", "dep_c"])]);

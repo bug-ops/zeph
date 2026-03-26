@@ -142,7 +142,7 @@ async fn setup_semantic_memory_with_qdrant() -> (SemanticMemory, ContainerAsync<
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Qdrant"]
 async fn store_session_summary_roundtrip() {
     let (memory, _container) = setup_semantic_memory_with_qdrant().await;
 
@@ -179,7 +179,7 @@ async fn store_session_summary_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Qdrant"]
 async fn store_session_summary_multiple_conversations() {
     let (memory, _container) = setup_semantic_memory_with_qdrant().await;
 
@@ -245,7 +245,7 @@ async fn store_session_summary_multiple_conversations() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Qdrant"]
 async fn store_shutdown_summary_full_roundtrip() {
     let (memory, _container) = setup_semantic_memory_with_qdrant().await;
 
@@ -290,7 +290,7 @@ async fn store_shutdown_summary_full_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Qdrant"]
 async fn search_session_summaries_returns_empty_when_no_data() {
     let (memory, _container) = setup_semantic_memory_with_qdrant().await;
 

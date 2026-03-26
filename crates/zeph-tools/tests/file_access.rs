@@ -316,7 +316,7 @@ fn empty_allowed_paths_defaults_to_cwd() {
 /// silently blocked when the executor has only a tilde path.
 ///
 /// This test documents the CURRENT (buggy) behavior:
-/// - tilde-only allowed_paths → SandboxViolation for any real file
+/// - tilde-only `allowed_paths` → `SandboxViolation` for any real file
 /// - mixing tilde + real path → real path still works (tilde is dead weight)
 ///
 /// When #2115 is fixed, update these assertions to verify tilde IS expanded.
