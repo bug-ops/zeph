@@ -369,6 +369,8 @@ impl<C: Channel> Agent<C> {
                     // Note linking is disabled for backfill — backfill doesn't have an
                     // embedding store reference in this context.
                     note_linking: zeph_memory::NoteLinkingConfig::default(),
+                    link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda,
+                    link_weight_decay_interval_secs: graph_cfg.link_weight_decay_interval_secs,
                 };
                 let pool = store.pool().clone();
                 match extract_and_store(

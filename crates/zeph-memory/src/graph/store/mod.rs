@@ -503,7 +503,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type
+                        edge_type, retrieval_count, last_retrieved_at
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders}))"
@@ -517,7 +517,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type
+                        edge_type, retrieval_count, last_retrieved_at
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders}))
@@ -547,7 +547,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE valid_to IS NULL
                AND (source_entity_id = ?1 OR target_entity_id = ?1)",
@@ -573,7 +573,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE source_entity_id = ?1 OR target_entity_id = ?1
              ORDER BY valid_from DESC
@@ -599,7 +599,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE valid_to IS NULL
                AND ((source_entity_id = ?1 AND target_entity_id = ?2)
@@ -625,7 +625,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE valid_to IS NULL
                AND source_entity_id = ?1
@@ -878,7 +878,7 @@ impl GraphStore {
         sqlx::query_as::<_, EdgeRow>(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE valid_to IS NULL
              ORDER BY id ASC",
@@ -911,7 +911,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE valid_to IS NULL AND id > ?1
              ORDER BY id ASC
@@ -965,6 +965,329 @@ impl GraphStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    // ── A-MEM Retrieval Tracking ──────────────────────────────────────────────
+
+    /// Find entities matching `query` and return them with normalized FTS5 scores.
+    ///
+    /// Returns `Vec<(Entity, fts_score)>` where `fts_score` is normalized to `[0.0, 1.0]`
+    /// by dividing each negated BM25 value by the maximum in the result set.
+    /// Alias matches receive a fixed score of `0.5` (relative to FTS matches before normalization).
+    ///
+    /// Uses `UNION ALL` with outer `ORDER BY` to preserve FTS5 ordering through the LIMIT.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn find_entities_ranked(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(Entity, f32)>, MemoryError> {
+        // Row type for UNION ALL FTS5 query: (id, name, canonical_name, entity_type,
+        // summary, first_seen_at, last_seen_at, qdrant_point_id, fts_rank).
+        type EntityFtsRow = (
+            i64,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            f64,
+        );
+
+        const FTS5_OPERATORS: &[&str] = &["AND", "OR", "NOT", "NEAR"];
+        let query = &query[..query.floor_char_boundary(512)];
+        let sanitized = crate::sqlite::messages::sanitize_fts5_query(query);
+        if sanitized.is_empty() {
+            return Ok(vec![]);
+        }
+        let fts_query: String = sanitized
+            .split_whitespace()
+            .filter(|t| !FTS5_OPERATORS.contains(t))
+            .map(|t| format!("{t}*"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if fts_query.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let limit_i64 = i64::try_from(limit)?;
+
+        // UNION ALL with outer ORDER BY preserves FTS5 BM25 ordering through LIMIT.
+        // Alias matches get a fixed raw score of 0.5 (below any real BM25 match).
+        let rows: Vec<EntityFtsRow> = sqlx::query_as(
+            "SELECT * FROM (
+                 SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary,
+                        e.first_seen_at, e.last_seen_at, e.qdrant_point_id,
+                        -bm25(graph_entities_fts, 10.0, 1.0) AS fts_rank
+                 FROM graph_entities_fts fts
+                 JOIN graph_entities e ON e.id = fts.rowid
+                 WHERE graph_entities_fts MATCH ?1
+                 UNION ALL
+                 SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary,
+                        e.first_seen_at, e.last_seen_at, e.qdrant_point_id,
+                        0.5 AS fts_rank
+                 FROM graph_entity_aliases a
+                 JOIN graph_entities e ON e.id = a.entity_id
+                 WHERE a.alias_name LIKE ?2 ESCAPE '\\' COLLATE NOCASE
+             )
+             ORDER BY fts_rank DESC
+             LIMIT ?3",
+        )
+        .bind(&fts_query)
+        .bind(format!(
+            "%{}%",
+            query
+                .trim()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
+        .bind(limit_i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Normalize FTS scores to [0, 1] by dividing by max; guard against div-by-zero.
+        let max_score: f64 = rows.iter().map(|r| r.8).fold(0.0_f64, f64::max);
+        let max_score = if max_score <= 0.0 { 1.0 } else { max_score };
+
+        // Deduplicate by entity ID (keep first/highest-ranked occurrence).
+        let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut result: Vec<(Entity, f32)> = Vec::with_capacity(rows.len());
+        for (
+            id,
+            name,
+            canonical_name,
+            entity_type_str,
+            summary,
+            first_seen_at,
+            last_seen_at,
+            qdrant_point_id,
+            raw_score,
+        ) in rows
+        {
+            if !seen_ids.insert(id) {
+                continue;
+            }
+            let entity_type = entity_type_str
+                .parse()
+                .unwrap_or(super::types::EntityType::Concept);
+            let entity = Entity {
+                id,
+                name,
+                canonical_name,
+                entity_type,
+                summary,
+                first_seen_at,
+                last_seen_at,
+                qdrant_point_id,
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let normalized = (raw_score / max_score).clamp(0.0, 1.0) as f32;
+            result.push((entity, normalized));
+        }
+
+        Ok(result)
+    }
+
+    /// Compute structural scores (degree + edge type diversity) for a batch of entity IDs.
+    ///
+    /// Returns `HashMap<entity_id, structural_score>` where score is in `[0.0, 1.0]`.
+    /// Formula: `0.6 * (degree / max_degree) + 0.4 * (type_diversity / 4.0)`.
+    /// Entities with no edges receive score `0.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn entity_structural_scores(
+        &self,
+        entity_ids: &[i64],
+    ) -> Result<HashMap<i64, f32>, MemoryError> {
+        // Each query binds entity_ids three times (three IN clauses).
+        // Stay safely under SQLite 999-variable limit: 999 / 3 = 333, use 163 for headroom.
+        const MAX_BATCH: usize = 163;
+
+        if entity_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut all_rows: Vec<(i64, i64, i64)> = Vec::new();
+        for chunk in entity_ids.chunks(MAX_BATCH) {
+            let placeholders = chunk
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            // Build query: count degree and distinct edge types for each entity.
+            let sql = format!(
+                "SELECT entity_id,
+                        COUNT(*) AS degree,
+                        COUNT(DISTINCT edge_type) AS type_diversity
+                 FROM (
+                     SELECT source_entity_id AS entity_id, edge_type
+                     FROM graph_edges
+                     WHERE valid_to IS NULL AND source_entity_id IN ({placeholders})
+                     UNION ALL
+                     SELECT target_entity_id AS entity_id, edge_type
+                     FROM graph_edges
+                     WHERE valid_to IS NULL AND target_entity_id IN ({placeholders})
+                 )
+                 WHERE entity_id IN ({placeholders})
+                 GROUP BY entity_id"
+            );
+
+            let mut query = sqlx::query_as::<_, (i64, i64, i64)>(&sql);
+            // Bind chunk three times (three IN clauses)
+            for id in chunk {
+                query = query.bind(*id);
+            }
+            for id in chunk {
+                query = query.bind(*id);
+            }
+            for id in chunk {
+                query = query.bind(*id);
+            }
+
+            let chunk_rows: Vec<(i64, i64, i64)> = query.fetch_all(&self.pool).await?;
+            all_rows.extend(chunk_rows);
+        }
+
+        if all_rows.is_empty() {
+            return Ok(entity_ids.iter().map(|&id| (id, 0.0_f32)).collect());
+        }
+
+        let max_degree = all_rows
+            .iter()
+            .map(|(_, d, _)| *d)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+
+        let mut scores: HashMap<i64, f32> = entity_ids.iter().map(|&id| (id, 0.0_f32)).collect();
+        for (entity_id, degree, type_diversity) in all_rows {
+            #[allow(clippy::cast_precision_loss)]
+            let norm_degree = degree as f32 / max_degree as f32;
+            #[allow(clippy::cast_precision_loss)]
+            let norm_diversity = (type_diversity as f32 / 4.0).min(1.0);
+            let score = 0.6 * norm_degree + 0.4 * norm_diversity;
+            scores.insert(entity_id, score);
+        }
+
+        Ok(scores)
+    }
+
+    /// Look up community IDs for a batch of entity IDs.
+    ///
+    /// Returns `HashMap<entity_id, community_id>`. Entities not assigned to any community
+    /// are absent from the map (treated as `None` by callers — no community cap applied).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn entity_community_ids(
+        &self,
+        entity_ids: &[i64],
+    ) -> Result<HashMap<i64, i64>, MemoryError> {
+        const MAX_BATCH: usize = 490;
+
+        if entity_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut result: HashMap<i64, i64> = HashMap::new();
+        for chunk in entity_ids.chunks(MAX_BATCH) {
+            let placeholders = chunk
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let sql = format!(
+                "SELECT CAST(j.value AS INTEGER) AS entity_id, c.id AS community_id
+                 FROM graph_communities c, json_each(c.entity_ids) j
+                 WHERE CAST(j.value AS INTEGER) IN ({placeholders})"
+            );
+
+            let mut query = sqlx::query_as::<_, (i64, i64)>(&sql);
+            for id in chunk {
+                query = query.bind(*id);
+            }
+
+            let rows: Vec<(i64, i64)> = query.fetch_all(&self.pool).await?;
+            result.extend(rows);
+        }
+
+        Ok(result)
+    }
+
+    /// Increment `retrieval_count` and set `last_retrieved_at` for a batch of edge IDs.
+    ///
+    /// Fire-and-forget: errors are logged but not propagated. Caller should log the warning.
+    /// Batched with `MAX_BATCH = 490` to stay safely under `SQLite` bind variable limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn record_edge_retrieval(&self, edge_ids: &[i64]) -> Result<(), MemoryError> {
+        const MAX_BATCH: usize = 490;
+        for chunk in edge_ids.chunks(MAX_BATCH) {
+            let placeholders = chunk
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "UPDATE graph_edges
+                 SET retrieval_count = retrieval_count + 1,
+                     last_retrieved_at = unixepoch('now')
+                 WHERE id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            q.execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Apply multiplicative decay to `retrieval_count` for un-retrieved active edges.
+    ///
+    /// Only edges with `retrieval_count > 0` and `last_retrieved_at < (now - interval_secs)`
+    /// are updated. Returns the number of rows affected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn decay_edge_retrieval_counts(
+        &self,
+        decay_lambda: f64,
+        interval_secs: u64,
+    ) -> Result<usize, MemoryError> {
+        let result = sqlx::query(
+            "UPDATE graph_edges
+             SET retrieval_count = MAX(CAST(retrieval_count * ?1 AS INTEGER), 0)
+             WHERE valid_to IS NULL
+               AND retrieval_count > 0
+               AND (last_retrieved_at IS NULL OR last_retrieved_at < unixepoch('now') - ?2)",
+        )
+        .bind(decay_lambda)
+        .bind(i64::try_from(interval_secs).unwrap_or(i64::MAX))
+        .execute(&self.pool)
+        .await?;
+        Ok(usize::try_from(result.rows_affected())?)
     }
 
     /// Delete expired edges older than `retention_days` and return count deleted.
@@ -1068,7 +1391,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = sqlx::query_as(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?2
@@ -1076,7 +1399,7 @@ impl GraphStore {
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?2
@@ -1116,7 +1439,7 @@ impl GraphStore {
             sqlx::query_as(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type
+                        edge_type, retrieval_count, last_retrieved_at
                  FROM graph_edges
                  WHERE source_entity_id = ?1
                    AND fact LIKE ?2 ESCAPE '\\'
@@ -1134,7 +1457,7 @@ impl GraphStore {
             sqlx::query_as(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type
+                        edge_type, retrieval_count, last_retrieved_at
                  FROM graph_edges
                  WHERE source_entity_id = ?1
                    AND fact LIKE ?2 ESCAPE '\\'
@@ -1475,7 +1798,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({placeholders})
@@ -1560,7 +1883,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type
+                    edge_type, retrieval_count, last_retrieved_at
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({placeholders})
@@ -1761,6 +2084,8 @@ struct EdgeRow {
     episode_id: Option<i64>,
     qdrant_point_id: Option<String>,
     edge_type: String,
+    retrieval_count: i32,
+    last_retrieved_at: Option<i64>,
 }
 
 fn edge_from_row(row: EdgeRow) -> Edge {
@@ -1783,6 +2108,8 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         episode_id: row.episode_id.map(MessageId),
         qdrant_point_id: row.qdrant_point_id,
         edge_type,
+        retrieval_count: row.retrieval_count,
+        last_retrieved_at: row.last_retrieved_at,
     }
 }
 

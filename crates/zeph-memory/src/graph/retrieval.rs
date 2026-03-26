@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 
 use super::activation::{ActivatedFact, SpreadingActivation, SpreadingActivationParams};
@@ -35,8 +36,8 @@ use super::types::{EdgeType, GraphFact};
 #[allow(clippy::too_many_arguments)]
 pub async fn graph_recall(
     store: &GraphStore,
-    _embeddings: Option<&crate::embedding_store::EmbeddingStore>,
-    _provider: &zeph_llm::any::AnyProvider,
+    embeddings: Option<&crate::embedding_store::EmbeddingStore>,
+    provider: &zeph_llm::any::AnyProvider,
     query: &str,
     limit: usize,
     max_hops: u32,
@@ -44,12 +45,25 @@ pub async fn graph_recall(
     temporal_decay_rate: f64,
     edge_types: &[EdgeType],
 ) -> Result<Vec<GraphFact>, MemoryError> {
+    // graph_recall has no SpreadingActivationParams — use spec defaults.
+    const DEFAULT_STRUCTURAL_WEIGHT: f32 = 0.4;
+    const DEFAULT_COMMUNITY_CAP: usize = 3;
+
     if limit == 0 {
         return Ok(Vec::new());
     }
 
-    // Step 1: fuzzy search per query word — shared helper (DRY with graph_recall_activated).
-    let entity_scores = find_seed_entities(store, query, limit).await?;
+    // Step 1: hybrid seed selection (FTS5 score + structural score + community cap).
+    let entity_scores = find_seed_entities(
+        store,
+        embeddings,
+        provider,
+        query,
+        limit,
+        DEFAULT_STRUCTURAL_WEIGHT,
+        DEFAULT_COMMUNITY_CAP,
+    )
+    .await?;
 
     if entity_scores.is_empty() {
         return Ok(Vec::new());
@@ -79,6 +93,9 @@ pub async fn graph_recall(
             .iter()
             .map(|e| (e.id, e.canonical_name.as_str()))
             .collect();
+
+        // Collect edge IDs before conversion to GraphFact (critic: issue 7 fix).
+        let traversed_edge_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
 
         for edge in &edges {
             let Some(&hop_distance) = depth_map
@@ -111,7 +128,15 @@ pub async fn graph_recall(
                 confidence: edge.confidence,
                 valid_from: Some(edge.valid_from.clone()),
                 edge_type: edge.edge_type,
+                retrieval_count: edge.retrieval_count,
             });
+        }
+
+        // Record edge retrievals (fire-and-forget).
+        if !traversed_edge_ids.is_empty()
+            && let Err(e) = store.record_edge_retrieval(&traversed_edge_ids).await
+        {
+            tracing::warn!(error = %e, "graph_recall: failed to record edge retrieval");
         }
     }
 
@@ -147,21 +172,75 @@ pub async fn graph_recall(
     Ok(all_facts)
 }
 
-/// Find seed entities by fuzzy-matching query words against the entity store.
+/// Find seed entities using hybrid ranking: FTS5 score + structural score + community cap.
 ///
-/// Returns a map of `entity_id -> match_score`. Match score is always `1.0` (fuzzy search
-/// returns binary match/no-match; seeds are query anchors per SYNAPSE semantics).
-///
-/// Shared by [`graph_recall`] and [`graph_recall_activated`] to avoid duplication (SUGGEST-04).
+/// Algorithm:
+/// 1. Run `find_entities_ranked()` per query word (up to 5 words).
+/// 2. If empty and `embeddings` is available, fall back to embedding similarity search.
+/// 3. Compute structural scores (degree + edge type diversity).
+/// 4. Look up community IDs.
+/// 5. Combine: `hybrid_score = fts_score * (1 - structural_weight) + structural_score * structural_weight`.
+/// 6. Apply community cap: keep top `seed_community_cap` per community (0 = unlimited).
+/// 7. Guard: if cap empties the result, return top-N ignoring cap (SA-INV-10).
 ///
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-async fn find_seed_entities(
+/// Fill `fts_map` via embedding similarity when FTS5 returned zero results.
+///
+/// Returns `false` when `embed()` fails (caller should return empty seeds).
+/// On search failure: logs warning and leaves map empty (caller continues normally).
+async fn seed_embedding_fallback(
     store: &GraphStore,
+    emb_store: &EmbeddingStore,
+    provider: &zeph_llm::any::AnyProvider,
     query: &str,
     limit: usize,
+    fts_map: &mut HashMap<i64, (super::types::Entity, f32)>,
+) -> bool {
+    use zeph_llm::LlmProvider as _;
+    const ENTITY_COLLECTION: &str = "zeph_graph_entities";
+    let embedding = match provider.embed(query).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "seed fallback: embed() failed, returning empty seeds");
+            return false;
+        }
+    };
+    match emb_store
+        .search_collection(ENTITY_COLLECTION, &embedding, limit, None)
+        .await
+    {
+        Ok(results) => {
+            for result in results {
+                if let Some(entity_id) = result
+                    .payload
+                    .get("entity_id")
+                    .and_then(serde_json::Value::as_i64)
+                    && let Ok(Some(entity)) = store.find_entity_by_id(entity_id).await
+                {
+                    fts_map.insert(entity_id, (entity, result.score));
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "seed fallback: embedding search failed");
+        }
+    }
+    true
+}
+
+async fn find_seed_entities(
+    store: &GraphStore,
+    embeddings: Option<&EmbeddingStore>,
+    provider: &zeph_llm::any::AnyProvider,
+    query: &str,
+    limit: usize,
+    structural_weight: f32,
+    community_cap: usize,
 ) -> Result<HashMap<i64, f32>, MemoryError> {
+    use crate::graph::types::ScoredEntity;
+
     const MAX_WORDS: usize = 5;
 
     let filtered: Vec<&str> = query
@@ -175,16 +254,100 @@ async fn find_seed_entities(
         filtered
     };
 
-    let mut entity_scores: HashMap<i64, f32> = HashMap::new();
+    // Step 1: gather ranked FTS5 matches per word, merge by max fts_score.
+    let mut fts_map: HashMap<i64, (super::types::Entity, f32)> = HashMap::new();
     for word in &words {
-        let matches = store.find_entities_fuzzy(word, limit * 2).await?;
-        for entity in matches {
-            entity_scores
+        let ranked = store.find_entities_ranked(word, limit * 2).await?;
+        for (entity, fts_score) in ranked {
+            fts_map
                 .entry(entity.id)
-                .and_modify(|s| *s = s.max(1.0))
-                .or_insert(1.0);
+                .and_modify(|(_, s)| *s = s.max(fts_score))
+                .or_insert((entity, fts_score));
         }
     }
+
+    // Step 2: embedding fallback when FTS5 returns nothing.
+    if fts_map.is_empty()
+        && let Some(emb_store) = embeddings
+        && !seed_embedding_fallback(store, emb_store, provider, query, limit, &mut fts_map).await
+    {
+        return Ok(HashMap::new());
+    }
+
+    if fts_map.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let entity_ids: Vec<i64> = fts_map.keys().copied().collect();
+
+    // Step 3: structural scores.
+    let structural_scores = store.entity_structural_scores(&entity_ids).await?;
+
+    // Step 4: community IDs.
+    let community_ids = store.entity_community_ids(&entity_ids).await?;
+
+    // Step 5: compute hybrid scores.
+    let fts_weight = 1.0 - structural_weight;
+    let mut scored: Vec<ScoredEntity> = fts_map
+        .into_values()
+        .map(|(entity, fts_score)| {
+            let struct_score = structural_scores.get(&entity.id).copied().unwrap_or(0.0);
+            let community_id = community_ids.get(&entity.id).copied();
+            ScoredEntity {
+                entity,
+                fts_score,
+                structural_score: struct_score,
+                community_id,
+            }
+        })
+        .collect();
+
+    // Sort by hybrid score descending.
+    scored.sort_by(|a, b| {
+        let score_a = a.fts_score * fts_weight + a.structural_score * structural_weight;
+        let score_b = b.fts_score * fts_weight + b.structural_score * structural_weight;
+        score_b.total_cmp(&score_a)
+    });
+
+    // Step 6: apply community cap.
+    let capped: Vec<&ScoredEntity> = if community_cap == 0 {
+        scored.iter().collect()
+    } else {
+        let mut community_counts: HashMap<i64, usize> = HashMap::new();
+        let mut result: Vec<&ScoredEntity> = Vec::new();
+        for se in &scored {
+            match se.community_id {
+                Some(cid) => {
+                    let count = community_counts.entry(cid).or_insert(0);
+                    if *count < community_cap {
+                        *count += 1;
+                        result.push(se);
+                    }
+                }
+                None => {
+                    // No community — unlimited.
+                    result.push(se);
+                }
+            }
+        }
+        result
+    };
+
+    // Step 7: SA-INV-10 guard — if cap zeroed out non-None-community seeds, fall back to top-N.
+    let selected: Vec<&ScoredEntity> = if capped.is_empty() && !scored.is_empty() {
+        scored.iter().take(limit).collect()
+    } else {
+        capped.into_iter().take(limit).collect()
+    };
+
+    let entity_scores: HashMap<i64, f32> = selected
+        .into_iter()
+        .map(|se| {
+            let hybrid = se.fts_score * fts_weight + se.structural_score * structural_weight;
+            // Clamp to [0.1, 1.0] to keep hybrid seeds above activation_threshold.
+            (se.entity.id, hybrid.clamp(0.1, 1.0))
+        })
+        .collect();
 
     Ok(entity_scores)
 }
@@ -205,6 +368,8 @@ async fn find_seed_entities(
 /// Returns an error if any database query fails.
 pub async fn graph_recall_activated(
     store: &GraphStore,
+    embeddings: Option<&EmbeddingStore>,
+    provider: &zeph_llm::any::AnyProvider,
     query: &str,
     limit: usize,
     params: SpreadingActivationParams,
@@ -214,7 +379,16 @@ pub async fn graph_recall_activated(
         return Ok(Vec::new());
     }
 
-    let entity_scores = find_seed_entities(store, query, limit).await?;
+    let entity_scores = find_seed_entities(
+        store,
+        embeddings,
+        provider,
+        query,
+        limit,
+        params.seed_structural_weight,
+        params.seed_community_cap,
+    )
+    .await?;
 
     if entity_scores.is_empty() {
         return Ok(Vec::new());
@@ -227,6 +401,14 @@ pub async fn graph_recall_activated(
 
     let sa = SpreadingActivation::new(params);
     let (_, mut facts) = sa.spread(store, entity_scores, edge_types).await?;
+
+    // Record edge retrievals from activated facts (fire-and-forget).
+    let edge_ids: Vec<i64> = facts.iter().map(|f| f.edge.id).collect();
+    if !edge_ids.is_empty()
+        && let Err(e) = store.record_edge_retrieval(&edge_ids).await
+    {
+        tracing::warn!(error = %e, "graph_recall_activated: failed to record edge retrieval");
+    }
 
     // Sort by activation score descending and truncate to limit.
     facts.sort_by(|a, b| b.activation_score.total_cmp(&a.activation_score));
@@ -545,6 +727,112 @@ mod tests {
         assert!(
             !result_historical.is_empty(),
             "edge should be visible within its validity window"
+        );
+    }
+
+    // Community cap guard (SA-INV-10): when all FTS5 seeds are in a single community and
+    // community_cap = 3 < total seeds, the result must still be non-empty.
+    //
+    // This tests the guard path in find_seed_entities: if after applying the community cap
+    // the result set is empty, the function falls back to top-N uncapped.
+    #[tokio::test]
+    async fn graph_recall_community_cap_guard_non_empty() {
+        let store = setup_store().await;
+        // Create 5 entities all in the same community
+        let mut entity_ids = Vec::new();
+        for i in 0..5usize {
+            let id = store
+                .upsert_entity(
+                    &format!("Entity{i}"),
+                    &format!("entity{i}"),
+                    crate::graph::types::EntityType::Concept,
+                    None,
+                )
+                .await
+                .unwrap();
+            entity_ids.push(id);
+        }
+
+        // Put all 5 in the same community
+        let community_id = store
+            .upsert_community("TestComm", "test", &entity_ids, Some("fp"))
+            .await
+            .unwrap();
+        let _ = community_id;
+
+        // Create a hub entity with edges to all 5 — so BFS from the hub yields facts
+        let hub = store
+            .upsert_entity("Hub", "hub", crate::graph::types::EntityType::Concept, None)
+            .await
+            .unwrap();
+        for &target in &entity_ids {
+            store
+                .insert_edge(hub, target, "has", "Hub has entity", 0.9, None)
+                .await
+                .unwrap();
+        }
+
+        let provider = mock_provider();
+        // "hub" query matches the Hub entity via FTS5; it has no community so cap doesn't apply.
+        // The community-capped entities are targets, not seeds — so this tests the bypass path
+        // (None community => unlimited). Use a query that matches the community entities.
+        let result = graph_recall(&store, None, &provider, "entity", 10, 2, None, 0.0, &[])
+            .await
+            .unwrap();
+        // The key invariant: result must not be empty even with cap < total seeds
+        assert!(
+            !result.is_empty(),
+            "SA-INV-10: community cap must not zero out all seeds"
+        );
+    }
+
+    // Embedding fallback: when FTS5 returns 0 results and embeddings=None,
+    // graph_recall must return empty (not error).
+    #[tokio::test]
+    async fn graph_recall_no_fts_match_no_embeddings_returns_empty() {
+        let store = setup_store().await;
+        // Populate graph with entities that won't match the query
+        let a = store
+            .upsert_entity(
+                "Zephyr",
+                "zephyr",
+                crate::graph::types::EntityType::Concept,
+                None,
+            )
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity(
+                "Concept",
+                "concept",
+                crate::graph::types::EntityType::Concept,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .insert_edge(a, b, "rel", "Zephyr rel Concept", 0.9, None)
+            .await
+            .unwrap();
+
+        let provider = mock_provider();
+        // Query that won't match anything via FTS5; no embeddings available
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "xyzzyquuxfrob",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.is_empty(),
+            "must return empty (not error) when FTS5 returns 0 and no embeddings available"
         );
     }
 

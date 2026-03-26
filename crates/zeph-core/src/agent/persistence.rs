@@ -468,6 +468,8 @@ impl<C: Channel> Agent<C> {
                     top_k: cfg.note_linking.top_k,
                     timeout_secs: cfg.note_linking.timeout_secs,
                 },
+                link_weight_decay_lambda: cfg.link_weight_decay_lambda,
+                link_weight_decay_interval_secs: cfg.link_weight_decay_interval_secs,
             }
         };
 

@@ -145,6 +145,10 @@ pub struct Edge {
     pub episode_id: Option<MessageId>,
     pub qdrant_point_id: Option<String>,
     pub edge_type: EdgeType,
+    /// Number of times this edge was traversed during graph recall (A-MEM link weight evolution).
+    pub retrieval_count: i32,
+    /// Unix timestamp of the last retrieval. `None` if never retrieved.
+    pub last_retrieved_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,6 +160,15 @@ pub struct Community {
     pub fingerprint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Entity with its match score from hybrid seed selection.
+#[derive(Debug, Clone)]
+pub struct ScoredEntity {
+    pub entity: Entity,
+    pub fts_score: f32,
+    pub structural_score: f32,
+    pub community_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,16 +185,39 @@ pub struct GraphFact {
     pub valid_from: Option<String>,
     /// MAGMA edge classification for this fact.
     pub edge_type: EdgeType,
+    /// Number of times this edge was traversed (A-MEM link weight evolution).
+    pub retrieval_count: i32,
+}
+
+/// Compute A-MEM evolved edge weight.
+///
+/// Applies a logarithmic boost to base confidence based on retrieval count.
+/// Uses a 0.2 dampening factor to prevent saturation at low counts.
+///
+/// Formula: `confidence * (1.0 + 0.2 * ln(1.0 + count)).min(1.0)`
+///
+/// - `count=0`: returns `confidence` (identity)
+/// - `count=1`: ~1.14x boost
+/// - `count=10`: ~1.48x boost (capped at 1.0 if confidence is high)
+#[must_use]
+pub fn evolved_weight(retrieval_count: i32, base_confidence: f32) -> f32 {
+    let count = f64::from(retrieval_count.max(0));
+    let boost = 1.0 + 0.2 * (1.0 + count).ln();
+    // cast f64 -> f32: boost is bounded, truncation is acceptable
+    #[allow(clippy::cast_possible_truncation)]
+    let boost_f32 = boost as f32;
+    (base_confidence * boost_f32).min(1.0)
 }
 
 impl GraphFact {
-    /// Base composite score (no temporal component).
+    /// Base composite score with A-MEM evolved edge weight.
     ///
-    /// Formula: `entity_match_score * (1 / (1 + hop_distance)) * confidence`
+    /// Formula: `entity_match_score * (1 / (1 + hop_distance)) * evolved_weight(retrieval_count, confidence)`
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn composite_score(&self) -> f32 {
-        self.entity_match_score * (1.0 / (1.0 + self.hop_distance as f32)) * self.confidence
+        let w = evolved_weight(self.retrieval_count, self.confidence);
+        self.entity_match_score * (1.0 / (1.0 + self.hop_distance as f32)) * w
     }
 
     /// Composite score with an optional additive temporal recency boost.
@@ -380,7 +416,9 @@ mod tests {
             confidence: 1.0,
             valid_from: None,
             edge_type: EdgeType::Semantic,
+            retrieval_count: 0,
         };
+        // retrieval_count=0 → evolved_weight = confidence = 1.0
         // 1.0 * (1/(1+0)) * 1.0 = 1.0
         assert!((fact.composite_score() - 1.0).abs() < 1e-6);
 
@@ -388,10 +426,69 @@ mod tests {
             hop_distance: 1,
             confidence: 0.8,
             entity_match_score: 0.9,
+            retrieval_count: 0,
             ..fact.clone()
         };
-        // 0.9 * (1/2) * 0.8 = 0.36
+        // retrieval_count=0: evolved_weight = 0.8; 0.9 * (1/2) * 0.8 = 0.36
         assert!((fact2.composite_score() - 0.36).abs() < 1e-5);
+    }
+
+    #[test]
+    fn evolved_weight_identity_at_zero() {
+        let w = evolved_weight(0, 0.8);
+        assert!(
+            (w - 0.8).abs() < 1e-6,
+            "count=0 must return base confidence"
+        );
+    }
+
+    #[test]
+    fn evolved_weight_capped_at_one() {
+        // High confidence + many retrievals should not exceed 1.0
+        let w = evolved_weight(1000, 0.9);
+        assert!(w <= 1.0, "evolved_weight must not exceed 1.0");
+        assert!(w > 0.9, "evolved_weight must boost above base confidence");
+    }
+
+    #[test]
+    fn evolved_weight_slow_growth() {
+        // Verify 0.2 dampening: count=1 should give modest boost
+        let w1 = evolved_weight(1, 0.5);
+        let w10 = evolved_weight(10, 0.5);
+        // Both must be in (0.5, 1.0]
+        assert!(w1 > 0.5 && w1 <= 1.0);
+        assert!(w10 > w1, "more retrievals → higher weight");
+    }
+
+    #[test]
+    fn evolved_weight_negative_count_treated_as_zero() {
+        let w_neg = evolved_weight(-5, 0.7);
+        let w_zero = evolved_weight(0, 0.7);
+        assert!((w_neg - w_zero).abs() < 1e-6);
+    }
+
+    #[test]
+    fn composite_score_boosted_by_retrieval_count() {
+        let base_fact = GraphFact {
+            entity_name: "A".into(),
+            relation: "knows".into(),
+            target_name: "B".into(),
+            fact: "A knows B".into(),
+            entity_match_score: 1.0,
+            hop_distance: 0,
+            confidence: 0.7,
+            valid_from: None,
+            edge_type: EdgeType::Semantic,
+            retrieval_count: 0,
+        };
+        let retrieved_fact = GraphFact {
+            retrieval_count: 5,
+            ..base_fact.clone()
+        };
+        assert!(
+            retrieved_fact.composite_score() > base_fact.composite_score(),
+            "frequently-retrieved fact must score higher"
+        );
     }
 
     #[test]
@@ -406,6 +503,7 @@ mod tests {
             confidence: 0.8,
             valid_from: Some("2026-01-01 00:00:00".into()),
             edge_type: EdgeType::Semantic,
+            retrieval_count: 0,
         };
         let base = fact.composite_score();
         let with_decay = fact.score_with_decay(0.0, 1_752_000_000);
@@ -427,6 +525,7 @@ mod tests {
             confidence: 1.0,
             valid_from: Some("2026-01-01 00:00:00".into()),
             edge_type: EdgeType::Semantic,
+            retrieval_count: 0,
         };
         let base = fact.composite_score();
         let boosted = fact.score_with_decay(0.01, now_secs);

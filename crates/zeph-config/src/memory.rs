@@ -409,6 +409,12 @@ pub struct SpreadingActivationConfig {
     pub inhibition_threshold: f32,
     /// Cap on total activated nodes per spread pass. Default: `50`.
     pub max_activated_nodes: usize,
+    /// Weight of structural score in hybrid seed ranking. Range: `[0.0, 1.0]`. Default: `0.4`.
+    #[serde(default = "default_seed_structural_weight")]
+    pub seed_structural_weight: f32,
+    /// Maximum seeds per community. `0` = unlimited. Default: `3`.
+    #[serde(default = "default_seed_community_cap")]
+    pub seed_community_cap: usize,
 }
 
 fn validate_decay_lambda<'de, D>(deserializer: D) -> Result<f32, D::Error>
@@ -457,6 +463,14 @@ impl SpreadingActivationConfig {
     }
 }
 
+fn default_seed_structural_weight() -> f32 {
+    0.4
+}
+
+fn default_seed_community_cap() -> usize {
+    3
+}
+
 impl Default for SpreadingActivationConfig {
     fn default() -> Self {
         Self {
@@ -466,6 +480,8 @@ impl Default for SpreadingActivationConfig {
             activation_threshold: default_spreading_activation_activation_threshold(),
             inhibition_threshold: default_spreading_activation_inhibition_threshold(),
             max_activated_nodes: default_spreading_activation_max_activated_nodes(),
+            seed_structural_weight: default_seed_structural_weight(),
+            seed_community_cap: default_seed_community_cap(),
         }
     }
 }
@@ -955,6 +971,16 @@ pub struct GraphConfig {
     /// with lateral inhibition and temporal decay instead of BFS.
     #[serde(default)]
     pub spreading_activation: SpreadingActivationConfig,
+    /// A-MEM link weight decay: multiplicative factor applied to `retrieval_count`
+    /// for un-retrieved edges each decay pass. Range: `(0.0, 1.0]`. Default: `0.95`.
+    #[serde(
+        default = "default_link_weight_decay_lambda",
+        deserialize_with = "validate_link_weight_decay_lambda"
+    )]
+    pub link_weight_decay_lambda: f64,
+    /// Seconds between link weight decay passes. Default: `86400` (24 hours).
+    #[serde(default = "default_link_weight_decay_interval_secs")]
+    pub link_weight_decay_interval_secs: u64,
 }
 
 impl Default for GraphConfig {
@@ -980,8 +1006,36 @@ impl Default for GraphConfig {
             edge_history_limit: default_graph_edge_history_limit(),
             note_linking: NoteLinkingConfig::default(),
             spreading_activation: SpreadingActivationConfig::default(),
+            link_weight_decay_lambda: default_link_weight_decay_lambda(),
+            link_weight_decay_interval_secs: default_link_weight_decay_interval_secs(),
         }
     }
+}
+
+fn default_link_weight_decay_lambda() -> f64 {
+    0.95
+}
+
+fn default_link_weight_decay_interval_secs() -> u64 {
+    86400
+}
+
+fn validate_link_weight_decay_lambda<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "link_weight_decay_lambda must be a finite number",
+        ));
+    }
+    if !(value > 0.0 && value <= 1.0) {
+        return Err(serde::de::Error::custom(
+            "link_weight_decay_lambda must be in (0.0, 1.0]",
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]

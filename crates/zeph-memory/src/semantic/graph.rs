@@ -24,7 +24,7 @@ pub type PostExtractValidator = Option<Box<dyn Fn(&ExtractorResult) -> Result<()
 ///
 /// Owned clone of the relevant fields from `GraphConfig` — no references, safe to send to
 /// spawned tasks.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GraphExtractionConfig {
     pub max_entities: usize,
     pub max_edges: usize,
@@ -37,6 +37,29 @@ pub struct GraphExtractionConfig {
     pub lpa_edge_chunk_size: usize,
     /// A-MEM note linking config, cloned from `GraphConfig.note_linking`.
     pub note_linking: NoteLinkingConfig,
+    /// A-MEM link weight decay lambda. Range: `(0.0, 1.0]`. Default: `0.95`.
+    pub link_weight_decay_lambda: f64,
+    /// Seconds between link weight decay passes. Default: `86400`.
+    pub link_weight_decay_interval_secs: u64,
+}
+
+impl Default for GraphExtractionConfig {
+    fn default() -> Self {
+        Self {
+            max_entities: 0,
+            max_edges: 0,
+            extraction_timeout_secs: 0,
+            community_refresh_interval: 0,
+            expired_edge_retention_days: 0,
+            max_entities_cap: 0,
+            community_summary_max_prompt_bytes: 0,
+            community_summary_concurrency: 0,
+            lpa_edge_chunk_size: 0,
+            note_linking: NoteLinkingConfig::default(),
+            link_weight_decay_lambda: 0.95,
+            link_weight_decay_interval_secs: 86400,
+        }
+    }
 }
 
 /// Config for A-MEM dynamic note linking, owned by the spawned extraction task.
@@ -680,6 +703,8 @@ impl SemanticMemory {
                     let max_prompt_bytes = config.community_summary_max_prompt_bytes;
                     let concurrency = config.community_summary_concurrency;
                     let edge_chunk_size = config.lpa_edge_chunk_size;
+                    let decay_lambda = config.link_weight_decay_lambda;
+                    let decay_interval_secs = config.link_weight_decay_interval_secs;
                     tokio::spawn(async move {
                         match crate::graph::community::detect_communities(
                             &store2,
@@ -715,6 +740,40 @@ impl SemanticMemory {
                             }
                             Err(e) => {
                                 tracing::warn!("graph eviction failed: {e:#}");
+                            }
+                        }
+
+                        // Time-based link weight decay — independent of eviction cycle.
+                        if decay_lambda > 0.0 && decay_interval_secs > 0 {
+                            let now_secs = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let last_decay = store2
+                                .get_metadata("last_link_weight_decay_at")
+                                .await
+                                .ok()
+                                .flatten()
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            if now_secs.saturating_sub(last_decay) >= decay_interval_secs {
+                                match store2
+                                    .decay_edge_retrieval_counts(decay_lambda, decay_interval_secs)
+                                    .await
+                                {
+                                    Ok(affected) => {
+                                        tracing::info!(affected, "link weight decay applied");
+                                        let _ = store2
+                                            .set_metadata(
+                                                "last_link_weight_decay_at",
+                                                &now_secs.to_string(),
+                                            )
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("link weight decay failed: {e:#}");
+                                    }
+                                }
                             }
                         }
                     });

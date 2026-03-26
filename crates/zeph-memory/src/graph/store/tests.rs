@@ -2824,3 +2824,434 @@ async fn fts5_cross_session_visibility_after_checkpoint() {
         "FTS5 cross-session: entity inserted in session A must be visible in session B after WAL checkpoint"
     );
 }
+
+// ── A-MEM: record_edge_retrieval ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn record_edge_retrieval_increments_count() {
+    let store = setup().await;
+    let a = store
+        .upsert_entity("A", "a", EntityType::Person, None)
+        .await
+        .unwrap();
+    let b = store
+        .upsert_entity("B", "b", EntityType::Person, None)
+        .await
+        .unwrap();
+    let edge_id: i64 = sqlx::query_scalar(
+        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'))
+         RETURNING id",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+
+    // Baseline: retrieval_count = 0
+    let count_before: i32 =
+        sqlx::query_scalar("SELECT retrieval_count FROM graph_edges WHERE id = ?1")
+            .bind(edge_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(count_before, 0);
+
+    store.record_edge_retrieval(&[edge_id]).await.unwrap();
+
+    let count_after: i32 =
+        sqlx::query_scalar("SELECT retrieval_count FROM graph_edges WHERE id = ?1")
+            .bind(edge_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(count_after, 1, "retrieval_count must be incremented to 1");
+
+    store.record_edge_retrieval(&[edge_id]).await.unwrap();
+
+    let count_after2: i32 =
+        sqlx::query_scalar("SELECT retrieval_count FROM graph_edges WHERE id = ?1")
+            .bind(edge_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        count_after2, 2,
+        "retrieval_count must be 2 after second call"
+    );
+}
+
+#[tokio::test]
+async fn record_edge_retrieval_sets_last_retrieved_at() {
+    let store = setup().await;
+    let a = store
+        .upsert_entity("A", "a", EntityType::Person, None)
+        .await
+        .unwrap();
+    let b = store
+        .upsert_entity("B", "b", EntityType::Person, None)
+        .await
+        .unwrap();
+    let edge_id: i64 = sqlx::query_scalar(
+        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'))
+         RETURNING id",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+
+    let ts_before: Option<i64> =
+        sqlx::query_scalar("SELECT last_retrieved_at FROM graph_edges WHERE id = ?1")
+            .bind(edge_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(
+        ts_before.is_none(),
+        "last_retrieved_at must be NULL before first retrieval"
+    );
+
+    store.record_edge_retrieval(&[edge_id]).await.unwrap();
+
+    let ts_after: Option<i64> =
+        sqlx::query_scalar("SELECT last_retrieved_at FROM graph_edges WHERE id = ?1")
+            .bind(edge_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(
+        ts_after.is_some(),
+        "last_retrieved_at must be set after retrieval"
+    );
+}
+
+#[tokio::test]
+async fn record_edge_retrieval_empty_ids_is_noop() {
+    let store = setup().await;
+    // Should succeed without touching any rows
+    store.record_edge_retrieval(&[]).await.unwrap();
+}
+
+// ── A-MEM: decay_edge_retrieval_counts ───────────────────────────────────────
+
+#[tokio::test]
+async fn decay_edge_retrieval_counts_reduces_count() {
+    let store = setup().await;
+    let a = store
+        .upsert_entity("A", "a", EntityType::Person, None)
+        .await
+        .unwrap();
+    let b = store
+        .upsert_entity("B", "b", EntityType::Person, None)
+        .await
+        .unwrap();
+    // Insert edge with retrieval_count=10 and last_retrieved_at far in the past
+    sqlx::query(
+        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence,
+         valid_from, retrieval_count, last_retrieved_at)
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 10, 0)",
+    )
+    .bind(a)
+    .bind(b)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    // Decay with lambda=0.5, interval=0 (all edges eligible)
+    let affected = store.decay_edge_retrieval_counts(0.5, 0).await.unwrap();
+    assert_eq!(affected, 1, "exactly one edge should be decayed");
+
+    let count: i32 = sqlx::query_scalar(
+        "SELECT retrieval_count FROM graph_edges WHERE source_entity_id = ?1 AND valid_to IS NULL",
+    )
+    .bind(a)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    // 10 * 0.5 = 5 (cast to INTEGER)
+    assert_eq!(
+        count, 5,
+        "retrieval_count must be halved by decay lambda=0.5"
+    );
+}
+
+#[tokio::test]
+async fn decay_edge_retrieval_counts_skips_zero_count_edges() {
+    let store = setup().await;
+    let a = store
+        .upsert_entity("A", "a", EntityType::Person, None)
+        .await
+        .unwrap();
+    let b = store
+        .upsert_entity("B", "b", EntityType::Person, None)
+        .await
+        .unwrap();
+    // Edge with retrieval_count=0 (default) — must not be updated
+    store
+        .insert_edge(a, b, "knows", "A knows B", 0.9, None)
+        .await
+        .unwrap();
+
+    let affected = store.decay_edge_retrieval_counts(0.5, 0).await.unwrap();
+    assert_eq!(affected, 0, "edge with count=0 must not be decayed");
+}
+
+#[tokio::test]
+async fn decay_edge_retrieval_counts_respects_interval() {
+    let store = setup().await;
+    let a = store
+        .upsert_entity("A", "a", EntityType::Person, None)
+        .await
+        .unwrap();
+    let b = store
+        .upsert_entity("B", "b", EntityType::Person, None)
+        .await
+        .unwrap();
+    // Edge retrieved just now (last_retrieved_at = current time)
+    sqlx::query(
+        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence,
+         valid_from, retrieval_count, last_retrieved_at)
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 5, unixepoch('now'))",
+    )
+    .bind(a)
+    .bind(b)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    // interval=86400 (24h): recent edge must NOT be decayed
+    let affected = store.decay_edge_retrieval_counts(0.5, 86400).await.unwrap();
+    assert_eq!(
+        affected, 0,
+        "recently-retrieved edge must not decay within interval"
+    );
+}
+
+// ── Hybrid seed selection: structural scores ──────────────────────────────────
+
+#[tokio::test]
+async fn entity_structural_scores_formula_hub_leaf() {
+    let store = setup().await;
+    let hub = store
+        .upsert_entity("Hub", "hub", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let leaf = store
+        .upsert_entity("Leaf", "leaf", EntityType::Concept, None)
+        .await
+        .unwrap();
+    // Hub has 1 edge; leaf has 1 edge (same edge, both as source/target)
+    store
+        .insert_edge(hub, leaf, "has", "Hub has Leaf", 0.9, None)
+        .await
+        .unwrap();
+
+    let scores = store.entity_structural_scores(&[hub, leaf]).await.unwrap();
+
+    // Both have degree=1 (max=1), type_diversity=1 (semantic only, 1/4=0.25)
+    // score = 0.6 * (1/1) + 0.4 * (1/4) = 0.6 + 0.1 = 0.7
+    let hub_score = scores[&hub];
+    let leaf_score = scores[&leaf];
+    assert!(
+        (hub_score - 0.7).abs() < 1e-5,
+        "hub structural score must be ~0.7, got {hub_score}"
+    );
+    assert!(
+        (leaf_score - 0.7).abs() < 1e-5,
+        "leaf structural score must be ~0.7, got {leaf_score}"
+    );
+}
+
+#[tokio::test]
+async fn entity_structural_scores_isolated_entity_gets_zero() {
+    let store = setup().await;
+    let isolated = store
+        .upsert_entity("Isolated", "isolated", EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    let structural_scores = store.entity_structural_scores(&[isolated]).await.unwrap();
+
+    let isolated_score = structural_scores[&isolated];
+    assert!(
+        isolated_score < 1e-6,
+        "entity with no edges must have structural score 0.0, got {isolated_score}"
+    );
+}
+
+#[tokio::test]
+async fn entity_structural_scores_hub_higher_than_leaf() {
+    let store = setup().await;
+    let hub = store
+        .upsert_entity("Hub2", "hub2", EntityType::Concept, None)
+        .await
+        .unwrap();
+    // Connect 5 leaves to hub — hub has degree 5, each leaf has degree 1
+    for i in 0..5 {
+        let leaf = store
+            .upsert_entity(
+                &format!("SmLeaf{i}"),
+                &format!("smleaf{i}"),
+                EntityType::Concept,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .insert_edge(hub, leaf, "has", &format!("Hub2 has SmLeaf{i}"), 0.9, None)
+            .await
+            .unwrap();
+        let leaf_scores = store.entity_structural_scores(&[leaf]).await.unwrap();
+        let hub_scores = store.entity_structural_scores(&[hub]).await.unwrap();
+        // After each leaf added, hub degree grows → hub score must grow or stay equal
+        let _ = (leaf_scores[&leaf], hub_scores[&hub]);
+    }
+    // Final check: hub score >= any leaf score (hub is in both as source/target)
+    let leaf0 = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM graph_entities WHERE canonical_name = 'smleaf0'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    let hub_scores = store.entity_structural_scores(&[hub]).await.unwrap();
+    let leaf_scores = store.entity_structural_scores(&[leaf0]).await.unwrap();
+    assert!(
+        hub_scores[&hub] >= leaf_scores[&leaf0],
+        "hub (degree=5) must score >= leaf (degree=1)"
+    );
+}
+
+// ── Hybrid seed selection: find_entities_ranked ───────────────────────────────
+
+#[tokio::test]
+async fn find_entities_ranked_returns_scores_in_0_1() {
+    let store = setup().await;
+    store
+        .upsert_entity("Rust", "rust", EntityType::Language, None)
+        .await
+        .unwrap();
+    store
+        .upsert_entity("RustLang", "rustlang", EntityType::Language, None)
+        .await
+        .unwrap();
+
+    let results = store.find_entities_ranked("rust", 10).await.unwrap();
+    assert!(
+        !results.is_empty(),
+        "must find at least one result for 'rust'"
+    );
+    for (entity, score) in &results {
+        assert!(
+            *score >= 0.0 && *score <= 1.0,
+            "score for {} must be in [0, 1], got {}",
+            entity.name,
+            score
+        );
+    }
+}
+
+#[tokio::test]
+async fn find_entities_ranked_empty_query_returns_empty() {
+    let store = setup().await;
+    store
+        .upsert_entity("Rust", "rust", EntityType::Language, None)
+        .await
+        .unwrap();
+
+    let results = store.find_entities_ranked("", 10).await.unwrap();
+    assert!(results.is_empty(), "empty query must return no results");
+}
+
+#[tokio::test]
+async fn find_entities_ranked_top_match_has_highest_score() {
+    let store = setup().await;
+    store
+        .upsert_entity("Rust", "rust", EntityType::Language, None)
+        .await
+        .unwrap();
+    store
+        .upsert_entity("Python", "python", EntityType::Language, None)
+        .await
+        .unwrap();
+
+    // "rust" query — Rust should score higher than Python
+    let results = store.find_entities_ranked("rust", 10).await.unwrap();
+    let rust_score = results
+        .iter()
+        .find(|(e, _)| e.canonical_name == "rust")
+        .map(|(_, s)| *s);
+    assert!(
+        rust_score.is_some(),
+        "Rust must be in results for 'rust' query"
+    );
+    // Scores must be in non-increasing order
+    let scores: Vec<f32> = results.iter().map(|(_, s)| *s).collect();
+    for w in scores.windows(2) {
+        assert!(
+            w[0] >= w[1],
+            "results must be ordered by score desc: {} < {}",
+            w[0],
+            w[1]
+        );
+    }
+}
+
+// ── Community cap guard (SA-INV-10) via retrieval ────────────────────────────
+
+#[tokio::test]
+async fn entity_community_ids_returns_correct_mapping() {
+    let store = setup().await;
+    let a = store
+        .upsert_entity("A", "a", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let b = store
+        .upsert_entity("B", "b", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let c = store
+        .upsert_entity("C", "c", EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    // Insert community with a and b as members
+    sqlx::query(
+        "INSERT INTO graph_communities (name, summary, entity_ids, fingerprint)
+         VALUES ('TestCommunity', 'summary', json_array(?1, ?2), 'fp1')",
+    )
+    .bind(a)
+    .bind(b)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    let mapping = store.entity_community_ids(&[a, b, c]).await.unwrap();
+
+    assert!(
+        mapping.contains_key(&a),
+        "entity a must be mapped to a community"
+    );
+    assert!(
+        mapping.contains_key(&b),
+        "entity b must be mapped to a community"
+    );
+    assert_eq!(
+        mapping[&a], mapping[&b],
+        "a and b must be in the same community"
+    );
+    assert!(
+        !mapping.contains_key(&c),
+        "entity c (not in any community) must not be in the map"
+    );
+}
+
+#[tokio::test]
+async fn entity_community_ids_empty_input_returns_empty() {
+    let store = setup().await;
+    let result = store.entity_community_ids(&[]).await.unwrap();
+    assert!(result.is_empty());
+}

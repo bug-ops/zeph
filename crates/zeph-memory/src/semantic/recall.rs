@@ -601,8 +601,15 @@ impl SemanticMemory {
             "spreading activation: starting graph recall"
         );
 
+        let embeddings = self.qdrant.as_deref();
         let results = crate::graph::retrieval::graph_recall_activated(
-            store, query, limit, params, edge_types,
+            store,
+            embeddings,
+            &self.provider,
+            query,
+            limit,
+            params,
+            edge_types,
         )
         .await?;
 

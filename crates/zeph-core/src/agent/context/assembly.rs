@@ -112,6 +112,8 @@ impl<C: Channel> Agent<C> {
                 inhibition_threshold: sa_config.inhibition_threshold,
                 max_activated_nodes: sa_config.max_activated_nodes,
                 temporal_decay_rate,
+                seed_structural_weight: sa_config.seed_structural_weight,
+                seed_community_cap: sa_config.seed_community_cap,
             };
             // Spreading activation path: wrap in a 500ms timeout to bound latency.
             let recall_fut =

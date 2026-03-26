@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::MemoryError;
 use crate::graph::store::GraphStore;
-use crate::graph::types::{Edge, EdgeType};
+use crate::graph::types::{Edge, EdgeType, evolved_weight};
 
 /// A graph node that was activated during spreading activation.
 #[derive(Debug, Clone)]
@@ -50,6 +50,10 @@ pub struct SpreadingActivationParams {
     pub inhibition_threshold: f32,
     pub max_activated_nodes: usize,
     pub temporal_decay_rate: f64,
+    /// Weight of structural score in hybrid seed ranking. Range: [0.0, 1.0]. Default: 0.4.
+    pub seed_structural_weight: f32,
+    /// Maximum seeds per community ID. 0 = unlimited. Default: 3.
+    pub seed_community_cap: usize,
 }
 
 /// Spreading activation engine parameterized from [`SpreadingActivationParams`].
@@ -174,8 +178,9 @@ impl SpreadingActivation {
                     }
 
                     let recency = self.recency_weight(&edge.valid_from, now_secs);
+                    let edge_weight = evolved_weight(edge.retrieval_count, edge.confidence);
                     let spread_value =
-                        node_score * self.params.decay_lambda * edge.confidence * recency;
+                        node_score * self.params.decay_lambda * edge_weight * recency;
 
                     if spread_value < self.params.activation_threshold {
                         continue;
@@ -344,6 +349,8 @@ mod tests {
             inhibition_threshold: 0.8,
             max_activated_nodes: 50,
             temporal_decay_rate: 0.0,
+            seed_structural_weight: 0.4,
+            seed_community_cap: 3,
         }
     }
 
