@@ -4,13 +4,13 @@
 /// Subcommands for the `zeph classifiers` command group.
 #[derive(clap::Subcommand)]
 pub(crate) enum ClassifiersCommand {
-    /// Pre-download configured classifier model weights to the HuggingFace Hub cache.
+    /// Pre-download configured classifier model weights to the `HuggingFace` Hub cache.
     ///
     /// Run this before starting the agent to avoid a slow first-inference download.
-    /// Model files (~100-280MB) are stored in the HuggingFace Hub cache directory
+    /// Model files (~100-280MB) are stored in the `HuggingFace` Hub cache directory
     /// (`~/.cache/huggingface/hub/` by default).
     Download {
-        /// HuggingFace repo ID of the injection model.
+        /// `HuggingFace` repo ID of the injection model.
         /// Defaults to the value from `[classifiers].injection_model` in config.
         #[arg(long, value_name = "REPO_ID")]
         repo: Option<String>,
