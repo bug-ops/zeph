@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(skills): bundled skills with security-awareness text in SKILL.md no longer emit false-positive WARN on startup — content scanner checks for `.bundled` marker and downgrades to DEBUG for vetted bundled skills; user-installed skills still produce WARN (#2272)
 - fix(skills): `build_registry()` now includes `managed_dir` so bundled skills are always matched, even when `skills.paths` is customized (#2259)
 - fix(skills): wire `FaultCategory` enum path in `native.rs` and `legacy.rs` for precise skill evolution signals instead of string heuristics (#2224)
 - fix(memory): `apply_tool_pair_summaries` now serializes summary parts via `MessagePart::Summary` instead of a hardcoded externally-tagged JSON literal; fixes deserialization failures ("missing field 'kind'") when loading compacted messages from SQLite (#2257)
