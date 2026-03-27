@@ -38,6 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(memory): reject self-loop edges in graph extractor — `extract_and_store` skips edges where source and target resolve to the same entity ID; `insert_edge_typed` returns `MemoryError::InvalidInput` for same-ID pairs; migration `044` removes existing self-loops and adds a BEFORE INSERT trigger to enforce the constraint at the DB level (#2215)
+
 - fix(security): agent no longer calls `fetch`/`web_scrape` with hallucinated URLs; three-layer defense: (1) tool descriptions now explicitly prohibit constructing or inferring URLs from entity names; (2) system prompt `## Guidelines` adds a fetch/URL grounding rule; (3) new `UrlGroundingVerifier` pre-execution gate blocks `fetch`, `web_scrape`, and `*_fetch` tool calls when the requested URL was not present in any user message in the session — returns "fetch rejected: URL was not provided by the user"; `user_provided_urls` extracted via `extract_flagged_urls` on every user turn, cleared on `/clear`; configurable via `[security.pre_execution_verify.url_grounding]` (#2191)
 
 - fix(core): permanent tool errors (e.g. HTTP 403) no longer cause OpenAI HTTP 400 "tool_calls must be followed by tool messages"; `attempt_self_reflection` is now deferred until after all `ToolResult` parts are assembled and pushed to message history, preserving the `Assistant{ToolUse} → User{ToolResults}` ordering required by the OpenAI and Claude APIs; `record_anomaly_outcome` errors are silently ignored so channel failures cannot abandon mid-batch ToolResult assembly; adds regression tests R-NTP-13 and R-NTP-14 for single and parallel permanent errors (#2197)

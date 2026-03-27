@@ -378,6 +378,14 @@ pub async fn extract_and_store(
             );
             continue;
         };
+        if src_id == tgt_id {
+            tracing::debug!(
+                "graph: skipping self-loop edge {:?}->{:?} (entity_id={src_id})",
+                edge.source,
+                edge.target
+            );
+            continue;
+        }
         // Parse LLM-provided edge_type; default to Semantic on any parse failure so
         // edges are never dropped due to classification errors.
         let edge_type = edge
@@ -583,6 +591,46 @@ mod tests {
         assert!(
             !results.is_empty(),
             "FTS5 cross-session (#2166): entity extracted in session A must be visible in session B"
+        );
+    }
+
+    /// Regression test for #2215: self-loop edges (source == target entity) must be silently
+    /// skipped; no edge row should be inserted.
+    #[tokio::test]
+    async fn extract_and_store_skips_self_loop_edges() {
+        let (gs, _emb) = setup().await;
+
+        // LLM returns one entity and one self-loop edge (source == target).
+        let extraction_json = r#"{
+            "entities":[{"name":"Rust","type":"language","summary":"systems language"}],
+            "edges":[{"source":"Rust","target":"Rust","relation":"is","fact":"Rust is Rust","edge_type":"semantic"}]
+        }"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Rust is a language.".to_owned(),
+            vec![],
+            provider,
+            gs.pool().clone(),
+            config,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.entities_upserted, 1);
+        assert_eq!(
+            result.stats.edges_inserted, 0,
+            "self-loop edge must be rejected (#2215)"
         );
     }
 }

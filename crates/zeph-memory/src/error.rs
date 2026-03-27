@@ -33,6 +33,9 @@ pub enum MemoryError {
     #[error("graph store error: {0}")]
     GraphStore(String),
 
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("{0}")]
     Other(String),
 }

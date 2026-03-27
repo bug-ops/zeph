@@ -3255,3 +3255,31 @@ async fn entity_community_ids_empty_input_returns_empty() {
     let result = store.entity_community_ids(&[]).await.unwrap();
     assert!(result.is_empty());
 }
+
+/// Regression test for #2215: insert_edge_typed must reject self-loop edges.
+#[tokio::test]
+async fn insert_edge_typed_rejects_self_loop() {
+    let gs = setup().await;
+    let id = gs
+        .upsert_entity("Solo", "Solo", EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    let err = gs
+        .insert_edge_typed(
+            id,
+            id,
+            "self",
+            "Solo is Solo",
+            0.9,
+            None,
+            EdgeType::Semantic,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, crate::error::MemoryError::InvalidInput(_)),
+        "expected InvalidInput for self-loop, got: {err:?}"
+    );
+}

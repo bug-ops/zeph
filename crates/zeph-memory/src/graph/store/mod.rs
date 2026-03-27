@@ -380,6 +380,11 @@ impl GraphStore {
         episode_id: Option<MessageId>,
         edge_type: EdgeType,
     ) -> Result<i64, MemoryError> {
+        if source_entity_id == target_entity_id {
+            return Err(MemoryError::InvalidInput(format!(
+                "self-loop edge rejected: source and target are the same entity (id={source_entity_id})"
+            )));
+        }
         let confidence = confidence.clamp(0.0, 1.0);
         let edge_type_str = edge_type.as_str();
 
