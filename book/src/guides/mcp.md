@@ -21,6 +21,42 @@ id = "remote-tools"
 url = "http://localhost:8080/mcp"
 ```
 
+### Per-Server Trust and Tool Allowlist
+
+Each `[[mcp.servers]]` entry accepts a `trust_level` and an optional `tool_allowlist` to control which tools from that server are exposed to the agent.
+
+```toml
+# Operator-controlled server: all tools allowed, SSRF checks skipped
+[[mcp.servers]]
+id = "internal-tools"
+command = "npx"
+args = ["-y", "@acme/internal-mcp"]
+trust_level = "trusted"
+
+# Community server: only the listed tools are exposed
+[[mcp.servers]]
+id = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+trust_level = "untrusted"
+tool_allowlist = ["read_file", "list_directory", "search_files"]
+
+# Sandboxed server: fail-closed — no tools exposed unless explicitly listed
+[[mcp.servers]]
+id = "experimental"
+url = "http://localhost:9000/mcp"
+trust_level = "sandboxed"
+tool_allowlist = ["safe_tool_a", "safe_tool_b"]
+```
+
+| Trust Level | Tool Exposure | SSRF Checks | Notes |
+|-------------|--------------|-------------|-------|
+| `trusted` | All tools | Skipped | For operator-controlled, static-config servers |
+| `untrusted` (default) | All tools | Applied | Emits a startup warning when `tool_allowlist` is empty |
+| `sandboxed` | Only `tool_allowlist` entries | Applied | Empty allowlist exposes zero tools (fail-closed) |
+
+The default trust level is `untrusted`. When `tool_allowlist` is not set on an `untrusted` server, a startup warning is logged to encourage explicit allowlisting of the tools you intend to use.
+
 ### Security
 
 ```toml

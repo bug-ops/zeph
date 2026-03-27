@@ -119,6 +119,90 @@ Two config fields control planner behavior:
 
 See [Configuration](../reference/configuration.md) for the full `[orchestration]` section reference.
 
+## Topology Classification
+
+When `topology_selection = true` in `[orchestration]`, the scheduler classifies the DAG structure before execution and adjusts dispatch strategy and parallelism accordingly.
+
+`TopologyClassifier` performs a single O(|V|+|E|) Kahn's toposort pass and assigns one of six topology variants:
+
+| Topology | Detection | Dispatch Strategy | Effective `max_parallel` |
+|----------|-----------|-------------------|--------------------------|
+| `AllParallel` | No edges | `FullParallel` | Config value |
+| `LinearChain` | n−1 edges, longest path = n−1 | `Sequential` | 1 |
+| `FanOut` | Single root, depth = 1 | `FullParallel` | Config value |
+| `FanIn` | ≥2 roots, single sink with ≥2 deps | `FullParallel` | Config value |
+| `Hierarchical` | Single root, depth ≥ 2, max in-degree = 1 | `LevelBarrier` | Config value |
+| `Mixed` | None of the above | `Adaptive` | `(max_parallel / 2 + 1)` |
+
+### Dispatch Strategies
+
+- **`FullParallel`** — dispatch all ready tasks up to `max_parallel` immediately.
+- **`Sequential`** — dispatch one task at a time in dependency order.
+- **`LevelBarrier`** — dispatch tasks level-by-level (all depth-0 tasks, then all depth-1 tasks once depth-0 completes, etc.). Used for tree-structured plans where each level depends on the entire previous level completing.
+- **`Adaptive`** — conservative parallel dispatch at half capacity. Used for mixed DAGs with diamond patterns that cannot be cleanly classified.
+
+### ExecutionMode per Task
+
+The LLM planner can annotate individual tasks with an `execution_mode` hint:
+
+| Mode | Description |
+|------|-------------|
+| `parallel` (default) | Task may run concurrently with sibling tasks |
+| `sequential` | Task must run alone when it becomes ready |
+
+```json
+{
+  "task_id": "build",
+  "title": "Build artifacts",
+  "depends_on": [],
+  "execution_mode": "parallel"
+}
+```
+
+`execution_mode` is stored on `TaskNode` and persisted to SQLite. Missing fields in existing stored JSON default to `parallel` for backward compatibility.
+
+### Configuration
+
+```toml
+[orchestration]
+topology_selection = true   # Enable topology classification (default: false, requires experiments feature)
+```
+
+When `topology_selection = false`, the scheduler uses `FullParallel` with the configured `max_parallel` — no classification overhead.
+
+## Plan Verification
+
+`PlanVerifier` evaluates whether a completed task's output satisfies its description. It uses a cheap LLM provider (`verify_provider`) to produce a structured `VerificationResult`. When gaps are found, `replan()` generates new `TaskNode`s and injects them into the live graph.
+
+### Gap Severity
+
+Three severity levels classify identified gaps:
+
+| Severity | Description | Replan action |
+|----------|-------------|---------------|
+| `critical` | Missing output that blocks downstream tasks | New task generated |
+| `important` | Partial output that may affect downstream quality | New task generated |
+| `minor` | Nice to have, does not affect correctness | Logged and skipped |
+
+### Fail-Open Behavior
+
+All LLM failures in the verification path are fail-open:
+
+- `verify()` returns `complete = true` when the LLM call fails — the task stays `Completed` and downstream tasks are dispatched normally.
+- `replan()` returns an empty `Vec` on LLM failure — no new tasks are injected.
+- After 3 consecutive LLM failures, an `ERROR` log is emitted to surface misconfiguration.
+
+Verification never blocks graph execution. Downstream tasks are unblocked immediately upon task completion, regardless of verification outcome.
+
+### Configuration
+
+```toml
+[orchestration]
+# verify_provider = "fast"   # Provider name from [[llm.providers]] for verification calls (default: empty = primary)
+```
+
+When `verify_provider` is empty, verification uses the agent's primary provider.
+
 ## Execution
 
 Once a `TaskGraph` is validated and persisted, the **DAG scheduler** drives execution by producing actions for the caller to perform.
@@ -292,11 +376,13 @@ max_parallel = 4                    # Maximum concurrent task executions (defaul
 default_failure_strategy = "abort"  # abort, retry, skip, or ask (default: "abort")
 default_max_retries = 3             # Retries for the "retry" strategy (default: 3)
 task_timeout_secs = 300             # Per-task timeout in seconds, 0 = fallback to 600s (default: 300)
-# planner_provider = "quality"               # Provider name from [[llm.providers]] for planning; empty = primary provider
+# planner_provider = "quality"      # Provider name from [[llm.providers]] for planning; empty = primary provider
 planner_max_tokens = 4096           # Max tokens for planner response (default: 4096; reserved)
 dependency_context_budget = 16384   # Character budget for cross-task context (default: 16384)
 confirm_before_execute = true       # Show confirmation before executing a plan (default: true)
 aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call (default: 4096)
+# topology_selection = false        # Enable DAG topology classification and adaptive dispatch (requires experiments feature)
+# verify_provider = ""              # Provider for post-task completeness verification; empty = primary provider
 
 [orchestration.plan_cache]
 enabled = false                     # Enable plan template caching (default: false)
@@ -329,7 +415,7 @@ During hard compaction, the summarizer preserves messages associated with active
 
 - **English-only keyword routing:** The `RuleBasedRouter` step 2 (tool keyword matching) only recognizes English keywords such as "implement", "build", "edit". Task descriptions in other languages always fall through to the first-available-agent fallback. Use explicit `agent_hint` values in planner output for reliable routing.
 - **Task count cap:** The `max_tasks` limit (default 20) is enforced at planning time. Graphs exceeding this limit are rejected by `dag::validate` and must be decomposed into smaller sub-goals.
-- **No dynamic re-planning:** Once a `TaskGraph` is created and confirmed, its structure is fixed. Tasks cannot be added or removed during execution; only their status and results change.
+- **Dynamic re-planning via verification:** When `verify_provider` is set and a task completes with gaps, `PlanVerifier` can inject new tasks into the live graph. This is the only supported form of dynamic graph modification — the original task structure is otherwise fixed once confirmed.
 - **No hot-reload of orchestration config:** Changes to the `[orchestration]` section of `config.toml` require a restart to take effect.
 - **`planner_max_tokens` is reserved:** This config field is parsed and stored but not yet applied at runtime. The underlying `chat_typed` API does not yet support per-call token limits.
 - **Residual prompt injection risk:** Task descriptions and cross-task context are wrapped in `ContentSanitizer` spotlight tags to mitigate prompt injection, but the risk is not fully eliminated — treat orchestrated task outputs with appropriate caution.

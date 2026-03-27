@@ -84,6 +84,38 @@ action = "deny"
 
 First matching rule wins. Default: `ask`.
 
+## Tool Error Taxonomy
+
+When a tool call fails, Zeph classifies the error into one of 11 categories defined by `ToolErrorCategory`. The classification drives retry decisions, LLM parameter-reformat paths, and reputation scoring.
+
+| Category | Retryable | Quality Failure | Description |
+|----------|-----------|-----------------|-------------|
+| `ToolNotFound` | no | yes | LLM requested a tool name not in the registry |
+| `InvalidParameters` | no | yes | LLM provided invalid or missing parameters |
+| `TypeMismatch` | no | yes | Parameter type mismatch (string vs integer, etc.) |
+| `PolicyBlocked` | no | no | Blocked by security policy, sandbox, or trust gate |
+| `ConfirmationRequired` | no | no | Operation requires user confirmation |
+| `PermanentFailure` | no | no | HTTP 403/404 or equivalent permanent rejection |
+| `Cancelled` | no | no | Cancelled by the user |
+| `RateLimited` | yes | no | HTTP 429 or resource exhaustion |
+| `ServerError` | yes | no | HTTP 5xx or equivalent server-side error |
+| `NetworkError` | yes | no | DNS failure, connection refused, reset |
+| `Timeout` | yes | no | Operation timed out |
+
+**Quality failures** (`ToolNotFound`, `InvalidParameters`, `TypeMismatch`) trigger self-reflection — the LLM is shown a structured error and asked to correct its parameters. Infrastructure failures (`RateLimited`, `ServerError`, `NetworkError`, `Timeout`) are retried automatically and never trigger self-reflection.
+
+When a tool call fails, the LLM receives a `ToolErrorFeedback` block instead of an opaque error string:
+
+```
+[tool_error]
+category: invalid_parameters
+error: missing required field: url
+suggestion: Review the tool schema and provide correct parameters.
+retryable: false
+```
+
+This structured format lets the LLM understand what went wrong and whether retrying with corrected parameters is appropriate. See [Tool System](../advanced/tools.md#tool-error-taxonomy) for the full reference.
+
 ## ErasedToolExecutor
 
 The `ToolExecutor` trait is made object-safe via `ErasedToolExecutor`, enabling `Box<dyn ErasedToolExecutor>` for dynamic dispatch. This allows `Agent<C>` to hold any tool executor combination without a generic type parameter, simplifying the agent signature and making it easier to compose executors at runtime.

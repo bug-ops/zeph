@@ -38,8 +38,11 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `memory.compression.probe.timeout_secs` | >= 1 |
 | `memory.semantic.importance_weight` | finite, in [0.0, 1.0] |
 | `memory.graph.spreading_activation.decay_lambda` | in (0.0, 1.0] |
+| `memory.graph.spreading_activation.max_hops` | >= 1 |
 | `memory.graph.spreading_activation.activation_threshold` | < `inhibition_threshold` |
 | `memory.graph.spreading_activation.inhibition_threshold` | > `activation_threshold` |
+| `memory.graph.spreading_activation.seed_structural_weight` | in [0.0, 1.0] |
+| `memory.graph.note_linking.link_weight_decay_lambda` | finite, in (0.0, 1.0] |
 | `llm.semantic_cache_threshold` | finite, in [0.0, 1.0] |
 | `orchestration.plan_cache.similarity_threshold` | in [0.5, 1.0] |
 | `orchestration.plan_cache.max_templates` | in [1, 10000] |
@@ -505,6 +508,8 @@ max_dynamic_servers = 10
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # env = {}                  # Environment variables passed to the child process
 # timeout = 30
+# trust_level = "untrusted" # trusted, untrusted (default), or sandboxed
+# tool_allowlist = []       # Tools to expose from this server; empty = all (untrusted) or none (sandboxed)
 
 [agents]
 enabled = false            # Enable sub-agent system (default: false)
@@ -533,6 +538,8 @@ planner_max_tokens = 4096                # Max tokens for planner LLM response (
 dependency_context_budget = 16384       # Character budget for cross-task context injection (default: 16384)
 confirm_before_execute = true           # Show task summary and require /plan confirm before executing (default: true)
 aggregator_max_tokens = 4096            # Token budget for the aggregation LLM call (default: 4096)
+# topology_selection = false            # Enable topology classification and adaptive dispatch (default: false, requires experiments feature)
+# verify_provider = ""                  # Provider name from [[llm.providers]] for post-task completeness verification; empty = primary provider
 
 [orchestration.plan_cache]
 # enabled = false                       # Enable plan template caching (default: false)
@@ -557,6 +564,20 @@ max_files = 7                 # Rotated log files to retain (default: 7)
 [debug]
 enabled = false             # Enable debug dump at startup (default: false)
 output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the platform default in the user data dir (%LOCALAPPDATA%\Zeph\debug on Windows)
+
+# Requires `classifiers` feature.
+# ML-backed injection detection and PII detection via Candle/DeBERTa models.
+# When `enabled = false` (the default), the existing regex-based detection runs unchanged.
+# [classifiers]
+# enabled = false
+# timeout_ms = 5000                                             # Per-inference timeout in ms (default: 5000)
+# injection_model = "protectai/deberta-v3-small-prompt-injection-v2"  # HuggingFace repo ID
+# injection_threshold = 0.8                                    # Minimum score to treat result as injection (default: 0.8)
+# injection_model_sha256 = ""                                  # Optional SHA-256 hex for tamper detection
+# pii_enabled = false                                          # Enable NER-based PII detection (default: false)
+# pii_model = "iiiorg/piiranha-v1-detect-personal-information" # HuggingFace repo ID
+# pii_threshold = 0.75                                         # Minimum per-token confidence for a PII label (default: 0.75)
+# pii_model_sha256 = ""                                        # Optional SHA-256 hex for tamper detection
 
 # Requires `experiments` feature.
 # [experiments]

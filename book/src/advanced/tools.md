@@ -510,6 +510,62 @@ requires = ["read"]
 
 When a hard dependency is not yet satisfied, the tool is excluded from the `ToolSchemaFilter` output and does not appear in the LLM's tool catalog. The `DependencyExclusion` metadata records which dependency was unsatisfied, visible in debug logs.
 
+## Tool Error Taxonomy
+
+Every tool failure is classified into one of 11 `ToolErrorCategory` values. Classification drives three independent recovery mechanisms:
+
+| Mechanism | Triggered by |
+|-----------|-------------|
+| Automatic retry with backoff | `RateLimited`, `ServerError`, `NetworkError`, `Timeout` |
+| LLM parameter-reformat path | `InvalidParameters`, `TypeMismatch` |
+| Reputation scoring / self-reflection | `InvalidParameters`, `TypeMismatch`, `ToolNotFound` |
+
+### ToolError::Shell
+
+Shell tool failures carry an explicit `category` field and exit code:
+
+```rust
+ToolError::Shell {
+    exit_code: Option<i32>,
+    category: ToolErrorCategory,
+}
+```
+
+The category is derived from the exit code and OS error kind via `classify_io_error`. An OS-level `NotFound` (command not found) maps to `PermanentFailure`, not `ToolNotFound` — `ToolNotFound` is reserved for registry misses where the LLM requested a tool name that does not exist.
+
+### ToolErrorFeedback
+
+On any classified failure, the executor injects a `ToolErrorFeedback` block as the `tool_result` content instead of an opaque error string:
+
+```
+[tool_error]
+category: rate_limited
+error: too many requests
+suggestion: Rate limit exceeded. The system will retry if possible.
+retryable: true
+```
+
+`format_for_llm()` produces this four-line block. The `retryable` flag tells the LLM whether the system will retry automatically so it does not need to ask for the operation to be repeated.
+
+### HTTP Status Classification
+
+`classify_http_status(status)` maps HTTP codes to categories:
+
+| HTTP Status | Category |
+|-------------|----------|
+| 400, 422 | `InvalidParameters` |
+| 401, 403 | `PolicyBlocked` |
+| 429 | `RateLimited` |
+| 500–599 | `ServerError` |
+| 404, 410, others | `PermanentFailure` |
+
+### Infrastructure vs Quality Failures
+
+The taxonomy enforces a hard split:
+
+- **Infrastructure failures** (`RateLimited`, `ServerError`, `NetworkError`, `Timeout`) are never quality failures. They must not trigger self-reflection — the failure is not attributable to LLM output.
+- **Quality failures** (`InvalidParameters`, `TypeMismatch`, `ToolNotFound`) indicate the LLM produced incorrect tool invocations. A single parameter-reformat attempt is made before the failure is final.
+
 ## Anomaly detection
 
 `AnomalyDetector` monitors tool failure rates in a sliding window. When the fraction of failed executions in the last `window_size` calls exceeds `failure_threshold`, a `Severity::Critical` alert is raised and the tool is automatically blocked via the trust system — no manual intervention required.

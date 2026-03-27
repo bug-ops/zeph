@@ -56,6 +56,31 @@ url = "https://trusted-server.example.com/mcp"
 - Verify the server's TLS certificate chain
 - Monitor server logs for unexpected tool invocations
 
+## Per-Server Trust Model
+
+Each `[[mcp.servers]]` entry has a `trust_level` field that controls tool exposure and SSRF enforcement:
+
+| Trust Level | Tool Exposure | SSRF Checks |
+|-------------|--------------|-------------|
+| `trusted` | All tools | Skipped — operator asserts the server is safe |
+| `untrusted` (default) | All tools | Applied |
+| `sandboxed` | Only `tool_allowlist` entries | Applied — fail-closed |
+
+**`trusted`** is intended for servers you fully control via static configuration (e.g., an internal tool server on `localhost`). SSRF validation is skipped for these servers.
+
+**`untrusted`** (default) applies all SSRF validation rules and rate-limited tool list refreshes. A startup warning is emitted when `tool_allowlist` is empty, because the full tool set from an untrusted server is exposed without filtering.
+
+**`sandboxed`** applies all SSRF rules and additionally filters tool discovery: only tools whose names appear in `tool_allowlist` are made available to the agent. An empty `tool_allowlist` with `trust_level = "sandboxed"` exposes zero tools (fail-closed). This is the safest configuration for external or third-party servers whose full tool catalog you do not trust.
+
+```toml
+# Minimal safe configuration for a third-party server
+[[mcp.servers]]
+id = "third-party"
+url = "https://mcp.example.com/v1"
+trust_level = "sandboxed"
+tool_allowlist = ["search", "fetch_document"]
+```
+
 ## Tool List Refresh Security
 
 When an MCP server sends a `notifications/tools/list_changed` notification, Zeph fetches the updated tool list and passes it through `sanitize_tools()` before the tools are made available to the agent. This ensures that:

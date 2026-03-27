@@ -130,15 +130,56 @@ Graph recall uses breadth-first search to find relevant facts:
 1. Match query to entities (by name or embedding similarity)
 2. Traverse edges up to `max_hops` (default: 2) from matched entities
 3. Collect active edges (`valid_until IS NULL`) along the path
-4. Score facts using `composite_score = entity_match * (1 / (1 + hop_distance)) * confidence`
+4. Score facts using `composite_score = entity_match * (1 / (1 + hop_distance)) * evolved_weight(retrieval_count, confidence)`
 
 The BFS implementation is cycle-safe and uses at most `max_hops + 2` SQLite queries regardless of graph size.
+
+## A-MEM Link Weight Evolution
+
+Edges accumulate a `retrieval_count` — the number of times they were traversed during graph recall. Each traversal increments the counter and the edge's effective weight in scoring is computed as:
+
+```
+evolved_weight(count, confidence) = confidence * (1.0 + 0.2 * ln(1.0 + count)).min(1.0)
+```
+
+At `count = 0` the weight equals the base confidence. At `count = 1` it is boosted by ~14%; at `count = 10` by ~48%. The boost is capped at `1.0` regardless of count.
+
+This means frequently retrieved edges — facts the agent has found useful many times — gradually rise in composite score and appear earlier in recall results. Edges that are never traversed remain at base confidence.
+
+### Link Weight Decay
+
+A background decay task can periodically reduce `retrieval_count` to prevent indefinite accumulation:
+
+```toml
+[memory.graph.note_linking]
+link_weight_decay_lambda = 0.95      # Multiplicative decay per interval, (0.0, 1.0] (default: 0.95)
+link_weight_decay_interval_secs = 86400  # Decay interval in seconds (default: 24h)
+```
+
+With `decay_lambda = 0.95`, each decay pass multiplies `retrieval_count` by 0.95, slowly reducing the influence of stale traversals. Set `decay_lambda = 1.0` to disable decay entirely.
 
 ## SYNAPSE Spreading Activation
 
 SYNAPSE (SYNaptic Activation and Propagation for Semantic Exploration) is an alternative retrieval strategy that replaces BFS with biologically inspired spreading activation over the entity graph. When enabled, it provides richer multi-hop recall with natural decay and lateral inhibition.
 
-### How It Works
+### Hybrid Seed Selection
+
+Before spreading activation, SYNAPSE selects seed entities using hybrid ranking that combines FTS5 full-text score with structural importance:
+
+```
+hybrid_score = fts_score * (1 - seed_structural_weight) + structural_score * seed_structural_weight
+```
+
+`structural_score` is derived from an entity's degree (number of active edges) and edge-type diversity. This prioritizes structurally central entities as seeds even when their name match is weak.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `seed_structural_weight` | `0.4` | Weight of structural score in hybrid ranking (`[0.0, 1.0]`) |
+| `seed_community_cap` | `3` | Maximum seed entities per community; `0` = unlimited |
+
+`seed_community_cap` prevents a single dense community from monopolizing all seed slots, encouraging coverage across unrelated parts of the graph.
+
+### How Spreading Works
 
 1. **Seed activation** — matched entities receive activation level 1.0
 2. **Propagation** — activation spreads along edges, decaying by `decay_lambda` per hop: `activation(hop) = parent_activation * decay_lambda`
@@ -154,12 +195,14 @@ SYNAPSE leverages MAGMA typed edges during propagation. Activation flows prefere
 
 ```toml
 [memory.graph.spreading_activation]
-enabled = true                  # Replace BFS with spreading activation (default: false)
-decay_lambda = 0.85             # Per-hop decay factor, (0.0, 1.0] (default: 0.85)
-max_hops = 3                    # Maximum propagation depth (default: 3)
-activation_threshold = 0.1      # Minimum activation to include in results (default: 0.1)
-inhibition_threshold = 0.8      # Activation level triggering lateral inhibition (default: 0.8)
-max_activated_nodes = 50        # Cap on activated nodes to return (default: 50)
+enabled = true                      # Replace BFS with spreading activation (default: false)
+decay_lambda = 0.85                 # Per-hop decay factor, (0.0, 1.0] (default: 0.85)
+max_hops = 3                        # Maximum propagation depth (default: 3)
+activation_threshold = 0.1          # Minimum activation to include in results (default: 0.1)
+inhibition_threshold = 0.8          # Activation level triggering lateral inhibition (default: 0.8)
+max_activated_nodes = 50            # Cap on activated nodes to return (default: 50)
+seed_structural_weight = 0.4        # Structural score weight in hybrid seed ranking (default: 0.4)
+seed_community_cap = 3              # Max seeds per community; 0 = unlimited (default: 3)
 ```
 
 | Field | Default | Constraint |
@@ -291,6 +334,14 @@ temporal_decay_rate = 0.0         # Recency boost for graph recall; 0.0 = disabl
                                   # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
 edge_history_limit = 100          # Max versions returned by edge_history() per source+predicate pair
 
+[memory.graph.note_linking]
+# enabled = false                 # Enable A-MEM note linking after extraction (default: false)
+# similarity_threshold = 0.85     # Min cosine similarity to create a similar_to edge (default: 0.85)
+# top_k = 10                      # Max similar entities to link per extracted entity (default: 10)
+# timeout_secs = 5                # Linking pass timeout in seconds (default: 5)
+# link_weight_decay_lambda = 0.95 # Multiplicative decay factor for retrieval_count, (0.0, 1.0] (default: 0.95)
+# link_weight_decay_interval_secs = 86400  # Seconds between decay passes (default: 86400 = 24h)
+
 [memory.graph.spreading_activation]
 enabled = false                   # Replace BFS with spreading activation (default: false)
 decay_lambda = 0.85               # Per-hop decay factor (default: 0.85)
@@ -298,6 +349,8 @@ max_hops = 3                      # Maximum propagation depth (default: 3)
 activation_threshold = 0.1        # Minimum activation for inclusion (default: 0.1)
 inhibition_threshold = 0.8        # Lateral inhibition threshold (default: 0.8)
 max_activated_nodes = 50          # Cap on returned nodes (default: 50)
+seed_structural_weight = 0.4      # Structural score weight in hybrid seed ranking (default: 0.4)
+seed_community_cap = 3            # Max seeds per community; 0 = unlimited (default: 3)
 ```
 
 ## Schema

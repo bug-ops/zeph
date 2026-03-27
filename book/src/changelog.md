@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-03-27
+
+### Added
+
+- **Tool error taxonomy** — `ToolErrorCategory` classifies tool failures into 11 categories driving retry, parameter-reformat, and reputation-scoring decisions. `ToolErrorFeedback::format_for_llm()` replaces opaque error strings with structured `[tool_error]` blocks. `ToolError::Shell` carries an explicit category and exit code. See [Tool System](advanced/tools.md#tool-error-taxonomy).
+- **MCP per-server trust levels** — `[[mcp.servers]]` entries accept `trust_level` (`trusted`/`untrusted`/`sandboxed`) and `tool_allowlist`. Sandboxed servers expose only explicitly listed tools (fail-closed). Untrusted servers with no allowlist emit a startup warning. See [MCP Integration](guides/mcp.md#per-server-trust-and-tool-allowlist).
+- **Candle-backed classifiers** — `CandleClassifier` runs `protectai/deberta-v3-small-prompt-injection-v2` for injection detection. `CandlePiiClassifier` runs `iiiorg/piiranha-v1-detect-personal-information` (NER) for PII detection; results are merged with the regex filter. Configured via the new `[classifiers]` section. Requires `classifiers` feature. See [Local Inference](advanced/candle.md#candle-backed-classifiers).
+- **SYNAPSE hybrid seed selection** — SYNAPSE spreading activation now ranks seed entities by `hybrid_score = fts_score * (1 - seed_structural_weight) + structural_score * seed_structural_weight`. New config fields: `seed_structural_weight` (default: 0.4) and `seed_community_cap` (default: 3).
+- **A-MEM link weight evolution** — edges accumulate `retrieval_count`; composite scoring uses `evolved_weight(count, confidence) = confidence * (1 + 0.2 * ln(1 + count)).min(1.0)`. A background decay task reduces counts over time via `link_weight_decay_lambda` and `link_weight_decay_interval_secs`.
+- **Topology-aware orchestration** — `TopologyClassifier` classifies DAG structure (AllParallel, LinearChain, FanOut, FanIn, Hierarchical, Mixed) and selects a dispatch strategy (FullParallel, Sequential, LevelBarrier, Adaptive). `LevelBarrier` dispatch fires tasks level-by-level for hierarchical plans. Enable with `topology_selection = true` (requires `experiments` feature).
+- **Per-task `execution_mode`** — planner annotates tasks with `parallel` (default) or `sequential` to hint the scheduler. Missing fields in stored graphs default to `parallel` for backward compatibility.
+- **`PlanVerifier` completeness checking** — post-task LLM verification produces a structured `VerificationResult` with gap severity levels (critical/important/minor). `replan()` injects new `TaskNode`s for actionable gaps. All failures are fail-open. Configure via `verify_provider`. See [Task Orchestration](concepts/task-orchestration.md#plan-verification).
+- **rmcp 1.3** — updated from rmcp 1.2.
+
 ## [0.15.3] - 2026-03-17
 
 ### Fixed
