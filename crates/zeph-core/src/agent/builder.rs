@@ -482,6 +482,13 @@ impl<C: Channel> Agent<C> {
             if icfg.enabled {
                 verifiers.push(Box::new(zeph_tools::InjectionPatternVerifier::new(icfg)));
             }
+            let ucfg = &security.pre_execution_verify.url_grounding;
+            if ucfg.enabled {
+                verifiers.push(Box::new(zeph_tools::UrlGroundingVerifier::new(
+                    ucfg,
+                    std::sync::Arc::clone(&self.security.user_provided_urls),
+                )));
+            }
         }
         self.tool_orchestrator.pre_execution_verifiers = verifiers;
 

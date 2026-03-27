@@ -99,13 +99,13 @@ impl ToolExecutor for WebScrapeExecutor {
         vec![
             ToolDef {
                 id: "web_scrape".into(),
-                description: "Extract structured data from a web page using CSS selectors.\n\nParameters: url (string, required) - HTTPS URL; select (string, required) - CSS selector; extract (string, optional) - \"text\", \"html\", or \"attr:<name>\"; limit (integer, optional) - max results\nReturns: extracted text/HTML/attribute values, one per line\nErrors: InvalidParams if URL is not HTTPS or selector is empty; Timeout after configured seconds; connection/DNS failures\nExample: {\"url\": \"https://example.com\", \"select\": \"h1\", \"extract\": \"text\"}".into(),
+                description: "Extract structured data from a web page using CSS selectors.\n\nONLY call this tool when the user has explicitly provided a URL in their message, or when a prior tool call returned a URL to retrieve. NEVER construct, guess, or infer a URL from entity names, brand knowledge, or domain patterns.\n\nParameters: url (string, required) - HTTPS URL; select (string, required) - CSS selector; extract (string, optional) - \"text\", \"html\", or \"attr:<name>\"; limit (integer, optional) - max results\nReturns: extracted text/HTML/attribute values, one per line\nErrors: InvalidParams if URL is not HTTPS or selector is empty; Timeout after configured seconds; connection/DNS failures".into(),
                 schema: schemars::schema_for!(ScrapeInstruction),
                 invocation: InvocationHint::FencedBlock("scrape"),
             },
             ToolDef {
                 id: "fetch".into(),
-                description: "Fetch a URL and return the response body as plain text.\n\nParameters: url (string, required) - HTTPS URL to fetch\nReturns: response body as UTF-8 text, truncated if exceeding max body size\nErrors: InvalidParams if URL is not HTTPS; Timeout; SSRF-blocked private IPs; connection failures\nExample: {\"url\": \"https://api.example.com/data.json\"}".into(),
+                description: "Fetch a URL and return the response body as plain text.\n\nONLY call this tool when the user has explicitly provided a URL in their message, or when a prior tool call returned a URL to retrieve. NEVER construct, guess, or infer a URL from entity names, brand knowledge, or domain patterns. If no URL is present in the conversation, do not call this tool.\n\nParameters: url (string, required) - HTTPS URL to fetch\nReturns: response body as UTF-8 text, truncated if exceeding max body size\nErrors: InvalidParams if URL is not HTTPS; Timeout; SSRF-blocked private IPs; connection failures".into(),
                 schema: schemars::schema_for!(FetchParams),
                 invocation: InvocationHint::ToolCall,
             },

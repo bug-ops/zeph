@@ -61,6 +61,9 @@ the user explicitly asks about a skill by name.\n\
 - For destructive commands (rm, git push --force), warn the user first.\n\
 - Do not hallucinate file contents or command outputs.\n\
 - If a command fails, analyze the error before retrying.\n\
+- Only call fetch or web_scrape with a URL that the user explicitly provided in their \
+message or that appeared in prior tool output. Never fabricate, guess, or infer URLs \
+from entity names, brand knowledge, or domain patterns.\n\
 \n\
 ## Security\n\
 - Never include secrets, API keys, or tokens in command output.\n\

@@ -356,6 +356,9 @@ impl<C: Channel> Agent<C> {
                     zeph_sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
                 ),
                 flagged_urls: std::collections::HashSet::new(),
+                user_provided_urls: std::sync::Arc::new(std::sync::RwLock::new(
+                    std::collections::HashSet::new(),
+                )),
                 pii_filter: zeph_sanitizer::pii::PiiFilter::new(
                     zeph_sanitizer::pii::PiiFilterConfig::default(),
                 ),
@@ -2286,6 +2289,9 @@ impl<C: Channel> Agent<C> {
         if trimmed == "/clear" {
             self.clear_history();
             self.tool_orchestrator.clear_cache();
+            if let Ok(mut urls) = self.security.user_provided_urls.write() {
+                urls.clear();
+            }
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));
         }
@@ -3255,6 +3261,14 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             }
         };
+        // Extract URLs from user input and add to user_provided_urls for grounding checks.
+        let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
+        if !urls.is_empty()
+            && let Ok(mut set) = self.security.user_provided_urls.write()
+        {
+            set.extend(urls);
+        }
+
         // Image parts intentionally excluded — base64 payloads too large for message history.
         self.persist_message(Role::User, &text, &[], false).await;
         self.push_message(user_msg);

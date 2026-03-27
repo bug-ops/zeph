@@ -77,5 +77,6 @@ pub use trust_gate::TrustGateExecutor;
 pub use trust_level::TrustLevel;
 pub use verifier::{
     DestructiveCommandVerifier, DestructiveVerifierConfig, InjectionPatternVerifier,
-    InjectionVerifierConfig, PreExecutionVerifier, PreExecutionVerifierConfig, VerificationResult,
+    InjectionVerifierConfig, PreExecutionVerifier, PreExecutionVerifierConfig,
+    UrlGroundingVerifier, UrlGroundingVerifierConfig, VerificationResult,
 };

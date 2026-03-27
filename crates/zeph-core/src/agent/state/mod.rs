@@ -6,9 +6,9 @@
 //! Each struct groups a related cluster of `Agent` fields.
 //! All types are `pub(super)` — visible only within the `agent` module.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
@@ -124,7 +124,11 @@ pub(crate) struct SecurityState {
     pub(crate) sanitizer: ContentSanitizer,
     pub(crate) quarantine_summarizer: Option<QuarantinedSummarizer>,
     pub(crate) exfiltration_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard,
-    pub(crate) flagged_urls: std::collections::HashSet<String>,
+    pub(crate) flagged_urls: HashSet<String>,
+    /// URLs explicitly provided by the user across all turns in this session.
+    /// Populated from raw user message text; cleared on `/clear`.
+    /// Shared with `UrlGroundingVerifier` to check `fetch`/`web_scrape` calls at dispatch time.
+    pub(crate) user_provided_urls: Arc<RwLock<HashSet<String>>>,
     pub(crate) pii_filter: zeph_sanitizer::pii::PiiFilter,
     pub(crate) memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator,
     /// LLM-based prompt injection pre-screener (opt-in).
