@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - fix(llm): `TriageRouter` now delegates `embed()` to the first embedding-capable tier provider instead of always returning `EmbeddingNotSupported`; `supports_embeddings()` reflects tier provider capability — resolves tool schema filter being silently disabled when `routing = "triage"` (#2174)
 - fix(core): `/provider` switch and `/provider status` now display the configured `name` field from `[[llm.providers]]` instead of the provider type string (e.g. `"openai"`); `active_provider_name` stored in `RuntimeConfig` and updated on every switch (#2173)
+- fix(llm): add missing `use crate::provider::MessageMetadata` import inside `#[cfg(test)]` in `candle_provider/template.rs`; `--features candle` alone now compiles and runs unit tests (`cargo nextest run -p zeph-llm --features candle --lib`) (#2189)
 - fix(mcp): narrow `new_directive` injection pattern to require colon suffix, preventing false positive match on legitimate phrases like "new persona" in Todoist MCP tool descriptions; add regression test (#2170)
 - fix(memory): run `PRAGMA wal_checkpoint(PASSIVE)` after FTS5 entity inserts to fix cross-session SYNAPSE seed lookup (#2166); checkpoint is called at `SqliteStore` startup (safety net) and after every `EntityResolver::resolve_batch` (targeted hook)
 - fix(config): add `[security.guardrail]` stub to `default.toml` so `--migrate-config` injects commented guardrail defaults for configs that have `[security]` but no `[security.guardrail]` (#2158)

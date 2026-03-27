@@ -128,6 +128,7 @@ fn format_raw(messages: &[Message]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::MessageMetadata;
 
     fn sample_messages() -> Vec<Message> {
         vec![
