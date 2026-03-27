@@ -521,6 +521,41 @@ pub(crate) fn apply_injection_classifier<C: Channel>(
     )
 }
 
+/// Wire the `CandleNerClassifier` (or `CandleClassifier`) feedback backend into the agent.
+///
+/// Only active when `classifiers.enabled = true` AND `detector_mode = "model"` in config.
+/// Uses `classifiers.ner_model` when `detector_model` in learning config is empty.
+/// Validates that `detector_model` is non-empty; falls back to `ner_model` default with
+/// a warning when it is blank.
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_feedback_classifier<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &Config,
+) -> zeph_core::agent::Agent<C> {
+    use zeph_core::config::DetectorMode;
+
+    if !config.classifiers.enabled {
+        return agent;
+    }
+    if config.skills.learning.detector_mode != DetectorMode::Model {
+        return agent;
+    }
+
+    let repo_id = if config.skills.learning.detector_model.is_empty() {
+        tracing::warn!("detector_mode=model but detector_model is empty — using ner_model default");
+        config.classifiers.ner_model.as_str()
+    } else {
+        config.skills.learning.detector_model.as_str()
+    };
+
+    let backend = std::sync::Arc::new(zeph_llm::classifier::ner::CandleNerClassifier::new(repo_id));
+    tracing::info!(
+        repo_id = %repo_id,
+        "ML feedback classifier attached (model loads lazily on first use)"
+    );
+    agent.with_feedback_classifier(backend)
+}
+
 pub(crate) async fn apply_code_indexer(
     config: &IndexConfig,
     qdrant_ops: Option<QdrantOps>,

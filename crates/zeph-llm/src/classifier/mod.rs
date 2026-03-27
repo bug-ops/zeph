@@ -7,17 +7,41 @@
 //! run via `std::thread::spawn` or `tokio::task::spawn_blocking` — never block the async
 //! runtime directly.
 //!
-//! Phase 1 provides only `CandleClassifier` for injection detection.
+//! Phase 1 provides `CandleClassifier` for injection detection and `CandleNerClassifier`
+//! for token-level NER (e.g. PII detection via piiranha).
 
 #[cfg(feature = "classifiers")]
 pub mod candle;
+#[cfg(feature = "classifiers")]
+pub mod ner;
 
 use std::future::Future;
 use std::pin::Pin;
 
 use crate::error::LlmError;
 
+/// A single token-level entity span from NER inference.
+///
+/// Character offsets (`start`, `end`) are in the original input string, matching the
+/// `HuggingFace` tokenizers library's `Encoding::get_offsets()` output (char offsets, not
+/// byte offsets).
+#[derive(Debug, Clone)]
+pub struct NerSpan {
+    /// Entity label (e.g. `"PERSON"`, `"EMAIL"`, `"PHONE"`).
+    pub label: String,
+    /// Confidence score in `[0.0, 1.0]`.
+    pub score: f32,
+    /// Character offset of the first character of the span in the original text.
+    pub start: usize,
+    /// Character offset one past the last character of the span.
+    pub end: usize,
+}
+
 /// Result of a single classification call.
+///
+/// The `is_positive` field means "the classifier's primary detection condition is met."
+/// Its interpretation is backend-specific: injection detected, PII found, correction
+/// signal present, etc.
 #[derive(Debug, Clone)]
 pub struct ClassificationResult {
     /// Primary predicted label (e.g. `"INJECTION"`, `"SAFE"`).
@@ -25,7 +49,12 @@ pub struct ClassificationResult {
     /// Confidence score in `[0.0, 1.0]`.
     pub score: f32,
     /// `true` when the classifier signals a positive detection (injection / PII / etc.).
+    ///
+    /// Interpretation is backend-specific — consumers must know which backend produced
+    /// this result to interpret the flag correctly.
     pub is_positive: bool,
+    /// Token-level entity spans. Populated by NER backends; empty for sequence classifiers.
+    pub spans: Vec<NerSpan>,
 }
 
 /// Object-safe async classifier interface.
@@ -70,6 +99,7 @@ pub mod mock {
                     label: label.to_owned(),
                     score,
                     is_positive,
+                    spans: vec![],
                 }),
             }
         }

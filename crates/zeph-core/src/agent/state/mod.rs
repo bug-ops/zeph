@@ -113,10 +113,17 @@ pub(crate) struct RuntimeConfig {
     pub(crate) dependency_config: zeph_tools::DependencyConfig,
 }
 
-/// Groups feedback detection subsystems: correction detector and judge detector.
+/// Groups feedback detection subsystems: correction detector, judge detector, and ML backend.
 pub(crate) struct FeedbackState {
     pub(crate) detector: super::feedback_detector::FeedbackDetector,
     pub(crate) judge: Option<super::feedback_detector::JudgeDetector>,
+    /// ML classifier backend for `detector_mode = "model"`.
+    ///
+    /// `None` when the `classifiers` feature is disabled, `classifiers.enabled = false`,
+    /// or model loading failed at startup. When `None` with `detector_mode = Model`, the
+    /// agent loop falls back to regex and emits a `warn!()`.
+    #[cfg(feature = "classifiers")]
+    pub(crate) model_backend: Option<std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>>,
 }
 
 /// Groups security-related subsystems (sanitizer, quarantine, exfiltration guard).

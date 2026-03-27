@@ -152,6 +152,13 @@ min_evaluations = 5
 max_versions = 10
 # Cooldown between improvements for same skill (minutes)
 cooldown_minutes = 60
+# Correction detector strategy: "regex" (default), "judge" (LLM-based), or "model" (ML classifier)
+# detector_mode = "regex"
+# LLM model for judge detector (e.g. "claude-sonnet-4-6"). Empty = use primary provider.
+# judge_model = ""
+# HuggingFace repo ID for ML correction detector (requires detector_mode = "model" and classifiers feature).
+# When empty, falls back to classifiers.ner_model default.
+# detector_model = ""
 
 [skills.trust]
 # Default trust level for newly discovered skills: trusted, verified, quarantined, blocked
@@ -685,6 +692,9 @@ timeout_ms = 5000
 injection_model = "protectai/deberta-v3-small-prompt-injection-v2"
 # Minimum classifier score (0.0–1.0) to treat a result as injection. Conservative default.
 injection_threshold = 0.8
+# HuggingFace repo ID for the NER model used by CandleNerClassifier (piiranha by default).
+# Used when detector_mode = "model" and detector_model in [skills.learning] is empty.
+ner_model = "iiiorg/piiranha-v1-detect-personal-information"
 
 [experiments]
 # Enable the autonomous self-experimentation engine

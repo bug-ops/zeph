@@ -560,6 +560,26 @@ impl AppBuilder {
         }
     }
 
+    /// Validate `detector_model` config when `detector_mode = "model"`.
+    ///
+    /// Emits a `tracing::warn` when the field is empty so users know the fallback is active.
+    /// Returns `true` when the model field is non-empty (configuration is valid).
+    pub fn validate_detector_model_config(&self) -> bool {
+        use crate::config::DetectorMode;
+        let learning = &self.config.skills.learning;
+        if learning.detector_mode != DetectorMode::Model {
+            return true;
+        }
+        if learning.detector_model.is_empty() {
+            tracing::warn!(
+                "detector_mode=model but detector_model is empty — \
+                 feedback classifier will use the ner_model default or fall back to regex"
+            );
+            return false;
+        }
+        true
+    }
+
     /// Build a dedicated provider for compaction probe LLM calls.
     ///
     /// Returns `None` when `probe_provider` is empty (falls back to summary provider at call site).

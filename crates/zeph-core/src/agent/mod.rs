@@ -291,6 +291,8 @@ impl<C: Channel> Agent<C> {
             feedback: FeedbackState {
                 detector: feedback_detector::FeedbackDetector::new(0.6),
                 judge: None,
+                #[cfg(feature = "classifiers")]
+                model_backend: None,
             },
             debug_state: DebugState {
                 debug_dumper: None,
@@ -2977,8 +2979,13 @@ impl<C: Channel> Agent<C> {
 
     /// Detect implicit corrections in the user's message and record them in the learning engine.
     ///
-    /// Uses regex-based `FeedbackDetector` first. If a `JudgeDetector` is configured and the
-    /// regex result is borderline, the LLM judge runs in a background task (non-blocking).
+    /// Detection strategy depends on `detector_mode`:
+    /// - `Regex` (default): pattern-matching only, no LLM calls.
+    /// - `Judge`: regex first; if borderline, LLM judge runs in background task.
+    /// - `Model`: ML classifier runs first; falls back to regex on error or missing backend.
+    ///   When `detector_mode = Model` but no backend is attached (feature disabled or
+    ///   `classifiers.enabled = false`), emits a `warn!()` and falls back to regex.
+    #[allow(clippy::too_many_lines)]
     async fn detect_and_record_corrections(
         &mut self,
         trimmed: &str,
@@ -3000,47 +3007,88 @@ impl<C: Channel> Agent<C> {
             .filter(|m| m.role == Role::User)
             .map(|m| m.content.as_str())
             .collect();
-        let regex_signal = self
-            .feedback
-            .detector
-            .detect(trimmed, &previous_user_messages);
 
-        // Judge mode: invoke LLM in background if regex is borderline or missed.
-        //
-        // The judge call is decoupled from the response pipeline — it records the
-        // correction asynchronously via tokio::spawn and returns None immediately
-        // so the user response is not blocked.
-        //
-        // TODO(I3): JoinHandles are not tracked — outstanding tasks may be aborted
-        // on runtime shutdown before store_user_correction completes. This is
-        // acceptable for the learning subsystem at MVP. Future: collect handles in
-        // Agent and drain on graceful shutdown.
-        // Check rate limit synchronously before deciding to spawn.
-        // The feedback.judge is &mut self so check_rate_limit() can update call_times.
-        let judge_should_run = self
-            .feedback
-            .judge
-            .as_ref()
-            .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
-            && self
+        // Model mode: run ML classifier first; fall back to regex on error / missing backend.
+        #[cfg(feature = "classifiers")]
+        let model_signal: Option<feedback_detector::CorrectionSignal> = {
+            use crate::config::DetectorMode;
+            let is_model_mode = self
+                .learning_engine
+                .config
+                .as_ref()
+                .is_some_and(|c| c.detector_mode == DetectorMode::Model);
+            if is_model_mode {
+                if let Some(backend) = self.feedback.model_backend.as_ref() {
+                    let threshold = self.feedback.detector.confidence_threshold();
+                    feedback_detector::FeedbackDetector::detect_with_model(
+                        backend.as_ref(),
+                        trimmed,
+                        threshold,
+                    )
+                    .await
+                } else {
+                    tracing::warn!(
+                        "detector_mode=model but no classifier backend attached — falling back to regex"
+                    );
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        #[cfg(not(feature = "classifiers"))]
+        let model_signal: Option<feedback_detector::CorrectionSignal> = None;
+
+        let regex_signal = if model_signal.is_none() {
+            self.feedback
+                .detector
+                .detect(trimmed, &previous_user_messages)
+        } else {
+            None
+        };
+
+        // When model produced a signal, use it directly (no judge).
+        // When regex produced a signal, optionally run judge for borderline cases.
+        let (signal, signal_source) = if let Some(ms) = model_signal {
+            (Some(ms), "model")
+        } else {
+            // Judge mode: invoke LLM in background if regex is borderline or missed.
+            //
+            // The judge call is decoupled from the response pipeline — it records the
+            // correction asynchronously via tokio::spawn and returns None immediately
+            // so the user response is not blocked.
+            //
+            // TODO(I3): JoinHandles are not tracked — outstanding tasks may be aborted
+            // on runtime shutdown before store_user_correction completes. This is
+            // acceptable for the learning subsystem at MVP. Future: collect handles in
+            // Agent and drain on graceful shutdown.
+            // Check rate limit synchronously before deciding to spawn.
+            // The feedback.judge is &mut self so check_rate_limit() can update call_times.
+            let judge_should_run = self
                 .feedback
                 .judge
-                .as_mut() // lgtm[rust/cleartext-logging]
-                .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
+                .as_ref()
+                .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
+                && self
+                    .feedback
+                    .judge
+                    .as_mut() // lgtm[rust/cleartext-logging]
+                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
 
-        let signal = if judge_should_run {
-            self.spawn_judge_correction_check(trimmed, conv_id);
-            // Judge runs in background — return None so the response pipeline continues.
-            None
-        } else {
-            regex_signal
+            if judge_should_run {
+                self.spawn_judge_correction_check(trimmed, conv_id);
+                // Judge runs in background — return None so the response pipeline continues.
+                (None, "judge")
+            } else {
+                (regex_signal, "regex")
+            }
         };
 
         let Some(signal) = signal else { return };
         tracing::info!(
             kind = signal.kind.as_str(),
             confidence = signal.confidence,
-            source = "regex",
+            source = signal_source,
             "implicit correction detected"
         );
         // REV-PH2-002 + SEC-PH2-002: cap feedback_text to 500 chars (UTF-8 safe)

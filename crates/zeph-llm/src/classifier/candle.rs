@@ -116,6 +116,7 @@ impl CandleClassifier {
             label,
             score: best_score,
             is_positive,
+            spans: vec![],
         })
     }
 
@@ -139,6 +140,7 @@ impl CandleClassifier {
                 label: "SAFE".into(),
                 score: 1.0,
                 is_positive: false,
+                spans: vec![],
             });
         }
 
@@ -177,6 +179,7 @@ impl CandleClassifier {
                 label: "SAFE".into(),
                 score: 1.0,
                 is_positive: false,
+                spans: vec![],
             }))
     }
 

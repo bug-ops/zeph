@@ -402,6 +402,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach an ML classifier backend for feedback/correction detection.
+    ///
+    /// Used when `detector_mode = "model"` in config. The backend is invoked in
+    /// `detect_and_record_corrections()` before regex as the primary signal source.
+    /// On error or when this is `None`, the agent falls back to regex detection.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_feedback_classifier(
+        mut self,
+        backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
+    ) -> Self {
+        self.feedback.model_backend = Some(backend);
+        self
+    }
+
     #[must_use]
     pub fn with_judge_provider(mut self, provider: AnyProvider) -> Self {
         self.providers.judge_provider = Some(provider);

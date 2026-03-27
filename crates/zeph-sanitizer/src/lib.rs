@@ -1505,6 +1505,7 @@ mod tests {
                         label: label.to_owned(),
                         score,
                         is_positive,
+                        spans: vec![],
                     },
                 }
             }
@@ -1524,6 +1525,7 @@ mod tests {
                         label,
                         score,
                         is_positive,
+                        spans: vec![],
                     })
                 })
             }
@@ -1639,6 +1641,7 @@ mod tests {
                             label: "INJECTION".into(),
                             score: 0.99,
                             is_positive: true,
+                            spans: vec![],
                         })
                     })
                 }

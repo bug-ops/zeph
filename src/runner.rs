@@ -1075,6 +1075,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_injection_classifier(agent, config);
+    #[cfg(feature = "classifiers")]
+    let agent = agent_setup::apply_feedback_classifier(agent, config);
 
     let (code_retriever, _index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
         &config.index,
@@ -1113,6 +1115,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent
     };
     let agent = agent.with_learning(config.skills.learning.clone());
+    app.validate_detector_model_config();
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {
         agent.with_judge_provider(jp)

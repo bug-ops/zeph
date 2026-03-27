@@ -15,6 +15,10 @@ fn default_injection_threshold() -> f32 {
     0.8
 }
 
+fn default_ner_model() -> String {
+    "iiiorg/piiranha-v1-detect-personal-information".into()
+}
+
 /// Configuration for the ML-backed classifier subsystem.
 ///
 /// Placed under `[classifiers]` in `config.toml`. All fields are optional with safe defaults
@@ -43,6 +47,12 @@ pub struct ClassifiersConfig {
     /// Range: `(0.0, 1.0]`. Conservative default of `0.8` minimises false positives.
     #[serde(default = "default_injection_threshold")]
     pub injection_threshold: f32,
+
+    /// `HuggingFace` repo ID for the NER model used by `CandleNerClassifier`.
+    ///
+    /// Default: `iiiorg/piiranha-v1-detect-personal-information`.
+    #[serde(default = "default_ner_model")]
+    pub ner_model: String,
 }
 
 impl Default for ClassifiersConfig {
@@ -52,6 +62,7 @@ impl Default for ClassifiersConfig {
             timeout_ms: default_classifier_timeout_ms(),
             injection_model: default_injection_model(),
             injection_threshold: default_injection_threshold(),
+            ner_model: default_ner_model(),
         }
     }
 }
@@ -106,6 +117,7 @@ mod tests {
             timeout_ms: 3000,
             injection_model: "org/model".into(),
             injection_threshold: 0.75,
+            ner_model: "org/ner-model".into(),
         };
         let serialized = toml::to_string(&original).unwrap();
         let deserialized: ClassifiersConfig = toml::from_str(&serialized).unwrap();

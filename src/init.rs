@@ -69,9 +69,10 @@ pub(crate) struct WizardState {
     pub(crate) agents_user_dir: Option<std::path::PathBuf>,
     /// Default memory scope for sub-agents (None = no memory by default).
     pub(crate) agents_default_memory_scope: Option<MemoryScope>,
-    /// "regex" or "judge" — defaults to "regex" (no LLM calls).
+    /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
+    pub(crate) detector_model: Option<String>,
     /// Router strategy: None = no router, "ema", "thompson", or "cascade".
     pub(crate) router_strategy: Option<String>,
     /// Custom path for Thompson state file (None = use default).
@@ -218,6 +219,7 @@ impl Default for WizardState {
             agents_default_memory_scope: None,
             detector_mode: None,
             judge_model: None,
+            detector_model: None,
             router_strategy: None,
             router_thompson_state_path: None,
             router_cascade_quality_threshold: None,
@@ -1249,11 +1251,20 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .clone_from(&state.agents_user_dir);
     config.agents.default_memory_scope = state.agents_default_memory_scope;
 
-    if state.detector_mode.as_deref() == Some("judge") {
-        config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Judge;
-        if let Some(ref model) = state.judge_model {
-            config.skills.learning.judge_model.clone_from(model);
+    match state.detector_mode.as_deref() {
+        Some("judge") => {
+            config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Judge;
+            if let Some(ref model) = state.judge_model {
+                config.skills.learning.judge_model.clone_from(model);
+            }
         }
+        Some("model") => {
+            config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Model;
+            if let Some(ref model) = state.detector_model {
+                config.skills.learning.detector_model.clone_from(model);
+            }
+        }
+        _ => {}
     }
 
     config.orchestration = OrchestrationConfig {
@@ -1925,6 +1936,7 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
     let detector_items = &[
         "regex (default — pattern matching, no LLM)",
         "judge (LLM-based verification)",
+        "model (ML classifier via classifiers feature)",
     ];
     let sel = Select::new()
         .with_prompt("Feedback detector mode")
@@ -1932,19 +1944,34 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
         .default(0)
         .interact()?;
 
-    if sel == 1 {
-        state.detector_mode = Some("judge".into());
-        let judge_model: String = Input::new()
-            .with_prompt(
-                "Judge model name (e.g. claude-sonnet-4-6; leave empty to use primary provider)",
-            )
-            .default(String::new())
-            .interact_text()?;
-        if !judge_model.is_empty() {
-            state.judge_model = Some(judge_model);
+    match sel {
+        1 => {
+            state.detector_mode = Some("judge".into());
+            let judge_model: String = Input::new()
+                .with_prompt(
+                    "Judge model name (e.g. claude-sonnet-4-6; leave empty to use primary provider)",
+                )
+                .default(String::new())
+                .interact_text()?;
+            if !judge_model.is_empty() {
+                state.judge_model = Some(judge_model);
+            }
         }
-    } else {
-        state.detector_mode = Some("regex".into());
+        2 => {
+            state.detector_mode = Some("model".into());
+            let detector_model: String = Input::new()
+                .with_prompt(
+                    "HuggingFace repo ID for correction detection model (e.g. org/model-name; requires classifiers feature)",
+                )
+                .default(String::new())
+                .interact_text()?;
+            if !detector_model.is_empty() {
+                state.detector_model = Some(detector_model);
+            }
+        }
+        _ => {
+            state.detector_mode = Some("regex".into());
+        }
     }
 
     println!();

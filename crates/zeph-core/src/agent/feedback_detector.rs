@@ -391,6 +391,44 @@ impl FeedbackDetector {
         }
     }
 
+    /// Return the configured confidence threshold.
+    #[must_use]
+    pub fn confidence_threshold(&self) -> f32 {
+        self.confidence_threshold
+    }
+
+    /// ML-based correction detection using a [`ClassifierBackend`].
+    ///
+    /// Returns `Some(signal)` when the model classifies the input as a correction above
+    /// `confidence_threshold`. Uses `CorrectionKind::ExplicitRejection` since the model
+    /// does not distinguish correction kinds.
+    ///
+    /// On model error, logs a warning and returns `None` — the caller falls back to regex.
+    #[cfg(feature = "classifiers")]
+    pub(crate) async fn detect_with_model(
+        backend: &dyn zeph_llm::classifier::ClassifierBackend,
+        text: &str,
+        confidence_threshold: f32,
+    ) -> Option<CorrectionSignal> {
+        match backend.classify(text).await {
+            Ok(result) if result.is_positive && result.score >= confidence_threshold => {
+                Some(CorrectionSignal {
+                    confidence: result.score,
+                    kind: CorrectionKind::ExplicitRejection,
+                    feedback_text: text.to_owned(),
+                })
+            }
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "feedback model classification failed, falling back to regex"
+                );
+                None
+            }
+        }
+    }
+
     /// Analyze `user_message` against recent conversation context.
     ///
     /// `previous_messages` should be user-role messages in chronological order.
