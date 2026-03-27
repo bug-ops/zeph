@@ -223,7 +223,7 @@ impl CandleClassifier {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to load tokenizer: {e}")))?;
 
-        super::ner::validate_safetensors(&weights_path)?;
+        crate::classifier::ner::validate_safetensors(&weights_path)?;
 
         let device = Device::Cpu;
         // SAFETY: validated safetensors header above; file not modified during VarBuilder lifetime
@@ -362,37 +362,41 @@ mod tests {
 
     // ── validate_safetensors unit tests ─────────────────────────────────────
 
+    #[cfg(feature = "classifiers")]
     #[test]
     fn validate_safetensors_rejects_truncated_file() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(&[0u8; 4]).unwrap();
-        let err = CandleClassifier::validate_safetensors(f.path()).unwrap_err();
+        let err = crate::classifier::ner::validate_safetensors(f.path()).unwrap_err();
         assert!(err.to_string().contains("too small"));
     }
 
+    #[cfg(feature = "classifiers")]
     #[test]
     fn validate_safetensors_rejects_header_length_past_eof() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         // header_len = 9999, but file only has 8 bytes total → header_len > file_len - 8
         let header_len: u64 = 9999;
         f.write_all(&header_len.to_le_bytes()).unwrap();
-        let err = CandleClassifier::validate_safetensors(f.path()).unwrap_err();
+        let err = crate::classifier::ner::validate_safetensors(f.path()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("invalid safetensors header length")
         );
     }
 
+    #[cfg(feature = "classifiers")]
     #[test]
     fn validate_safetensors_rejects_zero_length_header() {
         // header_len = 0 → serde_json::from_slice on empty bytes fails
         let mut f = tempfile::NamedTempFile::new().unwrap();
         let header_len: u64 = 0;
         f.write_all(&header_len.to_le_bytes()).unwrap();
-        let err = CandleClassifier::validate_safetensors(f.path()).unwrap_err();
+        let err = crate::classifier::ner::validate_safetensors(f.path()).unwrap_err();
         assert!(err.to_string().contains("not valid JSON"));
     }
 
+    #[cfg(feature = "classifiers")]
     #[test]
     fn validate_safetensors_rejects_invalid_json_header() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -400,10 +404,11 @@ mod tests {
         let header_len = u64::try_from(garbage.len()).unwrap();
         f.write_all(&header_len.to_le_bytes()).unwrap();
         f.write_all(garbage).unwrap();
-        let err = CandleClassifier::validate_safetensors(f.path()).unwrap_err();
+        let err = crate::classifier::ner::validate_safetensors(f.path()).unwrap_err();
         assert!(err.to_string().contains("not valid JSON"));
     }
 
+    #[cfg(feature = "classifiers")]
     #[test]
     fn validate_safetensors_accepts_valid_header() {
         let json_body = b"{}";
@@ -411,7 +416,7 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(&header_len.to_le_bytes()).unwrap();
         f.write_all(json_body).unwrap();
-        CandleClassifier::validate_safetensors(f.path()).unwrap();
+        crate::classifier::ner::validate_safetensors(f.path()).unwrap();
     }
 
     // ── Integration tests requiring model download (#[ignore]) ──────────────
