@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ShellConfig;
 use crate::executor::{
-    FilterStats, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
+    ClaimSource, FilterStats, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
 };
 use crate::filter::{OutputFilterRegistry, sanitize_output};
 use crate::permissions::{PermissionAction, PermissionPolicy};
@@ -250,6 +250,7 @@ impl ShellExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::Shell),
         }))
     }
 
@@ -532,6 +533,8 @@ impl ShellExecutor {
                 result,
                 duration_ms,
                 error_category: None,
+                error_domain: None,
+                claim_source: None,
             };
             logger.log(&entry).await;
         }

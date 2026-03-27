@@ -291,6 +291,18 @@ allowed_commands = ["npx", "uvx", "node", "python", "python3"]
 # Maximum number of dynamically added MCP servers
 max_dynamic_servers = 10
 
+[mcp.pruning]
+# Enable dynamic MCP tool pruning (LLM-based relevance filter before main inference)
+enabled = false
+# Maximum number of MCP tools to include after pruning
+max_tools = 15
+# Provider name from [[llm.providers]] for the pruning call (empty = default provider)
+pruning_provider = ""
+# Minimum tool count below which pruning is skipped (not worth the LLM overhead)
+min_tools_to_prune = 10
+# Tool names always included regardless of pruning result
+always_include = []
+
 # Stdio transport (spawn child process):
 # [[mcp.servers]]
 # id = "filesystem"

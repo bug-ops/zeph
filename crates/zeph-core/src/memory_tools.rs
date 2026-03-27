@@ -162,6 +162,7 @@ impl ToolExecutor for MemoryToolExecutor {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: Some(zeph_tools::ClaimSource::Memory),
                 }))
             }
             "memory_save" => {
@@ -206,6 +207,7 @@ impl ToolExecutor for MemoryToolExecutor {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: Some(zeph_tools::ClaimSource::Memory),
                 }))
             }
             _ => Ok(None),

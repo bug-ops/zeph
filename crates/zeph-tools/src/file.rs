@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::executor::{
-    DiffData, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
+    ClaimSource, DiffData, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
 use crate::registry::{InvocationHint, ToolDef};
 
@@ -224,6 +224,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -250,6 +251,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -281,6 +283,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -314,6 +317,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -353,6 +357,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -409,6 +414,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -429,6 +435,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -468,6 +475,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -486,6 +494,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 
@@ -512,6 +521,7 @@ impl FileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::FileSystem),
         }))
     }
 }

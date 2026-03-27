@@ -11,6 +11,7 @@ pub mod manager;
 pub mod oauth;
 pub mod policy;
 pub mod prompt;
+pub mod pruning;
 pub mod registry;
 pub mod sanitize;
 pub mod security;
@@ -31,5 +32,6 @@ pub use manager::{McpManager, McpTransport, McpTrustLevel, ServerConnectOutcome,
 pub use mock::{McpCall, MockMcpCaller};
 pub use policy::{McpPolicy, PolicyEnforcer, PolicyViolation, RateLimit};
 pub use prompt::format_mcp_tools_prompt;
+pub use pruning::{PruningError, PruningParams, prune_tools};
 pub use registry::McpToolRegistry;
 pub use tool::McpTool;

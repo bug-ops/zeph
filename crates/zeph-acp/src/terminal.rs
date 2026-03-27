@@ -260,6 +260,7 @@ impl AcpShellExecutor {
             terminal_id: Some(params.terminal_id),
             locations: None,
             raw_response: None,
+            claim_source: Some(zeph_tools::ClaimSource::Shell),
         }))
     }
 
@@ -416,6 +417,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             terminal_id: Some(result.terminal_id),
             locations: None,
             raw_response,
+            claim_source: Some(zeph_tools::ClaimSource::Shell),
         }))
     }
 }

@@ -40,12 +40,12 @@ pub use config::{
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use error_taxonomy::{
-    ToolErrorCategory, ToolErrorFeedback, classify_http_status, classify_io_error,
+    ErrorDomain, ToolErrorCategory, ToolErrorFeedback, classify_http_status, classify_io_error,
 };
 pub use executor::{
-    DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats, MAX_TOOL_OUTPUT_CHARS,
-    ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput, truncate_tool_output,
-    truncate_tool_output_at,
+    ClaimSource, DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats,
+    MAX_TOOL_OUTPUT_CHARS, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
+    truncate_tool_output, truncate_tool_output_at,
 };
 pub use file::FileExecutor;
 pub use filter::{

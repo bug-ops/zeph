@@ -9,6 +9,60 @@
 
 use crate::executor::ErrorKind;
 
+/// High-level error domain for recovery strategy dispatch.
+///
+/// Groups the 11 `ToolErrorCategory` variants into 4 domains that map to distinct
+/// recovery strategies in the agent loop. Does NOT replace `ToolErrorCategory` — it
+/// is a companion abstraction for coarse dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorDomain {
+    /// The agent selected the wrong tool or misunderstood the task.
+    /// Recovery: re-plan, pick a different tool or approach.
+    /// Categories: `ToolNotFound`
+    Planning,
+
+    /// The agent's output (parameters, types) was malformed.
+    /// Recovery: reformat parameters using tool schema, retry once.
+    /// Categories: `InvalidParameters`, `TypeMismatch`
+    Reflection,
+
+    /// External action failed due to policy or resource constraints.
+    /// Recovery: inform user, suggest alternative, or skip.
+    /// Categories: `PolicyBlocked`, `ConfirmationRequired`, `PermanentFailure`, `Cancelled`
+    Action,
+
+    /// Transient infrastructure failure.
+    /// Recovery: automatic retry with backoff.
+    /// Categories: `RateLimited`, `ServerError`, `NetworkError`, `Timeout`
+    System,
+}
+
+impl ErrorDomain {
+    /// Whether errors in this domain should trigger automatic retry.
+    #[must_use]
+    pub fn is_auto_retryable(self) -> bool {
+        matches!(self, Self::System)
+    }
+
+    /// Whether the LLM should be asked to fix its output.
+    #[must_use]
+    pub fn needs_llm_correction(self) -> bool {
+        matches!(self, Self::Reflection | Self::Planning)
+    }
+
+    /// Human-readable label for audit logs.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Planning => "planning",
+            Self::Reflection => "reflection",
+            Self::Action => "action",
+            Self::System => "system",
+        }
+    }
+}
+
 /// Fine-grained 12-category classification of tool invocation errors.
 ///
 /// Each category determines retry eligibility, LLM parameter reformat path,
@@ -79,6 +133,25 @@ impl ToolErrorCategory {
             self,
             Self::InvalidParameters | Self::TypeMismatch | Self::ToolNotFound
         )
+    }
+
+    /// Map to the high-level error domain for recovery dispatch.
+    ///
+    /// Use the returned `ErrorDomain` to select a recovery strategy in the agent loop
+    /// instead of checking multiple predicate methods individually.
+    #[must_use]
+    pub fn domain(self) -> ErrorDomain {
+        match self {
+            Self::ToolNotFound => ErrorDomain::Planning,
+            Self::InvalidParameters | Self::TypeMismatch => ErrorDomain::Reflection,
+            Self::PolicyBlocked
+            | Self::ConfirmationRequired
+            | Self::PermanentFailure
+            | Self::Cancelled => ErrorDomain::Action,
+            Self::RateLimited | Self::ServerError | Self::NetworkError | Self::Timeout => {
+                ErrorDomain::System
+            }
+        }
     }
 
     /// Coarse classification for backward compatibility with existing `ErrorKind`.
@@ -486,6 +559,81 @@ mod tests {
             // Quality failures are not retryable.
             assert!(!cat.is_retryable(), "{cat:?} must not be retryable");
         }
+    }
+
+    // ── ErrorDomain mapping: all 11 categories ───────────────────────────────
+
+    #[test]
+    fn domain_planning() {
+        assert_eq!(
+            ToolErrorCategory::ToolNotFound.domain(),
+            ErrorDomain::Planning
+        );
+    }
+
+    #[test]
+    fn domain_reflection() {
+        assert_eq!(
+            ToolErrorCategory::InvalidParameters.domain(),
+            ErrorDomain::Reflection
+        );
+        assert_eq!(
+            ToolErrorCategory::TypeMismatch.domain(),
+            ErrorDomain::Reflection
+        );
+    }
+
+    #[test]
+    fn domain_action() {
+        for cat in [
+            ToolErrorCategory::PolicyBlocked,
+            ToolErrorCategory::ConfirmationRequired,
+            ToolErrorCategory::PermanentFailure,
+            ToolErrorCategory::Cancelled,
+        ] {
+            assert_eq!(
+                cat.domain(),
+                ErrorDomain::Action,
+                "{cat:?} must map to Action"
+            );
+        }
+    }
+
+    #[test]
+    fn domain_system() {
+        for cat in [
+            ToolErrorCategory::RateLimited,
+            ToolErrorCategory::ServerError,
+            ToolErrorCategory::NetworkError,
+            ToolErrorCategory::Timeout,
+        ] {
+            assert_eq!(
+                cat.domain(),
+                ErrorDomain::System,
+                "{cat:?} must map to System"
+            );
+        }
+    }
+
+    #[test]
+    fn error_domain_helper_methods() {
+        assert!(ErrorDomain::System.is_auto_retryable());
+        assert!(!ErrorDomain::Planning.is_auto_retryable());
+        assert!(!ErrorDomain::Reflection.is_auto_retryable());
+        assert!(!ErrorDomain::Action.is_auto_retryable());
+
+        assert!(ErrorDomain::Reflection.needs_llm_correction());
+        assert!(ErrorDomain::Planning.needs_llm_correction());
+        assert!(!ErrorDomain::System.needs_llm_correction());
+        assert!(!ErrorDomain::Action.needs_llm_correction());
+    }
+
+    #[test]
+    fn error_domain_labels() {
+        assert_eq!(ErrorDomain::Planning.label(), "planning");
+        assert_eq!(ErrorDomain::Reflection.label(), "reflection");
+        assert_eq!(ErrorDomain::Action.label(), "action");
+        assert_eq!(ErrorDomain::System.label(), "system");
     }
 
     // ── B2 regression: io::NotFound must NOT produce ToolNotFound ────────────

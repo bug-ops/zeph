@@ -338,6 +338,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     terminal_id: None,
                     locations: Some(vec![resolved_str]),
                     raw_response,
+                    claim_source: Some(zeph_tools::ClaimSource::FileSystem),
                 }))
             }
             "write_file" if self.can_write => {
@@ -460,6 +461,7 @@ impl AcpFileExecutor {
             terminal_id: None,
             locations: Some(vec![params.path]),
             raw_response: None,
+            claim_source: Some(zeph_tools::ClaimSource::FileSystem),
         }))
     }
 
@@ -514,6 +516,7 @@ impl AcpFileExecutor {
             terminal_id: None,
             locations: Some(vec![params.path]),
             raw_response: None,
+            claim_source: Some(zeph_tools::ClaimSource::FileSystem),
         }))
     }
 
@@ -564,6 +567,7 @@ impl AcpFileExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(zeph_tools::ClaimSource::FileSystem),
         }))
     }
 }

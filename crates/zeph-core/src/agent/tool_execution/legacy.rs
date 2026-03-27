@@ -237,6 +237,7 @@ impl<C: Channel> Agent<C> {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     })),
                 )
                 .await?

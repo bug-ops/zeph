@@ -411,6 +411,7 @@ pub mod agent_tests {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))]);
 
         let agent_channel = MockChannel::new(vec!["execute tool".to_string()]);
@@ -614,6 +615,7 @@ pub mod agent_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             })),
             Ok(None),
         ]);
@@ -639,6 +641,7 @@ pub mod agent_tests {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))]);
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
@@ -736,6 +739,7 @@ pub mod agent_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             })),
             Ok(None),
         ]);
@@ -769,6 +773,7 @@ pub mod agent_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             })));
         }
         let executor = MockToolExecutor::new(outputs);
@@ -3693,6 +3698,7 @@ mod inline_tool_loop_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))])
         }
 
@@ -3830,6 +3836,7 @@ mod inline_tool_loop_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             })),
             Ok(Some(ToolOutput {
                 tool_name: "test_tool".into(),
@@ -3841,6 +3848,7 @@ mod inline_tool_loop_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             })),
         ]);
 
@@ -3910,6 +3918,7 @@ mod confirmation_propagation_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }
         }
     }
@@ -4397,6 +4406,7 @@ mod shutdown_summary_tests {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 }))
             }
         }
@@ -4483,6 +4493,7 @@ mod shutdown_summary_tests {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     }))
                 } else {
                     Ok(Some(ToolOutput {
@@ -4503,6 +4514,7 @@ mod shutdown_summary_tests {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     }))
                 }
             }

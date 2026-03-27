@@ -101,6 +101,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         result: AuditResult::Success,
                         duration_ms: 0,
                         error_category: None,
+                        error_domain: None,
+                        claim_source: None,
                     };
                     audit.log(&entry).await;
                 }
@@ -118,6 +120,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         },
                         duration_ms: 0,
                         error_category: Some("policy_blocked".to_owned()),
+                        error_domain: Some("action".to_owned()),
+                        claim_source: None,
                     };
                     audit.log(&entry).await;
                 }
@@ -221,6 +225,7 @@ mod tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))
         }
     }

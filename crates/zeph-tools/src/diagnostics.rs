@@ -139,6 +139,7 @@ impl ToolExecutor for DiagnosticsExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(crate::executor::ClaimSource::Diagnostics),
         }))
     }
 

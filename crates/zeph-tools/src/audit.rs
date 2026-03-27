@@ -26,6 +26,12 @@ pub struct AuditEntry {
     /// Fine-grained error category label from the taxonomy. `None` for successful executions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_category: Option<String>,
+    /// High-level error domain for recovery dispatch. `None` for successful executions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_domain: Option<String>,
+    /// Provenance of the tool result. `None` for non-executor audit entries (e.g. policy checks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_source: Option<crate::executor::ClaimSource>,
 }
 
 #[derive(serde::Serialize)]
@@ -107,6 +113,8 @@ mod tests {
             result: AuditResult::Success,
             duration_ms: 42,
             error_category: None,
+            error_domain: None,
+            claim_source: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -125,6 +133,8 @@ mod tests {
             },
             duration_ms: 0,
             error_category: Some("policy_blocked".to_owned()),
+            error_domain: Some("action".to_owned()),
+            claim_source: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -142,6 +152,8 @@ mod tests {
             },
             duration_ms: 0,
             error_category: None,
+            error_domain: None,
+            claim_source: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -156,6 +168,8 @@ mod tests {
             result: AuditResult::Timeout,
             duration_ms: 30000,
             error_category: Some("timeout".to_owned()),
+            error_domain: Some("system".to_owned()),
+            claim_source: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -175,6 +189,8 @@ mod tests {
             result: AuditResult::Success,
             duration_ms: 1,
             error_category: None,
+            error_domain: None,
+            claim_source: None,
         };
         logger.log(&entry).await;
     }
@@ -195,6 +211,8 @@ mod tests {
             result: AuditResult::Success,
             duration_ms: 1,
             error_category: None,
+            error_domain: None,
+            claim_source: None,
         };
         logger.log(&entry).await;
 
@@ -230,6 +248,8 @@ mod tests {
                 result: AuditResult::Success,
                 duration_ms: i,
                 error_category: None,
+                error_domain: None,
+                claim_source: None,
             };
             logger.log(&entry).await;
         }

@@ -405,6 +405,7 @@ mod tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }));
             Box::pin(std::future::ready(result))
         }
@@ -473,6 +474,7 @@ mod tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }));
             Box::pin(std::future::ready(result))
         }

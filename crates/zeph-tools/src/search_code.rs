@@ -10,7 +10,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
-use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
+use crate::executor::{
+    ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
+};
 use crate::registry::{InvocationHint, ToolDef};
 
 // ---------------------------------------------------------------------------
@@ -341,6 +343,7 @@ impl SearchCodeExecutor {
             terminal_id: None,
             locations: Some(locations),
             raw_response: Some(raw_response),
+            claim_source: Some(ClaimSource::CodeSearch),
         }))
     }
 

@@ -2152,6 +2152,7 @@ mod tests {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     }))
                 } else {
                     Ok(None)
@@ -3499,6 +3500,7 @@ mod tests {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 };
                 Box::pin(std::future::ready(Ok(Some(output))))
             }

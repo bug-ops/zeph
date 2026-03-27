@@ -72,6 +72,7 @@ impl ToolExecutor for SkillLoaderExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))
     }
 }

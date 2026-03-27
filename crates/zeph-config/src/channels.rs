@@ -176,6 +176,39 @@ impl Default for A2aServerConfig {
     }
 }
 
+/// Dynamic MCP tool context pruning configuration (#2204).
+///
+/// When enabled, an LLM call evaluates which MCP tools are relevant to the current task
+/// before sending tool schemas to the main LLM, reducing context usage and improving
+/// tool selection accuracy for servers with many tools.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ToolPruningConfig {
+    /// Enable dynamic tool pruning. Default: `false` (opt-in).
+    pub enabled: bool,
+    /// Maximum number of MCP tools to include after pruning.
+    pub max_tools: usize,
+    /// Provider name from `[[llm.providers]]` for the pruning LLM call.
+    /// Should be a fast/cheap model. Empty string = use the default provider.
+    pub pruning_provider: String,
+    /// Minimum number of MCP tools below which pruning is skipped.
+    pub min_tools_to_prune: usize,
+    /// Tool names that are never pruned (always included in the result).
+    pub always_include: Vec<String>,
+}
+
+impl Default for ToolPruningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_tools: 15,
+            pruning_provider: String::new(),
+            min_tools_to_prune: 10,
+            always_include: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]
@@ -184,6 +217,9 @@ pub struct McpConfig {
     pub allowed_commands: Vec<String>,
     #[serde(default = "default_max_dynamic_servers")]
     pub max_dynamic_servers: usize,
+    /// Dynamic tool pruning for context optimization.
+    #[serde(default)]
+    pub pruning: ToolPruningConfig,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

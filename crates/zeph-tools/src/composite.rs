@@ -78,6 +78,7 @@ mod tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))
         }
     }
@@ -114,6 +115,7 @@ mod tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))
         }
     }
@@ -195,6 +197,7 @@ mod tests {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 }))
             } else {
                 Ok(None)
@@ -223,6 +226,7 @@ mod tests {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 }))
             } else {
                 Ok(None)

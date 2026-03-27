@@ -68,6 +68,32 @@ impl FilterStats {
     }
 }
 
+/// Provenance of a tool execution result.
+///
+/// Set by each executor at `ToolOutput` construction time. Used by the sanitizer bridge
+/// in `zeph-core` to select the appropriate `ContentSourceKind` and trust level.
+/// `None` means the source is unspecified (pass-through code, mocks, tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimSource {
+    /// Local shell command execution.
+    Shell,
+    /// Local file system read/write.
+    FileSystem,
+    /// HTTP web scrape.
+    WebScrape,
+    /// MCP server tool response.
+    Mcp,
+    /// A2A agent message.
+    A2a,
+    /// Code search (LSP or semantic).
+    CodeSearch,
+    /// Agent diagnostics (internal).
+    Diagnostics,
+    /// Memory retrieval (semantic search).
+    Memory,
+}
+
 /// Structured result from tool execution.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
@@ -84,6 +110,9 @@ pub struct ToolOutput {
     pub locations: Option<Vec<String>>,
     /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
     pub raw_response: Option<serde_json::Value>,
+    /// Provenance of this tool result. Set by the executor at construction time.
+    /// `None` in pass-through wrappers, mocks, and tests.
+    pub claim_source: Option<ClaimSource>,
 }
 
 impl fmt::Display for ToolOutput {
@@ -520,6 +549,7 @@ mod tests {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         };
         assert_eq!(output.to_string(), "$ echo hello\nhello");
     }
@@ -872,6 +902,7 @@ mod tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))
         }
 
@@ -893,6 +924,7 @@ mod tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))
         }
     }

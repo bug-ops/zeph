@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(tools): `ErrorDomain` enum (`Planning`, `Reflection`, `Action`, `System`) added to `zeph-tools`; `ToolErrorCategory::domain()` maps each fine-grained error category to its recovery domain for agent-level dispatch (#2253)
+- feat(tools): `ClaimSource` enum (`Shell`, `FileSystem`, `WebScrape`, `Mcp`, `A2a`, `CodeSearch`, `Diagnostics`, `Memory`) added to `zeph-tools`; `ToolOutput` gains optional `claim_source: Option<ClaimSource>` field for provenance tracking; `AuditEntry` records `error_domain` and `claim_source` for each tool invocation (#2266)
+- feat(mcp): dynamic MCP tool pruning via `prune_tools<P: LlmProvider>()` in `zeph-mcp::pruning`; `ToolPruningConfig` added to `McpConfig` with `enabled`, `max_tools`, `min_tools_to_prune`, `pruning_provider`, and `always_include` fields; `[mcp.pruning]` section added to `config/default.toml` (#2204)
+
 ### Fixed
 
 - fix(tui): MCP Tools panel and Resources widget now show per-server connection status — `connect_all()` returns `(Vec<McpTool>, Vec<ServerConnectOutcome>)` with per-server id, connected flag, tool count, and error string; `MetricsSnapshot` gains `mcp_connected_count` and `mcp_servers: Vec<McpServerStatus>`; Resources panel shows `N/M connected, K tools`; Skills panel shows per-server OK (green) / FAIL (red) rows above the tool list; `mcp_server_count` now reflects total configured servers, not just connected ones (#2277)

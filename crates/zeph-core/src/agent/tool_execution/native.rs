@@ -808,6 +808,7 @@ impl<C: Channel> Agent<C> {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     }));
                 }
             }
@@ -909,6 +910,7 @@ impl<C: Channel> Agent<C> {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     };
                     tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                     continue;
@@ -930,6 +932,7 @@ impl<C: Channel> Agent<C> {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     };
                     tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                     continue;
@@ -951,6 +954,7 @@ impl<C: Channel> Agent<C> {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     };
                     tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                     continue;
@@ -996,6 +1000,7 @@ impl<C: Channel> Agent<C> {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     };
                     tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                     continue;
@@ -1131,6 +1136,7 @@ impl<C: Channel> Agent<C> {
                             terminal_id: None,
                             locations: None,
                             raw_response: None,
+                            claim_source: None,
                         }))
                     })
                 } else {

@@ -11,7 +11,9 @@ use url::Url;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ScrapeConfig;
-use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
+use crate::executor::{
+    ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
+};
 use crate::net::is_private_ip;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -163,6 +165,7 @@ impl ToolExecutor for WebScrapeExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: Some(ClaimSource::WebScrape),
         }))
     }
 
@@ -193,6 +196,7 @@ impl ToolExecutor for WebScrapeExecutor {
                             terminal_id: None,
                             locations: None,
                             raw_response: None,
+                            claim_source: Some(ClaimSource::WebScrape),
                         }))
                     }
                     Err(e) => {
@@ -223,6 +227,7 @@ impl ToolExecutor for WebScrapeExecutor {
                             terminal_id: None,
                             locations: None,
                             raw_response: None,
+                            claim_source: Some(ClaimSource::WebScrape),
                         }))
                     }
                     Err(e) => {
@@ -264,6 +269,8 @@ impl WebScrapeExecutor {
                 result,
                 duration_ms,
                 error_category: None,
+                error_domain: None,
+                claim_source: None,
             };
             logger.log(&entry).await;
         }

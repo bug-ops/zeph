@@ -178,6 +178,7 @@ impl ToolExecutor for DelayExecutor {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))
         }
     }
@@ -219,6 +220,7 @@ impl ToolExecutor for FailingNthExecutor {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 }))
             }
         }
@@ -623,6 +625,7 @@ async fn handle_tool_result_with_output_returns_true() {
         terminal_id: None,
         locations: None,
         raw_response: None,
+        claim_source: None,
     };
     let result = agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -654,6 +657,7 @@ async fn handle_tool_result_empty_output_returns_false() {
         terminal_id: None,
         locations: None,
         raw_response: None,
+        claim_source: None,
     };
     let result = agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -685,6 +689,7 @@ async fn handle_tool_result_error_prefix_triggers_anomaly_error() {
         terminal_id: None,
         locations: None,
         raw_response: None,
+        claim_source: None,
     };
     // reflection_used = true so reflection path is skipped
     agent.learning_engine.mark_reflection_used();
@@ -721,6 +726,7 @@ async fn handle_tool_result_stderr_prefix_triggers_anomaly_error() {
         terminal_id: None,
         locations: None,
         raw_response: None,
+        claim_source: None,
     };
     agent.learning_engine.mark_reflection_used();
     let result = agent
@@ -1278,6 +1284,7 @@ async fn handle_tool_result_sends_output_when_streamed_true() {
         terminal_id: None,
         locations: None,
         raw_response: None,
+        claim_source: None,
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -1313,6 +1320,7 @@ async fn handle_tool_result_fenced_emits_tool_start_then_output_via_loopback() {
         terminal_id: None,
         locations: None,
         raw_response: None,
+        claim_source: None,
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -1391,6 +1399,7 @@ async fn handle_tool_result_locations_propagated_to_loopback_event() {
         terminal_id: None,
         locations: Some(vec!["/src/main.rs".to_owned()]),
         raw_response: None,
+        claim_source: None,
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -1443,6 +1452,7 @@ async fn handle_tool_result_display_is_raw_body_not_markdown_wrapped() {
         terminal_id: None,
         locations: None,
         raw_response: None,
+        claim_source: None,
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -2283,6 +2293,7 @@ impl ToolExecutor for TransientThenOkExecutor {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 }))
             }
         }
@@ -2590,6 +2601,7 @@ impl ToolExecutor for FixedOutputExecutor {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 }))
             }
         }
@@ -3094,6 +3106,7 @@ async fn self_reflection_middle_tool_failure_no_orphans() {
                     terminal_id: None,
                     locations: None,
                     raw_response: None,
+                    claim_source: None,
                 }))
             }
         }
@@ -3752,6 +3765,7 @@ async fn mixed_retryable_and_non_retryable_batch() {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     })),
                     // tool-retryable: fail on first call (idx 1), succeed after that
                     "tool-retryable" if idx == 1 => Err(ToolError::Execution(std::io::Error::new(
@@ -3768,6 +3782,7 @@ async fn mixed_retryable_and_non_retryable_batch() {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     })),
                     // tool-nonretryable: always transient error
                     _ => Err(ToolError::Execution(std::io::Error::new(
@@ -4473,6 +4488,7 @@ async fn test_parallel_tool_calls_permanent_error_emits_tool_result() {
                         terminal_id: None,
                         locations: None,
                         raw_response: None,
+                        claim_source: None,
                     }))
                 }
             }

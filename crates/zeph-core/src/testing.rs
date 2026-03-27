@@ -167,6 +167,7 @@ impl MockToolExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         };
         Self::new(vec![Ok(Some(output))])
     }
