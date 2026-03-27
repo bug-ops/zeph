@@ -790,6 +790,22 @@ impl<C: Channel> Agent<C> {
             error::AgentError::Other(e.to_string())
         })?;
 
+        // Validate verify_provider name against the known provider pool (#2238).
+        let provider_names: Vec<&str> = self
+            .providers
+            .provider_pool
+            .iter()
+            .filter_map(|e| e.name.as_deref())
+            .collect();
+        scheduler
+            .validate_verify_config(&provider_names)
+            .map_err(|e| {
+                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                    mgr.release_reservation(reserved);
+                }
+                error::AgentError::Other(e.to_string())
+            })?;
+
         Ok((scheduler, reserved))
     }
 

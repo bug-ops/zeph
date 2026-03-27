@@ -135,6 +135,9 @@ pub struct DagScheduler {
     current_level: usize,
     /// Whether post-task verification is enabled (`config.verify_completeness`).
     verify_completeness: bool,
+    /// Provider name for verification LLM calls (`config.verify_provider`).
+    /// Empty string = use the agent's primary provider.
+    verify_provider: String,
     /// Per-task replan count. Limits replanning to 1 cycle per task (critic S2).
     task_replan_counts: HashMap<TaskId, u32>,
     /// Global replan counter across the entire scheduler run (critic S2).
@@ -230,6 +233,7 @@ impl DagScheduler {
             topology_dirty: false,
             current_level: 0,
             verify_completeness: config.verify_completeness,
+            verify_provider: config.verify_provider.trim().to_string(),
             task_replan_counts: HashMap::new(),
             global_replan_count: 0,
             max_replans: config.max_replans,
@@ -318,10 +322,45 @@ impl DagScheduler {
             topology_dirty: false,
             current_level: 0,
             verify_completeness: config.verify_completeness,
+            verify_provider: config.verify_provider.trim().to_string(),
             task_replan_counts: HashMap::new(),
             global_replan_count: 0,
             max_replans: config.max_replans,
         })
+    }
+
+    /// Validate that `verify_provider` references a known provider name.
+    ///
+    /// Call this after construction when `verify_completeness = true` to catch
+    /// misconfiguration early rather than failing open at runtime.
+    ///
+    /// - Empty `verify_provider` is always valid (falls back to the primary provider).
+    /// - If `provider_names` is empty, validation is skipped (provider set is unknown).
+    /// - Provider names are compared case-sensitively (matching the existing resolution convention).
+    ///
+    /// # Errors
+    ///
+    /// Returns `OrchestrationError::InvalidConfig` when `verify_completeness = true`,
+    /// `verify_provider` is non-empty, and the name is not present in `provider_names`.
+    pub fn validate_verify_config(
+        &self,
+        provider_names: &[&str],
+    ) -> Result<(), OrchestrationError> {
+        if !self.verify_completeness {
+            return Ok(());
+        }
+        let name = self.verify_provider.as_str();
+        if name.is_empty() || provider_names.is_empty() {
+            return Ok(());
+        }
+        if !provider_names.contains(&name) {
+            return Err(OrchestrationError::InvalidConfig(format!(
+                "verify_provider \"{}\" not found in [[llm.providers]]; available: [{}]",
+                name,
+                provider_names.join(", ")
+            )));
+        }
+        Ok(())
     }
 
     /// Get a clone of the event sender for injection into sub-agent loops.
@@ -3037,5 +3076,103 @@ mod tests {
             scheduler.max_parallel, 1,
             "resume_from must apply topology limit"
         );
+    }
+
+    // --- #2238: validate_verify_config tests ---
+
+    fn make_verify_config(provider: &str) -> zeph_config::OrchestrationConfig {
+        zeph_config::OrchestrationConfig {
+            verify_completeness: true,
+            verify_provider: provider.to_string(),
+            ..make_config()
+        }
+    }
+
+    #[test]
+    fn validate_verify_config_unknown_provider_returns_err() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_verify_config("nonexistent");
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        let result = scheduler.validate_verify_config(&["fast", "quality"]);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("nonexistent"));
+        assert!(err_msg.contains("fast"));
+    }
+
+    #[test]
+    fn validate_verify_config_known_provider_returns_ok() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_verify_config("fast");
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        assert!(
+            scheduler
+                .validate_verify_config(&["fast", "quality"])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_verify_config_empty_provider_always_ok() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_verify_config("");
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        assert!(scheduler.validate_verify_config(&["fast"]).is_ok());
+    }
+
+    #[test]
+    fn validate_verify_config_disabled_skips_validation() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        // verify_completeness = false: no validation even with bogus provider name
+        let scheduler = make_scheduler(graph);
+        assert!(scheduler.validate_verify_config(&["fast"]).is_ok());
+    }
+
+    #[test]
+    fn validate_verify_config_empty_pool_skips_validation() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_verify_config("nonexistent");
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        // Empty provider_names slice = unknown provider set, skip validation.
+        assert!(scheduler.validate_verify_config(&[]).is_ok());
+    }
+
+    #[test]
+    fn validate_verify_config_trims_whitespace_in_config() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        // verify_provider with surrounding whitespace in config is trimmed at construction.
+        let config = make_verify_config("  fast  ");
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        assert!(scheduler.validate_verify_config(&["fast"]).is_ok());
     }
 }

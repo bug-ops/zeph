@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(orchestration): validate `verify_provider` at scheduler construction — `DagScheduler::validate_verify_config()` returns `Err(InvalidConfig)` when `verify_completeness = true` and the provider name does not exist in `[[llm.providers]]`; empty name (fallback to primary) and unknown provider pools are allowed; provider names compared case-sensitively, whitespace trimmed at construction; called from `build_dag_scheduler()` in `agent/mod.rs` (#2238)
+- fix(orchestration): sanitize task output before `PlanVerifier` prompt — `PlanVerifier` holds a `ContentSanitizer` (constructed with `spotlight_untrusted = false` to avoid confusing the verification LLM with delimiters); `build_verify_prompt()` passes output through the sanitizer before embedding in the user message (#2239)
+- fix(orchestration): cap gap descriptions in replan prompt to 500 chars — `build_replan_prompt()` truncates each gap description to `MAX_GAP_DESCRIPTION_LEN = 500` Unicode scalar values before sanitization; truncation limits injection blast radius from attacker-controlled LLM-generated gap text (#2240)
+
 - fix(skills): decouple embedding provider from active conversational provider — `Agent` now holds a dedicated `embedding_provider: AnyProvider` field resolved once at bootstrap (prefers `embed = true` entry, falls back to first entry with `embedding_model`, then to primary); all 7 embedding call sites (skill matching, tool schema filter, MCP registry, semantic cache, plan cache) use `embedding_provider` and are unaffected by `/provider switch`; `provider_cmd.rs` emits a user-visible info message when the active provider differs from the embedding provider; `create_embedding_provider()` exported from `bootstrap` module (#2225)
 - triage routing: `debug_request_json` now reflects the actual selected tier provider instead of always showing the first-tier model (#2229)
 - triage routing: removed context size metadata (`msg_count`/`token_estimate`) from classification prompt to prevent bias toward higher tiers in long conversations (#2228)

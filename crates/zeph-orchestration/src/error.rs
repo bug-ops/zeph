@@ -49,6 +49,9 @@ pub enum OrchestrationError {
     #[error("verification failed: {0}")]
     VerificationFailed(String),
 
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
+
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
 }
