@@ -120,6 +120,7 @@ mod tests {
         ResponseVerifier::new(ResponseVerificationConfig {
             enabled: true,
             block_on_detection: block,
+            verifier_provider: String::new(),
         })
     }
 
@@ -127,6 +128,7 @@ mod tests {
         ResponseVerifier::new(ResponseVerificationConfig {
             enabled: false,
             block_on_detection: false,
+            verifier_provider: String::new(),
         })
     }
 

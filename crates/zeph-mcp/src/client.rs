@@ -635,6 +635,66 @@ impl McpClient {
         Ok(result)
     }
 
+    /// Return whether the server declared support for resources in its `initialize` response.
+    #[must_use]
+    pub fn server_supports_resources(&self) -> bool {
+        self.service
+            .peer_info()
+            .is_some_and(|info| info.capabilities.resources.is_some())
+    }
+
+    /// Return whether the server declared support for prompts in its `initialize` response.
+    #[must_use]
+    pub fn server_supports_prompts(&self) -> bool {
+        self.service
+            .peer_info()
+            .is_some_and(|info| info.capabilities.prompts.is_some())
+    }
+
+    /// List resource descriptions for injection scanning (probe path).
+    ///
+    /// Returns an empty vec if the server does not support resources or the call fails.
+    pub async fn probe_resource_descriptions(&self) -> Vec<String> {
+        if !self.server_supports_resources() {
+            return Vec::new();
+        }
+        match self.service.list_all_resources().await {
+            Ok(resources) => resources
+                .into_iter()
+                .filter_map(|r| r.description.clone())
+                .collect(),
+            Err(e) => {
+                tracing::debug!(
+                    server_id = self.server_id,
+                    "probe: failed to list resources: {e:#}"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// List prompt descriptions for injection scanning (probe path).
+    ///
+    /// Returns an empty vec if the server does not support prompts or the call fails.
+    pub async fn probe_prompt_descriptions(&self) -> Vec<String> {
+        if !self.server_supports_prompts() {
+            return Vec::new();
+        }
+        match self.service.list_all_prompts().await {
+            Ok(prompts) => prompts
+                .into_iter()
+                .filter_map(|p| p.description.clone())
+                .collect(),
+            Err(e) => {
+                tracing::debug!(
+                    server_id = self.server_id,
+                    "probe: failed to list prompts: {e:#}"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Graceful shutdown.
     pub async fn shutdown(self) {
         match Arc::try_unwrap(self.service) {

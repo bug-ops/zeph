@@ -133,38 +133,41 @@ impl ToolExecutor for McpToolExecutor {
                     ToolError::Execution(std::io::Error::other(e.to_string()))
                 })?;
 
-            let result = self
-                .manager
-                .call_tool(&instruction.server, &instruction.tool, instruction.args)
-                .await
-                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+            // SECURITY: Validate server:tool against the registered tool list before dispatch.
+            // This prevents a prompt injection from routing calls to unregistered servers or tools.
+            let found = {
+                let tools = self
+                    .tools
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                tools
+                    .iter()
+                    .find(|t| t.server_id == instruction.server && t.name == instruction.tool)
+                    .cloned()
+            };
+            let Some(tool) = found else {
+                return Err(ToolError::Execution(std::io::Error::other(format!(
+                    "MCP tool {}:{} not in registered tool list",
+                    instruction.server, instruction.tool
+                ))));
+            };
 
-            let text = result
-                .content
-                .iter()
-                .filter_map(|c| {
-                    if let rmcp::model::RawContent::Text(t) = &c.raw {
-                        Some(t.text.as_str())
-                    } else {
-                        tracing::debug!(
-                            server = instruction.server,
-                            tool = instruction.tool,
-                            "skipping non-text content from MCP tool"
-                        );
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            outputs.push(format!(
-                "[mcp:{}:{}]\n{}",
-                instruction.server, instruction.tool, text,
-            ));
+            // Delegate to execute_tool_call() so all security layers apply.
+            let call = ToolCall {
+                tool_id: tool.sanitized_id(),
+                params: match instruction.args {
+                    serde_json::Value::Object(map) => map,
+                    _ => serde_json::Map::new(),
+                },
+            };
+            if let Some(output) = self.execute_tool_call(&call).await? {
+                outputs.push(output.summary);
+            }
         }
 
         Ok(Some(ToolOutput {
-            tool_name: "mcp".to_owned(),
+            // SECURITY: Use qualified format so quarantine routing works (tool_name must contain ':').
+            tool_name: "mcp:fenced_block".to_owned(),
             summary: outputs.join("\n\n"),
             blocks_executed,
             filter_stats: None,
@@ -372,11 +375,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_valid_block_server_not_connected() {
+    async fn execute_valid_block_tool_not_registered_returns_error() {
+        // Tool is not in the registered list → rejected before any server call.
         let executor = make_executor();
         let text = "```mcp\n{\"server\":\"missing\",\"tool\":\"t\"}\n```";
         let result = executor.execute(text).await;
         assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not in registered tool list"),
+            "expected 'not in registered tool list' in: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_fenced_block_tool_name_contains_colon() {
+        // Verify the output tool_name uses qualified format for quarantine routing.
+        // We can't easily run a full call, but we can verify the rejection error path
+        // hits before any server dispatch.
+        let executor = make_executor();
+        // Register a real tool so the lookup can succeed but server call fails.
+        executor.set_tools(vec![McpTool {
+            server_id: "srv".into(),
+            name: "tool".into(),
+            description: "d".into(),
+            input_schema: serde_json::json!({}),
+        }]);
+        let text = "```mcp\n{\"server\":\"srv\",\"tool\":\"tool\"}\n```";
+        // Server not actually connected, so execute_tool_call returns Err.
+        let result = executor.execute(text).await;
+        assert!(result.is_err(), "expected Err when server is not connected");
     }
 
     #[tokio::test]

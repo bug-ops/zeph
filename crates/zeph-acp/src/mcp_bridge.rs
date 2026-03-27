@@ -36,6 +36,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                     trust_level: McpTrustLevel::Untrusted,
                     tool_allowlist: Vec::new(),
+                    expected_tools: Vec::new(),
                 })
             }
             acp::McpServer::Http(http) => Some(ServerEntry {
@@ -47,6 +48,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                 timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                 trust_level: McpTrustLevel::Untrusted,
                 tool_allowlist: Vec::new(),
+                expected_tools: Vec::new(),
             }),
             acp::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
@@ -60,6 +62,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                     trust_level: McpTrustLevel::Untrusted,
                     tool_allowlist: Vec::new(),
+                    expected_tools: Vec::new(),
                 })
             }
             _ => {

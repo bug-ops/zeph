@@ -32,6 +32,16 @@ pub struct AuditEntry {
     /// Provenance of the tool result. `None` for non-executor audit entries (e.g. policy checks).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claim_source: Option<crate::executor::ClaimSource>,
+    /// MCP server ID for tool calls routed through `McpToolExecutor`. `None` for native tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_server_id: Option<String>,
+    /// Tool output was flagged by regex injection detection.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub injection_flagged: bool,
+    /// Tool output was flagged as anomalous by the embedding guard.
+    /// Raw cosine distance is NOT stored (prevents threshold reverse-engineering).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embedding_anomalous: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -115,6 +125,9 @@ mod tests {
             error_category: None,
             error_domain: None,
             claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -135,6 +148,9 @@ mod tests {
             error_category: Some("policy_blocked".to_owned()),
             error_domain: Some("action".to_owned()),
             claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -154,6 +170,9 @@ mod tests {
             error_category: None,
             error_domain: None,
             claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -170,6 +189,9 @@ mod tests {
             error_category: Some("timeout".to_owned()),
             error_domain: Some("system".to_owned()),
             claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -191,6 +213,9 @@ mod tests {
             error_category: None,
             error_domain: None,
             claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
         };
         logger.log(&entry).await;
     }
@@ -213,6 +238,9 @@ mod tests {
             error_category: None,
             error_domain: None,
             claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
         };
         logger.log(&entry).await;
 
@@ -250,6 +278,9 @@ mod tests {
                 error_category: None,
                 error_domain: None,
                 claim_source: None,
+                mcp_server_id: None,
+                injection_flagged: false,
+                embedding_anomalous: false,
             };
             logger.log(&entry).await;
         }

@@ -317,6 +317,7 @@ fn create_mcp_manager_with_http_transport() {
         policy: Default::default(),
         trust_level: Default::default(),
         tool_allowlist: vec![],
+        expected_tools: vec![],
     }];
 
     let manager = create_mcp_manager(&config, false);
@@ -341,6 +342,7 @@ fn create_mcp_manager_with_stdio_transport() {
         policy: Default::default(),
         trust_level: Default::default(),
         tool_allowlist: vec![],
+        expected_tools: vec![],
     }];
 
     let manager = create_mcp_manager(&config, false);

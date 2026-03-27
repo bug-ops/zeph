@@ -103,6 +103,9 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         error_category: None,
                         error_domain: None,
                         claim_source: None,
+                        mcp_server_id: None,
+                        injection_flagged: false,
+                        embedding_anomalous: false,
                     };
                     audit.log(&entry).await;
                 }
@@ -122,6 +125,9 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         error_category: Some("policy_blocked".to_owned()),
                         error_domain: Some("action".to_owned()),
                         claim_source: None,
+                        mcp_server_id: None,
+                        injection_flagged: false,
+                        embedding_anomalous: false,
                     };
                     audit.log(&entry).await;
                 }
@@ -150,7 +156,31 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         self.check_policy(call).await?;
-        self.inner.execute_tool_call(call).await
+        let result = self.inner.execute_tool_call(call).await;
+        // Populate mcp_server_id in audit when the inner executor produces MCP output.
+        // MCP tool outputs use qualified_name() format: "server_id:tool_name".
+        if let Ok(Some(ref output)) = result
+            && let Some(colon) = output.tool_name.find(':')
+        {
+            let server_id = output.tool_name[..colon].to_owned();
+            if let Some(audit) = &self.audit {
+                let entry = AuditEntry {
+                    timestamp: chrono_now(),
+                    tool: call.tool_id.clone(),
+                    command: truncate_params(&call.params),
+                    result: AuditResult::Success,
+                    duration_ms: 0,
+                    error_category: None,
+                    error_domain: None,
+                    claim_source: None,
+                    mcp_server_id: Some(server_id),
+                    injection_flagged: false,
+                    embedding_anomalous: false,
+                };
+                audit.log(&entry).await;
+            }
+        }
+        result
     }
 
     // MED-04: policy is also enforced on confirmed calls — user confirmation does not

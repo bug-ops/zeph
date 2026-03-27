@@ -271,6 +271,9 @@ impl WebScrapeExecutor {
                 error_category: None,
                 error_domain: None,
                 claim_source: None,
+                mcp_server_id: None,
+                injection_flagged: false,
+                embedding_anomalous: false,
             };
             logger.log(&entry).await;
         }

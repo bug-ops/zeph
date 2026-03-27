@@ -13,6 +13,40 @@ fn default_max_content_size() -> usize {
     65_536
 }
 
+/// Configuration for the embedding anomaly guard, nested under
+/// `[security.content_isolation.embedding_guard]`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct EmbeddingGuardConfig {
+    /// Enable embedding-based anomaly detection (default: false — opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Cosine distance threshold above which outputs are flagged as anomalous.
+    #[serde(default = "default_embedding_threshold")]
+    pub threshold: f64,
+    /// Minimum clean samples before centroid-based detection activates.
+    /// Before this count, regex fallback is used instead.
+    #[serde(default = "default_embedding_min_samples")]
+    pub min_samples: usize,
+}
+
+fn default_embedding_threshold() -> f64 {
+    0.35
+}
+
+fn default_embedding_min_samples() -> usize {
+    10
+}
+
+impl Default for EmbeddingGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_embedding_threshold(),
+            min_samples: default_embedding_min_samples(),
+        }
+    }
+}
+
 /// Configuration for the content isolation pipeline, nested under
 /// `[security.content_isolation]` in the agent config file.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -38,6 +72,10 @@ pub struct ContentIsolationConfig {
     /// Quarantine summarizer configuration.
     #[serde(default)]
     pub quarantine: QuarantineConfig,
+
+    /// Embedding anomaly guard configuration.
+    #[serde(default)]
+    pub embedding_guard: EmbeddingGuardConfig,
 }
 
 impl Default for ContentIsolationConfig {
@@ -48,6 +86,7 @@ impl Default for ContentIsolationConfig {
             flag_injection_patterns: true,
             spotlight_untrusted: true,
             quarantine: QuarantineConfig::default(),
+            embedding_guard: EmbeddingGuardConfig::default(),
         }
     }
 }
@@ -361,6 +400,14 @@ pub struct ResponseVerificationConfig {
     /// is notified.
     #[serde(default)]
     pub block_on_detection: bool,
+    /// Optional LLM provider for async deep verification of flagged responses.
+    ///
+    /// When set: suspicious responses are delivered immediately with a `[FLAGGED]`
+    /// annotation, and background LLM verification runs asynchronously. The verifier
+    /// receives a sanitized summary (via `QuarantinedSummarizer`) to prevent recursive
+    /// injection. Empty string = disabled (regex-only verification).
+    #[serde(default)]
+    pub verifier_provider: String,
 }
 
 impl Default for ResponseVerificationConfig {
@@ -368,6 +415,7 @@ impl Default for ResponseVerificationConfig {
         Self {
             enabled: true,
             block_on_detection: false,
+            verifier_provider: String::new(),
         }
     }
 }

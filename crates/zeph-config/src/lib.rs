@@ -34,7 +34,7 @@ pub use agent::{
 };
 pub use channels::{
     A2aServerConfig, DiscordConfig, McpConfig, McpOAuthConfig, McpServerConfig, McpTrustLevel,
-    OAuthTokenStorage, SlackConfig, TelegramConfig, ToolPruningConfig,
+    OAuthTokenStorage, SlackConfig, TelegramConfig, ToolPruningConfig, TrustCalibrationConfig,
 };
 pub use defaults::{
     DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,
@@ -65,8 +65,8 @@ pub use providers::{
 pub use providers::{default_stt_language, default_stt_provider};
 pub use rate_limit::RateLimitConfig;
 pub use sanitizer::{
-    ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
-    PiiFilterConfig, QuarantineConfig, ResponseVerificationConfig,
+    ContentIsolationConfig, CustomPiiPattern, EmbeddingGuardConfig, ExfiltrationGuardConfig,
+    MemoryWriteValidationConfig, PiiFilterConfig, QuarantineConfig, ResponseVerificationConfig,
 };
 #[cfg(feature = "guardrail")]
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};

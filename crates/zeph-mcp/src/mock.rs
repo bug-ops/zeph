@@ -49,6 +49,10 @@ impl MockMcpCaller {
     }
 
     /// Register a server ID returned by `list_servers`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn with_server(self, id: impl Into<String>) -> Self {
         self.server_ids.lock().unwrap().push(id.into());
@@ -56,6 +60,10 @@ impl MockMcpCaller {
     }
 
     /// Queue a successful result with a single text content item.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn with_text_response(self, text: impl Into<String>) -> Self {
         let result = CallToolResult::success(vec![Content::text(text.into())]);
@@ -64,6 +72,10 @@ impl MockMcpCaller {
     }
 
     /// Queue an error response.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn with_error_response(self, server_id: impl Into<String>) -> Self {
         self.pending_responses

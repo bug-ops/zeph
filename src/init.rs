@@ -1371,6 +1371,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             policy: zeph_mcp::McpPolicy::default(),
             trust_level: McpTrustLevel::Trusted,
             tool_allowlist: Vec::new(),
+            expected_tools: Vec::new(),
         });
     }
     for server in state.mcp_remote_servers.clone() {
@@ -1787,6 +1788,7 @@ fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             oauth,
             trust_level,
             tool_allowlist: Vec::new(),
+            expected_tools: Vec::new(),
         });
 
         println!("Server added.");

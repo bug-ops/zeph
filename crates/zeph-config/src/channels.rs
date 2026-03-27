@@ -209,6 +209,55 @@ impl Default for ToolPruningConfig {
     }
 }
 
+/// Trust calibration configuration, nested under `[mcp.trust_calibration]`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct TrustCalibrationConfig {
+    /// Enable trust calibration (default: false — opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Run pre-invocation probe on connect (Phase 1).
+    #[serde(default = "default_true")]
+    pub probe_on_connect: bool,
+    /// Monitor invocations for trust score updates (Phase 2).
+    #[serde(default = "default_true")]
+    pub monitor_invocations: bool,
+    /// Persist trust scores to `SQLite` (Phase 3).
+    #[serde(default = "default_true")]
+    pub persist_scores: bool,
+    /// Per-day decay rate applied to trust scores above 0.5.
+    #[serde(default = "default_decay_rate")]
+    pub decay_rate_per_day: f64,
+    /// Score penalty applied when injection is detected.
+    #[serde(default = "default_injection_penalty")]
+    pub injection_penalty: f64,
+    /// Optional LLM provider for trust verification. Empty = disabled.
+    #[serde(default)]
+    pub verifier_provider: String,
+}
+
+fn default_decay_rate() -> f64 {
+    0.01
+}
+
+fn default_injection_penalty() -> f64 {
+    0.25
+}
+
+impl Default for TrustCalibrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            probe_on_connect: true,
+            monitor_invocations: true,
+            persist_scores: true,
+            decay_rate_per_day: default_decay_rate(),
+            injection_penalty: default_injection_penalty(),
+            verifier_provider: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]
@@ -220,6 +269,9 @@ pub struct McpConfig {
     /// Dynamic tool pruning for context optimization.
     #[serde(default)]
     pub pruning: ToolPruningConfig,
+    /// Trust calibration settings (opt-in, disabled by default).
+    #[serde(default)]
+    pub trust_calibration: TrustCalibrationConfig,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -254,6 +306,13 @@ pub struct McpServerConfig {
     /// - Sandboxed: empty = NO tools (fail-closed), non-empty = only listed tools
     #[serde(default)]
     pub tool_allowlist: Vec<String>,
+    /// Expected tool names for attestation. Supplements `tool_allowlist`.
+    ///
+    /// When non-empty: tools not in this list are filtered out (Untrusted/Sandboxed)
+    /// or warned about (Trusted). Schema drift is logged when fingerprints change
+    /// between connections.
+    #[serde(default)]
+    pub expected_tools: Vec<String>,
 }
 
 /// OAuth 2.1 configuration for an MCP server.
@@ -324,6 +383,7 @@ impl std::fmt::Debug for McpServerConfig {
             .field("oauth", &self.oauth)
             .field("trust_level", &self.trust_level)
             .field("tool_allowlist", &self.tool_allowlist)
+            .field("expected_tools", &self.expected_tools)
             .finish()
     }
 }
