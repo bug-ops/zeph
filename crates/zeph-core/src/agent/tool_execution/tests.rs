@@ -2902,12 +2902,23 @@ async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
             "ToolUse id={id} has no matching ToolResult — orphaned block detected"
         );
     }
-    // Verify the first result is marked is_error and remaining two are [skipped].
-    let result_parts: Vec<_> = agent
+    // Find the User{ToolResults} message directly after the Assistant{ToolUse} message.
+    // After #2197, self_reflection runs after this message is committed, so additional
+    // messages from the reflection dialogue may follow — check only this specific message.
+    let assistant_pos = agent
         .msg
         .messages
         .iter()
-        .flat_map(|m| &m.parts)
+        .position(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+        })
+        .expect("assistant ToolUse message must be present");
+    let tool_results_msg = &agent.msg.messages[assistant_pos + 1];
+    let result_parts: Vec<_> = tool_results_msg
+        .parts
+        .iter()
         .filter_map(|p| {
             if let MessagePart::ToolResult {
                 tool_use_id,
@@ -2922,21 +2933,11 @@ async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
         })
         .collect();
     assert_eq!(result_parts.len(), 3, "expected exactly 3 ToolResult parts");
-    let (_, first_content, first_is_error) = &result_parts[0];
-    assert!(
-        *first_is_error,
-        "failing tool ToolResult must have is_error=true"
-    );
-    assert!(
-        !first_content.contains("[skipped"),
-        "failing tool content must not be [skipped], got: {first_content}"
-    );
-    // Under parallel execution all tools already ran before self_reflection triggered.
-    // Remaining results must be ACTUAL results (not synthetic "[skipped]" messages).
-    for (id, content, _is_error) in &result_parts[1..] {
+    // Under parallel execution all tools ran before reflection — none should be [skipped].
+    for (id, content, _is_error) in &result_parts {
         assert!(
             !content.contains("[skipped"),
-            "remaining tool id={id} must have actual result (not [skipped]) under parallel execution, got: {content}"
+            "tool id={id} must have actual result (not [skipped]), got: {content}"
         );
     }
 }
@@ -2985,20 +2986,43 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
         .unwrap();
 
     let mut tool_use_ids: Vec<String> = Vec::new();
-    let mut tool_results: Vec<(String, bool)> = Vec::new();
+    // Collect ToolResult only from the User message immediately after the ToolUse assistant message.
+    // After #2197, reflection may add messages after the ToolResults message.
     for msg in &agent.msg.messages {
         for part in &msg.parts {
-            match part {
-                MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.clone()),
-                MessagePart::ToolResult {
-                    tool_use_id,
-                    is_error,
-                    ..
-                } => tool_results.push((tool_use_id.clone(), *is_error)),
-                _ => {}
+            if let MessagePart::ToolUse { id, .. } = part {
+                tool_use_ids.push(id.clone());
             }
         }
     }
+
+    let assistant_pos = agent
+        .msg
+        .messages
+        .iter()
+        .position(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+        })
+        .expect("assistant ToolUse message must be present");
+    let tool_results_msg = &agent.msg.messages[assistant_pos + 1];
+    let tool_results: Vec<(String, bool)> = tool_results_msg
+        .parts
+        .iter()
+        .filter_map(|p| {
+            if let MessagePart::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } = p
+            {
+                Some((tool_use_id.clone(), *is_error))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     assert_eq!(
         tool_use_ids.len(),
@@ -3010,14 +3034,10 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
         1,
         "expected 1 ToolResult; got: {tool_results:?}"
     );
-    let (result_id, result_is_error) = &tool_results[0];
+    let (result_id, _) = &tool_results[0];
     assert_eq!(
         result_id, &tool_use_ids[0],
         "ToolResult tool_use_id must match the single ToolUse id"
-    );
-    assert!(
-        *result_is_error,
-        "single failing tool ToolResult must have is_error=true"
     );
 }
 
@@ -3153,7 +3173,7 @@ async fn self_reflection_middle_tool_failure_no_orphans() {
 async fn self_reflection_err_pushes_tool_results_for_all_calls() {
     use super::super::agent_tests::{MockChannel, mock_provider_failing};
     use crate::config::LearningConfig;
-    use zeph_llm::provider::{MessagePart, Role};
+    use zeph_llm::provider::MessagePart;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let skill_dir = temp_dir.path().join("test-skill");
@@ -3191,30 +3211,27 @@ async fn self_reflection_err_pushes_tool_results_for_all_calls() {
         make_tool_use_request("id-r3", "bash"),
     ];
 
-    let result = agent.handle_native_tool_calls(None, &tool_calls).await;
-    assert!(result.is_err(), "expected Err from self-reflection failure");
+    // After #2197: reflection errors are swallowed; handle_native_tool_calls returns Ok.
+    // ToolResults are committed to history before attempt_self_reflection is called.
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
 
-    // The last message must be a User message with ToolResult parts covering every ToolUse ID.
-    let last = agent
+    // When reflection fails, a bare User{reflection_prompt} message (no parts) may follow the
+    // ToolResults message. Search all messages for ToolResult parts rather than checking only last.
+    let tool_result_ids: Vec<&str> = agent
         .msg
         .messages
-        .last()
-        .expect("at least one message after handle_native_tool_calls");
-    assert_eq!(
-        last.role,
-        Role::User,
-        "last message must be User (ToolResults)"
-    );
-
-    let tool_result_ids: Vec<&str> = last
-        .parts
         .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                Some(tool_use_id.as_str())
-            } else {
-                None
-            }
+        .flat_map(|m| {
+            m.parts.iter().filter_map(|p| {
+                if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                    Some(tool_use_id.as_str())
+                } else {
+                    None
+                }
+            })
         })
         .collect();
 
@@ -3233,12 +3250,12 @@ async fn self_reflection_err_pushes_tool_results_for_all_calls() {
 }
 
 // R-NTP-11: single-tool Err path — N=1 batch, attempt_self_reflection returns Err.
-// Verifies the Err arm pushes a ToolResult for the sole tool call before returning Err.
+// Verifies a ToolResult is present for the sole tool call (#2197: error is swallowed).
 #[tokio::test]
 async fn self_reflection_err_single_tool_pushes_tool_result() {
     use super::super::agent_tests::{MockChannel, mock_provider_failing};
     use crate::config::LearningConfig;
-    use zeph_llm::provider::{MessagePart, Role};
+    use zeph_llm::provider::MessagePart;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let skill_dir = temp_dir.path().join("test-skill");
@@ -3270,34 +3287,25 @@ async fn self_reflection_err_single_tool_pushes_tool_result() {
     // Single tool call in the batch.
     let tool_calls = vec![make_tool_use_request("id-r1", "bash")];
 
-    let result = agent.handle_native_tool_calls(None, &tool_calls).await;
-    assert!(result.is_err(), "expected Err from self-reflection failure");
+    // After #2197: reflection errors are swallowed; handle_native_tool_calls returns Ok.
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
 
-    let last = agent
-        .msg
-        .messages
-        .last()
-        .expect("at least one message after handle_native_tool_calls");
-    assert_eq!(
-        last.role,
-        Role::User,
-        "last message must be User (ToolResults)"
-    );
-
-    let has_tool_result = last.parts.iter().any(
+    let has_tool_result = agent.msg.messages.iter().flat_map(|m| &m.parts).any(
         |p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "id-r1"),
     );
     assert!(has_tool_result, "ToolResult for id-r1 must be present");
 }
 
 // R-NTP-12: mid-batch Err path — N=3 batch, tc[0] triggers attempt_self_reflection which
-// returns Err. All 3 IDs must be present in the pushed ToolResults: tc[0] is the reflection
-// trigger, tc[1] and tc[2] get tombstones.
+// returns Err. All 3 IDs must still be in history after #2197 (error swallowed, Ok returned).
 #[tokio::test]
 async fn self_reflection_err_mid_batch_pushes_all_tool_results() {
     use super::super::agent_tests::{MockChannel, mock_provider_failing};
     use crate::config::LearningConfig;
-    use zeph_llm::provider::{MessagePart, Role};
+    use zeph_llm::provider::MessagePart;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let skill_dir = temp_dir.path().join("test-skill");
@@ -3332,29 +3340,26 @@ async fn self_reflection_err_mid_batch_pushes_all_tool_results() {
         make_tool_use_request("id-r3", "bash"),
     ];
 
-    let result = agent.handle_native_tool_calls(None, &tool_calls).await;
-    assert!(result.is_err(), "expected Err from self-reflection failure");
+    // After #2197: reflection errors are swallowed; handle_native_tool_calls returns Ok.
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
 
-    let last = agent
+    // When reflection fails, a bare User{reflection_prompt} message (no parts) may follow the
+    // ToolResults message. Search all messages for ToolResult parts.
+    let tool_result_ids: Vec<&str> = agent
         .msg
         .messages
-        .last()
-        .expect("at least one message after handle_native_tool_calls");
-    assert_eq!(
-        last.role,
-        Role::User,
-        "last message must be User (ToolResults)"
-    );
-
-    let tool_result_ids: Vec<&str> = last
-        .parts
         .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                Some(tool_use_id.as_str())
-            } else {
-                None
-            }
+        .flat_map(|m| {
+            m.parts.iter().filter_map(|p| {
+                if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                    Some(tool_use_id.as_str())
+                } else {
+                    None
+                }
+            })
         })
         .collect();
 
@@ -3369,6 +3374,125 @@ async fn self_reflection_err_mid_batch_pushes_all_tool_results() {
     assert!(
         tool_result_ids.contains(&"id-r3"),
         "ToolResult for id-r3 must be present: {tool_result_ids:?}"
+    );
+}
+
+// ── #2197 regression: permanent tool error must not drop ToolResult ──────────
+
+// R-NTP-13: single permanent error (ToolError::Execution, io::Error::other → Permanent kind).
+// Reproduces issue #2197: OpenAI HTTP 400 "tool_calls must be followed by tool messages"
+// because the ToolResult was never pushed to history when execution returned Err.
+#[tokio::test]
+async fn permanent_tool_error_pushes_tool_result() {
+    use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+    use zeph_llm::provider::MessagePart;
+    use zeph_tools::ToolError;
+
+    struct PermanentErrorExecutor;
+    impl ToolExecutor for PermanentErrorExecutor {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            _call: &zeph_tools::ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Err(ToolError::Execution(std::io::Error::other(
+                "HTTP 403 Forbidden",
+            ))))
+        }
+    }
+
+    let executor = PermanentErrorExecutor;
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+    let tool_calls = vec![make_tool_use_request("perm-1", "web-scrape")];
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    let has_tool_result = agent.msg.messages.iter().flat_map(|m| &m.parts).any(
+        |p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "perm-1"),
+    );
+    assert!(
+        has_tool_result,
+        "ToolResult for perm-1 must be present even when execution returns permanent error"
+    );
+}
+
+// R-NTP-14: parallel permanent errors — two parallel tool calls both return Err.
+// Both ToolResult parts must be present in the User message so OpenAI does not get
+// an orphaned tool_call_id → HTTP 400.
+#[tokio::test]
+async fn parallel_permanent_errors_both_push_tool_results() {
+    use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+    use zeph_llm::provider::MessagePart;
+    use zeph_tools::ToolError;
+
+    struct PermanentErrorExecutor2;
+    impl ToolExecutor for PermanentErrorExecutor2 {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            _call: &zeph_tools::ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Err(ToolError::Execution(std::io::Error::other(
+                "HTTP 403 Forbidden",
+            ))))
+        }
+    }
+
+    let executor = PermanentErrorExecutor2;
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+    let tool_calls = vec![
+        make_tool_use_request("perm-a", "web-scrape"),
+        make_tool_use_request("perm-b", "web-scrape"),
+    ];
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    let tool_result_ids: Vec<&str> = agent
+        .msg
+        .messages
+        .iter()
+        .flat_map(|m| {
+            m.parts.iter().filter_map(|p| {
+                if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                    Some(tool_use_id.as_str())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    assert!(
+        tool_result_ids.contains(&"perm-a"),
+        "ToolResult for perm-a must be present: {tool_result_ids:?}"
+    );
+    assert!(
+        tool_result_ids.contains(&"perm-b"),
+        "ToolResult for perm-b must be present: {tool_result_ids:?}"
     );
 }
 
@@ -4295,4 +4419,137 @@ async fn sanitize_tool_output_memory_search_suppresses_injection_false_positive(
 #[tokio::test]
 async fn sanitize_tool_output_memory_save_still_uses_tool_result() {
     assert_tool_output!("memory_save", "saved some content");
+}
+
+// R-2197: parallel tool calls where one fails with a permanent error must emit a tool_result
+// for every tool_call_id. Previously, attempt_self_reflection was called inside the result
+// loop and could insert a reflection dialogue between Assistant{ToolUse} and User{ToolResults},
+// causing the API to return HTTP 400 and the remaining ToolResults to be dropped.
+//
+// This test uses a per-index executor: index 0 fails permanently (Err), index 1 succeeds.
+// After the fix, both ToolResults must be present in a single User message that immediately
+// follows the Assistant{ToolUse} message, with no interleaved messages in between.
+#[tokio::test]
+async fn test_parallel_tool_calls_permanent_error_emits_tool_result() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+    use zeph_llm::provider::{MessagePart, Role};
+
+    struct FirstFailsExecutor {
+        call_count: Arc<AtomicUsize>,
+    }
+
+    impl ToolExecutor for FirstFailsExecutor {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let tool_id = call.tool_id.clone();
+            async move {
+                if idx == 0 {
+                    let _ = tool_id;
+                    Err(ToolError::InvalidParams {
+                        message: "permanent error".to_owned(),
+                    })
+                } else {
+                    Ok(Some(ToolOutput {
+                        tool_name: tool_id,
+                        summary: "ok".to_owned(),
+                        blocks_executed: 1,
+                        diff: None,
+                        filter_stats: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                    }))
+                }
+            }
+        }
+    }
+
+    let executor = FirstFailsExecutor {
+        call_count: Arc::new(AtomicUsize::new(0)),
+    };
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+    let tool_calls = vec![
+        make_tool_use_request("id-par-1", "bash"),
+        make_tool_use_request("id-par-2", "bash"),
+    ];
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    // Collect the assistant ToolUse message and the user ToolResults message.
+    let assistant_pos = agent
+        .msg
+        .messages
+        .iter()
+        .rposition(|m| {
+            m.role == Role::Assistant
+                && m.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+        })
+        .expect("assistant ToolUse message must be present");
+    let user_pos = agent
+        .msg
+        .messages
+        .iter()
+        .rposition(|m| {
+            m.role == Role::User
+                && m.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+        })
+        .expect("user ToolResults message must be present");
+
+    // The User{ToolResults} must immediately follow Assistant{ToolUse} — no messages in between.
+    assert_eq!(
+        user_pos,
+        assistant_pos + 1,
+        "User{{ToolResults}} must immediately follow Assistant{{ToolUse}} with no interleaved messages"
+    );
+
+    let user_msg = &agent.msg.messages[user_pos];
+    let result_ids: Vec<&str> = user_msg
+        .parts
+        .iter()
+        .filter_map(|p| {
+            if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                Some(tool_use_id.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        result_ids.contains(&"id-par-1"),
+        "ToolResult for id-par-1 (permanent error) must be present: {result_ids:?}"
+    );
+    assert!(
+        result_ids.contains(&"id-par-2"),
+        "ToolResult for id-par-2 (success) must be present: {result_ids:?}"
+    );
+    assert_eq!(
+        result_ids.len(),
+        2,
+        "exactly 2 ToolResults expected, one per tool_call_id: {result_ids:?}"
+    );
 }

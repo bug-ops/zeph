@@ -1257,12 +1257,16 @@ impl<C: Channel> Agent<C> {
         let mut lsp_tool_calls: Vec<(String, serde_json::Value, String)> = Vec::new();
 
         // Process results sequentially (metrics, channel sends, message parts).
-        // Iterate by index so that tool_results[remaining_idx] remains accessible for
-        // self_reflection early-return paths (CRIT-1: all tools already executed in parallel,
-        // so we must emit their actual results rather than synthetic "[skipped]" messages).
+        // self_reflection is deferred until after all result_parts are assembled and user_msg
+        // is pushed to history. Calling it inside the loop would insert a reflection dialogue
+        // (User{prompt} + Assistant{response}) between Assistant{ToolUse} and User{ToolResults},
+        // violating the OpenAI/Claude API message ordering protocol → HTTP 400.
         let mut result_parts: Vec<MessagePart> = Vec::new();
         // Accumulates injection flags across all tools in the batch (Bug #1490 fix).
         let mut has_any_injection_flags = false;
+        // Deferred self-reflection: set to the sanitized error output of the first failing tool
+        // that is eligible for reflection. Consumed after user_msg is pushed to history.
+        let mut pending_reflection: Option<String> = None;
         for idx in 0..tool_calls.len() {
             let tc = &tool_calls[idx];
             let tool_call_id = &tool_call_ids[idx];
@@ -1368,8 +1372,8 @@ impl<C: Channel> Agent<C> {
             }
 
             // Record skill learning outcomes for the native tool path (mirrors legacy path in
-            // handle_tool_result). Must happen before processing so self_reflection can inject
-            // corrective context before the result is persisted to message history.
+            // handle_tool_result). Capture the first eligible error for deferred self_reflection
+            // (called after user_msg is pushed to history to preserve API message ordering).
             if output.contains("[error]") || output.contains("[exit code") {
                 let kind = FailureKind::from_error(&output);
                 self.record_skill_outcomes("tool_failure", Some(&output), Some(kind.as_str()))
@@ -1381,160 +1385,15 @@ impl<C: Channel> Agent<C> {
                     self.provider
                         .record_quality_outcome(self.provider.name(), false);
                 }
-                // Sanitize before passing to self_reflection: tool output from native calls can
-                // contain untrusted content with injection patterns. Use ToolResult (ExternalUntrusted)
-                // as the appropriate source kind for native tool call output.
-                let sanitized_out = self
-                    .security
-                    .sanitizer
-                    .sanitize(&output, ContentSource::new(ContentSourceKind::ToolResult))
-                    .body;
-                if !self.learning_engine.was_reflection_used() {
-                    match self
-                        .attempt_self_reflection(&sanitized_out, &sanitized_out)
-                        .await
-                    {
-                        Ok(true) => {
-                            // Push ToolResult for the current (failing) tool. Under parallel
-                            // execution all remaining tools already ran — emit their actual results
-                            // (not synthetic "[skipped]") so the LLM sees the true conversation
-                            // state (CRIT-1 fix). Also emit ToolOutputEvents for remaining tools
-                            // to preserve the ToolStart/ToolOutput pairing in the TUI.
-                            result_parts.push(MessagePart::ToolResult {
-                                tool_use_id: tc.id.clone(),
-                                content: sanitized_out.clone(),
-                                is_error: true,
-                            });
-                            for remaining_idx in (idx + 1)..tool_calls.len() {
-                                let remaining_tc = &tool_calls[remaining_idx];
-                                let remaining_result =
-                                    std::mem::replace(&mut tool_results[remaining_idx], Ok(None));
-                                let (remaining_content, remaining_is_error, remaining_inline_stats) =
-                                    match remaining_result {
-                                        Ok(Some(ref out)) => {
-                                            let (sanitized, _) = self
-                                                .sanitize_tool_output(
-                                                    &out.summary,
-                                                    &remaining_tc.name,
-                                                )
-                                                .await;
-                                            if let Some(ref fs) = out.filter_stats {
-                                                self.record_filter_metrics(fs);
-                                            }
-                                            let inline = out.filter_stats.as_ref().and_then(|fs| {
-                                                (fs.filtered_chars < fs.raw_chars)
-                                                    .then(|| fs.format_inline(&remaining_tc.name))
-                                            });
-                                            (sanitized, false, inline)
-                                        }
-                                        Ok(None) => ("(no output)".to_owned(), false, None),
-                                        Err(ref e) => (format!("[error] {e}"), true, None),
-                                    };
-                                let body_display = self.maybe_redact(&remaining_content);
-                                self.channel
-                                    .send_tool_output(ToolOutputEvent {
-                                        tool_name: &remaining_tc.name,
-                                        body: &body_display,
-                                        diff: None,
-                                        filter_stats: remaining_inline_stats,
-                                        kept_lines: None,
-                                        locations: None,
-                                        tool_call_id: &tool_call_ids[remaining_idx],
-                                        is_error: remaining_is_error,
-                                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
-                                        raw_response: None,
-                                        started_at: Some(tool_started_ats[remaining_idx]),
-                                    })
-                                    .await?;
-                                result_parts.push(MessagePart::ToolResult {
-                                    tool_use_id: remaining_tc.id.clone(),
-                                    content: remaining_content,
-                                    is_error: remaining_is_error,
-                                });
-                            }
-                            let user_msg = Message::from_parts(Role::User, result_parts);
-                            self.persist_message(
-                                Role::User,
-                                &user_msg.content,
-                                &user_msg.parts,
-                                false,
-                            )
-                            .await;
-                            self.push_message(user_msg);
-                            return Ok(());
-                        }
-                        Ok(false) => {
-                            // Self-reflection declined or not applicable; continue normal processing.
-                        }
-                        Err(e) => {
-                            // Self-reflection failed. Push ToolResults for all tool calls so
-                            // the conversation is never left with orphaned ToolUse blocks (#1517).
-                            // Under parallel execution remaining tools already ran — emit actual
-                            // results rather than synthetic errors (CRIT-1 fix).
-                            result_parts.push(MessagePart::ToolResult {
-                                tool_use_id: tc.id.clone(),
-                                content: output.clone(),
-                                is_error,
-                            });
-                            for remaining_idx in (idx + 1)..tool_calls.len() {
-                                let remaining_tc = &tool_calls[remaining_idx];
-                                let remaining_result =
-                                    std::mem::replace(&mut tool_results[remaining_idx], Ok(None));
-                                let (remaining_content, remaining_is_error, remaining_inline_stats) =
-                                    match remaining_result {
-                                        Ok(Some(ref out)) => {
-                                            let (sanitized, _) = self
-                                                .sanitize_tool_output(
-                                                    &out.summary,
-                                                    &remaining_tc.name,
-                                                )
-                                                .await;
-                                            if let Some(ref fs) = out.filter_stats {
-                                                self.record_filter_metrics(fs);
-                                            }
-                                            let inline = out.filter_stats.as_ref().and_then(|fs| {
-                                                (fs.filtered_chars < fs.raw_chars)
-                                                    .then(|| fs.format_inline(&remaining_tc.name))
-                                            });
-                                            (sanitized, false, inline)
-                                        }
-                                        Ok(None) => ("(no output)".to_owned(), false, None),
-                                        Err(ref re) => (format!("[error] {re}"), true, None),
-                                    };
-                                let body_display = self.maybe_redact(&remaining_content);
-                                self.channel
-                                    .send_tool_output(ToolOutputEvent {
-                                        tool_name: &remaining_tc.name,
-                                        body: &body_display,
-                                        diff: None,
-                                        filter_stats: remaining_inline_stats,
-                                        kept_lines: None,
-                                        locations: None,
-                                        tool_call_id: &tool_call_ids[remaining_idx],
-                                        is_error: remaining_is_error,
-                                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
-                                        raw_response: None,
-                                        started_at: Some(tool_started_ats[remaining_idx]),
-                                    })
-                                    .await?;
-                                result_parts.push(MessagePart::ToolResult {
-                                    tool_use_id: remaining_tc.id.clone(),
-                                    content: remaining_content,
-                                    is_error: remaining_is_error,
-                                });
-                            }
-                            let user_msg = Message::from_parts(Role::User, result_parts);
-                            self.persist_message(
-                                Role::User,
-                                &user_msg.content,
-                                &user_msg.parts,
-                                false,
-                            )
-                            .await;
-                            self.push_message(user_msg);
-                            return Err(e);
-                        }
-                    }
+                if pending_reflection.is_none() && !self.learning_engine.was_reflection_used() {
+                    // Sanitize before passing to self_reflection: tool output from native calls
+                    // can contain untrusted content with injection patterns.
+                    let sanitized_out = self
+                        .security
+                        .sanitizer
+                        .sanitize(&output, ContentSource::new(ContentSourceKind::ToolResult))
+                        .body;
+                    pending_reflection = Some(sanitized_out);
                 }
             } else {
                 self.record_skill_outcomes("success", None, None).await;
@@ -1542,7 +1401,8 @@ impl<C: Channel> Agent<C> {
                 self.provider
                     .record_quality_outcome(self.provider.name(), true);
             }
-            self.record_anomaly_outcome(anomaly_outcome).await?;
+            // Ignore channel errors so ToolResult assembly is never abandoned (#2197 secondary).
+            let _ = self.record_anomaly_outcome(anomaly_outcome).await;
 
             // read_overflow returns the full stored content and must not be re-overflowed.
             let processed = if tc.name == OverflowToolExecutor::TOOL_NAME {
@@ -1609,6 +1469,22 @@ impl<C: Channel> Agent<C> {
         )
         .await;
         self.push_message(user_msg);
+
+        // Deferred self-reflection: user_msg is now in history so the reflection dialogue
+        // (User{prompt} + Assistant{response}) appends after User{ToolResults}, preserving
+        // API message ordering. Only the first eligible error per batch triggers reflection.
+        if let Some(sanitized_out) = pending_reflection {
+            match self
+                .attempt_self_reflection(&sanitized_out, &sanitized_out)
+                .await
+            {
+                Ok(_) | Err(_) => {
+                    // Whether reflection succeeded, declined, or errored: the ToolResults are
+                    // already committed to history. Return Ok regardless so the caller continues
+                    // the tool loop normally (#2197).
+                }
+            }
+        }
 
         // Fire LSP hooks for each completed tool call (non-blocking: diagnostics fetch
         // is spawned in background; hover calls are awaited but short-lived).

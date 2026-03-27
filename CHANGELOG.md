@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(core): permanent tool errors (e.g. HTTP 403) no longer cause OpenAI HTTP 400 "tool_calls must be followed by tool messages"; `attempt_self_reflection` is now deferred until after all `ToolResult` parts are assembled and pushed to message history, preserving the `Assistant{ToolUse} → User{ToolResults}` ordering required by the OpenAI and Claude APIs; `record_anomaly_outcome` errors are silently ignored so channel failures cannot abandon mid-batch ToolResult assembly; adds regression tests R-NTP-13 and R-NTP-14 for single and parallel permanent errors (#2197)
 - fix(llm): `TriageRouter` now delegates `embed()` to the first embedding-capable tier provider instead of always returning `EmbeddingNotSupported`; `supports_embeddings()` reflects tier provider capability — resolves tool schema filter being silently disabled when `routing = "triage"` (#2174)
 - fix(core): `/provider` switch and `/provider status` now display the configured `name` field from `[[llm.providers]]` instead of the provider type string (e.g. `"openai"`); `active_provider_name` stored in `RuntimeConfig` and updated on every switch (#2173)
 - fix(llm): add missing `use crate::provider::MessageMetadata` import inside `#[cfg(test)]` in `candle_provider/template.rs`; `--features candle` alone now compiles and runs unit tests (`cargo nextest run -p zeph-llm --features candle --lib`) (#2189)
