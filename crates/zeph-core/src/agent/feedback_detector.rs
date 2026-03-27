@@ -1942,4 +1942,104 @@ mod tests {
         let signal = d.detect("That's неправильно", &[]).unwrap();
         assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
     }
+
+    // ── detect_with_model() ───────────────────────────────────────────────
+
+    #[cfg(feature = "classifiers")]
+    mod model_detection {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::Arc;
+
+        use zeph_llm::classifier::{ClassificationResult, ClassifierBackend};
+        use zeph_llm::error::LlmError;
+
+        use super::*;
+
+        struct MockBackend {
+            result: Result<ClassificationResult, String>,
+        }
+
+        impl MockBackend {
+            fn positive(score: f32) -> Self {
+                Self {
+                    result: Ok(ClassificationResult {
+                        label: "POSITIVE".into(),
+                        score,
+                        is_positive: true,
+                        spans: vec![],
+                    }),
+                }
+            }
+
+            fn negative(score: f32) -> Self {
+                Self {
+                    result: Ok(ClassificationResult {
+                        label: "NEGATIVE".into(),
+                        score,
+                        is_positive: false,
+                        spans: vec![],
+                    }),
+                }
+            }
+
+            fn error() -> Self {
+                Self {
+                    result: Err("model inference failed".into()),
+                }
+            }
+        }
+
+        impl ClassifierBackend for MockBackend {
+            fn classify<'a>(
+                &'a self,
+                _text: &'a str,
+            ) -> Pin<Box<dyn Future<Output = Result<ClassificationResult, LlmError>> + Send + 'a>>
+            {
+                let r = self
+                    .result
+                    .as_ref()
+                    .map(|v| v.clone())
+                    .map_err(|e| LlmError::Inference(e.clone()));
+                Box::pin(async move { r })
+            }
+
+            fn backend_name(&self) -> &'static str {
+                "mock"
+            }
+        }
+
+        #[tokio::test]
+        async fn positive_signal_above_threshold_returns_some() {
+            let backend = MockBackend::positive(0.9);
+            let signal = FeedbackDetector::detect_with_model(&backend, "that was wrong", 0.6).await;
+            let signal = signal.unwrap();
+            assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
+            assert!((signal.confidence - 0.9).abs() < 1e-5);
+            assert_eq!(signal.feedback_text, "that was wrong");
+        }
+
+        #[tokio::test]
+        async fn low_score_returns_none() {
+            // is_positive=true but score < threshold → None
+            let backend = MockBackend::positive(0.4);
+            let signal = FeedbackDetector::detect_with_model(&backend, "that was wrong", 0.6).await;
+            assert!(signal.is_none());
+        }
+
+        #[tokio::test]
+        async fn negative_classification_returns_none() {
+            let backend = MockBackend::negative(0.95);
+            let signal = FeedbackDetector::detect_with_model(&backend, "tell me more", 0.6).await;
+            assert!(signal.is_none());
+        }
+
+        #[tokio::test]
+        async fn model_error_swallowed_returns_none() {
+            let backend = MockBackend::error();
+            let signal = FeedbackDetector::detect_with_model(&backend, "anything", 0.6).await;
+            // Error must be swallowed; caller falls back to regex
+            assert!(signal.is_none());
+        }
+    }
 }

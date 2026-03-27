@@ -479,3 +479,45 @@ fn appbuilder_qdrant_ops_valid_url_succeeds() {
     let result = zeph_memory::QdrantOps::new("http://localhost:6334");
     assert!(result.is_ok(), "QdrantOps::new with valid URL must succeed");
 }
+
+// ── validate_detector_model_config ───────────────────────────────────────────
+
+fn make_builder_with_detector_mode(
+    mode: crate::config::DetectorMode,
+    detector_model: &str,
+) -> AppBuilder {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.skills.learning.detector_mode = mode;
+    config.skills.learning.detector_model = detector_model.to_owned();
+    AppBuilder {
+        config,
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        vault: Box::new(EnvVaultProvider),
+        age_vault: None,
+        qdrant_ops: None,
+    }
+}
+
+#[test]
+fn validate_detector_model_model_mode_non_empty_ok() {
+    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Model, "some/model-repo");
+    assert!(b.validate_detector_model_config());
+}
+
+#[test]
+fn validate_detector_model_model_mode_empty_returns_false() {
+    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Model, "");
+    assert!(!b.validate_detector_model_config());
+}
+
+#[test]
+fn validate_detector_model_regex_mode_always_ok() {
+    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Regex, "");
+    assert!(b.validate_detector_model_config());
+}
+
+#[test]
+fn validate_detector_model_judge_mode_always_ok() {
+    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Judge, "");
+    assert!(b.validate_detector_model_config());
+}

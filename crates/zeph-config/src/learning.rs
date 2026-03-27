@@ -170,3 +170,35 @@ impl Default for LearningConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detector_mode_model_serde_roundtrip() {
+        let toml = r#"
+            enabled = true
+            detector_mode = "model"
+            detector_model = "some/model"
+        "#;
+        let config: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.detector_mode, DetectorMode::Model);
+        assert_eq!(config.detector_model, "some/model");
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn detector_mode_defaults_to_regex() {
+        let config = LearningConfig::default();
+        assert_eq!(config.detector_mode, DetectorMode::Regex);
+        assert!(config.detector_model.is_empty());
+    }
+
+    #[test]
+    fn detector_mode_judge_roundtrip() {
+        let toml = r#"detector_mode = "judge""#;
+        let config: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.detector_mode, DetectorMode::Judge);
+    }
+}

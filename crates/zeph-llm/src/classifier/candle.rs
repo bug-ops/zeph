@@ -223,7 +223,7 @@ impl CandleClassifier {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to load tokenizer: {e}")))?;
 
-        Self::validate_safetensors(&weights_path)?;
+        super::ner::validate_safetensors(&weights_path)?;
 
         let device = Device::Cpu;
         // SAFETY: validated safetensors header above; file not modified during VarBuilder lifetime
@@ -240,40 +240,6 @@ impl CandleClassifier {
             device,
             id2label,
         })
-    }
-
-    fn validate_safetensors(path: &std::path::Path) -> Result<(), LlmError> {
-        use std::io::Read;
-        const MAX_HEADER: u64 = 100 * 1024 * 1024;
-        let mut f = std::fs::File::open(path)
-            .map_err(|e| LlmError::ModelLoad(format!("cannot open safetensors: {e}")))?;
-        let file_len = f
-            .metadata()
-            .map_err(|e| LlmError::ModelLoad(format!("cannot stat safetensors: {e}")))?
-            .len();
-        if file_len < 8 {
-            return Err(LlmError::ModelLoad(
-                "safetensors file too small (< 8 bytes)".into(),
-            ));
-        }
-        let mut header_len_buf = [0u8; 8];
-        f.read_exact(&mut header_len_buf)
-            .map_err(|e| LlmError::ModelLoad(format!("cannot read safetensors header: {e}")))?;
-        let header_len = u64::from_le_bytes(header_len_buf);
-        if header_len > file_len - 8 || header_len > MAX_HEADER {
-            return Err(LlmError::ModelLoad(format!(
-                "invalid safetensors header length: {header_len} (file size: {file_len})"
-            )));
-        }
-        let header_len_usize = usize::try_from(header_len)
-            .map_err(|_| LlmError::ModelLoad("header length overflow".into()))?;
-        let mut header_buf = vec![0u8; header_len_usize];
-        f.read_exact(&mut header_buf)
-            .map_err(|e| LlmError::ModelLoad(format!("cannot read safetensors header: {e}")))?;
-        serde_json::from_slice::<serde_json::Value>(&header_buf).map_err(|e| {
-            LlmError::ModelLoad(format!("safetensors header is not valid JSON: {e}"))
-        })?;
-        Ok(())
     }
 }
 
