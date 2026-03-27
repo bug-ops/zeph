@@ -1406,18 +1406,85 @@ async fn apply_tool_pair_summaries_parts_deserialize_as_summary_variant() {
     }
 }
 
-// Documents that the old externally-tagged format `{"Summary":{"text":"..."}}` does NOT
-// deserialize as `Vec<MessagePart>` with the current `#[serde(tag = "kind")]` schema.
-// Records with this format written by pre-fix code will silently fall back to an empty
-// parts list via `parse_parts_json`. A migration is required to repair such rows.
+// Verifies that the old externally-tagged format still does NOT deserialize directly via
+// serde (i.e. the schema change is real), but that the compat path in `parse_parts_json`
+// recovers it correctly.
 #[test]
-fn old_external_tag_summary_format_fails_to_deserialize() {
+fn old_external_tag_summary_format_via_compat_path() {
     use zeph_llm::provider::MessagePart;
 
     let old_json = r#"[{"Summary":{"text":"something"}}]"#;
-    let result: Result<Vec<MessagePart>, _> = serde_json::from_str(old_json);
+
+    // Direct serde still fails — the schema change is intact.
+    let direct: Result<Vec<MessagePart>, _> = serde_json::from_str(old_json);
     assert!(
-        result.is_err(),
+        direct.is_err(),
         "old externally-tagged format must not deserialize with the current internally-tagged schema"
     );
+
+    // Compat path recovers the record.
+    let parts = try_parse_legacy_parts(old_json).expect("compat path must succeed for Summary");
+    assert_eq!(parts.len(), 1);
+    match &parts[0] {
+        MessagePart::Summary { text } => assert_eq!(text, "something"),
+        other => panic!("expected MessagePart::Summary, got {other:?}"),
+    }
+}
+
+#[allow(clippy::type_complexity)]
+#[test]
+fn legacy_compat_all_text_like_variants() {
+    let cases: &[(&str, fn(&MessagePart) -> bool)] = &[
+        (r#"[{"Text":{"text":"t"}}]"#, |p| {
+            matches!(p, MessagePart::Text { .. })
+        }),
+        (r#"[{"Recall":{"text":"r"}}]"#, |p| {
+            matches!(p, MessagePart::Recall { .. })
+        }),
+        (r#"[{"CodeContext":{"text":"c"}}]"#, |p| {
+            matches!(p, MessagePart::CodeContext { .. })
+        }),
+        (r#"[{"CrossSession":{"text":"x"}}]"#, |p| {
+            matches!(p, MessagePart::CrossSession { .. })
+        }),
+        (r#"[{"Compaction":{"summary":"s"}}]"#, |p| {
+            matches!(p, MessagePart::Compaction { .. })
+        }),
+    ];
+    for (json, check) in cases {
+        let parts =
+            try_parse_legacy_parts(json).unwrap_or_else(|| panic!("compat failed for: {json}"));
+        assert_eq!(parts.len(), 1);
+        assert!(check(&parts[0]), "wrong variant for: {json}");
+    }
+}
+
+#[test]
+fn legacy_compat_mixed_array() {
+    let json = r#"[{"Text":{"text":"hello"}},{"Summary":{"text":"world"}}]"#;
+    let parts = try_parse_legacy_parts(json).expect("compat path must succeed for mixed array");
+    assert_eq!(parts.len(), 2);
+    assert!(matches!(&parts[0], MessagePart::Text { text } if text == "hello"));
+    assert!(matches!(&parts[1], MessagePart::Summary { text } if text == "world"));
+}
+
+#[test]
+fn new_format_not_intercepted_by_compat() {
+    // Already-new-format: compat returns None so primary path handles it.
+    let json = r#"[{"kind":"summary","text":"hello"}]"#;
+    assert!(
+        try_parse_legacy_parts(json).is_none(),
+        "new-format arrays must not be handled by the compat path"
+    );
+    // Primary path still deserializes it.
+    let parts: Vec<zeph_llm::provider::MessagePart> =
+        serde_json::from_str(json).expect("new format must deserialize directly");
+    assert_eq!(parts.len(), 1);
+}
+
+#[test]
+fn garbage_json_returns_none_from_compat() {
+    assert!(try_parse_legacy_parts("not json at all").is_none());
+    assert!(try_parse_legacy_parts(r#"{"not":"an array"}"#).is_none());
+    assert!(try_parse_legacy_parts(r#"[{"UnknownVariant":{"x":"y"}}]"#).is_none());
 }

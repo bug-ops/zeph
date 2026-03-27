@@ -41,6 +41,65 @@ pub fn role_str(role: Role) -> &'static str {
     }
 }
 
+/// Map a legacy externally-tagged variant key to the `kind` value used by the current
+/// internally-tagged schema.
+fn legacy_key_to_kind(key: &str) -> Option<&'static str> {
+    match key {
+        "Text" => Some("text"),
+        "ToolOutput" => Some("tool_output"),
+        "Recall" => Some("recall"),
+        "CodeContext" => Some("code_context"),
+        "Summary" => Some("summary"),
+        "CrossSession" => Some("cross_session"),
+        "ToolUse" => Some("tool_use"),
+        "ToolResult" => Some("tool_result"),
+        "Image" => Some("image"),
+        "ThinkingBlock" => Some("thinking_block"),
+        "RedactedThinkingBlock" => Some("redacted_thinking_block"),
+        "Compaction" => Some("compaction"),
+        _ => None,
+    }
+}
+
+/// Attempt to parse a JSON string written in the pre-v0.17.1 externally-tagged format.
+///
+/// Old format: `[{"Summary":{"text":"..."}}, ...]`
+/// New format: `[{"kind":"summary","text":"..."}, ...]`
+///
+/// Returns `None` if the input does not look like the old format or if any element fails
+/// to deserialize after conversion.
+fn try_parse_legacy_parts(parts_json: &str) -> Option<Vec<MessagePart>> {
+    let array: Vec<serde_json::Value> = serde_json::from_str(parts_json).ok()?;
+    let mut result = Vec::with_capacity(array.len());
+    for element in array {
+        let obj = element.as_object()?;
+        if obj.contains_key("kind") {
+            return None;
+        }
+        if obj.len() != 1 {
+            return None;
+        }
+        let (key, inner) = obj.iter().next()?;
+        let kind = legacy_key_to_kind(key)?;
+        let mut new_obj = match inner {
+            serde_json::Value::Object(m) => m.clone(),
+            // Image variant wraps a single object directly
+            other => {
+                let mut m = serde_json::Map::new();
+                m.insert("data".to_string(), other.clone());
+                m
+            }
+        };
+        new_obj.insert(
+            "kind".to_string(),
+            serde_json::Value::String(kind.to_string()),
+        );
+        let part: MessagePart = serde_json::from_value(serde_json::Value::Object(new_obj)).ok()?;
+        result.push(part);
+    }
+    Some(result)
+}
+
 /// Deserialize message parts from a stored JSON string.
 ///
 /// Returns an empty `Vec` and logs a warning if deserialization fails, including the role and
@@ -52,6 +111,15 @@ fn parse_parts_json(role_str: &str, parts_json: &str) -> Vec<MessagePart> {
     match serde_json::from_str(parts_json) {
         Ok(p) => p,
         Err(e) => {
+            if let Some(parts) = try_parse_legacy_parts(parts_json) {
+                let truncated = parts_json.chars().take(120).collect::<String>();
+                tracing::warn!(
+                    role = %role_str,
+                    parts_json = %truncated,
+                    "loaded legacy-format message parts via compat path"
+                );
+                return parts;
+            }
             let truncated = parts_json.chars().take(120).collect::<String>();
             tracing::warn!(
                 role = %role_str,
