@@ -9611,6 +9611,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "criterion",
  "dirs",
  "eventsource-stream",
  "futures-core",

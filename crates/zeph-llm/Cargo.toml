@@ -50,11 +50,17 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
+criterion.workspace = true
 insta.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock.workspace = true
+
+[[bench]]
+name = "classifier"
+harness = false
+required-features = ["classifiers"]
 
 [lints]
 workspace = true
