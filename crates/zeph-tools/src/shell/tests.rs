@@ -516,7 +516,7 @@ fn sandbox_allows_cwd_by_default() {
     let executor = ShellExecutor::new(&default_config());
     let cwd = std::env::current_dir().unwrap();
     let cwd_path = cwd.display().to_string();
-    let code = format!("cat {cwd_path}/file.txt");
+    let code = format!("cat \"{cwd_path}/file.txt\"");
     assert!(executor.validate_sandbox(&code).is_ok());
 }
 
