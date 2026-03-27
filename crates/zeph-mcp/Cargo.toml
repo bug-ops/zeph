@@ -24,6 +24,7 @@ dashmap.workspace = true
 glob.workspace = true
 http.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
+open.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }

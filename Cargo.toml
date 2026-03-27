@@ -51,6 +51,7 @@ notify = "8"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
 ollama-rs = { version = "0.3", default-features = false }
+open = "5"
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", default-features = false }
 opentelemetry_sdk = { version = "0.31", default-features = false }

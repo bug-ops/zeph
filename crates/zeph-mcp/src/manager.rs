@@ -262,31 +262,26 @@ impl McpManager {
         self
     }
 
-    /// Connect to all configured servers, return aggregated tool list.
+    /// Connect to all non-OAuth servers, return aggregated tool list.
     ///
-    /// Phase 1: non-OAuth servers connect concurrently via `JoinSet`.
-    /// Phase 2: OAuth servers connect sequentially (requires user interaction).
-    ///
-    /// For OAuth servers without a registered credential store, a warning is
-    /// logged and the server is skipped.
+    /// OAuth servers are skipped — call `connect_oauth_deferred()` after the
+    /// UI channel is ready so the auth URL is visible and startup is not blocked.
     ///
     /// # Panics
     ///
     /// Panics if the internal `connected_server_ids` lock is poisoned.
-    #[allow(clippy::too_many_lines)]
     pub async fn connect_all(&self) -> Vec<McpTool> {
         let allowed = self.allowed_commands.clone();
         let suppress = self.suppress_stderr;
         let last_refresh = Arc::clone(&self.last_refresh);
 
-        // Partition configs into non-OAuth (concurrent) and OAuth (sequential)
-        let (non_oauth, oauth_configs): (Vec<_>, Vec<_>) = self
+        let non_oauth: Vec<_> = self
             .configs
             .iter()
+            .filter(|&c| !matches!(c.transport, McpTransport::OAuth { .. }))
             .cloned()
-            .partition(|c| !matches!(c.transport, McpTransport::OAuth { .. }));
+            .collect();
 
-        // Phase 1: connect non-OAuth servers concurrently
         let mut join_set = JoinSet::new();
         for config in non_oauth {
             let allowed = allowed.clone();
@@ -322,7 +317,39 @@ impl McpManager {
             }
         }
 
-        // Phase 2: connect OAuth servers sequentially
+        all_tools
+    }
+
+    /// Returns `true` if any configured server uses OAuth transport.
+    #[must_use]
+    pub fn has_oauth_servers(&self) -> bool {
+        self.configs
+            .iter()
+            .any(|c| matches!(c.transport, McpTransport::OAuth { .. }))
+    }
+
+    /// Connect OAuth servers in the background.
+    ///
+    /// Must be called after the UI channel is running so that auth URLs are
+    /// visible to the user. For each server requiring authorization, the
+    /// browser is opened automatically and the callback is awaited (up to 300 s).
+    /// Discovered tools are published via `tools_watch_tx` so the running agent
+    /// picks them up automatically.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `connected_server_ids` lock is poisoned.
+    #[allow(clippy::too_many_lines)]
+    pub async fn connect_oauth_deferred(&self) {
+        let last_refresh = Arc::clone(&self.last_refresh);
+
+        let oauth_configs: Vec<_> = self
+            .configs
+            .iter()
+            .filter(|&c| matches!(c.transport, McpTransport::OAuth { .. }))
+            .cloned()
+            .collect();
+
         for config in oauth_configs {
             let McpTransport::OAuth {
                 ref url,
@@ -363,6 +390,7 @@ impl McpManager {
 
             match connect_result {
                 Ok(OAuthConnectResult::Connected(client)) => {
+                    let mut all_tools = Vec::new();
                     let mut clients = self.clients.write().await;
                     let mut server_tools = self.server_tools.write().await;
                     self.handle_connect_result(
@@ -373,6 +401,8 @@ impl McpManager {
                         &mut server_tools,
                     )
                     .await;
+                    let updated: Vec<McpTool> = server_tools.values().flatten().cloned().collect();
+                    let _ = self.tools_watch_tx.send(updated);
                 }
                 Ok(OAuthConnectResult::AuthorizationRequired(pending_box)) => {
                     let mut pending = *pending_box;
@@ -392,6 +422,9 @@ impl McpManager {
                     } else {
                         eprintln!("{auth_msg}");
                     }
+                    // open::that_in_background spawns an OS thread; ignore the handle —
+                    // we don't need to wait for the browser to open.
+                    let _ = open::that_in_background(pending.auth_url.clone());
 
                     let callback_timeout = std::time::Duration::from_secs(300);
                     let listener = pending
@@ -403,10 +436,11 @@ impl McpManager {
                     {
                         Ok((code, csrf_token)) => {
                             if let Some(ref tx) = self.status_tx {
-                                let _ = tx.send(String::new()); // clear "Waiting for OAuth..." spinner
+                                let _ = tx.send(String::new());
                             }
                             match McpClient::complete_oauth(pending, &code, &csrf_token).await {
                                 Ok(client) => {
+                                    let mut all_tools = Vec::new();
                                     let mut clients = self.clients.write().await;
                                     let mut server_tools = self.server_tools.write().await;
                                     self.handle_connect_result(
@@ -417,6 +451,9 @@ impl McpManager {
                                         &mut server_tools,
                                     )
                                     .await;
+                                    let updated: Vec<McpTool> =
+                                        server_tools.values().flatten().cloned().collect();
+                                    let _ = self.tools_watch_tx.send(updated);
                                 }
                                 Err(e) => {
                                     tracing::warn!(
@@ -439,8 +476,6 @@ impl McpManager {
                 }
             }
         }
-
-        all_tools
     }
 
     async fn handle_connect_result(
@@ -801,7 +836,7 @@ async fn connect_entry(
             }
         }
         McpTransport::OAuth { .. } => {
-            // OAuth connections are handled separately in connect_all() Phase 2.
+            // OAuth connections are handled separately in connect_oauth_deferred().
             Err(McpError::OAuthError {
                 server_id: entry.id.clone(),
                 message: "OAuth transport cannot be used via connect_entry".into(),
