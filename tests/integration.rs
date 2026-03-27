@@ -184,6 +184,7 @@ impl ToolExecutor for OutputToolExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))
     }
 }
@@ -202,6 +203,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))
     }
 }
@@ -220,6 +222,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))
     }
 }
@@ -254,6 +257,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))
     }
 }
@@ -293,6 +297,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
+            claim_source: None,
         }))
     }
 }
@@ -2361,6 +2366,7 @@ mod self_learning {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
+                claim_source: None,
             }))
         }
     }
