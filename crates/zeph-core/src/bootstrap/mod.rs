@@ -637,6 +637,39 @@ impl AppBuilder {
         }
     }
 
+    /// Build a dedicated provider for ACON compression guidelines LLM calls.
+    ///
+    /// Returns `None` when `guidelines_provider` is empty (falls back to primary provider at call site).
+    ///
+    /// # Errors (logged, not propagated)
+    ///
+    /// Emits a `tracing::warn` on resolution failure; primary provider is used as fallback.
+    #[cfg(feature = "compression-guidelines")]
+    pub fn build_guidelines_provider(&self) -> Option<AnyProvider> {
+        let name = &self
+            .config
+            .memory
+            .compression_guidelines
+            .guidelines_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "compression guidelines provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "guidelines provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for orchestration planner LLM calls.
     ///
     /// Returns `None` when `planner_provider` is empty (falls back to primary provider at call site).

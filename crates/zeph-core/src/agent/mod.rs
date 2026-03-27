@@ -33,6 +33,7 @@ pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
 pub mod session_config;
+mod session_digest;
 pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;
@@ -84,6 +85,7 @@ pub(crate) const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 pub(crate) const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 pub(crate) const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
 pub(crate) const SCHEDULED_TASK_PREFIX: &str = "Execute the following scheduled task now: ";
+pub(crate) const SESSION_DIGEST_PREFIX: &str = "[Session digest from previous interaction]\n";
 /// Prefix used for LSP context messages (`Role::System`) injected into message history.
 /// The tool-pair summarizer targets User/Assistant pairs and skips System messages,
 /// so these notes are never accidentally summarized. `remove_lsp_messages` uses this
@@ -280,6 +282,10 @@ impl<C: Channel> Agent<C> {
                 shutdown_summary_max_messages: 20,
                 shutdown_summary_timeout_secs: 10,
                 structured_summaries: false,
+                digest_config: crate::config::DigestConfig::default(),
+                cached_session_digest: None,
+                context_strategy: crate::config::ContextStrategy::default(),
+                crossover_turn_threshold: 20,
             },
             skill_state: SkillState {
                 registry,
@@ -2164,6 +2170,7 @@ impl<C: Channel> Agent<C> {
         }
 
         self.maybe_store_shutdown_summary().await;
+        self.maybe_store_session_digest().await;
 
         tracing::info!("agent shutdown complete");
     }
@@ -2237,6 +2244,9 @@ impl<C: Channel> Agent<C> {
                 tracing::warn!("model warmup did not complete successfully");
             }
         }
+
+        // Load the session digest once at session start for context injection.
+        self.load_and_cache_session_digest().await;
 
         loop {
             // Apply any pending provider override (from ACP set_session_config_option).

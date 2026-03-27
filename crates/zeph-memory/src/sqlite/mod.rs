@@ -11,6 +11,7 @@ mod history;
 pub(crate) mod messages;
 pub mod overflow;
 pub mod preferences;
+pub mod session_digest;
 mod skills;
 mod summaries;
 mod trust;

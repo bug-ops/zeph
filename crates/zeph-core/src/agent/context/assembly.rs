@@ -24,7 +24,7 @@ use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 use super::super::LSP_NOTE_PREFIX;
 use super::super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, DOCUMENT_RAG_PREFIX,
-    GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SUMMARY_PREFIX, Skill,
+    GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SESSION_DIGEST_PREFIX, SUMMARY_PREFIX, Skill,
     build_system_prompt_with_instructions, format_skills_prompt,
 };
 use super::ContextSlot;
@@ -360,6 +360,12 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::System || !m.content.starts_with(DOCUMENT_RAG_PREFIX));
     }
 
+    pub(in crate::agent) fn remove_session_digest_message(&mut self) {
+        self.msg
+            .messages
+            .retain(|m| m.role != Role::User || !m.content.starts_with(SESSION_DIGEST_PREFIX));
+    }
+
     async fn fetch_document_rag(
         memory_state: &MemoryState,
         query: &str,
@@ -607,14 +613,45 @@ impl<C: Channel> Agent<C> {
 
         let system_prompt = self.msg.messages.first().map_or("", |m| m.content.as_str());
         let graph_enabled = self.memory_state.graph_config.enabled;
-        let alloc = budget.allocate(
+
+        // Resolve effective context strategy (#2288).
+        let effective_strategy = match self.memory_state.context_strategy {
+            crate::config::ContextStrategy::FullHistory => {
+                crate::config::ContextStrategy::FullHistory
+            }
+            crate::config::ContextStrategy::MemoryFirst => {
+                crate::config::ContextStrategy::MemoryFirst
+            }
+            crate::config::ContextStrategy::Adaptive => {
+                if self.sidequest.turn_counter
+                    >= u64::from(self.memory_state.crossover_turn_threshold)
+                {
+                    crate::config::ContextStrategy::MemoryFirst
+                } else {
+                    crate::config::ContextStrategy::FullHistory
+                }
+            }
+        };
+        let memory_first = effective_strategy == crate::config::ContextStrategy::MemoryFirst;
+
+        // Pre-count digest tokens so the budget allocator can deduct them before splits.
+        let digest_tokens = self
+            .memory_state
+            .cached_session_digest
+            .as_ref()
+            .map_or(0, |(_, tokens)| *tokens);
+
+        let alloc = budget.allocate_with_opts(
             system_prompt,
             &self.skill_state.last_skills_prompt,
             &self.metrics.token_counter,
             graph_enabled,
+            digest_tokens,
+            memory_first,
         );
 
         // Remove stale injected messages before concurrent fetch
+        self.remove_session_digest_message();
         self.remove_summary_messages();
         self.remove_cross_session_messages();
         self.remove_recall_messages();
@@ -730,6 +767,22 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // MemoryFirst: drain conversation history BEFORE inserting memory messages so that the
+        // memory inserts land into the shorter array and are not accidentally removed.
+        if memory_first {
+            let keep_tail = 2usize; // keep last 2 messages as a coherence anchor
+            let history_start = 1usize; // skip system prompt
+            let len = self.msg.messages.len();
+            if len > history_start + keep_tail {
+                self.msg.messages.drain(history_start..len - keep_tail);
+                self.recompute_prompt_tokens();
+                tracing::debug!(
+                    strategy = "memory_first",
+                    "dropped conversation history, kept last {keep_tail} messages"
+                );
+            }
+        }
+
         // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
         // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
         // Each path carries a MemorySourceHint that modulates injection detection sensitivity:
@@ -823,7 +876,30 @@ impl<C: Channel> Agent<C> {
             self.inject_code_context(&sanitized.body);
         }
 
-        self.trim_messages_to_budget(alloc.recent_history);
+        if !memory_first {
+            self.trim_messages_to_budget(alloc.recent_history);
+        }
+
+        // Inject session digest AFTER all other memory inserts so it lands at position 1
+        // (closest to the system prompt). #2289
+        if let Some((digest_text, _)) = self
+            .memory_state
+            .cached_session_digest
+            .clone()
+            .filter(|_| self.msg.messages.len() > 1)
+        {
+            let digest_msg = Message {
+                role: Role::User,
+                content: format!("{SESSION_DIGEST_PREFIX}{digest_text}"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            };
+            let sanitized = self
+                .sanitize_memory_message(digest_msg, MemorySourceHint::LlmSummary)
+                .await;
+            self.msg.messages.insert(1, sanitized);
+            tracing::debug!("injected session digest into context");
+        }
 
         if self.runtime.redact_credentials {
             for msg in &mut self.msg.messages {

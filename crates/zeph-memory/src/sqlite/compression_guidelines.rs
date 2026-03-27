@@ -36,7 +36,7 @@ static JWT_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Redact secrets and filesystem paths from text before persistent storage.
 ///
 /// Returns `Cow::Borrowed` when no sensitive content is found (zero-alloc fast path).
-fn redact_sensitive(text: &str) -> Cow<'_, str> {
+pub(crate) fn redact_sensitive(text: &str) -> Cow<'_, str> {
     // Each replace_all may return Cow::Borrowed (no match) or Cow::Owned (replaced).
     // We materialise intermediate Owned values into String so that subsequent steps
     // do not hold a borrow of a local.

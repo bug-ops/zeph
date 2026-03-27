@@ -167,6 +167,10 @@ pub(crate) struct WizardState {
     // Tool retry config
     pub(crate) retry_max_attempts: usize,
     pub(crate) retry_parameter_reformat_provider: String,
+    // Session digest (#2289)
+    pub(crate) digest_enabled: bool,
+    // Context strategy (#2288)
+    pub(crate) context_strategy: String,
 }
 
 impl Default for WizardState {
@@ -297,6 +301,8 @@ impl Default for WizardState {
             probe_hard_fail_threshold: 0.35,
             retry_max_attempts: 2,
             retry_parameter_reformat_provider: String::new(),
+            digest_enabled: false,
+            context_strategy: "full_history".to_owned(),
         }
     }
 }
@@ -776,6 +782,26 @@ fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         .default(true)
         .interact()?;
 
+    state.digest_enabled = Confirm::new()
+        .with_prompt(
+            "Enable session digest generation? (generates a compact summary of key facts and \
+             decisions at session end and injects it at the start of the next session)",
+        )
+        .default(false)
+        .interact()?;
+
+    let strategy_options = ["full_history", "adaptive", "memory_first"];
+    let strategy_idx = Select::new()
+        .with_prompt(
+            "Context assembly strategy (full_history: current behavior; adaptive: switches to \
+             memory-first after crossover_turn_threshold turns; memory_first: always use memory \
+             instead of full history)",
+        )
+        .items(strategy_options)
+        .default(0)
+        .interact()?;
+    strategy_options[strategy_idx].clone_into(&mut state.context_strategy);
+
     println!();
     Ok(())
 }
@@ -1204,6 +1230,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.memory.compression.probe.hard_fail_threshold = state.probe_hard_fail_threshold;
     }
     config.memory.shutdown_summary = state.shutdown_summary;
+    config.memory.digest.enabled = state.digest_enabled;
+    config.memory.context_strategy = match state.context_strategy.as_str() {
+        "memory_first" => zeph_core::config::ContextStrategy::MemoryFirst,
+        "adaptive" => zeph_core::config::ContextStrategy::Adaptive,
+        _ => zeph_core::config::ContextStrategy::FullHistory,
+    };
 
     match state.channel {
         ChannelChoice::Cli => {}

@@ -70,6 +70,7 @@ pub use sqlite::compression_guidelines::CompressionFailurePair;
 pub use sqlite::corrections::UserCorrectionRow;
 #[cfg(feature = "experiments")]
 pub use sqlite::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
+pub use sqlite::session_digest::SessionDigest;
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;
