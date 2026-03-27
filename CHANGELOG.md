@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(skills): `browser` bundled skill — Playwright MCP decision tree, quick reference table, safety rules (SSRF protection for private IP ranges, credential and payment form guards, prompt injection defense), error handling guide; configure via `[[mcp.servers]]` with `id = "playwright"` (#2186)
+- feat(skills): `os-automation` bundled skill — cross-platform OS automation (notifications, clipboard, screenshots, file/URL open, volume, WiFi, scheduled tasks, brightness) with full macOS, Linux, and Windows reference files; macOS reference includes Safari and Chrome AppleScript tab management (#2187)
+
 - feat(memory): SYNAPSE hybrid seed selection — replace binary FTS5 match with combined `fts_score * (1-w) + structural_score * w` ranking (degree + edge-type diversity); embedding fallback when FTS5 yields 0 results; community-aware seed capping with SA-INV-10 guard (fallback to top-N when cap empties results); configurable `seed_structural_weight` and `seed_community_cap` in `[memory.synapse]` (#2167)
 - feat(memory): A-MEM link weight evolution — track per-edge `retrieval_count` / `last_retrieved_at` in SQLite (migration 043); logarithmic boost `confidence * (1 + 0.2 * ln(1 + count))` capped at 1.0 applied during spreading activation and BFS traversal; time-based decay via `decay_edge_retrieval_counts()` triggered independently of eviction cycle; configurable `link_weight_decay_lambda` and `link_weight_decay_interval_secs` in `[memory.graph]` (#2163)
 - feat(orchestration): `TopologyClassifier` — heuristic DAG topology classification (all-parallel, linear-chain, fan-out, mixed) with topology-aware concurrency limits; `DagScheduler` applies pre-dispatch `max_parallel` cap and stores `topology: Option<Topology>` accessible via `topology()` accessor; `[orchestration] topology_selection = true` opt-in config flag (#1840)
