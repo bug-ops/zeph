@@ -107,7 +107,7 @@ pub struct DagScheduler {
     /// Immutable base parallelism limit from config. Never changes after construction.
     ///
     /// `max_parallel` is derived from this via `TopologyClassifier::compute_max_parallel`
-    /// and may be lower (e.g., 1 for LinearChain). Using `config_max_parallel` as the
+    /// and may be lower (e.g., 1 for `LinearChain`). Using `config_max_parallel` as the
     /// base prevents drift: successive replan cycles always compute from the original
     /// config value, not from a previously reduced `max_parallel`.
     config_max_parallel: usize,
