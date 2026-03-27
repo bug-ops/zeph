@@ -285,6 +285,23 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_digest_config(mut self, config: crate::config::DigestConfig) -> Self {
+        self.memory_state.digest_config = config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_strategy(
+        mut self,
+        strategy: crate::config::ContextStrategy,
+        crossover_turn_threshold: u32,
+    ) -> Self {
+        self.memory_state.context_strategy = strategy;
+        self.memory_state.crossover_turn_threshold = crossover_turn_threshold;
+        self
+    }
+
+    #[must_use]
     pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
         // R-IMP-03: graph extraction writes raw entity names/relations extracted by the LLM.
         // No PII redaction is applied on the graph write path (pre-1.0 MVP limitation).

@@ -628,6 +628,61 @@ pub struct MemoryConfig {
     /// messages to a semantic tier by clustering near-duplicates and distilling via LLM.
     #[serde(default)]
     pub tiers: TierConfig,
+    /// Session digest generation at session end. Default: disabled.
+    #[serde(default)]
+    pub digest: DigestConfig,
+    /// Context assembly strategy. Default: `full_history` (current behavior).
+    #[serde(default)]
+    pub context_strategy: ContextStrategy,
+    /// Number of turns at which `Adaptive` strategy switches to `MemoryFirst`. Default: `20`.
+    #[serde(default = "default_crossover_turn_threshold")]
+    pub crossover_turn_threshold: u32,
+}
+
+fn default_crossover_turn_threshold() -> u32 {
+    20
+}
+
+/// Session digest configuration (#2289).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DigestConfig {
+    /// Enable session digest generation at session end. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for digest generation.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub provider: String,
+    /// Maximum tokens for the digest text. Default: `500`.
+    pub max_tokens: usize,
+    /// Maximum messages to feed into the digest prompt. Default: `50`.
+    pub max_input_messages: usize,
+}
+
+impl Default for DigestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: String::new(),
+            max_tokens: 500,
+            max_input_messages: 50,
+        }
+    }
+}
+
+/// Context assembly strategy (#2288).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextStrategy {
+    /// Full conversation history trimmed to budget, with memory augmentation.
+    /// This is the default and existing behavior.
+    #[default]
+    FullHistory,
+    /// Drop conversation history; assemble context from summaries, semantic recall,
+    /// cross-session memory, and session digest only.
+    MemoryFirst,
+    /// Start as `FullHistory`; switch to `MemoryFirst` when turn count exceeds
+    /// `crossover_turn_threshold`.
+    Adaptive,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

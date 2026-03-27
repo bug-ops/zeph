@@ -759,9 +759,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let _ = shutdown_for_guidelines.changed().await;
             guidelines_cancel_clone.cancel();
         });
+        let guidelines_provider = app
+            .build_guidelines_provider()
+            .unwrap_or_else(|| provider.clone());
         Some(zeph_memory::start_guidelines_updater(
             std::sync::Arc::new(memory.sqlite().clone()),
-            provider.clone(),
+            guidelines_provider,
             std::sync::Arc::clone(&memory.token_counter),
             config.memory.compression_guidelines.clone(),
             guidelines_cancel,
@@ -942,6 +945,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone())
+    .with_digest_config(config.memory.digest.clone())
+    .with_context_strategy(
+        config.memory.context_strategy,
+        config.memory.crossover_turn_threshold,
+    )
     .with_focus_config(config.agent.focus.clone())
     .with_sidequest_config(config.memory.sidequest.clone())
     .with_embedding_provider(embedding_provider)

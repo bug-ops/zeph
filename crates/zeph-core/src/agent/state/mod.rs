@@ -55,6 +55,14 @@ pub(crate) struct MemoryState {
     /// When `true`, hard compaction uses `AnchoredSummary` (structured JSON) instead of
     /// free-form prose. Falls back to prose on any LLM or validation failure.
     pub(crate) structured_summaries: bool,
+    /// Session digest configuration (#2289).
+    pub(crate) digest_config: crate::config::DigestConfig,
+    /// Cached session digest text and its token count, loaded at session start.
+    pub(crate) cached_session_digest: Option<(String, usize)>,
+    /// Context assembly strategy (#2288).
+    pub(crate) context_strategy: crate::config::ContextStrategy,
+    /// Turn threshold for `Adaptive` strategy crossover (#2288).
+    pub(crate) crossover_turn_threshold: u32,
 }
 
 pub(crate) struct SkillState {

@@ -25,6 +25,10 @@ pub struct CompressionGuidelinesConfig {
     pub update_interval_secs: u64,
     /// Maximum unused failure pairs to retain (cleanup policy). Default: `100`.
     pub max_stored_pairs: usize,
+    /// Provider name from `[[llm.providers]]` for guidelines update LLM calls.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    #[serde(default)]
+    pub guidelines_provider: String,
 }
 
 impl Default for CompressionGuidelinesConfig {
@@ -37,6 +41,7 @@ impl Default for CompressionGuidelinesConfig {
             detection_window_turns: 10,
             update_interval_secs: 300,
             max_stored_pairs: 100,
+            guidelines_provider: String::new(),
         }
     }
 }

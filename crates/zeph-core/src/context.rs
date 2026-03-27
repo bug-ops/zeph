@@ -254,6 +254,9 @@ pub struct BudgetAllocation {
     pub graph_facts: usize,
     pub recent_history: usize,
     pub response_reserve: usize,
+    /// Tokens pre-reserved for the session digest block. Always present; 0 when digest is
+    /// disabled or no digest exists for the current conversation.
+    pub session_digest: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +301,31 @@ impl ContextBudget {
         tc: &TokenCounter,
         graph_enabled: bool,
     ) -> BudgetAllocation {
+        self.allocate_with_opts(system_prompt, skills_prompt, tc, graph_enabled, 0, false)
+    }
+
+    /// Allocate context budget with optional digest pre-reservation and `MemoryFirst` mode.
+    ///
+    /// `digest_tokens` — pre-counted tokens for the session digest block; deducted from
+    /// `available` BEFORE percentage splits so it does not silently crowd out other slots.
+    ///
+    /// `memory_first` — when `true`, sets `recent_history` to 0 and redistributes those
+    /// tokens across `summaries`, `semantic_recall`, and `cross_session`.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn allocate_with_opts(
+        &self,
+        system_prompt: &str,
+        skills_prompt: &str,
+        tc: &TokenCounter,
+        graph_enabled: bool,
+        digest_tokens: usize,
+        memory_first: bool,
+    ) -> BudgetAllocation {
         if self.max_tokens == 0 {
             return BudgetAllocation {
                 system_prompt: 0,
@@ -309,6 +337,7 @@ impl ContextBudget {
                 graph_facts: 0,
                 recent_history: 0,
                 response_reserve: 0,
+                session_digest: 0,
             };
         }
 
@@ -320,15 +349,41 @@ impl ContextBudget {
 
         available = available.saturating_sub(system_prompt_tokens + skills_tokens);
 
-        // When graph is enabled: take 4% for graph facts, reduce other slices by 1% each.
-        let (summaries, semantic_recall, cross_session, code_context, graph_facts) =
-            if graph_enabled {
+        // Deduct digest tokens BEFORE percentage splits so the budget allocator accounts for them.
+        let session_digest = digest_tokens.min(available);
+        available = available.saturating_sub(session_digest);
+
+        let (summaries, semantic_recall, cross_session, code_context, graph_facts, recent_history) =
+            if memory_first {
+                // MemoryFirst: no recent history, redistribute to memory slots.
+                if graph_enabled {
+                    (
+                        (available as f32 * 0.22) as usize,
+                        (available as f32 * 0.22) as usize,
+                        (available as f32 * 0.12) as usize,
+                        (available as f32 * 0.38) as usize,
+                        (available as f32 * 0.06) as usize,
+                        0,
+                    )
+                } else {
+                    (
+                        (available as f32 * 0.25) as usize,
+                        (available as f32 * 0.25) as usize,
+                        (available as f32 * 0.15) as usize,
+                        (available as f32 * 0.35) as usize,
+                        0,
+                        0,
+                    )
+                }
+            } else if graph_enabled {
+                // When graph is enabled: take 4% for graph facts, reduce other slices by 1% each.
                 (
                     (available as f32 * 0.07) as usize,
                     (available as f32 * 0.07) as usize,
                     (available as f32 * 0.03) as usize,
                     (available as f32 * 0.29) as usize,
                     (available as f32 * 0.04) as usize,
+                    (available as f32 * 0.50) as usize,
                 )
             } else {
                 (
@@ -337,9 +392,9 @@ impl ContextBudget {
                     (available as f32 * 0.04) as usize,
                     (available as f32 * 0.30) as usize,
                     0,
+                    (available as f32 * 0.50) as usize,
                 )
             };
-        let recent_history = (available as f32 * 0.50) as usize;
 
         BudgetAllocation {
             system_prompt: system_prompt_tokens,
@@ -351,6 +406,7 @@ impl ContextBudget {
             graph_facts,
             recent_history,
             response_reserve,
+            session_digest,
         }
     }
 }

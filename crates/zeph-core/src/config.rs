@@ -24,6 +24,8 @@ pub use zeph_config::{
     TrustConfig, TuiConfig, VaultConfig, VectorBackend,
 };
 
+pub use zeph_config::{ContextStrategy, DigestConfig};
+
 #[cfg(feature = "lsp-context")]
 pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 
