@@ -2697,6 +2697,15 @@ impl<C: Channel> Agent<C> {
             }};
         }
 
+        // Slash command arguments may contain user-provided URLs (e.g. `/browse https://...`).
+        // Extract them here so UrlGroundingVerifier allows follow-up fetch calls.
+        let slash_urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
+        if !slash_urls.is_empty()
+            && let Ok(mut set) = self.security.user_provided_urls.write()
+        {
+            set.extend(slash_urls);
+        }
+
         if trimmed == "/help" {
             handled!(self.handle_help_command().await);
         }
