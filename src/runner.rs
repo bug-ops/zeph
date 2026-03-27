@@ -31,6 +31,7 @@ use crate::acp::run_acp_http_server;
 use crate::acp::{print_acp_manifest, run_acp_server};
 use crate::cli::Command;
 use crate::commands::agents::handle_agents_command;
+use crate::commands::classifiers::handle_classifiers_command;
 use crate::commands::memory::handle_memory_command;
 use crate::commands::router::handle_router_command;
 #[cfg(feature = "acp")]
@@ -313,6 +314,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let resolved =
                 resolve_config_path(migrate_config_path.as_deref().or(cli.config.as_deref()));
             return crate::commands::migrate::handle_migrate_config(&resolved, in_place, diff);
+        }
+        Some(Command::Classifiers { command: clf_cmd }) => {
+            let config_path = resolve_config_path(cli.config.as_deref());
+            let config = Config::load(&config_path).unwrap_or_default();
+            return handle_classifiers_command(&clf_cmd, &config);
         }
         None => {}
     }
@@ -1067,6 +1073,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     #[cfg(feature = "guardrail")]
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
+    #[cfg(feature = "classifiers")]
+    let agent = agent_setup::apply_injection_classifier(agent, &config);
 
     let (code_retriever, _index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
         &config.index,

@@ -27,6 +27,7 @@ static CANONICAL_ORDER: &[&str] = &[
     "daemon",
     "scheduler",
     "orchestration",
+    "classifiers",
     "security",
     "vault",
     "timeouts",

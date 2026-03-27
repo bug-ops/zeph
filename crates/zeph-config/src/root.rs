@@ -9,6 +9,7 @@ use zeph_tools::ToolsConfig;
 
 use crate::agent::{AgentConfig, FocusConfig, SubAgentConfig};
 use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig};
+use crate::classifiers::ClassifiersConfig;
 use crate::defaults::{default_skill_paths, default_sqlite_path_field};
 use crate::experiment::{ExperimentConfig, OrchestrationConfig};
 use crate::features::{
@@ -81,6 +82,8 @@ pub struct Config {
     pub agents: SubAgentConfig,
     #[serde(default)]
     pub orchestration: OrchestrationConfig,
+    #[serde(default)]
+    pub classifiers: ClassifiersConfig,
     #[serde(default)]
     pub experiments: ExperimentConfig,
     #[serde(default)]
@@ -215,6 +218,7 @@ impl Default for Config {
             acp: AcpConfig::default(),
             agents: SubAgentConfig::default(),
             orchestration: OrchestrationConfig::default(),
+            classifiers: ClassifiersConfig::default(),
             experiments: ExperimentConfig::default(),
             debug: DebugConfig::default(),
             logging: LoggingConfig::default(),

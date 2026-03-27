@@ -3170,6 +3170,19 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // ML classifier: lightweight injection detection on user input boundary.
+        // Runs after guardrail (LLM-based) to layer defenses. On detection, blocks and returns.
+        // Falls back to regex on classifier error/timeout — never degrades below regex baseline.
+        #[cfg(feature = "classifiers")]
+        if self.security.sanitizer.classify_injection(trimmed).await {
+            let _ = self
+                .channel
+                .send("[security] Input blocked: injection detected by classifier.")
+                .await;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(());
+        }
+
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).
         let conv_id = self.memory_state.conversation_id;

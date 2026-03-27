@@ -8,6 +8,7 @@ pub mod any;
 pub mod candle_provider;
 #[cfg(feature = "candle")]
 pub mod candle_whisper;
+pub mod classifier;
 pub mod claude;
 pub mod compatible;
 pub mod ema;

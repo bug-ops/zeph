@@ -659,6 +659,18 @@ aggregator_max_tokens = 4096
 # Backoff in ms before retrying deferred tasks
 deferral_backoff_ms = 250
 
+[classifiers]
+# Enable ML-backed classifiers (requires the `classifiers` feature at compile time).
+# When false, all classifier code is bypassed and existing regex detection runs unchanged.
+enabled = false
+# Per-inference timeout in milliseconds. On timeout the call falls back to regex.
+timeout_ms = 5000
+# HuggingFace repo ID for the injection detection model.
+# Pre-download with: zeph classifiers download
+injection_model = "protectai/deberta-v3-small-prompt-injection-v2"
+# Minimum classifier score (0.0–1.0) to treat a result as injection. Conservative default.
+injection_threshold = 0.8
+
 [experiments]
 # Enable the autonomous self-experimentation engine
 enabled = false

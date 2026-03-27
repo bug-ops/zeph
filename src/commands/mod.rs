@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub(crate) mod agents;
+pub(crate) mod classifiers;
 pub(crate) mod ingest;
 pub(crate) mod memory;
 pub(crate) mod migrate;

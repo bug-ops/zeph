@@ -542,6 +542,29 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach an ML classifier backend to the sanitizer for injection detection.
+    ///
+    /// When attached, `classify_injection()` is called on each incoming user message when
+    /// `classifiers.enabled = true`. On error or timeout it falls back to regex detection.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_injection_classifier(
+        mut self,
+        backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
+        timeout_ms: u64,
+        threshold: f32,
+    ) -> Self {
+        // Replace sanitizer in-place: move out, attach classifier, move back.
+        let old = std::mem::replace(
+            &mut self.security.sanitizer,
+            zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+        );
+        self.security.sanitizer = old.with_classifier(backend, timeout_ms, threshold);
+        self
+    }
+
     #[cfg(feature = "guardrail")]
     #[must_use]
     pub fn with_guardrail(mut self, filter: zeph_sanitizer::guardrail::GuardrailFilter) -> Self {

@@ -264,7 +264,7 @@ fn create_provider_candle_without_config_errors() {
         result
             .unwrap_err()
             .to_string()
-            .contains("llm.candle config section required")
+            .contains("candle provider requires 'candle' section in [[llm.providers]]")
     );
 }
 

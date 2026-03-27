@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod channels;
+pub mod classifiers;
 pub mod defaults;
 pub mod dump_format;
 mod env;
@@ -80,5 +81,6 @@ pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 
 // Top-level config struct, error type, and resolved secrets — moved from zeph-core.
+pub use classifiers::ClassifiersConfig;
 pub use error::ConfigError;
 pub use root::{Config, ResolvedSecrets};

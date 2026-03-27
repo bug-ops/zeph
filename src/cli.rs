@@ -259,6 +259,11 @@ pub(crate) enum Command {
         #[arg(long)]
         diff: bool,
     },
+    /// Manage ML classifier models
+    Classifiers {
+        #[command(subcommand)]
+        command: crate::commands::classifiers::ClassifiersCommand,
+    },
 }
 
 #[derive(Subcommand)]

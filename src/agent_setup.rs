@@ -496,6 +496,31 @@ pub(crate) fn apply_guardrail<C: Channel>(
     }
 }
 
+/// Wire the `CandleClassifier` injection backend into the agent's sanitizer.
+///
+/// Only active when `classifiers.enabled = true` in config.
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_injection_classifier<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &Config,
+) -> zeph_core::agent::Agent<C> {
+    if !config.classifiers.enabled {
+        return agent;
+    }
+    let backend = std::sync::Arc::new(zeph_llm::classifier::candle::CandleClassifier::new(
+        config.classifiers.injection_model.as_str(),
+    ));
+    tracing::info!(
+        repo_id = %config.classifiers.injection_model,
+        "ML injection classifier attached (model loads lazily on first use)"
+    );
+    agent.with_injection_classifier(
+        backend,
+        config.classifiers.timeout_ms,
+        config.classifiers.injection_threshold,
+    )
+}
+
 pub(crate) async fn apply_code_indexer(
     config: &IndexConfig,
     qdrant_ops: Option<QdrantOps>,

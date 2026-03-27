@@ -9,12 +9,12 @@
 // Re-export Config types from zeph-config for internal use.
 pub use zeph_config::{
     AcpConfig, AcpLspConfig, AcpTransport, AgentConfig, CandleConfig, CandleInlineConfig,
-    CascadeClassifierMode, CascadeConfig, CompressionConfig, CompressionStrategy, Config,
-    ConfigError, CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig,
-    DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig,
-    GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig, LearningConfig,
-    LlmConfig, LlmRoutingStrategy, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig,
-    McpOAuthConfig, McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig,
+    CascadeClassifierMode, CascadeConfig, ClassifiersConfig, CompressionConfig,
+    CompressionStrategy, Config, ConfigError, CostConfig, DaemonConfig, DebugConfig, DetectorMode,
+    DiscordConfig, DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule, FocusConfig,
+    GatewayConfig, GenerationParams, GraphConfig, HookDef, HookMatcher, HookType, IndexConfig,
+    LearningConfig, LlmConfig, LlmRoutingStrategy, LogRotation, LoggingConfig, MAX_TOKENS_CAP,
+    McpConfig, McpOAuthConfig, McpServerConfig, MemoryConfig, MemoryScope, NoteLinkingConfig,
     OAuthTokenStorage, ObservabilityConfig, OrchestrationConfig, PermissionMode, ProviderEntry,
     ProviderKind, PruningStrategy, RateLimitConfig, ResolvedSecrets, RouterConfig,
     RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind,
