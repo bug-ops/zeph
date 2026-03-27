@@ -1419,7 +1419,7 @@ impl<C: Channel> Agent<C> {
                     let feedback = zeph_tools::ToolErrorFeedback {
                         category,
                         message: e.to_string(),
-                        retryable: false,
+                        retryable: category.is_retryable(),
                     };
                     (
                         feedback.format_for_llm(),

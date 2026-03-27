@@ -126,10 +126,10 @@ impl ToolErrorCategory {
                 "This resource is not available. Try an alternative approach."
             }
             Self::Cancelled => "Operation was cancelled by the user.",
-            Self::RateLimited => "Rate limit exceeded. The system will retry automatically.",
-            Self::ServerError => "Server error. The system will retry automatically.",
-            Self::NetworkError => "Network error. The system will retry automatically.",
-            Self::Timeout => "Operation timed out. The system will retry automatically.",
+            Self::RateLimited => "Rate limit exceeded. The system will retry if possible.",
+            Self::ServerError => "Server error. The system will retry if possible.",
+            Self::NetworkError => "Network error. The system will retry if possible.",
+            Self::Timeout => "Operation timed out. The system will retry if possible.",
         }
     }
 }
@@ -395,9 +395,60 @@ mod tests {
         let s = fb.format_for_llm();
         assert!(s.contains("rate_limited"));
         assert!(s.contains("retryable: true"));
-        // RateLimited suggestion must mention automatic retry.
+        // RateLimited suggestion must mention retry but not promise it is automatic.
         let suggestion = ToolErrorCategory::RateLimited.suggestion();
-        assert!(suggestion.contains("retry automatically"), "{suggestion}");
+        assert!(suggestion.contains("retry"), "{suggestion}");
+        assert!(!suggestion.contains("automatically"), "{suggestion}");
+    }
+
+    #[test]
+    fn transient_suggestion_neutral_no_automatically() {
+        // Suggestion text must not promise "automatically" — retry may or may not fire
+        // (executor may not be retryable, or retries may be exhausted).
+        for cat in [
+            ToolErrorCategory::ServerError,
+            ToolErrorCategory::NetworkError,
+            ToolErrorCategory::RateLimited,
+            ToolErrorCategory::Timeout,
+        ] {
+            let s = cat.suggestion();
+            assert!(
+                !s.contains("automatically"),
+                "{cat:?} suggestion must not promise automatic retry: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn feedback_retryable_matches_category_is_retryable() {
+        // Transient categories must produce retryable: true feedback.
+        for cat in [
+            ToolErrorCategory::ServerError,
+            ToolErrorCategory::NetworkError,
+            ToolErrorCategory::RateLimited,
+            ToolErrorCategory::Timeout,
+        ] {
+            let fb = ToolErrorFeedback {
+                category: cat,
+                message: "error".to_owned(),
+                retryable: cat.is_retryable(),
+            };
+            assert!(fb.retryable, "{cat:?} feedback must be retryable");
+        }
+
+        // Permanent categories must produce retryable: false feedback.
+        for cat in [
+            ToolErrorCategory::InvalidParameters,
+            ToolErrorCategory::PolicyBlocked,
+            ToolErrorCategory::PermanentFailure,
+        ] {
+            let fb = ToolErrorFeedback {
+                category: cat,
+                message: "error".to_owned(),
+                retryable: cat.is_retryable(),
+            };
+            assert!(!fb.retryable, "{cat:?} feedback must not be retryable");
+        }
     }
 
     // ── B4 regression: infrastructure errors must NOT be quality failures ─────

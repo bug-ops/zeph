@@ -245,6 +245,10 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.inner.set_skill_env(env);
     }
 
+    fn is_tool_retryable(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_retryable(tool_id)
+    }
+
     fn set_effective_trust(&self, level: crate::TrustLevel) {
         self.effective_trust
             .store(trust_to_u8(level), Ordering::Relaxed);
@@ -472,6 +476,29 @@ mod tests {
         fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
             *self.captured.lock().unwrap() = env;
         }
+    }
+
+    #[test]
+    fn is_tool_retryable_delegated_to_inner() {
+        #[derive(Debug)]
+        struct RetryableExecutor;
+        impl ToolExecutor for RetryableExecutor {
+            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+            async fn execute_tool_call(
+                &self,
+                _: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+            fn is_tool_retryable(&self, tool_id: &str) -> bool {
+                tool_id == "fetch"
+            }
+        }
+        let gate = TrustGateExecutor::new(RetryableExecutor, PermissionPolicy::default());
+        assert!(gate.is_tool_retryable("fetch"));
+        assert!(!gate.is_tool_retryable("bash"));
     }
 
     #[test]

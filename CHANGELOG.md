@@ -51,6 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tools): `TrustGateExecutor` now delegates `is_tool_retryable()` to its inner executor; previously the missing delegation caused Phase 2 transient retry to never fire for HTTP-based tools (e.g. `fetch` returning 503) because the default `false` short-circuited the retry guard (#2223)
+- fix(tools): `ToolErrorFeedback.retryable` is now set from `category.is_retryable()` instead of being hardcoded `false`; transient categories (ServerError, NetworkError, RateLimited, Timeout) now correctly report `retryable: true` in LLM feedback; suggestion text for transient categories changed from "The system will retry automatically." to "The system will retry if possible." to avoid contradicting a `retryable: false` state at exhaustion (#2222)
+
 - fix(memory): reject self-loop edges in graph extractor — `extract_and_store` skips edges where source and target resolve to the same entity ID; `insert_edge_typed` returns `MemoryError::InvalidInput` for same-ID pairs; migration `044` removes existing self-loops and adds a BEFORE INSERT trigger to enforce the constraint at the DB level (#2215)
 
 - fix(security): agent no longer calls `fetch`/`web_scrape` with hallucinated URLs; three-layer defense: (1) tool descriptions now explicitly prohibit constructing or inferring URLs from entity names; (2) system prompt `## Guidelines` adds a fetch/URL grounding rule; (3) new `UrlGroundingVerifier` pre-execution gate blocks `fetch`, `web_scrape`, and `*_fetch` tool calls when the requested URL was not present in any user message in the session — returns "fetch rejected: URL was not provided by the user"; `user_provided_urls` extracted via `extract_flagged_urls` on every user turn, cleared on `/clear`; configurable via `[security.pre_execution_verify.url_grounding]` (#2191)

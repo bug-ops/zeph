@@ -1079,6 +1079,21 @@ mod tests {
     }
 
     #[test]
+    fn tool_error_http_503_is_transient_triggers_phase2_retry() {
+        // Phase 2 retry fires when err.kind() == ErrorKind::Transient.
+        // Verify the full chain: Http{503} -> ServerError -> is_retryable() -> Transient.
+        let err = ToolError::Http {
+            status: 503,
+            message: "service unavailable".to_owned(),
+        };
+        assert_eq!(
+            err.kind(),
+            ErrorKind::Transient,
+            "HTTP 503 must be Transient so Phase 2 retry fires"
+        );
+    }
+
+    #[test]
     fn tool_error_blocked_category_is_policy_blocked() {
         use crate::error_taxonomy::ToolErrorCategory;
         let err = ToolError::Blocked {
