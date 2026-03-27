@@ -15,8 +15,12 @@ fn default_injection_threshold() -> f32 {
     0.8
 }
 
-fn default_ner_model() -> String {
+fn default_pii_model() -> String {
     "iiiorg/piiranha-v1-detect-personal-information".into()
+}
+
+fn default_pii_threshold() -> f32 {
+    0.75
 }
 
 /// Configuration for the ML-backed classifier subsystem.
@@ -48,11 +52,35 @@ pub struct ClassifiersConfig {
     #[serde(default = "default_injection_threshold")]
     pub injection_threshold: f32,
 
-    /// `HuggingFace` repo ID for the NER model used by `CandleNerClassifier`.
+    /// Optional SHA-256 hex digest of the injection model safetensors file.
     ///
-    /// Default: `iiiorg/piiranha-v1-detect-personal-information`.
-    #[serde(default = "default_ner_model")]
-    pub ner_model: String,
+    /// When set, the file is verified before loading. Mismatch aborts startup with an error.
+    /// Useful for security-sensitive deployments to detect corruption or tampering.
+    #[serde(default)]
+    pub injection_model_sha256: Option<String>,
+
+    /// Enable PII detection via the NER model (`pii_model`).
+    ///
+    /// When `true`, `CandlePiiClassifier` runs on user messages in addition to the
+    /// regex-based `PiiFilter`. Both results are merged (union with deduplication).
+    #[serde(default)]
+    pub pii_enabled: bool,
+
+    /// `HuggingFace` repo ID for the PII NER model.
+    #[serde(default = "default_pii_model")]
+    pub pii_model: String,
+
+    /// Minimum per-token confidence to accept a PII label.
+    ///
+    /// Tokens below this threshold are treated as O (no entity).
+    /// Default `0.75` balances recall on rarer entity types (DRIVERLICENSE, PASSPORT, IBAN)
+    /// with precision. Raise to `0.85` to prefer precision over recall.
+    #[serde(default = "default_pii_threshold")]
+    pub pii_threshold: f32,
+
+    /// Optional SHA-256 hex digest of the PII model safetensors file.
+    #[serde(default)]
+    pub pii_model_sha256: Option<String>,
 }
 
 impl Default for ClassifiersConfig {
@@ -62,7 +90,11 @@ impl Default for ClassifiersConfig {
             timeout_ms: default_classifier_timeout_ms(),
             injection_model: default_injection_model(),
             injection_threshold: default_injection_threshold(),
-            ner_model: default_ner_model(),
+            injection_model_sha256: None,
+            pii_enabled: false,
+            pii_model: default_pii_model(),
+            pii_threshold: default_pii_threshold(),
+            pii_model_sha256: None,
         }
     }
 }
@@ -81,6 +113,14 @@ mod tests {
             "protectai/deberta-v3-small-prompt-injection-v2"
         );
         assert!((cfg.injection_threshold - 0.8).abs() < 1e-6);
+        assert!(cfg.injection_model_sha256.is_none());
+        assert!(!cfg.pii_enabled);
+        assert_eq!(
+            cfg.pii_model,
+            "iiiorg/piiranha-v1-detect-personal-information"
+        );
+        assert!((cfg.pii_threshold - 0.75).abs() < 1e-6);
+        assert!(cfg.pii_model_sha256.is_none());
     }
 
     #[test]
@@ -93,6 +133,8 @@ mod tests {
             "protectai/deberta-v3-small-prompt-injection-v2"
         );
         assert!((cfg.injection_threshold - 0.8).abs() < 1e-6);
+        assert!(!cfg.pii_enabled);
+        assert!((cfg.pii_threshold - 0.75).abs() < 1e-6);
     }
 
     #[test]
@@ -102,12 +144,27 @@ mod tests {
             timeout_ms = 2000
             injection_model = "custom/model-v1"
             injection_threshold = 0.9
+            pii_enabled = true
+            pii_threshold = 0.85
         "#;
         let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
         assert!(cfg.enabled);
         assert_eq!(cfg.timeout_ms, 2000);
         assert_eq!(cfg.injection_model, "custom/model-v1");
         assert!((cfg.injection_threshold - 0.9).abs() < 1e-6);
+        assert!(cfg.pii_enabled);
+        assert!((cfg.pii_threshold - 0.85).abs() < 1e-6);
+    }
+
+    #[test]
+    fn deserialize_sha256_fields() {
+        let toml = r#"
+            injection_model_sha256 = "abc123"
+            pii_model_sha256 = "def456"
+        "#;
+        let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.injection_model_sha256.as_deref(), Some("abc123"));
+        assert_eq!(cfg.pii_model_sha256.as_deref(), Some("def456"));
     }
 
     #[test]
@@ -117,7 +174,11 @@ mod tests {
             timeout_ms: 3000,
             injection_model: "org/model".into(),
             injection_threshold: 0.75,
-            ner_model: "org/ner-model".into(),
+            injection_model_sha256: Some("deadbeef".into()),
+            pii_enabled: true,
+            pii_model: "org/pii-model".into(),
+            pii_threshold: 0.80,
+            pii_model_sha256: None,
         };
         let serialized = toml::to_string(&original).unwrap();
         let deserialized: ClassifiersConfig = toml::from_str(&serialized).unwrap();

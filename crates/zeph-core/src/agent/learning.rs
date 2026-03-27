@@ -1275,7 +1275,6 @@ mod tests {
             correction_confidence_threshold: 0.6,
             detector_mode: crate::config::DetectorMode::default(),
             judge_model: String::new(),
-            detector_model: String::new(),
             judge_adaptive_low: 0.5,
             judge_adaptive_high: 0.8,
             correction_recall_limit: 3,
@@ -1284,6 +1283,7 @@ mod tests {
             auto_promote_threshold: 0.95,
             auto_demote_min_uses: 30,
             auto_demote_threshold: 0.40,
+            feedback_provider: String::new(),
         }
     }
 

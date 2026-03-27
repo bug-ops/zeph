@@ -72,7 +72,8 @@ pub(crate) struct WizardState {
     /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
-    pub(crate) detector_model: Option<String>,
+    /// Provider name from `[[llm.providers]]` for `DetectorMode::Model`. Empty = primary.
+    pub(crate) feedback_provider: Option<String>,
     /// Router strategy: None = no router, "ema", "thompson", or "cascade".
     pub(crate) router_strategy: Option<String>,
     /// Custom path for Thompson state file (None = use default).
@@ -141,6 +142,10 @@ pub(crate) struct WizardState {
     pub(crate) guardrail_action: String,
     #[cfg(feature = "guardrail")]
     pub(crate) guardrail_timeout_ms: u64,
+    #[cfg(feature = "classifiers")]
+    pub(crate) classifiers_enabled: bool,
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_enabled: bool,
     // Logging
     pub(crate) log_file: String,
     pub(crate) log_level: String,
@@ -219,7 +224,7 @@ impl Default for WizardState {
             agents_default_memory_scope: None,
             detector_mode: None,
             judge_model: None,
-            detector_model: None,
+            feedback_provider: None,
             router_strategy: None,
             router_thompson_state_path: None,
             router_cascade_quality_threshold: None,
@@ -273,6 +278,10 @@ impl Default for WizardState {
             guardrail_action: "block".to_owned(),
             #[cfg(feature = "guardrail")]
             guardrail_timeout_ms: 500,
+            #[cfg(feature = "classifiers")]
+            classifiers_enabled: false,
+            #[cfg(feature = "classifiers")]
+            pii_enabled: false,
             log_file: String::new(),
             log_level: String::new(),
             log_rotation: String::new(),
@@ -1260,8 +1269,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         }
         Some("model") => {
             config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Model;
-            if let Some(ref model) = state.detector_model {
-                config.skills.learning.detector_model.clone_from(model);
+            if let Some(ref provider) = state.feedback_provider {
+                config
+                    .skills
+                    .learning
+                    .feedback_provider
+                    .clone_from(provider);
             }
         }
         _ => {}
@@ -1313,6 +1326,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     #[cfg(feature = "policy-enforcer")]
     {
         config.tools.policy.enabled = state.policy_enforcer_enabled;
+    }
+
+    #[cfg(feature = "classifiers")]
+    {
+        config.classifiers.enabled = state.classifiers_enabled;
+        config.classifiers.pii_enabled = state.pii_enabled;
     }
 
     config.tools.retry.max_attempts = state.retry_max_attempts;
@@ -1959,14 +1978,14 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
         }
         2 => {
             state.detector_mode = Some("model".into());
-            let detector_model: String = Input::new()
+            let feedback_provider: String = Input::new()
                 .with_prompt(
-                    "HuggingFace repo ID for correction detection model (e.g. org/model-name; requires classifiers feature)",
+                    "Provider name from [[llm.providers]] for feedback detection (leave empty to use primary provider)",
                 )
                 .default(String::new())
                 .interact_text()?;
-            if !detector_model.is_empty() {
-                state.detector_model = Some(detector_model);
+            if !feedback_provider.is_empty() {
+                state.feedback_provider = Some(feedback_provider);
             }
         }
         _ => {
@@ -2065,6 +2084,24 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             state.guardrail_timeout_ms = timeout_str.parse().unwrap_or(500);
         }
     }
+
+    #[cfg(feature = "classifiers")]
+    {
+        state.classifiers_enabled = Confirm::new()
+            .with_prompt(
+                "Enable ML classifiers? (injection detection and PII detection via candle inference)",
+            )
+            .default(false)
+            .interact()?;
+
+        if state.classifiers_enabled {
+            state.pii_enabled = Confirm::new()
+                .with_prompt("Enable PII detection? (NER-based scan of assistant responses)")
+                .default(false)
+                .interact()?;
+        }
+    }
+
     println!();
     Ok(())
 }

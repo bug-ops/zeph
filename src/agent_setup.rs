@@ -504,56 +504,67 @@ pub(crate) fn apply_injection_classifier<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     config: &Config,
 ) -> zeph_core::agent::Agent<C> {
-    if !config.classifiers.enabled {
+    apply_injection_classifier_with_cfg(agent, &config.classifiers)
+}
+
+/// Wire the `CandleClassifier` injection backend into the agent's sanitizer (takes `ClassifiersConfig` directly).
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_injection_classifier_with_cfg<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    classifiers: &zeph_core::config::ClassifiersConfig,
+) -> zeph_core::agent::Agent<C> {
+    if !classifiers.enabled {
         return agent;
     }
     let backend = std::sync::Arc::new(zeph_llm::classifier::candle::CandleClassifier::new(
-        config.classifiers.injection_model.as_str(),
+        classifiers.injection_model.as_str(),
     ));
     tracing::info!(
-        repo_id = %config.classifiers.injection_model,
+        repo_id = %classifiers.injection_model,
         "ML injection classifier attached (model loads lazily on first use)"
     );
     agent.with_injection_classifier(
         backend,
-        config.classifiers.timeout_ms,
-        config.classifiers.injection_threshold,
+        classifiers.timeout_ms,
+        classifiers.injection_threshold,
     )
 }
 
-/// Wire the `CandleNerClassifier` (or `CandleClassifier`) feedback backend into the agent.
+/// Wire the `CandlePiiClassifier` NER backend into the agent's sanitizer.
 ///
-/// Only active when `classifiers.enabled = true` AND `detector_mode = "model"` in config.
-/// Uses `classifiers.ner_model` when `detector_model` in learning config is empty.
-/// Validates that `detector_model` is non-empty; falls back to `ner_model` default with
-/// a warning when it is blank.
+/// Only active when `classifiers.enabled = true` and `classifiers.pii_enabled = true`.
 #[cfg(feature = "classifiers")]
-pub(crate) fn apply_feedback_classifier<C: Channel>(
+pub(crate) fn apply_pii_classifier<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     config: &Config,
 ) -> zeph_core::agent::Agent<C> {
-    use zeph_core::config::DetectorMode;
+    apply_pii_classifier_with_cfg(agent, &config.classifiers)
+}
 
-    if !config.classifiers.enabled {
+/// Wire the `CandlePiiClassifier` NER backend into the agent's sanitizer (takes `ClassifiersConfig` directly).
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_pii_classifier_with_cfg<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    classifiers: &zeph_core::config::ClassifiersConfig,
+) -> zeph_core::agent::Agent<C> {
+    if !classifiers.enabled || !classifiers.pii_enabled {
         return agent;
     }
-    if config.skills.learning.detector_mode != DetectorMode::Model {
-        return agent;
-    }
-
-    let repo_id = if config.skills.learning.detector_model.is_empty() {
-        tracing::warn!("detector_mode=model but detector_model is empty — using ner_model default");
-        config.classifiers.ner_model.as_str()
-    } else {
-        config.skills.learning.detector_model.as_str()
-    };
-
-    let backend = std::sync::Arc::new(zeph_llm::classifier::ner::CandleNerClassifier::new(repo_id));
-    tracing::info!(
-        repo_id = %repo_id,
-        "ML feedback classifier attached (model loads lazily on first use)"
+    let mut pii_backend = zeph_llm::classifier::candle_pii::CandlePiiClassifier::new(
+        classifiers.pii_model.as_str(),
+        classifiers.pii_threshold,
     );
-    agent.with_feedback_classifier(backend)
+    if let Some(hash) = &classifiers.pii_model_sha256 {
+        pii_backend = pii_backend.with_sha256(hash.as_str());
+    }
+    let backend_arc: std::sync::Arc<dyn zeph_llm::classifier::PiiDetector> =
+        std::sync::Arc::new(pii_backend);
+    tracing::info!(
+        repo_id = %classifiers.pii_model,
+        threshold = classifiers.pii_threshold,
+        "PII classifier attached (model loads lazily on first use)"
+    );
+    agent.with_pii_detector(backend_arc, classifiers.pii_threshold)
 }
 
 pub(crate) async fn apply_code_indexer(
