@@ -88,7 +88,7 @@ pub(crate) struct WizardState {
     pub(crate) orchestration_max_parallel: u32,
     pub(crate) orchestration_confirm_before_execute: bool,
     pub(crate) orchestration_failure_strategy: String,
-    pub(crate) orchestration_planner_model: Option<String>,
+    pub(crate) orchestration_planner_provider: Option<String>,
     // Debug settings
     pub(crate) debug_dump_enabled: bool,
     pub(crate) debug_dump_format: zeph_core::debug_dump::DumpFormat,
@@ -225,7 +225,7 @@ impl Default for WizardState {
             orchestration_max_parallel: 0,
             orchestration_confirm_before_execute: false,
             orchestration_failure_strategy: String::new(),
-            orchestration_planner_model: None,
+            orchestration_planner_provider: None,
             debug_dump_enabled: false,
             debug_dump_format: zeph_core::debug_dump::DumpFormat::Json,
             graph_memory_enabled: false,
@@ -1256,7 +1256,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         max_parallel: state.orchestration_max_parallel,
         confirm_before_execute: state.orchestration_confirm_before_execute,
         default_failure_strategy: state.orchestration_failure_strategy.clone(),
-        planner_model: state.orchestration_planner_model.clone(),
+        planner_provider: state
+            .orchestration_planner_provider
+            .clone()
+            .unwrap_or_default(),
         ..OrchestrationConfig::default()
     };
 
@@ -1448,25 +1451,25 @@ fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> {
             .interact()?;
         state.orchestration_failure_strategy = strategies[strategy_idx].into();
 
-        let model: String = Input::new()
-            .with_prompt("Planner model override (leave empty for default)")
+        let provider: String = Input::new()
+            .with_prompt("Provider name for planning LLM calls (empty = primary provider)")
             .default(String::new())
             .interact_text()?;
-        // SEC-P6-02: validate model name — max 128 chars, alphanumeric + `:.-` only.
-        state.orchestration_planner_model = if model.is_empty() {
+        // Validate provider name: alphanumeric + `-_`, max 64 chars.
+        state.orchestration_planner_provider = if provider.is_empty() {
             None
-        } else if model.len() > 128
-            || !model
+        } else if provider.len() > 64
+            || !provider
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '.' || c == '-')
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             println!(
-                "Warning: planner model name contains invalid characters or exceeds 128 chars. \
-                 Ignoring and using the default model."
+                "Warning: provider name contains invalid characters or exceeds 64 chars. \
+                 Ignoring and using the primary provider."
             );
             None
         } else {
-            Some(model)
+            Some(provider)
         };
     }
 

@@ -114,7 +114,7 @@ The planner receives the list of available `SubAgentDef` entries and includes ea
 
 Two config fields control planner behavior:
 
-- `planner_model` — override the model used for planning LLM calls. When unset, the caller provides whatever provider is configured for the agent. Currently reserved for future caller-side provider selection; `LlmPlanner` uses the provider it receives at construction time.
+- `planner_provider` — provider name from `[[llm.providers]]` for planning LLM calls. When empty, the agent's primary provider is used. Set this to a provider name (e.g. `"quality"`) to dedicate a specific model for planning.
 - `planner_max_tokens` — maximum tokens for the planner LLM response (default: 4096). Currently reserved for future use: the underlying `chat_typed` API does not yet support per-call token limits.
 
 See [Configuration](../reference/configuration.md) for the full `[orchestration]` section reference.
@@ -292,7 +292,7 @@ max_parallel = 4                    # Maximum concurrent task executions (defaul
 default_failure_strategy = "abort"  # abort, retry, skip, or ask (default: "abort")
 default_max_retries = 3             # Retries for the "retry" strategy (default: 3)
 task_timeout_secs = 300             # Per-task timeout in seconds, 0 = fallback to 600s (default: 300)
-# planner_model = "claude-sonnet-4-20250514"  # Model override for planning LLM calls
+# planner_provider = "quality"               # Provider name from [[llm.providers]] for planning; empty = primary provider
 planner_max_tokens = 4096           # Max tokens for planner response (default: 4096; reserved)
 dependency_context_budget = 16384   # Character budget for cross-task context (default: 16384)
 confirm_before_execute = true       # Show confirmation before executing a plan (default: true)
@@ -331,7 +331,7 @@ During hard compaction, the summarizer preserves messages associated with active
 - **Task count cap:** The `max_tasks` limit (default 20) is enforced at planning time. Graphs exceeding this limit are rejected by `dag::validate` and must be decomposed into smaller sub-goals.
 - **No dynamic re-planning:** Once a `TaskGraph` is created and confirmed, its structure is fixed. Tasks cannot be added or removed during execution; only their status and results change.
 - **No hot-reload of orchestration config:** Changes to the `[orchestration]` section of `config.toml` require a restart to take effect.
-- **`planner_model` and `planner_max_tokens` are reserved:** These config fields are parsed and stored but not yet applied at runtime. `LlmPlanner` uses whatever provider it receives at construction time regardless of `planner_model`.
+- **`planner_max_tokens` is reserved:** This config field is parsed and stored but not yet applied at runtime. The underlying `chat_typed` API does not yet support per-call token limits.
 - **Residual prompt injection risk:** Task descriptions and cross-task context are wrapped in `ContentSanitizer` spotlight tags to mitigate prompt injection, but the risk is not fully eliminated — treat orchestrated task outputs with appropriate caution.
 - **Single-agent inline execution:** When no sub-agents are defined, tasks run inline on the main provider in sequence (no parallelism). Configure `[agents]` entries and `max_parallel > 1` for concurrent execution.
 

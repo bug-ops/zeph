@@ -1145,6 +1145,75 @@ pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, Migrat
     })
 }
 
+/// Migrate `[orchestration] planner_model` to `planner_provider`.
+///
+/// The namespaces differ: `planner_model` held a raw model name (e.g. `"gpt-4o"`),
+/// while `planner_provider` must reference a `[[llm.providers]]` `name` field. A migrated
+/// value would cause a silent `warn!` from `build_planner_provider()` when resolution fails,
+/// so the old value is commented out and a warning is emitted.
+///
+/// If `planner_model` is absent, the input is returned unchanged.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the input TOML is invalid.
+pub fn migrate_planner_model_to_provider(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    let old_value = doc
+        .get("orchestration")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|t| t.get("planner_model"))
+        .and_then(toml_edit::Item::as_value)
+        .and_then(toml_edit::Value::as_str)
+        .map(ToOwned::to_owned);
+
+    let Some(old_model) = old_value else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    };
+
+    // Remove the old key via text substitution to preserve surrounding comments/formatting.
+    // We rebuild the section comment in the output rather than using toml_edit mutations,
+    // following the same line-oriented approach used elsewhere in this file.
+    let commented_out = format!(
+        "# planner_provider = \"{old_model}\"  \
+         # MIGRATED: was planner_model; update to a [[llm.providers]] name"
+    );
+
+    let orch_table = doc
+        .get_mut("orchestration")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[orchestration] is not a table",
+        ))?;
+    orch_table.remove("planner_model");
+    let decor = orch_table.decor_mut();
+    let existing_suffix = decor.suffix().and_then(|s| s.as_str()).unwrap_or("");
+    // Append the commented-out entry as a trailing comment on the section.
+    let new_suffix = if existing_suffix.trim().is_empty() {
+        format!("\n{commented_out}\n")
+    } else {
+        format!("{existing_suffix}\n{commented_out}\n")
+    };
+    decor.set_suffix(new_suffix);
+
+    eprintln!(
+        "Migration warning: [orchestration].planner_model has been renamed to planner_provider \
+         and its value commented out. `planner_provider` must reference a [[llm.providers]] \
+         `name` field, not a raw model name. Update or remove the commented line."
+    );
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["orchestration.planner_provider".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -1767,6 +1836,49 @@ language = "en"
         assert!(
             stt.get("base_url").is_none(),
             "base_url must be removed from [llm.stt]"
+        );
+    }
+
+    #[test]
+    fn migrate_planner_model_to_provider_with_field() {
+        let input = r#"
+[orchestration]
+enabled = true
+planner_model = "gpt-4o"
+max_tasks = 20
+"#;
+        let result = migrate_planner_model_to_provider(input).expect("migration must succeed");
+        assert_eq!(result.added_count, 1, "added_count must be 1");
+        assert!(
+            !result.output.contains("planner_model = "),
+            "planner_model key must be removed from output"
+        );
+        assert!(
+            result.output.contains("# planner_provider"),
+            "commented-out planner_provider entry must be present"
+        );
+        assert!(
+            result.output.contains("gpt-4o"),
+            "old value must appear in the comment"
+        );
+        assert!(
+            result.output.contains("MIGRATED"),
+            "comment must include MIGRATED marker"
+        );
+    }
+
+    #[test]
+    fn migrate_planner_model_to_provider_no_op() {
+        let input = r#"
+[orchestration]
+enabled = true
+max_tasks = 20
+"#;
+        let result = migrate_planner_model_to_provider(input).expect("migration must succeed");
+        assert_eq!(result.added_count, 0, "added_count must be 0 when field is absent");
+        assert_eq!(
+            result.output, input,
+            "output must equal input when nothing to migrate"
         );
     }
 

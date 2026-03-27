@@ -585,6 +585,34 @@ impl AppBuilder {
         }
     }
 
+    /// Build a dedicated provider for orchestration planner LLM calls.
+    ///
+    /// Returns `None` when `planner_provider` is empty (falls back to primary provider at call site).
+    ///
+    /// # Errors (logged, not propagated)
+    ///
+    /// Emits a `tracing::warn` on resolution failure; primary provider is used as fallback.
+    pub fn build_planner_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.orchestration.planner_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "planner provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "planner provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     #[cfg(feature = "experiments")]
     pub fn build_eval_provider(&self) -> Option<AnyProvider> {
         let model_spec = self.config.experiments.eval_model.as_deref()?;

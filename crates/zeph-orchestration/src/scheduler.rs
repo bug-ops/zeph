@@ -972,7 +972,7 @@ mod tests {
             default_failure_strategy: "abort".to_string(),
             default_max_retries: 3,
             task_timeout_secs: 300,
-            planner_model: None,
+            planner_provider: String::new(),
             planner_max_tokens: 4096,
             dependency_context_budget: 16384,
             confirm_before_execute: true,

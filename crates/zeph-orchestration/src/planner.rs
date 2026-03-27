@@ -46,8 +46,8 @@ pub struct LlmPlanner<P: LlmProvider> {
 impl<P: LlmProvider> LlmPlanner<P> {
     /// Create a new `LlmPlanner` from a provider and config.
     ///
-    /// `config.planner_model` is reserved for future caller-side provider selection;
-    /// `LlmPlanner` uses whatever provider it receives.
+    /// The caller resolves `config.planner_provider` to a concrete provider and passes
+    /// it here. `LlmPlanner` uses whatever provider it receives.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
         Self {

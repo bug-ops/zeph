@@ -4,7 +4,9 @@
 use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
-use zeph_core::config::migrate::{ConfigMigrator, migrate_stt_to_provider};
+use zeph_core::config::migrate::{
+    ConfigMigrator, migrate_planner_model_to_provider, migrate_stt_to_provider,
+};
 
 /// Handle the `zeph migrate-config` command.
 ///
@@ -27,14 +29,23 @@ pub(crate) fn handle_migrate_config(
     let stt_result = migrate_stt_to_provider(&input)?;
     let after_stt = stt_result.output;
 
-    // Step 2: add missing default keys as commented-out entries.
+    // Step 2: migrate [orchestration] planner_model → planner_provider (rename + semantic change).
+    let planner_result = migrate_planner_model_to_provider(&after_stt)?;
+    let after_planner = planner_result.output;
+
+    // Step 3: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_stt)?;
+    let result = migrator.migrate(&after_planner)?;
 
     if diff {
         print_diff(&input, &result.output);
         if stt_result.added_count > 0 {
             eprintln!("STT migration: moved model/base_url to [[llm.providers]] entry.");
+        }
+        if planner_result.added_count > 0 {
+            eprintln!(
+                "Planner migration: planner_model renamed to planner_provider (value commented out)."
+            );
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

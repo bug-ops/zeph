@@ -128,13 +128,10 @@ pub struct OrchestrationConfig {
     pub default_max_retries: u32,
     /// Timeout in seconds for a single task. `0` means no timeout.
     pub task_timeout_secs: u64,
-    /// Model override for planning LLM calls. When `None`, uses the agent's primary model.
-    ///
-    /// Reserved for future caller-side provider selection (post-MVP). `LlmPlanner` itself
-    /// does not use this field — the caller is responsible for constructing the appropriate
-    /// provider based on this value before passing it to `LlmPlanner::new`.
+    /// Provider name from `[[llm.providers]]` for planning LLM calls.
+    /// Empty string = use the agent's primary provider.
     #[serde(default)]
-    pub planner_model: Option<String>,
+    pub planner_provider: String,
     /// Maximum tokens budget hint for planner responses. Reserved for future use when
     /// per-call token limits are added to the `LlmProvider::chat` API.
     #[serde(default = "default_planner_max_tokens")]
@@ -167,7 +164,7 @@ impl Default for OrchestrationConfig {
             default_failure_strategy: "abort".to_string(),
             default_max_retries: 3,
             task_timeout_secs: 300,
-            planner_model: None,
+            planner_provider: String::new(),
             planner_max_tokens: default_planner_max_tokens(),
             dependency_context_budget: 16384,
             confirm_before_execute: true,

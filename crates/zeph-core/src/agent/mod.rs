@@ -420,6 +420,7 @@ impl<C: Channel> Agent<C> {
                 extended_context: false,
             },
             orchestration: OrchestrationState {
+                planner_provider: None,
                 pending_graph: None,
                 plan_cancel_token: None,
                 subagent_manager: None,
@@ -589,10 +590,13 @@ impl<C: Channel> Agent<C> {
             "plan cache state for goal"
         );
 
-        let planner = LlmPlanner::new(
-            self.provider.clone(),
-            &self.orchestration.orchestration_config,
-        );
+        let planner_provider = self
+            .orchestration
+            .planner_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
+            .clone();
+        let planner = LlmPlanner::new(planner_provider, &self.orchestration.orchestration_config);
         let embed_model = self.skill_state.embedding_model.clone();
         let (graph, planner_usage) = plan_with_cache(
             &planner,

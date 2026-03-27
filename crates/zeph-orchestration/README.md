@@ -46,6 +46,7 @@ Orchestration is triggered via `/plan` commands in the agent chat:
 
 ```toml
 [orchestration]
+# planner_provider = "quality"     # provider name from [[llm.providers]] for planning; empty = primary provider
 planner_max_tokens = 4096          # LLM token budget for goal decomposition
 dependency_context_budget = 16384  # chars of cross-task context injected per task
 confirm_before_execute = true      # require /plan confirm before starting

@@ -63,6 +63,12 @@ impl TopologyClassifier {
     ///
     /// Returns `None` when `topology_selection` is disabled.
     /// The returned value never exceeds `config.max_parallel` and is always >= 1.
+    ///
+    /// # Performance note
+    ///
+    /// Parallel overhead only pays off when individual tool calls take >= 500 ms
+    /// (typical for LLM API calls). Below that threshold, scheduling cost dominates
+    /// and sequential execution may be faster (e.g., local file reads, in-memory lookups).
     #[must_use]
     pub fn suggest_max_parallel(topology: Topology, config: &OrchestrationConfig) -> Option<usize> {
         if !config.topology_selection {
