@@ -2415,9 +2415,18 @@ impl<C: Channel> Agent<C> {
 
         let count = targets.len();
         for (resp_idx, req_idx, summary) in targets {
+            let req_db_id = self.msg.messages[req_idx].metadata.db_id;
+            let resp_db_id = self.msg.messages[resp_idx].metadata.db_id;
+
             self.msg.messages[req_idx].metadata.agent_visible = false;
             self.msg.messages[resp_idx].metadata.agent_visible = false;
             self.msg.messages[resp_idx].metadata.deferred_summary = None;
+
+            if let (Some(req_id), Some(resp_id)) = (req_db_id, resp_db_id) {
+                self.deferred_db_hide_ids.push(req_id);
+                self.deferred_db_hide_ids.push(resp_id);
+                self.deferred_db_summaries.push(summary.clone());
+            }
 
             let content = format!("[tool summary] {summary}");
             let summary_msg = Message {
@@ -2432,6 +2441,28 @@ impl<C: Channel> Agent<C> {
         self.recompute_prompt_tokens();
         tracing::info!(count, "applied deferred tool pair summaries");
         count
+    }
+
+    pub(in crate::agent) async fn flush_deferred_summaries(&mut self) {
+        if self.deferred_db_hide_ids.is_empty() {
+            return;
+        }
+        let (Some(memory), Some(cid)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
+        else {
+            self.deferred_db_hide_ids.clear();
+            self.deferred_db_summaries.clear();
+            return;
+        };
+        let hide_ids = std::mem::take(&mut self.deferred_db_hide_ids);
+        let summaries = std::mem::take(&mut self.deferred_db_summaries);
+        if let Err(e) = memory
+            .sqlite()
+            .apply_tool_pair_summaries(cid, &hide_ids, &summaries)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to flush deferred summary batch to DB");
+        }
     }
 
     /// Apply deferred summaries if context usage exceeds the soft compaction threshold,
@@ -2670,6 +2701,7 @@ impl<C: Channel> Agent<C> {
                         crate::agent::context_manager::CompactionState::CompactedThisTurn {
                             cooldown: self.context_manager.compaction_cooldown_turns,
                         };
+                    self.flush_deferred_summaries().await;
                     let _ = self.channel.send_status("").await;
                     return Ok(());
                 }

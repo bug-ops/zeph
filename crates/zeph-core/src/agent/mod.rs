@@ -174,6 +174,13 @@ pub struct Agent<C: Channel> {
     /// Grows monotonically per session; cleared on `/clear`.
     /// NOTE: bounded by session length, typically < 1000 entries.
     pub(super) completed_tool_ids: HashSet<String>,
+    /// DB row ID of the most recently persisted message. Set by `persist_message`;
+    /// consumed by `push_message` call sites to populate `metadata.db_id` on in-memory messages.
+    pub(super) last_persisted_message_id: Option<i64>,
+    /// DB message IDs pending hide after deferred tool pair summarization.
+    pub(super) deferred_db_hide_ids: Vec<i64>,
+    /// Summary texts pending insertion after deferred tool pair summarization.
+    pub(super) deferred_db_summaries: Vec<String>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -447,6 +454,9 @@ impl<C: Channel> Agent<C> {
             dependency_graph: None,
             dependency_always_on: HashSet::new(),
             completed_tool_ids: HashSet::new(),
+            last_persisted_message_id: None,
+            deferred_db_hide_ids: Vec::new(),
+            deferred_db_summaries: Vec::new(),
         }
     }
 
@@ -3309,6 +3319,7 @@ impl<C: Channel> Agent<C> {
         // during the tool loop. Intentionally does NOT set compacted_this_turn, so
         // proactive/reactive compaction may still fire if tokens remain above their thresholds.
         self.maybe_apply_deferred_summaries();
+        self.flush_deferred_summaries().await;
 
         // Proactive compression fires first (if configured); if it runs, reactive is skipped.
         if let Err(e) = self.maybe_proactive_compress().await {

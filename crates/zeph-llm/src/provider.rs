@@ -295,6 +295,10 @@ pub struct MessageMetadata {
     /// to locate the checkpoint without relying on a fragile raw index.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus_marker_id: Option<uuid::Uuid>,
+    /// `SQLite` row ID for this message. Populated when loading from DB or after persisting.
+    /// Never serialized — always re-populated from the database on load.
+    #[serde(skip)]
+    pub db_id: Option<i64>,
 }
 
 impl Default for MessageMetadata {
@@ -306,6 +310,7 @@ impl Default for MessageMetadata {
             deferred_summary: None,
             focus_pinned: false,
             focus_marker_id: None,
+            db_id: None,
         }
     }
 }
@@ -321,6 +326,7 @@ impl MessageMetadata {
             deferred_summary: None,
             focus_pinned: false,
             focus_marker_id: None,
+            db_id: None,
         }
     }
 
@@ -334,6 +340,7 @@ impl MessageMetadata {
             deferred_summary: None,
             focus_pinned: false,
             focus_marker_id: None,
+            db_id: None,
         }
     }
 
@@ -347,6 +354,7 @@ impl MessageMetadata {
             deferred_summary: None,
             focus_pinned: true,
             focus_marker_id: None,
+            db_id: None,
         }
     }
 }

@@ -310,10 +310,12 @@ impl<C: Channel> Agent<C> {
         let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
         self.prune_stale_tool_outputs(keep_recent);
         self.maybe_apply_deferred_summaries();
+        self.flush_deferred_summaries().await;
         // Mid-iteration soft compaction: fires after summarization so fresh results are
         // either summarized or protected before pruning. Does not touch turn counters,
         // cooldown, or trigger Hard tier (no LLM call during tool loop).
         self.maybe_soft_compact_mid_iteration();
+        self.flush_deferred_summaries().await;
 
         Ok(None)
     }
@@ -599,6 +601,11 @@ impl<C: Channel> Agent<C> {
         )
         .await;
         self.push_message(assistant_msg);
+        if let (Some(id), Some(last)) =
+            (self.last_persisted_message_id, self.msg.messages.last_mut())
+        {
+            last.metadata.db_id = Some(id);
+        }
 
         // Build tool calls for all requests, stripping TAFC think fields before execution.
         let tafc_enabled = self.tool_orchestrator.tafc.enabled;
@@ -1561,6 +1568,11 @@ impl<C: Channel> Agent<C> {
         )
         .await;
         self.push_message(user_msg);
+        if let (Some(id), Some(last)) =
+            (self.last_persisted_message_id, self.msg.messages.last_mut())
+        {
+            last.metadata.db_id = Some(id);
+        }
 
         // Deferred self-reflection: user_msg is now in history so the reflection dialogue
         // (User{prompt} + Assistant{response}) appends after User{ToolResults}, preserving

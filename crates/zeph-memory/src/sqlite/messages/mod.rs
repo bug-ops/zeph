@@ -150,8 +150,8 @@ impl SqliteStore {
         conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
-        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT role, content, parts, agent_visible, user_visible FROM (\
+        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT role, content, parts, agent_visible, user_visible, id FROM (\
                 SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? AND deleted_at IS NULL \
                 ORDER BY id DESC \
@@ -166,7 +166,7 @@ impl SqliteStore {
         let messages = rows
             .into_iter()
             .map(
-                |(role_str, content, parts_json, agent_visible, user_visible)| {
+                |(role_str, content, parts_json, agent_visible, user_visible, row_id)| {
                     let parts = parse_parts_json(&role_str, &parts_json);
                     Message {
                         role: parse_role(&role_str),
@@ -179,6 +179,7 @@ impl SqliteStore {
                             deferred_summary: None,
                             focus_pinned: false,
                             focus_marker_id: None,
+                            db_id: Some(row_id),
                         },
                     }
                 },
@@ -204,7 +205,7 @@ impl SqliteStore {
         let av = agent_visible.map(i64::from);
         let uv = user_visible.map(i64::from);
 
-        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
             "WITH recent AS (\
                 SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? \
@@ -213,7 +214,7 @@ impl SqliteStore {
                   AND (? IS NULL OR user_visible = ?) \
                 ORDER BY id DESC \
                 LIMIT ?\
-             ) SELECT role, content, parts, agent_visible, user_visible FROM recent ORDER BY id ASC",
+             ) SELECT role, content, parts, agent_visible, user_visible, id FROM recent ORDER BY id ASC",
         )
         .bind(conversation_id)
         .bind(av)
@@ -227,7 +228,7 @@ impl SqliteStore {
         let messages = rows
             .into_iter()
             .map(
-                |(role_str, content, parts_json, agent_visible, user_visible)| {
+                |(role_str, content, parts_json, agent_visible, user_visible, row_id)| {
                     let parts = parse_parts_json(&role_str, &parts_json);
                     Message {
                         role: parse_role(&role_str),
@@ -240,6 +241,7 @@ impl SqliteStore {
                             deferred_summary: None,
                             focus_pinned: false,
                             focus_marker_id: None,
+                            db_id: Some(row_id),
                         },
                     }
                 },
@@ -306,6 +308,61 @@ impl SqliteStore {
         Ok(row.0)
     }
 
+    /// Atomically hide `tool_use/tool_result` message pairs and insert summary messages.
+    ///
+    /// Within a single transaction:
+    /// 1. Sets `agent_visible=0, compacted_at=<now>` for each ID in `hide_ids`.
+    /// 2. Inserts each text in `summaries` as a new agent-only assistant message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction fails.
+    pub async fn apply_tool_pair_summaries(
+        &self,
+        conversation_id: ConversationId,
+        hide_ids: &[i64],
+        summaries: &[String],
+    ) -> Result<(), MemoryError> {
+        if hide_ids.is_empty() && summaries.is_empty() {
+            return Ok(());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+
+        let mut tx = self.pool.begin().await?;
+
+        for &id in hide_ids {
+            sqlx::query("UPDATE messages SET agent_visible = 0, compacted_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        for summary in summaries {
+            let content = format!("[tool summary] {summary}");
+            let parts = serde_json::to_string(&[serde_json::json!({"Summary": {"text": summary}})])
+                .unwrap_or_else(|_| "[]".to_string());
+            sqlx::query(
+                "INSERT INTO messages \
+                 (conversation_id, role, content, parts, agent_visible, user_visible) \
+                 VALUES (?, 'assistant', ?, ?, 1, 0)",
+            )
+            .bind(conversation_id)
+            .bind(&content)
+            .bind(&parts)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Return the IDs of the N oldest messages in a conversation (ascending order).
     ///
     /// # Errors
@@ -369,6 +426,7 @@ impl SqliteStore {
                         deferred_summary: None,
                         focus_pinned: false,
                         focus_marker_id: None,
+                        db_id: None,
                     },
                 }
             },

@@ -1310,3 +1310,70 @@ async fn find_promotion_candidates_returns_conversation_id() {
         "find_promotion_candidates must return the source conversation_id"
     );
 }
+
+/// `apply_tool_pair_summaries` must hide the specified message IDs (agent_visible=0) and
+/// insert a summary assistant message, such that a subsequent `load_history_filtered`
+/// with `agent_visible=Some(true)` returns no orphaned tool_use/tool_result rows.
+#[tokio::test]
+async fn apply_tool_pair_summaries_hides_pairs_and_inserts_summary() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    // Simulate a tool_use assistant message and its tool_result user message.
+    let tool_use_id = store
+        .save_message_with_parts(
+            cid,
+            "assistant",
+            "[tool use]",
+            r#"[{"ToolUse":{"id":"c1","name":"memory_save","input":{}}}]"#,
+        )
+        .await
+        .unwrap();
+    let tool_result_id = store
+        .save_message_with_parts(
+            cid,
+            "user",
+            "[tool result]",
+            r#"[{"ToolResult":{"tool_use_id":"c1","content":"ok","is_error":false}}]"#,
+        )
+        .await
+        .unwrap();
+
+    // Both messages must be agent-visible before the operation.
+    let before = store
+        .load_history_filtered(cid, 50, Some(true), None)
+        .await
+        .unwrap();
+    assert_eq!(before.len(), 2);
+
+    // Apply summaries: hide the two DB rows, insert one summary.
+    store
+        .apply_tool_pair_summaries(
+            cid,
+            &[tool_use_id.0, tool_result_id.0],
+            &["saved fact".to_string()],
+        )
+        .await
+        .unwrap();
+
+    // After the operation, load_history_filtered(agent_visible=true) must not return the
+    // original tool_use/tool_result rows — they must be hidden.
+    let after_visible = store
+        .load_history_filtered(cid, 50, Some(true), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        after_visible.len(),
+        1,
+        "only the inserted summary should be agent-visible"
+    );
+    assert!(
+        after_visible[0].content.contains("saved fact"),
+        "summary content must appear in the inserted message"
+    );
+
+    // The hidden rows must still exist in DB (load without filter).
+    let all = store.load_history(cid, 50).await.unwrap();
+    // load_history returns all messages regardless of visibility; 3 total: 2 hidden + 1 summary.
+    assert_eq!(all.len(), 3, "hidden messages must remain in DB");
+}

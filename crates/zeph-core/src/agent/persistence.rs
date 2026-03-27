@@ -381,7 +381,10 @@ impl<C: Channel> Agent<C> {
                 .remember_with_parts(cid, role_str(role), content, &parts_json)
                 .await
             {
-                Ok((_message_id, stored)) => stored,
+                Ok((message_id, stored)) => {
+                    self.last_persisted_message_id = Some(message_id.0);
+                    stored
+                }
                 Err(e) => {
                     tracing::error!("failed to persist message: {e:#}");
                     return;
@@ -392,7 +395,10 @@ impl<C: Channel> Agent<C> {
                 .save_only(cid, role_str(role), content, &parts_json)
                 .await
             {
-                Ok(_) => false,
+                Ok(message_id) => {
+                    self.last_persisted_message_id = Some(message_id.0);
+                    false
+                }
                 Err(e) => {
                     tracing::error!("failed to persist message: {e:#}");
                     return;
