@@ -78,8 +78,38 @@ impl TopologyClassifier {
     /// Classify the topology of a `TaskGraph`.
     ///
     /// Empty graphs return `AllParallel` (no constraints).
+    ///
+    /// Calls `compute_longest_path_and_depths` once and delegates to
+    /// [`classify_with_depths`]. Use [`classify_with_depths`] directly when
+    /// depths have already been computed to avoid redundant work.
     #[must_use]
     pub fn classify(graph: &TaskGraph) -> Topology {
+        let tasks = &graph.tasks;
+        if tasks.is_empty() {
+            return Topology::AllParallel;
+        }
+        // Early exit for no-edge graphs avoids the toposort in classify_with_depths.
+        let edge_count: usize = tasks.iter().map(|t| t.depends_on.len()).sum();
+        if edge_count == 0 {
+            return Topology::AllParallel;
+        }
+        let (longest, depths) = compute_longest_path_and_depths(tasks);
+        Self::classify_with_depths(graph, longest, &depths)
+    }
+
+    /// Classify the topology of a `TaskGraph` using pre-computed depth values.
+    ///
+    /// Accepts the `longest_path` and per-task `depths` map produced by a prior
+    /// call to `compute_longest_path_and_depths` (or `compute_depths_for_scheduler`),
+    /// avoiding a redundant toposort pass when those values are already available.
+    #[must_use]
+    pub fn classify_with_depths(
+        graph: &TaskGraph,
+        longest_path: usize,
+        // NOTE: depths is reserved for future heuristics (e.g. per-level density).
+        // Classification currently only needs longest_path and structural edge counts.
+        _depths: &HashMap<TaskId, usize>,
+    ) -> Topology {
         let tasks = &graph.tasks;
         let n = tasks.len();
 
@@ -93,17 +123,16 @@ impl TopologyClassifier {
             return Topology::AllParallel;
         }
 
-        // Linear chain: exactly n-1 edges and longest path = n-1
-        if edge_count == n - 1 && compute_longest_path_and_depths(tasks).0 == n - 1 {
+        // Linear chain: exactly n-1 edges and longest path = n-1.
+        // depths is already computed — check longest_path directly instead of re-computing.
+        if edge_count == n - 1 && longest_path == n - 1 {
             return Topology::LinearChain;
         }
 
         let roots_count = tasks.iter().filter(|t| t.depends_on.is_empty()).count();
 
-        let (longest, _) = compute_longest_path_and_depths(tasks);
-
         // Fan-out: single root, max depth == 1 (root + one layer of leaves only).
-        if roots_count == 1 && longest == 1 {
+        if roots_count == 1 && longest_path == 1 {
             return Topology::FanOut;
         }
 
@@ -111,7 +140,7 @@ impl TopologyClassifier {
         // The sink has >= 2 dependencies (dep_count >= 2). All other nodes are roots.
         // Depth must be exactly 1.
         let non_roots_count = tasks.iter().filter(|t| !t.depends_on.is_empty()).count();
-        if roots_count >= 2 && non_roots_count == 1 && longest == 1 {
+        if roots_count >= 2 && non_roots_count == 1 && longest_path == 1 {
             let sink_dep_count = tasks
                 .iter()
                 .filter(|t| !t.depends_on.is_empty())
@@ -125,7 +154,7 @@ impl TopologyClassifier {
 
         // Hierarchical: single root, depth >= 2, max in-degree (dep_count) == 1 for all nodes
         // (tree-like: no node has multiple parents — ensures no diamond patterns).
-        if roots_count == 1 && longest >= 2 {
+        if roots_count == 1 && longest_path >= 2 {
             let max_dep_count = tasks.iter().map(|t| t.depends_on.len()).max().unwrap_or(0);
             if max_dep_count <= 1 {
                 return Topology::Hierarchical;
@@ -133,6 +162,24 @@ impl TopologyClassifier {
         }
 
         Topology::Mixed
+    }
+
+    /// Compute the effective `max_parallel` for a given topology and configured base.
+    ///
+    /// Encapsulates the topology-to-parallelism policy in one place so that
+    /// `analyze()` and the `tick()` dirty-reanalysis path use identical logic.
+    ///
+    /// `base` must be the immutable config value (`config.max_parallel`), never a
+    /// previously reduced `self.max_parallel`, to prevent drift across replan cycles.
+    #[must_use]
+    pub fn compute_max_parallel(topology: Topology, base: usize) -> usize {
+        match topology {
+            Topology::AllParallel | Topology::FanOut | Topology::FanIn | Topology::Hierarchical => {
+                base
+            }
+            Topology::LinearChain => 1,
+            Topology::Mixed => (base / 2 + 1).min(base).max(1),
+        }
     }
 
     /// Map a `Topology` variant to the appropriate `DispatchStrategy`.
@@ -173,17 +220,10 @@ impl TopologyClassifier {
         }
 
         let (longest, depths) = compute_longest_path_and_depths(tasks);
-        let topology = Self::classify(graph);
+        let topology = Self::classify_with_depths(graph, longest, &depths);
         let strategy = Self::strategy(topology);
         let base = config.max_parallel as usize;
-
-        let max_parallel = match topology {
-            Topology::AllParallel | Topology::FanOut | Topology::FanIn | Topology::Hierarchical => {
-                base
-            }
-            Topology::LinearChain => 1,
-            Topology::Mixed => (base / 2 + 1).min(base).max(1),
-        };
+        let max_parallel = Self::compute_max_parallel(topology, base);
 
         TopologyAnalysis {
             topology,
@@ -571,5 +611,144 @@ mod tests {
         ]);
         let analysis = TopologyClassifier::analyze(&g, &cfg);
         assert_eq!(analysis.max_parallel, 1);
+    }
+
+    // --- classify_with_depths tests ---
+
+    #[test]
+    fn classify_with_depths_matches_classify_for_all_variants() {
+        let graphs = vec![
+            // AllParallel
+            graph_from(vec![
+                make_node(0, &[]),
+                make_node(1, &[]),
+                make_node(2, &[]),
+            ]),
+            // LinearChain
+            graph_from(vec![
+                make_node(0, &[]),
+                make_node(1, &[0]),
+                make_node(2, &[1]),
+            ]),
+            // FanOut
+            graph_from(vec![
+                make_node(0, &[]),
+                make_node(1, &[0]),
+                make_node(2, &[0]),
+                make_node(3, &[0]),
+            ]),
+            // FanIn
+            graph_from(vec![
+                make_node(0, &[]),
+                make_node(1, &[]),
+                make_node(2, &[]),
+                make_node(3, &[0, 1, 2]),
+            ]),
+            // Hierarchical
+            graph_from(vec![
+                make_node(0, &[]),
+                make_node(1, &[0]),
+                make_node(2, &[0]),
+                make_node(3, &[1]),
+            ]),
+            // Mixed (diamond)
+            graph_from(vec![
+                make_node(0, &[]),
+                make_node(1, &[0]),
+                make_node(2, &[0]),
+                make_node(3, &[1, 2]),
+            ]),
+        ];
+
+        for g in &graphs {
+            let expected = TopologyClassifier::classify(g);
+            // Compute depths the same way analyze() does, then call classify_with_depths.
+            let tasks = &g.tasks;
+            let (longest, depths) = if tasks.is_empty() {
+                (0, std::collections::HashMap::new())
+            } else {
+                // Use the public API path via analyze to get depths.
+                let cfg = default_config();
+                let analysis = TopologyClassifier::analyze(g, &cfg);
+                (analysis.depth, analysis.depths)
+            };
+            let actual = TopologyClassifier::classify_with_depths(g, longest, &depths);
+            assert_eq!(
+                actual,
+                expected,
+                "classify_with_depths mismatch for graph with {} tasks",
+                g.tasks.len()
+            );
+        }
+    }
+
+    // --- compute_max_parallel tests ---
+
+    #[test]
+    fn compute_max_parallel_all_parallel_returns_base() {
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::AllParallel, 8),
+            8
+        );
+    }
+
+    #[test]
+    fn compute_max_parallel_fan_out_returns_base() {
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::FanOut, 6),
+            6
+        );
+    }
+
+    #[test]
+    fn compute_max_parallel_fan_in_returns_base() {
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::FanIn, 4),
+            4
+        );
+    }
+
+    #[test]
+    fn compute_max_parallel_hierarchical_returns_base() {
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::Hierarchical, 10),
+            10
+        );
+    }
+
+    #[test]
+    fn compute_max_parallel_linear_chain_returns_one() {
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::LinearChain, 8),
+            1
+        );
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::LinearChain, 1),
+            1
+        );
+    }
+
+    #[test]
+    fn compute_max_parallel_mixed_is_half_plus_one() {
+        // base=4: (4/2+1).min(4).max(1) = 3
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::Mixed, 4),
+            3
+        );
+        // base=2: (2/2+1).min(2).max(1) = 2
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::Mixed, 2),
+            2
+        );
+        // base=1: (1/2+1).min(1).max(1) = 1
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::Mixed, 1),
+            1
+        );
+        // base=8: (8/2+1).min(8).max(1) = 5
+        assert_eq!(
+            TopologyClassifier::compute_max_parallel(Topology::Mixed, 8),
+            5
+        );
     }
 }

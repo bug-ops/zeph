@@ -3121,13 +3121,14 @@ mod compaction_e2e {
         );
     }
 
-    /// COV-04: channel close (`Ok(None)`) during `run_scheduler_loop` returns `GraphStatus::Failed`.
+    /// COV-04: channel close (`Ok(None)`) on an exit-supporting channel (CLI/TUI) returns
+    /// `GraphStatus::Canceled` — no retry needed, stdin EOF is a normal termination.
     #[tokio::test]
-    async fn scheduler_loop_channel_close_returns_failed() {
+    async fn scheduler_loop_channel_close_supports_exit_returns_canceled() {
         use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
         use crate::subagent::SubAgentManager;
 
-        // Empty channel: first recv() returns Ok(None) immediately.
+        // Empty channel with exit_supported=true (the default): recv() returns Ok(None) immediately.
         let channel = MockChannel::new(vec![]);
         let provider = mock_provider(vec![]);
         let registry = create_test_registry();
@@ -3137,7 +3138,50 @@ mod compaction_e2e {
         agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
         let mut graph = TaskGraph::new("channel close test goal");
-        let mut node = TaskNode::new(0, "task-0", "will fail on channel close");
+        let mut node = TaskNode::new(0, "task-0", "will be canceled on channel close");
+        node.status = TaskStatus::Running;
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            ..OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Canceled,
+            "channel close on exit-supporting channel (CLI/TUI) must return Canceled, not Failed"
+        );
+    }
+
+    /// COV-04b: channel close (`Ok(None)`) on a server channel (Telegram/Discord/Slack,
+    /// `supports_exit()=false`) returns `GraphStatus::Failed` so the user can `/plan retry`
+    /// after reconnecting.
+    #[tokio::test]
+    async fn scheduler_loop_channel_close_no_exit_support_returns_failed() {
+        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
+        use crate::subagent::SubAgentManager;
+
+        // Channel with exit_supported=false simulates Telegram/Discord/Slack.
+        let channel = MockChannel::new(vec![]).without_exit_support();
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        let mut graph = TaskGraph::new("server channel close goal");
+        let mut node = TaskNode::new(0, "task-0", "interrupted by infra failure");
         node.status = TaskStatus::Running;
         graph.tasks.push(node);
         graph.status = GraphStatus::Running;
@@ -3158,7 +3202,88 @@ mod compaction_e2e {
         assert_eq!(
             status,
             GraphStatus::Failed,
-            "run_scheduler_loop must return Failed when channel is closed (Ok(None))"
+            "channel close on server channel (no exit support) must return Failed so the plan can be retried"
+        );
+    }
+
+    /// COV-04c: a task completion event that arrives between the last tick and the channel
+    /// close is captured by the drain tick and honored — the loop returns the natural
+    /// `Done` status from the drain rather than forcing `Canceled`/`Failed`.
+    ///
+    /// This verifies the drain-before-cancel ordering (architect S1 fix for #2246):
+    /// `cancel_all()` empties `self.running`, so any completion event processed AFTER it
+    /// would be silently discarded. The drain tick must come FIRST while `self.running`
+    /// is still intact.
+    #[tokio::test]
+    async fn scheduler_loop_channel_close_drain_captures_completion() {
+        use crate::orchestration::{
+            DagScheduler, OrchestrationConfig, RuleBasedRouter, TaskEvent, TaskOutcome,
+        };
+        use crate::subagent::SubAgentManager;
+
+        // Channel is empty: recv() returns Ok(None) immediately, triggering the close path.
+        let channel = MockChannel::new(vec![]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Single-task graph in Running state.  The task is assigned an agent handle so
+        // resume_from() reconstructs it in the running map — this is required for
+        // process_event() to accept the completion event (it checks self.running).
+        let mut graph = TaskGraph::new("drain capture goal");
+        let mut node = TaskNode::new(0, "task-0", "completes just before channel close");
+        node.status = TaskStatus::Running;
+        node.assigned_agent = Some("handle-0".to_string());
+        node.agent_hint = Some("worker".to_string());
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            ..OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+
+        // Inject the completion event via the public event_sender() so it sits in event_rx
+        // when the drain tick calls event_rx.try_recv().  This simulates the race: the task
+        // finished between the last tick and the channel EOF.
+        let event_tx = scheduler.event_sender();
+        event_tx
+            .send(TaskEvent {
+                task_id: scheduler.graph().tasks[0].id,
+                agent_handle_id: "handle-0".to_string(),
+                outcome: TaskOutcome::Completed {
+                    output: "finished just in time".to_string(),
+                    artifacts: vec![],
+                },
+            })
+            .await
+            .expect("event_tx send must not fail");
+        // Drop the sender so the channel is not kept alive beyond this test.
+        drop(event_tx);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        // The drain tick processes the completion event while self.running is intact,
+        // advances the graph to Completed, and emits Done{Completed}.  The loop must
+        // honor this natural Done rather than overriding it with Canceled/Failed.
+        assert_eq!(
+            status,
+            GraphStatus::Completed,
+            "drain tick must capture the late completion and return Done(Completed); got {status:?}"
+        );
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Completed,
+            "task 0 must be Completed, not Canceled, when its completion is captured by the drain tick"
         );
     }
 

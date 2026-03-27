@@ -1243,15 +1243,61 @@ impl<C: Channel> Agent<C> {
                         }
                         self.enqueue_or_merge(msg.text, vec![], msg.attachments);
                     } else {
-                        // Channel closed — cancel running sub-agents and exit with Failed.
-                        // This is an error condition (not a user-initiated cancel), so
-                        // Done actions from cancel_all() are intentionally ignored.
+                        // Channel closed. Drain buffered completion events BEFORE canceling
+                        // so that tasks which completed between the last tick and the
+                        // channel-close are recorded as Completed, not Canceled.
+                        // cancel_all() empties self.running first, causing process_event()
+                        // to silently discard any late completions — drain must come first.
+                        let drain_actions = scheduler.tick();
+                        let mut natural_done: Option<crate::orchestration::GraphStatus> = None;
+                        for action in drain_actions {
+                            match action {
+                                SchedulerAction::Cancel { agent_handle_id } => {
+                                    if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                                        let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
+                                            tracing::trace!(
+                                                error = %e,
+                                                "cancel during drain on channel close: agent already gone"
+                                            );
+                                        });
+                                    }
+                                }
+                                SchedulerAction::Done { status } => {
+                                    natural_done = Some(status);
+                                }
+                                // Ignore Spawn/RunInline/Verify — we are shutting down.
+                                SchedulerAction::Spawn { .. }
+                                | SchedulerAction::RunInline { .. }
+                                | SchedulerAction::Verify { .. } => {}
+                            }
+                        }
+
+                        // If the plan completed naturally during the drain tick, honor that.
+                        if let Some(status) = natural_done {
+                            break 'tick status;
+                        }
+
+                        // Cancel remaining running tasks after the drain.
                         let cancel_actions = scheduler.cancel_all();
                         let n = cancel_actions
                             .iter()
                             .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
                             .count();
-                        tracing::warn!(sub_agents = n, "scheduler channel closed, canceling running sub-agents");
+                        // Use supports_exit() to distinguish termination semantics:
+                        // - CLI/TUI (supports_exit=true): stdin EOF or TUI close → Canceled
+                        // - Telegram/Discord/Slack (supports_exit=false): infra failure → Failed
+                        //   so the user can /plan retry after reconnecting.
+                        let shutdown_status = if self.channel.supports_exit() {
+                            crate::orchestration::GraphStatus::Canceled
+                        } else {
+                            crate::orchestration::GraphStatus::Failed
+                        };
+                        tracing::warn!(
+                            sub_agents = n,
+                            supports_exit = self.channel.supports_exit(),
+                            status = ?shutdown_status,
+                            "scheduler channel closed, canceling running sub-agents"
+                        );
                         for action in cancel_actions {
                             match action {
                                 SchedulerAction::Cancel { agent_handle_id } => {
@@ -1264,14 +1310,14 @@ impl<C: Channel> Agent<C> {
                                         });
                                     }
                                 }
-                                // Intentionally ignore Done here — channel close is not a user cancel.
+                                // Intentionally ignore Done here — we use shutdown_status above.
                                 SchedulerAction::Done { .. }
                                 | SchedulerAction::Spawn { .. }
                                 | SchedulerAction::RunInline { .. }
                                 | SchedulerAction::Verify { .. } => {}
                             }
                         }
-                        break 'tick crate::orchestration::GraphStatus::Failed;
+                        break 'tick shutdown_status;
                     }
                 }
                 // Shutdown signal received — cancel running sub-agents and exit cleanly.

@@ -104,6 +104,13 @@ struct RunningTask {
 pub struct DagScheduler {
     graph: TaskGraph,
     max_parallel: usize,
+    /// Immutable base parallelism limit from config. Never changes after construction.
+    ///
+    /// `max_parallel` is derived from this via `TopologyClassifier::compute_max_parallel`
+    /// and may be lower (e.g., 1 for LinearChain). Using `config_max_parallel` as the
+    /// base prevents drift: successive replan cycles always compute from the original
+    /// config value, not from a previously reduced `max_parallel`.
+    config_max_parallel: usize,
     /// Maps `TaskId` -> running sub-agent state.
     running: HashMap<TaskId, RunningTask>,
     /// Receives completion/failure events from sub-agent loops.
@@ -205,6 +212,7 @@ impl DagScheduler {
 
         let topology = TopologyClassifier::analyze(&graph, config);
         let max_parallel = topology.max_parallel;
+        let config_max_parallel = config.max_parallel as usize;
 
         if config.topology_selection {
             tracing::debug!(
@@ -218,6 +226,7 @@ impl DagScheduler {
         Ok(Self {
             graph,
             max_parallel,
+            config_max_parallel,
             running: HashMap::new(),
             event_rx,
             event_tx,
@@ -303,10 +312,12 @@ impl DagScheduler {
 
         let topology = TopologyClassifier::analyze(&graph, config);
         let max_parallel = topology.max_parallel;
+        let config_max_parallel = config.max_parallel as usize;
 
         Ok(Self {
             graph,
             max_parallel,
+            config_max_parallel,
             running,
             event_rx,
             event_tx,
@@ -481,24 +492,25 @@ impl DagScheduler {
                     TopologyAnalysis {
                         topology: Topology::AllParallel,
                         strategy: DispatchStrategy::FullParallel,
-                        max_parallel: self.max_parallel,
+                        // Use the immutable config base so the fallback is consistent with
+                        // the initial analysis (not a previously reduced max_parallel).
+                        max_parallel: self.config_max_parallel,
                         depth: 0,
                         depths: std::collections::HashMap::new(),
                     }
                 } else {
-                    // Re-classify with current graph. Preserve the existing max_parallel
-                    // bound to avoid exceeding configured limits on replan.
-                    let topo = TopologyClassifier::classify(&self.graph);
-                    let strategy = TopologyClassifier::strategy(topo);
+                    // Compute depths once, then classify using pre-computed values.
+                    // This eliminates a redundant toposort compared to calling classify()
+                    // (which internally calls compute_longest_path_and_depths again).
                     let (depth, depths) =
                         super::topology::compute_depths_for_scheduler(&self.graph);
-                    let max_parallel = match topo {
-                        Topology::LinearChain => 1,
-                        Topology::Mixed => {
-                            (self.max_parallel / 2 + 1).min(self.max_parallel).max(1)
-                        }
-                        _ => self.max_parallel,
-                    };
+                    let topo =
+                        TopologyClassifier::classify_with_depths(&self.graph, depth, &depths);
+                    let strategy = TopologyClassifier::strategy(topo);
+                    // ALWAYS use config_max_parallel as the base, never self.max_parallel,
+                    // to prevent drift across successive replan cycles (architect S2).
+                    let max_parallel =
+                        TopologyClassifier::compute_max_parallel(topo, self.config_max_parallel);
                     TopologyAnalysis {
                         topology: topo,
                         strategy,
@@ -509,6 +521,10 @@ impl DagScheduler {
                 }
             };
             self.topology = new_analysis;
+            // Sync max_parallel to match the newly computed topology analysis (architect S2).
+            // The dispatch logic at line 559 reads self.max_parallel for slot computation;
+            // without this sync, self.max_parallel and self.topology.max_parallel diverge.
+            self.max_parallel = self.topology.max_parallel;
             self.topology_dirty = false;
 
             // After re-analysis, reset the level pointer to the shallowest non-terminal depth
@@ -3174,5 +3190,135 @@ mod tests {
         )
         .unwrap();
         assert!(scheduler.validate_verify_config(&["fast"]).is_ok());
+    }
+
+    // --- #2237 regression tests: max_parallel drift across replan cycles ---
+
+    #[test]
+    fn config_max_parallel_initialized_from_config() {
+        // config_max_parallel must always equal config.max_parallel, regardless
+        // of whether topology analysis reduces max_parallel for the initial topology.
+        let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        let config = zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 6,
+            ..make_config()
+        };
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            scheduler.config_max_parallel, 6,
+            "config_max_parallel must equal config.max_parallel"
+        );
+        // LinearChain reduces max_parallel to 1, but config_max_parallel stays at 6.
+        assert_eq!(
+            scheduler.max_parallel, 1,
+            "max_parallel reduced by topology analysis"
+        );
+        assert_eq!(
+            scheduler.config_max_parallel, 6,
+            "config_max_parallel must not be reduced by topology"
+        );
+    }
+
+    #[test]
+    fn max_parallel_does_not_drift_across_inject_tick_cycles() {
+        // Regression for #2237: successive inject_tasks+tick cycles with a Mixed graph
+        // must not reduce max_parallel below compute_max_parallel(Mixed, config_max_parallel).
+        //
+        // Before the fix, the tick() dirty path used self.max_parallel as the base for
+        // compute_max_parallel, so each replan cycle reduced it further:
+        //   cycle 1: max_parallel = (4/2+1)      = 3
+        //   cycle 2: max_parallel = (3/2+1)      = 2  ← drift!
+        //   cycle 3: max_parallel = (2/2+1)      = 2
+        //
+        // After the fix, config_max_parallel=4 is always used as the base:
+        //   all cycles: max_parallel = (4/2+1)   = 3  ← stable
+        let graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[0]),
+            make_node(3, &[1, 2]), // diamond → Mixed
+        ]);
+        let config = zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            max_tasks: 50,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        // Initial analysis: Mixed topology → max_parallel = (4/2+1) = 3.
+        assert_eq!(
+            scheduler.topology().topology,
+            crate::topology::Topology::Mixed,
+            "initial topology must be Mixed"
+        );
+        let expected_max_parallel = (4usize / 2 + 1).min(4).max(1); // = 3
+        assert_eq!(scheduler.max_parallel, expected_max_parallel);
+
+        // Simulate inject_tasks (which sets topology_dirty=true) followed by tick().
+        // The injected task depends on task 3 to keep the graph Mixed.
+        let extra_task_id = 4u32;
+        let extra_task = {
+            let mut n = crate::graph::TaskNode::new(
+                extra_task_id,
+                "extra".to_string(),
+                "extra task injected by replan",
+            );
+            n.depends_on = vec![TaskId(3)];
+            n
+        };
+
+        // inject_tasks requires the verified task to be Completed.
+        scheduler.graph.tasks[3].status = TaskStatus::Completed;
+
+        scheduler
+            .inject_tasks(TaskId(3), vec![extra_task], 50)
+            .expect("inject must succeed");
+        assert!(
+            scheduler.topology_dirty,
+            "topology_dirty must be true after inject"
+        );
+
+        // First tick() after inject: re-analyzes topology. Must use config_max_parallel as base.
+        let _ = scheduler.tick();
+        let max_after_first_inject = scheduler.max_parallel;
+        assert_eq!(
+            max_after_first_inject, expected_max_parallel,
+            "max_parallel must not drift after first inject+tick"
+        );
+
+        // Second inject+tick cycle: max_parallel must still equal the original computed value.
+        let extra_task2 = {
+            let mut n = crate::graph::TaskNode::new(5u32, "extra2".to_string(), "second replan");
+            n.depends_on = vec![TaskId(extra_task_id)];
+            n
+        };
+        scheduler.graph.tasks[extra_task_id as usize].status = TaskStatus::Completed;
+        // Reset to created-like state to allow a second inject (per-task limit is 1,
+        // so use a fresh task ID for the verified source).
+        scheduler
+            .inject_tasks(TaskId(extra_task_id), vec![extra_task2], 50)
+            .expect("second inject must succeed");
+
+        let _ = scheduler.tick();
+        let max_after_second_inject = scheduler.max_parallel;
+        assert_eq!(
+            max_after_second_inject, expected_max_parallel,
+            "max_parallel must not drift after second inject+tick (was: {max_after_second_inject}, expected: {expected_max_parallel})"
+        );
     }
 }
