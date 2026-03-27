@@ -61,6 +61,92 @@ struct CustomPiiPatternCompiled {
 }
 
 // ---------------------------------------------------------------------------
+// PiiSpan
+// ---------------------------------------------------------------------------
+
+/// A detected PII span with byte offsets into the original text.
+///
+/// **Offsets are always byte offsets** (not character offsets). This differs from
+/// `NerSpan` which uses character offsets from the `HuggingFace` tokenizers library.
+/// Convert NER character offsets to byte offsets with [`build_char_to_byte_map`]
+/// before creating a `PiiSpan` from an `NerSpan`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiiSpan {
+    /// Entity label (e.g. `"email"`, `"phone"`, `"PERSON"`).
+    pub label: String,
+    /// Byte offset of the first byte of the span in the original text.
+    pub start: usize,
+    /// Byte offset one past the last byte of the span (exclusive).
+    pub end: usize,
+}
+
+/// Build a mapping from character index to byte index for `text` (O(n)).
+///
+/// The returned `Vec` has length `text.chars().count() + 1`. Index `i` gives the byte
+/// offset of the `i`-th character. The sentinel at index `chars().count()` equals
+/// `text.len()`, which is the correct byte offset for a span ending at the last character.
+///
+/// Use this to convert NER character offsets (from `NerSpan::start`/`end`) to byte
+/// offsets suitable for `PiiSpan` and string slicing.
+#[must_use]
+pub fn build_char_to_byte_map(text: &str) -> Vec<usize> {
+    let mut map: Vec<usize> = text.char_indices().map(|(bi, _)| bi).collect();
+    map.push(text.len()); // sentinel
+    map
+}
+
+/// Merge overlapping or adjacent spans into the minimal covering set.
+///
+/// Input is sorted by `start` (ascending), then `end` (descending) so that contained spans
+/// are consumed before the outer span is closed. When spans overlap (`start < other.end`),
+/// they are merged into a single span covering the union. The label of the first (leftmost)
+/// span in each merged group is kept.
+#[must_use]
+pub fn merge_spans(mut spans: Vec<PiiSpan>) -> Vec<PiiSpan> {
+    if spans.is_empty() {
+        return spans;
+    }
+    spans.sort_unstable_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    let mut merged: Vec<PiiSpan> = Vec::new();
+    for span in spans {
+        if let Some(last) = merged.last_mut() {
+            // `start < last.end` handles proper overlap; `start == last.end` is adjacent.
+            // Both cases merge per M1 recommendation (use `<` not `<=` for near-duplicates).
+            if span.start < last.end {
+                last.end = last.end.max(span.end);
+                continue;
+            }
+        }
+        merged.push(span);
+    }
+    merged
+}
+
+/// Redact `spans` from `text` in a single pass, replacing each with `[PII:<label>]`.
+///
+/// `spans` must be sorted by `start` offset (ascending) and non-overlapping (use
+/// [`merge_spans`] first). Byte offsets must align to UTF-8 character boundaries.
+#[must_use]
+pub fn redact_spans(text: &str, spans: &[PiiSpan]) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut last_end = 0usize;
+    for span in spans {
+        if span.start > last_end {
+            result.push_str(&text[last_end..span.start]);
+        }
+        result.push('[');
+        result.push_str("PII:");
+        result.push_str(&span.label);
+        result.push(']');
+        last_end = span.end;
+    }
+    if last_end < text.len() {
+        result.push_str(&text[last_end..]);
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
 // PiiFilter
 // ---------------------------------------------------------------------------
 
@@ -129,6 +215,49 @@ impl PiiFilter {
             builtin,
             custom,
         }
+    }
+
+    /// Detect PII spans in `text` and return their byte offsets without replacing.
+    ///
+    /// Returns an empty `Vec` when the filter is disabled or no patterns are active.
+    /// Offsets are byte offsets (same unit as `regex::Match::start()`/`end()`).
+    #[must_use]
+    pub fn detect_spans(&self, text: &str) -> Vec<PiiSpan> {
+        if !self.enabled || (self.builtin.is_empty() && self.custom.is_empty()) {
+            return vec![];
+        }
+        let mut spans = Vec::new();
+        for p in &self.builtin {
+            let label = p
+                .replacement
+                .trim_matches(|c| c == '[' || c == ']')
+                .strip_prefix("PII:")
+                .unwrap_or("pii")
+                .to_owned();
+            for m in p.regex.find_iter(text) {
+                spans.push(PiiSpan {
+                    label: label.clone(),
+                    start: m.start(),
+                    end: m.end(),
+                });
+            }
+        }
+        for p in &self.custom {
+            let label = p
+                .replacement
+                .trim_matches(|c| c == '[' || c == ']')
+                .strip_prefix("PII:")
+                .unwrap_or("pii")
+                .to_owned();
+            for m in p.regex.find_iter(text) {
+                spans.push(PiiSpan {
+                    label: label.clone(),
+                    start: m.start(),
+                    end: m.end(),
+                });
+            }
+        }
+        spans
     }
 
     /// Scrub PII from `text`.
@@ -499,6 +628,193 @@ mod tests {
             result.contains("[PII:credit_card]"),
             "bare 16-digit CC must be scrubbed: {result}"
         );
+    }
+
+    // --- detect_spans ---
+
+    #[test]
+    fn detect_spans_returns_byte_offsets() {
+        let f = filter_all();
+        let text = "email: user@example.com here";
+        let spans = f.detect_spans(text);
+        assert!(!spans.is_empty(), "must detect email span");
+        let email_span = spans.iter().find(|s| s.label == "email").unwrap();
+        assert_eq!(&text[email_span.start..email_span.end], "user@example.com");
+    }
+
+    #[test]
+    fn detect_spans_disabled_returns_empty() {
+        let f = PiiFilter::new(PiiFilterConfig::default());
+        assert!(f.detect_spans("user@example.com").is_empty());
+    }
+
+    // --- build_char_to_byte_map ---
+
+    #[test]
+    fn char_to_byte_ascii_identity() {
+        let text = "hello";
+        let map = build_char_to_byte_map(text);
+        assert_eq!(map, vec![0, 1, 2, 3, 4, 5]); // 5 chars + sentinel
+    }
+
+    #[test]
+    fn char_to_byte_unicode_multibyte() {
+        // "é" = U+00E9 = 2 bytes in UTF-8
+        let text = "aéb";
+        let map = build_char_to_byte_map(text);
+        // a=byte 0, é=byte 1 (2-byte char), b=byte 3, sentinel=byte 4
+        assert_eq!(map[0], 0); // 'a'
+        assert_eq!(map[1], 1); // 'é'
+        assert_eq!(map[2], 3); // 'b'
+        assert_eq!(map[3], 4); // sentinel = text.len()
+    }
+
+    #[test]
+    fn char_to_byte_end_sentinel_equals_len() {
+        let text = "hello мир";
+        let map = build_char_to_byte_map(text);
+        assert_eq!(*map.last().unwrap(), text.len());
+    }
+
+    // --- merge_spans ---
+
+    #[test]
+    fn merge_non_overlapping() {
+        let spans = vec![
+            PiiSpan {
+                label: "a".into(),
+                start: 0,
+                end: 3,
+            },
+            PiiSpan {
+                label: "b".into(),
+                start: 5,
+                end: 9,
+            },
+        ];
+        let result = merge_spans(spans);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].start, 0);
+        assert_eq!(result[1].start, 5);
+    }
+
+    #[test]
+    fn merge_overlapping() {
+        let spans = vec![
+            PiiSpan {
+                label: "a".into(),
+                start: 0,
+                end: 5,
+            },
+            PiiSpan {
+                label: "b".into(),
+                start: 3,
+                end: 8,
+            },
+        ];
+        let result = merge_spans(spans);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start, 0);
+        assert_eq!(result[0].end, 8);
+        assert_eq!(result[0].label, "a"); // first label wins
+    }
+
+    #[test]
+    fn merge_adjacent_do_not_merge() {
+        // Adjacent spans (end == start of next) are NOT merged — only proper overlaps merge.
+        // M1: use `start < last.end` not `<=`, so touching spans stay separate.
+        let spans = vec![
+            PiiSpan {
+                label: "a".into(),
+                start: 0,
+                end: 5,
+            },
+            PiiSpan {
+                label: "b".into(),
+                start: 5,
+                end: 9,
+            },
+        ];
+        let result = merge_spans(spans);
+        assert_eq!(result.len(), 2, "adjacent spans must NOT merge");
+    }
+
+    #[test]
+    fn merge_contained() {
+        // Inner span fully inside outer: outer wins.
+        let spans = vec![
+            PiiSpan {
+                label: "outer".into(),
+                start: 0,
+                end: 10,
+            },
+            PiiSpan {
+                label: "inner".into(),
+                start: 2,
+                end: 6,
+            },
+        ];
+        let result = merge_spans(spans);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start, 0);
+        assert_eq!(result[0].end, 10);
+    }
+
+    #[test]
+    fn merge_empty_returns_empty() {
+        assert!(merge_spans(vec![]).is_empty());
+    }
+
+    // --- redact_spans ---
+
+    #[test]
+    fn redact_single_span() {
+        let text = "call 555-867-5309 please";
+        let spans = vec![PiiSpan {
+            label: "phone".into(),
+            start: 5,
+            end: 17,
+        }];
+        let result = redact_spans(text, &spans);
+        assert_eq!(result, "call [PII:phone] please");
+    }
+
+    #[test]
+    fn redact_multiple_spans() {
+        let text = "john@example.com and 555-000-0000";
+        let spans = vec![
+            PiiSpan {
+                label: "email".into(),
+                start: 0,
+                end: 16,
+            },
+            PiiSpan {
+                label: "phone".into(),
+                start: 21,
+                end: 33,
+            },
+        ];
+        let result = redact_spans(text, &spans);
+        assert_eq!(result, "[PII:email] and [PII:phone]");
+    }
+
+    #[test]
+    fn redact_empty_spans_returns_input() {
+        let text = "no pii here";
+        let result = redact_spans(text, &[]);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn redact_preserves_surrounding_text() {
+        let text = "prefix SECRET suffix";
+        let spans = vec![PiiSpan {
+            label: "tok".into(),
+            start: 7,
+            end: 13,
+        }];
+        let result = redact_spans(text, &spans);
+        assert_eq!(result, "prefix [PII:tok] suffix");
     }
 
     // --- SSN false positive: dates should not match ---

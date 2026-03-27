@@ -1080,6 +1080,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_injection_classifier(agent, config);
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_classifier(agent, config);
+    #[cfg(feature = "classifiers")]
+    let agent = agent_setup::apply_pii_ner_classifier(agent, config);
 
     let (code_retriever, _index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
         &config.index,

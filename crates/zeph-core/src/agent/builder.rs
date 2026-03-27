@@ -631,6 +631,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach a NER classifier backend for PII detection in the union merge pipeline.
+    ///
+    /// When attached, `sanitize_tool_output()` runs both regex and NER, merges spans, and
+    /// redacts from the merged list in a single pass. References `classifiers.ner_model`.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_pii_ner_classifier(
+        mut self,
+        backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
+        timeout_ms: u64,
+    ) -> Self {
+        self.security.pii_ner_backend = Some(backend);
+        self.security.pii_ner_timeout_ms = timeout_ms;
+        self
+    }
+
     #[cfg(feature = "guardrail")]
     #[must_use]
     pub fn with_guardrail(mut self, filter: zeph_sanitizer::guardrail::GuardrailFilter) -> Self {

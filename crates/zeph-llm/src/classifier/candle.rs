@@ -28,11 +28,7 @@ use crate::error::LlmError;
 
 use super::{ClassificationResult, ClassifierBackend};
 
-/// Maximum number of tokens per chunk sent to the model.
-/// DeBERTa-v3-small supports 512 tokens; we leave a margin for special tokens.
-const MAX_CHUNK_TOKENS: usize = 448;
-/// Token overlap between adjacent chunks to preserve cross-boundary context.
-const CHUNK_OVERLAP_TOKENS: usize = 64;
+use super::{CHUNK_OVERLAP_TOKENS, MAX_CHUNK_CONTENT_TOKENS};
 
 struct CandleClassifierInner {
     model: DebertaV2SeqClassificationModel,
@@ -40,6 +36,10 @@ struct CandleClassifierInner {
     device: Device,
     /// Maps label index → label string (e.g. `0 → "SAFE"`, `1 → "INJECTION"`).
     id2label: Vec<String>,
+    /// Token ID for `[CLS]` special token, resolved at load time.
+    cls_token_id: u32,
+    /// Token ID for `[SEP]` special token, resolved at load time.
+    sep_token_id: u32,
 }
 
 /// `CandleClassifier` wraps a DeBERTa-v2 sequence classification model.
@@ -142,14 +142,29 @@ impl CandleClassifier {
             });
         }
 
+        // Strip [CLS] and [SEP] added by encode(text, true) — every chunk gets its own framing.
+        let ids = if ids.len() >= 2
+            && ids[0] == inner.cls_token_id
+            && ids[ids.len() - 1] == inner.sep_token_id
+        {
+            &ids[1..ids.len() - 1]
+        } else {
+            ids
+        };
+
         // Chunk by token count, not character count (avoids 4-8x extra inference calls).
         let mut best_positive: Option<ClassificationResult> = None;
         let mut best_overall: Option<ClassificationResult> = None;
         let mut start = 0usize;
         while start < ids.len() {
-            let end = (start + MAX_CHUNK_TOKENS).min(ids.len());
-            let chunk = &ids[start..end];
-            let result = Self::run_chunk(inner, chunk)?;
+            let end = (start + MAX_CHUNK_CONTENT_TOKENS).min(ids.len());
+            let content = &ids[start..end];
+            // Frame every chunk with [CLS] ... [SEP] as DeBERTa expects.
+            let mut framed = Vec::with_capacity(content.len() + 2);
+            framed.push(inner.cls_token_id);
+            framed.extend_from_slice(content);
+            framed.push(inner.sep_token_id);
+            let result = Self::run_chunk(inner, &framed)?;
             if result.is_positive {
                 let is_better = best_positive
                     .as_ref()
@@ -220,6 +235,13 @@ impl CandleClassifier {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to load tokenizer: {e}")))?;
 
+        let cls_token_id = tokenizer
+            .token_to_id("[CLS]")
+            .ok_or_else(|| LlmError::ModelLoad("tokenizer missing [CLS] token".into()))?;
+        let sep_token_id = tokenizer
+            .token_to_id("[SEP]")
+            .ok_or_else(|| LlmError::ModelLoad("tokenizer missing [SEP] token".into()))?;
+
         validate_safetensors(&weights_path)?;
 
         let device = Device::Cpu;
@@ -236,6 +258,8 @@ impl CandleClassifier {
             tokenizer,
             device,
             id2label,
+            cls_token_id,
+            sep_token_id,
         })
     }
 
@@ -371,6 +395,101 @@ mod tests {
             .unwrap();
         assert!(!result.is_positive);
         assert_eq!(result.label, "SAFE");
+    }
+
+    // ── [CLS]/[SEP] framing logic unit tests ────────────────────────────────
+
+    /// Simulate the strip-then-frame logic from `classify_sync` without a real model.
+    /// Returns the framed chunks that would be passed to `run_chunk`.
+    fn simulate_framing(ids: &[u32], cls_id: u32, sep_id: u32) -> Vec<Vec<u32>> {
+        use super::super::{CHUNK_OVERLAP_TOKENS, MAX_CHUNK_CONTENT_TOKENS};
+        // Strip [CLS]/[SEP] added by encode(text, true)
+        let content = if ids.len() >= 2 && ids[0] == cls_id && ids[ids.len() - 1] == sep_id {
+            &ids[1..ids.len() - 1]
+        } else {
+            ids
+        };
+        let mut chunks = Vec::new();
+        let mut start = 0usize;
+        while start < content.len() {
+            let end = (start + MAX_CHUNK_CONTENT_TOKENS).min(content.len());
+            let slice = &content[start..end];
+            let mut framed = Vec::with_capacity(slice.len() + 2);
+            framed.push(cls_id);
+            framed.extend_from_slice(slice);
+            framed.push(sep_id);
+            chunks.push(framed);
+            if end == content.len() {
+                break;
+            }
+            start = end.saturating_sub(CHUNK_OVERLAP_TOKENS);
+        }
+        chunks
+    }
+
+    const CLS: u32 = 1;
+    const SEP: u32 = 2;
+
+    #[test]
+    fn framing_single_chunk_has_cls_sep() {
+        // Input: [CLS] 10 20 30 [SEP] — shorter than MAX_CHUNK_CONTENT_TOKENS
+        let ids: Vec<u32> = std::iter::once(CLS)
+            .chain(10u32..13)
+            .chain(std::iter::once(SEP))
+            .collect();
+        let chunks = simulate_framing(&ids, CLS, SEP);
+        assert_eq!(chunks.len(), 1, "short input must produce one chunk");
+        assert_eq!(chunks[0][0], CLS, "chunk must start with [CLS]");
+        assert_eq!(*chunks[0].last().unwrap(), SEP, "chunk must end with [SEP]");
+        // Content tokens: 10, 20, 30 (without [CLS]/[SEP])
+        assert_eq!(chunks[0][1..chunks[0].len() - 1], [10, 11, 12]);
+    }
+
+    #[test]
+    fn framing_exact_boundary_single_chunk() {
+        use super::super::MAX_CHUNK_CONTENT_TOKENS;
+        // Exactly MAX_CHUNK_CONTENT_TOKENS content tokens → single chunk, properly framed.
+        let end: u32 = 100 + u32::try_from(MAX_CHUNK_CONTENT_TOKENS).expect("fits u32");
+        let content: Vec<u32> = (100u32..end).collect();
+        let mut ids = vec![CLS];
+        ids.extend_from_slice(&content);
+        ids.push(SEP);
+        let chunks = simulate_framing(&ids, CLS, SEP);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0][0], CLS);
+        assert_eq!(*chunks[0].last().unwrap(), SEP);
+        assert_eq!(chunks[0].len(), MAX_CHUNK_CONTENT_TOKENS + 2);
+    }
+
+    #[test]
+    fn framing_multi_chunk_all_have_cls_sep() {
+        use super::super::MAX_CHUNK_CONTENT_TOKENS;
+        // More than MAX_CHUNK_CONTENT_TOKENS content tokens → multiple chunks.
+        let end: u32 = 100 + u32::try_from(MAX_CHUNK_CONTENT_TOKENS).expect("fits u32") + 50;
+        let content: Vec<u32> = (100u32..end).collect();
+        let mut ids = vec![CLS];
+        ids.extend_from_slice(&content);
+        ids.push(SEP);
+        let chunks = simulate_framing(&ids, CLS, SEP);
+        assert!(chunks.len() >= 2, "must produce multiple chunks");
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk[0], CLS, "chunk {i} must start with [CLS]");
+            assert_eq!(*chunk.last().unwrap(), SEP, "chunk {i} must end with [SEP]");
+            assert!(
+                chunk.len() >= 3,
+                "chunk {i} must have at least one content token"
+            );
+        }
+    }
+
+    #[test]
+    fn framing_no_double_cls_sep_in_content() {
+        // After stripping original [CLS]/[SEP], no duplicate special tokens in content slots.
+        let ids = vec![CLS, 10, 20, SEP];
+        let chunks = simulate_framing(&ids, CLS, SEP);
+        assert_eq!(chunks.len(), 1);
+        // Content must be exactly [10, 20] — no stray [CLS]/[SEP] from original encoding.
+        assert_eq!(chunks[0], vec![CLS, 10, 20, SEP]);
     }
 
     // ── CandleClassifier unit tests (no model downloads) ────────────────────

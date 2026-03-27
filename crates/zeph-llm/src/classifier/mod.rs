@@ -16,6 +16,16 @@ pub mod candle;
 pub mod candle_pii;
 pub mod llm;
 
+/// Maximum tokens per chunk sent to `DeBERTa` models (must leave room for `[CLS]` + `[SEP]`).
+#[cfg(feature = "classifiers")]
+pub(crate) const MAX_CHUNK_TOKENS: usize = 448;
+/// Effective content tokens per chunk after reserving slots for `[CLS]` and `[SEP]`.
+#[cfg(feature = "classifiers")]
+pub(crate) const MAX_CHUNK_CONTENT_TOKENS: usize = MAX_CHUNK_TOKENS - 2;
+/// Token overlap between adjacent chunks to preserve cross-boundary context.
+#[cfg(feature = "classifiers")]
+pub(crate) const CHUNK_OVERLAP_TOKENS: usize = 64;
+
 use std::future::Future;
 use std::pin::Pin;
 

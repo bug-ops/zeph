@@ -567,6 +567,28 @@ pub(crate) fn apply_pii_classifier_with_cfg<C: Channel>(
     agent.with_pii_detector(backend_arc, classifiers.pii_threshold)
 }
 
+/// Wire the `CandleNerClassifier` into the PII union merge pipeline.
+///
+/// Only active when `classifiers.enabled = true` AND `security.pii_filter.enabled = true`.
+/// Uses `classifiers.ner_model` as the NER model repo ID.
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_pii_ner_classifier<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &Config,
+) -> zeph_core::agent::Agent<C> {
+    if !config.classifiers.enabled || !config.security.pii_filter.enabled {
+        return agent;
+    }
+    let backend = std::sync::Arc::new(zeph_llm::classifier::ner::CandleNerClassifier::new(
+        config.classifiers.ner_model.as_str(),
+    ));
+    tracing::info!(
+        repo_id = %config.classifiers.ner_model,
+        "NER PII classifier attached for union merge pipeline (model loads lazily on first use)"
+    );
+    agent.with_pii_ner_classifier(backend, config.classifiers.timeout_ms)
+}
+
 pub(crate) async fn apply_code_indexer(
     config: &IndexConfig,
     qdrant_ops: Option<QdrantOps>,

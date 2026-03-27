@@ -382,22 +382,85 @@ impl<C: Channel> Agent<C> {
 
         // PII scrub: apply after sanitization so the filter processes the same content
         // that will enter the LLM context (post-truncation, post-spotlight delimiters).
-        let body = if self.security.pii_filter.is_enabled() {
-            let scrubbed = self.security.pii_filter.scrub(&sanitized.body);
-            if matches!(scrubbed, std::borrow::Cow::Owned(_)) {
-                self.update_metrics(|m| m.pii_scrub_count += 1);
-                tracing::debug!(tool = %tool_name, "PII scrubbed from tool output");
-            }
-            scrubbed.into_owned()
-        } else {
-            sanitized.body
-        };
+        let body = self.scrub_pii_union(&sanitized.body, tool_name).await;
 
         // Guardrail: opt-in tool output scanning for indirect prompt injection (scan_tool_output=true).
         #[cfg(feature = "guardrail")]
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
         (body, has_injection_flags)
+    }
+
+    /// Run regex PII filter and (optionally) NER classifier, merge spans, and redact in one pass.
+    ///
+    /// When `pii_ner_backend` is configured, both sources are combined so neither regex-only
+    /// nor NER-only detections are missed. Falls back to regex-only when NER is unavailable.
+    async fn scrub_pii_union(&mut self, text: &str, tool_name: &str) -> String {
+        use zeph_sanitizer::pii::{build_char_to_byte_map, merge_spans, redact_spans};
+
+        if !self.security.pii_filter.is_enabled() {
+            // NER alone does not activate PII scrubbing — the regex filter must be enabled.
+            return text.to_owned();
+        }
+
+        // Step 1: regex spans (byte offsets).
+        let mut spans = self.security.pii_filter.detect_spans(text);
+
+        // Step 2: NER spans (char offsets → convert to byte offsets, then append).
+        #[cfg(feature = "classifiers")]
+        if let Some(ref backend) = self.security.pii_ner_backend {
+            let timeout_ms = self.security.pii_ner_timeout_ms;
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                backend.classify(text),
+            )
+            .await
+            {
+                Ok(Ok(result)) if result.is_positive => {
+                    // Precompute char→byte map once for all NER spans (C2).
+                    let char_to_byte = build_char_to_byte_map(text);
+                    for ner_span in &result.spans {
+                        let byte_start = char_to_byte
+                            .get(ner_span.start)
+                            .copied()
+                            .unwrap_or(text.len());
+                        let byte_end = char_to_byte
+                            .get(ner_span.end)
+                            .copied()
+                            .unwrap_or(text.len());
+                        if byte_end > byte_start {
+                            spans.push(zeph_sanitizer::pii::PiiSpan {
+                                label: ner_span.label.clone(),
+                                start: byte_start,
+                                end: byte_end,
+                            });
+                        }
+                    }
+                }
+                Ok(Ok(_)) => {} // no positive detection
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, tool = %tool_name, "PII NER failed, regex only");
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_ms = timeout_ms,
+                        tool = %tool_name,
+                        "PII NER timed out, regex only"
+                    );
+                }
+            }
+        }
+
+        // Step 3: merge overlapping/adjacent spans.
+        let merged = merge_spans(spans);
+        if merged.is_empty() {
+            return text.to_owned();
+        }
+
+        // Step 4: single-pass redaction.
+        self.update_metrics(|m| m.pii_scrub_count += 1);
+        tracing::debug!(tool = %tool_name, span_count = merged.len(), "PII scrubbed from tool output");
+        redact_spans(text, &merged)
     }
 
     #[cfg(feature = "guardrail")]

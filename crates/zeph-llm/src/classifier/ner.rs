@@ -40,16 +40,17 @@ use crate::error::LlmError;
 
 use super::{ClassificationResult, ClassifierBackend, NerSpan};
 
-/// Maximum number of tokens per chunk sent to the model.
-const MAX_CHUNK_TOKENS: usize = 448;
-/// Token overlap between adjacent chunks to preserve cross-boundary context.
-const CHUNK_OVERLAP_TOKENS: usize = 64;
+use super::{CHUNK_OVERLAP_TOKENS, MAX_CHUNK_CONTENT_TOKENS};
 
 struct CandleNerClassifierInner {
     model: DebertaV2NERModel,
     tokenizer: Tokenizer,
     /// Maps label index → label string (e.g. `0 → "O"`, `1 → "B-PER"`).
     id2label: Vec<String>,
+    /// Token ID for `[CLS]` special token, resolved at load time.
+    cls_token_id: u32,
+    /// Token ID for `[SEP]` special token, resolved at load time.
+    sep_token_id: u32,
 }
 
 /// Candle-backed DeBERTa-v2 NER classifier.
@@ -124,6 +125,13 @@ impl CandleNerClassifier {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to load tokenizer: {e}")))?;
 
+        let cls_token_id = tokenizer
+            .token_to_id("[CLS]")
+            .ok_or_else(|| LlmError::ModelLoad("tokenizer missing [CLS] token".into()))?;
+        let sep_token_id = tokenizer
+            .token_to_id("[SEP]")
+            .ok_or_else(|| LlmError::ModelLoad("tokenizer missing [SEP] token".into()))?;
+
         validate_safetensors(&weights_path)?;
 
         let device = Device::Cpu;
@@ -138,6 +146,8 @@ impl CandleNerClassifier {
             model,
             tokenizer,
             id2label,
+            cls_token_id,
+            sep_token_id,
         })
     }
 
@@ -401,17 +411,42 @@ impl CandleNerClassifier {
             });
         }
 
+        // Strip [CLS] and [SEP] added by encode(text, true) — every chunk gets its own framing.
+        // Offsets from the tokenizer are absolute (into the original text), so no adjustment needed.
+        let (ids, offsets) = if ids.len() >= 2
+            && ids[0] == inner.cls_token_id
+            && ids[ids.len() - 1] == inner.sep_token_id
+        {
+            (&ids[1..ids.len() - 1], &offsets[1..offsets.len() - 1])
+        } else {
+            (ids, offsets)
+        };
+
         // Collect all spans from all chunks, then deduplicate.
         let mut all_spans: Vec<NerSpan> = Vec::new();
 
         let mut start = 0usize;
         while start < ids.len() {
-            let end = (start + MAX_CHUNK_TOKENS).min(ids.len());
-            let chunk_ids = &ids[start..end];
+            let end = (start + MAX_CHUNK_CONTENT_TOKENS).min(ids.len());
+            let content_ids = &ids[start..end];
             let chunk_offsets = &offsets[start..end];
 
-            let token_labels = Self::run_chunk_tokens(inner, chunk_ids)?;
-            let chunk_spans = Self::decode_bio_spans(&inner.id2label, &token_labels, chunk_offsets);
+            // Frame every chunk with [CLS] ... [SEP] as DeBERTa expects.
+            let mut framed_ids = Vec::with_capacity(content_ids.len() + 2);
+            framed_ids.push(inner.cls_token_id);
+            framed_ids.extend_from_slice(content_ids);
+            framed_ids.push(inner.sep_token_id);
+
+            let token_labels = Self::run_chunk_tokens(inner, &framed_ids)?;
+            // Strip [CLS] and [SEP] labels before BIO decoding — special tokens must not
+            // produce entity spans. Use saturating slice to be safe on malformed output.
+            let content_labels = if token_labels.len() >= 2 {
+                &token_labels[1..token_labels.len() - 1]
+            } else {
+                &[]
+            };
+            let chunk_spans =
+                Self::decode_bio_spans(&inner.id2label, content_labels, chunk_offsets);
             all_spans.extend(chunk_spans);
 
             if end == ids.len() {
@@ -668,5 +703,113 @@ mod tests {
         let id2label = make_id2label(&["O"]);
         let spans = CandleNerClassifier::decode_bio_spans(&id2label, &[], &[]);
         assert!(spans.is_empty());
+    }
+
+    // ── [CLS]/[SEP] framing: strip-then-reframe logic ───────────────────────
+
+    /// Simulate the NER `classify_sync` strip+frame logic without a real model.
+    #[allow(clippy::type_complexity)]
+    fn simulate_ner_framing(
+        ids: &[u32],
+        offsets: &[(usize, usize)],
+        cls_id: u32,
+        sep_id: u32,
+    ) -> Vec<(Vec<u32>, Vec<(usize, usize)>)> {
+        use super::super::{CHUNK_OVERLAP_TOKENS, MAX_CHUNK_CONTENT_TOKENS};
+        let (ids, offsets) = if ids.len() >= 2 && ids[0] == cls_id && ids[ids.len() - 1] == sep_id {
+            (&ids[1..ids.len() - 1], &offsets[1..offsets.len() - 1])
+        } else {
+            (ids, offsets)
+        };
+        let mut chunks = Vec::new();
+        let mut start = 0usize;
+        while start < ids.len() {
+            let end = (start + MAX_CHUNK_CONTENT_TOKENS).min(ids.len());
+            let content_ids = &ids[start..end];
+            let chunk_offsets = offsets[start..end].to_vec();
+            let mut framed = Vec::with_capacity(content_ids.len() + 2);
+            framed.push(cls_id);
+            framed.extend_from_slice(content_ids);
+            framed.push(sep_id);
+            chunks.push((framed, chunk_offsets));
+            if end == ids.len() {
+                break;
+            }
+            start = end.saturating_sub(CHUNK_OVERLAP_TOKENS);
+        }
+        chunks
+    }
+
+    const CLS: u32 = 1;
+    const SEP: u32 = 2;
+
+    #[test]
+    fn ner_framing_single_chunk_has_cls_sep() {
+        let ids = vec![CLS, 10, 20, 30, SEP];
+        let offsets = vec![(0, 0), (0, 4), (5, 9), (10, 14), (0, 0)];
+        let chunks = simulate_ner_framing(&ids, &offsets, CLS, SEP);
+        assert_eq!(chunks.len(), 1);
+        let (framed, chunk_offsets) = &chunks[0];
+        assert_eq!(framed[0], CLS);
+        assert_eq!(*framed.last().unwrap(), SEP);
+        // Content tokens 10, 20, 30 should be present
+        assert_eq!(&framed[1..framed.len() - 1], &[10, 20, 30]);
+        // Content offsets must NOT include the [CLS]/[SEP] zero-width offsets
+        assert_eq!(chunk_offsets, &[(0, 4), (5, 9), (10, 14)]);
+    }
+
+    #[test]
+    fn ner_framing_strips_special_labels_before_bio_decode() {
+        // Simulate: model returns label vector for [CLS] content... [SEP]
+        // We must strip positions 0 and len-1 before passing to decode_bio_spans.
+        // This test verifies the strip logic directly.
+        let id2label = make_id2label(&["O", "B-PER"]);
+        // Labels: [CLS]=B-PER (should be ignored), John=B-PER, [SEP]=B-PER (should be ignored)
+        let token_labels_with_special = [(1, 0.9f32), (1, 0.95f32), (1, 0.9f32)];
+        // Strip first and last entries (the [CLS] and [SEP] positions)
+        let content_labels = if token_labels_with_special.len() >= 2 {
+            &token_labels_with_special[1..token_labels_with_special.len() - 1]
+        } else {
+            &[]
+        };
+        let offsets = vec![(0, 4)]; // only one content token: "John" at 0..4
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, content_labels, &offsets);
+        assert_eq!(
+            spans.len(),
+            1,
+            "only the real content token should produce a span"
+        );
+        assert_eq!(spans[0].label, "PER");
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, 4);
+    }
+
+    #[test]
+    fn ner_offsets_preserved_across_chunks() {
+        use super::super::MAX_CHUNK_CONTENT_TOKENS;
+        // Create ids with [CLS] + content + [SEP] where content > MAX_CHUNK_CONTENT_TOKENS
+        let content_len = MAX_CHUNK_CONTENT_TOKENS + 10;
+        let mut ids = vec![CLS];
+        let end: u32 = 100 + u32::try_from(content_len).expect("fits u32");
+        ids.extend(100u32..end);
+        ids.push(SEP);
+        // Synthetic offsets: each content token covers 5 chars
+        let mut offsets = vec![(0, 0)]; // [CLS]
+        for i in 0..content_len {
+            offsets.push((i * 5, i * 5 + 5));
+        }
+        offsets.push((0, 0)); // [SEP]
+        let chunks = simulate_ner_framing(&ids, &offsets, CLS, SEP);
+        assert!(chunks.len() >= 2, "must produce multiple chunks");
+        // First chunk's offsets must start from (0, 5) — the first content token
+        let (_, first_offsets) = &chunks[0];
+        assert_eq!(first_offsets[0], (0, 5));
+        // Last chunk's offsets must include the final content token
+        let (_, last_offsets) = chunks.last().unwrap();
+        let last_tok_idx = content_len - 1;
+        assert_eq!(
+            last_offsets.last().unwrap(),
+            &(last_tok_idx * 5, last_tok_idx * 5 + 5)
+        );
     }
 }

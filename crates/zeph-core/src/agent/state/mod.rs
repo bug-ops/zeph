@@ -133,6 +133,14 @@ pub(crate) struct SecurityState {
     /// Shared with `UrlGroundingVerifier` to check `fetch`/`web_scrape` calls at dispatch time.
     pub(crate) user_provided_urls: Arc<RwLock<HashSet<String>>>,
     pub(crate) pii_filter: zeph_sanitizer::pii::PiiFilter,
+    /// NER classifier for PII detection (`classifiers.ner_model`). When `Some`, the PII path
+    /// runs both regex (`pii_filter`) and NER, then merges spans before redaction.
+    /// `None` when `classifiers` feature is disabled or `classifiers.enabled = false`.
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_ner_backend: Option<std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>>,
+    /// Per-call timeout for the NER PII classifier in milliseconds.
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_ner_timeout_ms: u64,
     pub(crate) memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator,
     /// LLM-based prompt injection pre-screener (opt-in).
     #[cfg(feature = "guardrail")]
