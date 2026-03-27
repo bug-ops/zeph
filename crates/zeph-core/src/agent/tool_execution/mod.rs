@@ -396,7 +396,7 @@ impl<C: Channel> Agent<C> {
     /// When `pii_ner_backend` is configured, both sources are combined so neither regex-only
     /// nor NER-only detections are missed. Falls back to regex-only when NER is unavailable.
     async fn scrub_pii_union(&mut self, text: &str, tool_name: &str) -> String {
-        use zeph_sanitizer::pii::{build_char_to_byte_map, merge_spans, redact_spans};
+        use zeph_sanitizer::pii::{merge_spans, redact_spans};
 
         if !self.security.pii_filter.is_enabled() {
             // NER alone does not activate PII scrubbing — the regex filter must be enabled.
@@ -404,11 +404,13 @@ impl<C: Channel> Agent<C> {
         }
 
         // Step 1: regex spans (byte offsets).
+        #[cfg_attr(not(feature = "classifiers"), allow(unused_mut))]
         let mut spans = self.security.pii_filter.detect_spans(text);
 
         // Step 2: NER spans (char offsets → convert to byte offsets, then append).
         #[cfg(feature = "classifiers")]
         if let Some(ref backend) = self.security.pii_ner_backend {
+            use zeph_sanitizer::pii::build_char_to_byte_map;
             let timeout_ms = self.security.pii_ner_timeout_ms;
             match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
