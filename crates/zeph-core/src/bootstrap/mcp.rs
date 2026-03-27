@@ -35,7 +35,8 @@ pub fn create_mcp_manager_with_vault(
                 id: s.id.clone(),
                 transport,
                 timeout: std::time::Duration::from_secs(s.timeout),
-                trusted: true,
+                trust_level: s.trust_level,
+                tool_allowlist: s.tool_allowlist.clone(),
             }
         })
         .collect();

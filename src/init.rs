@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy, McpOAuthConfig,
-    McpServerConfig, MemoryConfig, OAuthTokenStorage, OrchestrationConfig, ProviderEntry,
-    ProviderKind, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig,
-    VaultConfig,
+    McpServerConfig, McpTrustLevel, MemoryConfig, OAuthTokenStorage, OrchestrationConfig,
+    ProviderEntry, ProviderKind, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig,
+    TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -1326,6 +1326,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             oauth: None,
             timeout: 60,
             policy: zeph_mcp::McpPolicy::default(),
+            trust_level: McpTrustLevel::Trusted,
+            tool_allowlist: Vec::new(),
         });
     }
     for server in state.mcp_remote_servers.clone() {
@@ -1630,6 +1632,7 @@ file_patterns = ["**/*.rs"]
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== MCP: Remote Servers ==\n");
     println!(
@@ -1717,6 +1720,18 @@ fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             _ => {}
         }
 
+        let trust_choices = ["untrusted (default)", "trusted", "sandboxed"];
+        let trust_idx = Select::new()
+            .with_prompt("Trust level")
+            .items(trust_choices)
+            .default(0)
+            .interact()?;
+        let trust_level = match trust_idx {
+            1 => McpTrustLevel::Trusted,
+            2 => McpTrustLevel::Sandboxed,
+            _ => McpTrustLevel::Untrusted,
+        };
+
         state.mcp_remote_servers.push(McpServerConfig {
             id,
             command: None,
@@ -1727,6 +1742,8 @@ fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             policy: zeph_mcp::McpPolicy::default(),
             headers,
             oauth,
+            trust_level,
+            tool_allowlist: Vec::new(),
         });
 
         println!("Server added.");

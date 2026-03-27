@@ -237,20 +237,11 @@ mod tests {
     // Uses 8.8.8.8 as a "public" IP literal (no DNS) to avoid network dependency in passing fields.
     #[tokio::test]
     async fn validate_oauth_metadata_urls_blocks_private_token_endpoint() {
-        use std::collections::HashMap;
-        let metadata = rmcp::transport::auth::AuthorizationMetadata {
-            // token_endpoint is private — must be rejected
-            token_endpoint: "http://10.0.0.1/token".into(),
-            // other endpoints use a literal public IP so DNS is not required
-            authorization_endpoint: "http://8.8.8.8/auth".into(),
-            registration_endpoint: None,
-            issuer: None,
-            jwks_uri: None,
-            scopes_supported: None,
-            response_types_supported: None,
-            code_challenge_methods_supported: None,
-            additional_fields: HashMap::new(),
-        };
+        let mut metadata = rmcp::transport::auth::AuthorizationMetadata::default();
+        // token_endpoint is private — must be rejected
+        metadata.token_endpoint = "http://10.0.0.1/token".into();
+        // other endpoints use a literal public IP so DNS is not required
+        metadata.authorization_endpoint = "http://8.8.8.8/auth".into();
         let err = validate_oauth_metadata_urls("srv", &metadata)
             .await
             .unwrap_err();
@@ -260,20 +251,11 @@ mod tests {
 
     #[tokio::test]
     async fn validate_oauth_metadata_urls_blocks_private_authorization_endpoint() {
-        use std::collections::HashMap;
-        let metadata = rmcp::transport::auth::AuthorizationMetadata {
-            // token_endpoint uses literal public IP so it passes
-            token_endpoint: "http://8.8.8.8/token".into(),
-            // authorization_endpoint is private — must be rejected
-            authorization_endpoint: "http://192.168.1.1/auth".into(),
-            registration_endpoint: None,
-            issuer: None,
-            jwks_uri: None,
-            scopes_supported: None,
-            response_types_supported: None,
-            code_challenge_methods_supported: None,
-            additional_fields: HashMap::new(),
-        };
+        let mut metadata = rmcp::transport::auth::AuthorizationMetadata::default();
+        // token_endpoint uses literal public IP so it passes
+        metadata.token_endpoint = "http://8.8.8.8/token".into();
+        // authorization_endpoint is private — must be rejected
+        metadata.authorization_endpoint = "http://192.168.1.1/auth".into();
         let err = validate_oauth_metadata_urls("srv", &metadata)
             .await
             .unwrap_err();
@@ -283,20 +265,12 @@ mod tests {
 
     #[tokio::test]
     async fn validate_oauth_metadata_urls_blocks_private_jwks_uri() {
-        use std::collections::HashMap;
-        let metadata = rmcp::transport::auth::AuthorizationMetadata {
-            // token_endpoint and authorization_endpoint use literal public IPs
-            token_endpoint: "http://8.8.8.8/token".into(),
-            authorization_endpoint: "http://8.8.8.8/auth".into(),
-            registration_endpoint: None,
-            issuer: None,
-            // jwks_uri is private — must be rejected
-            jwks_uri: Some("http://127.0.0.1:9000/jwks".into()),
-            scopes_supported: None,
-            response_types_supported: None,
-            code_challenge_methods_supported: None,
-            additional_fields: HashMap::new(),
-        };
+        let mut metadata = rmcp::transport::auth::AuthorizationMetadata::default();
+        // token_endpoint and authorization_endpoint use literal public IPs
+        metadata.token_endpoint = "http://8.8.8.8/token".into();
+        metadata.authorization_endpoint = "http://8.8.8.8/auth".into();
+        // jwks_uri is private — must be rejected
+        metadata.jwks_uri = Some("http://127.0.0.1:9000/jwks".into());
         let err = validate_oauth_metadata_urls("srv", &metadata)
             .await
             .unwrap_err();

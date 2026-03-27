@@ -1215,6 +1215,72 @@ pub fn migrate_planner_model_to_provider(toml_src: &str) -> Result<MigrationResu
     })
 }
 
+/// Migrate `[[mcp.servers]]` entries to add `trust_level = "trusted"` for any entry
+/// that lacks an explicit `trust_level`.
+///
+/// Before this PR all config-defined servers skipped SSRF validation (equivalent to
+/// `trust_level = "trusted"`). Without migration, upgrading to the new default
+/// (`Untrusted`) would silently break remote servers on private networks.
+///
+/// This function adds `trust_level = "trusted"` only to entries that are missing the
+/// field, preserving entries that already have it set.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_mcp_trust_levels(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let mut added = 0usize;
+
+    let Some(mcp) = doc.get_mut("mcp").and_then(toml_edit::Item::as_table_mut) else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    };
+
+    let Some(servers) = mcp
+        .get_mut("servers")
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+    else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    };
+
+    for entry in servers.iter_mut() {
+        if !entry.contains_key("trust_level") {
+            entry.insert(
+                "trust_level",
+                toml_edit::value(toml_edit::Value::from("trusted")),
+            );
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        eprintln!(
+            "Migration: added trust_level = \"trusted\" to {added} [[mcp.servers]] \
+             entr{} (preserving previous SSRF-skip behavior). \
+             Review and adjust trust levels as needed.",
+            if added == 1 { "y" } else { "ies" }
+        );
+    }
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: added,
+        sections_added: if added > 0 {
+            vec!["mcp.servers.trust_level".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -1906,5 +1972,107 @@ max_tasks = 20
             msg.contains("test sentinel"),
             "message must include reason: {msg}"
         );
+    }
+
+    // ─── migrate_mcp_trust_levels ─────────────────────────────────────────────
+
+    #[test]
+    fn migrate_mcp_trust_levels_adds_trusted_to_entries_without_field() {
+        let src = r#"
+[mcp]
+allowed_commands = ["npx"]
+
+[[mcp.servers]]
+id = "srv-a"
+command = "npx"
+args = ["-y", "some-mcp"]
+
+[[mcp.servers]]
+id = "srv-b"
+command = "npx"
+args = ["-y", "other-mcp"]
+"#;
+        let result = migrate_mcp_trust_levels(src).expect("migrate");
+        assert_eq!(
+            result.added_count, 2,
+            "both entries must get trust_level added"
+        );
+        assert!(
+            result
+                .sections_added
+                .contains(&"mcp.servers.trust_level".to_owned()),
+            "sections_added must report mcp.servers.trust_level"
+        );
+        // Both entries must now contain trust_level = "trusted"
+        let occurrences = result.output.matches("trust_level = \"trusted\"").count();
+        assert_eq!(
+            occurrences, 2,
+            "each entry must have trust_level = \"trusted\""
+        );
+    }
+
+    #[test]
+    fn migrate_mcp_trust_levels_does_not_overwrite_existing_field() {
+        let src = r#"
+[[mcp.servers]]
+id = "srv-a"
+command = "npx"
+trust_level = "sandboxed"
+tool_allowlist = ["read_file"]
+
+[[mcp.servers]]
+id = "srv-b"
+command = "npx"
+"#;
+        let result = migrate_mcp_trust_levels(src).expect("migrate");
+        // Only srv-b has no trust_level, so only 1 entry should be updated
+        assert_eq!(
+            result.added_count, 1,
+            "only entry without trust_level gets updated"
+        );
+        // srv-a's sandboxed value must not be overwritten
+        assert!(
+            result.output.contains("trust_level = \"sandboxed\""),
+            "existing trust_level must not be overwritten"
+        );
+        // srv-b gets trusted
+        assert!(
+            result.output.contains("trust_level = \"trusted\""),
+            "entry without trust_level must get trusted"
+        );
+    }
+
+    #[test]
+    fn migrate_mcp_trust_levels_no_mcp_section_is_noop() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_mcp_trust_levels(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert!(result.sections_added.is_empty());
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_mcp_trust_levels_no_servers_is_noop() {
+        let src = "[mcp]\nallowed_commands = [\"npx\"]\n";
+        let result = migrate_mcp_trust_levels(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert!(result.sections_added.is_empty());
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_mcp_trust_levels_all_entries_already_have_field_is_noop() {
+        let src = r#"
+[[mcp.servers]]
+id = "srv-a"
+trust_level = "trusted"
+
+[[mcp.servers]]
+id = "srv-b"
+trust_level = "untrusted"
+"#;
+        let result = migrate_mcp_trust_levels(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert!(result.sections_added.is_empty());
     }
 }

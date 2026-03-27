@@ -82,7 +82,8 @@ impl<C: Channel> Agent<C> {
             id: args[0].to_owned(),
             transport,
             timeout: std::time::Duration::from_secs(30),
-            trusted: false,
+            trust_level: zeph_mcp::McpTrustLevel::Untrusted,
+            tool_allowlist: Vec::new(),
         };
 
         let _ = self.channel.send_status("connecting to mcp...").await;

@@ -33,8 +33,8 @@ pub use agent::{
     AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks, ToolFilterConfig,
 };
 pub use channels::{
-    A2aServerConfig, DiscordConfig, McpConfig, McpOAuthConfig, McpServerConfig, OAuthTokenStorage,
-    SlackConfig, TelegramConfig,
+    A2aServerConfig, DiscordConfig, McpConfig, McpOAuthConfig, McpServerConfig, McpTrustLevel,
+    OAuthTokenStorage, SlackConfig, TelegramConfig,
 };
 pub use defaults::{
     DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,

@@ -5,7 +5,8 @@ use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
-    ConfigMigrator, migrate_planner_model_to_provider, migrate_stt_to_provider,
+    ConfigMigrator, migrate_mcp_trust_levels, migrate_planner_model_to_provider,
+    migrate_stt_to_provider,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -33,9 +34,14 @@ pub(crate) fn handle_migrate_config(
     let planner_result = migrate_planner_model_to_provider(&after_stt)?;
     let after_planner = planner_result.output;
 
-    // Step 3: add missing default keys as commented-out entries.
+    // Step 3: add trust_level = "trusted" to existing [[mcp.servers]] entries that lack it,
+    // preserving the previous behavior where all config-defined servers skipped SSRF validation.
+    let trust_result = migrate_mcp_trust_levels(&after_planner)?;
+    let after_trust = trust_result.output;
+
+    // Step 4: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_planner)?;
+    let result = migrator.migrate(&after_trust)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -45,6 +51,12 @@ pub(crate) fn handle_migrate_config(
         if planner_result.added_count > 0 {
             eprintln!(
                 "Planner migration: planner_model renamed to planner_provider (value commented out)."
+            );
+        }
+        if trust_result.added_count > 0 {
+            eprintln!(
+                "MCP trust migration: added trust_level = \"trusted\" to {} [[mcp.servers]] entries.",
+                trust_result.added_count
             );
         }
         eprintln!(

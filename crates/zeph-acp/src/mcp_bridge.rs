@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use agent_client_protocol as acp;
-use zeph_mcp::{McpTransport, ServerEntry};
+use zeph_mcp::{McpTransport, McpTrustLevel, ServerEntry};
 
 const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 
@@ -34,7 +34,8 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                         env,
                     },
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
-                    trusted: false,
+                    trust_level: McpTrustLevel::Untrusted,
+                    tool_allowlist: Vec::new(),
                 })
             }
             acp::McpServer::Http(http) => Some(ServerEntry {
@@ -44,7 +45,8 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     headers: std::collections::HashMap::new(),
                 },
                 timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
-                trusted: false,
+                trust_level: McpTrustLevel::Untrusted,
+                tool_allowlist: Vec::new(),
             }),
             acp::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
@@ -56,7 +58,8 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                         headers: std::collections::HashMap::new(),
                     },
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
-                    trusted: false,
+                    trust_level: McpTrustLevel::Untrusted,
+                    tool_allowlist: Vec::new(),
                 })
             }
             _ => {

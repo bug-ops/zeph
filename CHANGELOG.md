@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(mcp): bump `rmcp` dependency 1.2 → 1.3 (#2188)
+- feat(mcp): per-server `trust_level` (`trusted` / `untrusted` / `sandboxed`) and `tool_allowlist` on `[[mcp.servers]]`; `Untrusted` (default) enforces SSRF and warns when allowlist is empty; `Sandboxed` is fail-closed (empty allowlist = no tools exposed); `Trusted` skips SSRF and exposes all tools; `--init` wizard prompts for trust level on remote servers; `--migrate-config` sets `trust_level = "trusted"` on existing servers to preserve prior SSRF-bypass behavior (#2178)
+
 - feat(skills): `browser` bundled skill — Playwright MCP decision tree, quick reference table, safety rules (SSRF protection for private IP ranges, credential and payment form guards, prompt injection defense), error handling guide; configure via `[[mcp.servers]]` with `id = "playwright"` (#2186)
 - feat(skills): `os-automation` bundled skill — cross-platform OS automation (notifications, clipboard, screenshots, file/URL open, volume, WiFi, scheduled tasks, brightness) with full macOS, Linux, and Windows reference files; macOS reference includes Safari and Chrome AppleScript tab management (#2187)
 - feat(classifiers): `[classifiers]` config section with Candle-backed injection detection — `ClassifierBackend` object-safe async trait, `CandleClassifier` using `deberta-v3-small-prompt-injection-v2` with token-based chunking (448-token chunks, 64-token overlap); `ContentSanitizer::classify_injection()` async method as separate ML detection path that leaves sync `sanitize()` unchanged; `zeph classifiers download` CLI subcommand for pre-caching models; `--migrate-config` support adds `[classifiers]` section with `enabled = false` to existing configs; feature `classifiers` (disabled by default, implies `candle`) (#2185)
@@ -24,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Breaking Changes
 
+- `[[mcp.servers]]` entries added without `trust_level` now default to `untrusted`, which enforces SSRF validation. Previous behavior was equivalent to `trusted` (SSRF skipped). Run `zeph --migrate-config --in-place` to set `trust_level = "trusted"` on all existing servers automatically.
 - `[orchestration] planner_model` renamed to `planner_provider`; now references a `[[llm.providers]]` name instead of a raw model string; empty = use primary provider. Run `zeph --migrate-config --in-place` to auto-migrate (old value is commented out; update it to a provider name).
 - `[llm.stt].model` and `[llm.stt].base_url` fields removed from `SttConfig`; move them to `stt_model` / `base_url` on the corresponding `[[llm.providers]]` entry. Run `zeph --migrate-config --in-place` to auto-convert.
 - `ZEPH_STT_MODEL` and `ZEPH_STT_BASE_URL` environment variables no longer applied; use provider-level config instead.

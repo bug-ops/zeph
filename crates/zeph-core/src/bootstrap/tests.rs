@@ -315,6 +315,8 @@ fn create_mcp_manager_with_http_transport() {
         oauth: None,
         timeout: 30,
         policy: Default::default(),
+        trust_level: Default::default(),
+        tool_allowlist: vec![],
     }];
 
     let manager = create_mcp_manager(&config, false);
@@ -337,6 +339,8 @@ fn create_mcp_manager_with_stdio_transport() {
         oauth: None,
         timeout: 30,
         policy: Default::default(),
+        trust_level: Default::default(),
+        tool_allowlist: vec![],
     }];
 
     let manager = create_mcp_manager(&config, false);

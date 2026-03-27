@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::defaults::default_true;
 
+pub use zeph_mcp::McpTrustLevel;
+
 fn default_slack_port() -> u16 {
     3000
 }
@@ -207,6 +209,15 @@ pub struct McpServerConfig {
     /// OAuth 2.1 configuration for this server.
     #[serde(default)]
     pub oauth: Option<McpOAuthConfig>,
+    /// Trust level for this server. Default: Untrusted.
+    #[serde(default)]
+    pub trust_level: McpTrustLevel,
+    /// Tool allowlist. Behavior depends on `trust_level`:
+    /// - Trusted: ignored (all tools exposed)
+    /// - Untrusted: empty = all tools (with warning), non-empty = only listed tools
+    /// - Sandboxed: empty = NO tools (fail-closed), non-empty = only listed tools
+    #[serde(default)]
+    pub tool_allowlist: Vec<String>,
 }
 
 /// OAuth 2.1 configuration for an MCP server.
@@ -275,6 +286,8 @@ impl std::fmt::Debug for McpServerConfig {
             .field("policy", &self.policy)
             .field("headers", &redacted_headers)
             .field("oauth", &self.oauth)
+            .field("trust_level", &self.trust_level)
+            .field("tool_allowlist", &self.tool_allowlist)
             .finish()
     }
 }

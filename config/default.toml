@@ -291,6 +291,8 @@ max_dynamic_servers = 10
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # env = {}                      # environment variables for the child process
 # timeout = 30
+# trust_level = "untrusted"     # "trusted" (skip SSRF), "untrusted" (default), or "sandboxed"
+# tool_allowlist = []           # empty = all tools exposed; non-empty = only listed tools visible
 
 # HTTP transport with static auth header (Mode A — static Bearer token):
 # Store the token in the vault: `zeph vault set TODOIST_API_TOKEN <value>`

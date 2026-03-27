@@ -26,7 +26,7 @@ pub use caller::McpCaller;
 pub use client::{OAuthConnectResult, OAuthPending, ToolRefreshEvent};
 pub use error::McpError;
 pub use executor::McpToolExecutor;
-pub use manager::{McpManager, McpTransport, ServerEntry};
+pub use manager::{McpManager, McpTransport, McpTrustLevel, ServerEntry};
 #[cfg(feature = "mock")]
 pub use mock::{McpCall, MockMcpCaller};
 pub use policy::{McpPolicy, PolicyEnforcer, PolicyViolation, RateLimit};

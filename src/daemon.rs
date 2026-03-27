@@ -175,7 +175,7 @@ pub(crate) async fn run_daemon(
     }
     tracing::info!(pid_file = %config.daemon.pid_file, "daemon started");
 
-    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
+    let (provider, status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let budget_tokens = app.auto_budget_tokens(&provider);
 
@@ -243,11 +243,10 @@ pub(crate) async fn run_daemon(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager = std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager_with_vault(
-        config,
-        false,
-        app.age_vault_arc(),
-    ));
+    let mcp_manager = std::sync::Arc::new(
+        zeph_core::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc())
+            .with_status_tx(status_tx),
+    );
     let mcp_tools = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
