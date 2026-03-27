@@ -1950,7 +1950,6 @@ mod tests {
     mod model_detection {
         use std::future::Future;
         use std::pin::Pin;
-        use std::sync::Arc;
 
         use zeph_llm::classifier::{ClassificationResult, ClassifierBackend};
         use zeph_llm::error::LlmError;
