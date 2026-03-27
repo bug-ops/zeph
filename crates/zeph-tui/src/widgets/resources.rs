@@ -135,6 +135,28 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         }
     }
 
+    // Classifier latency section — only shown when at least one task has been called.
+    let clf = &metrics.classifier;
+    let has_classifier_data =
+        clf.injection.call_count > 0 || clf.pii.call_count > 0 || clf.feedback.call_count > 0;
+    if has_classifier_data {
+        lines.push(Line::from("  Classifiers"));
+        for (name, snap) in [
+            ("injection", &clf.injection),
+            ("pii", &clf.pii),
+            ("feedback", &clf.feedback),
+        ] {
+            if snap.call_count > 0 {
+                lines.push(Line::from(format!(
+                    "    [{name}] calls:{} p50:{}ms p95:{}ms",
+                    snap.call_count,
+                    snap.p50_ms.unwrap_or(0),
+                    snap.p95_ms.unwrap_or(0),
+                )));
+            }
+        }
+    }
+
     let resources = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)

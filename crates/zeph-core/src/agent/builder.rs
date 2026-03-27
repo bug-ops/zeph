@@ -421,6 +421,13 @@ impl<C: Channel> Agent<C> {
         mut self,
         classifier: zeph_llm::classifier::llm::LlmClassifier,
     ) -> Self {
+        // If classifier_metrics is already set, wire it into the LlmClassifier for Feedback recording.
+        #[cfg(feature = "classifiers")]
+        let classifier = if let Some(ref m) = self.metrics.classifier_metrics {
+            classifier.with_metrics(std::sync::Arc::clone(m))
+        } else {
+            classifier
+        };
         self.feedback.llm_classifier = Some(classifier);
         self
     }
@@ -653,6 +660,30 @@ impl<C: Channel> Agent<C> {
     ) -> Self {
         self.security.pii_ner_backend = Some(backend);
         self.security.pii_ner_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Attach a [`ClassifierMetrics`] instance to record injection, PII, and feedback latencies.
+    ///
+    /// The same `Arc` is shared with `ContentSanitizer` (injection + PII) and `LlmClassifier`
+    /// (feedback) so all three tasks write into the same ring buffers. Call this before
+    /// `with_injection_classifier`, `with_pii_detector`, and `with_llm_classifier`.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_classifier_metrics(
+        mut self,
+        metrics: std::sync::Arc<zeph_llm::ClassifierMetrics>,
+    ) -> Self {
+        // Wire into sanitizer for injection + PII recording.
+        let old = std::mem::replace(
+            &mut self.security.sanitizer,
+            zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+        );
+        self.security.sanitizer = old.with_classifier_metrics(std::sync::Arc::clone(&metrics));
+        // Store Arc for snapshot push and LlmClassifier wiring.
+        self.metrics.classifier_metrics = Some(metrics);
         self
     }
 

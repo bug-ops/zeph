@@ -441,6 +441,7 @@ impl<C: Channel> Agent<C> {
                 cost_tracker: None,
                 token_counter,
                 extended_context: false,
+                classifier_metrics: None,
             },
             orchestration: OrchestrationState {
                 planner_provider: None,
@@ -2983,6 +2984,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// TODO(I3): `JoinHandle`s are not tracked — outstanding tasks may be aborted on runtime
     /// shutdown before `store_user_correction` completes. Acceptable for MVP.
+    #[allow(clippy::too_many_lines)]
     fn spawn_judge_correction_check(
         &mut self,
         trimmed: &str,
@@ -3010,12 +3012,21 @@ impl<C: Channel> Agent<C> {
             let assistant = assistant_snippet.clone();
             let memory_arc2 = memory_arc.clone();
             let skill_name2 = skill_name.clone();
+            // Clone metrics handles for use inside the spawned task.
+            let classifier_metrics_bg = self.metrics.classifier_metrics.clone();
+            let metrics_tx_bg = self.metrics.metrics_tx.clone();
             tokio::spawn(async move {
                 match llm_classifier
                     .classify_feedback(&user_msg, &assistant, confidence_threshold)
                     .await
                 {
                     Ok(verdict) => {
+                        // Push classifier snapshot after feedback classification.
+                        if let (Some(ref cm), Some(ref tx)) = (classifier_metrics_bg, metrics_tx_bg)
+                        {
+                            let snap = cm.snapshot();
+                            tx.send_modify(|ms| ms.classifier = snap);
+                        }
                         if let Some(signal) = feedback_verdict_into_signal(&verdict, &user_msg) {
                             let is_self_correction =
                                 signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
@@ -3344,6 +3355,7 @@ impl<C: Channel> Agent<C> {
         // Falls back to regex on classifier error/timeout — never degrades below regex baseline.
         #[cfg(feature = "classifiers")]
         if self.security.sanitizer.classify_injection(trimmed).await {
+            self.push_classifier_metrics();
             let _ = self
                 .channel
                 .send("[security] Input blocked: injection detected by classifier.")
@@ -3351,6 +3363,8 @@ impl<C: Channel> Agent<C> {
             let _ = self.channel.flush_chunks().await;
             return Ok(());
         }
+        #[cfg(feature = "classifiers")]
+        self.push_classifier_metrics();
 
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).

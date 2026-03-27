@@ -33,6 +33,7 @@ pub(crate) mod usage;
 #[cfg(feature = "stt")]
 pub mod whisper;
 
+pub use classifier::metrics::{ClassifierMetrics, ClassifierMetricsSnapshot, TaskMetricsSnapshot};
 pub use claude::{ThinkingConfig, ThinkingEffort};
 pub use error::LlmError;
 pub use extractor::Extractor;

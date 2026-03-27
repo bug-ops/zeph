@@ -226,6 +226,9 @@ pub(crate) struct MetricsState {
     /// Set to `true` when Claude extended context (`enable_extended_context = true`) is active.
     /// Read from config at build time, not derived from provider internals.
     pub(crate) extended_context: bool,
+    /// Shared classifier latency ring buffer. Populated by `ContentSanitizer` (injection, PII)
+    /// and `LlmClassifier` (feedback). `None` when classifiers are not configured.
+    pub(crate) classifier_metrics: Option<Arc<zeph_llm::ClassifierMetrics>>,
 }
 
 /// Groups task orchestration and subagent state.

@@ -128,6 +128,17 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Push the current classifier metrics snapshot into `MetricsSnapshot`.
+    ///
+    /// Call this after any classifier invocation (injection, PII, feedback) so the TUI panel
+    /// reflects the latest p50/p95 values. No-op when classifier metrics are not configured.
+    pub(super) fn push_classifier_metrics(&self) {
+        if let Some(ref m) = self.metrics.classifier_metrics {
+            let snapshot = m.snapshot();
+            self.update_metrics(|ms| ms.classifier = snapshot);
+        }
+    }
+
     pub(super) fn push_security_event(
         &self,
         category: SecurityEventCategory,

@@ -18,6 +18,13 @@ use serde::Deserialize;
 use crate::any::AnyProvider;
 use crate::error::LlmError;
 
+use super::ClassifierTask;
+use super::metrics::ClassifierMetrics;
+
+// NOTE: sync with JudgeVerdict in zeph-core (crates/zeph-core/src/agent/feedback_detector.rs).
+// Direct import is impossible due to the zeph-core → zeph-llm dependency direction.
+// Keep all fields in sync. See: https://github.com/bug-ops/zeph/issues/2250
+
 /// Structured LLM output for feedback/correction classification.
 ///
 /// Schema matches the existing `FeedbackVerdict` used by `JudgeDetector` in `zeph-core`
@@ -47,13 +54,24 @@ pub struct FeedbackVerdict {
 #[derive(Clone)]
 pub struct LlmClassifier {
     provider: Arc<AnyProvider>,
+    metrics: Option<Arc<ClassifierMetrics>>,
 }
 
 impl LlmClassifier {
     /// Create a new classifier backed by `provider`.
     #[must_use]
     pub fn new(provider: Arc<AnyProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            metrics: None,
+        }
+    }
+
+    /// Attach a [`ClassifierMetrics`] instance to record feedback latency.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<ClassifierMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Human-readable backend name for logging and metrics.
@@ -80,7 +98,12 @@ impl LlmClassifier {
         let t0 = std::time::Instant::now();
         let messages = build_judge_messages(user_message, assistant_response);
         let verdict: FeedbackVerdict = self.provider.chat_typed_erased(&messages).await?;
-        let latency_ms = t0.elapsed().as_millis();
+        let elapsed = t0.elapsed();
+        let latency_ms = elapsed.as_millis();
+
+        if let Some(ref m) = self.metrics {
+            m.record(ClassifierTask::Feedback, elapsed);
+        }
 
         tracing::debug!(
             task = "feedback",

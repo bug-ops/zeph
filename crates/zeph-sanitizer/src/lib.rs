@@ -270,6 +270,8 @@ pub struct ContentSanitizer {
     pii_detector: Option<std::sync::Arc<dyn zeph_llm::classifier::PiiDetector>>,
     #[cfg(feature = "classifiers")]
     pii_threshold: f32,
+    #[cfg(feature = "classifiers")]
+    classifier_metrics: Option<std::sync::Arc<zeph_llm::ClassifierMetrics>>,
 }
 
 impl ContentSanitizer {
@@ -293,6 +295,8 @@ impl ContentSanitizer {
             pii_detector: None,
             #[cfg(feature = "classifiers")]
             pii_threshold: 0.75,
+            #[cfg(feature = "classifiers")]
+            classifier_metrics: None,
         }
     }
 
@@ -330,6 +334,17 @@ impl ContentSanitizer {
         self
     }
 
+    /// Attach a [`ClassifierMetrics`] instance to record injection and PII latencies.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_classifier_metrics(
+        mut self,
+        metrics: std::sync::Arc<zeph_llm::ClassifierMetrics>,
+    ) -> Self {
+        self.classifier_metrics = Some(metrics);
+        self
+    }
+
     /// Run NER-based PII detection on `text`.
     ///
     /// Returns an empty result when no `pii_detector` is attached.
@@ -343,7 +358,14 @@ impl ContentSanitizer {
         text: &str,
     ) -> Result<zeph_llm::classifier::PiiResult, zeph_llm::LlmError> {
         match &self.pii_detector {
-            Some(detector) => detector.detect_pii(text).await,
+            Some(detector) => {
+                let t0 = std::time::Instant::now();
+                let result = detector.detect_pii(text).await?;
+                if let Some(ref m) = self.classifier_metrics {
+                    m.record(zeph_llm::classifier::ClassifierTask::Pii, t0.elapsed());
+                }
+                Ok(result)
+            }
             None => Ok(zeph_llm::classifier::PiiResult {
                 spans: vec![],
                 has_pii: false,
@@ -513,8 +535,15 @@ impl ContentSanitizer {
         };
 
         let timeout = std::time::Duration::from_millis(self.classifier_timeout_ms);
+        let t0 = std::time::Instant::now();
         match tokio::time::timeout(timeout, backend.classify(text)).await {
             Ok(Ok(result)) => {
+                if let Some(ref m) = self.classifier_metrics {
+                    m.record(
+                        zeph_llm::classifier::ClassifierTask::Injection,
+                        t0.elapsed(),
+                    );
+                }
                 if result.is_positive && result.score >= self.injection_threshold {
                     tracing::warn!(
                         label = %result.label,

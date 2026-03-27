@@ -15,6 +15,7 @@ pub mod candle;
 #[cfg(feature = "classifiers")]
 pub mod candle_pii;
 pub mod llm;
+pub mod metrics;
 #[cfg(feature = "classifiers")]
 pub mod ner;
 

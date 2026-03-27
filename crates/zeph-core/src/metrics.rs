@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 
 use tokio::sync::watch;
 
+pub use zeph_llm::{ClassifierMetricsSnapshot, TaskMetricsSnapshot};
 pub use zeph_memory::{CategoryScore, ProbeCategory, ProbeVerdict};
 
 /// Category of a security event for TUI display.
@@ -322,6 +323,8 @@ pub struct MetricsSnapshot {
     pub cache_enabled: bool,
     /// Whether assistant messages are auto-saved to memory.
     pub autosave_enabled: bool,
+    /// Classifier p50/p95 latency metrics per task (injection, pii, feedback).
+    pub classifier: ClassifierMetricsSnapshot,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.
