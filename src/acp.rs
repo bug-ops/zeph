@@ -90,6 +90,8 @@ fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::
 struct SharedAgentDeps {
     // Shared runtime objects
     provider: zeph_llm::any::AnyProvider,
+    /// Dedicated embedding provider. Never replaced by `/provider switch`.
+    embedding_provider: zeph_llm::any::AnyProvider,
     registry: std::sync::Arc<std::sync::RwLock<zeph_skills::registry::SkillRegistry>>,
     /// Shared skill matcher: `Clone` is cheap for Qdrant (connection-pool sharing), and
     /// involves copying in-memory embedding vectors only for the `InMemory` variant.
@@ -221,6 +223,8 @@ async fn build_acp_deps(
     log_acp_runtime_paths(app.config(), app.config_path());
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
+    let embedding_provider =
+        zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
     let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
@@ -419,6 +423,7 @@ async fn build_acp_deps(
 
     let deps = SharedAgentDeps {
         provider,
+        embedding_provider,
         registry,
         matcher,
         max_active_skills: config.skills.max_active_skills,
@@ -669,6 +674,7 @@ async fn spawn_acp_agent(
         .with_mcp_shared_tools(mcp_shared_tools)
         .with_focus_config(d.focus_config.clone())
         .with_sidequest_config(d.sidequest_config.clone())
+        .with_embedding_provider(d.embedding_provider.clone())
         .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider),
     )
     .await;

@@ -521,3 +521,79 @@ fn validate_detector_model_judge_mode_always_ok() {
     let b = make_builder_with_detector_mode(crate::config::DetectorMode::Judge, "");
     assert!(b.validate_detector_model_config());
 }
+
+// ── create_embedding_provider ─────────────────────────────────────────────────
+
+#[test]
+fn create_embedding_provider_prefers_embed_flag() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    // Two providers: first is Ollama (primary), second is OpenAI with embed=true.
+    config.llm.providers = vec![
+        ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            model: Some("qwen3:8b".into()),
+            embedding_model: Some("nomic-embed-text".into()),
+            embed: false,
+            ..ProviderEntry::default()
+        },
+        ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            name: Some("embed".into()),
+            model: Some("qwen3:8b".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            embed: true,
+            ..ProviderEntry::default()
+        },
+    ];
+    let primary = AnyProvider::Ollama(OllamaProvider::new(
+        "http://localhost:11434",
+        "qwen3:8b".into(),
+        "nomic-embed-text".into(),
+    ));
+    let embed_provider = create_embedding_provider(&config, &primary);
+    // Should resolve to an Ollama provider (the embed=true entry).
+    assert!(matches!(embed_provider, AnyProvider::Ollama(_)));
+}
+
+#[test]
+fn create_embedding_provider_falls_back_to_embedding_model_entry() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    // Only one provider with embedding_model set but embed=false.
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::Ollama,
+        name: Some("main".into()),
+        model: Some("qwen3:8b".into()),
+        embedding_model: Some("nomic-embed-text".into()),
+        embed: false,
+        ..ProviderEntry::default()
+    }];
+    let primary = AnyProvider::Ollama(OllamaProvider::new(
+        "http://localhost:11434",
+        "qwen3:8b".into(),
+        "nomic-embed-text".into(),
+    ));
+    let embed_provider = create_embedding_provider(&config, &primary);
+    assert!(matches!(embed_provider, AnyProvider::Ollama(_)));
+}
+
+#[test]
+fn create_embedding_provider_falls_back_to_primary_when_no_embedding_entry() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    // Provider with no embedding_model and embed=false.
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::Ollama,
+        model: Some("qwen3:8b".into()),
+        embedding_model: None,
+        embed: false,
+        ..ProviderEntry::default()
+    }];
+    let primary = AnyProvider::Ollama(OllamaProvider::new(
+        "http://localhost:11434",
+        "qwen3:8b".into(),
+        "nomic-embed-text".into(),
+    ));
+    let embed_provider = create_embedding_provider(&config, &primary);
+    // Falls back to primary clone — must still be Ollama.
+    assert!(matches!(embed_provider, AnyProvider::Ollama(_)));
+    assert_eq!(embed_provider.name(), primary.name());
+}

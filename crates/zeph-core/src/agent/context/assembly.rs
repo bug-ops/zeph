@@ -1000,7 +1000,7 @@ impl<C: Channel> Agent<C> {
         let mut skills_to_record: Vec<String> = Vec::new();
 
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
-            let provider = self.provider.clone();
+            let provider = self.embedding_provider.clone();
             let _ = self.channel.send_status("matching skills...").await;
             let mut scored = matcher
                 .match_skills(
@@ -1250,7 +1250,7 @@ impl<C: Channel> Agent<C> {
                 .collect();
 
             let _ = self.channel.send_status("filtering tools...").await;
-            match self.provider.embed(query).await {
+            match self.embedding_provider.embed(query).await {
                 Ok(query_emb) => {
                     let mut result = filter.filter(&all_ids, &descriptions, query, &query_emb);
 

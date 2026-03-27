@@ -177,6 +177,8 @@ pub(crate) async fn run_daemon(
 
     let (provider, status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
+    let embedding_provider =
+        zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
@@ -330,6 +332,7 @@ pub(crate) async fn run_daemon(
         .with_hybrid_search(config.skills.hybrid_search)
         .with_focus_config(config.agent.focus.clone())
         .with_sidequest_config(config.memory.sidequest.clone())
+        .with_embedding_provider(embedding_provider)
         .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider),
     )
     .await;

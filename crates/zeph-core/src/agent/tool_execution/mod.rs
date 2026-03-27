@@ -579,7 +579,7 @@ impl<C: Channel> Agent<C> {
                 threshold,
                 "semantic cache lookup: examining up to {max_candidates} candidates",
             );
-            match self.provider.embed(&content).await {
+            match self.embedding_provider.embed(&content).await {
                 Ok(embedding) => {
                     let embed_model = self.skill_state.embedding_model.clone();
                     match cache

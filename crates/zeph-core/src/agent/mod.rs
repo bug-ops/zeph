@@ -128,6 +128,11 @@ pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
 
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
+    /// Dedicated embedding provider. Resolved once at bootstrap from `[[llm.providers]]`
+    /// (the entry with `embed = true`, or first entry with `embedding_model` set).
+    /// Falls back to `provider.clone()` when no dedicated entry exists.
+    /// **Never replaced** by `/provider switch`.
+    embedding_provider: AnyProvider,
     channel: C,
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
     pub(super) msg: MessageState,
@@ -233,8 +238,10 @@ impl<C: Channel> Agent<C> {
         let (exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
         #[cfg(not(feature = "experiments"))]
         let (_exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
+        let embedding_provider = provider.clone();
         Self {
             provider,
+            embedding_provider,
             channel,
             tool_executor: Arc::new(tool_executor),
             msg: MessageState {
@@ -544,7 +551,7 @@ impl<C: Channel> Agent<C> {
 
         self.orchestration.plan_cache.as_ref()?;
         let normalized = normalize_goal(goal);
-        match self.provider.embed(&normalized).await {
+        match self.embedding_provider.embed(&normalized).await {
             Ok(emb) => Some(emb),
             Err(zeph_llm::LlmError::EmbedUnsupported { .. }) => {
                 tracing::debug!(
@@ -4092,7 +4099,7 @@ impl<C: Channel> Agent<C> {
 
     /// Rebuild or sync the in-memory skill matcher and BM25 index after a registry update.
     async fn rebuild_skill_matcher(&mut self, all_meta: &[&zeph_skills::loader::SkillMeta]) {
-        let provider = self.provider.clone();
+        let provider = self.embedding_provider.clone();
         let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();

@@ -20,7 +20,9 @@ pub use provider::{
     BootstrapError, build_provider_for_switch, build_provider_from_entry, create_named_provider,
     create_provider, create_summary_provider,
 };
-pub use skills::{create_skill_matcher, effective_embedding_model, managed_skills_dir};
+pub use skills::{
+    create_embedding_provider, create_skill_matcher, effective_embedding_model, managed_skills_dir,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

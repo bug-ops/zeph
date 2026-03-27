@@ -102,6 +102,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the dedicated embedding provider (resolved once at bootstrap, never changed by
+    /// `/provider switch`). When not called, defaults to the primary provider clone set in
+    /// `Agent::new`.
+    #[must_use]
+    pub fn with_embedding_provider(mut self, provider: AnyProvider) -> Self {
+        self.embedding_provider = provider;
+        self
+    }
+
     /// Store the provider pool and config snapshot for runtime `/provider` switching.
     #[must_use]
     pub fn with_provider_pool(

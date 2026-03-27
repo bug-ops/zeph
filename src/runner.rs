@@ -517,6 +517,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let (provider, agent_status_tx, status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
+    let embedding_provider =
+        zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let config = app.config();
@@ -931,6 +933,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone())
     .with_focus_config(config.agent.focus.clone())
     .with_sidequest_config(config.memory.sidequest.clone())
+    .with_embedding_provider(embedding_provider)
     .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
 

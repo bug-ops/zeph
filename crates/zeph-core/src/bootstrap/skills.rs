@@ -40,6 +40,43 @@ pub async fn create_skill_matcher(
         .map(SkillMatcherBackend::InMemory)
 }
 
+/// Resolve the dedicated embedding provider from `[[llm.providers]]`.
+///
+/// Prefers the entry with `embed = true`; falls back to the first entry that has
+/// `embedding_model` set; finally falls back to `primary`. This provider is stored
+/// separately from the chat provider and is **never replaced** by `/provider switch`.
+pub fn create_embedding_provider(config: &Config, primary: &AnyProvider) -> AnyProvider {
+    // Find a dedicated embed entry.
+    let embed_entry = config.llm.providers.iter().find(|e| e.embed).or_else(|| {
+        config
+            .llm
+            .providers
+            .iter()
+            .find(|e| e.embedding_model.is_some())
+    });
+
+    let Some(entry) = embed_entry else {
+        return primary.clone();
+    };
+
+    match crate::bootstrap::build_provider_from_entry(entry, config) {
+        Ok(p) => {
+            tracing::debug!(
+                provider = entry.effective_name(),
+                "embedding provider resolved from [[llm.providers]]"
+            );
+            p
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to build embedding provider, falling back to primary"
+            );
+            primary.clone()
+        }
+    }
+}
+
 pub fn effective_embedding_model(config: &Config) -> String {
     // Prefer a dedicated embed provider.
     if let Some(m) = config

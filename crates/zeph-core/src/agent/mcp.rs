@@ -284,7 +284,7 @@ impl<C: Channel> Agent<C> {
         let Some(ref registry) = self.mcp.registry else {
             return self.mcp.tools.clone();
         };
-        let provider = self.provider.clone();
+        let provider = self.embedding_provider.clone();
         registry
             .search(query, self.skill_state.max_active_skills, |text| {
                 let owned = text.to_owned();
@@ -351,10 +351,10 @@ impl<C: Channel> Agent<C> {
         let Some(ref mut registry) = self.mcp.registry else {
             return;
         };
-        if !self.provider.supports_embeddings() {
+        if !self.embedding_provider.supports_embeddings() {
             return;
         }
-        let provider = self.provider.clone();
+        let provider = self.embedding_provider.clone();
         let embed_fn = |text: &str| -> zeph_mcp::registry::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();

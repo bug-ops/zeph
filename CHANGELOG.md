@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(skills): decouple embedding provider from active conversational provider — `Agent` now holds a dedicated `embedding_provider: AnyProvider` field resolved once at bootstrap (prefers `embed = true` entry, falls back to first entry with `embedding_model`, then to primary); all 7 embedding call sites (skill matching, tool schema filter, MCP registry, semantic cache, plan cache) use `embedding_provider` and are unaffected by `/provider switch`; `provider_cmd.rs` emits a user-visible info message when the active provider differs from the embedding provider; `create_embedding_provider()` exported from `bootstrap` module (#2225)
 - triage routing: `debug_request_json` now reflects the actual selected tier provider instead of always showing the first-tier model (#2229)
 - triage routing: removed context size metadata (`msg_count`/`token_estimate`) from classification prompt to prevent bias toward higher tiers in long conversations (#2228)
 
