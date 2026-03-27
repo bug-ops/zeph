@@ -345,8 +345,10 @@ impl SqliteStore {
 
         for summary in summaries {
             let content = format!("[tool summary] {summary}");
-            let parts = serde_json::to_string(&[serde_json::json!({"Summary": {"text": summary}})])
-                .unwrap_or_else(|_| "[]".to_string());
+            let parts = serde_json::to_string(&[MessagePart::Summary {
+                text: summary.clone(),
+            }])
+            .unwrap_or_else(|_| "[]".to_string());
             sqlx::query(
                 "INSERT INTO messages \
                  (conversation_id, role, content, parts, agent_visible, user_visible) \
