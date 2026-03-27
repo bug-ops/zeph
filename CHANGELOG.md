@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- test(orchestration): add inline `DagScheduler` tests for `inject_tasks()` replan caps — per-task cap (silent no-op on second call), global cap enforcement, `topology_dirty` flag set/cleared by tick(), and cycle rejection returning `VerificationFailed` (#2241); add LevelBarrier dispatch tests — level advance when all current-level tasks are terminal, transitive failure propagation via Skip strategy BFS, and `current_level` reset after `inject_tasks()` inserts a task at depth < current level (#2242)
+
 - feat(tools): `ToolError::Shell { exit_code, category, message }` variant for shell executor exit-code classification; `ShellExecutor` returns `ToolError::Shell` for exit 126 (`PolicyBlocked`), exit 127 (`PermanentFailure`), and case-insensitive stderr patterns "permission denied" / "no such file or directory"; integrates with `ToolErrorFeedback.format_for_llm()` injection in native.rs (#2207, #2206)
 - feat(skills): `From<ToolErrorCategory> for FailureKind` mapping in `zeph-skills`; `PolicyBlocked → WrongApproach`, `ToolNotFound → WrongApproach`, `Timeout → Timeout`, `InvalidParameters/TypeMismatch → SyntaxError`, infrastructure errors → `Unknown`; enables precise skill evolution signals without string heuristic (#2207, #2206)
 - feat(mcp): bump `rmcp` dependency 1.2 → 1.3 (#2188)

@@ -2720,6 +2720,287 @@ mod tests {
         assert_eq!(spawned.len(), 2);
     }
 
+    // --- inject_tasks replan cap tests (#2241) ---
+
+    #[test]
+    fn test_inject_tasks_per_task_cap_skips_second() {
+        // Per-task cap: 1 replan per task. Second inject for same task_id is a silent no-op.
+        let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        let mut scheduler = make_scheduler(graph);
+
+        let first = make_node(2, &[]);
+        scheduler.inject_tasks(TaskId(0), vec![first], 20).unwrap();
+        assert_eq!(
+            scheduler.graph.tasks.len(),
+            3,
+            "first inject must append the task"
+        );
+        assert_eq!(scheduler.global_replan_count, 1);
+
+        // Second inject for the same verified task — per-task count is already 1.
+        let second = make_node(3, &[]);
+        scheduler.inject_tasks(TaskId(0), vec![second], 20).unwrap();
+        assert_eq!(
+            scheduler.graph.tasks.len(),
+            3,
+            "second inject must be silently skipped (per-task cap)"
+        );
+        assert_eq!(
+            scheduler.global_replan_count, 1,
+            "global counter must not increment on skipped inject"
+        );
+    }
+
+    #[test]
+    fn test_inject_tasks_global_cap_skips_when_exhausted() {
+        // Global cap: max_replans=1. First inject consumes the budget; second is a no-op.
+        let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        let mut config = make_config();
+        config.max_replans = 1;
+        let defs = vec![make_def("worker")];
+        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+
+        let new1 = make_node(2, &[]);
+        scheduler.inject_tasks(TaskId(0), vec![new1], 20).unwrap();
+        assert_eq!(scheduler.global_replan_count, 1);
+
+        // Second inject for a different task — global cap exhausted.
+        let new2 = make_node(3, &[]);
+        scheduler.inject_tasks(TaskId(1), vec![new2], 20).unwrap();
+        assert_eq!(
+            scheduler.graph.tasks.len(),
+            3,
+            "global cap must prevent the second inject"
+        );
+        assert_eq!(
+            scheduler.global_replan_count, 1,
+            "global counter must not increment past cap"
+        );
+    }
+
+    #[test]
+    fn test_inject_tasks_sets_topology_dirty() {
+        // inject_tasks must set topology_dirty; tick() must clear it after re-analysis.
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        assert!(
+            !scheduler.topology_dirty,
+            "topology_dirty must be false initially"
+        );
+
+        let new_task = make_node(1, &[]);
+        scheduler
+            .inject_tasks(TaskId(0), vec![new_task], 20)
+            .unwrap();
+        assert!(
+            scheduler.topology_dirty,
+            "inject_tasks must set topology_dirty=true"
+        );
+
+        scheduler.tick();
+        assert!(
+            !scheduler.topology_dirty,
+            "tick() must clear topology_dirty after re-analysis"
+        );
+    }
+
+    #[test]
+    fn test_inject_tasks_rejects_cycle() {
+        // Injecting a task that introduces a cycle must return VerificationFailed.
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+
+        // New task ID=1 with a self-reference (depends on itself) → cycle.
+        let cyclic_task = make_node(1, &[1]);
+        let result = scheduler.inject_tasks(TaskId(0), vec![cyclic_task], 20);
+        assert!(result.is_err(), "cyclic injection must return an error");
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                OrchestrationError::VerificationFailed(_)
+            ),
+            "must return VerificationFailed for cycle"
+        );
+        // Global and per-task counters must not be incremented on error.
+        assert_eq!(scheduler.global_replan_count, 0);
+        assert_eq!(
+            scheduler.topology_dirty, false,
+            "topology_dirty must not be set when inject fails"
+        );
+    }
+
+    // --- LevelBarrier dispatch tests (#2242) ---
+
+    fn make_hierarchical_config() -> zeph_config::OrchestrationConfig {
+        zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            ..make_config()
+        }
+    }
+
+    /// A(0)→{B(1),C(2)}, B(1)→D(3). Hierarchical topology, depths: A=0, B=1, C=1, D=2.
+    fn make_hierarchical_graph() -> TaskGraph {
+        graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[0]),
+            make_node(3, &[1]),
+        ])
+    }
+
+    #[test]
+    fn test_level_barrier_advances_on_terminal_level() {
+        // When all tasks at current_level are terminal, tick() advances current_level
+        // and dispatches tasks at the next non-terminal level.
+        let graph = make_hierarchical_graph();
+        let config = make_hierarchical_config();
+        let defs = vec![make_def("worker")];
+        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+
+        assert_eq!(
+            scheduler.topology().strategy,
+            crate::topology::DispatchStrategy::LevelBarrier,
+            "must use LevelBarrier strategy for Hierarchical graph"
+        );
+        assert_eq!(scheduler.current_level, 0);
+
+        // First tick: only A(0) at level 0 is dispatched.
+        let actions = scheduler.tick();
+        let spawned_ids: Vec<_> = actions
+            .iter()
+            .filter_map(|a| {
+                if let SchedulerAction::Spawn { task_id, .. } = a {
+                    Some(*task_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            spawned_ids,
+            vec![TaskId(0)],
+            "first tick must dispatch only A at level 0"
+        );
+
+        // Simulate A completing: mark Completed, mark B and C Ready (deps satisfied).
+        scheduler.graph.tasks[0].status = TaskStatus::Completed;
+        scheduler.running.clear();
+        scheduler.graph.tasks[1].status = TaskStatus::Ready;
+        scheduler.graph.tasks[2].status = TaskStatus::Ready;
+
+        // Second tick: A is terminal → level advances to 1 → B and C dispatched.
+        let actions2 = scheduler.tick();
+        assert_eq!(
+            scheduler.current_level, 1,
+            "current_level must advance to 1 after level-0 tasks terminate"
+        );
+        let spawned2: Vec<_> = actions2
+            .iter()
+            .filter_map(|a| {
+                if let SchedulerAction::Spawn { task_id, .. } = a {
+                    Some(*task_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            spawned2.contains(&TaskId(1)),
+            "B must be dispatched after level advance"
+        );
+        assert!(
+            spawned2.contains(&TaskId(2)),
+            "C must be dispatched after level advance"
+        );
+    }
+
+    #[test]
+    fn test_level_barrier_failure_propagates_transitively() {
+        // When A fails with Skip strategy, propagate_failure() BFS-marks all
+        // descendants (B, C, D) as Skipped. tick() must then advance past level 0.
+        let graph = make_hierarchical_graph();
+        let config = make_hierarchical_config();
+        let defs = vec![make_def("worker")];
+        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+
+        // Set A to Skip failure strategy and simulate it running.
+        scheduler.graph.tasks[0].failure_strategy = Some(crate::graph::FailureStrategy::Skip);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(0),
+            RunningTask {
+                agent_handle_id: "h0".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: Instant::now(),
+            },
+        );
+
+        // Push a failure event for A.
+        scheduler.buffered_events.push_back(TaskEvent {
+            task_id: TaskId(0),
+            agent_handle_id: "h0".to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "simulated failure".to_string(),
+            },
+        });
+
+        scheduler.tick();
+
+        // A failed with Skip → A=Skipped. B, C, D must be transitively Skipped.
+        assert_eq!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Skipped,
+            "A must be Skipped (Skip strategy)"
+        );
+        assert_eq!(
+            scheduler.graph.tasks[1].status,
+            TaskStatus::Skipped,
+            "B must be transitively Skipped"
+        );
+        assert_eq!(
+            scheduler.graph.tasks[2].status,
+            TaskStatus::Skipped,
+            "C must be transitively Skipped"
+        );
+        assert_eq!(
+            scheduler.graph.tasks[3].status,
+            TaskStatus::Skipped,
+            "D must be transitively Skipped"
+        );
+    }
+
+    #[test]
+    fn test_level_barrier_current_level_reset_after_inject() {
+        // inject_tasks() adding a task at depth < current_level must cause tick() to
+        // reset current_level downward via the .min() guard (critic C2 / issue #2242).
+        let graph = make_hierarchical_graph(); // A(0)→{B(1),C(2)}, B(1)→D(3)
+        let config = make_hierarchical_config();
+        let defs = vec![make_def("worker")];
+        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+
+        // Manually mark A, B, C as Completed (simulate levels 0 and 1 done).
+        scheduler.graph.tasks[0].status = TaskStatus::Completed; // A depth 0
+        scheduler.graph.tasks[1].status = TaskStatus::Completed; // B depth 1
+        scheduler.graph.tasks[2].status = TaskStatus::Completed; // C depth 1
+        // D(3) is Pending at depth 2. Manually set current_level to 2.
+        scheduler.current_level = 2;
+
+        // Inject E(4) depending on A(0) (Completed) → E will be at depth 1 after re-analysis.
+        // This is shallower than current_level=2 → tick() must reset current_level to 1.
+        let e = make_node(4, &[0]);
+        scheduler.inject_tasks(TaskId(3), vec![e], 20).unwrap();
+        assert!(scheduler.topology_dirty);
+
+        // tick() re-analyzes topology (E at depth 1, D at depth 2).
+        // min_non_terminal_depth = 1 (E is Ready). current_level = min(2, 1) = 1.
+        scheduler.tick();
+        assert_eq!(
+            scheduler.current_level, 1,
+            "current_level must reset to min non-terminal depth (1) after inject at depth 1"
+        );
+    }
+
     #[test]
     fn resume_from_preserves_topology_classification() {
         // resume_from() must also apply topology classification (fix H3).
