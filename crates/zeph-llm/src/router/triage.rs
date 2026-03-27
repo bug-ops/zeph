@@ -339,15 +339,12 @@ fn build_triage_prompt(messages: &[Message]) -> String {
         .map_or("", |m| m.content.as_str());
     // Truncate to keep triage cost minimal (~120 input tokens).
     let truncated = truncate_to_chars(last_user, 400);
-    let msg_count = messages.len();
-    let token_estimate: usize = messages.iter().map(|m| m.content.len() / 4).sum();
 
     format!(
         r#"Classify the complexity of the following user request. Consider:
 - Number of reasoning steps required
 - Domain expertise needed
 - Whether the task is well-defined or open-ended
-- Conversation context: {msg_count} messages, ~{token_estimate} tokens
 
 Tiers:
 - simple: greeting, factual lookup, yes/no, single-step task
@@ -578,12 +575,16 @@ impl LlmProvider for TriageRouter {
         tools: &[ToolDefinition],
         stream: bool,
     ) -> serde_json::Value {
-        // Return the debug JSON of the first tier provider (best effort; tier unknown statically).
-        self.tier_providers
-            .first()
-            .map_or(serde_json::Value::Null, |(_, p)| {
-                p.debug_request_json(messages, tools, stream)
-            })
+        // Use the last-selected tier provider when available; fall back to the first tier.
+        let idx = self.last_provider_idx.load(Ordering::Relaxed);
+        let provider = if idx == NO_LAST_PROVIDER {
+            self.tier_providers.first().map(|(_, p)| p)
+        } else {
+            self.tier_providers.get(idx).map(|(_, p)| p)
+        };
+        provider.map_or(serde_json::Value::Null, |p| {
+            p.debug_request_json(messages, tools, stream)
+        })
     }
 }
 
@@ -973,5 +974,73 @@ mod tests {
             50,
         );
         assert!(!router.supports_streaming());
+    }
+
+    // ── debug_request_json reflects last-selected provider (#2229) ────────────
+
+    fn ollama_with_model(model: &str) -> AnyProvider {
+        AnyProvider::Ollama(crate::ollama::OllamaProvider::new(
+            "http://localhost:11434",
+            model.to_owned(),
+            String::new(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn debug_request_json_reflects_last_provider_after_chat() {
+        // Triage classifies as "expert" → router selects index 1 (expert-model).
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"expert","reason":"architecture"}"#),
+            vec![
+                (ComplexityTier::Simple, ollama_with_model("simple-model")),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(MockProvider::with_responses(vec![
+                        "expert answer".to_owned(),
+                    ])),
+                ),
+            ],
+            5,
+            50,
+        );
+        // Before any chat: falls back to first provider (simple-model via ollama).
+        let json_before = router.debug_request_json(&[], &[], false);
+        assert_eq!(json_before["model"].as_str().unwrap_or(""), "simple-model");
+
+        // After chat routed to expert tier (index 1): should reflect mock provider (model: null).
+        let messages = vec![make_user_msg("design a distributed system")];
+        router.chat(&messages).await.unwrap();
+
+        let json_after = router.debug_request_json(&messages, &[], false);
+        // Expert tier is MockProvider → debug_request_json returns default (model: null).
+        // Simple tier is OllamaProvider → would return model: "simple-model".
+        // If the fix is correct, json_after must NOT contain "simple-model".
+        assert_ne!(json_after["model"].as_str().unwrap_or(""), "simple-model");
+    }
+
+    // ── build_triage_prompt has no context size metadata (#2228) ─────────────
+
+    #[test]
+    fn build_triage_prompt_has_no_context_size_metadata() {
+        let messages = vec![
+            make_user_msg("first message"),
+            Message {
+                role: Role::Assistant,
+                content: "reply".to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            make_user_msg("second message"),
+            make_user_msg("third message"),
+        ];
+        let prompt = build_triage_prompt(&messages);
+        assert!(
+            !prompt.contains("messages"),
+            "prompt must not contain 'messages' context metadata"
+        );
+        assert!(
+            !prompt.contains("tokens"),
+            "prompt must not contain 'tokens' context metadata"
+        );
     }
 }

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- triage routing: `debug_request_json` now reflects the actual selected tier provider instead of always showing the first-tier model (#2229)
+- triage routing: removed context size metadata (`msg_count`/`token_estimate`) from classification prompt to prevent bias toward higher tiers in long conversations (#2228)
+
 ### Added
 
 - feat(tools): `ToolError::Shell { exit_code, category, message }` variant for shell executor exit-code classification; `ShellExecutor` returns `ToolError::Shell` for exit 126 (`PolicyBlocked`), exit 127 (`PermanentFailure`), and case-insensitive stderr patterns "permission denied" / "no such file or directory"; integrates with `ToolErrorFeedback.format_for_llm()` injection in native.rs (#2207, #2206)
