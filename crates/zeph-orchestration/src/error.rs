@@ -44,6 +44,11 @@ pub enum OrchestrationError {
     #[error("invalid command: {0}")]
     InvalidCommand(String),
 
+    /// Hard invariant violation during verification (e.g. cycle detected after `inject_tasks`).
+    /// Never used for LLM call failures — those are fail-open.
+    #[error("verification failed: {0}")]
+    VerificationFailed(String),
+
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
 }

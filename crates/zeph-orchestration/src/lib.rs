@@ -13,6 +13,7 @@ pub mod planner;
 pub mod router;
 pub mod scheduler;
 pub mod topology;
+pub mod verifier;
 
 pub use aggregator::{Aggregator, LlmAggregator};
 pub use command::PlanCommand;
@@ -27,4 +28,5 @@ pub use plan_cache::{
 pub use planner::{LlmPlanner, Planner};
 pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};
-pub use topology::{Topology, TopologyClassifier};
+pub use topology::{DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier};
+pub use verifier::{Gap, GapSeverity, PlanVerifier, VerificationResult};

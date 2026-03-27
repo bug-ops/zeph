@@ -16,7 +16,8 @@ use super::graph::{
     ExecutionMode, GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus,
 };
 use super::router::AgentRouter;
-use super::topology::{Topology, TopologyClassifier};
+use super::topology::{DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier};
+use super::verifier::inject_tasks as verifier_inject_tasks;
 use zeph_config::OrchestrationConfig;
 use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_subagent::{SubAgentDef, SubAgentError};
@@ -39,6 +40,13 @@ pub enum SchedulerAction {
     RunInline { task_id: TaskId, prompt: String },
     /// Graph reached a terminal or paused state.
     Done { status: GraphStatus },
+    /// Request verification of a completed task's output (emitted when `verify_completeness=true`).
+    ///
+    /// The task stays `Completed` during verification. Downstream tasks are unblocked
+    /// immediately — verification is best-effort and does not gate dispatch.
+    /// The caller runs `PlanVerifier::verify()`, then optionally `PlanVerifier::replan()`,
+    /// then calls `DagScheduler::inject_tasks()` if new tasks were generated.
+    Verify { task_id: TaskId, output: String },
 }
 
 /// Event sent by a sub-agent loop when it terminates.
@@ -118,8 +126,21 @@ pub struct DagScheduler {
     deferral_backoff: Duration,
     /// Consecutive spawn failures due to concurrency limits. Used to compute exponential backoff.
     consecutive_spawn_failures: u32,
-    /// Classified topology of the graph. `None` when `topology_selection` is disabled.
-    topology: Option<Topology>,
+    /// Topology analysis result. Recomputed on next tick when `topology_dirty=true`.
+    topology: TopologyAnalysis,
+    /// When true, topology is re-analyzed at the start of the next tick.
+    /// Set by `inject_tasks()` after appending replan tasks (critic C2).
+    topology_dirty: bool,
+    /// Current dispatch level for `LevelBarrier` strategy.
+    current_level: usize,
+    /// Whether post-task verification is enabled (`config.verify_completeness`).
+    verify_completeness: bool,
+    /// Per-task replan count. Limits replanning to 1 cycle per task (critic S2).
+    task_replan_counts: HashMap<TaskId, u32>,
+    /// Global replan counter across the entire scheduler run (critic S2).
+    global_replan_count: u32,
+    /// Global replan hard cap from config.
+    max_replans: u32,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -130,7 +151,10 @@ impl std::fmt::Debug for DagScheduler {
             .field("running_count", &self.running.len())
             .field("max_parallel", &self.max_parallel)
             .field("task_timeout_secs", &self.task_timeout.as_secs())
-            .field("topology", &self.topology)
+            .field("topology", &self.topology.topology)
+            .field("strategy", &self.topology.strategy)
+            .field("current_level", &self.current_level)
+            .field("global_replan_count", &self.global_replan_count)
             .finish_non_exhaustive()
     }
 }
@@ -176,13 +200,13 @@ impl DagScheduler {
             Duration::from_secs(600)
         };
 
-        let topology = TopologyClassifier::classify(&graph);
-        let max_parallel = TopologyClassifier::suggest_max_parallel(topology, config)
-            .unwrap_or(config.max_parallel as usize);
+        let topology = TopologyClassifier::analyze(&graph, config);
+        let max_parallel = topology.max_parallel;
 
         if config.topology_selection {
             tracing::debug!(
-                topology = ?topology,
+                topology = ?topology.topology,
+                strategy = ?topology.strategy,
                 max_parallel,
                 "topology-aware concurrency limit applied"
             );
@@ -202,11 +226,13 @@ impl DagScheduler {
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
             deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
             consecutive_spawn_failures: 0,
-            topology: if config.topology_selection {
-                Some(topology)
-            } else {
-                None
-            },
+            topology,
+            topology_dirty: false,
+            current_level: 0,
+            verify_completeness: config.verify_completeness,
+            task_replan_counts: HashMap::new(),
+            global_replan_count: 0,
+            max_replans: config.max_replans,
         })
     }
 
@@ -271,9 +297,8 @@ impl DagScheduler {
             Duration::from_secs(600)
         };
 
-        let topology = TopologyClassifier::classify(&graph);
-        let max_parallel = TopologyClassifier::suggest_max_parallel(topology, config)
-            .unwrap_or(config.max_parallel as usize);
+        let topology = TopologyClassifier::analyze(&graph, config);
+        let max_parallel = topology.max_parallel;
 
         Ok(Self {
             graph,
@@ -289,11 +314,13 @@ impl DagScheduler {
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
             deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
             consecutive_spawn_failures: 0,
-            topology: if config.topology_selection {
-                Some(topology)
-            } else {
-                None
-            },
+            topology,
+            topology_dirty: false,
+            current_level: 0,
+            verify_completeness: config.verify_completeness,
+            task_replan_counts: HashMap::new(),
+            global_replan_count: 0,
+            max_replans: config.max_replans,
         })
     }
 
@@ -317,10 +344,65 @@ impl DagScheduler {
         self.graph.clone()
     }
 
-    /// Classified topology of the graph. `None` when `topology_selection` is disabled.
+    /// Current topology analysis.
     #[must_use]
-    pub fn topology(&self) -> Option<Topology> {
-        self.topology
+    pub fn topology(&self) -> &TopologyAnalysis {
+        &self.topology
+    }
+
+    /// Inject new tasks into the graph after a verify-replan cycle.
+    ///
+    /// Appends tasks and validates DAG acyclicity. Sets `topology_dirty=true` so
+    /// topology is re-analyzed at the start of the next `tick()`. Does NOT
+    /// re-analyze topology here (critic C2 — topology computed during injection
+    /// would be stale by the next tick).
+    ///
+    /// Per-task replan cap: each task is limited to 1 replan (critic S2).
+    /// Global hard cap: total replan count across the run is limited to `max_replans`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OrchestrationError::VerificationFailed` if the graph would exceed
+    /// `max_tasks` or injection introduces a cycle.
+    pub fn inject_tasks(
+        &mut self,
+        verified_task_id: TaskId,
+        new_tasks: Vec<TaskNode>,
+        max_tasks: usize,
+    ) -> Result<(), OrchestrationError> {
+        if new_tasks.is_empty() {
+            return Ok(());
+        }
+
+        // Per-task replan limit: 1 replan per task (critic S2).
+        let task_replan_count = self.task_replan_counts.entry(verified_task_id).or_insert(0);
+        if *task_replan_count >= 1 {
+            tracing::warn!(
+                task_id = %verified_task_id,
+                "per-task replan limit (1) reached, skipping replan injection"
+            );
+            return Ok(());
+        }
+
+        // Global hard cap (critic S2).
+        if self.global_replan_count >= self.max_replans {
+            tracing::warn!(
+                global_replan_count = self.global_replan_count,
+                max_replans = self.max_replans,
+                "global replan limit reached, skipping replan injection"
+            );
+            return Ok(());
+        }
+
+        verifier_inject_tasks(&mut self.graph, new_tasks, max_tasks)?;
+
+        *task_replan_count += 1;
+        self.global_replan_count += 1;
+
+        // Signal that topology needs re-analysis on the next tick (critic C2).
+        self.topology_dirty = true;
+
+        Ok(())
     }
 }
 
@@ -340,11 +422,72 @@ impl DagScheduler {
     /// Process pending events and produce actions for the caller.
     ///
     /// Call `wait_event` after processing all actions to block until the next event.
+    #[allow(clippy::too_many_lines)]
     pub fn tick(&mut self) -> Vec<SchedulerAction> {
         if self.graph.status != GraphStatus::Running {
             return vec![SchedulerAction::Done {
                 status: self.graph.status,
             }];
+        }
+
+        // Re-analyze topology when task set has changed (inject_tasks was called).
+        // Deferred from inject_tasks() to avoid stale analysis (critic C2).
+        if self.topology_dirty {
+            // Rebuild with topology_selection=true config equivalent: reuse existing analysis
+            // approach. Since we don't store the config here, re-analyze using a stub config
+            // that reflects what was originally set up.
+            let new_analysis = {
+                let n = self.graph.tasks.len();
+                if n == 0 {
+                    TopologyAnalysis {
+                        topology: Topology::AllParallel,
+                        strategy: DispatchStrategy::FullParallel,
+                        max_parallel: self.max_parallel,
+                        depth: 0,
+                        depths: std::collections::HashMap::new(),
+                    }
+                } else {
+                    // Re-classify with current graph. Preserve the existing max_parallel
+                    // bound to avoid exceeding configured limits on replan.
+                    let topo = TopologyClassifier::classify(&self.graph);
+                    let strategy = TopologyClassifier::strategy(topo);
+                    let (depth, depths) =
+                        super::topology::compute_depths_for_scheduler(&self.graph);
+                    let max_parallel = match topo {
+                        Topology::LinearChain => 1,
+                        Topology::Mixed => {
+                            (self.max_parallel / 2 + 1).min(self.max_parallel).max(1)
+                        }
+                        _ => self.max_parallel,
+                    };
+                    TopologyAnalysis {
+                        topology: topo,
+                        strategy,
+                        max_parallel,
+                        depth,
+                        depths,
+                    }
+                }
+            };
+            self.topology = new_analysis;
+            self.topology_dirty = false;
+
+            // After re-analysis, reset the level pointer to the shallowest non-terminal depth
+            // so injected tasks at lower depths are not skipped by the LevelBarrier.
+            // Uses .min() (not unconditional reset to 0) to preserve forward progress when
+            // injected tasks are at equal or deeper levels than current_level.
+            if self.topology.strategy == DispatchStrategy::LevelBarrier {
+                let min_active = self
+                    .graph
+                    .tasks
+                    .iter()
+                    .filter(|t| !t.status.is_terminal())
+                    .filter_map(|t| self.topology.depths.get(&t.id).copied())
+                    .min();
+                if let Some(min_depth) = min_active {
+                    self.current_level = self.current_level.min(min_depth);
+                }
+            }
         }
 
         let mut actions = Vec::new();
@@ -378,6 +521,40 @@ impl DagScheduler {
         // Running marks are reverted to Ready for ConcurrencyLimit errors.
         let ready = dag::ready_tasks(&self.graph);
 
+        // LevelBarrier: advance the current level when all tasks at this level are terminal.
+        // This handles failures/skips correctly because propagate_failure() uses BFS to
+        // transitively mark all non-terminal dependents as Skipped before tick() runs dispatch.
+        if self.topology.strategy == DispatchStrategy::LevelBarrier {
+            let all_current_level_terminal = self.graph.tasks.iter().all(|t| {
+                let task_depth = self
+                    .topology
+                    .depths
+                    .get(&t.id)
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                task_depth != self.current_level || t.status.is_terminal()
+            });
+            if all_current_level_terminal {
+                // Advance until we find a level with non-terminal tasks, or exhaust all levels.
+                let max_depth = self.topology.depth;
+                while self.current_level <= max_depth {
+                    let has_non_terminal = self.graph.tasks.iter().any(|t| {
+                        let d = self
+                            .topology
+                            .depths
+                            .get(&t.id)
+                            .copied()
+                            .unwrap_or(usize::MAX);
+                        d == self.current_level && !t.status.is_terminal()
+                    });
+                    if has_non_terminal {
+                        break;
+                    }
+                    self.current_level += 1;
+                }
+            }
+        }
+
         // Available dispatch slots for this tick.
         let mut slots = self.max_parallel.saturating_sub(self.running.len());
 
@@ -392,6 +569,19 @@ impl DagScheduler {
         for task_id in ready {
             if slots == 0 {
                 break;
+            }
+
+            // LevelBarrier: only dispatch tasks at the current level.
+            if self.topology.strategy == DispatchStrategy::LevelBarrier {
+                let task_depth = self
+                    .topology
+                    .depths
+                    .get(&task_id)
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                if task_depth != self.current_level {
+                    continue;
+                }
             }
 
             let task = &self.graph.tasks[task_id.index()];
@@ -723,7 +913,7 @@ impl DagScheduler {
             TaskOutcome::Completed { output, artifacts } => {
                 self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
                 self.graph.tasks[task_id.index()].result = Some(TaskResult {
-                    output,
+                    output: output.clone(),
                     artifacts,
                     duration_ms,
                     agent_id: Some(agent_handle_id),
@@ -731,6 +921,7 @@ impl DagScheduler {
                 });
 
                 // Mark newly unblocked tasks as Ready.
+                // Downstream tasks are unblocked immediately — verification does not gate dispatch.
                 let newly_ready = dag::ready_tasks(&self.graph);
                 for ready_id in newly_ready {
                     if self.graph.tasks[ready_id.index()].status == TaskStatus::Pending {
@@ -738,7 +929,16 @@ impl DagScheduler {
                     }
                 }
 
-                Vec::new()
+                // Emit Verify action when verify_completeness is enabled.
+                // The replan budget is enforced inside inject_tasks() — the observation
+                // (emitting Verify) must not be gated on the mutation budget, or tasks
+                // after budget exhaustion never receive verification at all.
+                // max_replans=0 still emits Verify; gaps are logged only (no inject_tasks call).
+                if self.verify_completeness {
+                    vec![SchedulerAction::Verify { task_id, output }]
+                } else {
+                    Vec::new()
+                }
             }
 
             TaskOutcome::Failed { error } => {
@@ -980,6 +1180,10 @@ mod tests {
             deferral_backoff_ms: 250,
             plan_cache: zeph_config::PlanCacheConfig::default(),
             topology_selection: false,
+            verify_provider: String::new(),
+            verify_max_tokens: 1024,
+            max_replans: 2,
+            verify_completeness: false,
         }
     }
 
@@ -2416,8 +2620,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            scheduler.topology(),
-            Some(crate::topology::Topology::LinearChain)
+            scheduler.topology().topology,
+            crate::topology::Topology::LinearChain
         );
         assert_eq!(scheduler.max_parallel, 1);
 
@@ -2453,8 +2657,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            scheduler.topology(),
-            Some(crate::topology::Topology::AllParallel)
+            scheduler.topology().topology,
+            crate::topology::Topology::AllParallel
         );
 
         let actions = scheduler.tick();
@@ -2544,8 +2748,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            scheduler.topology(),
-            Some(crate::topology::Topology::LinearChain),
+            scheduler.topology().topology,
+            crate::topology::Topology::LinearChain,
             "resume_from must classify topology"
         );
         assert_eq!(

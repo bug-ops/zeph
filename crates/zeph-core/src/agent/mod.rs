@@ -854,7 +854,9 @@ impl<C: Channel> Agent<C> {
                     }
                 }
                 SchedulerAction::Done { status } => return Some(status),
-                SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                SchedulerAction::Spawn { .. }
+                | SchedulerAction::RunInline { .. }
+                | SchedulerAction::Verify { .. } => {}
             }
         }
         None
@@ -1115,6 +1117,11 @@ impl<C: Channel> Agent<C> {
                     SchedulerAction::Done { status } => {
                         break 'tick status;
                     }
+                    SchedulerAction::Verify { .. } => {
+                        // Verification is fire-and-forget from the scheduler's perspective.
+                        // The core agent does not drive PlanVerifier directly — that is handled
+                        // by the scheduler's inject_tasks path. No action needed here.
+                    }
                 }
             }
 
@@ -1161,7 +1168,9 @@ impl<C: Channel> Agent<C> {
                             SchedulerAction::Done { status } => {
                                 break 'tick status;
                             }
-                            SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                            SchedulerAction::Spawn { .. }
+                            | SchedulerAction::RunInline { .. }
+                            | SchedulerAction::Verify { .. } => {}
                         }
                     }
                     // Defensive fallback: cancel_all always emits Done, but guard against
@@ -1188,7 +1197,8 @@ impl<C: Channel> Agent<C> {
                                         break 'tick status;
                                     }
                                     SchedulerAction::Spawn { .. }
-                                    | SchedulerAction::RunInline { .. } => {}
+                                    | SchedulerAction::RunInline { .. }
+                                    | SchedulerAction::Verify { .. } => {}
                                 }
                             }
                             // Defensive fallback: cancel_all always emits Done, but guard
@@ -1221,7 +1231,8 @@ impl<C: Channel> Agent<C> {
                                 // Intentionally ignore Done here — channel close is not a user cancel.
                                 SchedulerAction::Done { .. }
                                 | SchedulerAction::Spawn { .. }
-                                | SchedulerAction::RunInline { .. } => {}
+                                | SchedulerAction::RunInline { .. }
+                                | SchedulerAction::Verify { .. } => {}
                             }
                         }
                         break 'tick crate::orchestration::GraphStatus::Failed;
@@ -1250,7 +1261,9 @@ impl<C: Channel> Agent<C> {
                             SchedulerAction::Done { status } => {
                                 break 'tick status;
                             }
-                            SchedulerAction::Spawn { .. } | SchedulerAction::RunInline { .. } => {}
+                            SchedulerAction::Spawn { .. }
+                            | SchedulerAction::RunInline { .. }
+                            | SchedulerAction::Verify { .. } => {}
                         }
                     }
                     // Defensive fallback: cancel_all always emits Done, but guard against

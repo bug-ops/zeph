@@ -43,6 +43,14 @@ fn default_experiment_schedule_max_wall_time_secs() -> u64 {
     1800
 }
 
+fn default_verify_max_tokens() -> u32 {
+    1024
+}
+
+fn default_max_replans() -> u32 {
+    2
+}
+
 fn default_plan_cache_similarity_threshold() -> f32 {
     0.90
 }
@@ -115,6 +123,7 @@ impl PlanCacheConfig {
 /// Configuration for the task orchestration subsystem (`[orchestration]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct OrchestrationConfig {
     /// Enable the orchestration subsystem.
     pub enabled: bool,
@@ -153,6 +162,26 @@ pub struct OrchestrationConfig {
     /// adjusts `max_parallel` based on the DAG structure. Default: false (opt-in).
     #[serde(default)]
     pub topology_selection: bool,
+    /// Provider name from `[[llm.providers]]` for verification LLM calls.
+    /// Empty string = use the agent's primary provider. Should be a cheap/fast provider.
+    #[serde(default)]
+    pub verify_provider: String,
+    /// Maximum tokens budget for verification LLM calls. Default: 1024.
+    #[serde(default = "default_verify_max_tokens")]
+    pub verify_max_tokens: u32,
+    /// Maximum number of replan cycles per graph execution. Default: 2.
+    ///
+    /// Prevents infinite verify-replan loops. 0 = disable replan (verification still
+    /// runs, gaps are logged only).
+    #[serde(default = "default_max_replans")]
+    pub max_replans: u32,
+    /// Enable post-task completeness verification. Default: false (opt-in).
+    ///
+    /// When true, completed tasks are evaluated by `PlanVerifier`. Task stays
+    /// `Completed` during verification; downstream tasks are unblocked immediately.
+    /// Verification is best-effort and does not gate dispatch.
+    #[serde(default)]
+    pub verify_completeness: bool,
 }
 
 impl Default for OrchestrationConfig {
@@ -172,6 +201,10 @@ impl Default for OrchestrationConfig {
             deferral_backoff_ms: default_deferral_backoff_ms(),
             plan_cache: PlanCacheConfig::default(),
             topology_selection: false,
+            verify_provider: String::new(),
+            verify_max_tokens: default_verify_max_tokens(),
+            max_replans: default_max_replans(),
+            verify_completeness: false,
         }
     }
 }

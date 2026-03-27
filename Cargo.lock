@@ -9702,6 +9702,7 @@ name = "zeph-orchestration"
 version = "0.17.0"
 dependencies = [
  "blake3",
+ "futures",
  "schemars 1.2.1",
  "serde",
  "serde_json",
