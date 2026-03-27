@@ -113,7 +113,7 @@ fn confidence_color(posterior: f64) -> Color {
 mod tests {
     use insta::assert_snapshot;
 
-    use crate::metrics::{McpServerConnectionStatus, MetricsSnapshot, SkillConfidence};
+    use crate::metrics::{MetricsSnapshot, SkillConfidence};
     use crate::test_utils::render_to_string;
 
     #[test]
