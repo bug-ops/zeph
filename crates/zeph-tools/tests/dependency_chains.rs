@@ -444,7 +444,7 @@ fn always_on_bypasses_hard_gate() {
     assert!(result.dependency_exclusions.is_empty());
 }
 
-/// A tool included via SimilarityRank is subject to hard gates (not bypassed).
+/// A tool included via `SimilarityRank` is subject to hard gates (not bypassed).
 /// Deadlock fallback does NOT trigger here because `free_tool` (no requires) keeps
 /// one non-always-on tool available after gating.
 #[test]
@@ -482,7 +482,7 @@ fn similarity_rank_tool_is_gated() {
 // 6. Session scope: completed tools persist across turns, clear on reset
 // ---------------------------------------------------------------------------
 
-/// Simulates completed_tool_ids growing monotonically across turns.
+/// Simulates `completed_tool_ids` growing monotonically across turns.
 #[test]
 fn session_scope_completed_ids_grow_across_turns() {
     let graph = build_graph(&[
@@ -509,7 +509,7 @@ fn session_scope_completed_ids_grow_across_turns() {
     assert!(graph.requirements_met("save", &done));
 }
 
-/// On session clear (`/clear` equivalent), completed_tool_ids is reset.
+/// On session clear (`/clear` equivalent), `completed_tool_ids` is reset.
 #[test]
 fn session_scope_clear_resets_completed_ids() {
     let graph = build_graph(&[("save", &["search"], &[])]);
@@ -618,7 +618,7 @@ fn unknown_required_tool_id_no_deadlock_when_other_tool_free() {
 // 8. filter_tool_names: used in native tool loop (iteration 1+)
 // ---------------------------------------------------------------------------
 
-/// filter_tool_names lets through tools with met requirements and always-on.
+/// `filter_tool_names` lets through tools with met requirements and always-on.
 #[test]
 fn filter_tool_names_passes_met_and_always_on() {
     let graph = build_graph(&[("apply_patch", &["read"], &[]), ("save", &["write"], &[])]);
@@ -649,7 +649,7 @@ fn filter_tool_names_passes_met_and_always_on() {
     );
 }
 
-/// filter_tool_names with empty graph passes all names.
+/// `filter_tool_names` with empty graph passes all names.
 #[test]
 fn filter_tool_names_empty_graph_passes_all() {
     let graph = ToolDependencyGraph::new(HashMap::new());
@@ -698,7 +698,7 @@ fn toml_dependency_config_deserializes() {
     assert!(save.prefers.is_empty());
 }
 
-/// Default DependencyConfig: disabled, defaults for boost values.
+/// Default `DependencyConfig`: disabled, defaults for boost values.
 #[test]
 fn dependency_config_default_disabled() {
     let config = zeph_tools::config::DependencyConfig::default();
@@ -728,7 +728,7 @@ fn toml_empty_dependencies_section_uses_defaults() {
 // 10. unmet_requires diagnostic output
 // ---------------------------------------------------------------------------
 
-/// unmet_requires returns only the prerequisites that are not yet completed.
+/// `unmet_requires` returns only the prerequisites that are not yet completed.
 #[test]
 fn unmet_requires_returns_only_missing_deps() {
     let graph = build_graph(&[("save", &["search", "validate", "format_results"], &[])]);
@@ -738,7 +738,7 @@ fn unmet_requires_returns_only_missing_deps() {
     assert_eq!(unmet, vec!["format_results"]);
 }
 
-/// unmet_requires returns empty for unconfigured tools.
+/// `unmet_requires` returns empty for unconfigured tools.
 #[test]
 fn unmet_requires_empty_for_unconfigured_tool() {
     let graph = build_graph(&[("save", &["search"], &[])]);
@@ -746,7 +746,7 @@ fn unmet_requires_empty_for_unconfigured_tool() {
     assert!(unmet.is_empty());
 }
 
-/// unmet_requires returns empty when all deps satisfied.
+/// `unmet_requires` returns empty when all deps satisfied.
 #[test]
 fn unmet_requires_empty_when_all_satisfied() {
     let graph = build_graph(&[("save", &["a", "b"], &[])]);

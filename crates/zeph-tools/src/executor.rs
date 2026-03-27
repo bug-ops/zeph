@@ -192,6 +192,18 @@ pub enum ToolError {
     /// code for taxonomy classification. Scope: HTTP tools only (MCP uses a separate path).
     #[error("HTTP error {status}: {message}")]
     Http { status: u16, message: String },
+
+    /// Shell execution error with explicit exit code and pre-classified category.
+    ///
+    /// Used by `ShellExecutor` when the exit code or stderr content maps to a known
+    /// taxonomy category (e.g., exit 126 → `PolicyBlocked`, exit 127 → `PermanentFailure`).
+    /// Preserves the exit code for audit logging and the category for skill evolution.
+    #[error("shell error (exit {exit_code}): {message}")]
+    Shell {
+        exit_code: i32,
+        category: crate::error_taxonomy::ToolErrorCategory,
+        message: String,
+    },
 }
 
 impl ToolError {
@@ -212,6 +224,7 @@ impl ToolError {
             Self::InvalidParams { .. } => ToolErrorCategory::InvalidParameters,
             Self::Http { status, .. } => classify_http_status(*status),
             Self::Execution(io_err) => classify_io_error(io_err),
+            Self::Shell { category, .. } => *category,
         }
     }
 
@@ -1184,5 +1197,42 @@ mod tests {
             !ToolError::Execution(io_err).category().is_quality_failure(),
             "Timeout must not be a quality failure"
         );
+    }
+
+    // ── ToolError::Shell category tests ──────────────────────────────────────
+
+    #[test]
+    fn tool_error_shell_exit126_is_policy_blocked() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Shell {
+            exit_code: 126,
+            category: ToolErrorCategory::PolicyBlocked,
+            message: "permission denied".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::PolicyBlocked);
+    }
+
+    #[test]
+    fn tool_error_shell_exit127_is_permanent_failure() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Shell {
+            exit_code: 127,
+            category: ToolErrorCategory::PermanentFailure,
+            message: "command not found".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::PermanentFailure);
+        assert!(!err.category().is_retryable());
+    }
+
+    #[test]
+    fn tool_error_shell_not_quality_failure() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Shell {
+            exit_code: 127,
+            category: ToolErrorCategory::PermanentFailure,
+            message: "command not found".to_owned(),
+        };
+        // Shell exit errors are not attributable to LLM output quality.
+        assert!(!err.category().is_quality_failure());
     }
 }

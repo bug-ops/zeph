@@ -45,6 +45,25 @@ impl FailureKind {
     }
 }
 
+impl From<zeph_tools::error_taxonomy::ToolErrorCategory> for FailureKind {
+    fn from(cat: zeph_tools::error_taxonomy::ToolErrorCategory) -> Self {
+        use zeph_tools::error_taxonomy::ToolErrorCategory as C;
+        match cat {
+            C::Timeout => Self::Timeout,
+            // Quality-attributable: skill chose the wrong approach or wrong tool.
+            C::PolicyBlocked | C::ConfirmationRequired | C::ToolNotFound => Self::WrongApproach,
+            // LLM-supplied parameters were invalid or mistyped.
+            C::InvalidParameters | C::TypeMismatch => Self::SyntaxError,
+            // Infrastructure failures and non-quality outcomes are not attributable to the skill.
+            C::RateLimited
+            | C::ServerError
+            | C::NetworkError
+            | C::PermanentFailure
+            | C::Cancelled => Self::Unknown,
+        }
+    }
+}
+
 /// Outcome classification for skill-attributed events.
 #[derive(Debug, Clone)]
 pub enum SkillOutcome {
@@ -515,6 +534,34 @@ mod tests {
         assert_eq!(FailureKind::Partial.as_str(), "partial");
         assert_eq!(FailureKind::SyntaxError.as_str(), "syntax_error");
         assert_eq!(FailureKind::Unknown.as_str(), "unknown");
+    }
+
+    #[test]
+    fn failure_kind_from_tool_error_category_key_mappings() {
+        use zeph_tools::error_taxonomy::ToolErrorCategory as C;
+        assert_eq!(FailureKind::from(C::Timeout), FailureKind::Timeout);
+        assert_eq!(
+            FailureKind::from(C::PolicyBlocked),
+            FailureKind::WrongApproach
+        );
+        assert_eq!(
+            FailureKind::from(C::ToolNotFound),
+            FailureKind::WrongApproach
+        );
+        assert_eq!(
+            FailureKind::from(C::InvalidParameters),
+            FailureKind::SyntaxError
+        );
+        assert_eq!(FailureKind::from(C::TypeMismatch), FailureKind::SyntaxError);
+        assert_eq!(FailureKind::from(C::RateLimited), FailureKind::Unknown);
+        assert_eq!(FailureKind::from(C::ServerError), FailureKind::Unknown);
+        assert_eq!(FailureKind::from(C::NetworkError), FailureKind::Unknown);
+        assert_eq!(FailureKind::from(C::PermanentFailure), FailureKind::Unknown);
+        assert_eq!(
+            FailureKind::from(C::ConfirmationRequired),
+            FailureKind::WrongApproach
+        );
+        assert_eq!(FailureKind::from(C::Cancelled), FailureKind::Unknown);
     }
 
     proptest! {

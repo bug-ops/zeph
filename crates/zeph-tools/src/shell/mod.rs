@@ -303,18 +303,18 @@ impl ShellExecutor {
         self.log_audit(block, audit_result, duration_ms).await;
 
         if is_timeout {
-            if let Some(ref tx) = self.tool_event_tx {
-                let _ = tx.send(ToolEvent::Completed {
-                    tool_name: "bash".to_owned(),
-                    command: block.to_owned(),
-                    output: out.clone(),
-                    success: false,
-                    filter_stats: None,
-                    diff: None,
-                });
-            }
+            self.emit_completed(block, &out, false, None);
             return Err(ToolError::Timeout {
                 timeout_secs: self.timeout.as_secs(),
+            });
+        }
+
+        if let Some(category) = classify_shell_exit(exit_code, &out) {
+            self.emit_completed(block, &out, false, None);
+            return Err(ToolError::Shell {
+                exit_code,
+                category,
+                message: out.lines().take(3).collect::<Vec<_>>().join("; "),
             });
         }
 
@@ -347,18 +347,33 @@ impl ShellExecutor {
             sanitized
         };
 
+        self.emit_completed(
+            block,
+            &out,
+            !out.contains("[error]"),
+            per_block_stats.clone(),
+        );
+
+        Ok((format!("$ {block}\n{filtered}"), per_block_stats))
+    }
+
+    fn emit_completed(
+        &self,
+        command: &str,
+        output: &str,
+        success: bool,
+        filter_stats: Option<FilterStats>,
+    ) {
         if let Some(ref tx) = self.tool_event_tx {
             let _ = tx.send(ToolEvent::Completed {
                 tool_name: "bash".to_owned(),
-                command: block.to_owned(),
-                output: out.clone(),
-                success: !out.contains("[error]"),
-                filter_stats: per_block_stats.clone(),
+                command: command.to_owned(),
+                output: output.to_owned(),
+                success,
+                filter_stats,
                 diff: None,
             });
         }
-
-        Ok((format!("$ {block}\n{filtered}"), per_block_stats))
     }
 
     /// Check blocklist, permission policy, and confirmation requirements for `block`.
@@ -832,6 +847,34 @@ fn extract_paths(code: &str) -> Vec<String> {
         }
     }
     result
+}
+
+/// Classify shell exit codes and stderr patterns into `ToolErrorCategory`.
+///
+/// Returns `Some(category)` only for well-known failure modes that benefit from
+/// structured feedback (exit 126/127, recognisable stderr patterns). All other
+/// non-zero exits are left as `Ok` output so they surface verbatim to the LLM.
+fn classify_shell_exit(
+    exit_code: i32,
+    output: &str,
+) -> Option<crate::error_taxonomy::ToolErrorCategory> {
+    use crate::error_taxonomy::ToolErrorCategory;
+    match exit_code {
+        // exit 126: command found but not executable (OS-level permission/policy)
+        126 => Some(ToolErrorCategory::PolicyBlocked),
+        // exit 127: command not found in PATH
+        127 => Some(ToolErrorCategory::PermanentFailure),
+        _ => {
+            let lower = output.to_lowercase();
+            if lower.contains("permission denied") {
+                Some(ToolErrorCategory::PolicyBlocked)
+            } else if lower.contains("no such file or directory") {
+                Some(ToolErrorCategory::PermanentFailure)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 fn has_traversal(path: &str) -> bool {

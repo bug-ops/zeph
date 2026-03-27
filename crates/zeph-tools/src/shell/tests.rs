@@ -1501,3 +1501,52 @@ async fn confirm_commands_still_work_without_policy() {
         "confirm_patterns must still trigger ConfirmationRequired when no PermissionPolicy is set"
     );
 }
+
+// ── classify_shell_exit tests ─────────────────────────────────────────────────
+
+#[test]
+fn classify_exit_126_is_policy_blocked() {
+    use crate::error_taxonomy::ToolErrorCategory;
+    assert_eq!(
+        classify_shell_exit(126, ""),
+        Some(ToolErrorCategory::PolicyBlocked)
+    );
+}
+
+#[test]
+fn classify_exit_127_is_permanent_failure() {
+    use crate::error_taxonomy::ToolErrorCategory;
+    assert_eq!(
+        classify_shell_exit(127, "[stderr] bash: nonexistent: command not found"),
+        Some(ToolErrorCategory::PermanentFailure)
+    );
+}
+
+#[test]
+fn classify_exit_1_permission_denied_stderr() {
+    use crate::error_taxonomy::ToolErrorCategory;
+    assert_eq!(
+        classify_shell_exit(1, "[stderr] Permission denied"),
+        Some(ToolErrorCategory::PolicyBlocked),
+        "case-insensitive 'Permission denied' stderr must classify as PolicyBlocked"
+    );
+}
+
+#[test]
+fn classify_exit_1_no_such_file() {
+    use crate::error_taxonomy::ToolErrorCategory;
+    assert_eq!(
+        classify_shell_exit(1, "[stderr] /bin/foo: No such file or directory"),
+        Some(ToolErrorCategory::PermanentFailure)
+    );
+}
+
+#[test]
+fn classify_exit_0_returns_none() {
+    assert_eq!(classify_shell_exit(0, ""), None);
+}
+
+#[test]
+fn classify_exit_1_generic_returns_none() {
+    assert_eq!(classify_shell_exit(1, "some other error"), None);
+}
