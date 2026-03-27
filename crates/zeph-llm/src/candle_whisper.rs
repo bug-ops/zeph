@@ -57,7 +57,7 @@ fn detect_device() -> Device {
 }
 
 impl CandleWhisperProvider {
-    /// Load a Whisper model from a HuggingFace repo.
+    /// Load a Whisper model from a `HuggingFace` repo.
     ///
     /// # Errors
     ///
@@ -128,6 +128,7 @@ impl CandleWhisperProvider {
     }
 
     fn transcribe_sync(&self, audio: &[u8]) -> Result<Transcription, LlmError> {
+        const MAX_DECODE_TOKENS: usize = 224;
         let pcm = decode_audio(audio)?;
         let mel = m::audio::pcm_to_mel(&self.config, &pcm, &self.mel_filters);
         let mel_len = mel.len();
@@ -171,8 +172,6 @@ impl CandleWhisperProvider {
 
         let audio_features = model.encoder.forward(&mel, true)?;
 
-        const MAX_DECODE_TOKENS: usize = 224;
-
         let mut tokens = vec![sot, language_token, transcribe, no_timestamps];
 
         for _ in 0..MAX_DECODE_TOKENS {
@@ -211,6 +210,7 @@ impl CandleWhisperProvider {
                 }
                 .into(),
             ),
+            #[allow(clippy::cast_precision_loss)]
             duration_secs: Some(pcm.len() as f32 / m::SAMPLE_RATE as f32),
         })
     }
@@ -236,12 +236,12 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::formats::FormatOptions;
-    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
     use symphonia::core::meta::MetadataOptions;
     use symphonia::core::probe::Hint;
 
     let cursor = Cursor::new(bytes.to_vec());
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+    let mss = MediaSourceStream::new(Box::new(cursor), MediaSourceStreamOptions::default());
 
     let probed = symphonia::default::get_probe()
         .format(
@@ -260,7 +260,10 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
         .codec_params
         .sample_rate
         .ok_or_else(|| LlmError::TranscriptionFailed("unknown sample rate".into()))?;
-    let channels = track.codec_params.channels.map_or(1, |c| c.count());
+    let channels = track
+        .codec_params
+        .channels
+        .map_or(1, symphonia::core::audio::Channels::count);
     let track_id = track.id;
 
     let mut decoder = symphonia::default::get_codecs()
@@ -273,20 +276,21 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
         if packet.track_id() != track_id {
             continue;
         }
-        let decoded = match decoder.decode(&packet) {
+        let audio_buf = match decoder.decode(&packet) {
             Ok(d) => d,
             Err(e) => {
                 tracing::trace!("skipping packet decode error: {e}");
                 continue;
             }
         };
-        let spec = *decoded.spec();
-        let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        sample_buf.copy_interleaved_ref(decoded);
+        let spec = *audio_buf.spec();
+        let mut sample_buf = SampleBuffer::<f32>::new(audio_buf.capacity() as u64, spec);
+        sample_buf.copy_interleaved_ref(audio_buf);
         let samples = sample_buf.samples();
 
         if channels > 1 {
             for chunk in samples.chunks(channels) {
+                #[allow(clippy::cast_precision_loss)]
                 let avg = chunk.iter().sum::<f32>() / channels as f32;
                 pcm.push(avg);
             }
@@ -309,8 +313,10 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
     }
 
     // Resample to 16kHz if needed
-    if sample_rate != m::SAMPLE_RATE as u32 {
-        pcm = resample(&pcm, sample_rate, m::SAMPLE_RATE as u32)?;
+    #[allow(clippy::cast_possible_truncation)]
+    let target_rate = m::SAMPLE_RATE as u32;
+    if sample_rate != target_rate {
+        pcm = resample(&pcm, sample_rate, target_rate)?;
     }
 
     Ok(pcm)

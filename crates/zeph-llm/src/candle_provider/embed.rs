@@ -77,6 +77,8 @@ impl EmbedModel {
     }
 
     fn validate_safetensors(path: &std::path::Path) -> Result<(), LlmError> {
+        // Header must fit within the file and be under 100 MB
+        const MAX_HEADER: u64 = 100 * 1024 * 1024;
         use std::io::Read;
         let mut f = std::fs::File::open(path)
             .map_err(|e| LlmError::ModelLoad(format!("cannot open safetensors: {e}")))?;
@@ -93,8 +95,6 @@ impl EmbedModel {
         f.read_exact(&mut header_len_buf)
             .map_err(|e| LlmError::ModelLoad(format!("cannot read safetensors header: {e}")))?;
         let header_len = u64::from_le_bytes(header_len_buf);
-        // Header must fit within the file and be under 100 MB
-        const MAX_HEADER: u64 = 100 * 1024 * 1024;
         if header_len > file_len - 8 || header_len > MAX_HEADER {
             return Err(LlmError::ModelLoad(format!(
                 "invalid safetensors header length: {header_len} (file size: {file_len})"

@@ -182,7 +182,7 @@ impl LlmProvider for CandleProvider {
         self.embed_model.is_some()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "candle"
     }
 }
