@@ -1875,7 +1875,10 @@ enabled = true
 max_tasks = 20
 "#;
         let result = migrate_planner_model_to_provider(input).expect("migration must succeed");
-        assert_eq!(result.added_count, 0, "added_count must be 0 when field is absent");
+        assert_eq!(
+            result.added_count, 0,
+            "added_count must be 0 when field is absent"
+        );
         assert_eq!(
             result.output, input,
             "output must equal input when nothing to migrate"
