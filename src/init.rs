@@ -158,6 +158,9 @@ pub(crate) struct WizardState {
     pub(crate) probe_provider: Option<String>,
     pub(crate) probe_threshold: f32,
     pub(crate) probe_hard_fail_threshold: f32,
+    // Tool retry config
+    pub(crate) retry_max_attempts: usize,
+    pub(crate) retry_parameter_reformat_provider: String,
 }
 
 impl Default for WizardState {
@@ -281,6 +284,8 @@ impl Default for WizardState {
             probe_provider: None,
             probe_threshold: 0.6,
             probe_hard_fail_threshold: 0.35,
+            retry_max_attempts: 2,
+            retry_parameter_reformat_provider: String::new(),
         }
     }
 }
@@ -341,6 +346,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_debug(&mut state)?;
     step_logging(&mut state)?;
     step_experiments(&mut state)?;
+    step_retry(&mut state)?;
     step_policy(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -1298,6 +1304,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.tools.policy.enabled = state.policy_enforcer_enabled;
     }
 
+    config.tools.retry.max_attempts = state.retry_max_attempts;
+    config
+        .tools
+        .retry
+        .parameter_reformat_provider
+        .clone_from(&state.retry_parameter_reformat_provider);
+
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);
     config.logging.rotation = match state.log_rotation.as_str() {
@@ -2138,6 +2151,27 @@ fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
                 .interact_text()?;
         }
     }
+
+    println!();
+    Ok(())
+}
+
+fn step_retry(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Tool Retry Configuration ==\n");
+
+    state.retry_max_attempts = Input::new()
+        .with_prompt("Maximum retry attempts for transient tool errors (0 to disable)")
+        .default(2_usize)
+        .interact()?;
+
+    let provider: String = Input::new()
+        .with_prompt(
+            "Provider name for LLM parameter reformatting on invalid-params errors \
+             (leave empty to disable)",
+        )
+        .default(String::new())
+        .interact_text()?;
+    state.retry_parameter_reformat_provider = provider;
 
     println!();
     Ok(())

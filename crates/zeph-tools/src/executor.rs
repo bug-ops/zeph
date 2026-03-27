@@ -185,10 +185,37 @@ pub enum ToolError {
 
     #[error("execution failed: {0}")]
     Execution(#[from] std::io::Error),
+
+    /// HTTP or API error with status code for fine-grained classification.
+    ///
+    /// Used by `WebScrapeExecutor` and other HTTP-based tools to preserve the status
+    /// code for taxonomy classification. Scope: HTTP tools only (MCP uses a separate path).
+    #[error("HTTP error {status}: {message}")]
+    Http { status: u16, message: String },
 }
 
 impl ToolError {
-    /// Classify this error as transient (retryable) or permanent.
+    /// Fine-grained error classification using the 12-category taxonomy.
+    ///
+    /// Prefer `category()` over `kind()` for new code. `kind()` is preserved for
+    /// backward compatibility and delegates to `category().error_kind()`.
+    #[must_use]
+    pub fn category(&self) -> crate::error_taxonomy::ToolErrorCategory {
+        use crate::error_taxonomy::{ToolErrorCategory, classify_http_status, classify_io_error};
+        match self {
+            Self::Blocked { .. } | Self::SandboxViolation { .. } => {
+                ToolErrorCategory::PolicyBlocked
+            }
+            Self::ConfirmationRequired { .. } => ToolErrorCategory::ConfirmationRequired,
+            Self::Timeout { .. } => ToolErrorCategory::Timeout,
+            Self::Cancelled => ToolErrorCategory::Cancelled,
+            Self::InvalidParams { .. } => ToolErrorCategory::InvalidParameters,
+            Self::Http { status, .. } => classify_http_status(*status),
+            Self::Execution(io_err) => classify_io_error(io_err),
+        }
+    }
+
+    /// Coarse classification for backward compatibility. Delegates to `category().error_kind()`.
     ///
     /// For `Execution(io::Error)`, the classification inspects `io::Error::kind()`:
     /// - Transient: `TimedOut`, `WouldBlock`, `Interrupted`, `ConnectionReset`,
@@ -197,24 +224,7 @@ impl ToolError {
     ///   I/O error kinds — retrying would waste time with no benefit.
     #[must_use]
     pub fn kind(&self) -> ErrorKind {
-        match self {
-            Self::Timeout { .. } => ErrorKind::Transient,
-            Self::Execution(io_err) => match io_err.kind() {
-                std::io::ErrorKind::TimedOut
-                | std::io::ErrorKind::WouldBlock
-                | std::io::ErrorKind::Interrupted
-                | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::ConnectionAborted
-                | std::io::ErrorKind::BrokenPipe => ErrorKind::Transient,
-                // NotFound, PermissionDenied, AlreadyExists, and everything else: permanent.
-                _ => ErrorKind::Permanent,
-            },
-            Self::Blocked { .. }
-            | Self::SandboxViolation { .. }
-            | Self::ConfirmationRequired { .. }
-            | Self::Cancelled
-            | Self::InvalidParams { .. } => ErrorKind::Permanent,
-        }
+        self.category().error_kind()
     }
 }
 
@@ -970,6 +980,209 @@ mod tests {
         assert_eq!(
             extract_fenced_blocks("```bash \nfoo\n```", "bash"),
             vec!["foo"]
+        );
+    }
+
+    // ── ToolError::category() delegation tests ────────────────────────────────
+
+    #[test]
+    fn tool_error_http_400_category_is_invalid_parameters() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 400,
+            message: "bad request".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::InvalidParameters);
+    }
+
+    #[test]
+    fn tool_error_http_401_category_is_policy_blocked() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 401,
+            message: "unauthorized".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::PolicyBlocked);
+    }
+
+    #[test]
+    fn tool_error_http_403_category_is_policy_blocked() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 403,
+            message: "forbidden".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::PolicyBlocked);
+    }
+
+    #[test]
+    fn tool_error_http_404_category_is_permanent_failure() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 404,
+            message: "not found".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::PermanentFailure);
+    }
+
+    #[test]
+    fn tool_error_http_429_category_is_rate_limited() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 429,
+            message: "too many requests".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::RateLimited);
+    }
+
+    #[test]
+    fn tool_error_http_500_category_is_server_error() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 500,
+            message: "internal server error".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::ServerError);
+    }
+
+    #[test]
+    fn tool_error_http_502_category_is_server_error() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 502,
+            message: "bad gateway".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::ServerError);
+    }
+
+    #[test]
+    fn tool_error_http_503_category_is_server_error() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Http {
+            status: 503,
+            message: "service unavailable".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::ServerError);
+    }
+
+    #[test]
+    fn tool_error_blocked_category_is_policy_blocked() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Blocked {
+            command: "rm -rf /".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::PolicyBlocked);
+    }
+
+    #[test]
+    fn tool_error_sandbox_violation_category_is_policy_blocked() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::SandboxViolation {
+            path: "/etc/shadow".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::PolicyBlocked);
+    }
+
+    #[test]
+    fn tool_error_confirmation_required_category() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::ConfirmationRequired {
+            command: "rm /tmp/x".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::ConfirmationRequired);
+    }
+
+    #[test]
+    fn tool_error_timeout_category() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::Timeout { timeout_secs: 30 };
+        assert_eq!(err.category(), ToolErrorCategory::Timeout);
+    }
+
+    #[test]
+    fn tool_error_cancelled_category() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        assert_eq!(
+            ToolError::Cancelled.category(),
+            ToolErrorCategory::Cancelled
+        );
+    }
+
+    #[test]
+    fn tool_error_invalid_params_category() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let err = ToolError::InvalidParams {
+            message: "missing field".to_owned(),
+        };
+        assert_eq!(err.category(), ToolErrorCategory::InvalidParameters);
+    }
+
+    // B2 regression: Execution(NotFound) must NOT produce ToolNotFound.
+    #[test]
+    fn tool_error_execution_not_found_category_is_permanent_failure() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "bash: not found");
+        let err = ToolError::Execution(io_err);
+        let cat = err.category();
+        assert_ne!(
+            cat,
+            ToolErrorCategory::ToolNotFound,
+            "Execution(NotFound) must NOT map to ToolNotFound"
+        );
+        assert_eq!(cat, ToolErrorCategory::PermanentFailure);
+    }
+
+    #[test]
+    fn tool_error_execution_timed_out_category_is_timeout() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        assert_eq!(
+            ToolError::Execution(io_err).category(),
+            ToolErrorCategory::Timeout
+        );
+    }
+
+    #[test]
+    fn tool_error_execution_connection_refused_category_is_network_error() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        assert_eq!(
+            ToolError::Execution(io_err).category(),
+            ToolErrorCategory::NetworkError
+        );
+    }
+
+    // B4 regression: Http/network/transient categories must NOT be quality failures.
+    #[test]
+    fn b4_tool_error_http_429_not_quality_failure() {
+        let err = ToolError::Http {
+            status: 429,
+            message: "rate limited".to_owned(),
+        };
+        assert!(
+            !err.category().is_quality_failure(),
+            "RateLimited must not be a quality failure"
+        );
+    }
+
+    #[test]
+    fn b4_tool_error_http_503_not_quality_failure() {
+        let err = ToolError::Http {
+            status: 503,
+            message: "service unavailable".to_owned(),
+        };
+        assert!(
+            !err.category().is_quality_failure(),
+            "ServerError must not be a quality failure"
+        );
+    }
+
+    #[test]
+    fn b4_tool_error_execution_timed_out_not_quality_failure() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
+        assert!(
+            !ToolError::Execution(io_err).category().is_quality_failure(),
+            "Timeout must not be a quality failure"
         );
     }
 }

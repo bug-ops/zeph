@@ -197,6 +197,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the provider name for LLM-based parameter reformatting (empty = disabled).
+    #[must_use]
+    pub fn with_parameter_reformat_provider(mut self, provider: impl Into<String>) -> Self {
+        self.tool_orchestrator.parameter_reformat_provider = provider.into();
+        self
+    }
+
+    /// Set the exponential backoff parameters for tool retries.
+    #[must_use]
+    pub fn with_retry_backoff(mut self, base_ms: u64, max_ms: u64) -> Self {
+        self.tool_orchestrator.retry_base_ms = base_ms;
+        self.tool_orchestrator.retry_max_ms = max_ms;
+        self
+    }
+
     /// Set the repeat-detection threshold (0 = disabled).
     /// Window size is `2 * threshold`.
     #[must_use]
@@ -976,6 +991,9 @@ impl<C: Channel> Agent<C> {
             max_tool_iterations,
             max_tool_retries,
             max_retry_duration_secs,
+            retry_base_ms,
+            retry_max_ms,
+            parameter_reformat_provider,
             tool_repeat_threshold,
             tool_summarization,
             tool_call_cutoff,
@@ -1012,6 +1030,8 @@ impl<C: Channel> Agent<C> {
             .with_max_tool_iterations(max_tool_iterations)
             .with_max_tool_retries(max_tool_retries)
             .with_max_retry_duration_secs(max_retry_duration_secs)
+            .with_retry_backoff(retry_base_ms, retry_max_ms)
+            .with_parameter_reformat_provider(parameter_reformat_provider)
             .with_tool_repeat_threshold(tool_repeat_threshold)
             .with_model_name(model_name)
             .with_embedding_model(embed_model)

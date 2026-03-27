@@ -516,6 +516,7 @@ impl ShellExecutor {
                 command: command.into(),
                 result,
                 duration_ms,
+                error_category: None,
             };
             logger.log(&entry).await;
         }

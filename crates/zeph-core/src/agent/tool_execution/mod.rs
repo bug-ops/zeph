@@ -734,16 +734,14 @@ fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
 
 /// Compute exponential backoff delay for retry attempt (0-indexed).
 ///
-/// Formula: `base_ms * 2^attempt`, nominally capped at 5000ms.
+/// Formula: `base_ms * 2^attempt`, capped at `max_ms`.
 /// Full jitter in `[0, cap]` is applied using `rand` for cryptographically
 /// seeded randomness — avoids predictable timing that an adversary could exploit
 /// to align retry windows.
-fn retry_backoff_ms(attempt: usize) -> u64 {
+fn retry_backoff_ms(attempt: usize, base_ms: u64, max_ms: u64) -> u64 {
     use rand::RngExt as _;
-    const BASE_MS: u64 = 500;
-    const MAX_MS: u64 = 5000;
-    let base = BASE_MS.saturating_mul(1_u64 << attempt.min(10));
-    let capped = base.min(MAX_MS);
+    let base = base_ms.saturating_mul(1_u64 << attempt.min(10));
+    let capped = base.min(max_ms);
     rand::rng().random_range(0..=capped)
 }
 

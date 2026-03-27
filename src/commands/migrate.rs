@@ -5,8 +5,8 @@ use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
-    ConfigMigrator, migrate_mcp_trust_levels, migrate_planner_model_to_provider,
-    migrate_stt_to_provider,
+    ConfigMigrator, migrate_agent_retry_to_tools_retry, migrate_mcp_trust_levels,
+    migrate_planner_model_to_provider, migrate_stt_to_provider,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -39,9 +39,13 @@ pub(crate) fn handle_migrate_config(
     let trust_result = migrate_mcp_trust_levels(&after_planner)?;
     let after_trust = trust_result.output;
 
-    // Step 4: add missing default keys as commented-out entries.
+    // Step 4: migrate [agent].max_tool_retries / max_retry_duration_secs → [tools.retry].
+    let retry_result = migrate_agent_retry_to_tools_retry(&after_trust)?;
+    let after_retry = retry_result.output;
+
+    // Step 5: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_trust)?;
+    let result = migrator.migrate(&after_retry)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -58,6 +62,9 @@ pub(crate) fn handle_migrate_config(
                 "MCP trust migration: added trust_level = \"trusted\" to {} [[mcp.servers]] entries.",
                 trust_result.added_count
             );
+        }
+        if retry_result.added_count > 0 {
+            eprintln!("Retry migration: [agent] retry fields migrated to [tools.retry].");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

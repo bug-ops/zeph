@@ -23,6 +23,9 @@ pub struct AuditEntry {
     pub command: String,
     pub result: AuditResult,
     pub duration_ms: u64,
+    /// Fine-grained error category label from the taxonomy. `None` for successful executions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -103,6 +106,7 @@ mod tests {
             command: "echo hello".into(),
             result: AuditResult::Success,
             duration_ms: 42,
+            error_category: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -120,6 +124,7 @@ mod tests {
                 reason: "blocked command: sudo".into(),
             },
             duration_ms: 0,
+            error_category: Some("policy_blocked".to_owned()),
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -136,6 +141,7 @@ mod tests {
                 message: "exec failed".into(),
             },
             duration_ms: 0,
+            error_category: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -149,6 +155,7 @@ mod tests {
             command: "sleep 999".into(),
             result: AuditResult::Timeout,
             duration_ms: 30000,
+            error_category: Some("timeout".to_owned()),
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -167,6 +174,7 @@ mod tests {
             command: "echo test".into(),
             result: AuditResult::Success,
             duration_ms: 1,
+            error_category: None,
         };
         logger.log(&entry).await;
     }
@@ -186,6 +194,7 @@ mod tests {
             command: "echo test".into(),
             result: AuditResult::Success,
             duration_ms: 1,
+            error_category: None,
         };
         logger.log(&entry).await;
 
@@ -220,6 +229,7 @@ mod tests {
                 command: format!("cmd{i}"),
                 result: AuditResult::Success,
                 duration_ms: i,
+                error_category: None,
             };
             logger.log(&entry).await;
         }

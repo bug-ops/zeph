@@ -453,6 +453,19 @@ default_effect = "deny"
 # tool = "shell"
 # paths = ["/tmp/*"]
 
+[tools.retry]
+# Maximum retry attempts for transient errors per tool call (0 = disabled)
+max_attempts = 2
+# Base delay (ms) for exponential backoff
+base_ms = 500
+# Maximum delay cap (ms) for exponential backoff
+max_ms = 5000
+# Maximum wall-clock time (seconds) for all retries of a single tool call (0 = unlimited)
+budget_secs = 30
+# Provider name from [[llm.providers]] for LLM-based parameter reformatting
+# on InvalidParameters/TypeMismatch errors. Empty = disabled.
+# parameter_reformat_provider = "fast"
+
 [tools.anomaly]
 # Enable sliding-window anomaly detection for tool execution errors
 enabled = true

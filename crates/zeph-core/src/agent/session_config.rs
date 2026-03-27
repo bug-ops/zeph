@@ -49,6 +49,9 @@ pub struct AgentSessionConfig {
     pub max_tool_iterations: usize,
     pub max_tool_retries: usize,
     pub max_retry_duration_secs: u64,
+    pub retry_base_ms: u64,
+    pub retry_max_ms: u64,
+    pub parameter_reformat_provider: String,
     pub tool_repeat_threshold: usize,
     pub tool_summarization: bool,
     pub tool_call_cutoff: usize,
@@ -104,8 +107,11 @@ impl AgentSessionConfig {
     pub fn from_config(config: &Config, budget_tokens: usize) -> Self {
         Self {
             max_tool_iterations: config.agent.max_tool_iterations,
-            max_tool_retries: config.agent.max_tool_retries,
-            max_retry_duration_secs: config.agent.max_retry_duration_secs,
+            max_tool_retries: config.tools.retry.max_attempts,
+            max_retry_duration_secs: config.tools.retry.budget_secs,
+            retry_base_ms: config.tools.retry.base_ms,
+            retry_max_ms: config.tools.retry.max_ms,
+            parameter_reformat_provider: config.tools.retry.parameter_reformat_provider.clone(),
             tool_repeat_threshold: config.agent.tool_repeat_threshold,
             tool_summarization: config.tools.summarize_output,
             tool_call_cutoff: config.memory.tool_call_cutoff,
@@ -157,10 +163,13 @@ mod tests {
         let sc = AgentSessionConfig::from_config(&config, budget);
 
         assert_eq!(sc.max_tool_iterations, config.agent.max_tool_iterations);
-        assert_eq!(sc.max_tool_retries, config.agent.max_tool_retries);
+        assert_eq!(sc.max_tool_retries, config.tools.retry.max_attempts);
+        assert_eq!(sc.max_retry_duration_secs, config.tools.retry.budget_secs);
+        assert_eq!(sc.retry_base_ms, config.tools.retry.base_ms);
+        assert_eq!(sc.retry_max_ms, config.tools.retry.max_ms);
         assert_eq!(
-            sc.max_retry_duration_secs,
-            config.agent.max_retry_duration_secs
+            sc.parameter_reformat_provider,
+            config.tools.retry.parameter_reformat_provider
         );
         assert_eq!(sc.tool_repeat_threshold, config.agent.tool_repeat_threshold);
         assert_eq!(sc.tool_summarization, config.tools.summarize_output);

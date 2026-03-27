@@ -25,6 +25,10 @@ pub(crate) struct ToolOrchestrator {
     /// Maximum wall-clock time (seconds) to spend on retries for a single tool call.
     /// 0 = no wall-clock budget (only `max_tool_retries` applies).
     pub(super) max_retry_duration_secs: u64,
+    /// Base delay (ms) for exponential backoff. From `[tools.retry].base_ms`.
+    pub(super) retry_base_ms: u64,
+    /// Maximum delay cap (ms) for exponential backoff. From `[tools.retry].max_ms`.
+    pub(super) retry_max_ms: u64,
     /// Pre-execution verifiers run before every native tool call (`TrustBench` pattern,
     /// issue #1630). Stored here rather than on `SecurityState` because they are tool-layer
     /// concerns: they inspect tool arguments at dispatch time, consistent with
@@ -36,6 +40,9 @@ pub(crate) struct ToolOrchestrator {
     /// reset only on `/clear`. Unlike repeat-detection and doom-loop state (which reset per
     /// round), the cache is intentionally long-lived — its value comes from reuse across turns.
     pub(super) result_cache: ToolResultCache,
+    /// Provider name for LLM-based parameter reformatting on `InvalidParameters`/`TypeMismatch`
+    /// errors. Empty string = disabled. References a `[[llm.providers]]` name from config.
+    pub(super) parameter_reformat_provider: String,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -67,9 +74,12 @@ impl ToolOrchestrator {
             repeat_threshold,
             max_tool_retries: 2,
             max_retry_duration_secs: 30,
+            retry_base_ms: 500,
+            retry_max_ms: 5_000,
             pre_execution_verifiers: Vec::new(),
             tafc: TafcConfig::default(),
             result_cache: ToolResultCache::new(true, Some(Duration::from_secs(300))),
+            parameter_reformat_provider: String::new(),
         }
     }
 

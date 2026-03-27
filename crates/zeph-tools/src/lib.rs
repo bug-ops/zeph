@@ -9,6 +9,7 @@ pub mod cache;
 pub mod composite;
 pub mod config;
 pub mod diagnostics;
+pub mod error_taxonomy;
 pub mod executor;
 pub mod file;
 pub mod filter;
@@ -34,10 +35,13 @@ pub use audit::{AuditEntry, AuditLogger, AuditResult};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::{
-    AnomalyConfig, AuditConfig, DependencyConfig, OverflowConfig, ResultCacheConfig, ScrapeConfig,
-    ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
+    AnomalyConfig, AuditConfig, DependencyConfig, OverflowConfig, ResultCacheConfig, RetryConfig,
+    ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
+pub use error_taxonomy::{
+    ToolErrorCategory, ToolErrorFeedback, classify_http_status, classify_io_error,
+};
 pub use executor::{
     DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats, MAX_TOOL_OUTPUT_CHARS,
     ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput, truncate_tool_output,

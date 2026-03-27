@@ -2492,28 +2492,28 @@ fn tool_args_hash_different_keys_differ() {
 #[test]
 fn retry_backoff_ms_attempt0_within_range() {
     // attempt=0 → cap = 500ms, full jitter [0, 500]
-    let delay = retry_backoff_ms(0);
+    let delay = retry_backoff_ms(0, 500, 5000);
     assert!(delay <= 500, "attempt 0 delay too high: {delay}");
 }
 
 #[test]
 fn retry_backoff_ms_attempt1_within_range() {
     // attempt=1 → cap = 1000ms, full jitter [0, 1000]
-    let delay = retry_backoff_ms(1);
+    let delay = retry_backoff_ms(1, 500, 5000);
     assert!(delay <= 1000, "attempt 1 delay too high: {delay}");
 }
 
 #[test]
 fn retry_backoff_ms_cap_at_5000() {
     // attempt=4 → base = 8000ms → capped to 5000ms; full jitter [0, 5000]
-    let delay = retry_backoff_ms(4);
+    let delay = retry_backoff_ms(4, 500, 5000);
     assert!(delay <= 5000, "capped attempt 4 delay too high: {delay}");
 }
 
 #[test]
 fn retry_backoff_ms_large_attempt_still_capped() {
     // Very large attempt: bit-shift is capped at 10, so base = 500 * 1024 → capped at 5000ms.
-    let delay = retry_backoff_ms(100);
+    let delay = retry_backoff_ms(100, 500, 5000);
     assert!(delay <= 5000, "large attempt delay exceeds cap: {delay}");
 }
 
@@ -2521,7 +2521,7 @@ fn retry_backoff_ms_large_attempt_still_capped() {
 fn retry_backoff_ms_all_attempts_within_cap() {
     // SEC-002: full jitter is in [0, cap]. Verify no attempt returns a value above 5000ms.
     for attempt in 0..5 {
-        let delay = retry_backoff_ms(attempt);
+        let delay = retry_backoff_ms(attempt, 500, 5000);
         assert!(
             delay <= 5000,
             "attempt {attempt} delay out of range: {delay}"
@@ -2534,7 +2534,7 @@ fn retry_backoff_ms_is_non_deterministic() {
     // SEC-002: full jitter uses rand — successive calls for the same attempt must not
     // all return the same value (probability of 100 identical draws from [0, 500] is
     // effectively zero for a properly seeded PRNG).
-    let samples: Vec<u64> = (0..100).map(|_| retry_backoff_ms(0)).collect();
+    let samples: Vec<u64> = (0..100).map(|_| retry_backoff_ms(0, 500, 5000)).collect();
     let all_same = samples.windows(2).all(|w| w[0] == w[1]);
     assert!(
         !all_same,
@@ -2726,8 +2726,9 @@ async fn native_tool_executor_error_does_not_panic() {
         .unwrap();
 
     let last = agent.msg.messages.last().unwrap();
+    // Errors now use structured feedback format ([tool_error]) instead of plain [error].
     assert!(
-        last.content.contains("[error]"),
+        last.content.contains("[tool_error]"),
         "executor error must be reflected in result: {}",
         last.content
     );
@@ -4551,5 +4552,85 @@ async fn test_parallel_tool_calls_permanent_error_emits_tool_result() {
         result_ids.len(),
         2,
         "exactly 2 ToolResults expected, one per tool_call_id: {result_ids:?}"
+    );
+}
+
+// B4 fix: infrastructure errors (NetworkError, ServerError, RateLimited) must NOT trigger
+// attempt_self_reflection. Self-reflection is only for quality failures (LLM-attributable errors
+// such as InvalidParameters, TypeMismatch, ToolNotFound). Reflecting on infrastructure errors
+// wastes tokens with no improvement to future model behavior.
+//
+// This test verifies that a tool failing with a transient/infrastructure error category does NOT
+// produce additional messages beyond the ToolResults message (self-reflection would add them).
+#[tokio::test]
+async fn infrastructure_error_does_not_trigger_self_reflection() {
+    use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
+    use crate::config::LearningConfig;
+    use zeph_tools::executor::ToolExecutor;
+
+    // Executor that returns a network-level IO error (maps to NetworkError category).
+    struct NetworkErrorExecutor;
+    impl ToolExecutor for NetworkErrorExecutor {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            _call: &ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Err(ToolError::Execution(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "connection refused",
+            ))))
+        }
+    }
+
+    // Provide a reflection response to detect if self-reflection fires.
+    let provider = mock_provider(vec!["unexpected reflection response".into()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+
+    let mut agent =
+        super::super::Agent::new(provider, channel, registry, None, 5, NetworkErrorExecutor)
+            .with_learning(LearningConfig {
+                enabled: true,
+                ..LearningConfig::default()
+            });
+    // No active skill — self-reflection requires an active skill to fire.
+    // We intentionally do NOT add one to isolate the is_quality_failure gate.
+
+    let tool_calls = vec![make_tool_use_request("id-infra", "bash")];
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    // With is_quality_failure=false (NetworkError is not a quality failure), pending_reflection
+    // must not be set. Self-reflection adds 2 extra messages after ToolResults (a reflection
+    // User prompt + an Assistant response). Without self-reflection, we expect at most 3:
+    // 1 system/context + 1 ToolUse (assistant) + 1 ToolResults (user).
+    // If self-reflection fired, we'd see 5+ messages.
+    let msg_count = agent.msg.messages.len();
+    assert!(
+        msg_count <= 3,
+        "infrastructure error must not trigger self-reflection (got {} messages)",
+        msg_count
+    );
+
+    // Verify the error content uses structured taxonomy format.
+    let last = agent.msg.messages.last().unwrap();
+    assert!(
+        last.content.contains("[tool_error]"),
+        "infrastructure error must produce structured feedback: {}",
+        last.content
+    );
+    assert!(
+        last.content.contains("network_error"),
+        "ConnectionRefused must classify as network_error: {}",
+        last.content
     );
 }

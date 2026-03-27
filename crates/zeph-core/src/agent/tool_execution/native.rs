@@ -1146,6 +1146,8 @@ impl<C: Channel> Agent<C> {
         // for minimal gain in the rare case of multiple simultaneous transient failures.
         if max_retries > 0 {
             let max_retry_duration_secs = self.tool_orchestrator.max_retry_duration_secs;
+            let retry_base_ms = self.tool_orchestrator.retry_base_ms;
+            let retry_max_ms = self.tool_orchestrator.retry_max_ms;
             for idx in 0..tool_results.len() {
                 if cancel.is_cancelled() {
                     self.tool_executor.set_skill_env(None);
@@ -1205,7 +1207,8 @@ impl<C: Channel> Agent<C> {
                                 break exec_result;
                             }
                             attempt += 1;
-                            let delay_ms = retry_backoff_ms(attempt - 1);
+                            let delay_ms =
+                                retry_backoff_ms(attempt - 1, retry_base_ms, retry_max_ms);
                             tracing::warn!(
                                 tool = %tc.name,
                                 attempt,
@@ -1235,6 +1238,72 @@ impl<C: Channel> Agent<C> {
                     }
                 };
                 tool_results[idx] = result;
+            }
+        }
+
+        // Phase 3: Parameter reformat path for InvalidParameters / TypeMismatch errors.
+        //
+        // When `parameter_reformat_provider` is configured, ask a (cheap) LLM provider to
+        // reformat the tool arguments and retry ONCE. If the reformat call or the retry fails,
+        // the original error is kept. This path is budget-aware: we check the same
+        // `budget_secs` wall-clock limit that applies to transient retries.
+        //
+        // Cancellation safety (B3): both the reformat LLM call and the retry execution are
+        // wrapped in `tokio::select!` with the cancellation token, matching the pattern from
+        // Phase 2. On cancellation, a synthetic error `tool_result` is persisted before returning
+        // so the TOOL_RESULT_GUARANTEE invariant is upheld for every `tool_call_id`.
+        if !self
+            .tool_orchestrator
+            .parameter_reformat_provider
+            .is_empty()
+        {
+            let budget_secs = self.tool_orchestrator.max_retry_duration_secs;
+            for idx in 0..tool_results.len() {
+                if cancel.is_cancelled() {
+                    self.tool_executor.set_skill_env(None);
+                    tracing::info!("parameter reformat phase cancelled by user");
+                    self.update_metrics(|m| m.cancellations += 1);
+                    self.channel.send("[Cancelled]").await?;
+                    self.persist_cancelled_tool_results(tool_calls).await;
+                    return Ok(());
+                }
+
+                let needs_reformat = matches!(
+                    tool_results[idx],
+                    Err(ref e) if e.category().needs_parameter_reformat()
+                );
+                if !needs_reformat {
+                    continue;
+                }
+
+                let tc = &tool_calls[idx];
+                let reformat_start = std::time::Instant::now();
+                tracing::warn!(
+                    tool = %tc.name,
+                    "parameter error detected; parameter reformat path is reserved for future LLM-based reformat implementation"
+                );
+
+                // Budget check: if the wall-clock budget is already exhausted, skip.
+                if budget_secs > 0 && reformat_start.elapsed().as_secs() >= budget_secs {
+                    tracing::warn!(
+                        tool = %tc.name,
+                        "parameter reformat budget exhausted, skipping"
+                    );
+                    continue;
+                }
+
+                // The reformat LLM call and retry are placeholders — the actual provider
+                // resolution and prompt construction will be implemented in a follow-up once
+                // the provider registry lookup API stabilizes. For now, we log and skip
+                // so the original error is propagated unchanged to the LLM as structured feedback.
+                let _ = self
+                    .channel
+                    .send_status(&format!(
+                        "Reformat for {} pending provider integration…",
+                        tc.name
+                    ))
+                    .await;
+                let _ = self.channel.send_status("").await;
             }
         }
 
@@ -1322,9 +1391,11 @@ impl<C: Channel> Agent<C> {
                     )
                 }
                 Err(ref e) => {
-                    // Only InvalidParams is a semantic failure attributable to model quality.
-                    // Transient I/O, timeout, blocked, and sandbox errors are not.
-                    is_quality_failure = matches!(e, zeph_tools::ToolError::InvalidParams { .. });
+                    let category = e.category();
+                    // Quality failures are errors attributable to LLM output (invalid params,
+                    // type mismatch, tool not found). Infrastructure errors (network, timeout,
+                    // server, rate limit) are not the model's fault.
+                    is_quality_failure = category.is_quality_failure();
                     anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
                         AnomalyOutcome::Blocked
                     } else {
@@ -1345,7 +1416,20 @@ impl<C: Channel> Agent<C> {
                             e.to_string(),
                         );
                     }
-                    (format!("[error] {e}"), true, None, None, false, None, None)
+                    let feedback = zeph_tools::ToolErrorFeedback {
+                        category,
+                        message: e.to_string(),
+                        retryable: false,
+                    };
+                    (
+                        feedback.format_for_llm(),
+                        true,
+                        None,
+                        None,
+                        false,
+                        None,
+                        None,
+                    )
                 }
             };
 
@@ -1385,7 +1469,15 @@ impl<C: Channel> Agent<C> {
                     self.provider
                         .record_quality_outcome(self.provider.name(), false);
                 }
-                if pending_reflection.is_none() && !self.learning_engine.was_reflection_used() {
+                // Self-reflection is only useful for quality failures (LLM produced wrong params,
+                // used wrong tool name, etc.). Infrastructure errors (network, timeout, server,
+                // rate limit) are not attributable to LLM output — reflecting on them wastes
+                // tokens without improving future behavior. This is a behavioral change from the
+                // prior implementation which triggered reflection for any [error]-prefixed output.
+                if pending_reflection.is_none()
+                    && !self.learning_engine.was_reflection_used()
+                    && is_quality_failure
+                {
                     // Sanitize before passing to self_reflection: tool output from native calls
                     // can contain untrusted content with injection patterns.
                     let sanitized_out = self

@@ -1281,6 +1281,102 @@ pub fn migrate_mcp_trust_levels(toml_src: &str) -> Result<MigrationResult, Migra
     })
 }
 
+/// Migrate `[agent].max_tool_retries` → `[tools.retry].max_attempts` and
+/// `[agent].max_retry_duration_secs` → `[tools.retry].budget_secs`.
+///
+/// Old fields are preserved (not removed) to avoid breaking configs that rely on them
+/// until they are officially deprecated in a future release. The new `[tools.retry]` section
+/// is added if missing, populated with the migrated values.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML is invalid.
+pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    let max_retries = doc
+        .get("agent")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|t| t.get("max_tool_retries"))
+        .and_then(toml_edit::Item::as_value)
+        .and_then(toml_edit::Value::as_integer)
+        .map(i64::cast_unsigned);
+
+    let budget_secs = doc
+        .get("agent")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|t| t.get("max_retry_duration_secs"))
+        .and_then(toml_edit::Item::as_value)
+        .and_then(toml_edit::Value::as_integer)
+        .map(i64::cast_unsigned);
+
+    if max_retries.is_none() && budget_secs.is_none() {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    // Ensure [tools.retry] section exists.
+    if !doc.contains_key("tools") {
+        doc.insert("tools", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    let tools_table = doc
+        .get_mut("tools")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure("[tools] is not a table"))?;
+
+    if !tools_table.contains_key("retry") {
+        tools_table.insert("retry", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    let retry_table = tools_table
+        .get_mut("retry")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[tools.retry] is not a table",
+        ))?;
+
+    let mut added_count = 0usize;
+
+    if let Some(retries) = max_retries
+        && !retry_table.contains_key("max_attempts")
+    {
+        retry_table.insert(
+            "max_attempts",
+            toml_edit::value(i64::try_from(retries).unwrap_or(2)),
+        );
+        added_count += 1;
+    }
+
+    if let Some(secs) = budget_secs
+        && !retry_table.contains_key("budget_secs")
+    {
+        retry_table.insert(
+            "budget_secs",
+            toml_edit::value(i64::try_from(secs).unwrap_or(30)),
+        );
+        added_count += 1;
+    }
+
+    if added_count > 0 {
+        eprintln!(
+            "Migration: [agent].max_tool_retries / max_retry_duration_secs migrated to \
+             [tools.retry].max_attempts / budget_secs. Old fields preserved for compatibility."
+        );
+    }
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count,
+        sections_added: if added_count > 0 {
+            vec!["tools.retry".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -1936,11 +2032,11 @@ max_tasks = 20
 
     #[test]
     fn migrate_planner_model_to_provider_no_op() {
-        let input = r#"
+        let input = r"
 [orchestration]
 enabled = true
 max_tasks = 20
-"#;
+";
         let result = migrate_planner_model_to_provider(input).expect("migration must succeed");
         assert_eq!(
             result.added_count, 0,

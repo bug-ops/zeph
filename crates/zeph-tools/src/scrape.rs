@@ -263,6 +263,7 @@ impl WebScrapeExecutor {
                 command: command.into(),
                 result,
                 duration_ms,
+                error_category: None,
             };
             logger.log(&entry).await;
         }
@@ -353,9 +354,10 @@ impl WebScrapeExecutor {
             }
 
             if !status.is_success() {
-                return Err(ToolError::Execution(std::io::Error::other(format!(
-                    "HTTP {status}",
-                ))));
+                return Err(ToolError::Http {
+                    status: status.as_u16(),
+                    message: status.canonical_reason().unwrap_or("unknown").to_owned(),
+                });
             }
 
             let bytes = resp

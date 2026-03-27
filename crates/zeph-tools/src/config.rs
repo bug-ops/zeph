@@ -215,6 +215,55 @@ impl Default for DependencyConfig {
     }
 }
 
+fn default_retry_max_attempts() -> usize {
+    2
+}
+
+fn default_retry_base_ms() -> u64 {
+    500
+}
+
+fn default_retry_max_ms() -> u64 {
+    5_000
+}
+
+fn default_retry_budget_secs() -> u64 {
+    30
+}
+
+/// Configuration for tool error retry behavior.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RetryConfig {
+    /// Maximum retry attempts for transient errors per tool call. 0 = disabled.
+    #[serde(default = "default_retry_max_attempts")]
+    pub max_attempts: usize,
+    /// Base delay (ms) for exponential backoff.
+    #[serde(default = "default_retry_base_ms")]
+    pub base_ms: u64,
+    /// Maximum delay cap (ms) for exponential backoff.
+    #[serde(default = "default_retry_max_ms")]
+    pub max_ms: u64,
+    /// Maximum wall-clock time (seconds) for all retries of a single tool call. 0 = unlimited.
+    #[serde(default = "default_retry_budget_secs")]
+    pub budget_secs: u64,
+    /// Provider name from `[[llm.providers]]` for LLM-based parameter reformatting on
+    /// `InvalidParameters`/`TypeMismatch` errors. Empty string = disabled.
+    #[serde(default)]
+    pub parameter_reformat_provider: String,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_retry_max_attempts(),
+            base_ms: default_retry_base_ms(),
+            max_ms: default_retry_max_ms(),
+            budget_secs: default_retry_budget_secs(),
+            parameter_reformat_provider: String::new(),
+        }
+    }
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -242,6 +291,8 @@ pub struct ToolsConfig {
     pub tafc: TafcConfig,
     #[serde(default)]
     pub dependencies: DependencyConfig,
+    #[serde(default)]
+    pub retry: RetryConfig,
     /// Declarative policy compiler for tool call authorization.
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
@@ -305,6 +356,7 @@ impl Default for ToolsConfig {
             result_cache: ResultCacheConfig::default(),
             tafc: TafcConfig::default(),
             dependencies: DependencyConfig::default(),
+            retry: RetryConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
         }

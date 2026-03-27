@@ -100,6 +100,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         command: truncate_params(&call.params),
                         result: AuditResult::Success,
                         duration_ms: 0,
+                        error_category: None,
                     };
                     audit.log(&entry).await;
                 }
@@ -116,6 +117,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                             reason: trace.clone(),
                         },
                         duration_ms: 0,
+                        error_category: Some("policy_blocked".to_owned()),
                     };
                     audit.log(&entry).await;
                 }
