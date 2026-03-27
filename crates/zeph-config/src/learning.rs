@@ -82,10 +82,13 @@ pub enum DetectorMode {
     /// `ExplicitRejection` and `SelfCorrection` bypass the judge (confidence >= `adaptive_high`),
     /// while `AlternativeRequest`, `Repetition`, and regex misses go through it.
     Judge,
-    /// ML model-based detection via `ClassifierBackend`.
+    /// ML model-backed feedback classification via `LlmClassifier`.
     ///
-    /// Requires `classifiers.enabled = true` and a non-empty `detector_model` field.
-    /// When the backend is unavailable, falls back to regex with a warning.
+    /// Uses the provider named in `feedback_provider` (or the primary provider if empty).
+    /// Shares the same adaptive thresholds and rate limiter as `Judge` mode.
+    /// Returns `JudgeVerdict` directly, preserving `kind` and `reasoning` metadata.
+    ///
+    /// Falls back to regex-only if the provider cannot be resolved — never fails startup.
     Model,
 }
 
@@ -117,12 +120,12 @@ pub struct LearningConfig {
     /// Model for the judge detector (e.g. "claude-sonnet-4-6"). Empty = use primary provider.
     #[serde(default)]
     pub judge_model: String,
-    /// `HuggingFace` repo ID for the ML correction detector when `detector_mode = "model"`.
+    /// Provider name from `[[llm.providers]]` for `detector_mode = "model"` (`LlmClassifier`).
     ///
-    /// Must be non-empty when `detector_mode = "model"` and `classifiers.enabled = true`.
-    /// When empty or classifiers are disabled, bootstrap falls back to regex with a warning.
+    /// Empty = use the primary provider. Named but not found in registry = log warning,
+    /// degrade to regex-only. Never fails startup.
     #[serde(default)]
-    pub detector_model: String,
+    pub feedback_provider: String,
     /// Regex confidence below this value is treated as "not a correction" — judge not invoked.
     #[serde(default = "default_judge_adaptive_low")]
     pub judge_adaptive_low: f32,
@@ -158,7 +161,7 @@ impl Default for LearningConfig {
             correction_confidence_threshold: default_correction_confidence_threshold(),
             detector_mode: DetectorMode::default(),
             judge_model: String::new(),
-            detector_model: String::new(),
+            feedback_provider: String::new(),
             judge_adaptive_low: default_judge_adaptive_low(),
             judge_adaptive_high: default_judge_adaptive_high(),
             correction_recall_limit: default_correction_recall_limit(),
@@ -176,29 +179,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detector_mode_model_serde_roundtrip() {
-        let toml = r#"
-            enabled = true
-            detector_mode = "model"
-            detector_model = "some/model"
-        "#;
-        let config: LearningConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.detector_mode, DetectorMode::Model);
-        assert_eq!(config.detector_model, "some/model");
-        assert!(config.enabled);
+    fn detector_mode_default_is_regex() {
+        assert_eq!(DetectorMode::default(), DetectorMode::Regex);
     }
 
     #[test]
-    fn detector_mode_defaults_to_regex() {
-        let config = LearningConfig::default();
-        assert_eq!(config.detector_mode, DetectorMode::Regex);
-        assert!(config.detector_model.is_empty());
+    fn detector_mode_serde_roundtrip() {
+        for (mode, expected_str) in [
+            (DetectorMode::Regex, "\"regex\""),
+            (DetectorMode::Judge, "\"judge\""),
+            (DetectorMode::Model, "\"model\""),
+        ] {
+            let serialized = serde_json::to_string(&mode).unwrap();
+            assert_eq!(serialized, expected_str, "serialize {mode:?}");
+            let deserialized: DetectorMode = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(deserialized, mode, "deserialize {mode:?}");
+        }
     }
 
     #[test]
-    fn detector_mode_judge_roundtrip() {
-        let toml = r#"detector_mode = "judge""#;
-        let config: LearningConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.detector_mode, DetectorMode::Judge);
+    fn learning_config_default_detector_mode_is_regex() {
+        let cfg = LearningConfig::default();
+        assert_eq!(cfg.detector_mode, DetectorMode::Regex);
+    }
+
+    #[test]
+    fn learning_config_default_feedback_provider_is_empty() {
+        let cfg = LearningConfig::default();
+        assert!(cfg.feedback_provider.is_empty());
+    }
+
+    #[test]
+    fn learning_config_deserialize_model_mode() {
+        let toml = r#"detector_mode = "model"
+feedback_provider = "fast""#;
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.detector_mode, DetectorMode::Model);
+        assert_eq!(cfg.feedback_provider, "fast");
+    }
+
+    #[test]
+    fn learning_config_deserialize_empty_feedback_provider() {
+        let toml = r#"detector_mode = "model""#;
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.detector_mode, DetectorMode::Model);
+        assert!(
+            cfg.feedback_provider.is_empty(),
+            "empty feedback_provider must default to empty string (fallback to primary)"
+        );
+    }
+
+    #[test]
+    fn learning_config_deserialize_empty_section_uses_defaults() {
+        let cfg: LearningConfig = toml::from_str("").unwrap();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.min_failures, 3);
+        assert_eq!(cfg.detector_mode, DetectorMode::Regex);
+        assert!(cfg.feedback_provider.is_empty());
     }
 }

@@ -10,14 +10,22 @@ pub(crate) enum ClassifiersCommand {
     /// Model files (~100-280MB) are stored in the `HuggingFace` Hub cache directory
     /// (`~/.cache/huggingface/hub/` by default).
     Download {
-        /// `HuggingFace` repo ID of the injection model.
-        /// Defaults to the value from `[classifiers].injection_model` in config.
+        /// `HuggingFace` repo ID override. When set, downloads exactly this model.
+        /// When omitted, uses the value from `[classifiers].*_model` in config (see `--model`).
         #[arg(long, value_name = "REPO_ID")]
         repo: Option<String>,
 
         /// Download timeout in seconds (default: 600).
         #[arg(long, default_value = "600")]
         timeout_secs: u64,
+
+        /// Which model to download: "injection" (default), "pii", or "all".
+        ///
+        /// "injection" downloads `classifiers.injection_model`.
+        /// "pii" downloads `classifiers.pii_model`.
+        /// "all" downloads both.
+        #[arg(long, default_value = "all")]
+        model: String,
     },
 }
 
@@ -32,18 +40,37 @@ pub(crate) fn handle_classifiers_command(
     config: &zeph_core::config::Config,
 ) -> anyhow::Result<()> {
     match cmd {
-        ClassifiersCommand::Download { repo, timeout_secs } => {
-            let repo_id = repo
-                .as_deref()
-                .unwrap_or(&config.classifiers.injection_model);
+        ClassifiersCommand::Download {
+            repo,
+            timeout_secs,
+            model,
+        } => {
             let timeout = std::time::Duration::from_secs(*timeout_secs);
+            let download_injection = matches!(model.as_str(), "injection" | "all");
+            let download_pii = matches!(model.as_str(), "pii" | "all");
 
-            eprintln!("Downloading classifier model: {repo_id}");
-            eprintln!("This may take several minutes on first run (~100-280 MB).");
+            if !download_injection && !download_pii {
+                anyhow::bail!("Unknown model type '{model}'. Use 'injection', 'pii', or 'all'.");
+            }
 
-            zeph_llm::classifier::candle::download_model(repo_id, timeout)?;
+            if download_injection {
+                let repo_id = repo
+                    .as_deref()
+                    .unwrap_or(&config.classifiers.injection_model);
+                eprintln!("Downloading injection model: {repo_id}");
+                eprintln!("This may take several minutes on first run (~100-280 MB).");
+                zeph_llm::classifier::candle::download_model(repo_id, timeout)?;
+                eprintln!("Injection model cached: {repo_id}");
+            }
 
-            eprintln!("Model cached successfully: {repo_id}");
+            if download_pii {
+                let pii_repo_id = repo.as_deref().unwrap_or(&config.classifiers.pii_model);
+                eprintln!("Downloading PII model: {pii_repo_id}");
+                eprintln!("This may take several minutes on first run (~280 MB).");
+                zeph_llm::classifier::candle_pii::download_pii_model(pii_repo_id, timeout)?;
+                eprintln!("PII model cached: {pii_repo_id}");
+            }
+
             Ok(())
         }
     }

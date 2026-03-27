@@ -402,18 +402,17 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach an ML classifier backend for feedback/correction detection.
+    /// Attach an `LlmClassifier` for `detector_mode = "model"` feedback detection.
     ///
-    /// Used when `detector_mode = "model"` in config. The backend is invoked in
-    /// `detect_and_record_corrections()` before regex as the primary signal source.
-    /// On error or when this is `None`, the agent falls back to regex detection.
-    #[cfg(feature = "classifiers")]
+    /// When attached, the model-based path is used instead of `JudgeDetector`.
+    /// The classifier resolves the provider at construction time — if the provider
+    /// is unavailable, do not call this method (fallback to regex-only).
     #[must_use]
-    pub fn with_feedback_classifier(
+    pub fn with_llm_classifier(
         mut self,
-        backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
+        classifier: zeph_llm::classifier::llm::LlmClassifier,
     ) -> Self {
-        self.feedback.model_backend = Some(backend);
+        self.feedback.llm_classifier = Some(classifier);
         self
     }
 
@@ -599,6 +598,27 @@ impl<C: Channel> Agent<C> {
             ),
         );
         self.security.sanitizer = old.with_classifier(backend, timeout_ms, threshold);
+        self
+    }
+
+    /// Attach a PII detector backend to the sanitizer.
+    ///
+    /// When attached, `detect_pii()` is called on outgoing assistant responses when
+    /// `classifiers.pii_enabled = true`. On error it falls back to returning no spans.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_pii_detector(
+        mut self,
+        detector: std::sync::Arc<dyn zeph_llm::classifier::PiiDetector>,
+        threshold: f32,
+    ) -> Self {
+        let old = std::mem::replace(
+            &mut self.security.sanitizer,
+            zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+        );
+        self.security.sanitizer = old.with_pii_detector(detector, threshold);
         self
     }
 

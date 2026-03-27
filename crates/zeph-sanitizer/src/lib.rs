@@ -266,6 +266,10 @@ pub struct ContentSanitizer {
     classifier_timeout_ms: u64,
     #[cfg(feature = "classifiers")]
     injection_threshold: f32,
+    #[cfg(feature = "classifiers")]
+    pii_detector: Option<std::sync::Arc<dyn zeph_llm::classifier::PiiDetector>>,
+    #[cfg(feature = "classifiers")]
+    pii_threshold: f32,
 }
 
 impl ContentSanitizer {
@@ -285,6 +289,10 @@ impl ContentSanitizer {
             classifier_timeout_ms: 5000,
             #[cfg(feature = "classifiers")]
             injection_threshold: 0.8,
+            #[cfg(feature = "classifiers")]
+            pii_detector: None,
+            #[cfg(feature = "classifiers")]
+            pii_threshold: 0.75,
         }
     }
 
@@ -304,6 +312,43 @@ impl ContentSanitizer {
         self.classifier_timeout_ms = timeout_ms;
         self.injection_threshold = threshold;
         self
+    }
+
+    /// Attach a PII detector backend for NER-based PII detection.
+    ///
+    /// When attached, `detect_pii()` calls this backend in addition to the regex `PiiFilter`.
+    /// Both results are unioned. The existing regex path is unchanged.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_pii_detector(
+        mut self,
+        detector: std::sync::Arc<dyn zeph_llm::classifier::PiiDetector>,
+        threshold: f32,
+    ) -> Self {
+        self.pii_detector = Some(detector);
+        self.pii_threshold = threshold;
+        self
+    }
+
+    /// Run NER-based PII detection on `text`.
+    ///
+    /// Returns an empty result when no `pii_detector` is attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LlmError` if the underlying model fails.
+    #[cfg(feature = "classifiers")]
+    pub async fn detect_pii(
+        &self,
+        text: &str,
+    ) -> Result<zeph_llm::classifier::PiiResult, zeph_llm::LlmError> {
+        match &self.pii_detector {
+            Some(detector) => detector.detect_pii(text).await,
+            None => Ok(zeph_llm::classifier::PiiResult {
+                spans: vec![],
+                has_pii: false,
+            }),
+        }
     }
 
     /// Returns `true` when the sanitizer is active (i.e. `enabled = true` in config).
@@ -1505,7 +1550,6 @@ mod tests {
                         label: label.to_owned(),
                         score,
                         is_positive,
-                        spans: vec![],
                     },
                 }
             }
@@ -1525,7 +1569,6 @@ mod tests {
                         label,
                         score,
                         is_positive,
-                        spans: vec![],
                     })
                 })
             }
@@ -1641,7 +1684,6 @@ mod tests {
                             label: "INJECTION".into(),
                             score: 0.99,
                             is_positive: true,
-                            spans: vec![],
                         })
                     })
                 }

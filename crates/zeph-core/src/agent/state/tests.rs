@@ -94,8 +94,7 @@ fn make_feedback_state() -> FeedbackState {
     FeedbackState {
         detector: FeedbackDetector::new(0.6),
         judge: None,
-        #[cfg(feature = "classifiers")]
-        model_backend: None,
+        llm_classifier: None,
     }
 }
 

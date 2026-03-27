@@ -480,15 +480,14 @@ fn appbuilder_qdrant_ops_valid_url_succeeds() {
     assert!(result.is_ok(), "QdrantOps::new with valid URL must succeed");
 }
 
-// ── validate_detector_model_config ───────────────────────────────────────────
+// ── build_feedback_classifier ─────────────────────────────────────────────────
+//
+// Full integration tests require a live provider (Ollama/OpenAI). These tests only verify
+// the early-return behavior when `detector_mode != Model` — no LLM call is made.
 
-fn make_builder_with_detector_mode(
-    mode: crate::config::DetectorMode,
-    detector_model: &str,
-) -> AppBuilder {
+fn make_builder_with_detector_mode(mode: crate::config::DetectorMode) -> AppBuilder {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.skills.learning.detector_mode = mode;
-    config.skills.learning.detector_model = detector_model.to_owned();
     AppBuilder {
         config,
         config_path: PathBuf::from("/nonexistent/config.toml"),
@@ -498,26 +497,32 @@ fn make_builder_with_detector_mode(
     }
 }
 
-#[test]
-fn validate_detector_model_model_mode_non_empty_ok() {
-    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Model, "some/model-repo");
-    assert!(b.validate_detector_model_config());
+fn make_mock_primary() -> zeph_llm::any::AnyProvider {
+    zeph_llm::any::AnyProvider::Ollama(zeph_llm::ollama::OllamaProvider::new(
+        "http://localhost:11434",
+        "llama3".into(),
+        String::new(),
+    ))
 }
 
 #[test]
-fn validate_detector_model_model_mode_empty_returns_false() {
-    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Model, "");
-    assert!(!b.validate_detector_model_config());
+fn build_feedback_classifier_regex_mode_returns_none() {
+    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Regex);
+    let primary = make_mock_primary();
+    let result = b.build_feedback_classifier(&primary);
+    assert!(
+        result.is_none(),
+        "Regex mode must not build feedback classifier"
+    );
 }
 
 #[test]
-fn validate_detector_model_regex_mode_always_ok() {
-    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Regex, "");
-    assert!(b.validate_detector_model_config());
-}
-
-#[test]
-fn validate_detector_model_judge_mode_always_ok() {
-    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Judge, "");
-    assert!(b.validate_detector_model_config());
+fn build_feedback_classifier_judge_mode_returns_none() {
+    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Judge);
+    let primary = make_mock_primary();
+    let result = b.build_feedback_classifier(&primary);
+    assert!(
+        result.is_none(),
+        "Judge mode must not build feedback classifier"
+    );
 }

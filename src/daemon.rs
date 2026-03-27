@@ -368,10 +368,19 @@ pub(crate) async fn run_daemon(
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     #[cfg(feature = "guardrail")]
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
+    #[cfg(feature = "classifiers")]
+    let agent = agent_setup::apply_injection_classifier(agent, config);
+    #[cfg(feature = "classifiers")]
+    let agent = agent_setup::apply_pii_classifier(agent, config);
 
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {
         agent.with_judge_provider(jp)
+    } else {
+        agent
+    };
+    let agent = if let Some(fc) = app.build_feedback_classifier(&provider) {
+        agent.with_llm_classifier(fc)
     } else {
         agent
     };

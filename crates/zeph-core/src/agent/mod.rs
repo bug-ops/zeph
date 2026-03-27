@@ -291,8 +291,7 @@ impl<C: Channel> Agent<C> {
             feedback: FeedbackState {
                 detector: feedback_detector::FeedbackDetector::new(0.6),
                 judge: None,
-                #[cfg(feature = "classifiers")]
-                model_backend: None,
+                llm_classifier: None,
             },
             debug_state: DebugState {
                 debug_dumper: None,
@@ -2892,8 +2891,9 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    /// Spawn a background task to evaluate the user message with the LLM judge and store the
-    /// correction result. Non-blocking: the task runs independently of the response pipeline.
+    /// Spawn a background task to evaluate the user message with the LLM judge (or `LlmClassifier`)
+    /// and store the correction result. Non-blocking: the task runs independently of the response
+    /// pipeline.
     ///
     /// # Notes
     ///
@@ -2904,11 +2904,6 @@ impl<C: Channel> Agent<C> {
         trimmed: &str,
         conv_id: Option<zeph_memory::ConversationId>,
     ) {
-        let judge_provider = self
-            .providers
-            .judge_provider
-            .clone()
-            .unwrap_or_else(|| self.provider.clone());
         let assistant_snippet = self.last_assistant_response();
         let user_msg_owned = trimmed.to_owned();
         let memory_arc = self.memory_state.memory.clone();
@@ -2925,79 +2920,102 @@ impl<C: Channel> Agent<C> {
             .as_ref()
             .map_or(0.6, |c| c.correction_confidence_threshold);
 
-        tokio::spawn(async move {
-            match feedback_detector::JudgeDetector::evaluate(
-                &judge_provider,
-                &user_msg_owned,
-                &assistant_snippet,
-                confidence_threshold,
-            )
-            .await
-            {
-                Ok(verdict) => {
-                    if let Some(signal) = verdict.into_signal(&user_msg_owned) {
-                        // Self-corrections (user corrects their own statement) must not
-                        // penalize skills. The judge path has no record_skill_outcomes()
-                        // call today, but this guard mirrors the regex path to make the
-                        // intent explicit and prevent future regressions if parity is added.
-                        let is_self_correction =
-                            signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
-                        tracing::info!(
-                            kind = signal.kind.as_str(),
-                            confidence = signal.confidence,
-                            source = "judge",
-                            is_self_correction,
-                            "correction signal detected"
-                        );
-                        if let Some(memory) = memory_arc {
-                            let correction_text = context::truncate_chars(&user_msg_owned, 500);
-                            match memory
-                                .sqlite()
-                                .store_user_correction(
-                                    conv_id_bg.map(|c| c.0),
-                                    &assistant_snippet,
-                                    &correction_text,
-                                    if skill_name.is_empty() {
-                                        None
-                                    } else {
-                                        Some(skill_name.as_str())
-                                    },
-                                    signal.kind.as_str(),
-                                )
-                                .await
-                            {
-                                Ok(correction_id) => {
-                                    if let Err(e) = memory
-                                        .store_correction_embedding(correction_id, &correction_text)
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            "failed to store correction embedding: {e:#}"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!("failed to store judge correction: {e:#}");
-                                }
-                            }
+        if let Some(llm_classifier) = self.feedback.llm_classifier.clone() {
+            // DetectorMode::Model: clone the classifier (cheap — it holds Arc<AnyProvider>).
+            let user_msg = user_msg_owned.clone();
+            let assistant = assistant_snippet.clone();
+            let memory_arc2 = memory_arc.clone();
+            let skill_name2 = skill_name.clone();
+            tokio::spawn(async move {
+                match llm_classifier
+                    .classify_feedback(&user_msg, &assistant, confidence_threshold)
+                    .await
+                {
+                    Ok(verdict) => {
+                        if let Some(signal) = feedback_verdict_into_signal(&verdict, &user_msg) {
+                            let is_self_correction =
+                                signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
+                            tracing::info!(
+                                kind = signal.kind.as_str(),
+                                confidence = signal.confidence,
+                                source = "llm-classifier",
+                                is_self_correction,
+                                "correction signal detected"
+                            );
+                            store_correction_in_memory(
+                                memory_arc2,
+                                conv_id_bg,
+                                &assistant,
+                                &user_msg,
+                                skill_name2,
+                                signal.kind.as_str(),
+                            )
+                            .await;
                         }
                     }
+                    Err(e) => {
+                        tracing::warn!("llm-classifier failed: {e:#}");
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("judge detector failed: {e:#}");
+            });
+        } else {
+            // DetectorMode::Judge (legacy path).
+            let judge_provider = self
+                .providers
+                .judge_provider
+                .clone()
+                .unwrap_or_else(|| self.provider.clone());
+            let user_msg = user_msg_owned.clone();
+            let assistant = assistant_snippet.clone();
+            tokio::spawn(async move {
+                match feedback_detector::JudgeDetector::evaluate(
+                    &judge_provider,
+                    &user_msg,
+                    &assistant,
+                    confidence_threshold,
+                )
+                .await
+                {
+                    Ok(verdict) => {
+                        if let Some(signal) = verdict.into_signal(&user_msg) {
+                            // Self-corrections (user corrects their own statement) must not
+                            // penalize skills. The judge path has no record_skill_outcomes()
+                            // call today, but this guard mirrors the regex path to make the
+                            // intent explicit and prevent future regressions if parity is added.
+                            let is_self_correction =
+                                signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
+                            tracing::info!(
+                                kind = signal.kind.as_str(),
+                                confidence = signal.confidence,
+                                source = "judge",
+                                is_self_correction,
+                                "correction signal detected"
+                            );
+                            store_correction_in_memory(
+                                memory_arc,
+                                conv_id_bg,
+                                &assistant,
+                                &user_msg,
+                                skill_name,
+                                signal.kind.as_str(),
+                            )
+                            .await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("judge detector failed: {e:#}");
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     /// Detect implicit corrections in the user's message and record them in the learning engine.
     ///
-    /// Detection strategy depends on `detector_mode`:
-    /// - `Regex` (default): pattern-matching only, no LLM calls.
-    /// - `Judge`: regex first; if borderline, LLM judge runs in background task.
-    /// - `Model`: ML classifier runs first; falls back to regex on error or missing backend.
-    ///   When `detector_mode = Model` but no backend is attached (feature disabled or
-    ///   `classifiers.enabled = false`), emits a `warn!()` and falls back to regex.
+    /// Uses regex-based `FeedbackDetector` first. If a `JudgeDetector` is configured and the
+    /// regex result is borderline, the LLM judge runs in a background task (non-blocking).
+    /// When `DetectorMode::Model` and an `LlmClassifier` is attached, the LLM classifier is
+    /// used instead of `JudgeDetector`, sharing the same adaptive thresholds and rate limiter.
     #[allow(clippy::too_many_lines)]
     async fn detect_and_record_corrections(
         &mut self,
@@ -3021,64 +3039,55 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.content.as_str())
             .collect();
 
-        // Model mode: run ML classifier first; fall back to regex on error / missing backend.
-        #[cfg(feature = "classifiers")]
-        let model_signal: Option<feedback_detector::CorrectionSignal> = {
-            use crate::config::DetectorMode;
-            let is_model_mode = self
+        let regex_signal = self
+            .feedback
+            .detector
+            .detect(trimmed, &previous_user_messages);
+
+        // Judge/Model mode: invoke LLM in background if regex is borderline or missed.
+        //
+        // The LLM call is decoupled from the response pipeline — it records the
+        // correction asynchronously via tokio::spawn and returns None immediately
+        // so the user response is not blocked.
+        //
+        // TODO(I3): JoinHandles are not tracked — outstanding tasks may be aborted
+        // on runtime shutdown before store_user_correction completes. This is
+        // acceptable for the learning subsystem at MVP. Future: collect handles in
+        // Agent and drain on graceful shutdown.
+        // Check rate limit synchronously before deciding to spawn.
+        // The feedback.judge is &mut self so check_rate_limit() can update call_times.
+        //
+        // DetectorMode::Model reuses the judge's adaptive thresholds + rate limiter.
+        // If llm_classifier is present but judge is None, create a temporary JudgeDetector
+        // for threshold/rate-limit checking only (not for actual LLM calls).
+        let judge_should_run = if self.feedback.llm_classifier.is_some() {
+            // Model mode: use judge thresholds + rate limiter for gating.
+            let adaptive_low = self
                 .learning_engine
                 .config
                 .as_ref()
-                .is_some_and(|c| c.detector_mode == DetectorMode::Model);
-            if is_model_mode {
-                if let Some(backend) = self.feedback.model_backend.as_ref() {
-                    let threshold = self.feedback.detector.confidence_threshold();
-                    feedback_detector::FeedbackDetector::detect_with_model(
-                        backend.as_ref(),
-                        trimmed,
-                        threshold,
-                    )
-                    .await
-                } else {
-                    tracing::warn!(
-                        "detector_mode=model but no classifier backend attached — falling back to regex"
-                    );
-                    None
-                }
-            } else {
-                None
-            }
-        };
-        #[cfg(not(feature = "classifiers"))]
-        let model_signal: Option<feedback_detector::CorrectionSignal> = None;
-
-        let regex_signal = if model_signal.is_none() {
-            self.feedback
-                .detector
-                .detect(trimmed, &previous_user_messages)
-        } else {
-            None
-        };
-
-        // When model produced a signal, use it directly (no judge).
-        // When regex produced a signal, optionally run judge for borderline cases.
-        let (signal, signal_source) = if let Some(ms) = model_signal {
-            (Some(ms), "model")
-        } else {
-            // Judge mode: invoke LLM in background if regex is borderline or missed.
-            //
-            // The judge call is decoupled from the response pipeline — it records the
-            // correction asynchronously via tokio::spawn and returns None immediately
-            // so the user response is not blocked.
-            //
-            // TODO(I3): JoinHandles are not tracked — outstanding tasks may be aborted
-            // on runtime shutdown before store_user_correction completes. This is
-            // acceptable for the learning subsystem at MVP. Future: collect handles in
-            // Agent and drain on graceful shutdown.
-            // Check rate limit synchronously before deciding to spawn.
-            // The feedback.judge is &mut self so check_rate_limit() can update call_times.
-            let judge_should_run = self
+                .map_or(0.5, |c| c.judge_adaptive_low);
+            let adaptive_high = self
+                .learning_engine
+                .config
+                .as_ref()
+                .map_or(0.8, |c| c.judge_adaptive_high);
+            let should_invoke = self
                 .feedback
+                .judge
+                .get_or_insert_with(|| {
+                    feedback_detector::JudgeDetector::new(adaptive_low, adaptive_high)
+                })
+                .should_invoke(regex_signal.as_ref());
+            should_invoke
+                && self
+                    .feedback
+                    .judge
+                    .as_mut()
+                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit)
+        } else {
+            // Judge mode (or regex-only when neither judge nor llm_classifier is set).
+            self.feedback
                 .judge
                 .as_ref()
                 .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
@@ -3086,15 +3095,15 @@ impl<C: Channel> Agent<C> {
                     .feedback
                     .judge
                     .as_mut() // lgtm[rust/cleartext-logging]
-                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit);
+                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit)
+        };
 
-            if judge_should_run {
-                self.spawn_judge_correction_check(trimmed, conv_id);
-                // Judge runs in background — return None so the response pipeline continues.
-                (None, "judge")
-            } else {
-                (regex_signal, "regex")
-            }
+        let (signal, signal_source) = if judge_should_run {
+            self.spawn_judge_correction_check(trimmed, conv_id);
+            // Judge runs in background — return None so the response pipeline continues.
+            (None, "judge")
+        } else {
+            (regex_signal, "regex")
         };
 
         let Some(signal) = signal else { return };
@@ -4494,6 +4503,78 @@ pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
     while !*rx.borrow_and_update() {
         if rx.changed().await.is_err() {
             std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Convert a `FeedbackVerdict` (from `LlmClassifier`) into a `CorrectionSignal`.
+///
+/// Mirrors `JudgeVerdict::into_signal` to keep both code paths symmetric.
+fn feedback_verdict_into_signal(
+    verdict: &zeph_llm::classifier::llm::FeedbackVerdict,
+    user_message: &str,
+) -> Option<feedback_detector::CorrectionSignal> {
+    if !verdict.is_correction {
+        return None;
+    }
+    let confidence = verdict.confidence.clamp(0.0, 1.0);
+    let kind_raw = verdict.kind.trim().to_lowercase().replace(' ', "_");
+    let kind = match kind_raw.as_str() {
+        "explicit_rejection" => feedback_detector::CorrectionKind::ExplicitRejection,
+        "alternative_request" => feedback_detector::CorrectionKind::AlternativeRequest,
+        "repetition" => feedback_detector::CorrectionKind::Repetition,
+        "self_correction" => feedback_detector::CorrectionKind::SelfCorrection,
+        other => {
+            tracing::warn!(
+                kind = other,
+                "llm-classifier returned unknown correction kind, discarding"
+            );
+            return None;
+        }
+    };
+    Some(feedback_detector::CorrectionSignal {
+        confidence,
+        kind,
+        feedback_text: user_message.to_owned(),
+    })
+}
+
+/// Store a correction record in memory (shared by judge and llm-classifier paths).
+async fn store_correction_in_memory(
+    memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+    conv_id: Option<zeph_memory::ConversationId>,
+    assistant_snippet: &str,
+    user_msg: &str,
+    skill_name: String,
+    kind_str: &str,
+) {
+    let Some(mem) = memory else { return };
+    let correction_text = context::truncate_chars(user_msg, 500);
+    match mem
+        .sqlite()
+        .store_user_correction(
+            conv_id.map(|c| c.0),
+            assistant_snippet,
+            &correction_text,
+            if skill_name.is_empty() {
+                None
+            } else {
+                Some(skill_name.as_str())
+            },
+            kind_str,
+        )
+        .await
+    {
+        Ok(correction_id) => {
+            if let Err(e) = mem
+                .store_correction_embedding(correction_id, &correction_text)
+                .await
+            {
+                tracing::warn!("failed to store correction embedding: {e:#}");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to store judge correction: {e:#}");
         }
     }
 }

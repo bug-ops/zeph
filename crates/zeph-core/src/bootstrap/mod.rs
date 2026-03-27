@@ -560,24 +560,55 @@ impl AppBuilder {
         }
     }
 
-    /// Validate `detector_model` config when `detector_mode = "model"`.
+    /// Build an `LlmClassifier` for `detector_mode = "model"` feedback detection.
     ///
-    /// Emits a `tracing::warn` when the field is empty so users know the fallback is active.
-    /// Returns `true` when the model field is non-empty (configuration is valid).
-    pub fn validate_detector_model_config(&self) -> bool {
+    /// Resolves `feedback_provider` from `[[llm.providers]]` registry.
+    /// Pass the session's primary provider as `primary` for fallback when `feedback_provider`
+    /// is empty. Returns `None` with a warning on resolution failure — never fails startup.
+    pub fn build_feedback_classifier(
+        &self,
+        primary: &AnyProvider,
+    ) -> Option<zeph_llm::classifier::llm::LlmClassifier> {
         use crate::config::DetectorMode;
         let learning = &self.config.skills.learning;
         if learning.detector_mode != DetectorMode::Model {
-            return true;
+            return None;
         }
-        if learning.detector_model.is_empty() {
+        let provider = if learning.feedback_provider.is_empty() {
+            tracing::debug!("feedback_provider empty — using primary provider for LlmClassifier");
+            Some(primary.clone())
+        } else {
+            match crate::bootstrap::provider::create_named_provider(
+                &learning.feedback_provider,
+                &self.config,
+            ) {
+                Ok(p) => {
+                    tracing::info!(
+                        provider = %learning.feedback_provider,
+                        "LlmClassifier feedback provider configured"
+                    );
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %learning.feedback_provider,
+                        error = %e,
+                        "feedback_provider not found in registry, degrading to regex-only"
+                    );
+                    None
+                }
+            }
+        };
+        if let Some(p) = provider {
+            Some(zeph_llm::classifier::llm::LlmClassifier::new(
+                std::sync::Arc::new(p),
+            ))
+        } else {
             tracing::warn!(
-                "detector_mode=model but detector_model is empty — \
-                 feedback classifier will use the ner_model default or fall back to regex"
+                "detector_mode=model but no provider available, degrading to regex-only"
             );
-            return false;
+            None
         }
-        true
     }
 
     /// Build a dedicated provider for compaction probe LLM calls.

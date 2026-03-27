@@ -119,6 +119,9 @@ struct SharedAgentDeps {
     // Optional runtime providers (contain HTTP client pools; excluded from session_config)
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     judge_provider: Option<zeph_llm::any::AnyProvider>,
+    feedback_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
+    #[cfg(feature = "classifiers")]
+    classifiers_config: zeph_core::config::ClassifiersConfig,
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
     quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
@@ -416,6 +419,7 @@ async fn build_acp_deps(
     };
 
     let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
+    let feedback_classifier = app.build_feedback_classifier(&provider);
 
     let deps = SharedAgentDeps {
         provider,
@@ -439,6 +443,9 @@ async fn build_acp_deps(
         mcp_config: config.mcp.clone(),
         summary_provider,
         judge_provider: app.build_judge_provider(),
+        feedback_classifier,
+        #[cfg(feature = "classifiers")]
+        classifiers_config: config.classifiers.clone(),
         probe_provider: app.build_probe_provider(),
         planner_provider: app.build_planner_provider(),
         quarantine_provider: app.build_quarantine_provider(),
@@ -527,6 +534,9 @@ async fn spawn_acp_agent(
     let mcp_config = d.mcp_config.clone();
     let summary_provider = d.summary_provider.clone();
     let judge_provider = d.judge_provider.clone();
+    let feedback_classifier = d.feedback_classifier.clone();
+    #[cfg(feature = "classifiers")]
+    let classifiers_config = d.classifiers_config.clone();
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
@@ -719,6 +729,9 @@ async fn spawn_acp_agent(
     if let Some(jp) = judge_provider {
         agent = agent.with_judge_provider(jp);
     }
+    if let Some(fc) = feedback_classifier {
+        agent = agent.with_llm_classifier(fc);
+    }
 
     if let Some(pp) = probe_provider {
         agent = agent.with_probe_provider(pp);
@@ -732,6 +745,11 @@ async fn spawn_acp_agent(
     #[cfg(feature = "guardrail")]
     {
         agent = agent_setup::apply_guardrail(agent, guardrail_provider);
+    }
+    #[cfg(feature = "classifiers")]
+    {
+        agent = agent_setup::apply_injection_classifier_with_cfg(agent, &classifiers_config);
+        agent = agent_setup::apply_pii_classifier_with_cfg(agent, &classifiers_config);
     }
 
     if debug_config.enabled {
