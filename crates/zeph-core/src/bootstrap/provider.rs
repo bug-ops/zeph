@@ -204,7 +204,7 @@ pub fn select_device(
 
 #[cfg(feature = "candle")]
 fn build_candle_provider(
-    source: zeph_llm::candle_provider::loader::ModelSource,
+    source: &zeph_llm::candle_provider::loader::ModelSource,
     candle_cfg: &crate::config::CandleConfig,
     device_pref: &str,
 ) -> Result<AnyProvider, BootstrapError> {
@@ -221,7 +221,7 @@ fn build_candle_provider(
     };
     let device = select_device(device_pref)?;
     zeph_llm::candle_provider::CandleProvider::new(
-        &source,
+        source,
         template,
         gen_config,
         candle_cfg.embedding_repo.as_deref(),
@@ -448,7 +448,7 @@ pub fn build_provider_from_entry(
                 embedding_repo: candle.embedding_repo.clone(),
                 generation: candle.generation.clone(),
             };
-            build_candle_provider(source, &candle_cfg_adapter, &candle.device)
+            build_candle_provider(&source, &candle_cfg_adapter, &candle.device)
         }
         #[cfg(not(feature = "candle"))]
         ProviderKind::Candle => Err(BootstrapError::Provider(
