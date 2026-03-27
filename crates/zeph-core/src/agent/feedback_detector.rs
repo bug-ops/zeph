@@ -392,6 +392,7 @@ impl FeedbackDetector {
     }
 
     /// Return the configured confidence threshold.
+    #[cfg(feature = "classifiers")]
     #[must_use]
     pub fn confidence_threshold(&self) -> f32 {
         self.confidence_threshold
