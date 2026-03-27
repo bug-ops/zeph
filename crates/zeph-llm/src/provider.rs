@@ -1458,4 +1458,28 @@ mod tests {
             "HashMap<u32, u32>"
         );
     }
+
+    // Regression test for #2257: `MessagePart::Summary` must serialize to the
+    // internally-tagged format `{"kind":"summary","text":"..."}` and round-trip correctly.
+    #[test]
+    fn summary_roundtrip() {
+        let part = MessagePart::Summary {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&part).expect("serialization must not fail");
+        assert!(
+            json.contains("\"kind\":\"summary\""),
+            "must use internally-tagged format, got: {json}"
+        );
+        assert!(
+            !json.contains("\"Summary\""),
+            "must not use externally-tagged format, got: {json}"
+        );
+        let decoded: MessagePart =
+            serde_json::from_str(&json).expect("deserialization must not fail");
+        match decoded {
+            MessagePart::Summary { text } => assert_eq!(text, "hello"),
+            other => panic!("expected MessagePart::Summary, got {other:?}"),
+        }
+    }
 }

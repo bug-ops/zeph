@@ -1377,3 +1377,47 @@ async fn apply_tool_pair_summaries_hides_pairs_and_inserts_summary() {
     // load_history returns all messages regardless of visibility; 3 total: 2 hidden + 1 summary.
     assert_eq!(all.len(), 3, "hidden messages must remain in DB");
 }
+
+// Regression test for #2257: `apply_tool_pair_summaries` must write parts using the
+// internally-tagged format `{"kind":"summary","text":"..."}` so that `load_history`
+// can deserialize them back to `MessagePart::Summary`.
+#[tokio::test]
+async fn apply_tool_pair_summaries_parts_deserialize_as_summary_variant() {
+    use zeph_llm::provider::MessagePart;
+
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    store
+        .apply_tool_pair_summaries(cid, &[], &["compressed tool output".to_string()])
+        .await
+        .unwrap();
+
+    let history = store.load_history(cid, 10).await.unwrap();
+    assert_eq!(history.len(), 1);
+
+    let parts = &history[0].parts;
+    assert_eq!(parts.len(), 1, "summary message must have exactly one part");
+    match &parts[0] {
+        MessagePart::Summary { text } => {
+            assert_eq!(text, "compressed tool output");
+        }
+        other => panic!("expected MessagePart::Summary, got {other:?}"),
+    }
+}
+
+// Documents that the old externally-tagged format `{"Summary":{"text":"..."}}` does NOT
+// deserialize as `Vec<MessagePart>` with the current `#[serde(tag = "kind")]` schema.
+// Records with this format written by pre-fix code will silently fall back to an empty
+// parts list via `parse_parts_json`. A migration is required to repair such rows.
+#[test]
+fn old_external_tag_summary_format_fails_to_deserialize() {
+    use zeph_llm::provider::MessagePart;
+
+    let old_json = r#"[{"Summary":{"text":"something"}}]"#;
+    let result: Result<Vec<MessagePart>, _> = serde_json::from_str(old_json);
+    assert!(
+        result.is_err(),
+        "old externally-tagged format must not deserialize with the current internally-tagged schema"
+    );
+}
