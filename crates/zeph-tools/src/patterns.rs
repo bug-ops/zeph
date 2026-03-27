@@ -37,7 +37,10 @@ pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
         r"(?i)new\s+(instructions?|directives?)\s*:",
     ),
     ("developer_mode", r"(?i)developer\s+mode"),
-    ("system_prompt_leak", r"(?i)system\s+prompt"),
+    (
+        "system_prompt_leak",
+        r"(?i)((reveal|show|print|output|display|repeat|expose|dump|leak|copy|give)\s+(me\s+)?(your\s+|the\s+|my\s+)?(full\s+|entire\s+|exact\s+|complete\s+)?system\s+prompt|what\s+(is|are|was)\s+(your\s+|the\s+)?system\s+prompt)",
+    ),
     (
         "reveal_instructions",
         r"(?i)(reveal|show|display|print)\s+your\s+(instructions?|prompts?|rules?)",

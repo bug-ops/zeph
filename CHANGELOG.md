@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(tui): MCP Tools panel and Resources widget now show per-server connection status — `connect_all()` returns `(Vec<McpTool>, Vec<ServerConnectOutcome>)` with per-server id, connected flag, tool count, and error string; `MetricsSnapshot` gains `mcp_connected_count` and `mcp_servers: Vec<McpServerStatus>`; Resources panel shows `N/M connected, K tools`; Skills panel shows per-server OK (green) / FAIL (red) rows above the tool list; `mcp_server_count` now reflects total configured servers, not just connected ones (#2277)
+- fix(skills): tighten `system_prompt_leak` pattern to require an extraction verb or interrogative before "system prompt"; eliminates false-positive WARN for user-installed skills (e.g. `mcp-generate`) whose documentation describes where MCP tool output appears in the system prompt (#2274)
 
 ## [0.17.1] - 2026-03-27
 
