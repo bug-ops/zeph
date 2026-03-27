@@ -580,10 +580,10 @@ pub(crate) fn apply_pii_ner_classifier<C: Channel>(
         return agent;
     }
     let backend = std::sync::Arc::new(zeph_llm::classifier::ner::CandleNerClassifier::new(
-        config.classifiers.ner_model.as_str(),
+        config.classifiers.pii_model.as_str(),
     ));
     tracing::info!(
-        repo_id = %config.classifiers.ner_model,
+        repo_id = %config.classifiers.pii_model,
         "NER PII classifier attached for union merge pipeline (model loads lazily on first use)"
     );
     agent.with_pii_ner_classifier(backend, config.classifiers.timeout_ms)
