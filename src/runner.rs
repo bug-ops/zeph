@@ -843,6 +843,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         )
     };
     let mcp_tools = tool_setup.mcp_tools;
+    let mcp_outcomes = tool_setup.mcp_outcomes;
     // Register MCP tool IDs so TrustGateExecutor can block ALL MCP tools for
     // Quarantined skills — not just those matching QUARANTINE_DENIED suffixes.
     {
@@ -1118,6 +1119,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
+    let agent = agent.with_mcp_server_outcomes(mcp_outcomes);
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
     let agent = agent.with_mcp_tool_rx(mcp_tool_rx);
 

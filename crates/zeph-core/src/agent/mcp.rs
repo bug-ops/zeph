@@ -23,6 +23,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_mcp_add(&mut self, args: &[&str]) -> Result<(), super::error::AgentError> {
         if args.len() < 2 {
             self.channel
@@ -91,20 +92,45 @@ impl<C: Channel> Agent<C> {
             Ok(tools) => {
                 let _ = self.channel.send_status("").await;
                 let count = tools.len();
+                self.mcp
+                    .server_outcomes
+                    .push(zeph_mcp::ServerConnectOutcome {
+                        id: entry.id.clone(),
+                        connected: true,
+                        tool_count: count,
+                        error: String::new(),
+                    });
                 self.mcp.tools.extend(tools);
                 self.sync_mcp_executor_tools();
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
-                let mcp_servers = self
+                let mcp_server_count = self.mcp.server_outcomes.len();
+                let mcp_connected_count = self
                     .mcp
-                    .tools
+                    .server_outcomes
                     .iter()
-                    .map(|t| &t.server_id)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len();
+                    .filter(|o| o.connected)
+                    .count();
+                let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
+                    .mcp
+                    .server_outcomes
+                    .iter()
+                    .map(|o| crate::metrics::McpServerStatus {
+                        id: o.id.clone(),
+                        status: if o.connected {
+                            crate::metrics::McpServerConnectionStatus::Connected
+                        } else {
+                            crate::metrics::McpServerConnectionStatus::Failed
+                        },
+                        tool_count: o.tool_count,
+                        error: o.error.clone(),
+                    })
+                    .collect();
                 self.update_metrics(|m| {
                     m.mcp_tool_count = mcp_total;
-                    m.mcp_server_count = mcp_servers;
+                    m.mcp_server_count = mcp_server_count;
+                    m.mcp_connected_count = mcp_connected_count;
+                    m.mcp_servers = mcp_servers;
                 });
                 self.channel
                     .send(&format!(
@@ -208,19 +234,37 @@ impl<C: Channel> Agent<C> {
                 let before = self.mcp.tools.len();
                 self.mcp.tools.retain(|t| t.server_id != server_id);
                 let removed = before - self.mcp.tools.len();
+                self.mcp.server_outcomes.retain(|o| o.id != server_id);
                 self.sync_mcp_executor_tools();
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
-                let mcp_servers = self
+                let mcp_server_count = self.mcp.server_outcomes.len();
+                let mcp_connected_count = self
                     .mcp
-                    .tools
+                    .server_outcomes
                     .iter()
-                    .map(|t| &t.server_id)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len();
+                    .filter(|o| o.connected)
+                    .count();
+                let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
+                    .mcp
+                    .server_outcomes
+                    .iter()
+                    .map(|o| crate::metrics::McpServerStatus {
+                        id: o.id.clone(),
+                        status: if o.connected {
+                            crate::metrics::McpServerConnectionStatus::Connected
+                        } else {
+                            crate::metrics::McpServerConnectionStatus::Failed
+                        },
+                        tool_count: o.tool_count,
+                        error: o.error.clone(),
+                    })
+                    .collect();
                 self.update_metrics(|m| {
                     m.mcp_tool_count = mcp_total;
-                    m.mcp_server_count = mcp_servers;
+                    m.mcp_server_count = mcp_server_count;
+                    m.mcp_connected_count = mcp_connected_count;
+                    m.mcp_servers = mcp_servers;
                     m.active_mcp_tools
                         .retain(|name| !name.starts_with(&format!("{server_id}:")));
                 });
@@ -248,17 +292,30 @@ impl<C: Channel> Agent<C> {
             .map(zeph_mcp::McpTool::qualified_name)
             .collect();
         let mcp_total = self.mcp.tools.len();
-        let mcp_servers = self
-            .mcp
-            .tools
-            .iter()
-            .map(|t| &t.server_id)
-            .collect::<std::collections::HashSet<_>>()
-            .len();
+        let (mcp_server_count, mcp_connected_count) = if self.mcp.server_outcomes.is_empty() {
+            let connected = self
+                .mcp
+                .tools
+                .iter()
+                .map(|t| &t.server_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            (connected, connected)
+        } else {
+            let total = self.mcp.server_outcomes.len();
+            let connected = self
+                .mcp
+                .server_outcomes
+                .iter()
+                .filter(|o| o.connected)
+                .count();
+            (total, connected)
+        };
         self.update_metrics(|m| {
             m.active_mcp_tools = active_mcp;
             m.mcp_tool_count = mcp_total;
-            m.mcp_server_count = mcp_servers;
+            m.mcp_server_count = mcp_server_count;
+            m.mcp_connected_count = mcp_connected_count;
         });
         // When native tool_use is active, MCP tools flow through the executor chain
         // as ToolDefinitions — skip text prompt injection to avoid duplication.

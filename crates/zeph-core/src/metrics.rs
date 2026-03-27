@@ -135,6 +135,24 @@ pub struct OrchestrationMetrics {
     pub tasks_skipped: u64,
 }
 
+/// Connection status of a single MCP server for TUI display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpServerConnectionStatus {
+    Connected,
+    Failed,
+}
+
+/// Per-server MCP status snapshot for TUI display.
+#[derive(Debug, Clone)]
+pub struct McpServerStatus {
+    pub id: String,
+    pub status: McpServerConnectionStatus,
+    /// Number of tools provided by this server (0 when failed).
+    pub tool_count: usize,
+    /// Human-readable failure reason. Empty when connected.
+    pub error: String,
+}
+
 /// Bayesian confidence data for a single skill, used by TUI confidence bar.
 #[derive(Debug, Clone, Default)]
 pub struct SkillConfidence {
@@ -169,8 +187,13 @@ pub struct MetricsSnapshot {
     pub api_calls: u64,
     pub active_skills: Vec<String>,
     pub total_skills: usize,
+    /// Total configured MCP servers (connected + failed).
     pub mcp_server_count: usize,
     pub mcp_tool_count: usize,
+    /// Number of successfully connected MCP servers.
+    pub mcp_connected_count: usize,
+    /// Per-server connection status list.
+    pub mcp_servers: Vec<McpServerStatus>,
     pub active_mcp_tools: Vec<String>,
     pub sqlite_message_count: u64,
     pub sqlite_conversation_id: Option<zeph_memory::ConversationId>,

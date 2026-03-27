@@ -129,8 +129,8 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         }
         if metrics.mcp_server_count > 0 {
             lines.push(Line::from(format!(
-                "    MCP: {} servers, {} tools",
-                metrics.mcp_server_count, metrics.mcp_tool_count
+                "    MCP: {}/{} connected, {} tools",
+                metrics.mcp_connected_count, metrics.mcp_server_count, metrics.mcp_tool_count
             )));
         }
     }
@@ -267,6 +267,7 @@ mod tests {
             cache_enabled: true,
             autosave_enabled: true,
             mcp_server_count: 2,
+            mcp_connected_count: 2,
             mcp_tool_count: 14,
             ..MetricsSnapshot::default()
         };

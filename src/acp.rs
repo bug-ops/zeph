@@ -298,7 +298,7 @@ async fn build_acp_deps(
             app.age_vault_arc(),
         ))
     });
-    let mcp_tools = mcp_manager.connect_all().await;
+    let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());

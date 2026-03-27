@@ -471,6 +471,15 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_mcp_server_outcomes(
+        mut self,
+        outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
+    ) -> Self {
+        self.mcp.server_outcomes = outcomes;
+        self
+    }
+
+    #[must_use]
     pub fn with_mcp_shared_tools(
         mut self,
         shared: std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
@@ -839,13 +848,41 @@ impl<C: Channel> Agent<C> {
             .first()
             .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
         let mcp_tool_count = self.mcp.tools.len();
-        let mcp_server_count = self
+        let mcp_server_count = if self.mcp.server_outcomes.is_empty() {
+            // Fallback: count unique server IDs from connected tools
+            self.mcp
+                .tools
+                .iter()
+                .map(|t| &t.server_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        } else {
+            self.mcp.server_outcomes.len()
+        };
+        let mcp_connected_count = if self.mcp.server_outcomes.is_empty() {
+            mcp_server_count
+        } else {
+            self.mcp
+                .server_outcomes
+                .iter()
+                .filter(|o| o.connected)
+                .count()
+        };
+        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
             .mcp
-            .tools
+            .server_outcomes
             .iter()
-            .map(|t| &t.server_id)
-            .collect::<std::collections::HashSet<_>>()
-            .len();
+            .map(|o| crate::metrics::McpServerStatus {
+                id: o.id.clone(),
+                status: if o.connected {
+                    crate::metrics::McpServerConnectionStatus::Connected
+                } else {
+                    crate::metrics::McpServerConnectionStatus::Failed
+                },
+                tool_count: o.tool_count,
+                error: o.error.clone(),
+            })
+            .collect();
         let extended_context = self.metrics.extended_context;
         tx.send_modify(|m| {
             m.provider_name = provider_name;
@@ -858,6 +895,8 @@ impl<C: Channel> Agent<C> {
             m.total_tokens = prompt_estimate;
             m.mcp_tool_count = mcp_tool_count;
             m.mcp_server_count = mcp_server_count;
+            m.mcp_connected_count = mcp_connected_count;
+            m.mcp_servers = mcp_servers;
             m.extended_context = extended_context;
         });
         self.metrics.metrics_tx = Some(tx);

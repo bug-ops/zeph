@@ -342,6 +342,7 @@ impl<C: Channel> Agent<C> {
                 max_dynamic: 10,
                 shared_tools: None,
                 tool_rx: None,
+                server_outcomes: Vec::new(),
             },
             index: IndexState {
                 retriever: None,

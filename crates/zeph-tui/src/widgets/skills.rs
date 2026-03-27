@@ -7,7 +7,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::metrics::{MetricsSnapshot, SkillConfidence};
+use crate::metrics::{McpServerConnectionStatus, MetricsSnapshot, SkillConfidence};
 use crate::theme::Theme;
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
@@ -59,11 +59,21 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     frame.render_widget(skills, chunks[0]);
 
     if has_mcp {
-        let mcp_lines: Vec<Line<'_>> = metrics
-            .active_mcp_tools
-            .iter()
-            .map(|t| Line::from(format!("  - {t}")))
-            .collect();
+        let mut mcp_lines: Vec<Line<'_>> = Vec::new();
+        for srv in &metrics.mcp_servers {
+            let (indicator, color) = match srv.status {
+                McpServerConnectionStatus::Connected => ("OK", Color::Green),
+                McpServerConnectionStatus::Failed => ("FAIL", Color::Red),
+            };
+            mcp_lines.push(Line::from(vec![
+                Span::raw(format!("  {} ", srv.id)),
+                Span::styled(indicator, Style::default().fg(color)),
+                Span::raw(format!(" ({})", srv.tool_count)),
+            ]));
+        }
+        for t in &metrics.active_mcp_tools {
+            mcp_lines.push(Line::from(format!("  - {t}")));
+        }
         let mcp = Paragraph::new(mcp_lines).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -103,7 +113,7 @@ fn confidence_color(posterior: f64) -> Color {
 mod tests {
     use insta::assert_snapshot;
 
-    use crate::metrics::{MetricsSnapshot, SkillConfidence};
+    use crate::metrics::{McpServerConnectionStatus, MetricsSnapshot, SkillConfidence};
     use crate::test_utils::render_to_string;
 
     #[test]

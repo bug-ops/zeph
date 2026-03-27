@@ -87,6 +87,8 @@ pub(crate) struct McpState {
     pub(crate) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
     /// Receives full flattened tool list after any `tools/list_changed` notification.
     pub(crate) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
+    /// Per-server connection outcomes from the initial `connect_all()` call.
+    pub(crate) server_outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
 }
 
 pub(crate) struct IndexState {

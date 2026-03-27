@@ -77,6 +77,16 @@ pub struct ServerEntry {
     pub tool_allowlist: Vec<String>,
 }
 
+/// Per-server connection outcome from `connect_all()`.
+#[derive(Debug, Clone)]
+pub struct ServerConnectOutcome {
+    pub id: String,
+    pub connected: bool,
+    pub tool_count: usize,
+    /// Human-readable failure reason. Empty when connected.
+    pub error: String,
+}
+
 pub struct McpManager {
     configs: Vec<ServerEntry>,
     allowed_commands: Vec<String>,
@@ -262,7 +272,13 @@ impl McpManager {
         self
     }
 
-    /// Connect to all non-OAuth servers, return aggregated tool list.
+    /// Returns the number of configured servers (connected or not).
+    #[must_use]
+    pub fn configured_server_count(&self) -> usize {
+        self.configs.len()
+    }
+
+    /// Connect to all configured servers, return aggregated tool list and per-server outcomes.
     ///
     /// OAuth servers are skipped — call `connect_oauth_deferred()` after the
     /// UI channel is ready so the auth URL is visible and startup is not blocked.
@@ -270,7 +286,8 @@ impl McpManager {
     /// # Panics
     ///
     /// Panics if the internal `connected_server_ids` lock is poisoned.
-    pub async fn connect_all(&self) -> Vec<McpTool> {
+    #[allow(clippy::too_many_lines)]
+    pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
         let allowed = self.allowed_commands.clone();
         let suppress = self.suppress_stderr;
         let last_refresh = Arc::clone(&self.last_refresh);
@@ -296,6 +313,7 @@ impl McpManager {
         }
 
         let mut all_tools = Vec::new();
+        let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
         {
             let mut clients = self.clients.write().await;
             let mut server_tools = self.server_tools.write().await;
@@ -312,12 +330,13 @@ impl McpManager {
                     &mut all_tools,
                     &mut clients,
                     &mut server_tools,
+                    &mut outcomes,
                 )
                 .await;
             }
         }
 
-        all_tools
+        (all_tools, outcomes)
     }
 
     /// Returns `true` if any configured server uses OAuth transport.
@@ -350,6 +369,7 @@ impl McpManager {
             .cloned()
             .collect();
 
+        let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
         for config in oauth_configs {
             let McpTransport::OAuth {
                 ref url,
@@ -399,6 +419,7 @@ impl McpManager {
                         &mut all_tools,
                         &mut clients,
                         &mut server_tools,
+                        &mut outcomes,
                     )
                     .await;
                     let updated: Vec<McpTool> = server_tools.values().flatten().cloned().collect();
@@ -449,6 +470,7 @@ impl McpManager {
                                         &mut all_tools,
                                         &mut clients,
                                         &mut server_tools,
+                                        &mut outcomes,
                                     )
                                     .await;
                                     let updated: Vec<McpTool> =
@@ -460,6 +482,12 @@ impl McpManager {
                                         server_id = config.id,
                                         "OAuth token exchange failed: {e:#}"
                                     );
+                                    outcomes.push(ServerConnectOutcome {
+                                        id: config.id.clone(),
+                                        connected: false,
+                                        tool_count: 0,
+                                        error: format!("OAuth token exchange failed: {e:#}"),
+                                    });
                                 }
                             }
                         }
@@ -468,14 +496,28 @@ impl McpManager {
                                 let _ = tx.send(String::new());
                             }
                             tracing::warn!(server_id = config.id, "OAuth callback failed: {e:#}");
+                            outcomes.push(ServerConnectOutcome {
+                                id: config.id.clone(),
+                                connected: false,
+                                tool_count: 0,
+                                error: format!("OAuth callback failed: {e:#}"),
+                            });
                         }
                     }
                 }
                 Err(e) => {
                     tracing::warn!(server_id = config.id, "OAuth connection failed: {e:#}");
+                    outcomes.push(ServerConnectOutcome {
+                        id: config.id.clone(),
+                        connected: false,
+                        tool_count: 0,
+                        error: format!("{e:#}"),
+                    });
                 }
             }
         }
+
+        drop(outcomes);
     }
 
     async fn handle_connect_result(
@@ -485,6 +527,7 @@ impl McpManager {
         all_tools: &mut Vec<McpTool>,
         clients: &mut HashMap<String, McpClient>,
         server_tools: &mut HashMap<String, Vec<McpTool>>,
+        outcomes: &mut Vec<ServerConnectOutcome>,
     ) {
         match connect_result {
             Ok(client) => match client.list_tools().await {
@@ -505,20 +548,39 @@ impl McpManager {
                         self.status_tx.as_ref(),
                     );
                     tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
+                    let tool_count = tools.len();
                     server_tools.insert(server_id.clone(), tools.clone());
                     all_tools.extend(tools);
                     clients.insert(server_id.clone(), client);
                     self.connected_server_ids
                         .write()
                         .expect("connected_server_ids lock poisoned")
-                        .insert(server_id);
+                        .insert(server_id.clone());
+                    outcomes.push(ServerConnectOutcome {
+                        id: server_id,
+                        connected: true,
+                        tool_count,
+                        error: String::new(),
+                    });
                 }
                 Err(e) => {
                     tracing::warn!(server_id, "failed to list tools: {e:#}");
+                    outcomes.push(ServerConnectOutcome {
+                        id: server_id,
+                        connected: false,
+                        tool_count: 0,
+                        error: format!("{e:#}"),
+                    });
                 }
             },
             Err(e) => {
                 tracing::warn!(server_id, "MCP server connection failed: {e:#}");
+                outcomes.push(ServerConnectOutcome {
+                    id: server_id,
+                    connected: false,
+                    tool_count: 0,
+                    error: format!("{e:#}"),
+                });
             }
         }
     }
@@ -917,8 +979,10 @@ mod tests {
             vec![],
             PolicyEnforcer::new(vec![]),
         );
-        let tools = mgr.connect_all().await;
+        let (tools, outcomes) = mgr.connect_all().await;
         assert!(tools.is_empty());
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| !o.connected));
         assert!(mgr.list_servers().await.is_empty());
     }
 
@@ -1103,7 +1167,7 @@ mod tests {
             vec![],
             PolicyEnforcer::new(vec![]),
         );
-        let tools = mgr.connect_all().await;
+        let (tools, _outcomes) = mgr.connect_all().await;
         assert!(tools.is_empty());
         assert!(mgr.list_servers().await.is_empty());
     }

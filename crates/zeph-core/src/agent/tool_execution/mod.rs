@@ -395,6 +395,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// When `pii_ner_backend` is configured, both sources are combined so neither regex-only
     /// nor NER-only detections are missed. Falls back to regex-only when NER is unavailable.
+    #[allow(clippy::unused_async)]
     async fn scrub_pii_union(&mut self, text: &str, tool_name: &str) -> String {
         use zeph_sanitizer::pii::{merge_spans, redact_spans};
 

@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-tui/src/widgets/resources.rs
+assertion_line: 290
 expression: output
 ---
 ┌ Resources ───────────────────────────┐
@@ -14,7 +15,7 @@ expression: output
 │  Infra                               │
 │    Vault: age | Channel: tui         │
 │    Learning: ON | Cache: ON | Autosav│
-│    MCP: 2 servers, 14 tools          │
+│    MCP: 2/2 connected, 14 tools      │
 │                                      │
 │                                      │
 │                                      │
