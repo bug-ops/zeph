@@ -1352,6 +1352,7 @@ impl<C: Channel> Agent<C> {
             // True only for InvalidParams errors — semantic failures attributable to model quality.
             // Network, transient, timeout, and policy errors are excluded.
             let is_quality_failure;
+            let mut tool_err_category: Option<zeph_tools::error_taxonomy::ToolErrorCategory> = None;
             let (output, is_error, diff, inline_stats, _, kept_lines, locations) = match tool_result
             {
                 Ok(Some(out)) => {
@@ -1403,6 +1404,7 @@ impl<C: Channel> Agent<C> {
                     // type mismatch, tool not found). Infrastructure errors (network, timeout,
                     // server, rate limit) are not the model's fault.
                     is_quality_failure = category.is_quality_failure();
+                    tool_err_category = Some(category);
                     anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
                         AnomalyOutcome::Blocked
                     } else {
@@ -1466,7 +1468,9 @@ impl<C: Channel> Agent<C> {
             // handle_tool_result). Capture the first eligible error for deferred self_reflection
             // (called after user_msg is pushed to history to preserve API message ordering).
             if output.contains("[error]") || output.contains("[exit code") {
-                let kind = FailureKind::from_error(&output);
+                let kind = tool_err_category
+                    .take()
+                    .map_or_else(|| FailureKind::from_error(&output), FailureKind::from);
                 self.record_skill_outcomes("tool_failure", Some(&output), Some(kind.as_str()))
                     .await;
                 // Record quality failure for reputation scoring only when the model produced

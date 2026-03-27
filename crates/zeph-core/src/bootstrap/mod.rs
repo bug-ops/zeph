@@ -352,8 +352,7 @@ impl AppBuilder {
             }
         }
 
-        let skill_paths: Vec<PathBuf> =
-            self.config.skills.paths.iter().map(PathBuf::from).collect();
+        let skill_paths = self.skill_paths();
         let registry = SkillRegistry::load(&skill_paths);
 
         if self.config.skills.trust.scan_on_load {

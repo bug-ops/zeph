@@ -554,12 +554,13 @@ impl<C: Channel> Agent<C> {
                 Ok(false)
             }
             Err(e) => {
+                let category = e.category();
                 let err_str = format!("{e:#}");
                 tracing::error!("tool execution error: {err_str}");
                 if let Some(ref d) = self.debug_state.debug_dumper {
                     d.dump_tool_error("legacy", &e);
                 }
-                let kind = FailureKind::from_error(&err_str);
+                let kind = FailureKind::from(category);
                 // Sanitize before passing to self_reflection: error messages from MCP servers
                 // and web endpoints can contain untrusted content with injection patterns.
                 // Use McpResponse (ExternalUntrusted) as conservative default — tool_name is
