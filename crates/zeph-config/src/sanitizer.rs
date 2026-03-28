@@ -27,6 +27,14 @@ pub struct EmbeddingGuardConfig {
     /// Before this count, regex fallback is used instead.
     #[serde(default = "default_embedding_min_samples")]
     pub min_samples: usize,
+    /// EMA alpha floor for centroid updates after stabilization (n >= `min_samples`).
+    ///
+    /// Once the centroid has accumulated `min_samples` clean outputs, each new sample
+    /// can shift it by at most this fraction. Lower values make the centroid more
+    /// resistant to slow drift attacks but slower to adapt to legitimate distribution
+    /// changes. Default: 0.01 (1% per sample).
+    #[serde(default = "default_ema_floor")]
+    pub ema_floor: f32,
 }
 
 fn default_embedding_threshold() -> f64 {
@@ -37,12 +45,17 @@ fn default_embedding_min_samples() -> usize {
     10
 }
 
+fn default_ema_floor() -> f32 {
+    0.01
+}
+
 impl Default for EmbeddingGuardConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             threshold: default_embedding_threshold(),
             min_samples: default_embedding_min_samples(),
+            ema_floor: default_ema_floor(),
         }
     }
 }

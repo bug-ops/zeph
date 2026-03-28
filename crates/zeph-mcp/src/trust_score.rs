@@ -124,15 +124,19 @@ impl TrustScoreStore {
 
     /// Load the trust score for a server, applying asymmetric decay at read time.
     ///
-    /// Decay is applied in-memory on the returned value; it is NOT written back to the
-    /// database here. Callers that need to persist the decayed score should call
-    /// `apply_delta(server_id, 0.0, 0, 0)` after reading.
+    /// Decay is applied and, when non-zero, written back to the database so that
+    /// subsequent `apply_delta()` calls operate on the true current (decayed) value
+    /// rather than the stale stored score. Without this write-back, a success delta
+    /// would be added to the pre-decay score, effectively reversing the decay.
+    ///
+    /// Concurrent loads for the same server are safe: linear decay is idempotent
+    /// over a given time window, so two concurrent writes produce the same value.
     ///
     /// Returns `None` if not found.
     ///
     /// # Errors
     ///
-    /// Returns an error if the SQL query fails.
+    /// Returns an error if any SQL query fails.
     pub async fn load(&self, server_id: &str) -> Result<Option<ServerTrustScore>, sqlx::Error> {
         let row: Option<(String, f64, i64, i64, i64)> = sqlx::query_as(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
@@ -142,17 +146,34 @@ impl TrustScoreStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(sid, score, sc, fc, ts)| {
-            let mut entry = ServerTrustScore {
-                server_id: sid,
-                score,
-                success_count: u64::try_from(sc).unwrap_or(0),
-                failure_count: u64::try_from(fc).unwrap_or(0),
-                updated_at_secs: u64::try_from(ts).unwrap_or(0),
-            };
-            entry.apply_decay();
-            entry
-        }))
+        let Some((sid, score, sc, fc, ts)) = row else {
+            return Ok(None);
+        };
+
+        let mut entry = ServerTrustScore {
+            server_id: sid,
+            score,
+            success_count: u64::try_from(sc).unwrap_or(0),
+            failure_count: u64::try_from(fc).unwrap_or(0),
+            updated_at_secs: u64::try_from(ts).unwrap_or(0),
+        };
+
+        let score_before = entry.score;
+        entry.apply_decay();
+
+        if (entry.score - score_before).abs() > f64::EPSILON {
+            let now = i64::try_from(entry.updated_at_secs).unwrap_or(i64::MAX);
+            sqlx::query(
+                "UPDATE mcp_trust_scores SET score = ?, updated_at_secs = ? WHERE server_id = ?",
+            )
+            .bind(entry.score)
+            .bind(now)
+            .bind(server_id)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(Some(entry))
     }
 
     /// Atomically apply a score delta and update counters.
@@ -192,7 +213,12 @@ impl TrustScoreStore {
         Ok(())
     }
 
-    /// Load all server trust scores.
+    /// Load all server trust scores with decay applied for display accuracy.
+    ///
+    /// Decay is applied in-memory but NOT persisted. This is intentional: persisting
+    /// decay for every row in a bulk read would generate N writes, degrading performance
+    /// on large deployments. Decision-path code must always go through `load()`, which
+    /// persists the decayed score so `apply_delta()` operates on the correct base value.
     ///
     /// # Errors
     ///
@@ -207,12 +233,17 @@ impl TrustScoreStore {
 
         Ok(rows
             .into_iter()
-            .map(|(sid, score, sc, fc, ts)| ServerTrustScore {
-                server_id: sid,
-                score,
-                success_count: u64::try_from(sc).unwrap_or(0),
-                failure_count: u64::try_from(fc).unwrap_or(0),
-                updated_at_secs: u64::try_from(ts).unwrap_or(0),
+            .map(|(sid, score, sc, fc, ts)| {
+                let mut entry = ServerTrustScore {
+                    server_id: sid,
+                    score,
+                    success_count: u64::try_from(sc).unwrap_or(0),
+                    failure_count: u64::try_from(fc).unwrap_or(0),
+                    updated_at_secs: u64::try_from(ts).unwrap_or(0),
+                };
+                // Decay applied for display accuracy; not persisted (load() persists on read).
+                entry.apply_decay();
+                entry
             })
             .collect())
     }
@@ -422,6 +453,135 @@ mod tests {
         assert!(
             result.is_err(),
             "load before init should return a SQL error"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_load_persists_decay() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = TrustScoreStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        // Insert a score above INITIAL_SCORE with a timestamp 10 days in the past.
+        let old_ts = unix_now().saturating_sub(10 * 86_400);
+        sqlx::query(
+            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, ?, 0, 0, ?)",
+        )
+        .bind("srv1")
+        .bind(0.9_f64)
+        .bind(i64::try_from(old_ts).unwrap_or(i64::MAX))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // First load: applies and persists decay.
+        let first = store.load("srv1").await.unwrap().unwrap();
+        assert!(first.score < 0.9, "score should have decayed on load");
+
+        // Read the raw DB row to confirm the persisted value changed.
+        let (db_score, db_ts): (f64, i64) = sqlx::query_as(
+            "SELECT score, updated_at_secs FROM mcp_trust_scores WHERE server_id = ?",
+        )
+        .bind("srv1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            (db_score - first.score).abs() < 1e-9,
+            "DB score must equal the decayed value after load(): db={db_score}, expected={}",
+            first.score
+        );
+        assert!(
+            db_ts > i64::try_from(old_ts).unwrap_or(0),
+            "updated_at_secs must be refreshed after decay persist"
+        );
+
+        // Second immediate load must not decay further (timestamp was updated).
+        let second = store.load("srv1").await.unwrap().unwrap();
+        assert!(
+            (second.score - first.score).abs() < 1e-6,
+            "consecutive load() must not compound decay: first={}, second={}",
+            first.score,
+            second.score
+        );
+    }
+
+    #[tokio::test]
+    async fn store_load_no_write_when_no_decay() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = TrustScoreStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        // Insert a score at or below INITIAL_SCORE — no decay should trigger.
+        let now_ts = unix_now();
+        sqlx::query(
+            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, ?, 0, 0, ?)",
+        )
+        .bind("srv1")
+        .bind(ServerTrustScore::INITIAL_SCORE)
+        .bind(i64::try_from(now_ts).unwrap_or(i64::MAX))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let loaded = store.load("srv1").await.unwrap().unwrap();
+        assert!(
+            (loaded.score - ServerTrustScore::INITIAL_SCORE).abs() < f64::EPSILON,
+            "score at initial value should not decay"
+        );
+
+        // updated_at_secs in DB should remain approximately the same (no write occurred).
+        let (db_ts,): (i64,) =
+            sqlx::query_as("SELECT updated_at_secs FROM mcp_trust_scores WHERE server_id = ?")
+                .bind("srv1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            db_ts,
+            i64::try_from(now_ts).unwrap_or(i64::MAX),
+            "updated_at_secs must not change when no decay applied"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_load_then_delta_operates_on_decayed() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = TrustScoreStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        // Insert score=0.8 with timestamp 10 days ago.
+        let old_ts = unix_now().saturating_sub(10 * 86_400);
+        sqlx::query(
+            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, ?, 0, 0, ?)",
+        )
+        .bind("srv1")
+        .bind(0.8_f64)
+        .bind(i64::try_from(old_ts).unwrap_or(i64::MAX))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Trigger decay persistence via load().
+        let decayed = store.load("srv1").await.unwrap().unwrap();
+        assert!(decayed.score < 0.8, "score must have decayed");
+
+        // apply_delta now operates on the persisted decayed score, not 0.8.
+        store
+            .apply_delta("srv1", ServerTrustScore::SUCCESS_BOOST, 1, 0)
+            .await
+            .unwrap();
+
+        let final_score = store.load("srv1").await.unwrap().unwrap();
+        let expected = (decayed.score + ServerTrustScore::SUCCESS_BOOST).min(1.0);
+        assert!(
+            (final_score.score - expected).abs() < 1e-6,
+            "delta must be applied to decayed score: expected={expected}, got={}",
+            final_score.score
         );
     }
 }

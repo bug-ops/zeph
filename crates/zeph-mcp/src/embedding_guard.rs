@@ -64,6 +64,10 @@ pub struct EmbeddingAnomalyGuard {
     centroids: Arc<DashMap<String, CentroidState>>,
     threshold: f64,
     min_samples: usize,
+    /// EMA floor: maximum alpha applied after the centroid stabilizes (n >= `min_samples`).
+    /// Caps the per-sample update rate once the centroid is established, preventing
+    /// slow boiling-frog drift attacks. Default: 0.01 (1% shift per clean sample max).
+    ema_floor: f32,
     result_tx: mpsc::UnboundedSender<EmbeddingGuardEvent>,
 }
 
@@ -72,6 +76,7 @@ impl std::fmt::Debug for EmbeddingAnomalyGuard {
         f.debug_struct("EmbeddingAnomalyGuard")
             .field("threshold", &self.threshold)
             .field("min_samples", &self.min_samples)
+            .field("ema_floor", &self.ema_floor)
             .finish_non_exhaustive()
     }
 }
@@ -82,12 +87,15 @@ impl EmbeddingAnomalyGuard {
     /// `embed_fn` — embedding function shared with the memory subsystem.
     /// `threshold` — cosine distance above which outputs are flagged as anomalous.
     /// `min_samples` — minimum clean samples before centroid-based detection activates.
+    /// `ema_floor` — EMA alpha floor applied after stabilization (default: 0.01).
+    ///
     /// Returns the guard and the receiver end of the result channel.
     #[must_use]
     pub fn new(
         embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync>,
         threshold: f64,
         min_samples: usize,
+        ema_floor: f32,
     ) -> (Self, mpsc::UnboundedReceiver<EmbeddingGuardEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let guard = Self {
@@ -95,6 +103,7 @@ impl EmbeddingAnomalyGuard {
             centroids: Arc::new(DashMap::new()),
             threshold,
             min_samples,
+            ema_floor,
             result_tx: tx,
         };
         (guard, rx)
@@ -183,12 +192,22 @@ impl EmbeddingAnomalyGuard {
                 sample_count: 0,
             });
 
-        // Incremental mean update: centroid = (centroid * n + new) / (n + 1)
-        // Precision loss is acceptable for a statistical mean over typical sample counts.
+        // Two-phase adaptive EMA:
+        // - Cold-start (n < min_samples): standard running mean (alpha = 1/(n+1)) for fast convergence.
+        // - Stabilized (n >= min_samples): fixed low alpha = ema_floor to resist boiling-frog drift.
+        //   An attacker can shift the centroid by at most ema_floor per clean sample, bounding
+        //   the cumulative drift rate regardless of attack duration.
+        //
+        // NOTE: cold-start window is still exploitable if the attacker controls early samples.
+        // This is a known limitation documented in the design; the fix targets steady-state drift.
         #[allow(clippy::cast_precision_loss)]
-        let n = entry.sample_count as f32;
+        let alpha = if entry.sample_count < self.min_samples {
+            1.0 / (entry.sample_count as f32 + 1.0)
+        } else {
+            self.ema_floor
+        };
         for (c, v) in entry.centroid.iter_mut().zip(embedding.iter()) {
-            *c = (*c * n + v) / (n + 1.0);
+            *c = *c * (1.0 - alpha) + v * alpha;
         }
         entry.sample_count += 1;
     }
@@ -271,7 +290,7 @@ mod tests {
     fn record_clean_updates_centroid() {
         let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> =
             Arc::new(|_| Box::pin(async { Ok(vec![1.0f32, 0.0]) }));
-        let (guard, _rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 2);
+        let (guard, _rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 2, 0.01);
 
         guard.record_clean("srv", &[1.0, 0.0]);
         guard.record_clean("srv", &[0.0, 1.0]);
@@ -284,7 +303,7 @@ mod tests {
     fn check_async_cold_start_sends_regex_fallback() {
         let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> =
             Arc::new(|_| Box::pin(async { Ok(vec![1.0f32]) }));
-        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 10);
+        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 10, 0.01);
 
         guard.check_async("srv", "tool", "read file contents");
 
@@ -303,7 +322,7 @@ mod tests {
         // Centroid = [1.0, 0.0]; same embedding → distance ≈ 0 → Normal.
         let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> =
             Arc::new(|_| Box::pin(async { Ok(vec![1.0f32, 0.0]) }));
-        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.5, 2);
+        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.5, 2, 0.01);
 
         // Warm up to min_samples.
         guard.record_clean("srv", &[1.0f32, 0.0]);
@@ -327,7 +346,7 @@ mod tests {
         // Centroid = [1.0, 0.0]; orthogonal embedding [0.0, 1.0] → distance = 1.0 > threshold 0.3 → Anomalous.
         let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> =
             Arc::new(|_| Box::pin(async { Ok(vec![0.0f32, 1.0]) }));
-        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.3, 2);
+        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.3, 2, 0.01);
 
         // Centroid built from [1.0, 0.0] vectors.
         guard.record_clean("srv", &[1.0f32, 0.0]);
@@ -352,7 +371,7 @@ mod tests {
         let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> = Arc::new(|_| {
             Box::pin(async { Err(LlmError::Other("simulated embedding failure".into())) })
         });
-        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 2);
+        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 2, 0.01);
 
         guard.record_clean("srv", &[1.0f32, 0.0]);
         guard.record_clean("srv", &[1.0f32, 0.0]);
@@ -365,6 +384,62 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "embedding failure must not block output — no event expected"
+        );
+    }
+
+    #[test]
+    fn record_clean_ema_floor_limits_drift() {
+        // Establish centroid at [1.0, 0.0] with min_samples clean records,
+        // then send 50 adversarial embeddings [0.0, 1.0].
+        // With ema_floor=0.01, centroid[0] decays at most (0.99)^50 ≈ 0.605 per sample,
+        // so after 50 adversarial samples centroid[0] must still exceed 0.5.
+        // (1000 adversarial samples would fully converge at this floor; the protection
+        // guarantee is per-sample rate-limiting, not infinite resistance.)
+        let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> =
+            Arc::new(|_| Box::pin(async { Ok(vec![1.0f32, 0.0]) }));
+        let min_samples = 10;
+        let ema_floor = 0.01_f32;
+        let (guard, _rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, min_samples, ema_floor);
+
+        // Cold-start: build centroid toward [1.0, 0.0].
+        for _ in 0..min_samples {
+            guard.record_clean("srv", &[1.0, 0.0]);
+        }
+
+        // Adversarial phase: 50 samples pushing toward [0.0, 1.0].
+        for _ in 0..50 {
+            guard.record_clean("srv", &[0.0, 1.0]);
+        }
+
+        let state = guard.centroids.get("srv").unwrap();
+        let first_component = state.centroid[0];
+        assert!(
+            first_component > 0.5,
+            "ema_floor must limit drift: centroid[0]={first_component}, expected > 0.5"
+        );
+    }
+
+    #[test]
+    fn record_clean_cold_start_converges() {
+        // During cold-start the guard uses a running mean (alpha = 1/(n+1)).
+        // After 2 samples of [1.0, 0.0], centroid should equal [1.0, 0.0].
+        let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> =
+            Arc::new(|_| Box::pin(async { Ok(vec![1.0f32, 0.0]) }));
+        let (guard, _rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 10, 0.01);
+
+        guard.record_clean("srv", &[1.0, 0.0]);
+        guard.record_clean("srv", &[1.0, 0.0]);
+
+        let state = guard.centroids.get("srv").unwrap();
+        assert!(
+            (state.centroid[0] - 1.0).abs() < 1e-5,
+            "cold-start must converge to [1.0, 0.0]: centroid[0]={}",
+            state.centroid[0]
+        );
+        assert!(
+            state.centroid[1].abs() < 1e-5,
+            "cold-start must converge to [1.0, 0.0]: centroid[1]={}",
+            state.centroid[1]
         );
     }
 }
