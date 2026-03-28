@@ -529,7 +529,6 @@ mod tests {
 
     use chrono::{Duration, Utc};
     use tokio::sync::mpsc;
-    use zeph_db::DbPool;
     use zeph_scheduler::JobStore;
 
     use super::*;
