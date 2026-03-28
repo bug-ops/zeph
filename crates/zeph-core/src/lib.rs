@@ -48,6 +48,7 @@ pub mod hash;
 pub mod http;
 pub mod memory_tools;
 pub mod overflow_tools;
+pub mod runtime_layer;
 pub mod skill_loader;
 /// Re-export zeph-subagent crate as a module to preserve internal import paths.
 pub mod subagent {

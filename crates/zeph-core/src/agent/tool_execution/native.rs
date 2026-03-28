@@ -324,6 +324,7 @@ impl<C: Channel> Agent<C> {
         Ok(None)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn call_chat_with_tools(
         &mut self,
         tool_defs: &[ToolDefinition],
@@ -361,6 +362,22 @@ impl<C: Channel> Agent<C> {
                         ), // lgtm[rust/cleartext-logging]
                     })
                 });
+
+        // RuntimeLayer before_chat hooks (MVP: empty vec = zero iterations).
+        if !self.runtime_layers.is_empty() {
+            let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+            let ctx = crate::runtime_layer::LayerContext {
+                conversation_id: conv_id_str.as_deref(),
+                turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+            };
+            for layer in &self.runtime_layers {
+                if let Some(sc) = layer.before_chat(&ctx, &self.msg.messages, tool_defs).await {
+                    // Layer short-circuited the LLM call.
+                    tracing::debug!("RuntimeLayer short-circuited LLM call");
+                    return Ok(Some(sc));
+                }
+            }
+        }
 
         // CR-01: open LLM span before the call.
         let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
@@ -416,6 +433,19 @@ impl<C: Channel> Agent<C> {
         }
 
         self.write_chat_debug_dump(dump_id, &result);
+
+        // RuntimeLayer after_chat hooks (MVP: empty vec = zero iterations).
+        if !self.runtime_layers.is_empty() {
+            let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+            let ctx = crate::runtime_layer::LayerContext {
+                conversation_id: conv_id_str.as_deref(),
+                turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+            };
+            for layer in &self.runtime_layers {
+                layer.after_chat(&ctx, &result).await;
+            }
+        }
+
         Ok(Some(result))
     }
 

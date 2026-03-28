@@ -217,6 +217,10 @@ pub struct Agent<C: Channel> {
     pub(super) deferred_db_hide_ids: Vec<i64>,
     /// Summary texts pending insertion after deferred tool pair summarization.
     pub(super) deferred_db_summaries: Vec<String>,
+    /// Runtime middleware layers for LLM calls and tool dispatch (#2286).
+    ///
+    /// Default: empty vec (zero-cost — loops never iterate).
+    pub(super) runtime_layers: Vec<std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -512,6 +516,7 @@ impl<C: Channel> Agent<C> {
             last_persisted_message_id: None,
             deferred_db_hide_ids: Vec::new(),
             deferred_db_summaries: Vec::new(),
+            runtime_layers: Vec::new(),
         }
     }
 
