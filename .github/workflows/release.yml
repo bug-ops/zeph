@@ -53,6 +53,9 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
+          shared-key: "release-${{ matrix.target }}"
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        if: "!matrix.use_cross"
       - uses: taiki-e/install-action@879e9c8ba9a16a9dde5253c07a5826b902ca048c # cross
       - name: Build binary (cross)
         if: matrix.use_cross
@@ -60,6 +63,9 @@ jobs:
       - name: Build binary (native)
         if: "!matrix.use_cross"
         run: cargo build --release --features full --target ${{ matrix.target }}
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
       - name: Strip binary (Unix)
         if: "!matrix.use_cross && runner.os != 'Windows'"
         run: strip target/${{ matrix.target }}/release/zeph

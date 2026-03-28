@@ -131,6 +131,9 @@ jobs:
     if: needs.detect-changes.outputs.run-full-ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -140,12 +143,10 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
+          shared-key: "ci"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Clippy
         run: cargo clippy --profile ci --workspace --features full -- -D warnings
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
 
   build-tests:
     name: Build Tests (${{ matrix.os }})
@@ -157,6 +158,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -165,13 +169,11 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
+          shared-key: "ci"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@6ee2d1f3a2f8ca91cc2bf3180c6ec89fb3a109ad # nextest
       - name: Build and archive tests
         run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --tests --archive-file nextest-archive.tar.zst
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
       - name: Upload test archive
         uses: actions/upload-artifact@v6
         with:
@@ -234,6 +236,11 @@ jobs:
     needs: [detect-changes, lint-fmt, lint-clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # coverage uses -C instrument-coverage which produces different artifacts than
+    # normal builds; sccache still helps for unchanged crates between main pushes
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -242,14 +249,12 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
+          shared-key: "coverage"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@cff9fdfca2088e53d33015e47b75d0653d76aa25 # cargo-llvm-cov
       - uses: taiki-e/install-action@6ee2d1f3a2f8ca91cc2bf3180c6ec89fb3a109ad # nextest
       - name: Generate coverage
         run: cargo llvm-cov nextest --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --lcov --output-path lcov.info
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
       - name: Upload coverage
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5
         with:
@@ -315,6 +320,9 @@ jobs:
         include:
           - bundle: ml
             allow_failure: true
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -323,13 +331,11 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
+          shared-key: "bundle-check"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Check bundle
         continue-on-error: ${{ matrix.allow_failure == true }}
         run: cargo check --features ${{ matrix.bundle }}
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
 
   validate-specs:
     name: Validate Specs
