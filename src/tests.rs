@@ -424,6 +424,72 @@ async fn loopback_stale_flush_drained_after_full_message() {
     assert!(rx.try_recv().is_err());
 }
 
+// Fix #2326: drain-until-Flush guarantees no tail event leaks into the next request.
+// Simulates the race: agent emits FullMessage (exits recv loop), then asynchronously
+// emits Usage + Flush. The drain loop must consume both before process() returns.
+#[cfg(feature = "a2a")]
+#[tokio::test]
+async fn a2a_response_shift_drain_until_flush_prevents_leak() {
+    use zeph_core::LoopbackEvent;
+
+    // Test the drain logic directly using a channel pair.
+    // Sequence: FullMessage → Usage (tail) → Flush (tail, arrives with delay).
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<LoopbackEvent>(8);
+
+    tx.send(LoopbackEvent::FullMessage("req1-response".into()))
+        .await
+        .unwrap();
+
+    // Tail events arrive asynchronously after the primary response — models the race.
+    let tx2 = tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let _ = tx2
+            .send(LoopbackEvent::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                context_window: 8192,
+            })
+            .await;
+        let _ = tx2.send(LoopbackEvent::Flush).await;
+    });
+    drop(tx);
+
+    // Recv loop: exit on FullMessage (mirrors src/daemon.rs process()).
+    let mut exited_on_flush = false;
+    let mut response = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            LoopbackEvent::Flush => {
+                exited_on_flush = true;
+                break;
+            }
+            LoopbackEvent::FullMessage(text) => {
+                response = text;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(response, "req1-response");
+
+    // Drain until Flush — the fix for #2326.
+    if !exited_on_flush {
+        loop {
+            match rx.recv().await {
+                Some(LoopbackEvent::Flush) | None => break,
+                Some(_) => {}
+            }
+        }
+    }
+
+    // Channel must be empty — stale events must not leak into the next request.
+    assert!(
+        rx.try_recv().is_err(),
+        "channel must be empty after drain; stale events would shift next response"
+    );
+}
+
 // Fix #2295: stale PID detection — read_pid_file + is_process_alive roundtrip.
 #[test]
 fn stale_pid_detection_dead_process() {

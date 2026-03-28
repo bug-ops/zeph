@@ -130,11 +130,17 @@ impl EmbeddingAnomalyGuard {
         let Some(centroid) = centroid_opt else {
             // Cold-start: synchronous regex check, sub-millisecond.
             let injection_detected = check_regex(tool_output);
-            let _ = self.result_tx.send(EmbeddingGuardEvent {
-                server_id: server_id.to_owned(),
-                tool_name: tool_name.to_owned(),
-                result: EmbeddingGuardResult::RegexFallback { injection_detected },
-            });
+            if self
+                .result_tx
+                .send(EmbeddingGuardEvent {
+                    server_id: server_id.to_owned(),
+                    tool_name: tool_name.to_owned(),
+                    result: EmbeddingGuardResult::RegexFallback { injection_detected },
+                })
+                .is_err()
+            {
+                tracing::warn!("embedding guard: result channel closed, receiver dropped");
+            }
             return;
         };
 
@@ -164,11 +170,16 @@ impl EmbeddingAnomalyGuard {
                     } else {
                         EmbeddingGuardResult::Normal { distance }
                     };
-                    let _ = tx.send(EmbeddingGuardEvent {
-                        server_id,
-                        tool_name,
-                        result,
-                    });
+                    if tx
+                        .send(EmbeddingGuardEvent {
+                            server_id,
+                            tool_name,
+                            result,
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!("embedding guard: result channel closed, receiver dropped");
+                    }
                 }
                 Err(e) => {
                     // Fail-open: embedding failure does not block the tool output path.

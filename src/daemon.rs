@@ -107,6 +107,7 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                 .await
                 .map_err(|_| zeph_a2a::A2aError::Server("event channel closed".to_owned()))?;
 
+            let mut exited_on_flush = false;
             while let Some(event) = handle.output_rx.recv().await {
                 match event {
                     zeph_core::LoopbackEvent::Chunk(text) => {
@@ -124,6 +125,7 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                                 is_final: true,
                             })
                             .await;
+                        exited_on_flush = true;
                         break;
                     }
                     zeph_core::LoopbackEvent::FullMessage(text) => {
@@ -146,9 +148,18 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                 }
             }
 
-            // Drain any stale events left in the channel from previous requests
-            // (e.g. a Flush emitted after a FullMessage was already consumed).
-            while let Ok(_stale) = handle.output_rx.try_recv() {}
+            // Wait for Flush — the definitive end-of-turn sentinel always emitted by the
+            // agent loop after FullMessage or stop-hint paths. This prevents stale tail
+            // events (e.g. the Flush that follows FullMessage, Usage, SessionTitle) from
+            // leaking into the next request's recv loop.
+            if !exited_on_flush {
+                loop {
+                    match handle.output_rx.recv().await {
+                        Some(zeph_core::LoopbackEvent::Flush) | None => break,
+                        Some(_) => {} // discard tail events
+                    }
+                }
+            }
 
             let _ = event_tx
                 .send(zeph_a2a::ProcessorEvent::StatusUpdate {

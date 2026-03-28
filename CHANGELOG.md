@@ -27,7 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- fix(a2a): `message/send` returning empty artifacts on second and subsequent requests — drain stale events from `output_rx` with `try_recv()` after breaking out of the recv loop so they do not leak into the next request (#2302)
+- fix(a2a): A2A response shift — replace `try_recv()` drain with a blocking drain-until-`Flush` loop; the agent loop always emits `Flush` as the definitive end-of-turn sentinel after `FullMessage`, so waiting for it eliminates the TOCTOU race where tail events (`Usage`, `SessionTitle`, `Flush`) arrived after the drain window and leaked into the next request (#2326)
+- fix(mcp): silent drop of embedding guard result on closed receiver — replace `let _ = tx.send(result)` with an explicit `is_err()` check that logs a `WARN` when the result channel is closed; prevents silent failure hiding in `EmbeddingAnomalyGuard::check_async()` (#2313)
 - fix(daemon): stale PID file from a crashed run no longer blocks startup — read and liveness-check the existing PID before writing; remove the file if the process is dead, error if the process is still alive (#2295)
 - fix(mcp): `prune_tools` `max_tools == 0` now means no cap on LLM-selected candidates (#2294)
 - fix(security): sanitize MCP tool descriptions and names before interpolating into the pruning prompt — strip control characters, cap description at 200 chars and name at 64 chars (#2297)
