@@ -144,7 +144,8 @@ impl CandlePiiClassifier {
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
 
-        let model = DebertaV2NERModel::load(vb, &config, config.id2label.clone())
+        // HuggingFace DeBERTa v2/v3 safetensors store backbone weights under the deberta.* namespace
+        let model = DebertaV2NERModel::load(vb.pp("deberta"), &config, config.id2label.clone())
             .map_err(|e| LlmError::ModelLoad(format!("failed to load DeBERTa NER model: {e}")))?;
 
         let load_ms = load_t0.elapsed().as_millis();

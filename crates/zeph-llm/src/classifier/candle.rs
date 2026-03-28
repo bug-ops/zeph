@@ -268,7 +268,8 @@ impl CandleClassifier {
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
 
         // Pass None — model's config.json contains id2label; passing Some(empty) would conflict.
-        let model = DebertaV2SeqClassificationModel::load(vb, &config, None)
+        // HuggingFace DeBERTa v2/v3 safetensors store backbone weights under the deberta.* namespace
+        let model = DebertaV2SeqClassificationModel::load(vb.pp("deberta"), &config, None)
             .map_err(|e| LlmError::ModelLoad(format!("failed to load DeBERTa model: {e}")))?;
 
         Ok(CandleClassifierInner {

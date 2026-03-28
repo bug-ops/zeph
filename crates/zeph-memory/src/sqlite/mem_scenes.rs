@@ -148,7 +148,10 @@ mod tests {
     use super::*;
 
     async fn make_store() -> SqliteStore {
-        SqliteStore::new(":memory:").await.unwrap()
+        // pool_size=1 is required: SQLite :memory: creates an isolated database per
+        // connection, so a multi-connection pool would split inserts across empty DBs,
+        // causing FK violations when querying across connections.
+        SqliteStore::with_pool_size(":memory:", 1).await.unwrap()
     }
 
     /// Create N real messages in the DB and return their IDs.
