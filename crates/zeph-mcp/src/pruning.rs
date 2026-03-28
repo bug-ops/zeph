@@ -18,6 +18,207 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::tool::McpTool;
 
+// ── Per-message pruning cache (#2298) ────────────────────────────────────────
+
+/// Cached outcome stored by [`PruningCache`].
+///
+/// [`Ok`] holds the previously-computed pruned tool list; [`Failed`] is a
+/// sentinel written when the LLM call failed, so subsequent lookups with the
+/// same key return the all-tools fallback without retrying the LLM.
+#[derive(Debug, Clone)]
+enum CachedResult {
+    Ok(Vec<McpTool>),
+    /// LLM call failed; caller should use the full tool list.
+    Failed,
+}
+
+/// Per-message cache for MCP tool pruning results.
+///
+/// Stores at most one entry keyed on `(message_content_hash, tool_list_hash)`.
+/// A cache miss triggers an LLM call; a hit returns the stored result
+/// immediately.  Negative entries (`Failed`) prevent retry storms when the
+/// pruning LLM is transiently unavailable.
+///
+/// # Cache contract
+///
+/// `PruningCache` returns previously-computed pruning results keyed on
+/// `(message_content_hash, tool_list_hash)`.
+///
+/// `tool_list_hash` includes: `server_id`, `name`, `description`, and
+/// `input_schema` for every tool.  Any change to tool metadata (not just the
+/// name set) produces a different hash and causes a cache miss.
+///
+/// `PruningCache::reset()` is additionally called on:
+/// - New user message (top of `process_user_message_inner`)
+/// - `tools/list_changed` notification (in `check_tool_refresh`)
+/// - Manual `/mcp add` or `/mcp remove` commands
+///
+/// `PruningParams` is **not** part of the cache key.  Callers must not change
+/// `PruningParams` within a single user turn; this invariant holds because
+/// params are derived from `ToolPruningConfig`, which is stable within a turn
+/// (config changes trigger a full agent rebuild, not a mid-turn param swap).
+///
+/// Designed for single-owner use (`&mut` on `Agent`). Not thread-safe.
+#[derive(Debug, Default, Clone)]
+pub struct PruningCache {
+    key: Option<(u64, u64)>,
+    result: Option<CachedResult>,
+}
+
+/// Outcome of a [`PruningCache::lookup`] call.
+enum CacheLookup<'a> {
+    /// Positive hit: pruned tool slice from a previous successful call.
+    Hit(&'a [McpTool]),
+    /// Negative hit: LLM previously failed; caller should use the full tool list.
+    NegativeHit,
+    /// No entry for this key.
+    Miss,
+}
+
+impl PruningCache {
+    /// Create a new, empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clear the cached entry.
+    ///
+    /// Must be called at the start of each user turn and whenever the MCP tool
+    /// list changes (via notification, `/mcp add`, or `/mcp remove`).
+    pub fn reset(&mut self) {
+        self.key = None;
+        self.result = None;
+    }
+
+    fn lookup(&self, msg_hash: u64, tool_hash: u64) -> CacheLookup<'_> {
+        match (&self.key, &self.result) {
+            (Some(k), Some(CachedResult::Ok(tools))) if *k == (msg_hash, tool_hash) => {
+                CacheLookup::Hit(tools)
+            }
+            (Some(k), Some(CachedResult::Failed)) if *k == (msg_hash, tool_hash) => {
+                CacheLookup::NegativeHit
+            }
+            _ => CacheLookup::Miss,
+        }
+    }
+
+    fn insert_ok(&mut self, msg_hash: u64, tool_hash: u64, tools: Vec<McpTool>) {
+        self.key = Some((msg_hash, tool_hash));
+        self.result = Some(CachedResult::Ok(tools));
+    }
+
+    fn insert_failed(&mut self, msg_hash: u64, tool_hash: u64) {
+        self.key = Some((msg_hash, tool_hash));
+        self.result = Some(CachedResult::Failed);
+    }
+}
+
+/// Compute a `u64` hash of a string using blake3 (first 8 bytes, little-endian).
+///
+/// # Panics
+///
+/// Never panics in practice: blake3 always produces at least 8 bytes of output.
+#[must_use]
+pub fn content_hash(s: &str) -> u64 {
+    let hash = blake3::hash(s.as_bytes());
+    u64::from_le_bytes(hash.as_bytes()[..8].try_into().expect("blake3 >= 8 bytes"))
+}
+
+/// Compute a `u64` hash of the full tool list metadata using blake3.
+///
+/// Hashes `server_id`, `name`, `description`, and `input_schema` for every
+/// tool, sorted by qualified name (`server_id` then `name`) for deterministic
+/// ordering regardless of list order.
+///
+/// **`BTreeMap` assumption**: `serde_json::to_vec` produces deterministic output
+/// because `serde_json::Map` defaults to `BTreeMap`-backed storage (sorted
+/// keys).  If the `preserve_order` feature of `serde_json` is ever enabled
+/// (switching `Map` to `IndexMap`), key order becomes insertion-order and
+/// hashing becomes non-deterministic.  Should `preserve_order` be needed,
+/// sort `Map` keys before serialising here.
+///
+/// # Panics
+///
+/// Never panics in practice: blake3 always produces at least 8 bytes of output.
+#[must_use]
+pub fn tool_list_hash(tools: &[McpTool]) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    let mut sorted: Vec<&McpTool> = tools.iter().collect();
+    sorted.sort_by(|a, b| a.server_id.cmp(&b.server_id).then(a.name.cmp(&b.name)));
+    for tool in sorted {
+        hasher.update(tool.server_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(tool.name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(tool.description.as_bytes());
+        hasher.update(b"\0");
+        match serde_json::to_vec(&tool.input_schema) {
+            Ok(schema_bytes) => {
+                hasher.update(&schema_bytes);
+            }
+            Err(_) => {
+                hasher.update(b"\x00");
+            }
+        }
+        // Tool separator — prevents adjacent-field collisions.
+        hasher.update(b"\x01");
+    }
+    let hash = hasher.finalize();
+    u64::from_le_bytes(hash.as_bytes()[..8].try_into().expect("blake3 >= 8 bytes"))
+}
+
+/// Cache-aware wrapper around [`prune_tools`].
+///
+/// On a **positive cache hit**: returns the previously-computed pruned list
+/// without an LLM call.
+///
+/// On a **negative cache hit** (LLM previously failed for this key): returns
+/// `Ok(all_tools.to_vec())` without retrying the LLM, avoiding retry storms
+/// when the pruning LLM is transiently unavailable.
+///
+/// On a **cache miss**: calls [`prune_tools`], stores the result (success or
+/// failure), and returns.  On LLM failure the negative sentinel is cached and
+/// `Err(PruningError)` is returned so the caller can log and fall back.
+///
+/// # Errors
+///
+/// Propagates `PruningError` from [`prune_tools`] on the first (uncached) LLM
+/// failure.  Subsequent calls with the same key return `Ok(all_tools.to_vec())`
+/// from the negative cache entry.
+pub async fn prune_tools_cached<P: LlmProvider>(
+    cache: &mut PruningCache,
+    all_tools: &[McpTool],
+    task_context: &str,
+    params: &PruningParams,
+    provider: &P,
+) -> Result<Vec<McpTool>, PruningError> {
+    let msg_hash = content_hash(task_context);
+    let tl_hash = tool_list_hash(all_tools);
+
+    match cache.lookup(msg_hash, tl_hash) {
+        CacheLookup::Hit(cached) => return Ok(cached.to_vec()),
+        CacheLookup::NegativeHit => {
+            // Negative cache hit: LLM previously failed for this key.
+            // Return all tools as fallback without retrying to avoid retry storms.
+            tracing::warn!("pruning cache: negative hit, returning all tools without LLM call");
+            return Ok(all_tools.to_vec());
+        }
+        CacheLookup::Miss => {}
+    }
+
+    match prune_tools(all_tools, task_context, params, provider).await {
+        Ok(result) => {
+            cache.insert_ok(msg_hash, tl_hash, result.clone());
+            Ok(result)
+        }
+        Err(e) => {
+            cache.insert_failed(msg_hash, tl_hash);
+            Err(e)
+        }
+    }
+}
+
 /// Errors that can occur during tool pruning.
 #[derive(Debug, thiserror::Error)]
 pub enum PruningError {
@@ -41,6 +242,11 @@ pub struct PruningParams {
     /// Minimum number of MCP tools below which pruning is skipped.
     pub min_tools_to_prune: usize,
     /// Tool names that are never pruned (always included).
+    ///
+    /// Matches on bare tool `name` (not qualified `server_id:name`).  When two
+    /// MCP servers expose a tool with the same name, both instances are pinned.
+    /// This is intentional: the config is user-facing and users specify tool
+    /// names, not server-qualified identifiers.
     pub always_include: Vec<String>,
 }
 
@@ -179,7 +385,16 @@ mod tests {
         }
     }
 
-    /// Build a params with low `min_tools_to_prune` so tests aren't skipped early.
+    fn make_tool_with_server(server_id: &str, name: &str, description: &str) -> McpTool {
+        McpTool {
+            server_id: server_id.into(),
+            name: name.into(),
+            description: description.into(),
+            input_schema: serde_json::Value::Null,
+        }
+    }
+
+    /// Build params with low `min_tools_to_prune` so tests aren't skipped early.
     fn params_with_max(max_tools: usize) -> PruningParams {
         PruningParams {
             max_tools,
@@ -221,14 +436,110 @@ mod tests {
         assert!(parse_name_array("{\"key\": \"val\"}").is_err());
     }
 
-    #[test]
-    fn below_min_detected() {
+    // Replaced below_min_detected tautology (#2300): call prune_tools with a failing
+    // mock to verify the early-return path fires before the LLM is ever contacted.
+    #[tokio::test]
+    async fn below_min_detected_early_return() {
+        let tools: Vec<McpTool> = (0..5).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        // MockProvider::failing() would panic on any LLM call — if prune_tools invokes it,
+        // the test will error rather than pass.
+        let provider = MockProvider::failing();
         let params = PruningParams {
-            min_tools_to_prune: 10,
-            ..Default::default()
+            max_tools: 0,
+            min_tools_to_prune: 10, // 5 tools < 10 → early return before LLM
+            always_include: Vec::new(),
         };
-        // Two tools < 10 → prune_tools would return all as-is.
-        assert!(2 < params.min_tools_to_prune);
+
+        let result = prune_tools(&tools, "task", &params, &provider)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 5, "all tools returned when below threshold");
+    }
+
+    #[tokio::test]
+    async fn always_include_pinned() {
+        let tools = vec![
+            make_tool("pinned", "always here"),
+            make_tool("candidate_a", "desc a"),
+            make_tool("candidate_b", "desc b"),
+        ];
+        // LLM returns only candidate_a; pinned must still appear.
+        let provider = MockProvider::with_responses(vec![r#"["candidate_a"]"#.into()]);
+        let params = PruningParams {
+            max_tools: 0,
+            min_tools_to_prune: 1,
+            always_include: vec!["pinned".into()],
+        };
+
+        let result = prune_tools(&tools, "task", &params, &provider)
+            .await
+            .unwrap();
+        assert!(
+            result.iter().any(|t| t.name == "pinned"),
+            "pinned must survive pruning"
+        );
+        assert!(result.iter().any(|t| t.name == "candidate_a"));
+    }
+
+    /// S4: `always_include` pins tools by bare name across multiple servers.
+    #[tokio::test]
+    async fn always_include_matches_bare_name_across_servers() {
+        let tools = vec![
+            make_tool_with_server("server_a", "search", "search on A"),
+            make_tool_with_server("server_b", "search", "search on B"),
+            make_tool_with_server("server_a", "other", "other tool"),
+        ];
+        // LLM returns only "other"; both "search" instances should still be pinned.
+        let provider = MockProvider::with_responses(vec![r#"["other"]"#.into()]);
+        let params = PruningParams {
+            max_tools: 0,
+            min_tools_to_prune: 1,
+            always_include: vec!["search".into()],
+        };
+
+        let result = prune_tools(&tools, "task", &params, &provider)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3, "both search tools + other must be present");
+        let search_count = result.iter().filter(|t| t.name == "search").count();
+        assert_eq!(
+            search_count, 2,
+            "both server_a:search and server_b:search must be pinned"
+        );
+        assert!(result.iter().any(|t| t.name == "other"));
+    }
+
+    #[tokio::test]
+    async fn max_tools_cap_respected() {
+        let tools: Vec<McpTool> = (0..5).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        // LLM returns all 5 as relevant; max_tools=2 must cap candidates.
+        let names_json = r#"["t0","t1","t2","t3","t4"]"#;
+        let provider = MockProvider::with_responses(vec![names_json.into()]);
+
+        let result = prune_tools(&tools, "task", &params_with_max(2), &provider)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            2,
+            "max_tools=2 must cap LLM-selected candidates"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_failure_propagates() {
+        let tools: Vec<McpTool> = (0..3).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        let provider = MockProvider::failing();
+        let result = prune_tools(&tools, "task", &params_with_max(0), &provider).await;
+        assert!(matches!(result, Err(PruningError::LlmError(_))));
+    }
+
+    #[tokio::test]
+    async fn parse_error_propagates() {
+        let tools: Vec<McpTool> = (0..3).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        let provider = MockProvider::with_responses(vec!["not valid json at all".into()]);
+        let result = prune_tools(&tools, "task", &params_with_max(0), &provider).await;
+        assert!(matches!(result, Err(PruningError::ParseError)));
     }
 
     #[tokio::test]
@@ -290,5 +601,116 @@ mod tests {
         );
         // Only 1 candidate slot remains after pinned bypasses cap; total = 1 (pinned) + 1 (candidate).
         assert_eq!(result.len(), 2);
+    }
+
+    // ── PruningCache tests (#2298, #2300) ────────────────────────────────────
+
+    #[tokio::test]
+    async fn cache_positive_hit() {
+        // Two tools to exceed min_tools_to_prune=1; MockProvider has exactly one response.
+        // The second call must succeed from cache without consuming the (empty) response queue.
+        let tools: Vec<McpTool> = (0..2).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        let provider = MockProvider::with_responses(vec![r#"["t0","t1"]"#.into()]);
+        let params = params_with_max(0);
+        let mut cache = PruningCache::new();
+
+        let r1 = prune_tools_cached(&mut cache, &tools, "query", &params, &provider)
+            .await
+            .unwrap();
+        let r2 = prune_tools_cached(&mut cache, &tools, "query", &params, &provider)
+            .await
+            .unwrap();
+
+        assert_eq!(r1.len(), 2);
+        assert_eq!(r1.len(), r2.len(), "cache hit must return same result");
+    }
+
+    #[tokio::test]
+    async fn cache_miss_on_message_change() {
+        let tools: Vec<McpTool> = (0..2).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        let provider =
+            MockProvider::with_responses(vec![r#"["t0","t1"]"#.into(), r#"["t0"]"#.into()]);
+        let params = params_with_max(0);
+        let mut cache = PruningCache::new();
+
+        let r1 = prune_tools_cached(&mut cache, &tools, "query_a", &params, &provider)
+            .await
+            .unwrap();
+        let r2 = prune_tools_cached(&mut cache, &tools, "query_b", &params, &provider)
+            .await
+            .unwrap();
+
+        assert_eq!(r1.len(), 2, "first call returns both tools");
+        assert_eq!(
+            r2.len(),
+            1,
+            "different message triggers cache miss and LLM call"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_miss_on_tool_list_change() {
+        let tools1: Vec<McpTool> = (0..2).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        let mut tools2 = tools1.clone();
+        tools2.push(make_tool("t2", "new tool"));
+
+        let provider = MockProvider::with_responses(vec![
+            r#"["t0","t1"]"#.into(),
+            r#"["t0","t1","t2"]"#.into(),
+        ]);
+        let params = params_with_max(0);
+        let mut cache = PruningCache::new();
+
+        let r1 = prune_tools_cached(&mut cache, &tools1, "query", &params, &provider)
+            .await
+            .unwrap();
+        let r2 = prune_tools_cached(&mut cache, &tools2, "query", &params, &provider)
+            .await
+            .unwrap();
+
+        assert_eq!(r1.len(), 2);
+        assert_eq!(r2.len(), 3, "new tool triggers cache miss");
+    }
+
+    #[tokio::test]
+    async fn cache_negative_hit_skips_llm() {
+        let tools: Vec<McpTool> = (0..2).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        let provider = MockProvider::failing();
+        let params = params_with_max(0);
+        let mut cache = PruningCache::new();
+
+        // First call: LLM fails → error is returned and negative entry is cached.
+        let r1 = prune_tools_cached(&mut cache, &tools, "query", &params, &provider).await;
+        assert!(r1.is_err(), "first call must propagate LLM error");
+
+        // Second call: negative cache hit → returns all tools without calling LLM.
+        // MockProvider::failing() would panic on a second LLM call, proving cache is used.
+        let r2 = prune_tools_cached(&mut cache, &tools, "query", &params, &provider)
+            .await
+            .unwrap();
+        assert_eq!(r2.len(), 2, "negative cache hit must return all tools");
+    }
+
+    #[tokio::test]
+    async fn cache_negative_hit_clears_on_reset() {
+        let tools: Vec<McpTool> = (0..2).map(|i| make_tool(&format!("t{i}"), "d")).collect();
+        // Fail on the first LLM call; succeed on the second (after cache.reset()).
+        let provider = MockProvider::with_responses(vec![r#"["t0","t1"]"#.into()])
+            .with_errors(vec![zeph_llm::LlmError::Other("simulated failure".into())]);
+        let params = params_with_max(0);
+        let mut cache = PruningCache::new();
+
+        // First call: LLM fails → negative entry cached.
+        let r1 = prune_tools_cached(&mut cache, &tools, "query", &params, &provider).await;
+        assert!(r1.is_err());
+
+        // Reset clears the negative entry.
+        cache.reset();
+
+        // After reset the LLM is retried; the queued success response is now returned.
+        let r2 = prune_tools_cached(&mut cache, &tools, "query", &params, &provider)
+            .await
+            .unwrap();
+        assert_eq!(r2.len(), 2, "after reset the LLM must be retried");
     }
 }

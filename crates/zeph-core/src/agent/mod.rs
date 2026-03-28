@@ -349,6 +349,10 @@ impl<C: Channel> Agent<C> {
                 shared_tools: None,
                 tool_rx: None,
                 server_outcomes: Vec::new(),
+                pruning_cache: zeph_mcp::PruningCache::new(),
+                pruning_provider: None,
+                pruning_enabled: false,
+                pruning_params: zeph_mcp::PruningParams::default(),
             },
             index: IndexState {
                 retriever: None,
@@ -3379,6 +3383,9 @@ impl<C: Channel> Agent<C> {
         }
         #[cfg(feature = "classifiers")]
         self.push_classifier_metrics();
+
+        // Reset per-message pruning cache at the start of each turn (#2298).
+        self.mcp.pruning_cache.reset();
 
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).

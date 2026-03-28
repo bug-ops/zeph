@@ -512,6 +512,24 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure MCP tool pruning (#2298).
+    ///
+    /// Sets the pruning params derived from `ToolPruningConfig` and optionally a dedicated
+    /// provider for pruning LLM calls.  `pruning_provider = None` means fall back to the
+    /// primary provider.
+    #[must_use]
+    pub fn with_mcp_pruning(
+        mut self,
+        params: zeph_mcp::PruningParams,
+        enabled: bool,
+        pruning_provider: Option<zeph_llm::any::AnyProvider>,
+    ) -> Self {
+        self.mcp.pruning_params = params;
+        self.mcp.pruning_enabled = enabled;
+        self.mcp.pruning_provider = pruning_provider;
+        self
+    }
+
     /// Set the watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     ///
     /// The agent polls this receiver at the start of each turn to pick up refreshed tool lists.

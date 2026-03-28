@@ -92,11 +92,36 @@ pub(crate) struct McpState {
     pub(crate) allowed_commands: Vec<String>,
     pub(crate) max_dynamic: usize,
     /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
+    ///
+    /// Two methods write to this `RwLock` — ordering matters:
+    /// - `sync_mcp_executor_tools()`: writes the **full** `self.mcp.tools` set.
+    /// - `apply_pruned_mcp_tools()`: writes the **pruned** subset (used after pruning).
+    ///
+    /// Within a turn, `sync_mcp_executor_tools` must always run **before**
+    /// `apply_pruned_mcp_tools`.  The normal call order guarantees this: tool-list
+    /// change events call `sync_mcp_executor_tools` (inside `check_tool_refresh`,
+    /// `handle_mcp_add`, `handle_mcp_remove`), and pruning runs later inside
+    /// `rebuild_system_prompt`.  See also: `apply_pruned_mcp_tools`.
     pub(crate) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
     /// Receives full flattened tool list after any `tools/list_changed` notification.
     pub(crate) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
     /// Per-server connection outcomes from the initial `connect_all()` call.
     pub(crate) server_outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
+    /// Per-message cache for MCP tool pruning results (#2298).
+    ///
+    /// Reset at the start of each user turn and whenever the MCP tool list
+    /// changes (via `tools/list_changed`, `/mcp add`, or `/mcp remove`).
+    pub(crate) pruning_cache: zeph_mcp::PruningCache,
+    /// Dedicated provider for MCP tool pruning LLM calls.
+    ///
+    /// `None` means fall back to the agent's primary provider.
+    /// Resolved from `[[llm.providers]]` at build time using `pruning_provider`
+    /// from `ToolPruningConfig`.
+    pub(crate) pruning_provider: Option<zeph_llm::any::AnyProvider>,
+    /// Whether MCP tool pruning is enabled.  Mirrors `ToolPruningConfig::enabled`.
+    pub(crate) pruning_enabled: bool,
+    /// Pruning parameters snapshot.  Derived from `ToolPruningConfig` at build time.
+    pub(crate) pruning_params: zeph_mcp::PruningParams,
 }
 
 pub(crate) struct IndexState {

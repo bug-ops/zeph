@@ -39,7 +39,10 @@ pub use mock::{McpCall, MockMcpCaller};
 pub use policy::{McpPolicy, PolicyEnforcer, PolicyViolation, RateLimit};
 pub use prober::{DefaultMcpProber, ProbeResult};
 pub use prompt::format_mcp_tools_prompt;
-pub use pruning::{PruningError, PruningParams, prune_tools};
+pub use pruning::{
+    PruningCache, PruningError, PruningParams, content_hash, prune_tools, prune_tools_cached,
+    tool_list_hash,
+};
 pub use registry::McpToolRegistry;
 pub use tool::McpTool;
 pub use trust_score::{ServerTrustScore, TrustScoreStore};

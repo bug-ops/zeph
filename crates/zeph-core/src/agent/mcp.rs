@@ -103,6 +103,7 @@ impl<C: Channel> Agent<C> {
                     });
                 self.mcp.tools.extend(tools);
                 self.sync_mcp_executor_tools();
+                self.mcp.pruning_cache.reset();
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_server_count = self.mcp.server_outcomes.len();
@@ -237,6 +238,7 @@ impl<C: Channel> Agent<C> {
                 let removed = before - self.mcp.tools.len();
                 self.mcp.server_outcomes.retain(|o| o.id != server_id);
                 self.sync_mcp_executor_tools();
+                self.mcp.pruning_cache.reset();
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_server_count = self.mcp.server_outcomes.len();
@@ -381,6 +383,7 @@ impl<C: Channel> Agent<C> {
         );
         self.mcp.tools = new_tools;
         self.sync_mcp_executor_tools();
+        self.mcp.pruning_cache.reset();
         self.sync_mcp_registry().await;
         let mcp_total = self.mcp.tools.len();
         let mcp_servers = self
@@ -396,12 +399,51 @@ impl<C: Channel> Agent<C> {
         });
     }
 
+    /// Write the **full** `self.mcp.tools` set to the shared executor `RwLock`.
+    ///
+    /// This is the first of two writers to `mcp.shared_tools`.  Within a turn
+    /// this method must run **before** `apply_pruned_mcp_tools`, which writes the
+    /// pruned subset.  The normal call order guarantees this: tool-list change
+    /// events (notify, `/mcp add`, `/mcp remove`) call this method, and pruning
+    /// runs later inside `rebuild_system_prompt`.
+    /// See also: `McpState::shared_tools` doc comment.
     pub(super) fn sync_mcp_executor_tools(&self) {
         if let Some(ref shared) = self.mcp.shared_tools {
             let mut guard = shared
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.clone_from(&self.mcp.tools);
+        }
+    }
+
+    /// Write the **pruned** tool subset to the shared executor `RwLock`.
+    ///
+    /// This is the second of two writers to `mcp.shared_tools`.  Must only be
+    /// called **after** `sync_mcp_executor_tools` has established the full tool
+    /// set for the current turn (guaranteed by call-site ordering: pruning runs
+    /// inside `rebuild_system_prompt`, after any tool-list change events).
+    ///
+    /// `self.mcp.tools` (the full set) is intentionally **not** modified: it is
+    /// retained for cache key computation and for restoration when the next turn
+    /// triggers a cache reset.
+    ///
+    /// This method must **NOT** call `sync_mcp_executor_tools` internally —
+    /// doing so would overwrite the pruned subset with the full set.
+    /// See also: `McpState::shared_tools` doc comment.
+    pub(in crate::agent) fn apply_pruned_mcp_tools(&self, pruned: Vec<zeph_mcp::McpTool>) {
+        debug_assert!(
+            pruned.iter().all(|p| self
+                .mcp
+                .tools
+                .iter()
+                .any(|t| t.server_id == p.server_id && t.name == p.name)),
+            "pruned set must be a subset of self.mcp.tools"
+        );
+        if let Some(ref shared) = self.mcp.shared_tools {
+            let mut guard = shared
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = pruned;
         }
     }
 

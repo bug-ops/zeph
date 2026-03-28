@@ -1313,6 +1313,38 @@ impl<C: Channel> Agent<C> {
             .model_name
             .clone_from(&self.runtime.model_name);
 
+        // MCP tool pruning (#2298): reduce MCP tools to those relevant to this turn's query.
+        // Runs before the schema filter so the pruned subset feeds into the combined
+        // (native + MCP) tool set that the schema filter operates on.
+        if self.mcp.pruning_enabled && !self.mcp.tools.is_empty() {
+            // Resolve pruning provider: use dedicated provider if configured, else fall back to
+            // the primary provider.  Clone to avoid borrow conflicts with &mut self below.
+            let pruning_provider = self
+                .mcp
+                .pruning_provider
+                .clone()
+                .unwrap_or_else(|| self.provider.clone());
+            let tools_snapshot = self.mcp.tools.clone();
+            let params_snapshot = self.mcp.pruning_params.clone();
+            match zeph_mcp::prune_tools_cached(
+                &mut self.mcp.pruning_cache,
+                &tools_snapshot,
+                query,
+                &params_snapshot,
+                &pruning_provider,
+            )
+            .await
+            {
+                Ok(pruned) => {
+                    self.apply_pruned_mcp_tools(pruned);
+                }
+                Err(e) => {
+                    tracing::warn!("MCP pruning failed, using all tools: {e:#}");
+                    self.sync_mcp_executor_tools();
+                }
+            }
+        }
+
         // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
         self.cached_filtered_tool_ids = None;
         if let Some(ref filter) = self.tool_schema_filter
