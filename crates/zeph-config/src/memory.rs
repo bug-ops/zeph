@@ -710,6 +710,14 @@ pub struct MemoryConfig {
     /// messages and merges them into consolidated entries via LLM.
     #[serde(default)]
     pub consolidation: ConsolidationConfig,
+    /// `PostgreSQL` connection URL.
+    ///
+    /// Used when the binary is compiled with `--features postgres`.
+    /// Can be overridden by the vault key `ZEPH_DATABASE_URL`.
+    /// Example: `postgres://user:pass@localhost:5432/zeph`
+    /// Default: `None` (uses `sqlite_path` instead).
+    #[serde(default)]
+    pub database_url: Option<String>,
 }
 
 fn default_crossover_turn_threshold() -> u32 {

@@ -111,9 +111,14 @@ impl CodeStore {
         let line_end = i64::try_from(chunk.line_end)?;
 
         sqlx::query(
-            sql!("INSERT OR REPLACE INTO chunk_metadata \
+            sql!("INSERT INTO chunk_metadata \
              (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type, entity_name) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(qdrant_id) DO UPDATE SET \
+               file_path = excluded.file_path, content_hash = excluded.content_hash, \
+               line_start = excluded.line_start, line_end = excluded.line_end, \
+               language = excluded.language, node_type = excluded.node_type, \
+               entity_name = excluded.entity_name"),
         )
         .bind(&point_id)
         .bind(chunk.file_path)
@@ -423,9 +428,13 @@ mod tests {
 
         for (i, path) in ["src/a.rs", "src/b.rs", "src/a.rs"].iter().enumerate() {
             sqlx::query(sql!(
-                "INSERT OR REPLACE INTO chunk_metadata \
+                "INSERT INTO chunk_metadata \
                  (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(qdrant_id) DO UPDATE SET \
+                   file_path = excluded.file_path, content_hash = excluded.content_hash, \
+                   line_start = excluded.line_start, line_end = excluded.line_end, \
+                   language = excluded.language, node_type = excluded.node_type"
             ))
             .bind(format!("q{i}"))
             .bind(path)

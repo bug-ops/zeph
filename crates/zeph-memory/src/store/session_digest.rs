@@ -38,7 +38,7 @@ impl SqliteStore {
         let safe_digest = redact_sensitive(digest);
         sqlx::query(sql!(
             "INSERT INTO session_digest (conversation_id, digest, token_count, updated_at) \
-             VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP) \
              ON CONFLICT(conversation_id) DO UPDATE SET \
                digest = excluded.digest, \
                token_count = excluded.token_count, \

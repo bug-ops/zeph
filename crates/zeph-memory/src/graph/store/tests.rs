@@ -862,6 +862,7 @@ async fn orphan_alias_cleanup_on_entity_delete() {
 /// - initial aliases are seeded from entity names
 /// - `graph_edges` survive (FK cascade did not wipe them)
 #[tokio::test]
+#[cfg(feature = "sqlite")]
 async fn migration_024_backfill_preserves_entities_and_edges() {
     use sqlx::Acquire as _;
     use sqlx::ConnectOptions as _;
@@ -885,8 +886,8 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             name TEXT NOT NULL,
             entity_type TEXT NOT NULL,
             summary TEXT,
-            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            first_seen_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            last_seen_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
             qdrant_point_id TEXT,
             UNIQUE(name, entity_type)
          )"
@@ -903,9 +904,9 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             relation TEXT NOT NULL,
             fact TEXT NOT NULL,
             confidence REAL NOT NULL DEFAULT 1.0,
-            valid_from TEXT NOT NULL DEFAULT (datetime('now')),
+            valid_from TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
             valid_to TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
             expired_at TEXT,
             episode_id INTEGER,
             qdrant_point_id TEXT
@@ -1004,8 +1005,8 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             canonical_name TEXT NOT NULL,
             entity_type TEXT NOT NULL,
             summary TEXT,
-            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            first_seen_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            last_seen_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
             qdrant_point_id TEXT,
             UNIQUE(canonical_name, entity_type)
          )"
@@ -1069,7 +1070,7 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_id INTEGER NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
             alias_name TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
             UNIQUE(alias_name, entity_id)
          )"
     ))
@@ -2864,7 +2865,7 @@ async fn record_edge_retrieval_increments_count() {
         .unwrap();
     let edge_id: i64 = sqlx::query_scalar(
         sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'))
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, CURRENT_TIMESTAMP)
          RETURNING id"),
     )
     .bind(a)
@@ -2922,7 +2923,7 @@ async fn record_edge_retrieval_sets_last_retrieved_at() {
         .unwrap();
     let edge_id: i64 = sqlx::query_scalar(
         sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'))
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, CURRENT_TIMESTAMP)
          RETURNING id"),
     )
     .bind(a)
@@ -2982,7 +2983,7 @@ async fn decay_edge_retrieval_counts_reduces_count() {
     sqlx::query(sql!(
         "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence,
          valid_from, retrieval_count, last_retrieved_at)
-         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 10, 0)"
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, CURRENT_TIMESTAMP, 10, 0)"
     ))
     .bind(a)
     .bind(b)
@@ -3041,16 +3042,19 @@ async fn decay_edge_retrieval_counts_respects_interval() {
         .await
         .unwrap();
     // Edge retrieved just now (last_retrieved_at = current time)
-    sqlx::query(sql!(
-        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence,
-         valid_from, retrieval_count, last_retrieved_at)
-         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 5, unixepoch('now'))"
-    ))
-    .bind(a)
-    .bind(b)
-    .execute(store.pool())
-    .await
-    .unwrap();
+    let epoch_now = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+    let insert_raw = format!(
+        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, \
+         valid_from, retrieval_count, last_retrieved_at) \
+         VALUES (?, ?, 'knows', 'A knows B', 0.9, CURRENT_TIMESTAMP, 5, {epoch_now})"
+    );
+    let insert_sql = zeph_db::rewrite_placeholders(&insert_raw);
+    sqlx::query(&insert_sql)
+        .bind(a)
+        .bind(b)
+        .execute(store.pool())
+        .await
+        .unwrap();
 
     // interval=86400 (24h): recent edge must NOT be decayed
     let affected = store.decay_edge_retrieval_counts(0.5, 86400).await.unwrap();

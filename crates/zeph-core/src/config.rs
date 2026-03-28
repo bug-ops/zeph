@@ -110,6 +110,9 @@ impl SecretResolver for Config {
         if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
             self.gateway.auth_token = Some(val);
         }
+        if let Some(val) = vault.get_secret("ZEPH_DATABASE_URL").await? {
+            self.memory.database_url = Some(val);
+        }
         if let Some(val) = vault.get_secret("ZEPH_DISCORD_TOKEN").await?
             && let Some(dc) = self.discord.as_mut()
         {

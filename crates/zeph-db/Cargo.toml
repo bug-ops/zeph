@@ -22,6 +22,8 @@ readme = "README.md"
 default = ["sqlite"]
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
+# Enables test utilities and testcontainers for PostgreSQL integration tests.
+test-utils = ["dep:testcontainers", "dep:testcontainers-modules", "postgres"]
 
 [dependencies]
 # "macros" required for sqlx::migrate! in driver implementations.
@@ -30,6 +32,8 @@ regex = { workspace = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
+testcontainers = { workspace = true, optional = true }
+testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 
 [lints]
 workspace = true

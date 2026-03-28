@@ -1,0 +1,1 @@
+ALTER TABLE messages ADD COLUMN parts JSONB NOT NULL DEFAULT '[]'::jsonb;

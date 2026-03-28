@@ -737,10 +737,11 @@ impl SqliteStore {
             return Ok(std::collections::HashMap::new());
         }
 
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String =
+            zeph_db::rewrite_placeholders(&ids.iter().map(|_| "?").collect::<Vec<_>>().join(","));
+        let epoch_expr = <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("created_at");
         let query = format!(
-            "SELECT id, COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0) \
-             FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+            "SELECT id, {epoch_expr} FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
         let mut q = sqlx::query_as::<_, (MessageId, i64)>(&query);
         for &id in ids {
@@ -1030,17 +1031,20 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         // Insert the new semantic fact.
-        let row: (MessageId,) = sqlx::query_as(sql!(
+        let epoch_now = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let promote_insert_raw = format!(
             "INSERT INTO messages \
              (conversation_id, role, content, parts, agent_visible, user_visible, \
               tier, promotion_timestamp) \
-             VALUES (?, 'assistant', ?, '[]', 1, 0, 'semantic', unixepoch()) \
+             VALUES (?, 'assistant', ?, '[]', 1, 0, 'semantic', {epoch_now}) \
              RETURNING id"
-        ))
-        .bind(conversation_id)
-        .bind(merged_content)
-        .fetch_one(&mut *tx)
-        .await?;
+        );
+        let promote_insert_sql = zeph_db::rewrite_placeholders(&promote_insert_raw);
+        let row: (MessageId,) = sqlx::query_as(&promote_insert_sql)
+            .bind(conversation_id)
+            .bind(merged_content)
+            .fetch_one(&mut *tx)
+            .await?;
 
         let new_id = row.0;
 
@@ -1072,16 +1076,19 @@ impl SqliteStore {
         if ids.is_empty() {
             return Ok(0);
         }
+        let epoch_now = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let manual_promote_raw = format!(
+            "UPDATE messages \
+             SET tier = 'semantic', promotion_timestamp = {epoch_now} \
+             WHERE id = ? AND deleted_at IS NULL AND tier = 'episodic'"
+        );
+        let manual_promote_sql = zeph_db::rewrite_placeholders(&manual_promote_raw);
         let mut count = 0usize;
         for &id in ids {
-            let result = sqlx::query(sql!(
-                "UPDATE messages \
-                 SET tier = 'semantic', promotion_timestamp = unixepoch() \
-                 WHERE id = ? AND deleted_at IS NULL AND tier = 'episodic'"
-            ))
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+            let result = sqlx::query(&manual_promote_sql)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
             count += usize::try_from(result.rows_affected()).unwrap_or(0);
         }
         Ok(count)

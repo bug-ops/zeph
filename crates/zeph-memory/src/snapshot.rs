@@ -70,14 +70,15 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
     for (cid_raw,) in conv_ids {
         let cid = ConversationId(cid_raw);
 
-        let msg_rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(sql!(
-            "SELECT id, role, content, parts, \
-             COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0) \
-             FROM messages WHERE conversation_id = ? ORDER BY id ASC"
-        ))
-        .bind(cid)
-        .fetch_all(sqlite.pool())
-        .await?;
+        let epoch_expr = <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("created_at");
+        let msg_sql = zeph_db::rewrite_placeholders(&format!(
+            "SELECT id, role, content, parts, {epoch_expr} \
+            FROM messages WHERE conversation_id = ? ORDER BY id ASC"
+        ));
+        let msg_rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(&msg_sql)
+            .bind(cid)
+            .fetch_all(sqlite.pool())
+            .await?;
 
         let messages = msg_rows
             .into_iter()

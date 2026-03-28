@@ -1278,16 +1278,21 @@ impl GraphStore {
     /// Returns an error if the database query fails.
     pub async fn record_edge_retrieval(&self, edge_ids: &[i64]) -> Result<(), MemoryError> {
         const MAX_BATCH: usize = 490;
-        // TODO(Phase 2): rewrite_placeholders() does not support format!()-built queries;
-        //   these will need a dedicated multi-placeholder rewriter for PostgreSQL compatibility.
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
         for chunk in edge_ids.chunks(MAX_BATCH) {
-            let placeholders = std::iter::repeat_n("?", chunk.len())
+            #[cfg(feature = "sqlite")]
+            let placeholders: String = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            #[cfg(feature = "postgres")]
+            let placeholders: String = (1..=chunk.len())
+                .map(|n| format!("${n}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
-                "UPDATE graph_edges
-                 SET retrieval_count = retrieval_count + 1,
-                     last_retrieved_at = unixepoch('now')
+                "UPDATE graph_edges \
+                 SET retrieval_count = retrieval_count + 1, \
+                     last_retrieved_at = {epoch_now} \
                  WHERE id IN ({placeholders})"
             );
             let mut q = sqlx::query(&sql);
@@ -1312,17 +1317,20 @@ impl GraphStore {
         decay_lambda: f64,
         interval_secs: u64,
     ) -> Result<usize, MemoryError> {
-        let result = sqlx::query(sql!(
-            "UPDATE graph_edges
-             SET retrieval_count = MAX(CAST(retrieval_count * ? AS INTEGER), 0)
-             WHERE valid_to IS NULL
-               AND retrieval_count > 0
-               AND (last_retrieved_at IS NULL OR last_retrieved_at < unixepoch('now') - ?)"
-        ))
-        .bind(decay_lambda)
-        .bind(i64::try_from(interval_secs).unwrap_or(i64::MAX))
-        .execute(&self.pool)
-        .await?;
+        let epoch_now_decay = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let decay_raw = format!(
+            "UPDATE graph_edges \
+             SET retrieval_count = MAX(CAST(retrieval_count * ? AS INTEGER), 0) \
+             WHERE valid_to IS NULL \
+               AND retrieval_count > 0 \
+               AND (last_retrieved_at IS NULL OR last_retrieved_at < {epoch_now_decay} - ?)"
+        );
+        let decay_sql = zeph_db::rewrite_placeholders(&decay_raw);
+        let result = sqlx::query(&decay_sql)
+            .bind(decay_lambda)
+            .bind(i64::try_from(interval_secs).unwrap_or(i64::MAX))
+            .execute(&self.pool)
+            .await?;
         Ok(usize::try_from(result.rows_affected())?)
     }
 

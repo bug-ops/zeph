@@ -121,7 +121,8 @@ impl VectorStore for DbVectorStore {
         let collection = collection.to_owned();
         Box::pin(async move {
             for point in points {
-                let vector_bytes: Vec<u8> = bytemuck::cast_slice(&point.vector).to_vec();
+                let vector_bytes: Vec<u8> =
+                    point.vector.iter().flat_map(|f| f.to_le_bytes()).collect();
                 let payload_json = serde_json::to_string(&point.payload)
                     .map_err(|e| VectorStoreError::Serialization(e.to_string()))?;
                 sqlx::query(
@@ -161,9 +162,13 @@ impl VectorStore for DbVectorStore {
             let mut scored: Vec<ScoredVectorPoint> = rows
                 .into_iter()
                 .filter_map(|(id, blob, payload_str)| {
-                    let Ok(stored) = bytemuck::try_cast_slice::<u8, f32>(&blob) else {
+                    if blob.len() % 4 != 0 {
                         return None;
-                    };
+                    }
+                    let stored: Vec<f32> = blob
+                        .chunks_exact(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect();
                     let payload: HashMap<String, serde_json::Value> =
                         serde_json::from_str(&payload_str).unwrap_or_default();
 
@@ -174,7 +179,7 @@ impl VectorStore for DbVectorStore {
                         return None;
                     }
 
-                    let score = cosine_similarity(&vector, stored);
+                    let score = cosine_similarity(&vector, &stored);
                     Some(ScoredVectorPoint { id, score, payload })
                 })
                 .collect();

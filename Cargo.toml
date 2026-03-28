@@ -84,6 +84,7 @@ symphonia = { version = "0.5.5", default-features = false }
 teloxide = { version = "0.17", default-features = false }
 tempfile = "3.27"
 testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", default-features = false }
 thiserror = "2.0"
 tiktoken-rs = "0.9"
 tokenizers = { version = "0.22", default-features = false }

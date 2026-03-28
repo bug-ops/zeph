@@ -104,6 +104,17 @@ macro_rules! sql {
     ($query:expr) => {{ $crate::rewrite_placeholders($query) }};
 }
 
+/// Returns `true` if the given database URL looks like a `PostgreSQL` connection string.
+///
+/// Compiled only when the `sqlite` feature is active. Callers can use this to
+/// detect a misconfigured `database_url` pointing to `PostgreSQL` in a build
+/// that only supports `SQLite`.
+#[cfg(feature = "sqlite")]
+#[must_use]
+pub fn is_postgres_url(url: &str) -> bool {
+    url.starts_with("postgres://") || url.starts_with("postgresql://")
+}
+
 /// Rewrite `?` bind markers to `$1, $2, ...` for `PostgreSQL`.
 ///
 /// Skips `?` inside single-quoted string literals. Does NOT handle dollar-quoted

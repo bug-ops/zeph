@@ -44,10 +44,13 @@ impl ResponseCache {
         let now = unix_now();
         // Cap TTL at 1 year (31_536_000 s) to prevent i64 overflow for extreme values.
         let expires_at = now.saturating_add(self.ttl_secs.min(31_536_000).cast_signed());
-        sqlx::query(
-            sql!("INSERT OR REPLACE INTO response_cache (cache_key, response, model, created_at, expires_at) \
-             VALUES (?, ?, ?, ?, ?)"),
-        )
+        sqlx::query(sql!(
+            "INSERT INTO response_cache (cache_key, response, model, created_at, expires_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(cache_key) DO UPDATE SET \
+               response = excluded.response, model = excluded.model, \
+               created_at = excluded.created_at, expires_at = excluded.expires_at"
+        ))
         .bind(key)
         .bind(response)
         .bind(model)
@@ -92,23 +95,22 @@ impl ResponseCache {
         let mut best_response: Option<String> = None;
 
         for (response, blob) in &rows {
-            // bytemuck::try_cast_slice handles corrupt BLOBs (non-multiple-of-4 length) safely.
-            match bytemuck::try_cast_slice::<u8, f32>(blob) {
-                Ok(stored) => {
-                    let score = crate::math::cosine_similarity(embedding, stored);
-                    tracing::debug!(
-                        score,
-                        threshold = similarity_threshold,
-                        "semantic cache candidate evaluated",
-                    );
-                    if score > best_score {
-                        best_score = score;
-                        best_response = Some(response.clone());
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("semantic cache: failed to deserialize embedding blob: {e}");
-                }
+            if blob.len() % 4 != 0 {
+                continue;
+            }
+            let stored: Vec<f32> = blob
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            let score = crate::math::cosine_similarity(embedding, &stored);
+            tracing::debug!(
+                score,
+                threshold = similarity_threshold,
+                "semantic cache candidate evaluated",
+            );
+            if score > best_score {
+                best_score = score;
+                best_response = Some(response.clone());
             }
         }
 
@@ -144,12 +146,16 @@ impl ResponseCache {
     ) -> Result<(), MemoryError> {
         let now = unix_now();
         let expires_at = now.saturating_add(self.ttl_secs.min(31_536_000).cast_signed());
-        // Zero-copy serialization: &[f32] → &[u8] via bytemuck.
-        let blob: &[u8] = bytemuck::cast_slice(embedding);
+        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
         sqlx::query(
-            sql!("INSERT OR REPLACE INTO response_cache \
+            sql!("INSERT INTO response_cache \
              (cache_key, response, model, created_at, expires_at, embedding, embedding_model, embedding_ts) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(cache_key) DO UPDATE SET \
+               response = excluded.response, model = excluded.model, \
+               created_at = excluded.created_at, expires_at = excluded.expires_at, \
+               embedding = excluded.embedding, embedding_model = excluded.embedding_model, \
+               embedding_ts = excluded.embedding_ts"),
         )
         .bind(key)
         .bind(response)
@@ -641,8 +647,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_semantic_get_corrupted_blob_odd_length() {
-        // A BLOB of 5 bytes is not a multiple of 4, so bytemuck::try_cast_slice returns
-        // Err(SizeMismatch). Verify that get_semantic returns Ok(None) without panicking.
+        // A BLOB of 5 bytes is not a multiple of 4 and is skipped by the length guard.
+        // Verify that get_semantic returns Ok(None) without panicking.
         let store = SqliteStore::new(":memory:").await.unwrap();
         let pool = store.pool().clone();
         let cache = ResponseCache::new(pool.clone(), 3600);
@@ -702,7 +708,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_semantic_get_empty_blob() {
-        // An empty BLOB (0 bytes) causes bytemuck::try_cast_slice to return Ok(&[]) — an empty
+        // An empty BLOB (0 bytes): length % 4 == 0, so the guard passes and produces an empty
         // f32 slice. cosine_similarity returns 0.0 for mismatched lengths, which is below the
         // 0.9 threshold. Verify Ok(None) is returned without panicking.
         let store = SqliteStore::new(":memory:").await.unwrap();

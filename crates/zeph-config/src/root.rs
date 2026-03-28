@@ -203,6 +203,7 @@ impl Default for Config {
                 context_strategy: crate::memory::ContextStrategy::default(),
                 crossover_turn_threshold: 20,
                 consolidation: crate::memory::ConsolidationConfig::default(),
+                database_url: None,
             },
             telegram: None,
             discord: None,

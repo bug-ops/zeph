@@ -240,10 +240,26 @@ impl AppBuilder {
         provider: &AnyProvider,
     ) -> Result<SemanticMemory, BootstrapError> {
         let embed_model = self.embedding_model();
+        // Resolve the database path: prefer database_url (PostgreSQL) over sqlite_path.
+        let db_path: &str = self
+            .config
+            .memory
+            .database_url
+            .as_deref()
+            .unwrap_or(&self.config.memory.sqlite_path);
+
+        if zeph_db::is_postgres_url(db_path) {
+            return Err(BootstrapError::Memory(
+                "database_url points to PostgreSQL but binary was compiled with the \
+                 sqlite feature. Recompile with --features postgres."
+                    .to_string(),
+            ));
+        }
+
         let mut memory = match self.config.memory.vector_backend {
             crate::config::VectorBackend::Sqlite => {
                 SemanticMemory::with_sqlite_backend_and_pool_size(
-                    &self.config.memory.sqlite_path,
+                    db_path,
                     provider.clone(),
                     &embed_model,
                     self.config.memory.semantic.vector_weight,
@@ -264,7 +280,7 @@ impl AppBuilder {
                     })?
                     .clone();
                 SemanticMemory::with_qdrant_ops(
-                    &self.config.memory.sqlite_path,
+                    db_path,
                     ops,
                     provider.clone(),
                     &embed_model,
