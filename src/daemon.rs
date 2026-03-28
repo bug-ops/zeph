@@ -35,6 +35,7 @@ fn spawn_a2a_server(
         std::sync::Arc::new(AgentTaskProcessor {
             loopback_handle: std::sync::Arc::new(tokio::sync::Mutex::new(loopback_handle)),
             sanitizer,
+            drain_timeout: std::time::Duration::from_millis(config.a2a.drain_timeout_ms),
         });
     let a2a_server = zeph_a2a::A2aServer::new(
         card,
@@ -63,6 +64,7 @@ fn spawn_a2a_server(
 pub(crate) struct AgentTaskProcessor {
     pub(crate) loopback_handle: std::sync::Arc<tokio::sync::Mutex<zeph_core::LoopbackHandle>>,
     pub(crate) sanitizer: zeph_core::ContentSanitizer,
+    pub(crate) drain_timeout: std::time::Duration,
 }
 
 impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
@@ -75,6 +77,8 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
     {
         let handle = self.loopback_handle.clone();
         let sanitizer = self.sanitizer.clone();
+
+        let drain_timeout = self.drain_timeout;
 
         Box::pin(async move {
             // Inbound A2A messages come from external agents and are treated as
@@ -152,12 +156,23 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
             // agent loop after FullMessage or stop-hint paths. This prevents stale tail
             // events (e.g. the Flush that follows FullMessage, Usage, SessionTitle) from
             // leaking into the next request's recv loop.
+            // A timeout guards against an agent loop panic that holds the sender Arc alive
+            // without ever emitting Flush, which would otherwise block indefinitely.
             if !exited_on_flush {
-                loop {
-                    match handle.output_rx.recv().await {
-                        Some(zeph_core::LoopbackEvent::Flush) | None => break,
-                        Some(_) => {} // discard tail events
+                let drain = async {
+                    loop {
+                        match handle.output_rx.recv().await {
+                            Some(zeph_core::LoopbackEvent::Flush) | None => break,
+                            Some(_) => {} // discard tail events
+                        }
                     }
+                };
+                if tokio::time::timeout(drain_timeout, drain).await.is_err() {
+                    tracing::warn!(
+                        timeout_ms = drain_timeout.as_millis(),
+                        "A2A drain timeout: Flush not received within deadline; \
+                         proceeding with degraded state"
+                    );
                 }
             }
 

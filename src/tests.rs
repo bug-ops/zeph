@@ -370,6 +370,7 @@ fn agent_task_processor_construction() {
     let processor = AgentTaskProcessor {
         loopback_handle: std::sync::Arc::new(tokio::sync::Mutex::new(handle)),
         sanitizer,
+        drain_timeout: std::time::Duration::from_millis(30_000),
     };
     assert!(std::sync::Arc::strong_count(&processor.loopback_handle) == 1);
 }
@@ -487,6 +488,72 @@ async fn a2a_response_shift_drain_until_flush_prevents_leak() {
     assert!(
         rx.try_recv().is_err(),
         "channel must be empty after drain; stale events would shift next response"
+    );
+}
+
+// Fix #2329: drain loop must complete normally when Flush arrives within the timeout.
+#[cfg(feature = "a2a")]
+#[tokio::test]
+async fn a2a_drain_completes_on_flush_within_timeout() {
+    use zeph_core::LoopbackEvent;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<LoopbackEvent>(8);
+
+    // Simulate tail events arriving after FullMessage — typical agent turn sequence.
+    let tx2 = tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let _ = tx2
+            .send(LoopbackEvent::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                context_window: 8192,
+            })
+            .await;
+        let _ = tx2.send(LoopbackEvent::Flush).await;
+    });
+    drop(tx);
+
+    // Drain loop with a generous timeout — must complete before it expires.
+    let drain = async {
+        loop {
+            match rx.recv().await {
+                Some(LoopbackEvent::Flush) | None => break,
+                Some(_) => {}
+            }
+        }
+    };
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), drain).await;
+    assert!(
+        result.is_ok(),
+        "drain must complete before timeout on normal Flush"
+    );
+}
+
+// Fix #2329: drain loop must break on timeout when Flush is never sent (e.g. agent panic).
+#[cfg(feature = "a2a")]
+#[tokio::test]
+async fn a2a_drain_times_out_when_flush_never_arrives() {
+    use zeph_core::LoopbackEvent;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<LoopbackEvent>(8);
+
+    // Keep sender alive but never send Flush — models a panicked agent holding the Arc.
+    let _keep_tx = tx;
+
+    // Drain loop with a very short timeout — must expire.
+    let drain = async {
+        loop {
+            match rx.recv().await {
+                Some(LoopbackEvent::Flush) | None => break,
+                Some(_) => {}
+            }
+        }
+    };
+    let result = tokio::time::timeout(std::time::Duration::from_millis(50), drain).await;
+    assert!(
+        result.is_err(),
+        "drain must time out when Flush is never sent"
     );
 }
 

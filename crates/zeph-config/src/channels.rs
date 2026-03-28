@@ -33,6 +33,10 @@ fn default_a2a_max_body() -> usize {
     1_048_576
 }
 
+fn default_drain_timeout_ms() -> u64 {
+    30_000
+}
+
 fn default_max_dynamic_servers() -> usize {
     10
 }
@@ -139,6 +143,8 @@ pub struct A2aServerConfig {
     pub ssrf_protection: bool,
     #[serde(default = "default_a2a_max_body")]
     pub max_body_size: usize,
+    #[serde(default = "default_drain_timeout_ms")]
+    pub drain_timeout_ms: u64,
 }
 
 impl std::fmt::Debug for A2aServerConfig {
@@ -156,6 +162,7 @@ impl std::fmt::Debug for A2aServerConfig {
             .field("require_tls", &self.require_tls)
             .field("ssrf_protection", &self.ssrf_protection)
             .field("max_body_size", &self.max_body_size)
+            .field("drain_timeout_ms", &self.drain_timeout_ms)
             .finish()
     }
 }
@@ -172,6 +179,7 @@ impl Default for A2aServerConfig {
             require_tls: true,
             ssrf_protection: true,
             max_body_size: default_a2a_max_body(),
+            drain_timeout_ms: default_drain_timeout_ms(),
         }
     }
 }
