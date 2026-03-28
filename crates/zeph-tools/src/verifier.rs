@@ -1519,7 +1519,7 @@ mod tests {
 
     /// REG-2191-1: exact reproduction of the bug scenario.
     /// Agent asks "do you know Anthropic?" (no URL provided) and halluccinates
-    /// `https://api.anthropic.ai/v1/models`. With an empty user_provided_urls set
+    /// `https://api.anthropic.ai/v1/models`. With an empty `user_provided_urls` set
     /// the fetch must be blocked.
     #[test]
     fn reg_2191_hallucinated_api_endpoint_blocked_with_empty_session() {
@@ -1549,7 +1549,7 @@ mod tests {
         );
     }
 
-    /// REG-2191-3: web_scrape variant — same rejection for web_scrape tool.
+    /// REG-2191-3: `web_scrape` variant — same rejection for `web_scrape` tool.
     #[test]
     fn reg_2191_web_scrape_hallucinated_url_blocked() {
         let v = ugv(&[]);
@@ -1564,7 +1564,7 @@ mod tests {
     }
 
     /// REG-2191-4: URL present only in an imagined system/assistant message context
-    /// is NOT in user_provided_urls (the agent only populates from user messages).
+    /// is NOT in `user_provided_urls` (the agent only populates from user messages).
     /// The verifier itself cannot distinguish message roles — it only sees the set
     /// populated by the agent. This test confirms: an empty set always blocks.
     #[test]
@@ -1611,7 +1611,7 @@ mod tests {
     }
 
     /// REG-2191-7: reverse prefix — user provided a specific URL, agent fetches
-    /// the root. This is the "reverse prefix" case: user_url starts_with fetch_url.
+    /// the root. This is the "reverse prefix" case: `user_url` `starts_with` `fetch_url`.
     #[test]
     fn reg_2191_reverse_prefix_match_allows_fetch() {
         // User provided a deep URL; agent wants to fetch the root.
