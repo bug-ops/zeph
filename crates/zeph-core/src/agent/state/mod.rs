@@ -281,6 +281,9 @@ pub(crate) struct OrchestrationState {
     /// On `OrchestrationState` (not `ProviderState`) because this provider is used exclusively
     /// by `LlmPlanner` during orchestration, not shared across subsystems.
     pub(crate) planner_provider: Option<AnyProvider>,
+    /// Provider for `PlanVerifier` LLM calls. `None` falls back to the primary provider.
+    /// On `OrchestrationState` for the same reason as `planner_provider`.
+    pub(crate) verify_provider: Option<AnyProvider>,
     /// Graph waiting for `/plan confirm` before execution starts.
     pub(crate) pending_graph: Option<crate::orchestration::TaskGraph>,
     /// Cancellation token for the currently executing plan. `None` when no plan is running.

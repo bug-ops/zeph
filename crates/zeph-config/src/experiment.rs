@@ -51,6 +51,10 @@ fn default_max_replans() -> u32 {
     2
 }
 
+fn default_completeness_threshold() -> f32 {
+    0.7
+}
+
 fn default_plan_cache_similarity_threshold() -> f32 {
     0.90
 }
@@ -182,6 +186,13 @@ pub struct OrchestrationConfig {
     /// Verification is best-effort and does not gate dispatch.
     #[serde(default)]
     pub verify_completeness: bool,
+    /// Minimum completeness score (0.0–1.0) for the plan to be accepted without
+    /// replanning. Default: 0.7. When the verifier reports `confidence <
+    /// completeness_threshold` AND gaps exist, a replan cycle is triggered.
+    /// Used by both per-task and whole-plan verification.
+    /// Values outside [0.0, 1.0] are rejected at startup by `Config::validate()`.
+    #[serde(default = "default_completeness_threshold")]
+    pub completeness_threshold: f32,
 }
 
 impl Default for OrchestrationConfig {
@@ -205,6 +216,7 @@ impl Default for OrchestrationConfig {
             verify_max_tokens: default_verify_max_tokens(),
             max_replans: default_max_replans(),
             verify_completeness: false,
+            completeness_threshold: default_completeness_threshold(),
         }
     }
 }
@@ -334,6 +346,41 @@ mod tests {
         assert!(
             result.is_err(),
             "similarity_threshold = 1.1 must return a validation error"
+        );
+    }
+
+    #[test]
+    fn completeness_threshold_default_is_0_7() {
+        let cfg = OrchestrationConfig::default();
+        assert!(
+            (cfg.completeness_threshold - 0.7).abs() < f32::EPSILON,
+            "completeness_threshold default must be 0.7, got {}",
+            cfg.completeness_threshold
+        );
+    }
+
+    #[test]
+    fn completeness_threshold_serde_round_trip() {
+        let toml_in = r#"
+            enabled = true
+            completeness_threshold = 0.85
+        "#;
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert!((cfg.completeness_threshold - 0.85).abs() < f32::EPSILON);
+
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        let cfg2: OrchestrationConfig = toml::from_str(&serialized).expect("re-deserialize");
+        assert!((cfg2.completeness_threshold - 0.85).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn completeness_threshold_missing_uses_default() {
+        let toml_in = "enabled = true\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert!(
+            (cfg.completeness_threshold - 0.7).abs() < f32::EPSILON,
+            "missing field must use default 0.7, got {}",
+            cfg.completeness_threshold
         );
     }
 }
