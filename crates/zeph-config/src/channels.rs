@@ -124,6 +124,7 @@ impl std::fmt::Debug for SlackConfig {
 }
 
 #[derive(Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic here
 pub struct A2aServerConfig {
     #[serde(default)]
     pub enabled: bool,
