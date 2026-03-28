@@ -325,6 +325,7 @@ async fn drain_embedding_guard_events(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_tool_setup(
     config: &Config,
     permission_policy: zeph_tools::PermissionPolicy,
