@@ -30,7 +30,7 @@ pub mod trust_gate;
 pub mod trust_level;
 pub mod verifier;
 
-pub use anomaly::{AnomalyDetector, AnomalySeverity};
+pub use anomaly::{AnomalyDetector, AnomalySeverity, is_reasoning_model};
 pub use audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
@@ -40,7 +40,8 @@ pub use config::{
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use error_taxonomy::{
-    ErrorDomain, ToolErrorCategory, ToolErrorFeedback, classify_http_status, classify_io_error,
+    ErrorDomain, ToolErrorCategory, ToolErrorFeedback, ToolInvocationPhase, classify_http_status,
+    classify_io_error,
 };
 pub use executor::{
     ClaimSource, DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats,

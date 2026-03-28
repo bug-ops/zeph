@@ -298,6 +298,7 @@ impl WebScrapeExecutor {
                 duration_ms,
                 error_category,
                 error_domain,
+                error_phase: None,
                 claim_source: Some(ClaimSource::WebScrape),
                 mcp_server_id: None,
                 injection_flagged: false,

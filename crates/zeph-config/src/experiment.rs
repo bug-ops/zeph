@@ -186,6 +186,12 @@ pub struct OrchestrationConfig {
     /// Verification is best-effort and does not gate dispatch.
     #[serde(default)]
     pub verify_completeness: bool,
+    /// Provider name from `[[llm.providers]]` for tool-dispatch routing.
+    /// When set, tool-heavy tasks prefer this provider over the primary.
+    /// Prefer mid-tier models (e.g., qwen2.5:14b) for reliability per arXiv:2601.16280.
+    /// Empty string = use the primary provider.
+    #[serde(default)]
+    pub tool_provider: String,
     /// Minimum completeness score (0.0–1.0) for the plan to be accepted without
     /// replanning. Default: 0.7. When the verifier reports `confidence <
     /// completeness_threshold` AND gaps exist, a replan cycle is triggered.
@@ -217,6 +223,7 @@ impl Default for OrchestrationConfig {
             max_replans: default_max_replans(),
             verify_completeness: false,
             completeness_threshold: default_completeness_threshold(),
+            tool_provider: String::new(),
         }
     }
 }

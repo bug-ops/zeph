@@ -551,6 +551,7 @@ impl ShellExecutor {
                 duration_ms,
                 error_category,
                 error_domain,
+                error_phase: None,
                 claim_source: Some(ClaimSource::Shell),
                 mcp_server_id: None,
                 injection_flagged: false,

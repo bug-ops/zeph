@@ -704,6 +704,7 @@ impl<C: Channel> Agent<C> {
                                     duration_ms: 0,
                                     error_category: Some("pre_execution_block".to_owned()),
                                     error_domain: Some("security".to_owned()),
+                                    error_phase: None,
                                     claim_source: None,
                                     mcp_server_id: None,
                                     injection_flagged: false,

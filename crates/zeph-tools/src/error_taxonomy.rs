@@ -9,6 +9,37 @@
 
 use crate::executor::ErrorKind;
 
+/// Invocation phase in which a tool failure occurred, per arXiv:2601.16280.
+///
+/// Maps Zeph's `ToolErrorCategory` variants to the 4-phase diagnostic framework:
+/// Setup → `ParamHandling` → Execution → `ResultInterpretation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolInvocationPhase {
+    /// Tool lookup/registration phase: was the tool name valid?
+    Setup,
+    /// Parameter validation phase: were the provided arguments well-formed?
+    ParamHandling,
+    /// Runtime execution phase: did the tool run successfully?
+    Execution,
+    /// Output parsing/interpretation phase: was the result usable?
+    /// Reserved for future use — no current `ToolErrorCategory` maps here.
+    ResultInterpretation,
+}
+
+impl ToolInvocationPhase {
+    /// Human-readable label for audit logs.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::ParamHandling => "param_handling",
+            Self::Execution => "execution",
+            Self::ResultInterpretation => "result_interpretation",
+        }
+    }
+}
+
 /// High-level error domain for recovery strategy dispatch.
 ///
 /// Groups the 11 `ToolErrorCategory` variants into 4 domains that map to distinct
@@ -161,6 +192,23 @@ impl ToolErrorCategory {
             ErrorKind::Transient
         } else {
             ErrorKind::Permanent
+        }
+    }
+
+    /// Map to the diagnostic invocation phase per arXiv:2601.16280.
+    #[must_use]
+    pub fn phase(self) -> ToolInvocationPhase {
+        match self {
+            Self::ToolNotFound => ToolInvocationPhase::Setup,
+            Self::InvalidParameters | Self::TypeMismatch => ToolInvocationPhase::ParamHandling,
+            Self::PolicyBlocked
+            | Self::ConfirmationRequired
+            | Self::PermanentFailure
+            | Self::Cancelled
+            | Self::RateLimited
+            | Self::ServerError
+            | Self::NetworkError
+            | Self::Timeout => ToolInvocationPhase::Execution,
         }
     }
 
@@ -661,5 +709,55 @@ mod tests {
         assert!(!ToolErrorCategory::Cancelled.is_retryable());
         assert!(!ToolErrorCategory::Cancelled.is_quality_failure());
         assert!(!ToolErrorCategory::Cancelled.needs_parameter_reformat());
+    }
+
+    // ── ToolInvocationPhase ──────────────────────────────────────────────────
+
+    #[test]
+    fn phase_setup_for_tool_not_found() {
+        assert_eq!(
+            ToolErrorCategory::ToolNotFound.phase(),
+            ToolInvocationPhase::Setup
+        );
+    }
+
+    #[test]
+    fn phase_param_handling() {
+        assert_eq!(
+            ToolErrorCategory::InvalidParameters.phase(),
+            ToolInvocationPhase::ParamHandling
+        );
+        assert_eq!(
+            ToolErrorCategory::TypeMismatch.phase(),
+            ToolInvocationPhase::ParamHandling
+        );
+    }
+
+    #[test]
+    fn phase_execution_for_runtime_errors() {
+        for cat in [
+            ToolErrorCategory::PolicyBlocked,
+            ToolErrorCategory::ConfirmationRequired,
+            ToolErrorCategory::PermanentFailure,
+            ToolErrorCategory::Cancelled,
+            ToolErrorCategory::RateLimited,
+            ToolErrorCategory::ServerError,
+            ToolErrorCategory::NetworkError,
+            ToolErrorCategory::Timeout,
+        ] {
+            assert_eq!(cat.phase(), ToolInvocationPhase::Execution, "{cat:?}");
+        }
+    }
+
+    #[test]
+    fn phase_label_non_empty() {
+        for phase in [
+            ToolInvocationPhase::Setup,
+            ToolInvocationPhase::ParamHandling,
+            ToolInvocationPhase::Execution,
+            ToolInvocationPhase::ResultInterpretation,
+        ] {
+            assert!(!phase.label().is_empty(), "{phase:?}");
+        }
     }
 }

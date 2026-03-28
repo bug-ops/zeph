@@ -61,6 +61,22 @@ impl AnomalyDetector {
         self.push(Outcome::Blocked);
     }
 
+    /// Record a quality failure (`ToolNotFound`, `InvalidParameters`, `TypeMismatch`) that
+    /// originated from a reasoning-enhanced model. Counts as an error for anomaly
+    /// detection purposes and logs a `reasoning_amplification` warning.
+    ///
+    /// Per arXiv:2510.22977, reasoning models amplify tool hallucinations — this
+    /// method makes such failures visible in the anomaly window.
+    pub fn record_reasoning_quality_failure(&mut self, model_name: &str, tool_name: &str) {
+        self.push(Outcome::Error);
+        tracing::warn!(
+            model = model_name,
+            tool = tool_name,
+            category = "reasoning_amplification",
+            "quality failure from reasoning model — CoT may amplify tool hallucination (arXiv:2510.22977)"
+        );
+    }
+
     fn push(&mut self, outcome: Outcome) {
         if self.window.len() >= self.window_size {
             self.window.pop_front();
@@ -116,6 +132,25 @@ impl Default for AnomalyDetector {
     fn default() -> Self {
         Self::new(10, 0.5, 0.8)
     }
+}
+
+/// Returns `true` when `model_name` matches a known reasoning-enhanced model pattern.
+///
+/// Reasoning models (o1, o3, o4-mini, `QwQ`, `DeepSeek-R1`, etc.) are more prone to
+/// tool hallucination than standard models per arXiv:2510.22977. This helper enables
+/// callers to conditionally emit `reasoning_amplification` warnings.
+#[must_use]
+pub fn is_reasoning_model(model_name: &str) -> bool {
+    let lower = model_name.to_ascii_lowercase();
+    // OpenAI o-series: o1, o3, o4-mini, o1-mini, o1-preview, o3-mini
+    let openai_o = lower.starts_with("o1") || lower.starts_with("o3") || lower.starts_with("o4");
+    // QwQ reasoning models
+    let qwq = lower.contains("qwq");
+    // DeepSeek R1 and variants
+    let deepseek_r1 = lower.contains("deepseek-r1") || lower.contains("deepseek_r1");
+    // Claude extended thinking (prefixed with "claude" and contains "think")
+    let claude_think = lower.starts_with("claude") && lower.contains("think");
+    openai_o || qwq || deepseek_r1 || claude_think
 }
 
 #[cfg(test)]
@@ -210,5 +245,39 @@ mod tests {
         assert_eq!(det.window_size, 10);
         assert!((det.error_threshold - 0.5).abs() < f64::EPSILON);
         assert!((det.critical_threshold - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn is_reasoning_model_openai_o_series() {
+        assert!(is_reasoning_model("o1"));
+        assert!(is_reasoning_model("o1-mini"));
+        assert!(is_reasoning_model("o1-preview"));
+        assert!(is_reasoning_model("o3"));
+        assert!(is_reasoning_model("o3-mini"));
+        assert!(is_reasoning_model("o4-mini"));
+        assert!(!is_reasoning_model("gpt-4o"));
+        assert!(!is_reasoning_model("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn is_reasoning_model_other_families() {
+        assert!(is_reasoning_model("QwQ-32B"));
+        assert!(is_reasoning_model("deepseek-r1"));
+        assert!(is_reasoning_model("deepseek-r1-distill-qwen-14b"));
+        assert!(is_reasoning_model("claude-3-opus-think"));
+        assert!(!is_reasoning_model("claude-3-opus"));
+        assert!(!is_reasoning_model("qwen2.5:14b"));
+    }
+
+    #[test]
+    fn record_reasoning_quality_failure_increments_error_count() {
+        let mut det = AnomalyDetector::new(10, 0.5, 0.8);
+        // Record 6 reasoning quality failures in window of 10
+        for _ in 0..6 {
+            det.record_reasoning_quality_failure("o1", "shell");
+        }
+        // 6/6 = 100% > critical threshold
+        let anomaly = det.check().unwrap();
+        assert_eq!(anomaly.severity, AnomalySeverity::Critical);
     }
 }

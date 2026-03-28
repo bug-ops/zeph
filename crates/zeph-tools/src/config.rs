@@ -97,6 +97,12 @@ pub struct AnomalyConfig {
     pub error_threshold: f64,
     #[serde(default = "default_anomaly_critical_threshold")]
     pub critical_threshold: f64,
+    /// Emit a WARN log when a reasoning-enhanced model (o1, o3, `QwQ`, etc.) produces
+    /// a quality failure (`ToolNotFound`, `InvalidParameters`, `TypeMismatch`). Default: `true`.
+    ///
+    /// Based on arXiv:2510.22977 — CoT/RL reasoning amplifies tool hallucination.
+    #[serde(default = "default_true")]
+    pub reasoning_model_warning: bool,
 }
 
 impl Default for AnomalyConfig {
@@ -106,6 +112,7 @@ impl Default for AnomalyConfig {
             window_size: default_anomaly_window(),
             error_threshold: default_anomaly_error_threshold(),
             critical_threshold: default_anomaly_critical_threshold(),
+            reasoning_model_warning: true,
         }
     }
 }

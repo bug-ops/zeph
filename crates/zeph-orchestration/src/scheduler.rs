@@ -1276,6 +1276,7 @@ mod tests {
             max_replans: 2,
             verify_completeness: false,
             completeness_threshold: 0.7,
+            tool_provider: String::new(),
         }
     }
 

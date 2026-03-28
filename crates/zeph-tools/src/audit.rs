@@ -29,6 +29,10 @@ pub struct AuditEntry {
     /// High-level error domain for recovery dispatch. `None` for successful executions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_domain: Option<String>,
+    /// Invocation phase in which the error occurred per arXiv:2601.16280 taxonomy.
+    /// `None` for successful executions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_phase: Option<String>,
     /// Provenance of the tool result. `None` for non-executor audit entries (e.g. policy checks).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claim_source: Option<crate::executor::ClaimSource>,
@@ -125,6 +129,7 @@ mod tests {
             duration_ms: 42,
             error_category: None,
             error_domain: None,
+            error_phase: None,
             claim_source: None,
             mcp_server_id: None,
             injection_flagged: false,
@@ -148,6 +153,7 @@ mod tests {
             duration_ms: 0,
             error_category: Some("policy_blocked".to_owned()),
             error_domain: Some("action".to_owned()),
+            error_phase: None,
             claim_source: None,
             mcp_server_id: None,
             injection_flagged: false,
@@ -170,6 +176,7 @@ mod tests {
             duration_ms: 0,
             error_category: None,
             error_domain: None,
+            error_phase: None,
             claim_source: None,
             mcp_server_id: None,
             injection_flagged: false,
@@ -189,6 +196,7 @@ mod tests {
             duration_ms: 30000,
             error_category: Some("timeout".to_owned()),
             error_domain: Some("system".to_owned()),
+            error_phase: None,
             claim_source: None,
             mcp_server_id: None,
             injection_flagged: false,
@@ -213,6 +221,7 @@ mod tests {
             duration_ms: 1,
             error_category: None,
             error_domain: None,
+            error_phase: None,
             claim_source: None,
             mcp_server_id: None,
             injection_flagged: false,
@@ -238,6 +247,7 @@ mod tests {
             duration_ms: 1,
             error_category: None,
             error_domain: None,
+            error_phase: None,
             claim_source: None,
             mcp_server_id: None,
             injection_flagged: false,
@@ -290,6 +300,7 @@ mod tests {
             duration_ms: 1,
             error_category: None,
             error_domain: None,
+            error_phase: None,
             claim_source: None,
             mcp_server_id: None,
             injection_flagged: false,
@@ -313,6 +324,7 @@ mod tests {
             duration_ms: 1,
             error_category: None,
             error_domain: None,
+            error_phase: None,
             claim_source: Some(ClaimSource::Shell),
             mcp_server_id: None,
             injection_flagged: false,
@@ -344,6 +356,7 @@ mod tests {
                 duration_ms: i,
                 error_category: None,
                 error_domain: None,
+                error_phase: None,
                 claim_source: None,
                 mcp_server_id: None,
                 injection_flagged: false,
