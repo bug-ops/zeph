@@ -216,7 +216,7 @@ impl TelegramChannel {
     fn should_send_update(&self) -> bool {
         match self.last_edit {
             None => true,
-            Some(last) => last.elapsed() > Duration::from_secs(10),
+            Some(last) => last.elapsed() > Duration::from_secs(3),
         }
     }
 
@@ -243,14 +243,17 @@ impl TelegramChannel {
         match self.message_id {
             None => {
                 tracing::debug!("sending new message (length: {})", formatted_text.len());
-                let msg = self
-                    .bot
-                    .send_message(chat_id, formatted_text)
-                    .parse_mode(ParseMode::MarkdownV2)
-                    .await
-                    .map_err(ChannelError::other)?;
-                self.message_id = Some(msg.id);
-                tracing::debug!("new message sent with id: {:?}", msg.id);
+                let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
+                for chunk in chunks {
+                    let msg = self
+                        .bot
+                        .send_message(chat_id, chunk)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await
+                        .map_err(ChannelError::other)?;
+                    self.message_id = Some(msg.id);
+                    tracing::debug!("new message sent with id: {:?}", msg.id);
+                }
             }
             Some(msg_id) => {
                 tracing::debug!(
@@ -258,39 +261,68 @@ impl TelegramChannel {
                     msg_id,
                     formatted_text.len()
                 );
-                let edit_result = self
-                    .bot
-                    .edit_message_text(chat_id, msg_id, &formatted_text)
-                    .parse_mode(ParseMode::MarkdownV2)
-                    .await;
+                if formatted_text.len() <= MAX_MESSAGE_LEN {
+                    let edit_result = self
+                        .bot
+                        .edit_message_text(chat_id, msg_id, &formatted_text)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await;
 
-                if let Err(e) = edit_result {
-                    let error_msg = e.to_string();
+                    if let Err(e) = edit_result {
+                        let error_msg = e.to_string();
 
-                    if error_msg.contains("message is not modified") {
-                        // Text hasn't changed, just skip this update
-                        tracing::debug!("message content unchanged, skipping edit");
-                    } else if error_msg.contains("message to edit not found")
-                        || error_msg.contains("MESSAGE_ID_INVALID")
-                    {
-                        tracing::warn!(
-                            "Telegram edit failed (message_id stale?): {e}, sending new message"
-                        );
-                        self.message_id = None;
-                        self.last_edit = None;
+                        if error_msg.contains("message is not modified") {
+                            tracing::debug!("message content unchanged, skipping edit");
+                        } else if error_msg.contains("message to edit not found")
+                            || error_msg.contains("MESSAGE_ID_INVALID")
+                        {
+                            tracing::warn!(
+                                "Telegram edit failed (message_id stale?): {e}, sending new message"
+                            );
+                            self.message_id = None;
+                            self.last_edit = None;
 
+                            let msg = self
+                                .bot
+                                .send_message(chat_id, &formatted_text)
+                                .parse_mode(ParseMode::MarkdownV2)
+                                .await
+                                .map_err(ChannelError::other)?;
+                            self.message_id = Some(msg.id);
+                        } else {
+                            return Err(ChannelError::other(e));
+                        }
+                    } else {
+                        tracing::debug!("message edited successfully");
+                    }
+                } else {
+                    // Accumulated text exceeds limit: edit first chunk into existing message,
+                    // send remaining chunks as new messages.
+                    let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
+                    let mut iter = chunks.into_iter();
+                    if let Some(first) = iter.next() {
+                        let edit_result = self
+                            .bot
+                            .edit_message_text(chat_id, msg_id, first)
+                            .parse_mode(ParseMode::MarkdownV2)
+                            .await;
+                        if let Err(e) = edit_result {
+                            let error_msg = e.to_string();
+                            if !error_msg.contains("message is not modified") {
+                                tracing::warn!("Telegram edit failed during split: {e}");
+                            }
+                        }
+                    }
+                    for chunk in iter {
                         let msg = self
                             .bot
-                            .send_message(chat_id, &formatted_text)
+                            .send_message(chat_id, chunk)
                             .parse_mode(ParseMode::MarkdownV2)
                             .await
                             .map_err(ChannelError::other)?;
                         self.message_id = Some(msg.id);
-                    } else {
-                        return Err(ChannelError::other(e));
+                        tracing::debug!("overflow chunk sent with id: {:?}", msg.id);
                     }
-                } else {
-                    tracing::debug!("message edited successfully");
                 }
             }
         }
@@ -553,14 +585,18 @@ mod tests {
     fn should_send_update_time_threshold() {
         let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new());
         channel.accumulated = "test".to_string();
-        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(11)).unwrap());
+        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(4)).unwrap());
         assert!(channel.should_send_update());
     }
 
     #[test]
     fn should_not_send_update_within_threshold() {
         let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new());
-        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+        channel.last_edit = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(500))
+                .unwrap(),
+        );
         assert!(!channel.should_send_update());
     }
 
@@ -571,9 +607,9 @@ mod tests {
 
     #[test]
     fn photo_size_limit_enforcement() {
-        assert!(MAX_IMAGE_BYTES - 1 <= MAX_IMAGE_BYTES);
-        assert!(MAX_IMAGE_BYTES <= MAX_IMAGE_BYTES);
-        assert!(MAX_IMAGE_BYTES + 1 > MAX_IMAGE_BYTES);
+        const { assert!(MAX_IMAGE_BYTES - 1 <= MAX_IMAGE_BYTES) };
+        const { assert!(MAX_IMAGE_BYTES <= MAX_IMAGE_BYTES) };
+        const { assert!(MAX_IMAGE_BYTES + 1 > MAX_IMAGE_BYTES) };
     }
 
     #[test]
@@ -744,5 +780,70 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!result.text.trim().eq_ignore_ascii_case("yes"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // send_or_edit() — split at MAX_MESSAGE_LEN
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn send_or_edit_splits_long_message_into_multiple_sends() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        // Build text that exceeds MAX_MESSAGE_LEN after markdown_to_telegram pass.
+        // Plain ASCII repeated is safe: markdown_to_telegram won't expand it beyond itself.
+        let long_text = "a".repeat(MAX_MESSAGE_LEN + 1);
+        channel.accumulated = long_text;
+
+        channel.send_or_edit().await.unwrap();
+
+        // The mock server records every request; ≥2 sendMessage calls expected.
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.len() >= 2,
+            "expected ≥2 API calls for oversized message, got {}",
+            requests.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn send_or_edit_single_message_when_within_limit() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        channel.accumulated = "short text".to_string();
+
+        channel.send_or_edit().await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "expected exactly 1 API call for short message"
+        );
+        // message_id must be recorded after a successful send
+        assert!(channel.message_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn send_or_edit_splits_when_edit_overflows() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        // Pre-set a message_id to trigger the edit branch.
+        channel.message_id = Some(teloxide::types::MessageId(42));
+        let long_text = "b".repeat(MAX_MESSAGE_LEN + 1);
+        channel.accumulated = long_text;
+
+        channel.send_or_edit().await.unwrap();
+
+        // Expect: 1 editMessageText call + ≥1 sendMessage call for overflow chunks.
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.len() >= 2,
+            "expected edit + at least 1 overflow send, got {}",
+            requests.len()
+        );
     }
 }

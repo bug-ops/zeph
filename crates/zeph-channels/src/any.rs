@@ -221,10 +221,10 @@ mod tests {
         );
     }
 
-    /// Exhaustive Channel method coverage for AnyChannel.
+    /// Exhaustive `Channel` method coverage for `AnyChannel`.
     ///
     /// When a new method is added to the Channel trait, it must be called here.
-    /// If a forwarding is missing in AnyChannel, this test serves as a manual checklist
+    /// If a forwarding is missing in `AnyChannel`, this test serves as a manual checklist
     /// to catch the gap during review.
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
