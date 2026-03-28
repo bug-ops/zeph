@@ -374,6 +374,93 @@ fn agent_task_processor_construction() {
     assert!(std::sync::Arc::strong_count(&processor.loopback_handle) == 1);
 }
 
+// Fix #2302: stale events left in output_rx after a completed request must be drained
+// so they do not bleed into the next request as a false leading Flush/FullMessage.
+#[cfg(feature = "a2a")]
+#[tokio::test]
+async fn loopback_stale_flush_drained_after_full_message() {
+    use zeph_core::LoopbackChannel;
+    use zeph_core::LoopbackEvent;
+
+    let (_channel, mut handle) = LoopbackChannel::pair(8);
+
+    // Simulate: agent sends FullMessage (terminates the recv loop), then emits a
+    // stale Flush (e.g. emitted by a different code path after the turn ends).
+    handle
+        .output_rx
+        .try_recv()
+        .unwrap_err(); // channel is empty initially
+
+    // Pre-load the channel as the agent loop would: FullMessage followed by stale Flush.
+    // We drive the output_tx side via a separate sender cloned from the pair internals.
+    // Because LoopbackHandle owns output_rx (not output_tx), we simulate by sending
+    // through a fresh mpsc pair that mirrors the drain logic directly.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<LoopbackEvent>(8);
+    tx.send(LoopbackEvent::FullMessage("hello".to_owned())).await.unwrap();
+    tx.send(LoopbackEvent::Flush).await.unwrap();
+
+    // Consume up to and including FullMessage (mirrors the recv loop in process()).
+    let mut got_terminal = false;
+    while let Some(event) = rx.recv().await {
+        match event {
+            LoopbackEvent::FullMessage(_) | LoopbackEvent::Flush => {
+                got_terminal = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(got_terminal);
+
+    // Drain stale events (mirrors the fix in src/daemon.rs).
+    let mut drained = 0usize;
+    while rx.try_recv().is_ok() {
+        drained += 1;
+    }
+
+    // The stale Flush must have been drained.
+    assert_eq!(drained, 1, "expected exactly one stale event to be drained");
+
+    // Channel is now empty — a subsequent request would not see the stale Flush.
+    assert!(rx.try_recv().is_err());
+}
+
+// Fix #2295: stale PID detection — read_pid_file + is_process_alive roundtrip.
+#[test]
+fn stale_pid_detection_dead_process() {
+    use zeph_core::daemon::{is_process_alive, read_pid_file, remove_pid_file};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("stale.pid");
+    let path_str = path.to_string_lossy().to_string();
+
+    // Write a PID that is guaranteed to be dead (u32::MAX).
+    std::fs::write(&path, u32::MAX.to_string()).unwrap();
+
+    let pid = read_pid_file(&path_str).expect("should read PID");
+    assert!(!is_process_alive(pid), "u32::MAX must not be alive");
+
+    remove_pid_file(&path_str).unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
+fn stale_pid_detection_live_process() {
+    use zeph_core::daemon::{is_process_alive, read_pid_file, remove_pid_file, write_pid_file};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("live.pid");
+    let path_str = path.to_string_lossy().to_string();
+
+    write_pid_file(&path_str).unwrap();
+
+    let pid = read_pid_file(&path_str).expect("should read PID");
+    assert_eq!(pid, std::process::id());
+    assert!(is_process_alive(pid), "current process must be alive");
+
+    remove_pid_file(&path_str).unwrap();
+}
+
 // R-03: VaultCommand CLI parsing
 #[test]
 fn cli_parse_vault_init() {

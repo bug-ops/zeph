@@ -146,6 +146,10 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                 }
             }
 
+            // Drain any stale events left in the channel from previous requests
+            // (e.g. a Flush emitted after a FullMessage was already consumed).
+            while let Ok(_stale) = handle.output_rx.try_recv() {}
+
             let _ = event_tx
                 .send(zeph_a2a::ProcessorEvent::StatusUpdate {
                     state: zeph_a2a::TaskState::Completed,
@@ -165,11 +169,30 @@ pub(crate) async fn run_daemon(
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    use zeph_core::daemon::{ComponentHandle, DaemonSupervisor, remove_pid_file, write_pid_file};
+    use zeph_core::daemon::{
+        ComponentHandle, DaemonSupervisor, is_process_alive, read_pid_file, remove_pid_file,
+        write_pid_file,
+    };
 
     let app = AppBuilder::new(config_path, vault, vault_key, vault_path).await?;
     let config = app.config();
 
+    // Check for a stale or live PID file before writing a new one.
+    if let Ok(existing_pid) = read_pid_file(&config.daemon.pid_file) {
+        if is_process_alive(existing_pid) {
+            anyhow::bail!(
+                "another daemon instance is already running (PID {existing_pid}); \
+                 stop it before starting a new one"
+            );
+        }
+        tracing::info!(
+            pid = existing_pid,
+            "removing stale PID file from previous run"
+        );
+        if let Err(e) = remove_pid_file(&config.daemon.pid_file) {
+            tracing::warn!("failed to remove stale PID file: {e}");
+        }
+    }
     if let Err(e) = write_pid_file(&config.daemon.pid_file) {
         tracing::warn!("failed to write PID file: {e}");
     }

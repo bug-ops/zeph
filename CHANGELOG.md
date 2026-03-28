@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(a2a): `message/send` returning empty artifacts on second and subsequent requests — drain stale events from `output_rx` with `try_recv()` after breaking out of the recv loop so they do not leak into the next request (#2302)
+- fix(daemon): stale PID file from a crashed run no longer blocks startup — read and liveness-check the existing PID before writing; remove the file if the process is dead, error if the process is still alive (#2295)
 - fix(mcp): `prune_tools` `max_tools == 0` now means no cap on LLM-selected candidates (#2294)
 - fix(security): sanitize MCP tool descriptions and names before interpolating into the pruning prompt — strip control characters, cap description at 200 chars and name at 64 chars (#2297)
 - fix(mcp): document and enforce `always_include` semantics — pinned tools bypass the `max_tools` cap; cap applies only to LLM-selected candidates (#2296)
