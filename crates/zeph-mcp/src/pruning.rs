@@ -11,6 +11,8 @@
 //! zeph-mcp). Callers in `zeph-core` convert `ToolPruningConfig` into `PruningParams`
 //! before calling `prune_tools`.
 
+use std::fmt::Write as _;
+
 use zeph_llm::LlmError;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
@@ -62,7 +64,7 @@ impl Default for PruningParams {
 /// - If `all_tools.len() < params.min_tools_to_prune`, returns `Ok(all_tools.to_vec())`.
 /// - On LLM failure or parse failure, returns `Err(PruningError)` — the caller should
 ///   fall back to the full tool list and log at `WARN` level.
-/// - Result is capped at `params.max_tools` total tools.
+/// - Result is capped at `params.max_tools` total tools. `max_tools == 0` means no cap.
 ///
 /// # Errors
 ///
@@ -84,11 +86,14 @@ pub async fn prune_tools<P: LlmProvider>(
         .partition(|t| params.always_include.iter().any(|a| a == &t.name));
 
     // Build the pruning prompt.
-    let tool_list = candidates
-        .iter()
-        .map(|t| format!("{}: {}", t.name, t.description))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Sanitize tool names and descriptions before interpolation to prevent prompt injection
+    // from attacker-controlled MCP servers.
+    let tool_list = candidates.iter().fold(String::new(), |mut acc, t| {
+        let name = sanitize_tool_name(&t.name);
+        let desc = sanitize_tool_description(&t.description);
+        let _ = writeln!(acc, "- {name}: {desc}");
+        acc
+    });
 
     let prompt = format!(
         "Return a JSON array of tool names that are relevant to the task below.\n\
@@ -103,18 +108,36 @@ pub async fn prune_tools<P: LlmProvider>(
     // Parse: strip markdown fences, find first `[` to last `]`.
     let relevant_names = parse_name_array(&response)?;
 
-    // Build result: pinned tools + matched candidates, capped at max_tools.
+    // always_include tools are added unconditionally and bypass the max_tools cap;
+    // max_tools applies only to LLM-selected candidates.
     let mut result: Vec<McpTool> = pinned.into_iter().cloned().collect();
+    let mut candidates_added: usize = 0;
     for tool in &candidates {
-        if result.len() >= params.max_tools {
+        // max_tools == 0 means no cap on LLM-selected candidates.
+        if params.max_tools > 0 && candidates_added >= params.max_tools {
             break;
         }
         if relevant_names.iter().any(|n| n == &tool.name) {
             result.push((*tool).clone());
+            candidates_added += 1;
         }
     }
 
     Ok(result)
+}
+
+/// Sanitize a tool name before interpolating into an LLM prompt.
+///
+/// Strips control characters and caps at 64 characters.
+fn sanitize_tool_name(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).take(64).collect()
+}
+
+/// Sanitize a tool description before interpolating into an LLM prompt.
+///
+/// Strips control characters and caps at 200 characters.
+fn sanitize_tool_description(desc: &str) -> String {
+    desc.chars().filter(|c| !c.is_control()).take(200).collect()
 }
 
 /// Extract tool names from an LLM response expected to contain a JSON array of strings.
@@ -143,7 +166,27 @@ fn parse_name_array(response: &str) -> Result<Vec<String>, PruningError> {
 
 #[cfg(test)]
 mod tests {
+    use zeph_llm::mock::MockProvider;
+
     use super::*;
+
+    fn make_tool(name: &str, description: &str) -> McpTool {
+        McpTool {
+            server_id: "test".into(),
+            name: name.into(),
+            description: description.into(),
+            input_schema: serde_json::Value::Null,
+        }
+    }
+
+    /// Build a params with low `min_tools_to_prune` so tests aren't skipped early.
+    fn params_with_max(max_tools: usize) -> PruningParams {
+        PruningParams {
+            max_tools,
+            min_tools_to_prune: 1,
+            always_include: Vec::new(),
+        }
+    }
 
     #[test]
     fn parse_plain_array() {
@@ -186,5 +229,66 @@ mod tests {
         };
         // Two tools < 10 → prune_tools would return all as-is.
         assert!(2 < params.min_tools_to_prune);
+    }
+
+    #[tokio::test]
+    async fn max_tools_zero_means_no_cap() {
+        let tools: Vec<McpTool> = (0..5)
+            .map(|i| make_tool(&format!("tool{i}"), "desc"))
+            .collect();
+        let names_json = r#"["tool0","tool1","tool2","tool3","tool4"]"#;
+        let provider = MockProvider::with_responses(vec![names_json.into()]);
+        let params = params_with_max(0);
+
+        let result = prune_tools(&tools, "any task", &params, &provider)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 5, "max_tools=0 must not cap the result");
+    }
+
+    #[test]
+    fn description_sanitization_strips_control_chars_and_caps() {
+        // Newline and tab are control characters.
+        let desc = "line1\nline2\tinject";
+        let sanitized = sanitize_tool_description(desc);
+        assert!(!sanitized.contains('\n'));
+        assert!(!sanitized.contains('\t'));
+
+        // Cap at 200 characters.
+        let long_desc = "x".repeat(300);
+        assert_eq!(sanitize_tool_description(&long_desc).len(), 200);
+
+        // Name capped at 64 characters.
+        let long_name = "a".repeat(100);
+        assert_eq!(sanitize_tool_name(&long_name).len(), 64);
+    }
+
+    #[tokio::test]
+    async fn always_include_bypasses_max_tools_cap() {
+        // max_tools=1 — only 1 candidate from LLM allowed; but always_include adds unconditionally.
+        let tools = vec![
+            make_tool("pinned", "always here"),
+            make_tool("candidate_a", "desc a"),
+            make_tool("candidate_b", "desc b"),
+        ];
+        let provider =
+            MockProvider::with_responses(vec![r#"["candidate_a","candidate_b"]"#.into()]);
+        let params = PruningParams {
+            max_tools: 1,
+            min_tools_to_prune: 1,
+            always_include: vec!["pinned".into()],
+        };
+
+        let result = prune_tools(&tools, "task", &params, &provider)
+            .await
+            .unwrap();
+
+        // "pinned" is always present regardless of max_tools.
+        assert!(
+            result.iter().any(|t| t.name == "pinned"),
+            "pinned tool must bypass cap"
+        );
+        // Only 1 candidate slot remains after pinned bypasses cap; total = 1 (pinned) + 1 (candidate).
+        assert_eq!(result.len(), 2);
     }
 }
