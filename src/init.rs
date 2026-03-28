@@ -1867,10 +1867,10 @@ fn step_mcp_discovery(state: &mut WizardState) -> anyhow::Result<()> {
     };
     let idx = Select::new()
         .with_prompt("MCP tool discovery strategy")
-        .items(&strategy_choices)
+        .items(strategy_choices)
         .default(default_idx)
         .interact()?;
-    state.mcp_discovery_strategy = strategy_choices[idx].to_owned();
+    strategy_choices[idx].clone_into(&mut state.mcp_discovery_strategy);
 
     if state.mcp_discovery_strategy == "embedding" {
         let top_k: usize = Input::new()
