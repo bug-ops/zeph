@@ -67,8 +67,9 @@ pub use providers::{
 pub use providers::{default_stt_language, default_stt_provider};
 pub use rate_limit::RateLimitConfig;
 pub use sanitizer::{
-    ContentIsolationConfig, CustomPiiPattern, EmbeddingGuardConfig, ExfiltrationGuardConfig,
-    MemoryWriteValidationConfig, PiiFilterConfig, QuarantineConfig, ResponseVerificationConfig,
+    CausalIpiConfig, ContentIsolationConfig, CustomPiiPattern, EmbeddingGuardConfig,
+    ExfiltrationGuardConfig, MemoryWriteValidationConfig, PiiFilterConfig, QuarantineConfig,
+    ResponseVerificationConfig,
 };
 #[cfg(feature = "guardrail")]
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
@@ -83,6 +84,6 @@ pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 
 // Top-level config struct, error type, and resolved secrets — moved from zeph-core.
-pub use classifiers::ClassifiersConfig;
+pub use classifiers::{ClassifiersConfig, InjectionEnforcementMode};
 pub use error::ConfigError;
 pub use root::{Config, ResolvedSecrets};

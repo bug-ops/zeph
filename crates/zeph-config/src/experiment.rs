@@ -368,10 +368,10 @@ mod tests {
 
     #[test]
     fn completeness_threshold_serde_round_trip() {
-        let toml_in = r#"
+        let toml_in = r"
             enabled = true
             completeness_threshold = 0.85
-        "#;
+        ";
         let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
         assert!((cfg.completeness_threshold - 0.85).abs() < f32::EPSILON);
 

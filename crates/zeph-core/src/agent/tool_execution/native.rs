@@ -825,6 +825,22 @@ impl<C: Channel> Agent<C> {
         let max_parallel = self.runtime.timeouts.max_parallel_tools.max(1);
         let cancel = self.lifecycle.cancel_token.clone();
 
+        // Causal IPI pre-probe: record behavioral baseline before tool batch dispatch.
+        // Per-batch (not per-tool): 1 LLM call for the entire batch.
+        // On error: log WARN + skip causal analysis for this batch. Never block dispatch.
+        let causal_pre_response = if let Some(ref analyzer) = self.security.causal_analyzer {
+            let context_summary = self.build_causal_context_summary();
+            match analyzer.probe(&context_summary).await {
+                Ok(resp) => Some((resp, context_summary)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "causal IPI pre-probe failed, skipping analysis");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Phase 1: Tiered parallel execution bounded by a shared semaphore.
         //
         // Build a dependency DAG over tool_use_id references in call arguments. When the
@@ -1669,6 +1685,63 @@ impl<C: Channel> Agent<C> {
             });
         }
 
+        // Causal IPI post-probe: compare behavioral state after tool batch results.
+        // Uses tool output snippets (first 200 chars each) — never the full sanitized content.
+        if let Some((pre_response, context_summary)) = causal_pre_response {
+            // Collect snippets from the sanitized content in result_parts.
+            let snippets: Vec<String> = result_parts
+                .iter()
+                .filter_map(|p| {
+                    if let MessagePart::ToolResult {
+                        content, is_error, ..
+                    } = p
+                    {
+                        if *is_error {
+                            Some(zeph_sanitizer::causal_ipi::format_error_snippet(content))
+                        } else {
+                            Some(zeph_sanitizer::causal_ipi::format_tool_snippet(content))
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let tool_snippets = if snippets.is_empty() {
+                "[empty]".to_owned()
+            } else {
+                snippets.join("---")
+            };
+            if let Some(ref analyzer) = self.security.causal_analyzer {
+                match analyzer.post_probe(&context_summary, &tool_snippets).await {
+                    Ok(post_response) => {
+                        let analysis = analyzer.analyze(&pre_response, &post_response);
+                        if analysis.is_flagged {
+                            let pre_excerpt =
+                                &pre_response[..pre_response.floor_char_boundary(100)];
+                            let post_excerpt =
+                                &post_response[..post_response.floor_char_boundary(100)];
+                            tracing::warn!(
+                                deviation_score = analysis.deviation_score,
+                                threshold = analyzer.threshold(),
+                                pre = %pre_excerpt,
+                                post = %post_excerpt,
+                                "causal IPI: behavioral deviation detected at tool-return boundary"
+                            );
+                            self.update_metrics(|m| m.causal_ipi_flags += 1);
+                            self.push_security_event(
+                                crate::metrics::SecurityEventCategory::CausalIpiFlag,
+                                "tool_batch",
+                                format!("deviation={:.3}", analysis.deviation_score),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "causal IPI post-probe failed, skipping analysis");
+                    }
+                }
+            }
+        }
+
         let user_msg = Message::from_parts(Role::User, result_parts);
         // flagged_urls accumulates across ALL tools in this batch (cross-tool trust boundary).
         // A URL from tool N's output can flag tool M's arguments even if tool M returned clean
@@ -2193,7 +2266,7 @@ mod tests {
             agent
                 .msg
                 .messages
-                .push(Message::from_legacy(Role::User, &format!("msg {i}")));
+                .push(Message::from_legacy(Role::User, format!("msg {i}")));
         }
         agent.handle_focus_tool("complete_focus", &serde_json::json!({"summary": "done"}));
         // Messages after complete_focus: [system prompt, knowledge block] at minimum

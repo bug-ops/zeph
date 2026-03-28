@@ -124,6 +124,7 @@ struct SharedAgentDeps {
     feedback_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
     #[cfg(feature = "classifiers")]
     classifiers_config: zeph_core::config::ClassifiersConfig,
+    causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig,
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
     verify_provider: Option<zeph_llm::any::AnyProvider>,
@@ -463,6 +464,7 @@ async fn build_acp_deps(
         feedback_classifier,
         #[cfg(feature = "classifiers")]
         classifiers_config: config.classifiers.clone(),
+        causal_ipi_config: config.security.causal_ipi.clone(),
         probe_provider: app.build_probe_provider(),
         planner_provider: app.build_planner_provider(),
         verify_provider: app.build_verify_provider(),
@@ -556,6 +558,7 @@ async fn spawn_acp_agent(
     let feedback_classifier = d.feedback_classifier.clone();
     #[cfg(feature = "classifiers")]
     let classifiers_config = d.classifiers_config.clone();
+    let causal_ipi_config = d.causal_ipi_config.clone();
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
     let verify_provider = d.verify_provider.clone();
@@ -778,7 +781,31 @@ async fn spawn_acp_agent(
     #[cfg(feature = "classifiers")]
     {
         agent = agent_setup::apply_injection_classifier_with_cfg(agent, &classifiers_config);
+        if classifiers_config.enabled {
+            agent = agent.with_enforcement_mode(classifiers_config.enforcement_mode);
+            if let Some(ref repo_id) = classifiers_config.three_class_model {
+                let mut tc = zeph_llm::classifier::three_class::CandleThreeClassClassifier::new(
+                    repo_id.as_str(),
+                );
+                if let Some(ref token) = classifiers_config.hf_token {
+                    tc = tc.with_hf_token(token.as_str());
+                }
+                if let Some(ref hash) = classifiers_config.three_class_model_sha256 {
+                    tc = tc.with_sha256(hash.as_str());
+                }
+                agent = agent.with_three_class_classifier(
+                    std::sync::Arc::new(tc),
+                    classifiers_config.three_class_threshold,
+                );
+            }
+        }
         agent = agent_setup::apply_pii_classifier_with_cfg(agent, &classifiers_config);
+    }
+    if causal_ipi_config.enabled {
+        agent = agent.with_causal_analyzer(zeph_sanitizer::causal_ipi::TurnCausalAnalyzer::new(
+            provider.clone(),
+            &causal_ipi_config,
+        ));
     }
 
     if debug_config.enabled {

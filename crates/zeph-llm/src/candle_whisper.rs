@@ -400,7 +400,7 @@ mod tests {
     fn resample_changes_length() {
         let input = vec![0.5_f32; 44100];
         let output = resample(&input, 44100, 16000).unwrap();
-        let expected_len = (44100.0 * 16000.0 / 44100.0) as usize;
+        let expected_len = 16000_usize; // 44100 * 16000 / 44100 = 16000 exactly
         let tolerance = expected_len / 10;
         assert!(
             output.len().abs_diff(expected_len) < tolerance,

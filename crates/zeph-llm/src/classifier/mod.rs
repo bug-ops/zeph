@@ -18,6 +18,8 @@ pub mod llm;
 pub mod metrics;
 #[cfg(feature = "classifiers")]
 pub mod ner;
+#[cfg(feature = "classifiers")]
+pub mod three_class;
 
 /// Maximum tokens per chunk sent to `DeBERTa` models (must leave room for `[CLS]` + `[SEP]`).
 #[cfg(feature = "classifiers")]

@@ -1408,12 +1408,12 @@ mod tests {
         let p1 = AnyProvider::Ollama(OllamaProvider::new(
             "http://127.0.0.1:1",
             "a".into(),
-            "".into(),
+            String::new(),
         ));
         let p2 = AnyProvider::Ollama(OllamaProvider::new(
             "http://127.0.0.1:2",
             "b".into(),
-            "".into(),
+            String::new(),
         ));
         let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
         let ordered = r.ordered_providers();
@@ -1839,7 +1839,7 @@ mod tests {
         assert!(!verdict.should_escalate, "score={}", verdict.score);
     }
 
-    /// Empty string from the only provider must not be stored as best_seen.
+    /// Empty string from the only provider must not be stored as `best_seen`.
     /// When all providers fail or return empty, the caller should get an error,
     /// not a silent empty response.
     #[tokio::test]
@@ -1862,7 +1862,7 @@ mod tests {
         assert_eq!(result.unwrap(), "");
     }
 
-    /// When provider 1 returns empty and provider 2 fails, best_seen must not hold
+    /// When provider 1 returns empty and provider 2 fails, `best_seen` must not hold
     /// the empty string — the caller must get an error, not a silent empty response.
     #[tokio::test]
     async fn cascade_empty_best_seen_not_returned_on_all_fail() {
@@ -1879,12 +1879,11 @@ mod tests {
         // best_seen must NOT be the empty string; error must propagate.
         assert!(
             result.is_err(),
-            "expected error, not silent empty string; got: {:?}",
-            result
+            "expected error, not silent empty string; got: {result:?}"
         );
     }
 
-    /// Stream variant: empty string from early provider must not be stored as best_seen.
+    /// Stream variant: empty string from early provider must not be stored as `best_seen`.
     #[tokio::test]
     async fn cascade_stream_empty_response_not_stored_as_best_seen() {
         use crate::mock::MockProvider;
@@ -1925,7 +1924,7 @@ mod tests {
             cost_tiers: Some(vec!["ollama".into(), "claude".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
         // ollama first (tier 0), claude second (tier 1), openai last (unlisted, original idx 2)
         assert_eq!(names, vec!["ollama", "claude", "openai"]);
     }
@@ -1939,7 +1938,7 @@ mod tests {
             cost_tiers: None,
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["claude", "ollama"]);
     }
 
@@ -1952,7 +1951,7 @@ mod tests {
             cost_tiers: Some(vec![]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["claude", "ollama"]);
     }
 
@@ -1965,7 +1964,7 @@ mod tests {
             cost_tiers: Some(vec!["nonexistent".into(), "ollama".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
         // "nonexistent" ignored; "ollama" is tier 1 → first; "claude" unlisted → second
         assert_eq!(names, vec!["ollama", "claude"]);
     }
@@ -1980,7 +1979,7 @@ mod tests {
             cost_tiers: Some(vec!["a".into(), "b".into(), "c".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 
@@ -1995,7 +1994,7 @@ mod tests {
             cost_tiers: Some(vec!["claude".into(), "ollama".into(), "ollama".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["claude", "ollama"]);
     }
 

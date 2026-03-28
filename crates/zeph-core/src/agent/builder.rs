@@ -711,6 +711,53 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the enforcement mode for the injection classifier.
+    ///
+    /// `Warn` (default): scores above the hard threshold emit WARN + metric but do NOT block.
+    /// `Block`: scores above the hard threshold block content.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_enforcement_mode(mut self, mode: zeph_config::InjectionEnforcementMode) -> Self {
+        let old = std::mem::replace(
+            &mut self.security.sanitizer,
+            zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+        );
+        self.security.sanitizer = old.with_enforcement_mode(mode);
+        self
+    }
+
+    /// Attach a three-class classifier backend for `AlignSentinel` injection refinement.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_three_class_classifier(
+        mut self,
+        backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
+        threshold: f32,
+    ) -> Self {
+        let old = std::mem::replace(
+            &mut self.security.sanitizer,
+            zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+        );
+        self.security.sanitizer = old.with_three_class_backend(backend, threshold);
+        self
+    }
+
+    /// Attach a temporal causal IPI analyzer.
+    ///
+    /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.
+    #[must_use]
+    pub fn with_causal_analyzer(
+        mut self,
+        analyzer: zeph_sanitizer::causal_ipi::TurnCausalAnalyzer,
+    ) -> Self {
+        self.security.causal_analyzer = Some(analyzer);
+        self
+    }
+
     /// Configure whether the ML classifier runs on direct user chat messages.
     ///
     /// Default `false`. See `ClassifiersConfig::scan_user_input` for rationale.
@@ -1338,7 +1385,7 @@ mod tests {
             },
             model: String::new(),
             pruning_strategy: crate::config::PruningStrategy::default(),
-            probe: Default::default(),
+            probe: zeph_memory::CompactionProbeConfig::default(),
             compress_provider: String::new(),
         };
         let agent = make_agent().with_compression(compression);
@@ -1486,7 +1533,7 @@ mod tests {
     /// Verify that `apply_session_config` wires graph memory, orchestration, and anomaly
     /// detector configs into the agent in a single call — the acceptance criterion for issue #1812.
     ///
-    /// This exercises the full path: AgentSessionConfig::from_config → apply_session_config →
+    /// This exercises the full path: `AgentSessionConfig::from_config` → `apply_session_config` →
     /// agent internal state, confirming that all three feature configs are propagated correctly.
     #[test]
     fn apply_session_config_wires_graph_orchestration_anomaly() {
@@ -1569,7 +1616,7 @@ mod tests {
         );
     }
 
-    /// Verify that apply_session_config does NOT create an anomaly detector when disabled.
+    /// Verify that `apply_session_config` does NOT create an anomaly detector when disabled.
     #[test]
     fn apply_session_config_skips_anomaly_detector_when_disabled() {
         use crate::config::Config;

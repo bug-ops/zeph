@@ -12,6 +12,8 @@ pub use zeph_memory::{CategoryScore, ProbeCategory, ProbeVerdict};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityEventCategory {
     InjectionFlag,
+    /// ML classifier hard-blocked tool output (`enforcement_mode=block` only).
+    InjectionBlocked,
     ExfiltrationBlock,
     Quarantine,
     Truncation,
@@ -20,6 +22,8 @@ pub enum SecurityEventCategory {
     PreExecutionBlock,
     PreExecutionWarn,
     ResponseVerification,
+    /// `TurnCausalAnalyzer` flagged behavioral deviation at tool-return boundary.
+    CausalIpiFlag,
 }
 
 impl SecurityEventCategory {
@@ -27,6 +31,7 @@ impl SecurityEventCategory {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InjectionFlag => "injection",
+            Self::InjectionBlocked => "injection_blocked",
             Self::ExfiltrationBlock => "exfil",
             Self::Quarantine => "quarantine",
             Self::Truncation => "truncation",
@@ -35,6 +40,7 @@ impl SecurityEventCategory {
             Self::PreExecutionBlock => "pre_exec_block",
             Self::PreExecutionWarn => "pre_exec_warn",
             Self::ResponseVerification => "response_verify",
+            Self::CausalIpiFlag => "causal_ipi",
         }
     }
 }
@@ -254,6 +260,12 @@ pub struct MetricsSnapshot {
     pub sanitizer_truncations: u64,
     pub quarantine_invocations: u64,
     pub quarantine_failures: u64,
+    /// ML classifier hard-blocked tool outputs (`enforcement_mode=block` only).
+    pub classifier_tool_blocks: u64,
+    /// ML classifier suspicious tool outputs (both enforcement modes).
+    pub classifier_tool_suspicious: u64,
+    /// `TurnCausalAnalyzer` flags: behavioral deviation detected at tool-return boundary.
+    pub causal_ipi_flags: u64,
     pub exfiltration_images_blocked: u64,
     pub exfiltration_tool_urls_flagged: u64,
     pub exfiltration_memory_guards: u64,

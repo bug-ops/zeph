@@ -657,6 +657,73 @@ pub(crate) fn apply_pii_ner_classifier<C: Channel>(
     agent.with_pii_ner_classifier(backend, config.classifiers.timeout_ms)
 }
 
+/// Wire `enforcement_mode` from config into the agent's injection classifier.
+///
+/// Must be called AFTER `apply_injection_classifier` so the sanitizer already has
+/// a classifier attached. Safe to call when classifiers are disabled (no-op).
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_enforcement_mode<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &Config,
+) -> zeph_core::agent::Agent<C> {
+    if !config.classifiers.enabled {
+        return agent;
+    }
+    agent.with_enforcement_mode(config.classifiers.enforcement_mode)
+}
+
+/// Wire the three-class `AlignSentinel` refinement model into the agent's sanitizer.
+///
+/// Only active when `classifiers.enabled = true` and `classifiers.three_class_model` is set.
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_three_class_classifier<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &Config,
+) -> zeph_core::agent::Agent<C> {
+    let Some(ref repo_id) = config.classifiers.three_class_model else {
+        return agent;
+    };
+    if !config.classifiers.enabled {
+        return agent;
+    }
+    let mut classifier =
+        zeph_llm::classifier::three_class::CandleThreeClassClassifier::new(repo_id.as_str());
+    if let Some(token) = &config.classifiers.hf_token {
+        classifier = classifier.with_hf_token(token.as_str());
+    }
+    if let Some(hash) = &config.classifiers.three_class_model_sha256 {
+        classifier = classifier.with_sha256(hash.as_str());
+    }
+    let backend = std::sync::Arc::new(classifier);
+    tracing::info!(
+        repo_id = %repo_id,
+        threshold = config.classifiers.three_class_threshold,
+        "three-class AlignSentinel classifier attached (model loads lazily on first use)"
+    );
+    agent.with_three_class_classifier(backend, config.classifiers.three_class_threshold)
+}
+
+/// Wire the `TurnCausalAnalyzer` into the agent's security config.
+///
+/// Only active when `security.causal_ipi.enabled = true`.
+pub(crate) fn apply_causal_analyzer<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    provider: zeph_llm::any::AnyProvider,
+    config: &Config,
+) -> zeph_core::agent::Agent<C> {
+    if !config.security.causal_ipi.enabled {
+        return agent;
+    }
+    let analyzer =
+        zeph_sanitizer::causal_ipi::TurnCausalAnalyzer::new(provider, &config.security.causal_ipi);
+    tracing::info!(
+        threshold = config.security.causal_ipi.threshold,
+        probe_timeout_ms = config.security.causal_ipi.probe_timeout_ms,
+        "causal IPI analyzer attached"
+    );
+    agent.with_causal_analyzer(analyzer)
+}
+
 pub(crate) async fn apply_code_indexer(
     config: &IndexConfig,
     qdrant_ops: Option<QdrantOps>,

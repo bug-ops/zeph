@@ -2836,7 +2836,7 @@ fn is_compact_beta_rejection_detects_invalid_beta_keyword() {
 fn is_compact_beta_rejection_ignores_non_400() {
     assert!(!ClaudeProvider::is_compact_beta_rejection(
         reqwest::StatusCode::UNAUTHORIZED,
-        r#"unknown beta: compact-2026-01-12"#
+        "unknown beta: compact-2026-01-12"
     ));
 }
 

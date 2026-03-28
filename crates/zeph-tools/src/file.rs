@@ -1507,8 +1507,7 @@ mod tests {
         let result = exec.execute_file_tool("read", &params);
         assert!(
             matches!(result, Err(ToolError::SandboxViolation { .. })),
-            "expected SandboxViolation for dotdot bypass, got {:?}",
-            result
+            "expected SandboxViolation for dotdot bypass, got {result:?}"
         );
     }
 

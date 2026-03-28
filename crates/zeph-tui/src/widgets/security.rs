@@ -162,6 +162,7 @@ fn append_event_items<'a>(
     for ev in metrics.security_events.range(start..) {
         let (cat_str, cat_style) = match ev.category {
             SecurityEventCategory::InjectionFlag => ("[inj]  ", flag_style),
+            SecurityEventCategory::InjectionBlocked => ("[injb] ", block_style),
             SecurityEventCategory::ExfiltrationBlock => ("[exfil]", block_style),
             SecurityEventCategory::Quarantine => ("[quar] ", Style::default().fg(Color::Cyan)),
             SecurityEventCategory::Truncation => ("[trunc]", Style::default().fg(Color::DarkGray)),
@@ -172,6 +173,7 @@ fn append_event_items<'a>(
             SecurityEventCategory::PreExecutionBlock => ("[pexb] ", block_style),
             SecurityEventCategory::PreExecutionWarn => ("[pexw] ", flag_style),
             SecurityEventCategory::ResponseVerification => ("[rver] ", flag_style),
+            SecurityEventCategory::CausalIpiFlag => ("[cipi] ", flag_style),
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![

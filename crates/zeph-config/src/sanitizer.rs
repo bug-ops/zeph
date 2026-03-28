@@ -516,3 +516,142 @@ mod tests {
         assert_eq!(cfg.min_samples, 1);
     }
 }
+
+// ---------------------------------------------------------------------------
+// CausalIpiConfig
+// ---------------------------------------------------------------------------
+
+fn default_causal_threshold() -> f32 {
+    0.7
+}
+
+fn validate_causal_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "causal_ipi.threshold must be a finite number",
+        ));
+    }
+    if !(value > 0.0 && value <= 1.0) {
+        return Err(serde::de::Error::custom(
+            "causal_ipi.threshold must be in (0.0, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+fn default_probe_max_tokens() -> u32 {
+    100
+}
+
+fn default_probe_timeout_ms() -> u64 {
+    3000
+}
+
+/// Temporal causal IPI analysis at tool-return boundaries.
+///
+/// When enabled, the agent generates behavioral probes before and after tool batch dispatch
+/// and compares them to detect behavioral deviation caused by injected instructions in
+/// tool outputs. Probes are per-batch (2 LLM calls total), not per individual tool.
+///
+/// Config section: `[security.causal_ipi]`
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct CausalIpiConfig {
+    /// Master switch. Default: false (opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Causal attribution score threshold for flagging. Range: (0.0, 1.0]. Default 0.7.
+    ///
+    /// Scores above this value trigger a WARN log, metric increment, and `SecurityEvent`.
+    /// Content is never blocked — this is an observation layer only.
+    #[serde(
+        default = "default_causal_threshold",
+        deserialize_with = "validate_causal_threshold"
+    )]
+    pub threshold: f32,
+
+    /// LLM provider name from `[[llm.providers]]` for probe calls.
+    ///
+    /// Should reference a fast/cheap provider — probes run on every tool batch return.
+    /// When `None`, falls back to the agent's default provider.
+    #[serde(default)]
+    pub provider: Option<String>,
+
+    /// Maximum tokens for each probe response. Limits cost per probe call. Default: 100.
+    ///
+    /// Two probes per batch = max `2 * probe_max_tokens` output tokens per tool batch.
+    #[serde(default = "default_probe_max_tokens")]
+    pub probe_max_tokens: u32,
+
+    /// Timeout in milliseconds for each individual probe LLM call. Default: 3000.
+    ///
+    /// On timeout: WARN log, skip causal analysis for the batch (never block).
+    #[serde(default = "default_probe_timeout_ms")]
+    pub probe_timeout_ms: u64,
+}
+
+impl Default for CausalIpiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_causal_threshold(),
+            provider: None,
+            probe_max_tokens: default_probe_max_tokens(),
+            probe_timeout_ms: default_probe_timeout_ms(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod causal_ipi_tests {
+    use super::*;
+
+    #[test]
+    fn causal_ipi_defaults() {
+        let cfg = CausalIpiConfig::default();
+        assert!(!cfg.enabled);
+        assert!((cfg.threshold - 0.7).abs() < 1e-6);
+        assert!(cfg.provider.is_none());
+        assert_eq!(cfg.probe_max_tokens, 100);
+        assert_eq!(cfg.probe_timeout_ms, 3000);
+    }
+
+    #[test]
+    fn causal_ipi_deserialize_enabled() {
+        let toml = r#"
+            enabled = true
+            threshold = 0.8
+            provider = "fast"
+            probe_max_tokens = 150
+            probe_timeout_ms = 5000
+        "#;
+        let cfg: CausalIpiConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert!((cfg.threshold - 0.8).abs() < 1e-6);
+        assert_eq!(cfg.provider.as_deref(), Some("fast"));
+        assert_eq!(cfg.probe_max_tokens, 150);
+        assert_eq!(cfg.probe_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn causal_ipi_threshold_zero_rejected() {
+        let result: Result<CausalIpiConfig, _> = toml::from_str("threshold = 0.0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn causal_ipi_threshold_above_one_rejected() {
+        let result: Result<CausalIpiConfig, _> = toml::from_str("threshold = 1.1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn causal_ipi_threshold_exactly_one_accepted() {
+        let cfg: CausalIpiConfig = toml::from_str("threshold = 1.0").unwrap();
+        assert!((cfg.threshold - 1.0).abs() < 1e-6);
+    }
+}

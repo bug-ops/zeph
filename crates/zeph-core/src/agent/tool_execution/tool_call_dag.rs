@@ -292,9 +292,9 @@ mod tests {
         let tiers = dag.tiers();
         assert_eq!(tiers.len(), 3);
         assert_eq!(tiers[0].indices, vec![0usize]); // A
-        let mut tier1 = tiers[1].indices.clone();
-        tier1.sort_unstable();
-        assert_eq!(tier1, vec![1usize, 2]); // B and C (parallel)
+        let mut tier_bc = tiers[1].indices.clone();
+        tier_bc.sort_unstable();
+        assert_eq!(tier_bc, vec![1usize, 2]); // B and C (parallel)
         assert_eq!(tiers[2].indices, vec![3usize]); // D
     }
 

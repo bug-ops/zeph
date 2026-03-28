@@ -296,6 +296,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// This is the SOLE sanitization point for tool output data flows. Do not add
     /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
+    #[allow(clippy::too_many_lines)]
     async fn sanitize_tool_output(&mut self, body: &str, tool_name: &str) -> (String, bool) {
         // MCP tools use "server:tool" format (contains ':') or legacy "mcp" name.
         // Web scrape tools use "web-scrape" (hyphenated) or "fetch".
@@ -317,6 +318,7 @@ impl<C: Channel> Agent<C> {
             ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
         };
         let kind = source.kind;
+        let memory_hint = source.memory_hint;
         let sanitized = self.security.sanitizer.sanitize(body, source);
         let has_injection_flags = !sanitized.injection_flags.is_empty();
         if has_injection_flags {
@@ -354,6 +356,49 @@ impl<C: Channel> Agent<C> {
             );
         }
         self.update_metrics(|m| m.sanitizer_runs += 1);
+
+        // ML injection classifier: runs on tool output after regex sanitization.
+        // Skip for memory_search (ConversationHistory hint) — same rationale as regex skip:
+        // the user's own prior messages legitimately contain terms like "system prompt".
+        #[cfg(feature = "classifiers")]
+        {
+            let skip_ml = matches!(
+                memory_hint,
+                Some(
+                    zeph_sanitizer::MemorySourceHint::ConversationHistory
+                        | zeph_sanitizer::MemorySourceHint::LlmSummary
+                )
+            );
+            if !skip_ml && self.security.sanitizer.has_classifier_backend() {
+                // Classify the original body, not sanitized.body: the spotlight wrapper
+                // (<external-data ...>) would trigger the delimiter_escape pattern in
+                // the regex fallback path, causing false positives for all tool outputs.
+                let ml_verdict = self.security.sanitizer.classify_injection(body).await;
+                match ml_verdict {
+                    zeph_sanitizer::InjectionVerdict::Blocked => {
+                        tracing::warn!(tool = %tool_name, "ML classifier blocked tool output");
+                        self.update_metrics(|m| m.classifier_tool_blocks += 1);
+                        self.push_security_event(
+                            crate::metrics::SecurityEventCategory::InjectionBlocked,
+                            tool_name,
+                            "ML classifier blocked tool output",
+                        );
+                        return (
+                            "[tool output blocked: injection detected by classifier]".into(),
+                            true,
+                        );
+                    }
+                    zeph_sanitizer::InjectionVerdict::Suspicious => {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            "ML classifier: suspicious tool output"
+                        );
+                        self.update_metrics(|m| m.classifier_tool_suspicious += 1);
+                    }
+                    zeph_sanitizer::InjectionVerdict::Clean => {}
+                }
+            }
+        }
 
         // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
         if self.security.sanitizer.is_enabled()
@@ -783,6 +828,50 @@ impl<C: Channel> Agent<C> {
         if !env.is_empty() {
             self.tool_executor.set_skill_env(Some(env));
         }
+    }
+
+    /// Build a compact context summary for causal IPI probes.
+    ///
+    /// Takes the last user message and last assistant message, each truncated to 500 chars.
+    /// Never exposes the full message history to the probe provider.
+    pub(super) fn build_causal_context_summary(&self) -> String {
+        const MAX_CHARS: usize = 500;
+
+        let mut last_user: Option<&str> = None;
+        let mut last_assistant: Option<&str> = None;
+
+        for msg in self.msg.messages.iter().rev() {
+            match msg.role {
+                Role::User if last_user.is_none() => {
+                    if let Some(zeph_llm::provider::MessagePart::Text { text }) = msg.parts.first()
+                    {
+                        last_user = Some(text.as_str());
+                    }
+                }
+                Role::Assistant if last_assistant.is_none() => {
+                    if let Some(zeph_llm::provider::MessagePart::Text { text }) = msg.parts.first()
+                    {
+                        last_assistant = Some(text.as_str());
+                    }
+                }
+                _ => {}
+            }
+            if last_user.is_some() && last_assistant.is_some() {
+                break;
+            }
+        }
+
+        let truncate = |s: &str| {
+            if s.len() <= MAX_CHARS {
+                s.to_owned()
+            } else {
+                s[..s.floor_char_boundary(MAX_CHARS)].to_owned()
+            }
+        };
+
+        let user_part = last_user.map_or_else(String::new, truncate);
+        let assistant_part = last_assistant.map_or_else(String::new, truncate);
+        format!("User: {user_part}\nAssistant: {assistant_part}")
     }
 }
 

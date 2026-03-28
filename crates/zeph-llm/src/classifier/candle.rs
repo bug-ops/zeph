@@ -540,7 +540,7 @@ mod tests {
     fn hf_token_propagation_stored_in_field() {
         let classifier = CandleClassifier::new("test/model").with_hf_token("hf_test_token_value");
         assert_eq!(
-            classifier.hf_token.as_ref().map(|t| t.as_ref()),
+            classifier.hf_token.as_deref(),
             Some("hf_test_token_value"),
             "hf_token was not stored after with_hf_token()"
         );

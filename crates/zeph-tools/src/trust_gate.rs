@@ -724,7 +724,7 @@ mod tests {
     fn gate_with_mcp_ids(ids: &[&str]) -> TrustGateExecutor<MockExecutor> {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         let handle = gate.mcp_tool_ids_handle();
-        let set: std::collections::HashSet<String> = ids.iter().map(|s| s.to_string()).collect();
+        let set: std::collections::HashSet<String> = ids.iter().map(ToString::to_string).collect();
         *handle.write().unwrap() = set;
         gate
     }

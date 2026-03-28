@@ -444,7 +444,12 @@ pub(crate) async fn run_daemon(
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_injection_classifier(agent, config);
     #[cfg(feature = "classifiers")]
+    let agent = agent_setup::apply_enforcement_mode(agent, config);
+    #[cfg(feature = "classifiers")]
+    let agent = agent_setup::apply_three_class_classifier(agent, config);
+    #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_classifier(agent, config);
+    let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
 
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {

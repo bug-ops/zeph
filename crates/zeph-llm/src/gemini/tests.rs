@@ -1015,7 +1015,7 @@ fn test_parse_null_args_uses_empty_object() {
     if let ChatResponse::ToolUse { tool_calls, .. } = result {
         assert_eq!(
             tool_calls[0].input,
-            serde_json::Value::Object(Default::default())
+            serde_json::Value::Object(serde_json::Map::default())
         );
     } else {
         panic!("expected ToolUse");
@@ -1536,7 +1536,7 @@ fn gemini_list_models_excludes_embedding_model_when_not_configured() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live Gemini API key"]
 async fn integration_gemini_embed() {
     let api_key = std::env::var("ZEPH_GEMINI_API_KEY").expect("ZEPH_GEMINI_API_KEY required");
     let p = GeminiProvider::new(api_key, "gemini-2.0-flash".into(), 1024)
@@ -1615,7 +1615,7 @@ fn list_models_response_empty_models() {
 
 #[test]
 fn list_models_response_missing_models_field() {
-    let json = r#"{}"#;
+    let json = r"{}";
     let list: GeminiModelList = serde_json::from_str(json).unwrap();
     assert!(
         list.models.is_empty(),
@@ -1915,21 +1915,21 @@ fn thinking_budget_edge_values() {
     let p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
         .with_thinking_budget(0)
         .unwrap();
-    let json = serde_json::to_value(&p.make_gen_config()).unwrap();
+    let json = serde_json::to_value(p.make_gen_config()).unwrap();
     assert_eq!(json["thinkingConfig"]["thinkingBudget"], 0);
 
     // -1 = dynamic
     let p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
         .with_thinking_budget(-1)
         .unwrap();
-    let json = serde_json::to_value(&p.make_gen_config()).unwrap();
+    let json = serde_json::to_value(p.make_gen_config()).unwrap();
     assert_eq!(json["thinkingConfig"]["thinkingBudget"], -1);
 
     // max = 32768
     let p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048)
         .with_thinking_budget(32768)
         .unwrap();
-    let json = serde_json::to_value(&p.make_gen_config()).unwrap();
+    let json = serde_json::to_value(p.make_gen_config()).unwrap();
     assert_eq!(json["thinkingConfig"]["thinkingBudget"], 32768);
 }
 

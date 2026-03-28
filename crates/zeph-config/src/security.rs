@@ -38,8 +38,8 @@ impl Default for ScannerConfig {
 }
 use crate::rate_limit::RateLimitConfig;
 use crate::sanitizer::{
-    ContentIsolationConfig, ExfiltrationGuardConfig, MemoryWriteValidationConfig, PiiFilterConfig,
-    ResponseVerificationConfig,
+    CausalIpiConfig, ContentIsolationConfig, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
+    PiiFilterConfig, ResponseVerificationConfig,
 };
 
 #[cfg(feature = "guardrail")]
@@ -140,6 +140,9 @@ pub struct SecurityConfig {
     /// Post-LLM response verification layer (enabled by default).
     #[serde(default)]
     pub response_verification: ResponseVerificationConfig,
+    /// Temporal causal IPI analysis at tool-return boundaries (opt-in, disabled by default).
+    #[serde(default)]
+    pub causal_ipi: CausalIpiConfig,
 }
 
 impl Default for SecurityConfig {
@@ -156,6 +159,7 @@ impl Default for SecurityConfig {
             #[cfg(feature = "guardrail")]
             guardrail: GuardrailConfig::default(),
             response_verification: ResponseVerificationConfig::default(),
+            causal_ipi: CausalIpiConfig::default(),
         }
     }
 }

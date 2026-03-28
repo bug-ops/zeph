@@ -4168,11 +4168,11 @@ fn tafc_config_default_disabled() {
 
 #[test]
 fn tafc_config_parse_from_toml() {
-    let toml_str = r#"
+    let toml_str = r"
         [tafc]
         enabled = true
         complexity_threshold = 0.7
-    "#;
+    ";
     let config: zeph_tools::ToolsConfig = toml::from_str(toml_str).unwrap();
     assert!(config.tafc.enabled);
     assert!((config.tafc.complexity_threshold - 0.7).abs() < f64::EPSILON);

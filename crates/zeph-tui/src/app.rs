@@ -1471,6 +1471,7 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
         );
         let cat = match ev.category {
             SecurityEventCategory::InjectionFlag => "INJECTION_FLAG ",
+            SecurityEventCategory::InjectionBlocked => "INJECT_BLOCKED ",
             SecurityEventCategory::ExfiltrationBlock => "EXFIL_BLOCK    ",
             SecurityEventCategory::Quarantine => "QUARANTINE     ",
             SecurityEventCategory::Truncation => "TRUNCATION     ",
@@ -1479,6 +1480,7 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
             SecurityEventCategory::PreExecutionBlock => "PRE_EXEC_BLOCK ",
             SecurityEventCategory::PreExecutionWarn => "PRE_EXEC_WARN  ",
             SecurityEventCategory::ResponseVerification => "RESP_VERIFY    ",
+            SecurityEventCategory::CausalIpiFlag => "CAUSAL_IPI     ",
         };
         lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
     }

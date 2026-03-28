@@ -739,12 +739,12 @@ mod tests {
 
     #[test]
     fn cosine_similarity_empty_returns_zero() {
-        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+        assert!(cosine_similarity(&[], &[]) < f32::EPSILON);
     }
 
     #[test]
     fn cosine_similarity_mismatched_length_returns_zero() {
-        assert_eq!(cosine_similarity(&[1.0], &[1.0, 2.0]), 0.0);
+        assert!(cosine_similarity(&[1.0], &[1.0, 2.0]) < f32::EPSILON);
     }
 
     #[test]
@@ -823,7 +823,7 @@ mod tests {
     fn preference_boost_none_met() {
         let graph = make_dep_graph(&[("format", vec![], vec!["search", "grep"])]);
         let boost = graph.preference_boost("format", &completed(&[]), 0.15, 0.2);
-        assert_eq!(boost, 0.0);
+        assert!(boost < f32::EPSILON);
     }
 
     #[test]
@@ -973,10 +973,10 @@ mod tests {
         assert!(graph.requirements_met("tool_a", &completed(&["tool_b"])));
     }
 
-    /// HIGH-02 regression: NameMentioned tools must still respect hard gates.
+    /// HIGH-02 regression: `NameMentioned` tools must still respect hard gates.
     ///
-    /// If the user says "use apply_patch to fix the bug", apply_patch is
-    /// NameMentioned but must NOT bypass its requires=[read] constraint.
+    /// If the user says "use `apply_patch` to fix the bug", `apply_patch` is
+    /// `NameMentioned` but must NOT bypass its `requires=[read]` constraint.
     #[test]
     fn name_mentioned_does_not_bypass_hard_gate() {
         let graph = make_dep_graph(&[("apply_patch", vec!["read"], vec![])]);
@@ -1037,7 +1037,7 @@ mod tests {
         assert!(result2.dependency_exclusions.is_empty());
     }
 
-    /// Three-step linear chain: read → search → apply_patch.
+    /// Three-step linear chain: `read` → `search` → `apply_patch`.
     /// Each turn unlocks exactly one more tool.
     #[test]
     fn multi_turn_chain_three_steps() {
@@ -1076,7 +1076,7 @@ mod tests {
         assert!(r3.dependency_exclusions.is_empty());
     }
 
-    /// Multi-requires: apply_patch needs both `read` AND `search` to be done.
+    /// Multi-requires: `apply_patch` needs both `read` AND `search` to be done.
     #[test]
     fn multi_turn_multi_requires_both_must_complete() {
         let graph = make_dep_graph(&[("apply_patch", vec!["read", "search"], vec![])]);
@@ -1145,8 +1145,7 @@ mod tests {
                 .scores
                 .iter()
                 .find(|(tid, _)| tid == id)
-                .map(|(_, s)| *s)
-                .unwrap_or(0.0)
+                .map_or(0.0, |(_, s)| *s)
         };
 
         // Turn 1: no prefs satisfied — no boost

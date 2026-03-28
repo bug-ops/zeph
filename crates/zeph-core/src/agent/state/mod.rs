@@ -194,6 +194,8 @@ pub(crate) struct SecurityState {
     pub(crate) guardrail: Option<zeph_sanitizer::guardrail::GuardrailFilter>,
     /// Post-LLM response verification layer.
     pub(crate) response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier,
+    /// Temporal causal IPI analyzer (opt-in, disabled when `None`).
+    pub(crate) causal_analyzer: Option<zeph_sanitizer::causal_ipi::TurnCausalAnalyzer>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).

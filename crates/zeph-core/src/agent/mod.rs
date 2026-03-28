@@ -443,6 +443,7 @@ impl<C: Channel> Agent<C> {
                 response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier::new(
                     zeph_config::ResponseVerificationConfig::default(),
                 ),
+                causal_analyzer: None,
             },
             experiments: ExperimentState {
                 #[cfg(feature = "experiments")]
