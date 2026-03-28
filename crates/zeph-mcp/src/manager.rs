@@ -582,7 +582,7 @@ impl McpManager {
                         );
                         if let Some(ref store) = self.trust_store {
                             let _ = store
-                                .apply_delta(
+                                .load_and_apply_delta(
                                     &server_id,
                                     probe.score_delta,
                                     0,
@@ -737,7 +737,7 @@ impl McpManager {
             );
             if let Some(ref store) = self.trust_store {
                 let _ = store
-                    .apply_delta(&entry.id, probe.score_delta, 0, u64::from(probe.block))
+                    .load_and_apply_delta(&entry.id, probe.score_delta, 0, u64::from(probe.block))
                     .await;
             }
             if probe.block {

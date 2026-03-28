@@ -213,6 +213,46 @@ impl TrustScoreStore {
         Ok(())
     }
 
+    /// Load the current score with decay applied, then write back the decayed-plus-delta value.
+    ///
+    /// Unlike [`apply_delta`], this method reads the stored score first, applies time-based
+    /// decay in-memory, and then upserts the corrected value. This prevents delta application
+    /// on a stale (pre-decay) score when a server has not been probed for an extended period.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query or execution fails.
+    pub async fn load_and_apply_delta(
+        &self,
+        server_id: &str,
+        score_delta: f64,
+        success_increment: u64,
+        failure_increment: u64,
+    ) -> Result<(), sqlx::Error> {
+        let current = self.load(server_id).await?;
+        let base_score = current.map_or(ServerTrustScore::INITIAL_SCORE, |s| s.score);
+        let new_score = (base_score + score_delta).clamp(0.0, 1.0);
+        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        sqlx::query(
+            "INSERT INTO mcp_trust_scores
+                (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(server_id) DO UPDATE SET
+                score           = excluded.score,
+                success_count   = success_count + excluded.success_count,
+                failure_count   = failure_count + excluded.failure_count,
+                updated_at_secs = excluded.updated_at_secs",
+        )
+        .bind(server_id)
+        .bind(new_score)
+        .bind(i64::try_from(success_increment).unwrap_or(i64::MAX))
+        .bind(i64::try_from(failure_increment).unwrap_or(i64::MAX))
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Load all server trust scores with decay applied for display accuracy.
     ///
     /// Decay is applied in-memory but NOT persisted. This is intentional: persisting
@@ -582,6 +622,61 @@ mod tests {
             (final_score.score - expected).abs() < 1e-6,
             "delta must be applied to decayed score: expected={expected}, got={}",
             final_score.score
+        );
+    }
+
+    #[tokio::test]
+    async fn load_and_apply_delta_new_entry() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = TrustScoreStore::new(pool);
+        store.init().await.unwrap();
+
+        store
+            .load_and_apply_delta("srv1", ServerTrustScore::SUCCESS_BOOST, 1, 0)
+            .await
+            .unwrap();
+
+        let score = store.load("srv1").await.unwrap().unwrap();
+        assert!(
+            score.score > ServerTrustScore::INITIAL_SCORE,
+            "new entry should start at INITIAL_SCORE + delta"
+        );
+        assert_eq!(score.success_count, 1);
+    }
+
+    #[tokio::test]
+    async fn load_and_apply_delta_applies_decay_before_delta() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = TrustScoreStore::new(pool);
+        store.init().await.unwrap();
+
+        // Insert a high score with an old timestamp (simulate 30 days ago).
+        let old_ts = unix_now().saturating_sub(30 * 86_400);
+        sqlx::query(
+            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, 0.9, 0, 0, ?)",
+        )
+        .bind("srv1")
+        .bind(i64::try_from(old_ts).unwrap())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        // Delta = 0.0 — decay only.
+        store.load_and_apply_delta("srv1", 0.0, 0, 0).await.unwrap();
+
+        let score = store.load("srv1").await.unwrap().unwrap();
+        // After 30 days of decay (0.01/day) from 0.9, effective base ≈ 0.60.
+        // Written back score should be below 0.9.
+        assert!(
+            score.score < 0.9,
+            "score should have decayed from 0.9, got {}",
+            score.score
+        );
+        assert!(
+            score.score >= ServerTrustScore::INITIAL_SCORE,
+            "score should not decay below INITIAL_SCORE, got {}",
+            score.score
         );
     }
 }

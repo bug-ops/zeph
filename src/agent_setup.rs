@@ -301,6 +301,7 @@ pub(crate) async fn build_tool_setup(
     suppress_stderr: bool,
     age_vault: Option<&Arc<tokio::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pool: Option<&sqlx::SqlitePool>,
 ) -> ToolSetup {
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -341,6 +342,8 @@ pub(crate) async fn build_tool_setup(
     if let Some(tx) = status_tx {
         mcp_manager_builder = mcp_manager_builder.with_status_tx(tx);
     }
+    mcp_manager_builder =
+        zeph_core::bootstrap::wire_trust_calibration(mcp_manager_builder, config, pool).await;
     let mcp_manager = Arc::new(mcp_manager_builder);
     let (mcp_tools, mcp_outcomes) = mcp_manager.connect_all().await;
     tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());

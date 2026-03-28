@@ -549,18 +549,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let suppress_mcp_stderr = false;
 
-    let (memory_result, tool_setup) = tokio::join!(
-        app.build_memory(&provider),
-        agent_setup::build_tool_setup(
-            config,
-            permission_policy.clone(),
-            with_tool_events,
-            suppress_mcp_stderr,
-            app.age_vault_arc(),
-            Some(agent_status_tx.clone()),
-        ),
-    );
-    let memory = std::sync::Arc::new(memory_result?);
+    let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+    let tool_setup = agent_setup::build_tool_setup(
+        config,
+        permission_policy.clone(),
+        with_tool_events,
+        suppress_mcp_stderr,
+        app.age_vault_arc(),
+        Some(agent_status_tx.clone()),
+        Some(memory.sqlite().pool()),
+    )
+    .await;
 
     let registry = std::sync::Arc::new(std::sync::RwLock::new(registry));
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry

@@ -291,13 +291,19 @@ async fn build_acp_deps(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager = prebuilt_mcp_manager.unwrap_or_else(|| {
-        std::sync::Arc::new(zeph_core::bootstrap::create_mcp_manager_with_vault(
+    let mcp_manager = if let Some(m) = prebuilt_mcp_manager {
+        m
+    } else {
+        let builder =
+            zeph_core::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc());
+        let builder = zeph_core::bootstrap::wire_trust_calibration(
+            builder,
             config,
-            false,
-            app.age_vault_arc(),
-        ))
-    });
+            Some(memory.sqlite().pool()),
+        )
+        .await;
+        std::sync::Arc::new(builder)
+    };
     let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =

@@ -279,10 +279,16 @@ pub(crate) async fn run_daemon(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager = std::sync::Arc::new(
+    let mcp_manager_builder =
         zeph_core::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc())
-            .with_status_tx(status_tx),
-    );
+            .with_status_tx(status_tx);
+    let mcp_manager_builder = zeph_core::bootstrap::wire_trust_calibration(
+        mcp_manager_builder,
+        config,
+        Some(memory.sqlite().pool()),
+    )
+    .await;
+    let mcp_manager = std::sync::Arc::new(mcp_manager_builder);
     let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =

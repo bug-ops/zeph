@@ -12,7 +12,9 @@ pub mod skills;
 
 pub use config::{parse_vault_args, resolve_config_path};
 pub use health::{health_check, warmup_provider};
-pub use mcp::{create_mcp_manager, create_mcp_manager_with_vault, create_mcp_registry};
+pub use mcp::{
+    create_mcp_manager, create_mcp_manager_with_vault, create_mcp_registry, wire_trust_calibration,
+};
 pub use oauth::VaultCredentialStore;
 #[cfg(feature = "candle")]
 pub use provider::select_device;

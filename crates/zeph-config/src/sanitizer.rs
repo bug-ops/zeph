@@ -21,11 +21,17 @@ pub struct EmbeddingGuardConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Cosine distance threshold above which outputs are flagged as anomalous.
-    #[serde(default = "default_embedding_threshold")]
+    #[serde(
+        default = "default_embedding_threshold",
+        deserialize_with = "validate_embedding_threshold"
+    )]
     pub threshold: f64,
     /// Minimum clean samples before centroid-based detection activates.
     /// Before this count, regex fallback is used instead.
-    #[serde(default = "default_embedding_min_samples")]
+    #[serde(
+        default = "default_embedding_min_samples",
+        deserialize_with = "validate_min_samples"
+    )]
     pub min_samples: usize,
     /// EMA alpha floor for centroid updates after stabilization (n >= `min_samples`).
     ///
@@ -35,6 +41,37 @@ pub struct EmbeddingGuardConfig {
     /// changes. Default: 0.01 (1% per sample).
     #[serde(default = "default_ema_floor")]
     pub ema_floor: f32,
+}
+
+fn validate_embedding_threshold<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "embedding_guard.threshold must be a finite number",
+        ));
+    }
+    if !(value > 0.0 && value <= 1.0) {
+        return Err(serde::de::Error::custom(
+            "embedding_guard.threshold must be in (0.0, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_min_samples<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "embedding_guard.min_samples must be >= 1",
+        ));
+    }
+    Ok(value)
 }
 
 fn default_embedding_threshold() -> f64 {
@@ -430,5 +467,52 @@ impl Default for ResponseVerificationConfig {
             block_on_detection: false,
             verifier_provider: String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn de_guard(toml: &str) -> Result<EmbeddingGuardConfig, toml::de::Error> {
+        toml::from_str(toml)
+    }
+
+    #[test]
+    fn threshold_valid() {
+        let cfg = de_guard("threshold = 0.35\nmin_samples = 5").unwrap();
+        assert!((cfg.threshold - 0.35).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn threshold_one_valid() {
+        let cfg = de_guard("threshold = 1.0\nmin_samples = 1").unwrap();
+        assert!((cfg.threshold - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn threshold_zero_rejected() {
+        assert!(de_guard("threshold = 0.0\nmin_samples = 1").is_err());
+    }
+
+    #[test]
+    fn threshold_above_one_rejected() {
+        assert!(de_guard("threshold = 1.5\nmin_samples = 1").is_err());
+    }
+
+    #[test]
+    fn threshold_negative_rejected() {
+        assert!(de_guard("threshold = -0.1\nmin_samples = 1").is_err());
+    }
+
+    #[test]
+    fn min_samples_zero_rejected() {
+        assert!(de_guard("threshold = 0.35\nmin_samples = 0").is_err());
+    }
+
+    #[test]
+    fn min_samples_one_valid() {
+        let cfg = de_guard("threshold = 0.35\nmin_samples = 1").unwrap();
+        assert_eq!(cfg.min_samples, 1);
     }
 }

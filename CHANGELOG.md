@@ -29,6 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - fix(a2a): A2A response shift — replace `try_recv()` drain with a blocking drain-until-`Flush` loop; the agent loop always emits `Flush` as the definitive end-of-turn sentinel after `FullMessage`, so waiting for it eliminates the TOCTOU race where tail events (`Usage`, `SessionTitle`, `Flush`) arrived after the drain window and leaked into the next request (#2326)
 - fix(mcp): silent drop of embedding guard result on closed receiver — replace `let _ = tx.send(result)` with an explicit `is_err()` check that logs a `WARN` when the result channel is closed; prevents silent failure hiding in `EmbeddingAnomalyGuard::check_async()` (#2313)
+- fix(mcp): wire `DefaultMcpProber` and `TrustScoreStore` into all three bootstrap paths (runner, daemon, ACP) via new `wire_trust_calibration()` in `zeph-core::bootstrap`; `TrustCalibrationConfig.enabled` now has effect at startup (#2315)
+- fix(mcp): `TrustScoreStore::apply_delta()` operated on stale pre-decay score; new `load_and_apply_delta()` reads with decay applied in-memory before writing back, preventing inflated base scores after long server idle periods; both call sites in `manager.rs` updated (#2323)
+- fix(config): `EmbeddingGuardConfig::threshold` now validated to `(0.0, 1.0]` at deserialization time; `min_samples` validated to `>= 1`; invalid values produce a descriptive config error at startup (#2322)
 - fix(daemon): stale PID file from a crashed run no longer blocks startup — read and liveness-check the existing PID before writing; remove the file if the process is dead, error if the process is still alive (#2295)
 - fix(mcp): `prune_tools` `max_tools == 0` now means no cap on LLM-selected candidates (#2294)
 - fix(security): sanitize MCP tool descriptions and names before interpolating into the pruning prompt — strip control characters, cap description at 200 chars and name at 64 chars (#2297)
