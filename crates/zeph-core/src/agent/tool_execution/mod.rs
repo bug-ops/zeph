@@ -318,7 +318,10 @@ impl<C: Channel> Agent<C> {
             ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
         };
         let kind = source.kind;
+        #[cfg(feature = "classifiers")]
         let memory_hint = source.memory_hint;
+        #[cfg(not(feature = "classifiers"))]
+        let _ = source.memory_hint;
         let sanitized = self.security.sanitizer.sanitize(body, source);
         let has_injection_flags = !sanitized.injection_flags.is_empty();
         if has_injection_flags {
