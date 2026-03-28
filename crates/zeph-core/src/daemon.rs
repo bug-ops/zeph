@@ -127,8 +127,16 @@ impl DaemonSupervisor {
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
+        // PIDs on Unix are signed (pid_t = i32); u32::MAX wraps to -1 which would
+        // signal every process, so reject anything that does not fit in a positive i32.
+        let Ok(signed) = i32::try_from(pid) else {
+            return false;
+        };
+        if signed <= 0 {
+            return false;
+        }
         std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
+            .args(["-0", &signed.to_string()])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
