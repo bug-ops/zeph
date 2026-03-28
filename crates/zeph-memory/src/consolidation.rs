@@ -1,0 +1,556 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! All-Mem lifelong memory consolidation (#2270).
+//!
+//! Provides a background sweep loop that periodically clusters semantically similar messages
+//! and merges them into consolidated entries via LLM. Originals are never deleted — they are
+//! marked as consolidated (`consolidated = 1`) and deprioritized in recall over time via
+//! temporal decay.
+//!
+//! # Transaction safety
+//!
+//! Every `MERGE` operation runs inside a single `SQLite` transaction via
+//! [`SqliteStore::apply_consolidation_merge`]. Partial state is never written.
+//!
+//! # Clustering
+//!
+//! Uses in-memory cosine similarity over the batch (same pattern as `tiers.rs`), not Qdrant.
+//! This keeps the feature independent of optional infrastructure.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::LlmProvider as _;
+
+use crate::error::MemoryError;
+use crate::math::cosine_similarity;
+use crate::sqlite::SqliteStore;
+
+/// Topology operation proposed by the LLM for memory consolidation.
+///
+/// MVP includes `Merge` and `Update` only. `Split` is deferred — the trigger
+/// condition (a single entry being "too broad") requires a separate sweep strategy
+/// not based on similarity clustering.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TopologyOp {
+    /// Merge N similar messages into one consolidated entry.
+    Merge {
+        source_ids: Vec<i64>,
+        merged_content: String,
+        confidence: f32,
+    },
+    /// Update/refine an existing consolidated entry with new evidence.
+    Update {
+        target_id: i64,
+        new_content: String,
+        additional_source_ids: Vec<i64>,
+        confidence: f32,
+    },
+}
+
+/// Result of a single consolidation sweep cycle.
+#[derive(Debug, Default)]
+pub struct ConsolidationResult {
+    pub merges: u32,
+    pub updates: u32,
+    /// Ops skipped because their confidence was below the threshold.
+    pub skipped: u32,
+}
+
+/// Configuration for the consolidation sweep, passed from `zeph-config::ConsolidationConfig`.
+///
+/// Defined locally to avoid a dependency from `zeph-memory` on `zeph-config`.
+#[derive(Debug, Clone)]
+pub struct ConsolidationConfig {
+    pub enabled: bool,
+    pub confidence_threshold: f32,
+    pub sweep_interval_secs: u64,
+    pub sweep_batch_size: usize,
+    pub similarity_threshold: f32,
+}
+
+/// Start the background consolidation loop.
+///
+/// Each sweep cycle:
+/// 1. Fetches all conversations with unconsolidated messages.
+/// 2. For each conversation, loads a batch of unconsolidated messages.
+/// 3. Embeds candidates and clusters near-duplicates (cosine similarity >= threshold).
+/// 4. For each cluster with >= 2 messages, calls the LLM to produce a merged fact.
+/// 5. Applies accepted merges inside transactions.
+///
+/// The loop exits immediately if `config.enabled = false`.
+///
+/// Database and LLM errors are logged but do not stop the loop.
+pub fn start_consolidation_loop(
+    store: Arc<SqliteStore>,
+    provider: AnyProvider,
+    config: ConsolidationConfig,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if !config.enabled {
+            tracing::debug!("consolidation disabled (consolidation.enabled = false)");
+            return;
+        }
+
+        let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
+        // Skip the first immediate tick to avoid running at startup.
+        ticker.tick().await;
+
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    tracing::debug!("consolidation loop shutting down");
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
+
+            tracing::debug!("consolidation: starting sweep");
+            let start = std::time::Instant::now();
+
+            let result = run_consolidation_sweep(&store, &provider, &config).await;
+            let elapsed_ms = start.elapsed().as_millis();
+
+            match result {
+                Ok(r) => {
+                    if r.skipped > 0 && r.merges + r.updates == 0 {
+                        tracing::warn!(
+                            skipped = r.skipped,
+                            elapsed_ms,
+                            "consolidation: all proposed ops below confidence threshold — \
+                             consider lowering confidence_threshold or checking provider quality"
+                        );
+                    } else {
+                        tracing::info!(
+                            merges = r.merges,
+                            updates = r.updates,
+                            skipped = r.skipped,
+                            elapsed_ms,
+                            "consolidation: sweep complete"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, elapsed_ms, "consolidation: sweep failed, will retry");
+                }
+            }
+        }
+    })
+}
+
+/// Execute one full consolidation sweep cycle.
+///
+/// # Errors
+///
+/// Returns an error if a database query fails. LLM errors for individual clusters are
+/// logged and skipped without propagating.
+#[allow(clippy::too_many_lines)]
+pub async fn run_consolidation_sweep(
+    store: &SqliteStore,
+    provider: &AnyProvider,
+    config: &ConsolidationConfig,
+) -> Result<ConsolidationResult, MemoryError> {
+    let mut result = ConsolidationResult::default();
+
+    // Find all conversations that have unconsolidated messages.
+    let conv_ids = store.conversations_with_unconsolidated_messages().await?;
+
+    for conv_id in conv_ids {
+        let candidates = store
+            .find_unconsolidated_messages(conv_id, config.sweep_batch_size)
+            .await?;
+
+        if candidates.is_empty() {
+            continue;
+        }
+
+        // Embed all candidates for clustering.
+        let mut embedded: Vec<(i64, String, Vec<f32>)> = Vec::with_capacity(candidates.len());
+        for (id, content) in candidates {
+            if !provider.supports_embeddings() {
+                // No embedding support — cannot cluster, skip this conversation.
+                break;
+            }
+            match provider.embed(&content).await {
+                Ok(vec) => embedded.push((id.0, content, vec)),
+                Err(e) => {
+                    tracing::warn!(
+                        message_id = id.0,
+                        error = %e,
+                        "consolidation: failed to embed candidate, skipping"
+                    );
+                }
+            }
+        }
+
+        if embedded.len() < 2 {
+            continue;
+        }
+
+        let clusters = cluster_by_similarity(&embedded, config.similarity_threshold);
+
+        for cluster in clusters {
+            if cluster.len() < 2 {
+                continue;
+            }
+
+            let ops = propose_merge_op(provider, &cluster).await;
+            match ops {
+                None => {
+                    tracing::debug!(
+                        cluster_size = cluster.len(),
+                        "consolidation: LLM returned no op for cluster, skipping"
+                    );
+                }
+                Some(TopologyOp::Merge {
+                    source_ids,
+                    merged_content,
+                    confidence,
+                }) => {
+                    let source_msg_ids: Vec<crate::types::MessageId> = source_ids
+                        .iter()
+                        .map(|&id| crate::types::MessageId(id))
+                        .collect();
+                    match store
+                        .apply_consolidation_merge(
+                            conv_id,
+                            "assistant",
+                            &merged_content,
+                            &source_msg_ids,
+                            confidence,
+                            config.confidence_threshold,
+                        )
+                        .await
+                    {
+                        Ok(true) => result.merges += 1,
+                        Ok(false) => result.skipped += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                cluster_size = cluster.len(),
+                                "consolidation: merge failed"
+                            );
+                        }
+                    }
+                }
+                Some(TopologyOp::Update {
+                    new_content,
+                    additional_source_ids,
+                    confidence,
+                    ..
+                }) => {
+                    // Update: same apply path but with a fresh merge for MVP simplicity.
+                    let source_msg_ids: Vec<crate::types::MessageId> = additional_source_ids
+                        .iter()
+                        .map(|&id| crate::types::MessageId(id))
+                        .collect();
+                    match store
+                        .apply_consolidation_merge(
+                            conv_id,
+                            "assistant",
+                            &new_content,
+                            &source_msg_ids,
+                            confidence,
+                            config.confidence_threshold,
+                        )
+                        .await
+                    {
+                        Ok(true) => result.updates += 1,
+                        Ok(false) => result.skipped += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "consolidation: update failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// A cluster: (representative embedding, list of (id, content) members).
+type Cluster = (Vec<f32>, Vec<(i64, String)>);
+
+/// Cluster messages by cosine similarity using greedy nearest-neighbor.
+///
+/// Each message is assigned to the first existing cluster whose representative has
+/// cosine similarity >= `threshold` with it, or starts a new cluster.
+fn cluster_by_similarity(
+    embedded: &[(i64, String, Vec<f32>)],
+    threshold: f32,
+) -> Vec<Vec<(i64, String)>> {
+    let mut clusters: Vec<Cluster> = Vec::new();
+
+    for (id, content, embedding) in embedded {
+        let mut assigned = false;
+        for (rep_emb, members) in &mut clusters {
+            if cosine_similarity(embedding, rep_emb) >= threshold {
+                members.push((*id, content.clone()));
+                assigned = true;
+                break;
+            }
+        }
+        if !assigned {
+            clusters.push((embedding.clone(), vec![(*id, content.clone())]));
+        }
+    }
+
+    clusters.into_iter().map(|(_, members)| members).collect()
+}
+
+/// Ask the LLM to produce a `TopologyOp` for a cluster of similar messages.
+///
+/// Returns `None` if the LLM response cannot be parsed or if the LLM declines.
+async fn propose_merge_op(provider: &AnyProvider, cluster: &[(i64, String)]) -> Option<TopologyOp> {
+    use zeph_llm::provider::{Message, Role};
+
+    let entries: String = cluster
+        .iter()
+        .map(|(id, content)| format!("  [id={id}] {content}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "You are a memory consolidation assistant. \
+         The following messages are semantically similar and should be consolidated.\n\n\
+         Messages:\n{entries}\n\n\
+         Produce a single JSON object representing a consolidation operation.\n\
+         Use this exact schema (choose either 'merge' or 'update'):\n\
+         {{\"op\":\"merge\",\"source_ids\":[<list of ids>],\"merged_content\":\"<combined fact>\",\"confidence\":<0.0-1.0>}}\n\
+         OR\n\
+         {{\"op\":\"update\",\"target_id\":<id>,\"new_content\":\"<updated fact>\",\"additional_source_ids\":[<ids>],\"confidence\":<0.0-1.0>}}\n\n\
+         Return ONLY the JSON object, no explanation."
+    );
+
+    let messages = vec![Message::from_legacy(Role::User, &prompt)];
+    let text = match provider.chat(&messages).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "consolidation: LLM call failed");
+            return None;
+        }
+    };
+
+    // Try to parse from the first JSON object in the response.
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    let json_slice = &text[start..=end];
+
+    match serde_json::from_str::<TopologyOp>(json_slice) {
+        Ok(op) => Some(op),
+        Err(e) => {
+            tracing::debug!(error = %e, response = %json_slice, "consolidation: failed to parse LLM response as TopologyOp");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topology_op_merge_serde_roundtrip() {
+        let op = TopologyOp::Merge {
+            source_ids: vec![1, 2, 3],
+            merged_content: "Alice uses Rust and loves neovim".into(),
+            confidence: 0.9,
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        let restored: TopologyOp = serde_json::from_str(&json).unwrap();
+        assert_eq!(op, restored);
+    }
+
+    #[test]
+    fn topology_op_update_serde_roundtrip() {
+        let op = TopologyOp::Update {
+            target_id: 5,
+            new_content: "Alice prefers Rust over Python".into(),
+            additional_source_ids: vec![6, 7],
+            confidence: 0.85,
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        let restored: TopologyOp = serde_json::from_str(&json).unwrap();
+        assert_eq!(op, restored);
+    }
+
+    #[test]
+    fn cluster_by_similarity_groups_identical_embeddings() {
+        // Two identical embeddings should cluster together.
+        let emb = vec![1.0_f32, 0.0, 0.0];
+        let entries = vec![
+            (1i64, "msg1".into(), emb.clone()),
+            (2i64, "msg2".into(), emb.clone()),
+            (3i64, "orthogonal".into(), vec![0.0, 1.0, 0.0]),
+        ];
+        let clusters = cluster_by_similarity(&entries, 0.9);
+        // msg1 and msg2 should be in the same cluster; orthogonal in its own.
+        assert_eq!(clusters.len(), 2);
+        let sizes: Vec<usize> = {
+            let mut s: Vec<usize> = clusters.iter().map(|c| c.len()).collect();
+            s.sort_unstable();
+            s
+        };
+        assert_eq!(sizes, vec![1, 2]);
+    }
+
+    #[test]
+    fn cluster_by_similarity_all_orthogonal_gives_singletons() {
+        let entries = vec![
+            (1i64, "a".into(), vec![1.0_f32, 0.0, 0.0]),
+            (2i64, "b".into(), vec![0.0, 1.0, 0.0]),
+            (3i64, "c".into(), vec![0.0, 0.0, 1.0]),
+        ];
+        let clusters = cluster_by_similarity(&entries, 0.9);
+        assert_eq!(clusters.len(), 3);
+        for c in &clusters {
+            assert_eq!(c.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_consolidation_merge_inserts_and_marks_sources() {
+        use crate::sqlite::SqliteStore;
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let m1 = store
+            .save_message(conv_id, "user", "Alice uses Rust")
+            .await
+            .unwrap();
+        let m2 = store
+            .save_message(conv_id, "user", "Alice loves Rust")
+            .await
+            .unwrap();
+
+        let accepted = store
+            .apply_consolidation_merge(
+                conv_id,
+                "assistant",
+                "Alice uses and loves Rust",
+                &[m1, m2],
+                0.95,
+                0.7,
+            )
+            .await
+            .unwrap();
+        assert!(
+            accepted,
+            "merge must be accepted when confidence >= threshold"
+        );
+
+        // Verify originals are now marked consolidated.
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT consolidated FROM messages WHERE id IN (?, ?) ORDER BY id")
+                .bind(m1)
+                .bind(m2)
+                .fetch_all(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 1, "source m1 must be marked consolidated");
+        assert_eq!(rows[1].0, 1, "source m2 must be marked consolidated");
+
+        // Verify join table has entries.
+        let join_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM memory_consolidation_sources WHERE source_id IN (?, ?)",
+        )
+        .bind(m1)
+        .bind(m2)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(join_count.0, 2, "both sources must appear in join table");
+    }
+
+    #[tokio::test]
+    async fn apply_consolidation_merge_skips_below_threshold() {
+        use crate::sqlite::SqliteStore;
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let m1 = store.save_message(conv_id, "user", "foo").await.unwrap();
+        let m2 = store.save_message(conv_id, "user", "bar").await.unwrap();
+
+        let accepted = store
+            .apply_consolidation_merge(conv_id, "assistant", "combined", &[m1, m2], 0.5, 0.7)
+            .await
+            .unwrap();
+        assert!(
+            !accepted,
+            "merge must be skipped when confidence < threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_unconsolidated_messages_returns_originals_only() {
+        use crate::sqlite::SqliteStore;
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let m1 = store
+            .save_message(conv_id, "user", "original 1")
+            .await
+            .unwrap();
+        let m2 = store
+            .save_message(conv_id, "user", "original 2")
+            .await
+            .unwrap();
+
+        // Merge them so m1 and m2 become consolidated=1.
+        store
+            .apply_consolidation_merge(conv_id, "assistant", "merged", &[m1, m2], 0.9, 0.7)
+            .await
+            .unwrap();
+
+        let remaining = store
+            .find_unconsolidated_messages(conv_id, 100)
+            .await
+            .unwrap();
+        // The consolidated product (consolidated=1) and originals (now consolidated=1) must not appear.
+        for (id, _) in &remaining {
+            assert!(
+                *id != m1 && *id != m2,
+                "consolidated originals must not appear in sweep candidates"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn find_consolidated_for_source_returns_consolidated_id() {
+        use crate::sqlite::SqliteStore;
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let m1 = store.save_message(conv_id, "user", "fact a").await.unwrap();
+        let m2 = store.save_message(conv_id, "user", "fact b").await.unwrap();
+
+        store
+            .apply_consolidation_merge(conv_id, "assistant", "fact a and b", &[m1, m2], 0.9, 0.7)
+            .await
+            .unwrap();
+
+        let found = store.find_consolidated_for_source(m1).await.unwrap();
+        assert!(found.is_some(), "must find consolidated entry for m1");
+
+        let not_found = store
+            .find_consolidated_for_source(crate::types::MessageId(9999))
+            .await
+            .unwrap();
+        assert!(
+            not_found.is_none(),
+            "must return None for unknown source_id"
+        );
+    }
+}

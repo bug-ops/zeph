@@ -748,6 +748,31 @@ impl AppBuilder {
         }
     }
 
+    /// Build a dedicated provider for All-Mem consolidation LLM calls.
+    ///
+    /// Returns `None` when `consolidation_provider` is empty (falls back to primary provider at
+    /// call site) or when provider resolution fails (logs a warning, fails open).
+    pub fn build_consolidation_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.consolidation.consolidation_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "consolidation provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "consolidation provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for orchestration planner LLM calls.
     ///
     /// Returns `None` when `planner_provider` is empty (falls back to primary provider at call site).

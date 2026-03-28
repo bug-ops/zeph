@@ -1143,6 +1143,146 @@ impl SqliteStore {
         let rows = q.fetch_all(&self.pool).await?;
         Ok(rows.into_iter().collect())
     }
+
+    /// Return all conversation IDs that have at least one non-consolidated original message.
+    ///
+    /// Used by the consolidation sweep to find conversations that need processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn conversations_with_unconsolidated_messages(
+        &self,
+    ) -> Result<Vec<ConversationId>, MemoryError> {
+        let rows: Vec<(ConversationId,)> = sqlx::query_as(
+            "SELECT DISTINCT conversation_id FROM messages \
+             WHERE consolidated = 0 AND deleted_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Fetch a batch of non-consolidated original messages for the consolidation sweep.
+    ///
+    /// Returns `(id, content)` pairs for messages that have not yet been processed by the
+    /// consolidation loop (`consolidated = 0`) and are not soft-deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn find_unconsolidated_messages(
+        &self,
+        conversation_id: ConversationId,
+        limit: usize,
+    ) -> Result<Vec<(MessageId, String)>, MemoryError> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows: Vec<(MessageId, String)> = sqlx::query_as(
+            "SELECT id, content FROM messages \
+             WHERE conversation_id = ? \
+               AND consolidated = 0 \
+               AND deleted_at IS NULL \
+             ORDER BY id ASC \
+             LIMIT ?",
+        )
+        .bind(conversation_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Look up which consolidated entry (if any) covers the given original message.
+    ///
+    /// Returns the `consolidated_id` of the first consolidation product that lists `source_id`
+    /// in its sources, or `None` if no consolidated entry covers it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn find_consolidated_for_source(
+        &self,
+        source_id: MessageId,
+    ) -> Result<Option<MessageId>, MemoryError> {
+        let row: Option<(MessageId,)> = sqlx::query_as(
+            "SELECT consolidated_id FROM memory_consolidation_sources \
+             WHERE source_id = ? \
+             LIMIT 1",
+        )
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    /// Insert a consolidated message and record its source linkage in a single transaction.
+    ///
+    /// Atomically:
+    /// 1. Inserts the consolidated message with `consolidated = 1` and the given confidence.
+    /// 2. Inserts rows into `memory_consolidation_sources` for each source ID.
+    /// 3. Marks each source message's `consolidated = 1` so future sweeps skip them.
+    ///
+    /// If `confidence < confidence_threshold` the operation is skipped and `false` is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database operation fails. The transaction is rolled back automatically
+    /// on failure so no partial state is written.
+    pub async fn apply_consolidation_merge(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        merged_content: &str,
+        source_ids: &[MessageId],
+        confidence: f32,
+        confidence_threshold: f32,
+    ) -> Result<bool, MemoryError> {
+        if confidence < confidence_threshold {
+            return Ok(false);
+        }
+        if source_ids.is_empty() {
+            return Ok(false);
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        let importance = crate::semantic::importance::compute_importance(merged_content, role);
+        let row: (MessageId,) = sqlx::query_as(
+            "INSERT INTO messages \
+               (conversation_id, role, content, parts, agent_visible, user_visible, \
+                importance_score, consolidated, consolidation_confidence) \
+             VALUES (?, ?, ?, '[]', 1, 1, ?, 1, ?) \
+             RETURNING id",
+        )
+        .bind(conversation_id)
+        .bind(role)
+        .bind(merged_content)
+        .bind(importance)
+        .bind(confidence)
+        .fetch_one(&mut *tx)
+        .await?;
+        let consolidated_id = row.0;
+
+        for &source_id in source_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO memory_consolidation_sources \
+                   (consolidated_id, source_id) VALUES (?, ?)",
+            )
+            .bind(consolidated_id)
+            .bind(source_id)
+            .execute(&mut *tx)
+            .await?;
+
+            // Mark original as consolidated so future sweeps skip it.
+            sqlx::query("UPDATE messages SET consolidated = 1 WHERE id = ?")
+                .bind(source_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(true)
+    }
 }
 
 /// A candidate message for tier promotion, returned by [`SqliteStore::find_promotion_candidates`].

@@ -7,6 +7,7 @@ pub mod admission;
 pub mod anchored_summary;
 pub mod compaction_probe;
 pub mod compression_guidelines;
+pub mod consolidation;
 pub mod document;
 pub mod scenes;
 pub mod tiers;
@@ -45,6 +46,9 @@ pub use compression_guidelines::CompressionGuidelinesConfig;
 pub use compression_guidelines::{
     build_guidelines_update_prompt, sanitize_guidelines, start_guidelines_updater,
     truncate_to_token_budget, update_guidelines_once,
+};
+pub use consolidation::{
+    ConsolidationConfig, ConsolidationResult, TopologyOp, start_consolidation_loop,
 };
 #[cfg(feature = "pdf")]
 pub use document::PdfLoader;

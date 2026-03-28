@@ -704,6 +704,12 @@ pub struct MemoryConfig {
     /// Number of turns at which `Adaptive` strategy switches to `MemoryFirst`. Default: `20`.
     #[serde(default = "default_crossover_turn_threshold")]
     pub crossover_turn_threshold: u32,
+    /// All-Mem lifelong memory consolidation sweep.
+    ///
+    /// When `consolidation.enabled = true`, a background loop clusters semantically similar
+    /// messages and merges them into consolidated entries via LLM.
+    #[serde(default)]
+    pub consolidation: ConsolidationConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -1136,6 +1142,64 @@ impl Default for GraphConfig {
             spreading_activation: SpreadingActivationConfig::default(),
             link_weight_decay_lambda: default_link_weight_decay_lambda(),
             link_weight_decay_interval_secs: default_link_weight_decay_interval_secs(),
+        }
+    }
+}
+
+fn default_consolidation_confidence_threshold() -> f32 {
+    0.7
+}
+
+fn default_consolidation_sweep_interval_secs() -> u64 {
+    3600
+}
+
+fn default_consolidation_sweep_batch_size() -> usize {
+    50
+}
+
+fn default_consolidation_similarity_threshold() -> f32 {
+    0.85
+}
+
+/// Configuration for the All-Mem lifelong memory consolidation sweep (`[memory.consolidation]`).
+///
+/// When `enabled = true`, a background loop periodically clusters semantically similar messages
+/// and merges them into consolidated entries via an LLM call. Originals are never deleted —
+/// they are marked as consolidated and deprioritized in recall via temporal decay.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ConsolidationConfig {
+    /// Enable the consolidation background loop. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for consolidation LLM calls.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    #[serde(default)]
+    pub consolidation_provider: String,
+    /// Minimum LLM-assigned confidence for a topology op to be applied. Default: `0.7`.
+    #[serde(default = "default_consolidation_confidence_threshold")]
+    pub confidence_threshold: f32,
+    /// How often the background consolidation sweep runs, in seconds. Default: `3600`.
+    #[serde(default = "default_consolidation_sweep_interval_secs")]
+    pub sweep_interval_secs: u64,
+    /// Maximum number of messages to evaluate per sweep cycle. Default: `50`.
+    #[serde(default = "default_consolidation_sweep_batch_size")]
+    pub sweep_batch_size: usize,
+    /// Minimum cosine similarity for two messages to be considered consolidation candidates.
+    /// Default: `0.85`.
+    #[serde(default = "default_consolidation_similarity_threshold")]
+    pub similarity_threshold: f32,
+}
+
+impl Default for ConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            consolidation_provider: String::new(),
+            confidence_threshold: default_consolidation_confidence_threshold(),
+            sweep_interval_secs: default_consolidation_sweep_interval_secs(),
+            sweep_batch_size: default_consolidation_sweep_batch_size(),
+            similarity_threshold: default_consolidation_similarity_threshold(),
         }
     }
 }

@@ -202,6 +202,7 @@ impl Default for Config {
                 digest: crate::memory::DigestConfig::default(),
                 context_strategy: crate::memory::ContextStrategy::default(),
                 crossover_turn_threshold: 20,
+                consolidation: crate::memory::ConsolidationConfig::default(),
             },
             telegram: None,
             discord: None,

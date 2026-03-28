@@ -776,6 +776,33 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         )
     };
 
+    let _consolidation_handle = {
+        let consolidation_cancel = zeph_memory::CancellationToken::new();
+        let consolidation_cancel_clone = consolidation_cancel.clone();
+        let mut shutdown_for_consolidation = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = shutdown_for_consolidation.changed().await;
+            consolidation_cancel_clone.cancel();
+        });
+        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+        let consolidation_cfg = zeph_memory::ConsolidationConfig {
+            enabled: config.memory.consolidation.enabled,
+            confidence_threshold: config.memory.consolidation.confidence_threshold,
+            sweep_interval_secs: config.memory.consolidation.sweep_interval_secs,
+            sweep_batch_size: config.memory.consolidation.sweep_batch_size,
+            similarity_threshold: config.memory.consolidation.similarity_threshold,
+        };
+        let consolidation_provider = app
+            .build_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        zeph_memory::start_consolidation_loop(
+            sqlite_store,
+            consolidation_provider,
+            consolidation_cfg,
+            consolidation_cancel,
+        )
+    };
+
     #[cfg(feature = "compression-guidelines")]
     let _guidelines_handle = if config.memory.compression_guidelines.enabled {
         let guidelines_cancel = zeph_memory::CancellationToken::new();
