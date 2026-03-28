@@ -122,6 +122,18 @@ pub(crate) struct McpState {
     pub(crate) pruning_enabled: bool,
     /// Pruning parameters snapshot.  Derived from `ToolPruningConfig` at build time.
     pub(crate) pruning_params: zeph_mcp::PruningParams,
+    /// Pre-computed semantic tool index for embedding-based discovery (#2321).
+    ///
+    /// Built at connect time via `rebuild_semantic_index()`, rebuilt on tool list change.
+    /// `None` when strategy is not `Embedding` or when build failed (fallback to all tools).
+    pub(crate) semantic_index: Option<zeph_mcp::SemanticToolIndex>,
+    /// Active discovery strategy and parameters.  Derived from `ToolDiscoveryConfig`.
+    pub(crate) discovery_strategy: zeph_mcp::ToolDiscoveryStrategy,
+    /// Discovery parameters snapshot.  Derived from `ToolDiscoveryConfig` at build time.
+    pub(crate) discovery_params: zeph_mcp::DiscoveryParams,
+    /// Dedicated embedding provider for tool discovery.  `None` = fall back to the
+    /// agent's primary embedding provider.
+    pub(crate) discovery_provider: Option<zeph_llm::any::AnyProvider>,
 }
 
 pub(crate) struct IndexState {

@@ -104,6 +104,7 @@ impl<C: Channel> Agent<C> {
                 self.mcp.tools.extend(tools);
                 self.sync_mcp_executor_tools();
                 self.mcp.pruning_cache.reset();
+                self.rebuild_semantic_index().await;
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_server_count = self.mcp.server_outcomes.len();
@@ -239,6 +240,7 @@ impl<C: Channel> Agent<C> {
                 self.mcp.server_outcomes.retain(|o| o.id != server_id);
                 self.sync_mcp_executor_tools();
                 self.mcp.pruning_cache.reset();
+                self.rebuild_semantic_index().await;
                 self.sync_mcp_registry().await;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_server_count = self.mcp.server_outcomes.len();
@@ -384,6 +386,7 @@ impl<C: Channel> Agent<C> {
         self.mcp.tools = new_tools;
         self.sync_mcp_executor_tools();
         self.mcp.pruning_cache.reset();
+        self.rebuild_semantic_index().await;
         self.sync_mcp_registry().await;
         let mcp_total = self.mcp.tools.len();
         let mcp_servers = self
@@ -465,6 +468,62 @@ impl<C: Channel> Agent<C> {
             .await
         {
             tracing::warn!("failed to sync MCP tool registry: {e:#}");
+        }
+    }
+
+    /// Build (or rebuild) the in-memory semantic tool index for embedding-based discovery.
+    /// Build the initial semantic tool index after agent construction.
+    ///
+    /// Must be called once after `with_mcp` and `with_mcp_discovery` are applied,
+    /// before the first user turn.  Subsequent rebuilds happen automatically on
+    /// tool list change events (`check_tool_refresh`, `/mcp add`, `/mcp remove`).
+    pub async fn init_semantic_index(&mut self) {
+        self.rebuild_semantic_index().await;
+    }
+
+    /// Rebuild the in-memory semantic tool index.
+    ///
+    /// Only runs when `discovery_strategy == Embedding`.  On failure (all embeddings fail),
+    /// sets `semantic_index = None` and logs at WARN — the caller falls back to all tools.
+    ///
+    /// Called at:
+    /// - initial setup via `init_semantic_index()`
+    /// - `tools/list_changed` notification
+    /// - `/mcp add` and `/mcp remove`
+    pub(in crate::agent) async fn rebuild_semantic_index(&mut self) {
+        if self.mcp.discovery_strategy != zeph_mcp::ToolDiscoveryStrategy::Embedding {
+            return;
+        }
+
+        if self.mcp.tools.is_empty() {
+            self.mcp.semantic_index = None;
+            return;
+        }
+
+        // Resolve embedding provider: dedicated discovery provider → primary embedding provider.
+        let provider = self
+            .mcp
+            .discovery_provider
+            .clone()
+            .unwrap_or_else(|| self.embedding_provider.clone());
+
+        let embed_fn = provider.embed_fn();
+
+        match zeph_mcp::SemanticToolIndex::build(&self.mcp.tools, &embed_fn).await {
+            Ok(idx) => {
+                tracing::info!(
+                    indexed = idx.len(),
+                    total = self.mcp.tools.len(),
+                    "semantic tool index built"
+                );
+                self.mcp.semantic_index = Some(idx);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "semantic tool index build failed, falling back to all tools: {e:#}"
+                );
+                self.mcp.semantic_index = None;
+            }
         }
     }
 }

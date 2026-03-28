@@ -530,6 +530,23 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure embedding-based MCP tool discovery (#2321).
+    ///
+    /// Sets the discovery strategy, parameters, and optionally a dedicated embedding provider.
+    /// `discovery_provider = None` means fall back to the agent's primary embedding provider.
+    #[must_use]
+    pub fn with_mcp_discovery(
+        mut self,
+        strategy: zeph_mcp::ToolDiscoveryStrategy,
+        params: zeph_mcp::DiscoveryParams,
+        discovery_provider: Option<zeph_llm::any::AnyProvider>,
+    ) -> Self {
+        self.mcp.discovery_strategy = strategy;
+        self.mcp.discovery_params = params;
+        self.mcp.discovery_provider = discovery_provider;
+        self
+    }
+
     /// Set the watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     ///
     /// The agent polls this receiver at the start of each turn to pick up refreshed tool lists.

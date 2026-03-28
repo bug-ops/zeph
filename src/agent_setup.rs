@@ -882,6 +882,105 @@ pub(crate) fn apply_whisper_stt<C: Channel>(
     agent.with_stt(Box::new(whisper))
 }
 
+/// Apply MCP tool pruning (LLM-based) configuration to the agent.
+///
+/// Converts `ToolPruningConfig` into `PruningParams` and optionally resolves a dedicated
+/// provider for pruning LLM calls.
+pub(crate) fn apply_mcp_pruning<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &zeph_core::config::Config,
+) -> zeph_core::agent::Agent<C> {
+    let pruning = &config.mcp.pruning;
+    if !pruning.enabled {
+        return agent;
+    }
+
+    let params = zeph_mcp::PruningParams {
+        max_tools: pruning.max_tools,
+        min_tools_to_prune: pruning.min_tools_to_prune,
+        always_include: pruning.always_include.clone(),
+    };
+
+    let pruning_provider = if pruning.pruning_provider.is_empty() {
+        None
+    } else {
+        match zeph_core::bootstrap::create_named_provider(&pruning.pruning_provider, config) {
+            Ok(p) => {
+                tracing::info!(
+                    provider = %pruning.pruning_provider,
+                    "MCP pruning provider configured"
+                );
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %pruning.pruning_provider,
+                    "MCP pruning provider resolution failed, using primary: {e:#}"
+                );
+                None
+            }
+        }
+    };
+
+    agent.with_mcp_pruning(params, true, pruning_provider)
+}
+
+/// Apply embedding-based MCP tool discovery configuration to the agent (#2321).
+///
+/// Converts `ToolDiscoveryConfig` into `DiscoveryParams` and `ToolDiscoveryStrategy`,
+/// optionally resolving a dedicated embedding provider for query embeddings.
+pub(crate) fn apply_mcp_discovery<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &zeph_core::config::Config,
+) -> zeph_core::agent::Agent<C> {
+    use zeph_core::config::ToolDiscoveryStrategyConfig;
+    use zeph_mcp::ToolDiscoveryStrategy;
+
+    let discovery = &config.mcp.tool_discovery;
+
+    let strategy = match discovery.strategy {
+        ToolDiscoveryStrategyConfig::Embedding => ToolDiscoveryStrategy::Embedding,
+        ToolDiscoveryStrategyConfig::Llm => ToolDiscoveryStrategy::Llm,
+        ToolDiscoveryStrategyConfig::None => ToolDiscoveryStrategy::None,
+    };
+
+    if strategy == ToolDiscoveryStrategy::Llm {
+        // Llm is the default — handled by apply_mcp_pruning.
+        return agent;
+    }
+
+    let params = zeph_mcp::DiscoveryParams {
+        top_k: discovery.top_k,
+        min_similarity: discovery.min_similarity,
+        min_tools_to_filter: discovery.min_tools_to_filter,
+        always_include: discovery.always_include.clone(),
+        strict: discovery.strict,
+    };
+
+    let discovery_provider = if discovery.embedding_provider.is_empty() {
+        None
+    } else {
+        match zeph_core::bootstrap::create_named_provider(&discovery.embedding_provider, config) {
+            Ok(p) => {
+                tracing::info!(
+                    provider = %discovery.embedding_provider,
+                    "MCP tool discovery embedding provider configured"
+                );
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %discovery.embedding_provider,
+                    "MCP tool discovery provider resolution failed, using primary: {e:#}"
+                );
+                None
+            }
+        }
+    };
+
+    agent.with_mcp_discovery(strategy, params, discovery_provider)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

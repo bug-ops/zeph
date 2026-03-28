@@ -9682,6 +9682,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "dashmap",
+ "futures",
  "glob",
  "http",
  "open",

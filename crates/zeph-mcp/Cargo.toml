@@ -20,6 +20,7 @@ mock = []
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
+futures.workspace = true
 dashmap.workspace = true
 glob.workspace = true
 http.workspace = true

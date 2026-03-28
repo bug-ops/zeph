@@ -1130,6 +1130,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_mcp_server_outcomes(mcp_outcomes);
     let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
     let agent = agent.with_mcp_tool_rx(mcp_tool_rx);
+    let agent = agent_setup::apply_mcp_pruning(agent, config);
+    let agent = agent_setup::apply_mcp_discovery(agent, config);
 
     // Wire LSP context injection hooks when the feature is enabled and configured.
     #[cfg(feature = "lsp-context")]
@@ -1496,6 +1498,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .check_vector_store_health(config.memory.vector_backend.as_str())
         .await;
     agent.sync_graph_counts().await;
+    agent.init_semantic_index().await;
 
     agent_setup::spawn_ctrl_c_handler(agent.cancel_signal(), shutdown_tx);
     agent.load_history().await?;

@@ -20,8 +20,8 @@ pub use zeph_config::{
     RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind,
     SchedulerConfig, SecurityConfig, SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter,
     SkillPromptMode, SkillsConfig, SlackConfig, SttConfig, SubAgentConfig, SubAgentLifecycleHooks,
-    SubagentHooks, TelegramConfig, TimeoutConfig, ToolFilterConfig, ToolPolicy, TraceConfig,
-    TrustConfig, TuiConfig, VaultConfig, VectorBackend,
+    SubagentHooks, TelegramConfig, TimeoutConfig, ToolDiscoveryConfig, ToolDiscoveryStrategyConfig,
+    ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig, VectorBackend,
 };
 
 pub use zeph_config::{ContextStrategy, DigestConfig};

@@ -353,6 +353,10 @@ impl<C: Channel> Agent<C> {
                 pruning_provider: None,
                 pruning_enabled: false,
                 pruning_params: zeph_mcp::PruningParams::default(),
+                semantic_index: None,
+                discovery_strategy: zeph_mcp::ToolDiscoveryStrategy::default(),
+                discovery_params: zeph_mcp::DiscoveryParams::default(),
+                discovery_provider: None,
             },
             index: IndexState {
                 retriever: None,

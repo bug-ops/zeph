@@ -303,6 +303,22 @@ min_tools_to_prune = 10
 # Tool names always included regardless of pruning result
 always_include = []
 
+[mcp.tool_discovery]
+# Tool discovery strategy: "embedding" (cosine similarity), "llm" (prune_tools), or "none" (all tools)
+strategy = "none"
+# Number of top tools to include per query (embedding strategy only)
+top_k = 10
+# Minimum cosine similarity threshold; tools below this score are excluded (embedding strategy only)
+min_similarity = 0.2
+# Provider name from [[llm.providers]] for embedding calls (empty = default provider)
+embedding_provider = ""
+# Tool names always included regardless of similarity score
+always_include = []
+# Minimum tool count below which discovery is skipped
+min_tools_to_filter = 10
+# When true, treat any embedding failure as a hard error instead of falling back to all tools
+strict = false
+
 # Stdio transport (spawn child process):
 # [[mcp.servers]]
 # id = "filesystem"

@@ -225,6 +225,63 @@ impl Default for ToolPruningConfig {
     }
 }
 
+/// MCP tool discovery strategy (config-side representation).
+///
+/// Converted to `zeph_mcp::ToolDiscoveryStrategy` in `zeph-core` to avoid a
+/// circular crate dependency (`zeph-config` → `zeph-mcp`).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolDiscoveryStrategyConfig {
+    /// Embedding-based cosine similarity retrieval.  Fast, no LLM call per turn.
+    Embedding,
+    /// LLM-based pruning via `prune_tools_cached`.  Existing behavior.
+    Llm,
+    /// No filtering — all tools are passed through.  This is the default.
+    #[default]
+    None,
+}
+
+/// MCP tool discovery configuration (#2321).
+///
+/// Nested under `[mcp.tool_discovery]`.  When `strategy = "embedding"`, the
+/// `mcp.pruning` section is ignored for this session — the embedding path
+/// supersedes LLM pruning entirely.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ToolDiscoveryConfig {
+    /// Discovery strategy.  Default: `none` (all tools, safe default).
+    pub strategy: ToolDiscoveryStrategyConfig,
+    /// Number of top-scoring tools to include per turn (embedding strategy only).
+    pub top_k: usize,
+    /// Minimum cosine similarity for a tool to be included (embedding strategy only).
+    pub min_similarity: f32,
+    /// Provider name from `[[llm.providers]]` for embedding computation.
+    /// Should reference a fast/cheap embedding model.  Empty = use the agent's
+    /// default embedding provider.
+    pub embedding_provider: String,
+    /// Tool names always included regardless of similarity score.
+    pub always_include: Vec<String>,
+    /// Minimum tool count below which discovery is skipped (all tools passed through).
+    pub min_tools_to_filter: usize,
+    /// When `true`, treat any embedding failure as a hard error instead of silently
+    /// falling back to all tools.  Default: `false` (soft fallback).
+    pub strict: bool,
+}
+
+impl Default for ToolDiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            strategy: ToolDiscoveryStrategyConfig::None,
+            top_k: 10,
+            min_similarity: 0.2,
+            embedding_provider: String::new(),
+            always_include: Vec::new(),
+            min_tools_to_filter: 10,
+            strict: false,
+        }
+    }
+}
+
 /// Trust calibration configuration, nested under `[mcp.trust_calibration]`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
@@ -288,6 +345,9 @@ pub struct McpConfig {
     /// Trust calibration settings (opt-in, disabled by default).
     #[serde(default)]
     pub trust_calibration: TrustCalibrationConfig,
+    /// Embedding-based tool discovery (#2321).
+    #[serde(default)]
+    pub tool_discovery: ToolDiscoveryConfig,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

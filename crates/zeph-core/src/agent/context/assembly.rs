@@ -1313,39 +1313,106 @@ impl<C: Channel> Agent<C> {
             .model_name
             .clone_from(&self.runtime.model_name);
 
-        // MCP tool pruning (#2298): reduce MCP tools to those relevant to this turn's query.
-        // Runs before the schema filter so the pruned subset feeds into the combined
+        // MCP tool discovery (#2321 / #2298): select tools relevant to this turn's query.
+        // Strategy dispatch: Embedding (new), Llm (existing prune_tools_cached), None (all).
+        // Runs before the schema filter so the selected subset feeds into the combined
         // (native + MCP) tool set that the schema filter operates on.
-        if self.mcp.pruning_enabled && !self.mcp.tools.is_empty() {
-            // Resolve pruning provider: use dedicated provider if configured, else fall back to
-            // the primary provider.  Clone to avoid borrow conflicts with &mut self below.
-            let pruning_provider = self
-                .mcp
-                .pruning_provider
-                .clone()
-                .unwrap_or_else(|| self.provider.clone());
-            let tools_snapshot = self.mcp.tools.clone();
-            let params_snapshot = self.mcp.pruning_params.clone();
-            match zeph_mcp::prune_tools_cached(
-                &mut self.mcp.pruning_cache,
-                &tools_snapshot,
-                query,
-                &params_snapshot,
-                &pruning_provider,
-            )
-            .await
-            {
-                Ok(pruned) => {
-                    self.apply_pruned_mcp_tools(pruned);
+        if !self.mcp.tools.is_empty() {
+            match self.mcp.discovery_strategy {
+                zeph_mcp::ToolDiscoveryStrategy::Embedding => {
+                    let params = self.mcp.discovery_params.clone();
+                    if self.mcp.tools.len() < params.min_tools_to_filter {
+                        // Below threshold — skip filtering.
+                        self.sync_mcp_executor_tools();
+                    } else if let Some(ref index) = self.mcp.semantic_index {
+                        // Resolve embedding provider for query.
+                        let embed_provider = self
+                            .mcp
+                            .discovery_provider
+                            .clone()
+                            .unwrap_or_else(|| self.embedding_provider.clone());
+                        let _ = self.channel.send_status("selecting tools...").await;
+                        match embed_provider.embed(query).await {
+                            Ok(query_emb) => {
+                                let selected = index.select(
+                                    &query_emb,
+                                    params.top_k,
+                                    params.min_similarity,
+                                    &params.always_include,
+                                );
+                                tracing::info!(
+                                    total = self.mcp.tools.len(),
+                                    selected = selected.len(),
+                                    "semantic tool discovery applied"
+                                );
+                                self.apply_pruned_mcp_tools(selected);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    strict = params.strict,
+                                    "semantic tool discovery: query embed failed, falling back to all tools: {e:#}"
+                                );
+                                if !params.strict {
+                                    self.sync_mcp_executor_tools();
+                                }
+                                // strict=true: do not sync — executor retains whatever tools it had
+                                // (either previously synced or empty). The turn will proceed without
+                                // MCP tools rather than silently degrading to the full unfiltered set.
+                            }
+                        }
+                        let _ = self.channel.send_status("").await;
+                    } else {
+                        // Index not built (build failed at connect time).
+                        tracing::warn!(
+                            strict = params.strict,
+                            "semantic tool discovery: index not available, falling back to all tools"
+                        );
+                        if !params.strict {
+                            self.sync_mcp_executor_tools();
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("MCP pruning failed, using all tools: {e:#}");
+                zeph_mcp::ToolDiscoveryStrategy::Llm => {
+                    if self.mcp.pruning_enabled {
+                        let pruning_provider = self
+                            .mcp
+                            .pruning_provider
+                            .clone()
+                            .unwrap_or_else(|| self.provider.clone());
+                        let tools_snapshot = self.mcp.tools.clone();
+                        let params_snapshot = self.mcp.pruning_params.clone();
+                        match zeph_mcp::prune_tools_cached(
+                            &mut self.mcp.pruning_cache,
+                            &tools_snapshot,
+                            query,
+                            &params_snapshot,
+                            &pruning_provider,
+                        )
+                        .await
+                        {
+                            Ok(pruned) => {
+                                self.apply_pruned_mcp_tools(pruned);
+                            }
+                            Err(e) => {
+                                tracing::warn!("MCP pruning failed, using all tools: {e:#}");
+                                self.sync_mcp_executor_tools();
+                            }
+                        }
+                    } else {
+                        // pruning_enabled=false: pass all tools through.
+                        self.sync_mcp_executor_tools();
+                    }
+                }
+                zeph_mcp::ToolDiscoveryStrategy::None => {
+                    // Pass all tools through without filtering.
                     self.sync_mcp_executor_tools();
                 }
             }
         }
 
         // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
+        // Query embedding is computed here; when strategy=Embedding already computed it above,
+        // but providers are stateless so a second embed() call is acceptable for MVP.
         self.cached_filtered_tool_ids = None;
         if let Some(ref filter) = self.tool_schema_filter
             && self.provider.supports_tool_use()

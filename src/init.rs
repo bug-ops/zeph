@@ -171,6 +171,10 @@ pub(crate) struct WizardState {
     pub(crate) digest_enabled: bool,
     // Context strategy (#2288)
     pub(crate) context_strategy: String,
+    // MCP tool discovery (#2321)
+    pub(crate) mcp_discovery_strategy: String,
+    pub(crate) mcp_discovery_top_k: usize,
+    pub(crate) mcp_discovery_provider: String,
 }
 
 impl Default for WizardState {
@@ -303,6 +307,9 @@ impl Default for WizardState {
             retry_parameter_reformat_provider: String::new(),
             digest_enabled: false,
             context_strategy: "full_history".to_owned(),
+            mcp_discovery_strategy: "none".to_owned(),
+            mcp_discovery_top_k: 10,
+            mcp_discovery_provider: String::new(),
         }
     }
 }
@@ -355,6 +362,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_acp(&mut state)?;
     step_mcpls(&mut state)?;
     step_mcp_remote(&mut state)?;
+    step_mcp_discovery(&mut state)?;
     step_lsp_context(&mut state)?;
     step_agents(&mut state)?;
     step_router(&mut state)?;
@@ -1410,6 +1418,20 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.mcp.servers.push(server);
     }
 
+    config.mcp.tool_discovery.strategy = match state.mcp_discovery_strategy.as_str() {
+        "embedding" => zeph_core::config::ToolDiscoveryStrategyConfig::Embedding,
+        "llm" => zeph_core::config::ToolDiscoveryStrategyConfig::Llm,
+        _ => zeph_core::config::ToolDiscoveryStrategyConfig::None,
+    };
+    if state.mcp_discovery_strategy == "embedding" {
+        config.mcp.tool_discovery.top_k = state.mcp_discovery_top_k;
+        config
+            .mcp
+            .tool_discovery
+            .embedding_provider
+            .clone_from(&state.mcp_discovery_provider);
+    }
+
     if state.experiments_enabled {
         config.experiments.enabled = true;
         config
@@ -1824,6 +1846,44 @@ fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
         });
 
         println!("Server added.");
+    }
+
+    println!();
+    Ok(())
+}
+
+fn step_mcp_discovery(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== MCP: Tool Discovery ==\n");
+    println!("Controls how MCP tools are selected per turn when you have many tools configured.");
+    println!("  none      — all tools passed to the LLM every turn (default, safest)");
+    println!("  embedding — cosine similarity via embedding; fast, no extra LLM call per turn");
+    println!("  llm       — LLM-based pruning via mcp.pruning config\n");
+
+    let strategy_choices = ["none", "embedding", "llm"];
+    let default_idx = match state.mcp_discovery_strategy.as_str() {
+        "embedding" => 1,
+        "llm" => 2,
+        _ => 0,
+    };
+    let idx = Select::new()
+        .with_prompt("MCP tool discovery strategy")
+        .items(&strategy_choices)
+        .default(default_idx)
+        .interact()?;
+    state.mcp_discovery_strategy = strategy_choices[idx].to_owned();
+
+    if state.mcp_discovery_strategy == "embedding" {
+        let top_k: usize = Input::new()
+            .with_prompt("Max tools to select per turn (top_k)")
+            .default(10)
+            .interact_text()?;
+        state.mcp_discovery_top_k = top_k;
+
+        let provider: String = Input::new()
+            .with_prompt("Embedding provider name from [[llm.providers]] (leave empty for default)")
+            .default(String::new())
+            .interact_text()?;
+        state.mcp_discovery_provider = provider;
     }
 
     println!();

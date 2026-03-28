@@ -18,6 +18,7 @@ pub mod pruning;
 pub mod registry;
 pub mod sanitize;
 pub mod security;
+pub mod semantic_index;
 pub mod tool;
 pub mod trust_score;
 
@@ -44,5 +45,8 @@ pub use pruning::{
     tool_list_hash,
 };
 pub use registry::McpToolRegistry;
+pub use semantic_index::{
+    DiscoveryParams, SemanticIndexError, SemanticToolIndex, ToolDiscoveryStrategy,
+};
 pub use tool::McpTool;
 pub use trust_score::{ServerTrustScore, TrustScoreStore};
