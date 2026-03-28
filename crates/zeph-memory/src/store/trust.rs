@@ -134,7 +134,7 @@ impl SqliteStore {
         sqlx::query(
             sql!("INSERT INTO skill_trust \
              (skill_name, trust_level, source_kind, source_url, source_path, blake3_hash, git_hash, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) \
              ON CONFLICT(skill_name) DO UPDATE SET \
              trust_level = excluded.trust_level, \
              source_kind = excluded.source_kind, \
@@ -142,7 +142,7 @@ impl SqliteStore {
              source_path = excluded.source_path, \
              blake3_hash = excluded.blake3_hash, \
              git_hash = excluded.git_hash, \
-             updated_at = datetime('now')"),
+             updated_at = CURRENT_TIMESTAMP"),
         )
         .bind(skill_name)
         .bind(trust_level)
@@ -203,7 +203,7 @@ impl SqliteStore {
         trust_level: &str,
     ) -> Result<bool, MemoryError> {
         let result = sqlx::query(
-            sql!("UPDATE skill_trust SET trust_level = ?, updated_at = datetime('now') WHERE skill_name = ?"),
+            sql!("UPDATE skill_trust SET trust_level = ?, updated_at = CURRENT_TIMESTAMP WHERE skill_name = ?"),
         )
         .bind(trust_level)
         .bind(skill_name)
@@ -236,7 +236,7 @@ impl SqliteStore {
         blake3_hash: &str,
     ) -> Result<bool, MemoryError> {
         let result = sqlx::query(
-            sql!("UPDATE skill_trust SET blake3_hash = ?, updated_at = datetime('now') WHERE skill_name = ?"),
+            sql!("UPDATE skill_trust SET blake3_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE skill_name = ?"),
         )
         .bind(blake3_hash)
         .bind(skill_name)

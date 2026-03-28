@@ -95,7 +95,7 @@ impl SqliteStore {
         &self,
         conversation_id: Option<ConversationId>,
     ) -> Result<(i64, String), MemoryError> {
-        let row = sqlx::query_as::<_, (i64, String)>(
+        let row = sqlx::query_as::<_, (i64, String)>(sql!(
             // When conversation_id is Some(cid): `conversation_id = cid` matches
             // conversation-specific rows; `conversation_id IS NULL` matches global rows.
             // The CASE ensures conversation-specific rows sort before global ones.
@@ -105,8 +105,8 @@ impl SqliteStore {
              WHERE conversation_id = ? OR conversation_id IS NULL \
              ORDER BY CASE WHEN conversation_id IS NOT NULL THEN 0 ELSE 1 END, \
                       version DESC \
-             LIMIT 1",
-        )
+             LIMIT 1"
+        ))
         .bind(conversation_id.map(|c| c.0))
         .fetch_optional(&self.pool)
         .await?;

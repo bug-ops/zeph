@@ -6,12 +6,6 @@
 /// Implemented by zero-sized marker types ([`Sqlite`], [`Postgres`]).
 /// All associated constants are `&'static str` for zero-cost usage.
 pub trait Dialect: Send + Sync + 'static {
-    /// The `NOW()` expression for this backend.
-    ///
-    /// `SQLite`: `datetime('now')`
-    /// `PostgreSQL`: `now()`
-    const NOW: &'static str;
-
     /// Auto-increment primary key DDL fragment.
     ///
     /// `SQLite`: `INTEGER PRIMARY KEY AUTOINCREMENT`
@@ -30,6 +24,14 @@ pub trait Dialect: Send + Sync + 'static {
     /// `PostgreSQL`: `ON CONFLICT DO NOTHING`
     const CONFLICT_NOTHING: &'static str;
 
+    /// Case-insensitive collation suffix for `ORDER BY` / `WHERE` clauses.
+    ///
+    /// `SQLite`: `COLLATE NOCASE`
+    /// `PostgreSQL`: empty string (use `ILIKE` or `LOWER()` instead)
+    ///
+    /// TODO Phase 2: `PostgreSQL` callers should switch to `ILIKE` predicates.
+    const COLLATE_NOCASE: &'static str;
+
     /// Case-insensitive comparison expression for a column.
     ///
     /// `SQLite`: `{col} COLLATE NOCASE`
@@ -41,10 +43,10 @@ pub trait Dialect: Send + Sync + 'static {
 pub struct Sqlite;
 
 impl Dialect for Sqlite {
-    const NOW: &'static str = "datetime('now')";
     const AUTO_PK: &'static str = "INTEGER PRIMARY KEY AUTOINCREMENT";
     const INSERT_IGNORE: &'static str = "INSERT OR IGNORE";
     const CONFLICT_NOTHING: &'static str = "";
+    const COLLATE_NOCASE: &'static str = "COLLATE NOCASE";
 
     fn ilike(col: &str) -> String {
         format!("{col} COLLATE NOCASE")
@@ -55,10 +57,10 @@ impl Dialect for Sqlite {
 pub struct Postgres;
 
 impl Dialect for Postgres {
-    const NOW: &'static str = "now()";
     const AUTO_PK: &'static str = "BIGSERIAL PRIMARY KEY";
     const INSERT_IGNORE: &'static str = "INSERT";
     const CONFLICT_NOTHING: &'static str = "ON CONFLICT DO NOTHING";
+    const COLLATE_NOCASE: &'static str = "";
 
     fn ilike(col: &str) -> String {
         format!("LOWER({col})")

@@ -322,11 +322,13 @@ mod tests {
     }
 
     async fn setup_pool() -> zeph_db::DbPool {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        zeph_memory::store::SqliteStore::run_migrations(&pool)
-            .await
-            .unwrap();
-        pool
+        zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap()
     }
 
     #[tokio::test]

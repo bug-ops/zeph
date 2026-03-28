@@ -55,17 +55,10 @@ impl DbStore {
         let pool = DbConfig {
             url: path.to_string(),
             max_connections: pool_size,
-            write_pool_size: 1,
+            pool_size,
         }
         .connect()
         .await?;
-
-        #[cfg(feature = "sqlite")]
-        if path != ":memory:" {
-            sqlx::query(sql!("PRAGMA wal_checkpoint(PASSIVE)"))
-                .execute(&pool)
-                .await?;
-        }
 
         Ok(Self { pool })
     }

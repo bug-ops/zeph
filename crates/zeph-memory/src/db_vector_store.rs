@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
-use zeph_db::DbPool;
+use zeph_db::{ActiveDialect, DbPool};
 
 use crate::vector_store::{
     BoxFuture, FieldValue, ScoredVectorPoint, ScrollResult, VectorFilter, VectorPoint, VectorStore,
@@ -68,13 +68,16 @@ impl VectorStore for DbVectorStore {
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            sqlx::query(sql!(
-                "INSERT OR IGNORE INTO vector_collections (name) VALUES (?)"
-            ))
-            .bind(&collection)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| VectorStoreError::Collection(e.to_string()))?;
+            let sql = format!(
+                "{} INTO vector_collections (name) VALUES (?){}",
+                <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+                <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+            );
+            sqlx::query(&sql)
+                .bind(&collection)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| VectorStoreError::Collection(e.to_string()))?;
             Ok(())
         })
     }

@@ -110,7 +110,7 @@ mod tests {
 
     async fn insert_conversation(store: &SqliteStore) -> ConversationId {
         sqlx::query_scalar::<_, i64>(sql!(
-            "INSERT INTO conversations (created_at) VALUES (datetime('now')) RETURNING id"
+            "INSERT INTO conversations (created_at) VALUES (CURRENT_TIMESTAMP) RETURNING id"
         ))
         .fetch_one(&store.pool)
         .await

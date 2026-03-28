@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use zeph_db::sql;
 
+use zeph_db::ActiveDialect;
+
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
@@ -166,17 +168,19 @@ pub async fn import_snapshot(
         }
 
         for msg in conv.messages {
-            let result = sqlx::query(sql!(
-                "INSERT OR IGNORE INTO messages (id, conversation_id, role, content, parts) \
-                 VALUES (?, ?, ?, ?, ?)"
-            ))
-            .bind(msg.id)
-            .bind(msg.conversation_id)
-            .bind(&msg.role)
-            .bind(&msg.content)
-            .bind(&msg.parts_json)
-            .execute(sqlite.pool())
-            .await?;
+            let msg_sql = format!(
+                "{} INTO messages (id, conversation_id, role, content, parts) VALUES (?, ?, ?, ?, ?){}",
+                <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+                <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+            );
+            let result = sqlx::query(&msg_sql)
+                .bind(msg.id)
+                .bind(msg.conversation_id)
+                .bind(&msg.role)
+                .bind(&msg.content)
+                .bind(&msg.parts_json)
+                .execute(sqlite.pool())
+                .await?;
 
             if result.rows_affected() > 0 {
                 stats.messages_imported += 1;
@@ -186,19 +190,20 @@ pub async fn import_snapshot(
         }
 
         for sum in conv.summaries {
-            let result = sqlx::query(sql!(
-                "INSERT OR IGNORE INTO summaries \
-                 (id, conversation_id, content, first_message_id, last_message_id, token_estimate) \
-                 VALUES (?, ?, ?, ?, ?, ?)"
-            ))
-            .bind(sum.id)
-            .bind(sum.conversation_id)
-            .bind(&sum.content)
-            .bind(sum.first_message_id)
-            .bind(sum.last_message_id)
-            .bind(sum.token_estimate)
-            .execute(sqlite.pool())
-            .await?;
+            let sum_sql = format!(
+                "{} INTO summaries (id, conversation_id, content, first_message_id, last_message_id, token_estimate) VALUES (?, ?, ?, ?, ?, ?){}",
+                <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+                <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+            );
+            let result = sqlx::query(&sum_sql)
+                .bind(sum.id)
+                .bind(sum.conversation_id)
+                .bind(&sum.content)
+                .bind(sum.first_message_id)
+                .bind(sum.last_message_id)
+                .bind(sum.token_estimate)
+                .execute(sqlite.pool())
+                .await?;
 
             if result.rows_affected() > 0 {
                 stats.summaries_imported += 1;

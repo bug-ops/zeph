@@ -8,6 +8,8 @@ use crate::types::{MemSceneId, MessageId};
 #[allow(unused_imports)]
 use zeph_db::sql;
 
+use zeph_db::ActiveDialect;
+
 use crate::error::MemoryError;
 
 use super::SqliteStore;
@@ -72,14 +74,17 @@ impl SqliteStore {
         .await?;
         let scene_id = row.0;
 
+        let member_sql = format!(
+            "{} INTO mem_scene_members (scene_id, message_id) VALUES (?, ?){}",
+            <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+            <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+        );
         for &msg_id in member_ids {
-            sqlx::query(sql!(
-                "INSERT OR IGNORE INTO mem_scene_members (scene_id, message_id) VALUES (?, ?)"
-            ))
-            .bind(scene_id)
-            .bind(msg_id.0)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query(&member_sql)
+                .bind(scene_id)
+                .bind(msg_id.0)
+                .execute(&mut *tx)
+                .await?;
         }
 
         tx.commit().await?;

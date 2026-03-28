@@ -4,6 +4,7 @@
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
+use zeph_db::ActiveDialect;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -28,7 +29,12 @@ impl SqliteStore {
     ///
     /// Returns an error if the database write fails.
     pub async fn create_acp_session(&self, session_id: &str) -> Result<(), MemoryError> {
-        sqlx::query(sql!("INSERT OR IGNORE INTO acp_sessions (id) VALUES (?)"))
+        let sql = format!(
+            "{} INTO acp_sessions (id) VALUES (?){}",
+            <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+            <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+        );
+        sqlx::query(&sql)
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -237,13 +243,16 @@ impl SqliteStore {
         session_id: &str,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query(sql!(
-            "INSERT OR IGNORE INTO acp_sessions (id, conversation_id) VALUES (?, ?)"
-        ))
-        .bind(session_id)
-        .bind(conversation_id)
-        .execute(&self.pool)
-        .await?;
+        let sql = format!(
+            "{} INTO acp_sessions (id, conversation_id) VALUES (?, ?){}",
+            <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+            <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+        );
+        sqlx::query(&sql)
+            .bind(session_id)
+            .bind(conversation_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

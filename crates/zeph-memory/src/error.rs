@@ -15,9 +15,6 @@ pub enum MemoryError {
     #[error("vector store error: {0}")]
     VectorStore(#[from] crate::vector_store::VectorStoreError),
 
-    #[error("migration failed: {0}")]
-    Migration(#[from] sqlx::migrate::MigrateError),
-
     #[error("LLM error: {0}")]
     Llm(#[from] zeph_llm::LlmError),
 

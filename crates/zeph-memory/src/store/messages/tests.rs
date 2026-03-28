@@ -405,11 +405,12 @@ async fn keyword_search_respects_limit() {
 
 #[test]
 fn sanitize_fts5_query_strips_special_chars() {
-    assert_eq!(sanitize_fts5_query("skill-audit"), "skill audit");
-    assert_eq!(sanitize_fts5_query("hello, world"), "hello world");
-    assert_eq!(sanitize_fts5_query("a+b*c^d"), "a b c d");
-    assert_eq!(sanitize_fts5_query("  "), "");
-    assert_eq!(sanitize_fts5_query("rust programming"), "rust programming");
+    use zeph_db::fts::sanitize_fts_query;
+    assert_eq!(sanitize_fts_query("skill-audit"), "skill audit");
+    assert_eq!(sanitize_fts_query("hello, world"), "hello world");
+    assert_eq!(sanitize_fts_query("a+b*c^d"), "a b c d");
+    assert_eq!(sanitize_fts_query("  "), "");
+    assert_eq!(sanitize_fts_query("rust programming"), "rust programming");
 }
 
 #[tokio::test]

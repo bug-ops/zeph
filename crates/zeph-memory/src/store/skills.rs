@@ -4,7 +4,7 @@
 use super::SqliteStore;
 use crate::error::MemoryError;
 #[allow(unused_imports)]
-use zeph_db::sql;
+use zeph_db::{begin_write, sql};
 
 #[derive(Debug)]
 pub struct SkillUsageRow {
@@ -74,10 +74,10 @@ impl SqliteStore {
         for name in skill_names {
             sqlx::query(sql!(
                 "INSERT INTO skill_usage (skill_name, invocation_count, last_used_at) \
-                 VALUES (?, 1, datetime('now')) \
+                 VALUES (?, 1, CURRENT_TIMESTAMP) \
                  ON CONFLICT(skill_name) DO UPDATE SET \
                  invocation_count = invocation_count + 1, \
-                 last_used_at = datetime('now')"
+                 last_used_at = CURRENT_TIMESTAMP"
             ))
             .bind(name)
             .execute(&self.pool)
@@ -156,7 +156,7 @@ impl SqliteStore {
     ) -> Result<(), MemoryError> {
         // Acquire the write lock up front to avoid DEFERRED read->write upgrades
         // failing with SQLITE_BUSY_SNAPSHOT under concurrent WAL writers.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         let mut version_map: std::collections::HashMap<String, Option<i64>> =
             std::collections::HashMap::new();
@@ -339,7 +339,7 @@ impl SqliteStore {
         skill_name: &str,
         version_id: i64,
     ) -> Result<(), MemoryError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         sqlx::query(sql!(
             "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1"
@@ -1000,11 +1000,7 @@ mod tests {
             .unwrap();
         store.activate_skill_version("git", vid).await.unwrap();
 
-        let mut writer = store.pool().acquire().await.expect("acquire writer");
-        let mut writer_tx = writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .expect("begin immediate");
+        let mut writer_tx = begin_write(store.pool()).await.expect("begin immediate");
         sqlx::query(sql!("INSERT INTO conversations DEFAULT VALUES"))
             .execute(&mut *writer_tx)
             .await

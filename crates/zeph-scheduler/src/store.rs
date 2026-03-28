@@ -37,7 +37,7 @@ impl JobStore {
         let pool = zeph_db::DbConfig {
             url: path.to_string(),
             max_connections: 5,
-            write_pool_size: 1,
+            pool_size: 5,
         }
         .connect()
         .await?;
@@ -134,7 +134,7 @@ impl JobStore {
     /// Returns an error if the SQL statement fails.
     pub async fn mark_done(&self, name: &str) -> Result<(), SchedulerError> {
         sqlx::query(sql!(
-            "UPDATE scheduled_jobs SET status = 'done', last_run = datetime('now') WHERE name = ?"
+            "UPDATE scheduled_jobs SET status = 'done', last_run = CURRENT_TIMESTAMP WHERE name = ?"
         ))
         .bind(name)
         .execute(&self.pool)
@@ -256,7 +256,7 @@ mod tests {
         zeph_db::DbConfig {
             url: ":memory:".to_string(),
             max_connections: 5,
-            write_pool_size: 1,
+            pool_size: 5,
         }
         .connect()
         .await

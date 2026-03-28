@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_db::ActiveDialect;
+use zeph_db::fts::sanitize_fts_query;
 #[allow(unused_imports)]
 use zeph_db::sql;
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
@@ -8,23 +10,6 @@ use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 use super::SqliteStore;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
-
-/// Sanitize an arbitrary string into a valid FTS5 query.
-///
-/// Splits on non-alphanumeric characters, filters empty tokens, and joins
-/// with spaces. This strips FTS5 special characters (`"`, `*`, `(`, `)`,
-/// `^`, `-`, `+`, `:`) to prevent syntax errors in `MATCH` clauses.
-///
-/// Note: FTS5 boolean operators (AND, OR, NOT, NEAR) are preserved in their
-/// original case. Callers that need to prevent operator interpretation must
-/// filter these tokens separately (see `find_entities_fuzzy` in `graph/store.rs`).
-pub(crate) fn sanitize_fts5_query(query: &str) -> String {
-    query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 fn parse_role(s: &str) -> Role {
     match s {
@@ -632,7 +617,7 @@ impl SqliteStore {
         conversation_id: Option<ConversationId>,
     ) -> Result<Vec<(MessageId, f64)>, MemoryError> {
         let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let safe_query = sanitize_fts5_query(query);
+        let safe_query = sanitize_fts_query(query);
         if safe_query.is_empty() {
             return Ok(Vec::new());
         }
@@ -690,7 +675,7 @@ impl SqliteStore {
         before: Option<&str>,
     ) -> Result<Vec<(MessageId, f64)>, MemoryError> {
         let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let safe_query = sanitize_fts5_query(query);
+        let safe_query = sanitize_fts_query(query);
         if safe_query.is_empty() {
             return Ok(Vec::new());
         }
@@ -840,7 +825,7 @@ impl SqliteStore {
         // SQLite does not support array binding natively. Batch via individual updates.
         for &id in ids {
             sqlx::query(
-                sql!("UPDATE messages SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"),
+                sql!("UPDATE messages SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL"),
             )
             .bind(id)
             .execute(&self.pool)
@@ -909,7 +894,7 @@ impl SqliteStore {
         Ok(rows.into_iter().collect())
     }
 
-    /// Increment `access_count` and set `last_accessed = datetime('now')` for the given IDs.
+    /// Increment `access_count` and set `last_accessed = CURRENT_TIMESTAMP` for the given IDs.
     ///
     /// Skips the update when `ids` is empty.
     ///
@@ -922,7 +907,7 @@ impl SqliteStore {
         }
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
-            "UPDATE messages SET access_count = access_count + 1, last_accessed = datetime('now') \
+            "UPDATE messages SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP \
              WHERE id IN ({placeholders})"
         );
         let mut q = sqlx::query(&query);
@@ -1063,7 +1048,7 @@ impl SqliteStore {
         for &id in original_ids {
             sqlx::query(sql!(
                 "UPDATE messages \
-                 SET deleted_at = datetime('now'), qdrant_cleaned = 0 \
+                 SET deleted_at = CURRENT_TIMESTAMP, qdrant_cleaned = 0 \
                  WHERE id = ? AND deleted_at IS NULL"
             ))
             .bind(id)
@@ -1269,15 +1254,17 @@ impl SqliteStore {
         .await?;
         let consolidated_id = row.0;
 
+        let consol_sql = format!(
+            "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES (?, ?){}",
+            <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+            <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+        );
         for &source_id in source_ids {
-            sqlx::query(sql!(
-                "INSERT OR IGNORE INTO memory_consolidation_sources \
-                   (consolidated_id, source_id) VALUES (?, ?)"
-            ))
-            .bind(consolidated_id)
-            .bind(source_id)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query(&consol_sql)
+                .bind(consolidated_id)
+                .bind(source_id)
+                .execute(&mut *tx)
+                .await?;
 
             // Mark original as consolidated so future sweeps skip it.
             sqlx::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))

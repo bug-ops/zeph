@@ -10,11 +10,11 @@ pub struct DbConfig {
     pub url: String,
     /// Maximum number of connections in the pool.
     pub max_connections: u32,
-    /// `SQLite` only: maximum write-pool connections. Default 1.
+    /// `SQLite` only: connection pool size. Default 5.
     ///
-    /// `SQLite` WAL allows only one concurrent writer; a write pool > 1
-    /// creates unnecessary `SQLITE_BUSY` contention.
-    pub write_pool_size: u32,
+    /// `BEGIN IMMEDIATE` serializes concurrent writers at the `SQLite` level;
+    /// the pool size controls read concurrency only.
+    pub pool_size: u32,
 }
 
 impl Default for DbConfig {
@@ -22,7 +22,7 @@ impl Default for DbConfig {
         Self {
             url: String::new(),
             max_connections: 5,
-            write_pool_size: 1,
+            pool_size: 5,
         }
     }
 }
@@ -36,7 +36,7 @@ impl DbConfig {
     pub async fn connect(&self) -> Result<DbPool, DbError> {
         #[cfg(feature = "sqlite")]
         {
-            Self::connect_sqlite(&self.url, self.max_connections, self.write_pool_size).await
+            Self::connect_sqlite(&self.url, self.max_connections, self.pool_size).await
         }
         #[cfg(feature = "postgres")]
         {
@@ -47,8 +47,8 @@ impl DbConfig {
     #[cfg(feature = "sqlite")]
     async fn connect_sqlite(
         path: &str,
+        max_connections: u32,
         pool_size: u32,
-        write_pool_size: u32,
     ) -> Result<DbPool, DbError> {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         use std::str::FromStr;
@@ -72,18 +72,25 @@ impl DbConfig {
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
-        // SQLite WAL allows only one concurrent writer. Enforce write_pool_size
-        // (default 1) to prevent SQLITE_BUSY contention under concurrent writes.
-        // The overall pool still uses max_connections for read connections.
-        let effective_max = pool_size.max(write_pool_size);
+        // BEGIN IMMEDIATE serializes concurrent writers at the SQLite level.
+        // pool_size controls the connection count; max_connections is the upper bound.
+        let effective_max = max_connections.max(pool_size);
         let pool = SqlitePoolOptions::new()
             .max_connections(effective_max)
-            .min_connections(write_pool_size)
             .connect_with(opts)
             .await
             .map_err(DbError::Sqlx)?;
 
         crate::migrate::run_migrations(&pool).await?;
+
+        // Run a passive WAL checkpoint after migrations to avoid unbounded WAL growth.
+        // Skipped for in-memory databases (no WAL file).
+        if path != ":memory:" {
+            sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                .execute(&pool)
+                .await
+                .map_err(DbError::Sqlx)?;
+        }
 
         Ok(pool)
     }
@@ -116,9 +123,11 @@ impl DbConfig {
 /// Returns `Some(redacted)` if credentials were found and replaced.
 #[must_use]
 pub fn redact_url(url: &str) -> Option<String> {
-    let re = regex::Regex::new(r"://[^:]+:[^@]+@").ok()?;
-    if re.is_match(url) {
-        Some(re.replace(url, "://[redacted]@").into_owned())
+    use std::sync::LazyLock;
+    static RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"://[^:]+:[^@]+@").expect("static regex"));
+    if RE.is_match(url) {
+        Some(RE.replace(url, "://[redacted]@").into_owned())
     } else {
         None
     }

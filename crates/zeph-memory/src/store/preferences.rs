@@ -70,12 +70,12 @@ impl SqliteStore {
         sqlx::query(sql!(
             "INSERT INTO learned_preferences \
              (preference_key, preference_value, confidence, evidence_count, updated_at) \
-             VALUES (?, ?, ?, ?, datetime('now')) \
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) \
              ON CONFLICT(preference_key) DO UPDATE SET \
                preference_value = excluded.preference_value, \
                confidence = excluded.confidence, \
                evidence_count = excluded.evidence_count, \
-               updated_at = datetime('now')"
+               updated_at = CURRENT_TIMESTAMP"
         ))
         .bind(key_trunc)
         .bind(value_trunc)

@@ -14,10 +14,9 @@ description = "Database abstraction layer for Zeph (SQLite and PostgreSQL backen
 readme = "README.md"
 
 [features]
-# Default activates sqlite so that `cargo check -p zeph-db` and rust-analyzer
-# work without explicit feature flags. The root workspace overrides via
-# `sqlite = ["zeph-db/sqlite"]` for full builds.
 # Both sqlite and postgres are mutually exclusive; compile_error! enforces this.
+# default = ["sqlite"] ensures standalone `cargo check -p zeph-db` and rust-analyzer work.
+# The root workspace Cargo.toml also enables sqlite via its own default feature set.
 # NOTE: --all-features activates both, which intentionally triggers compile_error!.
 # Use --features full or --features full,postgres instead.
 default = ["sqlite"]
