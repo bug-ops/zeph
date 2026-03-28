@@ -3,6 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
@@ -439,7 +441,7 @@ mod tests {
     use super::*;
     use crate::graph::store::GraphStore;
     use crate::graph::types::EntityType;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
 
@@ -648,8 +650,8 @@ mod tests {
             .unwrap();
         // Insert an edge with valid_from = year 2100 (far future).
         sqlx::query(
-            "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-             VALUES (?1, ?2, 'knows', 'Alice knows Bob', 0.9, '2100-01-01 00:00:00')",
+            sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'knows', 'Alice knows Bob', 0.9, '2100-01-01 00:00:00')"),
         )
         .bind(alice)
         .bind(bob)
@@ -688,10 +690,10 @@ mod tests {
             .unwrap();
         // Insert an edge valid 2020-01-01 → 2021-01-01 (already expired by 2026).
         sqlx::query(
-            "INSERT INTO graph_edges
+            sql!("INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
              VALUES (?1, ?2, 'manages', 'Alice manages Carol', 0.8,
-                     '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')",
+                     '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')"),
         )
         .bind(alice)
         .bind(carol)

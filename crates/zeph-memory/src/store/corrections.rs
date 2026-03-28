@@ -3,6 +3,8 @@
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 #[derive(Debug, Clone)]
 pub struct UserCorrectionRow {
@@ -51,11 +53,11 @@ impl SqliteStore {
         skill_name: Option<&str>,
         correction_kind: &str,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
+        let row: (i64,) = sqlx::query_as(sql!(
             "INSERT INTO user_corrections \
              (session_id, original_output, correction_text, skill_name, correction_kind) \
-             VALUES (?, ?, ?, ?, ?) RETURNING id",
-        )
+             VALUES (?, ?, ?, ?, ?) RETURNING id"
+        ))
         .bind(session_id)
         .bind(original_output)
         .bind(correction_text)
@@ -76,12 +78,12 @@ impl SqliteStore {
         skill_name: &str,
         limit: u32,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = sqlx::query_as(
+        let rows: Vec<CorrectionTuple> = sqlx::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
              FROM user_corrections WHERE skill_name = ? \
-             ORDER BY id DESC LIMIT ?",
-        )
+             ORDER BY id DESC LIMIT ?"
+        ))
         .bind(skill_name)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -98,11 +100,11 @@ impl SqliteStore {
         &self,
         limit: u32,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = sqlx::query_as(
+        let rows: Vec<CorrectionTuple> = sqlx::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
-             FROM user_corrections ORDER BY id DESC LIMIT ?",
-        )
+             FROM user_corrections ORDER BY id DESC LIMIT ?"
+        ))
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -118,11 +120,11 @@ impl SqliteStore {
         &self,
         id: i64,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = sqlx::query_as(
+        let rows: Vec<CorrectionTuple> = sqlx::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
-             FROM user_corrections WHERE id = ?",
-        )
+             FROM user_corrections WHERE id = ?"
+        ))
         .bind(id)
         .fetch_all(&self.pool)
         .await?;

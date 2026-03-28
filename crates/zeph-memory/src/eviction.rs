@@ -19,7 +19,7 @@ use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::MemoryError;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::types::MessageId;
 
 // ── Public types ──────────────────────────────────────────────────────────────

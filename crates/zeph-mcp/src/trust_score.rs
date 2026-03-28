@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use zeph_db::DbPool;
 
 use crate::manager::McpTrustLevel;
 
@@ -89,36 +91,27 @@ impl ServerTrustScore {
 
 /// SQLite-backed store for per-server trust scores.
 pub struct TrustScoreStore {
-    pool: SqlitePool,
+    pool: DbPool,
 }
 
 impl TrustScoreStore {
     /// Create a new store backed by the given pool.
     #[must_use]
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
-    /// Initialize the `mcp_trust_scores` table.
+    /// Run all pending migrations on the underlying pool.
     ///
-    /// Uses `CREATE TABLE IF NOT EXISTS` for forward compatibility. New columns can be
-    /// added via `ALTER TABLE ADD COLUMN` without breaking existing databases.
+    /// Replaces the former inline `CREATE TABLE IF NOT EXISTS` DDL. The
+    /// `mcp_trust_scores` schema is now managed by migration
+    /// `052_mcp_trust_scores.sql` in `zeph-db`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the SQL execution fails.
-    pub async fn init(&self) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS mcp_trust_scores (
-                server_id      TEXT PRIMARY KEY NOT NULL,
-                score          REAL NOT NULL DEFAULT 0.5,
-                success_count  INTEGER NOT NULL DEFAULT 0,
-                failure_count  INTEGER NOT NULL DEFAULT 0,
-                updated_at_secs INTEGER NOT NULL DEFAULT 0
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
+    /// Returns an error if any migration fails.
+    pub async fn init(&self) -> Result<(), zeph_db::DbError> {
+        zeph_db::run_migrations(&self.pool).await?;
         Ok(())
     }
 
@@ -138,10 +131,10 @@ impl TrustScoreStore {
     ///
     /// Returns an error if any SQL query fails.
     pub async fn load(&self, server_id: &str) -> Result<Option<ServerTrustScore>, sqlx::Error> {
-        let row: Option<(String, f64, i64, i64, i64)> = sqlx::query_as(
+        let row: Option<(String, f64, i64, i64, i64)> = sqlx::query_as(sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
-             FROM mcp_trust_scores WHERE server_id = ?",
-        )
+             FROM mcp_trust_scores WHERE server_id = ?"
+        ))
         .bind(server_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -163,9 +156,9 @@ impl TrustScoreStore {
 
         if (entry.score - score_before).abs() > f64::EPSILON {
             let now = i64::try_from(entry.updated_at_secs).unwrap_or(i64::MAX);
-            sqlx::query(
-                "UPDATE mcp_trust_scores SET score = ?, updated_at_secs = ? WHERE server_id = ?",
-            )
+            sqlx::query(sql!(
+                "UPDATE mcp_trust_scores SET score = ?, updated_at_secs = ? WHERE server_id = ?"
+            ))
             .bind(entry.score)
             .bind(now)
             .bind(server_id)
@@ -192,7 +185,7 @@ impl TrustScoreStore {
         failure_increment: u64,
     ) -> Result<(), sqlx::Error> {
         let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO mcp_trust_scores
                 (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, ?, ?, ?)
@@ -200,8 +193,8 @@ impl TrustScoreStore {
                 score          = MIN(1.0, MAX(0.0, score + excluded.score - 0.5)),
                 success_count  = success_count + excluded.success_count,
                 failure_count  = failure_count + excluded.failure_count,
-                updated_at_secs = excluded.updated_at_secs",
-        )
+                updated_at_secs = excluded.updated_at_secs"
+        ))
         .bind(server_id)
         // Initial insert: 0.5 + delta
         .bind(ServerTrustScore::INITIAL_SCORE + score_delta)
@@ -233,7 +226,7 @@ impl TrustScoreStore {
         let base_score = current.map_or(ServerTrustScore::INITIAL_SCORE, |s| s.score);
         let new_score = (base_score + score_delta).clamp(0.0, 1.0);
         let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO mcp_trust_scores
                 (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, ?, ?, ?)
@@ -241,8 +234,8 @@ impl TrustScoreStore {
                 score           = excluded.score,
                 success_count   = success_count + excluded.success_count,
                 failure_count   = failure_count + excluded.failure_count,
-                updated_at_secs = excluded.updated_at_secs",
-        )
+                updated_at_secs = excluded.updated_at_secs"
+        ))
         .bind(server_id)
         .bind(new_score)
         .bind(i64::try_from(success_increment).unwrap_or(i64::MAX))
@@ -264,10 +257,10 @@ impl TrustScoreStore {
     ///
     /// Returns an error if the SQL query fails.
     pub async fn load_all(&self) -> Result<Vec<ServerTrustScore>, sqlx::Error> {
-        let rows: Vec<(String, f64, i64, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, f64, i64, i64, i64)> = sqlx::query_as(sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
-             FROM mcp_trust_scores",
-        )
+             FROM mcp_trust_scores"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -299,6 +292,18 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_db::DbPool;
+
+    async fn test_pool() -> DbPool {
+        zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            max_connections: 5,
+            write_pool_size: 1,
+        }
+        .connect()
+        .await
+        .unwrap()
+    }
 
     #[test]
     fn initial_score_is_neutral() {
@@ -394,7 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_init_and_roundtrip() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
@@ -413,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_apply_delta_failure() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
@@ -429,7 +434,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_load_all_returns_all_servers() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
@@ -442,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_atomic_update_does_not_reset() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
@@ -456,7 +461,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_score_clamped_between_zero_and_one() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
@@ -484,29 +489,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_load_before_init_returns_error() {
-        // Without calling init(), the table does not exist — load() must return Err.
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    async fn store_load_before_any_write_returns_none() {
+        // DbConfig::connect() already runs migrations, so the schema is present.
+        // load() on a fresh pool with no rows should return Ok(None).
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
-        // Do NOT call store.init()
+        // Do NOT call store.init() — migrations already ran via DbConfig::connect()
         let result = store.load("srv1").await;
-        assert!(
-            result.is_err(),
-            "load before init should return a SQL error"
-        );
+        assert!(result.is_ok(), "load on fresh db should not error");
+        assert!(result.unwrap().is_none(), "no entry should exist yet");
     }
 
     #[tokio::test]
     async fn store_load_persists_decay() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool.clone());
         store.init().await.unwrap();
 
         // Insert a score above INITIAL_SCORE with a timestamp 10 days in the past.
         let old_ts = unix_now().saturating_sub(10 * 86_400);
         sqlx::query(
-            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
-             VALUES (?, ?, 0, 0, ?)",
+            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, ?, 0, 0, ?)"),
         )
         .bind("srv1")
         .bind(0.9_f64)
@@ -520,9 +524,9 @@ mod tests {
         assert!(first.score < 0.9, "score should have decayed on load");
 
         // Read the raw DB row to confirm the persisted value changed.
-        let (db_score, db_ts): (f64, i64) = sqlx::query_as(
-            "SELECT score, updated_at_secs FROM mcp_trust_scores WHERE server_id = ?",
-        )
+        let (db_score, db_ts): (f64, i64) = sqlx::query_as(sql!(
+            "SELECT score, updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
+        ))
         .bind("srv1")
         .fetch_one(&pool)
         .await
@@ -550,15 +554,15 @@ mod tests {
 
     #[tokio::test]
     async fn store_load_no_write_when_no_decay() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool.clone());
         store.init().await.unwrap();
 
         // Insert a score at or below INITIAL_SCORE — no decay should trigger.
         let now_ts = unix_now();
         sqlx::query(
-            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
-             VALUES (?, ?, 0, 0, ?)",
+            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, ?, 0, 0, ?)"),
         )
         .bind("srv1")
         .bind(ServerTrustScore::INITIAL_SCORE)
@@ -574,12 +578,13 @@ mod tests {
         );
 
         // updated_at_secs in DB should remain approximately the same (no write occurred).
-        let (db_ts,): (i64,) =
-            sqlx::query_as("SELECT updated_at_secs FROM mcp_trust_scores WHERE server_id = ?")
-                .bind("srv1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (db_ts,): (i64,) = sqlx::query_as(sql!(
+            "SELECT updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
+        ))
+        .bind("srv1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(
             db_ts,
             i64::try_from(now_ts).unwrap_or(i64::MAX),
@@ -589,15 +594,15 @@ mod tests {
 
     #[tokio::test]
     async fn store_load_then_delta_operates_on_decayed() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool.clone());
         store.init().await.unwrap();
 
         // Insert score=0.8 with timestamp 10 days ago.
         let old_ts = unix_now().saturating_sub(10 * 86_400);
         sqlx::query(
-            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
-             VALUES (?, ?, 0, 0, ?)",
+            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, ?, 0, 0, ?)"),
         )
         .bind("srv1")
         .bind(0.8_f64)
@@ -627,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_and_apply_delta_new_entry() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
@@ -646,15 +651,15 @@ mod tests {
 
     #[tokio::test]
     async fn load_and_apply_delta_applies_decay_before_delta() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
         // Insert a high score with an old timestamp (simulate 30 days ago).
         let old_ts = unix_now().saturating_sub(30 * 86_400);
         sqlx::query(
-            "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
-             VALUES (?, 0.9, 0, 0, ?)",
+            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, 0.9, 0, 0, ?)"),
         )
         .bind("srv1")
         .bind(i64::try_from(old_ts).unwrap())

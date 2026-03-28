@@ -3,6 +3,9 @@
 
 //! Task orchestration: DAG execution, failure propagation, and persistence.
 
+#[allow(unused_imports)]
+pub(crate) use zeph_db::sql;
+
 pub mod aggregator;
 pub mod command;
 pub mod dag;

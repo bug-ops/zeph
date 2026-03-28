@@ -11,7 +11,7 @@ pub(crate) async fn handle_sessions_command(
 ) -> anyhow::Result<()> {
     use zeph_core::bootstrap::resolve_config_path;
     use zeph_core::text::truncate_to_chars;
-    use zeph_memory::sqlite::SqliteStore;
+    use zeph_memory::store::SqliteStore;
 
     let config_file = resolve_config_path(config_path);
     let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();

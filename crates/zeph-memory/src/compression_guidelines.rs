@@ -58,8 +58,8 @@ mod updater {
     use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 
     use crate::error::MemoryError;
-    use crate::sqlite::SqliteStore;
-    use crate::sqlite::compression_guidelines::CompressionFailurePair;
+    use crate::store::SqliteStore;
+    use crate::store::compression_guidelines::CompressionFailurePair;
     use crate::token_counter::TokenCounter;
 
     use super::CompressionGuidelinesConfig;
@@ -349,7 +349,7 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "compression-guidelines")]
-    use crate::sqlite::compression_guidelines::CompressionFailurePair;
+    use crate::store::compression_guidelines::CompressionFailurePair;
 
     #[cfg(feature = "compression-guidelines")]
     #[test]

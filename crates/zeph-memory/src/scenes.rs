@@ -16,7 +16,7 @@ use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
 use crate::math::cosine_similarity;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::types::{MemSceneId, MessageId};
 
 /// A `MemScene` groups semantically related semantic-tier messages with a stable entity profile.

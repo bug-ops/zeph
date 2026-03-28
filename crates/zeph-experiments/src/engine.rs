@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::sqlite::experiments::NewExperimentResult;
+use zeph_memory::store::experiments::NewExperimentResult;
 
 use super::error::EvalError;
 use super::evaluator::Evaluator;

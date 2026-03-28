@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub use qdrant_client::qdrant::Filter;
-use sqlx::SqlitePool;
+use zeph_db::DbPool;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
+use crate::db_vector_store::DbVectorStore;
 use crate::error::MemoryError;
 use crate::qdrant_ops::QdrantOps;
-use crate::sqlite_vector_store::SqliteVectorStore;
 use crate::types::{ConversationId, MessageId};
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter, VectorPoint, VectorStore};
 
@@ -44,7 +46,7 @@ pub async fn ensure_qdrant_collection(
 pub struct EmbeddingStore {
     ops: Box<dyn VectorStore>,
     collection: String,
-    pool: SqlitePool,
+    pool: DbPool,
 }
 
 impl std::fmt::Debug for EmbeddingStore {
@@ -77,7 +79,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant client cannot be created.
-    pub fn new(url: &str, pool: SqlitePool) -> Result<Self, MemoryError> {
+    pub fn new(url: &str, pool: DbPool) -> Result<Self, MemoryError> {
         let ops = QdrantOps::new(url).map_err(MemoryError::Qdrant)?;
 
         Ok(Self {
@@ -91,8 +93,8 @@ impl EmbeddingStore {
     ///
     /// Uses the same pool for both vector data and metadata. No external Qdrant required.
     #[must_use]
-    pub fn new_sqlite(pool: SqlitePool) -> Self {
-        let ops = SqliteVectorStore::new(pool.clone());
+    pub fn new_sqlite(pool: DbPool) -> Self {
+        let ops = DbVectorStore::new(pool.clone());
         Self {
             ops: Box::new(ops),
             collection: COLLECTION_NAME.into(),
@@ -101,7 +103,7 @@ impl EmbeddingStore {
     }
 
     #[must_use]
-    pub fn with_store(store: Box<dyn VectorStore>, pool: SqlitePool) -> Self {
+    pub fn with_store(store: Box<dyn VectorStore>, pool: DbPool) -> Self {
         Self {
             ops: store,
             collection: COLLECTION_NAME.into(),
@@ -167,12 +169,12 @@ impl EmbeddingStore {
 
         self.ops.upsert(&self.collection, vec![point]).await?;
 
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
              VALUES (?, ?, ?, ?) \
              ON CONFLICT(message_id, model) DO UPDATE SET \
-             qdrant_point_id = excluded.qdrant_point_id, dimensions = excluded.dimensions",
-        )
+             qdrant_point_id = excluded.qdrant_point_id, dimensions = excluded.dimensions"
+        ))
         .bind(message_id)
         .bind(&point_id)
         .bind(dimensions)
@@ -392,11 +394,12 @@ impl EmbeddingStore {
     ///
     /// Returns an error if the `SQLite` query fails.
     pub async fn has_embedding(&self, message_id: MessageId) -> Result<bool, MemoryError> {
-        let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
-                .bind(message_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let row: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
+        ))
+        .bind(message_id)
+        .fetch_one(&self.pool)
+        .await?;
 
         Ok(row.0 > 0)
     }
@@ -406,9 +409,9 @@ impl EmbeddingStore {
 mod tests {
     use super::*;
     use crate::in_memory_store::InMemoryVectorStore;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
 
-    async fn setup() -> (SqliteStore, SqlitePool) {
+    async fn setup() -> (SqliteStore, DbPool) {
         let store = SqliteStore::new(":memory:").await.unwrap();
         let pool = store.pool().clone();
         (store, pool)
@@ -428,12 +431,13 @@ mod tests {
     async fn has_embedding_returns_false_when_none() {
         let (_store, pool) = setup().await;
 
-        let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
-                .bind(999_i64)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let row: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
+        ))
+        .bind(999_i64)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
         assert_eq!(row.0, 0);
     }
@@ -445,10 +449,10 @@ mod tests {
         let msg_id = sqlite.save_message(cid, "user", "test").await.unwrap();
 
         let point_id = uuid::Uuid::new_v4().to_string();
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?)"
+        ))
         .bind(msg_id)
         .bind(&point_id)
         .bind(768_i64)
@@ -457,12 +461,13 @@ mod tests {
         .await
         .unwrap();
 
-        let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
-                .bind(msg_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let row: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
+        ))
+        .bind(msg_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(row.0, 1);
     }
 
@@ -583,10 +588,10 @@ mod tests {
         let msg_id = sqlite.save_message(cid, "user", "test").await.unwrap();
 
         let point_id1 = uuid::Uuid::new_v4().to_string();
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?)"
+        ))
         .bind(msg_id)
         .bind(&point_id1)
         .bind(768_i64)
@@ -596,10 +601,10 @@ mod tests {
         .unwrap();
 
         let point_id2 = uuid::Uuid::new_v4().to_string();
-        let result = sqlx::query(
+        let result = sqlx::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?)"
+        ))
         .bind(msg_id)
         .bind(&point_id2)
         .bind(768_i64)

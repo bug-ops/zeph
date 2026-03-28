@@ -1,18 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use sqlx::SqlitePool;
+use zeph_db::DbPool;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use crate::error::MemoryError;
 
 pub struct ResponseCache {
-    pool: SqlitePool,
+    pool: DbPool,
     ttl_secs: u64,
 }
 
 impl ResponseCache {
     #[must_use]
-    pub fn new(pool: SqlitePool, ttl_secs: u64) -> Self {
+    pub fn new(pool: DbPool, ttl_secs: u64) -> Self {
         Self { pool, ttl_secs }
     }
 
@@ -23,9 +25,9 @@ impl ResponseCache {
     /// Returns an error if the database query fails.
     pub async fn get(&self, key: &str) -> Result<Option<String>, MemoryError> {
         let now = unix_now();
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT response FROM response_cache WHERE cache_key = ? AND expires_at > ?",
-        )
+        let row: Option<(String,)> = sqlx::query_as(sql!(
+            "SELECT response FROM response_cache WHERE cache_key = ? AND expires_at > ?"
+        ))
         .bind(key)
         .bind(now)
         .fetch_optional(&self.pool)
@@ -43,8 +45,8 @@ impl ResponseCache {
         // Cap TTL at 1 year (31_536_000 s) to prevent i64 overflow for extreme values.
         let expires_at = now.saturating_add(self.ttl_secs.min(31_536_000).cast_signed());
         sqlx::query(
-            "INSERT OR REPLACE INTO response_cache (cache_key, response, model, created_at, expires_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            sql!("INSERT OR REPLACE INTO response_cache (cache_key, response, model, created_at, expires_at) \
+             VALUES (?, ?, ?, ?, ?)"),
         )
         .bind(key)
         .bind(response)
@@ -75,11 +77,11 @@ impl ResponseCache {
         max_candidates: u32,
     ) -> Result<Option<(String, f32)>, MemoryError> {
         let now = unix_now();
-        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(sql!(
             "SELECT response, embedding FROM response_cache \
              WHERE embedding_model = ? AND embedding IS NOT NULL AND expires_at > ? \
-             ORDER BY embedding_ts DESC LIMIT ?",
-        )
+             ORDER BY embedding_ts DESC LIMIT ?"
+        ))
         .bind(embedding_model)
         .bind(now)
         .bind(max_candidates)
@@ -145,9 +147,9 @@ impl ResponseCache {
         // Zero-copy serialization: &[f32] → &[u8] via bytemuck.
         let blob: &[u8] = bytemuck::cast_slice(embedding);
         sqlx::query(
-            "INSERT OR REPLACE INTO response_cache \
+            sql!("INSERT OR REPLACE INTO response_cache \
              (cache_key, response, model, created_at, expires_at, embedding, embedding_model, embedding_ts) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
         )
         .bind(key)
         .bind(response)
@@ -174,11 +176,11 @@ impl ResponseCache {
         &self,
         old_model: &str,
     ) -> Result<u64, MemoryError> {
-        let result = sqlx::query(
+        let result = sqlx::query(sql!(
             "UPDATE response_cache \
              SET embedding = NULL, embedding_model = NULL, embedding_ts = NULL \
-             WHERE embedding_model = ?",
-        )
+             WHERE embedding_model = ?"
+        ))
         .bind(old_model)
         .execute(&self.pool)
         .await?;
@@ -198,17 +200,17 @@ impl ResponseCache {
     /// Returns an error if either database operation fails.
     pub async fn cleanup(&self, current_embedding_model: &str) -> Result<u64, MemoryError> {
         let now = unix_now();
-        let deleted = sqlx::query("DELETE FROM response_cache WHERE expires_at <= ?")
+        let deleted = sqlx::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
             .bind(now)
             .execute(&self.pool)
             .await?
             .rows_affected();
 
-        let updated = sqlx::query(
+        let updated = sqlx::query(sql!(
             "UPDATE response_cache \
              SET embedding = NULL, embedding_model = NULL, embedding_ts = NULL \
-             WHERE embedding IS NOT NULL AND embedding_model != ?",
-        )
+             WHERE embedding IS NOT NULL AND embedding_model != ?"
+        ))
         .bind(current_embedding_model)
         .execute(&self.pool)
         .await?
@@ -224,7 +226,7 @@ impl ResponseCache {
     /// Returns an error if the database delete fails.
     pub async fn cleanup_expired(&self) -> Result<u64, MemoryError> {
         let now = unix_now();
-        let result = sqlx::query("DELETE FROM response_cache WHERE expires_at <= ?")
+        let result = sqlx::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
             .bind(now)
             .execute(&self.pool)
             .await?;
@@ -261,7 +263,7 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
 
     async fn test_cache() -> ResponseCache {
         let store = SqliteStore::new(":memory:").await.unwrap();
@@ -478,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_semantic_get_ignores_expired() {
-        let store = crate::sqlite::SqliteStore::new(":memory:").await.unwrap();
+        let store = crate::store::SqliteStore::new(":memory:").await.unwrap();
         // TTL=0 → immediately expired
         let cache = ResponseCache::new(store.pool().clone(), 0);
         cache
@@ -581,7 +583,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_deletes_expired() {
-        let store = crate::sqlite::SqliteStore::new(":memory:").await.unwrap();
+        let store = crate::store::SqliteStore::new(":memory:").await.unwrap();
         let cache = ResponseCache::new(store.pool().clone(), 0);
         cache.put("k1", "resp", "m1").await.unwrap();
         let affected = cache.cleanup("model-a").await.unwrap();
@@ -616,13 +618,13 @@ mod tests {
     // updated and the row is silently skipped without panic.
 
     /// Helper: insert a row with a raw (potentially corrupt) embedding BLOB via SQL.
-    async fn insert_corrupt_blob(pool: &SqlitePool, key: &str, blob: &[u8]) {
+    async fn insert_corrupt_blob(pool: &DbPool, key: &str, blob: &[u8]) {
         let now = unix_now();
         let expires_at = now + 3600;
         sqlx::query(
-            "INSERT INTO response_cache \
+            sql!("INSERT INTO response_cache \
              (cache_key, response, model, created_at, expires_at, embedding, embedding_model, embedding_ts) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
         )
         .bind(key)
         .bind("corrupt-response")

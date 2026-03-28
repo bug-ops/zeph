@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use chrono::Utc;
 use tokio::sync::{mpsc, watch};
@@ -351,7 +353,7 @@ mod tests {
 
     use super::*;
     use crate::task::TaskHandler;
-    use sqlx::SqlitePool;
+    use zeph_db::DbPool;
 
     struct CountingHandler {
         count: Arc<AtomicU32>,
@@ -371,8 +373,8 @@ mod tests {
         }
     }
 
-    async fn test_pool() -> SqlitePool {
-        SqlitePool::connect("sqlite::memory:").await.unwrap()
+    async fn test_pool() -> DbPool {
+        sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
     }
 
     #[tokio::test]
@@ -402,9 +404,9 @@ mod tests {
         scheduler.init().await.unwrap();
 
         // Backdate next_run to simulate a due task.
-        sqlx::query(
-            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'test'",
-        )
+        sqlx::query(sql!(
+            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'test'"
+        ))
         .execute(&pool)
         .await
         .unwrap();
@@ -446,10 +448,12 @@ mod tests {
             .await
             .unwrap();
         // Explicitly clear next_run to ensure it's NULL.
-        sqlx::query("UPDATE scheduled_jobs SET next_run = NULL WHERE name = 'yearly'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(sql!(
+            "UPDATE scheduled_jobs SET next_run = NULL WHERE name = 'yearly'"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
 
         scheduler.tick().await;
         assert_eq!(
@@ -477,12 +481,13 @@ mod tests {
         scheduler.add_task(task);
         scheduler.init().await.unwrap();
 
-        let next: Option<String> =
-            sqlx::query_scalar("SELECT next_run FROM scheduled_jobs WHERE name = 'periodic'")
-                .fetch_optional(&pool)
-                .await
-                .unwrap()
-                .flatten();
+        let next: Option<String> = sqlx::query_scalar(sql!(
+            "SELECT next_run FROM scheduled_jobs WHERE name = 'periodic'"
+        ))
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+        .flatten();
         assert!(
             next.is_some(),
             "next_run must be set after init() for periodic task"
@@ -518,11 +523,13 @@ mod tests {
 
         // Manually set next_run to far future to prevent firing.
         let far_future = "2099-01-01T00:00:00+00:00";
-        sqlx::query("UPDATE scheduled_jobs SET next_run = ? WHERE name = 'future'")
-            .bind(far_future)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(sql!(
+            "UPDATE scheduled_jobs SET next_run = ? WHERE name = 'future'"
+        ))
+        .bind(far_future)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         scheduler.tick().await;
         assert_eq!(
@@ -558,9 +565,9 @@ mod tests {
         scheduler.init().await.unwrap();
 
         // Backdate next_run to force execution.
-        sqlx::query(
-            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'adv'",
-        )
+        sqlx::query(sql!(
+            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'adv'"
+        ))
         .execute(&pool)
         .await
         .unwrap();
@@ -568,12 +575,13 @@ mod tests {
         scheduler.tick().await;
 
         // next_run must now be in the future.
-        let next: Option<String> =
-            sqlx::query_scalar("SELECT next_run FROM scheduled_jobs WHERE name = 'adv'")
-                .fetch_optional(&pool)
-                .await
-                .unwrap()
-                .flatten();
+        let next: Option<String> = sqlx::query_scalar(sql!(
+            "SELECT next_run FROM scheduled_jobs WHERE name = 'adv'"
+        ))
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+        .flatten();
         let next_str = next.expect("next_run should be set after execution");
         let next_dt = next_str
             .parse::<chrono::DateTime<Utc>>()

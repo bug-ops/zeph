@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::sync::Arc;
+#[allow(unused_imports)]
+use zeph_db::sql;
+
 use std::sync::atomic::Ordering;
+use zeph_db::DbPool;
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
@@ -133,7 +137,7 @@ struct EntityWorkItem {
 #[allow(clippy::too_many_lines)]
 pub async fn link_memory_notes(
     entity_ids: &[i64],
-    pool: sqlx::SqlitePool,
+    pool: DbPool,
     embedding_store: Arc<EmbeddingStore>,
     provider: AnyProvider,
     cfg: &NoteLinkingConfig,
@@ -295,7 +299,7 @@ pub async fn extract_and_store(
     content: String,
     context_messages: Vec<String>,
     provider: AnyProvider,
-    pool: sqlx::SqlitePool,
+    pool: DbPool,
     config: GraphExtractionConfig,
     post_extract_validator: PostExtractValidator,
     embedding_store: Option<Arc<EmbeddingStore>>,
@@ -308,17 +312,17 @@ pub async fn extract_and_store(
     let store = GraphStore::new(pool);
 
     let pool = store.pool();
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_metadata (key, value) VALUES ('extraction_count', '0')
-         ON CONFLICT(key) DO NOTHING",
-    )
+         ON CONFLICT(key) DO NOTHING"
+    ))
     .execute(pool)
     .await?;
-    sqlx::query(
+    sqlx::query(sql!(
         "UPDATE graph_metadata
          SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
-         WHERE key = 'extraction_count'",
-    )
+         WHERE key = 'extraction_count'"
+    ))
     .execute(pool)
     .await?;
 
@@ -441,7 +445,7 @@ mod tests {
     use crate::embedding_store::EmbeddingStore;
     use crate::graph::GraphStore;
     use crate::in_memory_store::InMemoryVectorStore;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
 
     use super::GraphExtractionConfig;
 
@@ -560,7 +564,7 @@ mod tests {
 
         // Session A: run extract_and_store on a file DB (not :memory:) so WAL is used.
         {
-            let sqlite = crate::sqlite::SqliteStore::new(&path).await.unwrap();
+            let sqlite = crate::store::SqliteStore::new(&path).await.unwrap();
             let extraction_json = r#"{"entities":[{"name":"Ferris","type":"concept","summary":"Rust mascot"}],"edges":[]}"#;
             let mock =
                 zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
@@ -585,7 +589,7 @@ mod tests {
         }
 
         // Session B: new pool — FTS5 must see the entity extracted in session A.
-        let sqlite_b = crate::sqlite::SqliteStore::new(&path).await.unwrap();
+        let sqlite_b = crate::store::SqliteStore::new(&path).await.unwrap();
         let gs_b = crate::graph::GraphStore::new(sqlite_b.pool().clone());
         let results = gs_b.find_entities_fuzzy("Ferris", 10).await.unwrap();
         assert!(

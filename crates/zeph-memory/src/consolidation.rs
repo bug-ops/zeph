@@ -11,7 +11,7 @@
 //! # Transaction safety
 //!
 //! Every `MERGE` operation runs inside a single `SQLite` transaction via
-//! [`SqliteStore::apply_consolidation_merge`]. Partial state is never written.
+//! [`DbStore::apply_consolidation_merge`]. Partial state is never written.
 //!
 //! # Clustering
 //!
@@ -20,6 +20,8 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
@@ -29,7 +31,7 @@ use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
 use crate::math::cosine_similarity;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 
 /// Topology operation proposed by the LLM for memory consolidation.
 ///
@@ -421,7 +423,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_consolidation_merge_inserts_and_marks_sources() {
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
         let store = SqliteStore::new(":memory:").await.unwrap();
         let conv_id = store.create_conversation().await.unwrap();
 
@@ -451,21 +453,22 @@ mod tests {
         );
 
         // Verify originals are now marked consolidated.
-        let rows: Vec<(i64,)> =
-            sqlx::query_as("SELECT consolidated FROM messages WHERE id IN (?, ?) ORDER BY id")
-                .bind(m1)
-                .bind(m2)
-                .fetch_all(store.pool())
-                .await
-                .unwrap();
+        let rows: Vec<(i64,)> = sqlx::query_as(sql!(
+            "SELECT consolidated FROM messages WHERE id IN (?, ?) ORDER BY id"
+        ))
+        .bind(m1)
+        .bind(m2)
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, 1, "source m1 must be marked consolidated");
         assert_eq!(rows[1].0, 1, "source m2 must be marked consolidated");
 
         // Verify join table has entries.
-        let join_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM memory_consolidation_sources WHERE source_id IN (?, ?)",
-        )
+        let join_count: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM memory_consolidation_sources WHERE source_id IN (?, ?)"
+        ))
         .bind(m1)
         .bind(m2)
         .fetch_one(store.pool())
@@ -476,7 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_consolidation_merge_skips_below_threshold() {
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
         let store = SqliteStore::new(":memory:").await.unwrap();
         let conv_id = store.create_conversation().await.unwrap();
 
@@ -495,7 +498,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_unconsolidated_messages_returns_originals_only() {
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
         let store = SqliteStore::new(":memory:").await.unwrap();
         let conv_id = store.create_conversation().await.unwrap();
 
@@ -529,7 +532,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_consolidated_for_source_returns_consolidated_id() {
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
         let store = SqliteStore::new(":memory:").await.unwrap();
         let conv_id = store.create_conversation().await.unwrap();
 
@@ -561,7 +564,7 @@ mod tests {
         use zeph_llm::any::AnyProvider;
         use zeph_llm::mock::MockProvider;
 
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
 
         let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
         let provider = AnyProvider::Mock(MockProvider::default());
@@ -588,7 +591,7 @@ mod tests {
         use zeph_llm::any::AnyProvider;
         use zeph_llm::mock::MockProvider;
 
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
 
         let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
         let conv_id = store.create_conversation().await.unwrap();
@@ -623,7 +626,7 @@ mod tests {
     /// `apply_consolidation_merge` with empty source list returns false without writing anything.
     #[tokio::test]
     async fn apply_consolidation_merge_empty_sources_skipped() {
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
         let store = SqliteStore::new(":memory:").await.unwrap();
         let conv_id = store.create_conversation().await.unwrap();
 
@@ -633,7 +636,7 @@ mod tests {
             .unwrap();
         assert!(!accepted, "empty source list must be rejected");
 
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages")
+        let count: (i64,) = sqlx::query_as(sql!("SELECT COUNT(*) FROM messages"))
             .fetch_one(store.pool())
             .await
             .unwrap();
@@ -644,7 +647,7 @@ mod tests {
     /// must be accepted.
     #[tokio::test]
     async fn apply_consolidation_merge_at_exact_threshold_accepted() {
-        use crate::sqlite::SqliteStore;
+        use crate::store::SqliteStore;
         let store = SqliteStore::new(":memory:").await.unwrap();
         let conv_id = store.create_conversation().await.unwrap();
 

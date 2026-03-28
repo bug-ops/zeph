@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use uuid::Uuid;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use crate::error::MemoryError;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 
 impl SqliteStore {
     /// Save overflow content associated with a conversation, returning the generated UUID.
@@ -19,10 +21,10 @@ impl SqliteStore {
     ) -> Result<String, MemoryError> {
         let id = Uuid::new_v4().to_string();
         let byte_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO tool_overflow (id, conversation_id, content, byte_size) \
-             VALUES (?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?)"
+        ))
         .bind(&id)
         .bind(conversation_id)
         .bind(content)
@@ -43,9 +45,9 @@ impl SqliteStore {
         id: &str,
         conversation_id: i64,
     ) -> Result<Option<Vec<u8>>, MemoryError> {
-        let row: Option<(Vec<u8>,)> = sqlx::query_as(
-            "SELECT content FROM tool_overflow WHERE id = ? AND conversation_id = ?",
-        )
+        let row: Option<(Vec<u8>,)> = sqlx::query_as(sql!(
+            "SELECT content FROM tool_overflow WHERE id = ? AND conversation_id = ?"
+        ))
         .bind(id)
         .bind(conversation_id)
         .fetch_optional(&self.pool)
@@ -60,10 +62,10 @@ impl SqliteStore {
     ///
     /// Returns an error if the database delete fails.
     pub async fn cleanup_overflow(&self, max_age_secs: u64) -> Result<u64, MemoryError> {
-        let result = sqlx::query(
+        let result = sqlx::query(sql!(
             "DELETE FROM tool_overflow \
-             WHERE created_at < datetime('now', printf('-%d seconds', ?))",
-        )
+             WHERE created_at < datetime('now', printf('-%d seconds', ?))"
+        ))
         .bind(max_age_secs.cast_signed())
         .execute(&self.pool)
         .await?;
@@ -76,9 +78,9 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     pub async fn overflow_size(&self, conversation_id: i64) -> Result<u64, MemoryError> {
-        let total: Option<i64> = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(byte_size), 0) FROM tool_overflow WHERE conversation_id = ?",
-        )
+        let total: Option<i64> = sqlx::query_scalar(sql!(
+            "SELECT COALESCE(SUM(byte_size), 0) FROM tool_overflow WHERE conversation_id = ?"
+        ))
         .bind(conversation_id)
         .fetch_one(&self.pool)
         .await?;
@@ -158,18 +160,19 @@ mod tests {
         let (store, cid) = make_store().await;
         let id = store.save_overflow(cid, b"data").await.expect("save");
         // Delete the conversation — overflow should cascade.
-        sqlx::query("DELETE FROM conversations WHERE id = ?")
+        sqlx::query(sql!("DELETE FROM conversations WHERE id = ?"))
             .bind(cid)
             .execute(store.pool())
             .await
             .expect("delete conversation");
         // Use a fresh store to load by id only — conversation is gone, use id=0 (will miss).
         // Verify via direct SQL that the row is gone.
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_overflow WHERE id = ?")
-            .bind(&id)
-            .fetch_one(store.pool())
-            .await
-            .expect("count");
+        let count: i64 =
+            sqlx::query_scalar(sql!("SELECT COUNT(*) FROM tool_overflow WHERE id = ?"))
+                .bind(&id)
+                .fetch_one(store.pool())
+                .await
+                .expect("count");
         assert_eq!(count, 0, "overflow row should be removed by CASCADE");
     }
 
@@ -178,10 +181,10 @@ mod tests {
         let (store, cid) = make_store().await;
         // Insert a row with an old timestamp.
         let id = Uuid::new_v4().to_string();
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO tool_overflow (id, conversation_id, content, byte_size, created_at) \
-             VALUES (?, ?, ?, ?, datetime('now', '-2 days'))",
-        )
+             VALUES (?, ?, ?, ?, datetime('now', '-2 days'))"
+        ))
         .bind(&id)
         .bind(cid)
         .bind(b"old data".as_slice())

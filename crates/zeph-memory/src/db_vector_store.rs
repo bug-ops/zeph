@@ -2,21 +2,30 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
-use sqlx::SqlitePool;
+use zeph_db::DbPool;
 
 use crate::vector_store::{
     BoxFuture, FieldValue, ScoredVectorPoint, ScrollResult, VectorFilter, VectorPoint, VectorStore,
     VectorStoreError,
 };
 
-pub struct SqliteVectorStore {
-    pool: SqlitePool,
+/// Database-backed in-process vector store.
+///
+/// Stores vectors as BLOBs in `SQLite` and performs cosine similarity in memory.
+/// For production-scale workloads, prefer the Qdrant-backed store.
+pub struct DbVectorStore {
+    pool: DbPool,
 }
 
-impl SqliteVectorStore {
+/// Backward-compatible alias.
+pub type SqliteVectorStore = DbVectorStore;
+
+impl DbVectorStore {
     #[must_use]
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -51,7 +60,7 @@ fn matches_filter(payload: &HashMap<String, serde_json::Value>, filter: &VectorF
     true
 }
 
-impl VectorStore for SqliteVectorStore {
+impl VectorStore for DbVectorStore {
     fn ensure_collection(
         &self,
         collection: &str,
@@ -59,11 +68,13 @@ impl VectorStore for SqliteVectorStore {
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            sqlx::query("INSERT OR IGNORE INTO vector_collections (name) VALUES (?)")
-                .bind(&collection)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| VectorStoreError::Collection(e.to_string()))?;
+            sqlx::query(sql!(
+                "INSERT OR IGNORE INTO vector_collections (name) VALUES (?)"
+            ))
+            .bind(&collection)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| VectorStoreError::Collection(e.to_string()))?;
             Ok(())
         })
     }
@@ -71,12 +82,13 @@ impl VectorStore for SqliteVectorStore {
     fn collection_exists(&self, collection: &str) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let row: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM vector_collections WHERE name = ?")
-                    .bind(&collection)
-                    .fetch_one(&self.pool)
-                    .await
-                    .map_err(|e| VectorStoreError::Connection(e.to_string()))?;
+            let row: (i64,) = sqlx::query_as(sql!(
+                "SELECT COUNT(*) FROM vector_collections WHERE name = ?"
+            ))
+            .bind(&collection)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| VectorStoreError::Connection(e.to_string()))?;
             Ok(row.0 > 0)
         })
     }
@@ -84,12 +96,12 @@ impl VectorStore for SqliteVectorStore {
     fn delete_collection(&self, collection: &str) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            sqlx::query("DELETE FROM vector_points WHERE collection = ?")
+            sqlx::query(sql!("DELETE FROM vector_points WHERE collection = ?"))
                 .bind(&collection)
                 .execute(&self.pool)
                 .await
                 .map_err(|e| VectorStoreError::Delete(e.to_string()))?;
-            sqlx::query("DELETE FROM vector_collections WHERE name = ?")
+            sqlx::query(sql!("DELETE FROM vector_collections WHERE name = ?"))
                 .bind(&collection)
                 .execute(&self.pool)
                 .await
@@ -110,8 +122,8 @@ impl VectorStore for SqliteVectorStore {
                 let payload_json = serde_json::to_string(&point.payload)
                     .map_err(|e| VectorStoreError::Serialization(e.to_string()))?;
                 sqlx::query(
-                    "INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?) \
-                     ON CONFLICT(collection, id) DO UPDATE SET vector = excluded.vector, payload = excluded.payload",
+                    sql!("INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?) \
+                     ON CONFLICT(collection, id) DO UPDATE SET vector = excluded.vector, payload = excluded.payload"),
                 )
                 .bind(&point.id)
                 .bind(&collection)
@@ -134,9 +146,9 @@ impl VectorStore for SqliteVectorStore {
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let rows: Vec<(String, Vec<u8>, String)> = sqlx::query_as(
-                "SELECT id, vector, payload FROM vector_points WHERE collection = ?",
-            )
+            let rows: Vec<(String, Vec<u8>, String)> = sqlx::query_as(sql!(
+                "SELECT id, vector, payload FROM vector_points WHERE collection = ?"
+            ))
             .bind(&collection)
             .fetch_all(&self.pool)
             .await
@@ -182,12 +194,14 @@ impl VectorStore for SqliteVectorStore {
         let collection = collection.to_owned();
         Box::pin(async move {
             for id in ids {
-                sqlx::query("DELETE FROM vector_points WHERE collection = ? AND id = ?")
-                    .bind(&collection)
-                    .bind(&id)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| VectorStoreError::Delete(e.to_string()))?;
+                sqlx::query(sql!(
+                    "DELETE FROM vector_points WHERE collection = ? AND id = ?"
+                ))
+                .bind(&collection)
+                .bind(&id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| VectorStoreError::Delete(e.to_string()))?;
             }
             Ok(())
         })
@@ -201,12 +215,13 @@ impl VectorStore for SqliteVectorStore {
         let collection = collection.to_owned();
         let key_field = key_field.to_owned();
         Box::pin(async move {
-            let rows: Vec<(String, String)> =
-                sqlx::query_as("SELECT id, payload FROM vector_points WHERE collection = ?")
-                    .bind(&collection)
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err(|e| VectorStoreError::Scroll(e.to_string()))?;
+            let rows: Vec<(String, String)> = sqlx::query_as(sql!(
+                "SELECT id, payload FROM vector_points WHERE collection = ?"
+            ))
+            .bind(&collection)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| VectorStoreError::Scroll(e.to_string()))?;
 
             let mut result = ScrollResult::new();
             for (id, payload_str) in rows {
@@ -227,7 +242,7 @@ impl VectorStore for SqliteVectorStore {
 
     fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
         Box::pin(async move {
-            sqlx::query_scalar::<_, i32>("SELECT 1")
+            sqlx::query_scalar::<_, i32>(sql!("SELECT 1"))
                 .fetch_one(&self.pool)
                 .await
                 .map(|_| true)
@@ -239,13 +254,13 @@ impl VectorStore for SqliteVectorStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::SqliteStore;
+    use crate::store::DbStore;
     use crate::vector_store::FieldCondition;
 
-    async fn setup() -> (SqliteVectorStore, SqliteStore) {
-        let store = SqliteStore::new(":memory:").await.unwrap();
+    async fn setup() -> (DbVectorStore, DbStore) {
+        let store = DbStore::new(":memory:").await.unwrap();
         let pool = store.pool().clone();
-        let vs = SqliteVectorStore::new(pool);
+        let vs = DbVectorStore::new(pool);
         (vs, store)
     }
 
@@ -685,9 +700,9 @@ mod tests {
         // 3 bytes cannot be cast to f32 (needs multiples of 4)
         let corrupt_blob: Vec<u8> = vec![0xFF, 0xFE, 0xFD];
         let payload_json = r"{}";
-        sqlx::query(
-            "INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?)",
-        )
+        sqlx::query(sql!(
+            "INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?)"
+        ))
         .bind("corrupt")
         .bind("c")
         .bind(&corrupt_blob)

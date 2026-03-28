@@ -18,7 +18,7 @@ use zeph_llm::provider::LlmProvider as _;
 use zeph_mcp::McpManager;
 use zeph_mcp::manager::ServerEntry;
 use zeph_memory::ConversationId;
-use zeph_memory::sqlite::SqliteStore;
+use zeph_memory::store::SqliteStore;
 
 use zeph_tools::is_private_ip;
 
@@ -650,7 +650,7 @@ struct McpRemoveParams {
 /// Returns `None` when the store is unavailable or all creation attempts fail, allowing
 /// the caller to proceed in ephemeral (no-history) mode rather than failing the session.
 async fn resolve_conversation_id(
-    store: &zeph_memory::sqlite::SqliteStore,
+    store: &zeph_memory::store::SqliteStore,
     session_id: &acp::SessionId,
 ) -> Option<ConversationId> {
     match store
@@ -2034,7 +2034,7 @@ impl ZephAcpAgent {
     async fn replay_session_events(
         &self,
         session_id: &acp::SessionId,
-        events: Vec<zeph_memory::sqlite::AcpSessionEvent>,
+        events: Vec<zeph_memory::store::AcpSessionEvent>,
     ) {
         for ev in events {
             let update = match ev.event_type.as_str() {

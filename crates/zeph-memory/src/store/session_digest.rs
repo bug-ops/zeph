@@ -4,9 +4,11 @@
 //! `SQLite` CRUD for the `session_digest` table — upsert, load, delete.
 
 use crate::error::MemoryError;
-use crate::sqlite::SqliteStore;
-use crate::sqlite::compression_guidelines::redact_sensitive;
+use crate::store::SqliteStore;
+use crate::store::compression_guidelines::redact_sensitive;
 use crate::types::ConversationId;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 /// A distilled session digest: key facts and outcomes for a single conversation.
 #[derive(Debug, Clone)]
@@ -34,14 +36,14 @@ impl SqliteStore {
         token_count: i64,
     ) -> Result<(), MemoryError> {
         let safe_digest = redact_sensitive(digest);
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO session_digest (conversation_id, digest, token_count, updated_at) \
              VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
              ON CONFLICT(conversation_id) DO UPDATE SET \
                digest = excluded.digest, \
                token_count = excluded.token_count, \
-               updated_at = excluded.updated_at",
-        )
+               updated_at = excluded.updated_at"
+        ))
         .bind(conversation_id.0)
         .bind(safe_digest.as_ref())
         .bind(token_count)
@@ -59,10 +61,10 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Option<SessionDigest>, MemoryError> {
-        let row = sqlx::query_as::<_, (i64, i64, String, i64, String)>(
+        let row = sqlx::query_as::<_, (i64, i64, String, i64, String)>(sql!(
             "SELECT id, conversation_id, digest, token_count, updated_at \
-             FROM session_digest WHERE conversation_id = ?",
-        )
+             FROM session_digest WHERE conversation_id = ?"
+        ))
         .bind(conversation_id.0)
         .fetch_optional(&self.pool)
         .await?;
@@ -87,7 +89,7 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query("DELETE FROM session_digest WHERE conversation_id = ?")
+        sqlx::query(sql!("DELETE FROM session_digest WHERE conversation_id = ?"))
             .bind(conversation_id.0)
             .execute(&self.pool)
             .await?;
@@ -98,7 +100,7 @@ impl SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
 
     async fn make_store() -> SqliteStore {
         SqliteStore::with_pool_size(":memory:", 1)
@@ -107,9 +109,9 @@ mod tests {
     }
 
     async fn insert_conversation(store: &SqliteStore) -> ConversationId {
-        sqlx::query_scalar::<_, i64>(
-            "INSERT INTO conversations (created_at) VALUES (datetime('now')) RETURNING id",
-        )
+        sqlx::query_scalar::<_, i64>(sql!(
+            "INSERT INTO conversations (created_at) VALUES (datetime('now')) RETURNING id"
+        ))
         .fetch_one(&store.pool)
         .await
         .map(ConversationId)

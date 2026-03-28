@@ -4,7 +4,7 @@
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::response_cache::ResponseCache;
-use zeph_memory::sqlite::SqliteStore;
+use zeph_memory::store::SqliteStore;
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const CHAT_MODEL: &str = "qwen3:8b";

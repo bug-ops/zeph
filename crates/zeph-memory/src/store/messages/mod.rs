@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[allow(unused_imports)]
+use zeph_db::sql;
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use super::SqliteStore;
@@ -139,10 +141,11 @@ impl SqliteStore {
     ///
     /// Returns an error if the insert fails.
     pub async fn create_conversation(&self) -> Result<ConversationId, MemoryError> {
-        let row: (ConversationId,) =
-            sqlx::query_as("INSERT INTO conversations DEFAULT VALUES RETURNING id")
-                .fetch_one(&self.pool)
-                .await?;
+        let row: (ConversationId,) = sqlx::query_as(sql!(
+            "INSERT INTO conversations DEFAULT VALUES RETURNING id"
+        ))
+        .fetch_one(&self.pool)
+        .await?;
         Ok(row.0)
     }
 
@@ -193,8 +196,8 @@ impl SqliteStore {
     ) -> Result<MessageId, MemoryError> {
         let importance_score = crate::semantic::importance::compute_importance(content, role);
         let row: (MessageId,) = sqlx::query_as(
-            "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible, importance_score) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            sql!("INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible, importance_score) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"),
         )
         .bind(conversation_id)
         .bind(role)
@@ -218,14 +221,14 @@ impl SqliteStore {
         conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
-        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(sql!(
             "SELECT role, content, parts, agent_visible, user_visible, id FROM (\
                 SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? AND deleted_at IS NULL \
                 ORDER BY id DESC \
                 LIMIT ?\
-             ) ORDER BY id ASC",
-        )
+             ) ORDER BY id ASC"
+        ))
         .bind(conversation_id)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -274,7 +277,7 @@ impl SqliteStore {
         let uv = user_visible.map(i64::from);
 
         let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
-            "WITH recent AS (\
+            sql!("WITH recent AS (\
                 SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? \
                   AND deleted_at IS NULL \
@@ -282,7 +285,7 @@ impl SqliteStore {
                   AND (? IS NULL OR user_visible = ?) \
                 ORDER BY id DESC \
                 LIMIT ?\
-             ) SELECT role, content, parts, agent_visible, user_visible, id FROM recent ORDER BY id ASC",
+             ) SELECT role, content, parts, agent_visible, user_visible, id FROM recent ORDER BY id ASC"),
         )
         .bind(conversation_id)
         .bind(av)
@@ -348,10 +351,10 @@ impl SqliteStore {
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
+        sqlx::query(sql!(
             "UPDATE messages SET agent_visible = 0, compacted_at = ? \
-             WHERE conversation_id = ? AND id >= ? AND id <= ?",
-        )
+             WHERE conversation_id = ? AND id >= ? AND id <= ?"
+        ))
         .bind(&now)
         .bind(conversation_id)
         .bind(start_id)
@@ -360,11 +363,11 @@ impl SqliteStore {
         .await?;
 
         // importance_score uses schema DEFAULT 0.5 (neutral); compaction summaries are not scored at write time.
-        let row: (MessageId,) = sqlx::query_as(
+        let row: (MessageId,) = sqlx::query_as(sql!(
             "INSERT INTO messages \
              (conversation_id, role, content, parts, agent_visible, user_visible) \
-             VALUES (?, ?, ?, '[]', 1, 0) RETURNING id",
-        )
+             VALUES (?, ?, ?, '[]', 1, 0) RETURNING id"
+        ))
         .bind(conversation_id)
         .bind(summary_role)
         .bind(summary_content)
@@ -404,11 +407,13 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         for &id in hide_ids {
-            sqlx::query("UPDATE messages SET agent_visible = 0, compacted_at = ? WHERE id = ?")
-                .bind(&now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(sql!(
+                "UPDATE messages SET agent_visible = 0, compacted_at = ? WHERE id = ?"
+            ))
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         }
 
         for summary in summaries {
@@ -417,11 +422,11 @@ impl SqliteStore {
                 text: summary.clone(),
             }])
             .unwrap_or_else(|_| "[]".to_string());
-            sqlx::query(
+            sqlx::query(sql!(
                 "INSERT INTO messages \
                  (conversation_id, role, content, parts, agent_visible, user_visible) \
-                 VALUES (?, 'assistant', ?, ?, 1, 0)",
-            )
+                 VALUES (?, 'assistant', ?, ?, 1, 0)"
+            ))
             .bind(conversation_id)
             .bind(&content)
             .bind(&parts)
@@ -444,7 +449,7 @@ impl SqliteStore {
         n: u32,
     ) -> Result<Vec<MessageId>, MemoryError> {
         let rows: Vec<(MessageId,)> = sqlx::query_as(
-            "SELECT id FROM messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?",
+            sql!("SELECT id FROM messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?"),
         )
         .bind(conversation_id)
         .bind(n)
@@ -459,10 +464,11 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn latest_conversation_id(&self) -> Result<Option<ConversationId>, MemoryError> {
-        let row: Option<(ConversationId,)> =
-            sqlx::query_as("SELECT id FROM conversations ORDER BY id DESC LIMIT 1")
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(ConversationId,)> = sqlx::query_as(sql!(
+            "SELECT id FROM conversations ORDER BY id DESC LIMIT 1"
+        ))
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -476,7 +482,7 @@ impl SqliteStore {
         message_id: MessageId,
     ) -> Result<Option<Message>, MemoryError> {
         let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT role, content, parts, agent_visible, user_visible FROM messages WHERE id = ? AND deleted_at IS NULL",
+            sql!("SELECT role, content, parts, agent_visible, user_visible FROM messages WHERE id = ? AND deleted_at IS NULL"),
         )
         .bind(message_id)
         .fetch_optional(&self.pool)
@@ -557,14 +563,14 @@ impl SqliteStore {
     ) -> Result<Vec<(MessageId, ConversationId, String, String)>, MemoryError> {
         let effective_limit = limit.map_or(i64::MAX, |l| i64::try_from(l).unwrap_or(i64::MAX));
 
-        let rows: Vec<(MessageId, ConversationId, String, String)> = sqlx::query_as(
+        let rows: Vec<(MessageId, ConversationId, String, String)> = sqlx::query_as(sql!(
             "SELECT m.id, m.conversation_id, m.role, m.content \
              FROM messages m \
              LEFT JOIN embeddings_metadata em ON m.id = em.message_id \
              WHERE em.id IS NULL AND m.deleted_at IS NULL \
              ORDER BY m.id ASC \
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(effective_limit)
         .fetch_all(&self.pool)
         .await?;
@@ -581,9 +587,9 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND deleted_at IS NULL",
-        )
+        let row: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND deleted_at IS NULL"
+        ))
         .bind(conversation_id)
         .fetch_one(&self.pool)
         .await?;
@@ -602,7 +608,7 @@ impl SqliteStore {
     ) -> Result<i64, MemoryError> {
         let row: (i64,) =
             sqlx::query_as(
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND id > ? AND deleted_at IS NULL",
+                sql!("SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND id > ? AND deleted_at IS NULL"),
             )
             .bind(conversation_id)
             .bind(after_id)
@@ -633,12 +639,12 @@ impl SqliteStore {
 
         let rows: Vec<(MessageId, f64)> = if let Some(cid) = conversation_id {
             sqlx::query_as(
-                "SELECT m.id, -rank AS score \
+                sql!("SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
                  WHERE messages_fts MATCH ? AND m.conversation_id = ? AND m.agent_visible = 1 AND m.deleted_at IS NULL \
                  ORDER BY rank \
-                 LIMIT ?",
+                 LIMIT ?"),
             )
             .bind(&safe_query)
             .bind(cid)
@@ -646,14 +652,14 @@ impl SqliteStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as(
+            sqlx::query_as(sql!(
                 "SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
                  WHERE messages_fts MATCH ? AND m.agent_visible = 1 AND m.deleted_at IS NULL \
                  ORDER BY rank \
-                 LIMIT ?",
-            )
+                 LIMIT ?"
+            ))
             .bind(&safe_query)
             .bind(effective_limit)
             .fetch_all(&self.pool)
@@ -773,11 +779,11 @@ impl SqliteStore {
     ) -> Result<Vec<(MessageId, String, String)>, MemoryError> {
         let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
 
-        let rows: Vec<(MessageId, String, String)> = sqlx::query_as(
+        let rows: Vec<(MessageId, String, String)> = sqlx::query_as(sql!(
             "SELECT id, role, content FROM messages \
              WHERE conversation_id = ? AND id > ? AND deleted_at IS NULL \
-             ORDER BY id ASC LIMIT ?",
-        )
+             ORDER BY id ASC LIMIT ?"
+        ))
         .bind(conversation_id)
         .bind(after_message_id)
         .bind(effective_limit)
@@ -797,10 +803,10 @@ impl SqliteStore {
     pub async fn get_eviction_candidates(
         &self,
     ) -> Result<Vec<crate::eviction::EvictionEntry>, crate::error::MemoryError> {
-        let rows: Vec<(MessageId, String, Option<String>, i64)> = sqlx::query_as(
+        let rows: Vec<(MessageId, String, Option<String>, i64)> = sqlx::query_as(sql!(
             "SELECT id, created_at, last_accessed, access_count \
-             FROM messages WHERE deleted_at IS NULL",
-        )
+             FROM messages WHERE deleted_at IS NULL"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -834,7 +840,7 @@ impl SqliteStore {
         // SQLite does not support array binding natively. Batch via individual updates.
         for &id in ids {
             sqlx::query(
-                "UPDATE messages SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+                sql!("UPDATE messages SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"),
             )
             .bind(id)
             .execute(&self.pool)
@@ -851,9 +857,9 @@ impl SqliteStore {
     pub async fn get_soft_deleted_message_ids(
         &self,
     ) -> Result<Vec<MessageId>, crate::error::MemoryError> {
-        let rows: Vec<(MessageId,)> = sqlx::query_as(
-            "SELECT id FROM messages WHERE deleted_at IS NOT NULL AND qdrant_cleaned = 0",
-        )
+        let rows: Vec<(MessageId,)> = sqlx::query_as(sql!(
+            "SELECT id FROM messages WHERE deleted_at IS NOT NULL AND qdrant_cleaned = 0"
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
@@ -869,7 +875,7 @@ impl SqliteStore {
         ids: &[MessageId],
     ) -> Result<(), crate::error::MemoryError> {
         for &id in ids {
-            sqlx::query("UPDATE messages SET qdrant_cleaned = 1 WHERE id = ?")
+            sqlx::query(sql!("UPDATE messages SET qdrant_cleaned = 1 WHERE id = ?"))
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
@@ -942,13 +948,13 @@ impl SqliteStore {
     ) -> Result<Vec<PromotionCandidate>, MemoryError> {
         let limit = i64::try_from(batch_size).unwrap_or(i64::MAX);
         let min = i64::from(min_sessions);
-        let rows: Vec<(MessageId, ConversationId, String, i64, f64)> = sqlx::query_as(
+        let rows: Vec<(MessageId, ConversationId, String, i64, f64)> = sqlx::query_as(sql!(
             "SELECT id, conversation_id, content, session_count, importance_score \
              FROM messages \
              WHERE tier = 'episodic' AND session_count >= ? AND deleted_at IS NULL \
              ORDER BY session_count DESC, importance_score DESC \
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(min)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -978,11 +984,11 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn count_messages_by_tier(&self) -> Result<(i64, i64), MemoryError> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, i64)> = sqlx::query_as(sql!(
             "SELECT tier, COUNT(*) FROM messages \
              WHERE deleted_at IS NULL AND tier IN ('episodic', 'semantic') \
-             GROUP BY tier",
-        )
+             GROUP BY tier"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -1004,9 +1010,9 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn count_semantic_facts(&self) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM messages WHERE tier = 'semantic' AND deleted_at IS NULL",
-        )
+        let row: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM messages WHERE tier = 'semantic' AND deleted_at IS NULL"
+        ))
         .fetch_one(&self.pool)
         .await?;
         Ok(row.0)
@@ -1039,13 +1045,13 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         // Insert the new semantic fact.
-        let row: (MessageId,) = sqlx::query_as(
+        let row: (MessageId,) = sqlx::query_as(sql!(
             "INSERT INTO messages \
              (conversation_id, role, content, parts, agent_visible, user_visible, \
               tier, promotion_timestamp) \
              VALUES (?, 'assistant', ?, '[]', 1, 0, 'semantic', unixepoch()) \
-             RETURNING id",
-        )
+             RETURNING id"
+        ))
         .bind(conversation_id)
         .bind(merged_content)
         .fetch_one(&mut *tx)
@@ -1055,11 +1061,11 @@ impl SqliteStore {
 
         // Soft-delete originals and reset qdrant_cleaned so eviction sweep removes vectors.
         for &id in original_ids {
-            sqlx::query(
+            sqlx::query(sql!(
                 "UPDATE messages \
                  SET deleted_at = datetime('now'), qdrant_cleaned = 0 \
-                 WHERE id = ? AND deleted_at IS NULL",
-            )
+                 WHERE id = ? AND deleted_at IS NULL"
+            ))
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -1083,11 +1089,11 @@ impl SqliteStore {
         }
         let mut count = 0usize;
         for &id in ids {
-            let result = sqlx::query(
+            let result = sqlx::query(sql!(
                 "UPDATE messages \
                  SET tier = 'semantic', promotion_timestamp = unixepoch() \
-                 WHERE id = ? AND deleted_at IS NULL AND tier = 'episodic'",
-            )
+                 WHERE id = ? AND deleted_at IS NULL AND tier = 'episodic'"
+            ))
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -1108,10 +1114,10 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query(
+        sqlx::query(sql!(
             "UPDATE messages SET session_count = session_count + 1 \
-             WHERE conversation_id = ? AND tier = 'episodic' AND deleted_at IS NULL",
-        )
+             WHERE conversation_id = ? AND tier = 'episodic' AND deleted_at IS NULL"
+        ))
         .bind(conversation_id)
         .execute(&self.pool)
         .await?;
@@ -1154,10 +1160,10 @@ impl SqliteStore {
     pub async fn conversations_with_unconsolidated_messages(
         &self,
     ) -> Result<Vec<ConversationId>, MemoryError> {
-        let rows: Vec<(ConversationId,)> = sqlx::query_as(
+        let rows: Vec<(ConversationId,)> = sqlx::query_as(sql!(
             "SELECT DISTINCT conversation_id FROM messages \
-             WHERE consolidated = 0 AND deleted_at IS NULL",
-        )
+             WHERE consolidated = 0 AND deleted_at IS NULL"
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
@@ -1177,14 +1183,14 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<(MessageId, String)>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows: Vec<(MessageId, String)> = sqlx::query_as(
+        let rows: Vec<(MessageId, String)> = sqlx::query_as(sql!(
             "SELECT id, content FROM messages \
              WHERE conversation_id = ? \
                AND consolidated = 0 \
                AND deleted_at IS NULL \
              ORDER BY id ASC \
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(conversation_id)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -1204,11 +1210,11 @@ impl SqliteStore {
         &self,
         source_id: MessageId,
     ) -> Result<Option<MessageId>, MemoryError> {
-        let row: Option<(MessageId,)> = sqlx::query_as(
+        let row: Option<(MessageId,)> = sqlx::query_as(sql!(
             "SELECT consolidated_id FROM memory_consolidation_sources \
              WHERE source_id = ? \
-             LIMIT 1",
-        )
+             LIMIT 1"
+        ))
         .bind(source_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -1247,13 +1253,13 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         let importance = crate::semantic::importance::compute_importance(merged_content, role);
-        let row: (MessageId,) = sqlx::query_as(
+        let row: (MessageId,) = sqlx::query_as(sql!(
             "INSERT INTO messages \
                (conversation_id, role, content, parts, agent_visible, user_visible, \
                 importance_score, consolidated, consolidation_confidence) \
              VALUES (?, ?, ?, '[]', 1, 1, ?, 1, ?) \
-             RETURNING id",
-        )
+             RETURNING id"
+        ))
         .bind(conversation_id)
         .bind(role)
         .bind(merged_content)
@@ -1264,17 +1270,17 @@ impl SqliteStore {
         let consolidated_id = row.0;
 
         for &source_id in source_ids {
-            sqlx::query(
+            sqlx::query(sql!(
                 "INSERT OR IGNORE INTO memory_consolidation_sources \
-                   (consolidated_id, source_id) VALUES (?, ?)",
-            )
+                   (consolidated_id, source_id) VALUES (?, ?)"
+            ))
             .bind(consolidated_id)
             .bind(source_id)
             .execute(&mut *tx)
             .await?;
 
             // Mark original as consolidated so future sweeps skip it.
-            sqlx::query("UPDATE messages SET consolidated = 1 WHERE id = ?")
+            sqlx::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
                 .bind(source_id)
                 .execute(&mut *tx)
                 .await?;

@@ -22,6 +22,7 @@ serde_json.workspace = true
 semver.workspace = true
 sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite"] }
 thiserror.workspace = true
+zeph-db.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)

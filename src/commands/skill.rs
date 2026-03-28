@@ -35,22 +35,22 @@ pub(crate) async fn handle_skill_command(
             }
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             let (source_kind, source_url, source_path) = match &result.source {
                 zeph_skills::SkillSource::Hub { url } => (
-                    zeph_memory::sqlite::SourceKind::Hub,
+                    zeph_memory::store::SourceKind::Hub,
                     Some(url.as_str()),
                     None,
                 ),
                 zeph_skills::SkillSource::File { path } => (
-                    zeph_memory::sqlite::SourceKind::File,
+                    zeph_memory::store::SourceKind::File,
                     None,
                     Some(path.to_string_lossy().into_owned()),
                 ),
                 zeph_skills::SkillSource::Local => {
-                    (zeph_memory::sqlite::SourceKind::Local, None, None)
+                    (zeph_memory::store::SourceKind::Local, None, None)
                 }
             };
             store
@@ -86,7 +86,7 @@ pub(crate) async fn handle_skill_command(
         SkillCommand::Remove { name } => {
             mgr.remove(&name).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             store
@@ -102,7 +102,7 @@ pub(crate) async fn handle_skill_command(
                 println!("No skills installed in {}.", managed_dir.display());
                 return Ok(());
             }
-            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             println!("Installed skills ({}):\n", installed.len());
@@ -128,7 +128,7 @@ pub(crate) async fn handle_skill_command(
         }
 
         SkillCommand::Verify { name } => {
-            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
 
@@ -212,7 +212,7 @@ pub(crate) async fn handle_skill_command(
                     .await
                     .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {e}"))??;
 
-                let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
                 let row = store
@@ -239,7 +239,7 @@ pub(crate) async fn handle_skill_command(
                     anyhow::bail!("skill \"{name}\" not found in trust database");
                 }
             } else {
-                let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+                let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
                 let updated = store
@@ -255,7 +255,7 @@ pub(crate) async fn handle_skill_command(
         }
 
         SkillCommand::Block { name } => {
-            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             let updated = store
@@ -270,7 +270,7 @@ pub(crate) async fn handle_skill_command(
         }
 
         SkillCommand::Unblock { name } => {
-            let store = zeph_memory::sqlite::SqliteStore::new(&sqlite_path)
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             let updated = store

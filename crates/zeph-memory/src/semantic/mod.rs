@@ -20,7 +20,7 @@ use zeph_llm::any::AnyProvider;
 use crate::admission::AdmissionControl;
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::token_counter::TokenCounter;
 
 pub(crate) const SESSION_SUMMARIES_COLLECTION: &str = "zeph_session_summaries";

@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeph_memory::sqlite::graph_store::{GraphSummary, RawGraphStore};
+use zeph_memory::store::graph_store::{GraphSummary, RawGraphStore};
 
 use super::error::OrchestrationError;
 

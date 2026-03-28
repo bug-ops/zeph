@@ -9,6 +9,8 @@ pub enum SchedulerError {
     InvalidCron(String),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("database error: {0}")]
+    Db(#[from] zeph_db::DbError),
     #[error("task execution failed: {0}")]
     TaskFailed(String),
 }

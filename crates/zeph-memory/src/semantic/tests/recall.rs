@@ -3,13 +3,15 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_llm::provider::Role;
 
 use crate::embedding_store::SearchFilter;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::token_counter::TokenCounter;
 use crate::types::ConversationId;
 
@@ -443,7 +445,7 @@ async fn recall_access_count_incremented_after_recall() {
         .await
         .unwrap();
 
-    let before: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+    let before: (i64,) = sqlx::query_as(sql!("SELECT access_count FROM messages WHERE id = ?"))
         .bind(id)
         .fetch_one(memory.sqlite.pool())
         .await
@@ -453,7 +455,7 @@ async fn recall_access_count_incremented_after_recall() {
     let recalled = memory.recall("rust", 5, None).await.unwrap();
     assert!(!recalled.is_empty());
 
-    let after: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+    let after: (i64,) = sqlx::query_as(sql!("SELECT access_count FROM messages WHERE id = ?"))
         .bind(id)
         .fetch_one(memory.sqlite.pool())
         .await

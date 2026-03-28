@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicU64;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::token_counter::TokenCounter;
 use crate::types::{ConversationId, MessageId};
 

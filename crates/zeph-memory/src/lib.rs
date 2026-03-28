@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! SQLite-backed conversation persistence with Qdrant vector search.
+//! Database-backed conversation persistence with Qdrant vector search.
 
 pub mod admission;
 pub mod anchored_summary;
@@ -12,6 +12,7 @@ pub mod document;
 pub mod scenes;
 pub mod tiers;
 
+pub mod db_vector_store;
 pub mod embedding_registry;
 pub mod embedding_store;
 pub mod error;
@@ -24,8 +25,7 @@ pub mod response_cache;
 pub mod router;
 pub mod semantic;
 pub mod snapshot;
-pub mod sqlite;
-pub mod sqlite_vector_store;
+pub mod store;
 pub mod testing;
 pub mod token_counter;
 pub mod types;
@@ -79,11 +79,11 @@ pub use semantic::{
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 #[cfg(feature = "compression-guidelines")]
-pub use sqlite::compression_guidelines::CompressionFailurePair;
-pub use sqlite::corrections::UserCorrectionRow;
+pub use store::compression_guidelines::CompressionFailurePair;
+pub use store::corrections::UserCorrectionRow;
 #[cfg(feature = "experiments")]
-pub use sqlite::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
-pub use sqlite::session_digest::SessionDigest;
+pub use store::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
+pub use store::session_digest::SessionDigest;
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;

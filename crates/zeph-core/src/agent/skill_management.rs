@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use zeph_memory::sqlite::SourceKind;
+use zeph_memory::store::SourceKind;
 use zeph_skills::SkillSource;
 use zeph_skills::manager::SkillManager;
 

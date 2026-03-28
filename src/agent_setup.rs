@@ -335,7 +335,7 @@ pub(crate) async fn build_tool_setup(
     suppress_stderr: bool,
     age_vault: Option<&Arc<tokio::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    pool: Option<&sqlx::SqlitePool>,
+    pool: Option<&zeph_db::DbPool>,
     provider: &zeph_llm::any::AnyProvider,
 ) -> ToolSetup {
     let filter_registry = if config.tools.filters.enabled {
@@ -468,7 +468,7 @@ pub(crate) fn spawn_ctrl_c_handler(
 pub(crate) fn apply_response_cache<C: Channel>(
     agent: Agent<C>,
     enabled: bool,
-    pool: sqlx::SqlitePool,
+    pool: zeph_db::DbPool,
     ttl_secs: u64,
     semantic_cache_enabled: bool,
     embed_model: String,
@@ -728,7 +728,7 @@ pub(crate) async fn apply_code_indexer(
     config: &IndexConfig,
     qdrant_ops: Option<QdrantOps>,
     provider: zeph_llm::any::AnyProvider,
-    pool: sqlx::SqlitePool,
+    pool: zeph_db::DbPool,
     cli_mode: bool,
 ) -> CodeIndexerSetup {
     if !config.enabled {
@@ -859,7 +859,7 @@ pub(crate) fn build_search_code_executor(
     config: &Config,
     qdrant_ops: Option<QdrantOps>,
     provider: zeph_llm::any::AnyProvider,
-    pool: sqlx::SqlitePool,
+    pool: zeph_db::DbPool,
     mcp_manager: Option<Arc<zeph_mcp::McpManager>>,
 ) -> Option<SearchCodeExecutor> {
     if !config.index.search_enabled {

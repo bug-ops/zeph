@@ -22,6 +22,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite"] }
 thiserror.workspace = true
+zeph-db.workspace = true
 tokio = { workspace = true, features = ["fs", "rt"] }
 tracing.workspace = true
 tree-sitter.workspace = true

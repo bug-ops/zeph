@@ -6589,6 +6589,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx-core",
+ "sqlx-postgres",
  "sqlx-sqlite",
  "syn 2.0.117",
  "tokio",
@@ -9375,6 +9376,7 @@ dependencies = [
  "zeph-acp",
  "zeph-channels",
  "zeph-core",
+ "zeph-db",
  "zeph-gateway",
  "zeph-index",
  "zeph-llm",
@@ -9553,6 +9555,7 @@ dependencies = [
  "uuid",
  "zeph-common",
  "zeph-config",
+ "zeph-db",
  "zeph-experiments",
  "zeph-index",
  "zeph-llm",
@@ -9564,6 +9567,17 @@ dependencies = [
  "zeph-subagent",
  "zeph-tools",
  "zeph-vault",
+]
+
+[[package]]
+name = "zeph-db"
+version = "0.17.1"
+dependencies = [
+ "regex",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -9633,6 +9647,7 @@ dependencies = [
  "tree-sitter-typescript",
  "uuid",
  "zeph-common",
+ "zeph-db",
  "zeph-llm",
  "zeph-memory",
 ]
@@ -9700,6 +9715,7 @@ dependencies = [
  "url",
  "uuid",
  "zeph-common",
+ "zeph-db",
  "zeph-llm",
  "zeph-memory",
  "zeph-tools",
@@ -9734,6 +9750,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeph-common",
+ "zeph-db",
  "zeph-llm",
 ]
 
@@ -9753,6 +9770,7 @@ dependencies = [
  "uuid",
  "zeph-common",
  "zeph-config",
+ "zeph-db",
  "zeph-llm",
  "zeph-memory",
  "zeph-sanitizer",
@@ -9794,6 +9812,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+ "zeph-db",
 ]
 
 [[package]]

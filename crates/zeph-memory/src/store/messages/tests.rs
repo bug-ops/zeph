@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 async fn test_store() -> SqliteStore {
     SqliteStore::new(":memory:").await.unwrap()
@@ -92,16 +94,19 @@ async fn messages_isolated_per_conversation() {
 async fn pool_accessor_returns_valid_pool() {
     let store = test_store().await;
     let pool = store.pool();
-    let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(pool).await.unwrap();
+    let row: (i64,) = sqlx::query_as(sql!("SELECT 1"))
+        .fetch_one(pool)
+        .await
+        .unwrap();
     assert_eq!(row.0, 1);
 }
 
 #[tokio::test]
 async fn embeddings_metadata_table_exists() {
     let store = test_store().await;
-    let result: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings_metadata'",
-    )
+    let result: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings_metadata'"
+    ))
     .fetch_one(store.pool())
     .await
     .unwrap();
@@ -117,10 +122,10 @@ async fn cascade_delete_removes_embeddings_metadata() {
     let msg_id = store.save_message(cid, "user", "test").await.unwrap();
 
     let point_id = uuid::Uuid::new_v4().to_string();
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions) \
-         VALUES (?, ?, ?)",
-    )
+         VALUES (?, ?, ?)"
+    ))
     .bind(msg_id)
     .bind(&point_id)
     .bind(768_i64)
@@ -128,26 +133,28 @@ async fn cascade_delete_removes_embeddings_metadata() {
     .await
     .unwrap();
 
-    let before: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
-            .bind(msg_id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+    let before: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
+    ))
+    .bind(msg_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
     assert_eq!(before.0, 1);
 
-    sqlx::query("DELETE FROM messages WHERE id = ?")
+    sqlx::query(sql!("DELETE FROM messages WHERE id = ?"))
         .bind(msg_id)
         .execute(pool)
         .await
         .unwrap();
 
-    let after: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?")
-            .bind(msg_id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+    let after: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
+    ))
+    .bind(msg_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
     assert_eq!(after.0, 0);
 }
 
@@ -228,10 +235,10 @@ async fn unembedded_message_ids_excludes_embedded() {
     let msg_id2 = store.save_message(cid, "assistant", "msg2").await.unwrap();
 
     let point_id = uuid::Uuid::new_v4().to_string();
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions) \
-         VALUES (?, ?, ?)",
-    )
+         VALUES (?, ?, ?)"
+    ))
     .bind(msg_id1)
     .bind(&point_id)
     .bind(768_i64)
@@ -860,7 +867,7 @@ async fn increment_access_counts_updates_rows() {
     let id = store.save_message(cid, "user", "test").await.unwrap();
 
     // Verify initial access_count is 0.
-    let before: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+    let before: (i64,) = sqlx::query_as(sql!("SELECT access_count FROM messages WHERE id = ?"))
         .bind(id)
         .fetch_one(store.pool())
         .await
@@ -869,7 +876,7 @@ async fn increment_access_counts_updates_rows() {
 
     store.increment_access_counts(&[id]).await.unwrap();
 
-    let after: (i64,) = sqlx::query_as("SELECT access_count FROM messages WHERE id = ?")
+    let after: (i64,) = sqlx::query_as(sql!("SELECT access_count FROM messages WHERE id = ?"))
         .bind(id)
         .fetch_one(store.pool())
         .await
@@ -887,20 +894,21 @@ async fn migration_039_default_importance_score_for_preexisting_rows() {
     let store = test_store().await;
     let cid = store.create_conversation().await.unwrap();
 
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
-         VALUES (?, 'user', 'legacy row', '[]', 1, 1)",
-    )
+         VALUES (?, 'user', 'legacy row', '[]', 1, 1)"
+    ))
     .bind(cid)
     .execute(store.pool())
     .await
     .unwrap();
 
-    let row: (f64,) =
-        sqlx::query_as("SELECT importance_score FROM messages WHERE content = 'legacy row'")
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let row: (f64,) = sqlx::query_as(sql!(
+        "SELECT importance_score FROM messages WHERE content = 'legacy row'"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
 
     assert!(
         (row.0 - 0.5).abs() < f64::EPSILON,
@@ -1032,7 +1040,7 @@ async fn find_promotion_candidates_returns_rows_meeting_threshold() {
         .unwrap();
 
     // Simulate the fact appearing in 2 sessions by incrementing session_count directly.
-    sqlx::query("UPDATE messages SET session_count = 2 WHERE id = ?")
+    sqlx::query(sql!("UPDATE messages SET session_count = 2 WHERE id = ?"))
         .bind(id)
         .execute(store.pool())
         .await
@@ -1051,11 +1059,13 @@ async fn find_promotion_candidates_excludes_already_semantic_rows() {
         .await
         .unwrap();
 
-    sqlx::query("UPDATE messages SET session_count = 3, tier = 'semantic' WHERE id = ?")
-        .bind(id)
-        .execute(store.pool())
-        .await
-        .unwrap();
+    sqlx::query(sql!(
+        "UPDATE messages SET session_count = 3, tier = 'semantic' WHERE id = ?"
+    ))
+    .bind(id)
+    .execute(store.pool())
+    .await
+    .unwrap();
 
     let candidates = store.find_promotion_candidates(1, 100).await.unwrap();
     assert!(
@@ -1073,7 +1083,7 @@ async fn find_promotion_candidates_respects_batch_size() {
             .save_message(cid, "user", &format!("fact {i}"))
             .await
             .unwrap();
-        sqlx::query("UPDATE messages SET session_count = 5 WHERE id = ?")
+        sqlx::query(sql!("UPDATE messages SET session_count = 5 WHERE id = ?"))
             .bind(id)
             .execute(store.pool())
             .await
@@ -1228,19 +1238,21 @@ async fn migration_042_default_tier_for_preexisting_rows() {
     let store = test_store().await;
     let cid = store.create_conversation().await.unwrap();
 
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
-         VALUES (?, 'user', 'legacy row', '[]', 1, 1)",
-    )
+         VALUES (?, 'user', 'legacy row', '[]', 1, 1)"
+    ))
     .bind(cid)
     .execute(store.pool())
     .await
     .unwrap();
 
-    let row: (String,) = sqlx::query_as("SELECT tier FROM messages WHERE content = 'legacy row'")
-        .fetch_one(store.pool())
-        .await
-        .unwrap();
+    let row: (String,) = sqlx::query_as(sql!(
+        "SELECT tier FROM messages WHERE content = 'legacy row'"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
 
     assert_eq!(
         row.0, "episodic",
@@ -1253,20 +1265,21 @@ async fn migration_042_default_session_count_for_preexisting_rows() {
     let store = test_store().await;
     let cid = store.create_conversation().await.unwrap();
 
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
-         VALUES (?, 'user', 'session count row', '[]', 1, 1)",
-    )
+         VALUES (?, 'user', 'session count row', '[]', 1, 1)"
+    ))
     .bind(cid)
     .execute(store.pool())
     .await
     .unwrap();
 
-    let row: (i64,) =
-        sqlx::query_as("SELECT session_count FROM messages WHERE content = 'session count row'")
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let row: (i64,) = sqlx::query_as(sql!(
+        "SELECT session_count FROM messages WHERE content = 'session count row'"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
 
     assert_eq!(row.0, 0, "legacy rows must default to session_count = 0");
 }
@@ -1297,7 +1310,7 @@ async fn find_promotion_candidates_returns_conversation_id() {
         .await
         .unwrap();
 
-    sqlx::query("UPDATE messages SET session_count = 3 WHERE id = ?")
+    sqlx::query(sql!("UPDATE messages SET session_count = 3 WHERE id = ?"))
         .bind(id)
         .execute(store.pool())
         .await

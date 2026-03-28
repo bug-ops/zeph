@@ -3,6 +3,9 @@
 
 //! MCP client lifecycle, tool discovery, and execution.
 
+#[allow(unused_imports)]
+pub(crate) use zeph_db::sql;
+
 pub mod attestation;
 pub mod caller;
 pub mod client;

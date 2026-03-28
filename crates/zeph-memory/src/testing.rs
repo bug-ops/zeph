@@ -16,7 +16,7 @@ use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::in_memory_store::InMemoryVectorStore;
 use crate::semantic::SemanticMemory;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::token_counter::TokenCounter;
 
 /// Build a [`SemanticMemory`] that runs entirely in-process with no external

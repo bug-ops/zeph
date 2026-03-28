@@ -5,11 +5,13 @@
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use regex::Regex;
 
 use crate::error::MemoryError;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::types::ConversationId;
 
 static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -126,13 +128,13 @@ impl SqliteStore {
         &self,
         conversation_id: Option<ConversationId>,
     ) -> Result<(i64, String), MemoryError> {
-        let row = sqlx::query_as::<_, (i64, String)>(
+        let row = sqlx::query_as::<_, (i64, String)>(sql!(
             "SELECT version, created_at FROM compression_guidelines \
              WHERE conversation_id = ? OR conversation_id IS NULL \
              ORDER BY CASE WHEN conversation_id IS NOT NULL THEN 0 ELSE 1 END, \
                       version DESC \
-             LIMIT 1",
-        )
+             LIMIT 1"
+        ))
         .bind(conversation_id.map(|c| c.0)) // lgtm[rust/cleartext-logging]
         .fetch_optional(&self.pool)
         .await?;
@@ -166,10 +168,10 @@ impl SqliteStore {
         // and inserts it in a single statement. SQLite's single-writer WAL guarantee makes this
         // atomic — no concurrent writer can observe the same MAX and produce a duplicate version.
         let new_version: i64 = sqlx::query_scalar(
-            "INSERT INTO compression_guidelines (version, guidelines, token_count, conversation_id) \
+            sql!("INSERT INTO compression_guidelines (version, guidelines, token_count, conversation_id) \
              SELECT COALESCE(MAX(version), 0) + 1, ?, ?, ? \
              FROM compression_guidelines \
-             RETURNING version",
+             RETURNING version"),
         )
         .bind(guidelines)
         .bind(token_count)
@@ -197,11 +199,11 @@ impl SqliteStore {
         let ctx = truncate_field(&ctx);
         let reason = redact_sensitive(failure_reason);
         let reason = truncate_field(&reason);
-        let id = sqlx::query_scalar(
+        let id = sqlx::query_scalar(sql!(
             "INSERT INTO compression_failure_pairs \
              (conversation_id, compressed_context, failure_reason) \
-             VALUES (?, ?, ?) RETURNING id",
-        )
+             VALUES (?, ?, ?) RETURNING id"
+        ))
         .bind(conversation_id.0)
         .bind(ctx)
         .bind(reason)
@@ -220,13 +222,13 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<CompressionFailurePair>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = sqlx::query_as::<_, (i64, i64, String, String, String)>(
+        let rows = sqlx::query_as::<_, (i64, i64, String, String, String)>(sql!(
             "SELECT id, conversation_id, compressed_context, failure_reason, created_at \
              FROM compression_failure_pairs \
              WHERE used_in_update = 0 \
              ORDER BY created_at ASC \
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -272,9 +274,9 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     pub async fn count_unused_failure_pairs(&self) -> Result<i64, MemoryError> {
-        let count = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM compression_failure_pairs WHERE used_in_update = 0",
-        )
+        let count = sqlx::query_scalar(sql!(
+            "SELECT COUNT(*) FROM compression_failure_pairs WHERE used_in_update = 0"
+        ))
         .fetch_one(&self.pool)
         .await?;
         Ok(count)
@@ -291,13 +293,15 @@ impl SqliteStore {
     /// Returns an error if the database query fails.
     pub async fn cleanup_old_failure_pairs(&self, keep_recent: usize) -> Result<(), MemoryError> {
         // Delete all used pairs (they've already been processed).
-        sqlx::query("DELETE FROM compression_failure_pairs WHERE used_in_update = 1")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(sql!(
+            "DELETE FROM compression_failure_pairs WHERE used_in_update = 1"
+        ))
+        .execute(&self.pool)
+        .await?;
 
         // Keep only the most recent `keep_recent` unused pairs.
         let keep = i64::try_from(keep_recent).unwrap_or(i64::MAX);
-        sqlx::query(
+        sqlx::query(sql!(
             "DELETE FROM compression_failure_pairs \
              WHERE used_in_update = 0 \
              AND id NOT IN ( \
@@ -305,8 +309,8 @@ impl SqliteStore {
                  WHERE used_in_update = 0 \
                  ORDER BY created_at DESC \
                  LIMIT ? \
-             )",
-        )
+             )"
+        ))
         .bind(keep)
         .execute(&self.pool)
         .await?;
@@ -488,7 +492,7 @@ mod tests {
             .await
             .unwrap();
         // Delete the conversation row directly — should cascade-delete the guideline.
-        sqlx::query("DELETE FROM conversations WHERE id = ?")
+        sqlx::query(sql!("DELETE FROM conversations WHERE id = ?"))
             .bind(cid.0)
             .execute(store.pool())
             .await
@@ -681,7 +685,7 @@ mod tests {
         // store.pool() access is intentional: we need direct pool access to bypass
         // the public API and test the UNIQUE constraint at the SQL level.
         let result = sqlx::query(
-            "INSERT INTO compression_guidelines (version, guidelines, token_count) VALUES (1, 'dup', 0)",
+            sql!("INSERT INTO compression_guidelines (version, guidelines, token_count) VALUES (1, 'dup', 0)"),
         )
         .execute(store.pool())
         .await;

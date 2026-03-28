@@ -3,6 +3,8 @@
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 #[derive(Debug, Clone)]
 pub struct ExperimentResultRow {
@@ -128,12 +130,12 @@ impl SqliteStore {
         &self,
         result: &NewExperimentResult<'_>,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
+        let row: (i64,) = sqlx::query_as(sql!(
             "INSERT INTO experiment_results \
              (session_id, parameter, value_json, baseline_score, candidate_score, \
               delta, latency_ms, tokens_used, accepted, source) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-        )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
+        ))
         .bind(result.session_id)
         .bind(result.parameter)
         .bind(result.value_json)
@@ -160,21 +162,21 @@ impl SqliteStore {
         limit: u32,
     ) -> Result<Vec<ExperimentResultRow>, MemoryError> {
         let rows: Vec<ResultTuple> = if let Some(sid) = session_id {
-            sqlx::query_as(
+            sqlx::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
-                 FROM experiment_results WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-            )
+                 FROM experiment_results WHERE session_id = ? ORDER BY id DESC LIMIT ?"
+            ))
             .bind(sid)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as(
+            sqlx::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
-                 FROM experiment_results ORDER BY id DESC LIMIT ?",
-            )
+                 FROM experiment_results ORDER BY id DESC LIMIT ?"
+            ))
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -192,22 +194,22 @@ impl SqliteStore {
         parameter: Option<&str>,
     ) -> Result<Option<ExperimentResultRow>, MemoryError> {
         let row: Option<ResultTuple> = if let Some(param) = parameter {
-            sqlx::query_as(
+            sqlx::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
                  FROM experiment_results \
-                 WHERE accepted = 1 AND parameter = ? ORDER BY delta DESC LIMIT 1",
-            )
+                 WHERE accepted = 1 AND parameter = ? ORDER BY delta DESC LIMIT 1"
+            ))
             .bind(param)
             .fetch_optional(&self.pool)
             .await?
         } else {
-            sqlx::query_as(
+            sqlx::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
                  FROM experiment_results \
-                 WHERE accepted = 1 ORDER BY delta DESC LIMIT 1",
-            )
+                 WHERE accepted = 1 ORDER BY delta DESC LIMIT 1"
+            ))
             .fetch_optional(&self.pool)
             .await?
         };
@@ -225,11 +227,11 @@ impl SqliteStore {
         since: &str,
     ) -> Result<Vec<ExperimentResultRow>, MemoryError> {
         validate_timestamp(since)?;
-        let rows: Vec<ResultTuple> = sqlx::query_as(
+        let rows: Vec<ResultTuple> = sqlx::query_as(sql!(
             "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
              delta, latency_ms, tokens_used, accepted, source, created_at \
-             FROM experiment_results WHERE created_at >= ? ORDER BY id DESC LIMIT 10000",
-        )
+             FROM experiment_results WHERE created_at >= ? ORDER BY id DESC LIMIT 10000"
+        ))
         .bind(since)
         .fetch_all(&self.pool)
         .await?;
@@ -245,13 +247,13 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionSummaryRow>, MemoryError> {
-        let row: Option<(String, i64, i64, Option<f64>, i64)> = sqlx::query_as(
+        let row: Option<(String, i64, i64, Option<f64>, i64)> = sqlx::query_as(sql!(
             "SELECT session_id, COUNT(*) as total, \
              SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) as accepted_count, \
              MAX(CASE WHEN accepted = 1 THEN delta ELSE NULL END) as best_delta, \
              SUM(tokens_used) as total_tokens \
-             FROM experiment_results WHERE session_id = ? GROUP BY session_id",
-        )
+             FROM experiment_results WHERE session_id = ? GROUP BY session_id"
+        ))
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await?;

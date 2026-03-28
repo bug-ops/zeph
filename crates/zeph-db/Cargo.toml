@@ -1,0 +1,36 @@
+[package]
+name = "zeph-db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Database abstraction layer for Zeph (SQLite and PostgreSQL backends)"
+readme = "README.md"
+
+[features]
+# Default activates sqlite so that `cargo check -p zeph-db` and rust-analyzer
+# work without explicit feature flags. The root workspace overrides via
+# `sqlite = ["zeph-db/sqlite"]` for full builds.
+# Both sqlite and postgres are mutually exclusive; compile_error! enforces this.
+# NOTE: --all-features activates both, which intentionally triggers compile_error!.
+# Use --features full or --features full,postgres instead.
+default = ["sqlite"]
+sqlite = ["sqlx/sqlite"]
+postgres = ["sqlx/postgres"]
+
+[dependencies]
+# "macros" required for sqlx::migrate! in driver implementations.
+sqlx = { workspace = true, features = ["macros", "migrate", "runtime-tokio-rustls"] }
+regex = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

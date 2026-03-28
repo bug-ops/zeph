@@ -7,6 +7,9 @@
 //! chunks are embedded and stored in Qdrant, and retrieved via hybrid search
 //! (semantic + grep routing) for injection into the agent context window.
 
+#[allow(unused_imports)]
+pub(crate) use zeph_db::sql;
+
 pub(crate) mod chunker;
 pub(crate) mod context;
 pub mod error;

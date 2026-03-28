@@ -30,7 +30,7 @@ use axum::extract::Path;
 #[cfg(feature = "acp-http")]
 use serde::Serialize;
 #[cfg(feature = "acp-http")]
-use zeph_memory::sqlite::{AcpSessionInfo, SqliteStore};
+use zeph_memory::store::{AcpSessionInfo, SqliteStore};
 
 #[cfg(feature = "acp-http")]
 use crate::agent::SendAgentSpawner;

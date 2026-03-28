@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use crate::channel::Channel;
 use zeph_llm::provider::{Message, MessagePart, Role};
-use zeph_memory::sqlite::role_str;
+use zeph_memory::store::role_str;
 
 use super::Agent;
 

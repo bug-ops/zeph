@@ -1290,7 +1290,7 @@ pub(crate) async fn run_acp_http_server(
         })
     });
     let mut state = zeph_acp::AcpHttpState::new(spawner, server_config);
-    match zeph_memory::sqlite::SqliteStore::new(&app.config().memory.sqlite_path).await {
+    match zeph_memory::store::SqliteStore::new(&app.config().memory.sqlite_path).await {
         Ok(store) => state = state.with_store(store),
         Err(e) => tracing::warn!(error = %e, "failed to open SQLite for HTTP session endpoints"),
     }

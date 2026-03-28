@@ -3,6 +3,8 @@
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 #[derive(Debug)]
 pub struct SkillUsageRow {
@@ -70,13 +72,13 @@ impl SqliteStore {
     /// Returns an error if the database operation fails.
     pub async fn record_skill_usage(&self, skill_names: &[&str]) -> Result<(), MemoryError> {
         for name in skill_names {
-            sqlx::query(
+            sqlx::query(sql!(
                 "INSERT INTO skill_usage (skill_name, invocation_count, last_used_at) \
                  VALUES (?, 1, datetime('now')) \
                  ON CONFLICT(skill_name) DO UPDATE SET \
                  invocation_count = invocation_count + 1, \
-                 last_used_at = datetime('now')",
-            )
+                 last_used_at = datetime('now')"
+            ))
             .bind(name)
             .execute(&self.pool)
             .await?;
@@ -90,10 +92,10 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_skill_usage(&self) -> Result<Vec<SkillUsageRow>, MemoryError> {
-        let rows: Vec<(String, i64, String)> = sqlx::query_as(
+        let rows: Vec<(String, i64, String)> = sqlx::query_as(sql!(
             "SELECT skill_name, invocation_count, last_used_at \
-             FROM skill_usage ORDER BY invocation_count DESC",
-        )
+             FROM skill_usage ORDER BY invocation_count DESC"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -123,11 +125,11 @@ impl SqliteStore {
         error_context: Option<&str>,
         outcome_detail: Option<&str>,
     ) -> Result<(), MemoryError> {
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO skill_outcomes \
              (skill_name, version_id, conversation_id, outcome, error_context, outcome_detail) \
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?, ?, ?)"
+        ))
         .bind(skill_name)
         .bind(version_id)
         .bind(conversation_id)
@@ -159,9 +161,9 @@ impl SqliteStore {
         let mut version_map: std::collections::HashMap<String, Option<i64>> =
             std::collections::HashMap::new();
         for name in skill_names {
-            let vid: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM skill_versions WHERE skill_name = ? AND is_active = 1",
-            )
+            let vid: Option<(i64,)> = sqlx::query_as(sql!(
+                "SELECT id FROM skill_versions WHERE skill_name = ? AND is_active = 1"
+            ))
             .bind(name)
             .fetch_optional(&mut *tx)
             .await?;
@@ -170,11 +172,11 @@ impl SqliteStore {
 
         for name in skill_names {
             let version_id = version_map.get(name.as_str()).copied().flatten();
-            sqlx::query(
+            sqlx::query(sql!(
                 "INSERT INTO skill_outcomes \
                  (skill_name, version_id, conversation_id, outcome, error_context, outcome_detail) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
+                 VALUES (?, ?, ?, ?, ?, ?)"
+            ))
             .bind(name)
             .bind(version_id)
             .bind(conversation_id)
@@ -197,7 +199,7 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<SkillMetricsRow>, MemoryError> {
-        let row: Option<(String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
+        let row: Option<(String, Option<i64>, i64, i64, i64)> = sqlx::query_as(sql!(
             "SELECT skill_name, version_id, \
              COUNT(*) as total, \
              SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes, \
@@ -205,8 +207,8 @@ impl SqliteStore {
              FROM skill_outcomes WHERE skill_name = ? \
              AND outcome NOT IN ('user_approval', 'user_rejection') \
              GROUP BY skill_name, version_id \
-             ORDER BY version_id DESC LIMIT 1",
-        )
+             ORDER BY version_id DESC LIMIT 1"
+        ))
         .bind(skill_name)
         .fetch_optional(&self.pool)
         .await?;
@@ -228,15 +230,15 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_skill_outcome_stats(&self) -> Result<Vec<SkillMetricsRow>, MemoryError> {
-        let rows: Vec<(String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, Option<i64>, i64, i64, i64)> = sqlx::query_as(sql!(
             "SELECT skill_name, version_id, \
              COUNT(*) as total, \
              SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes, \
              COUNT(*) - SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as failures \
              FROM skill_outcomes \
              GROUP BY skill_name \
-             ORDER BY total DESC",
-        )
+             ORDER BY total DESC"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -270,11 +272,11 @@ impl SqliteStore {
         error_context: Option<&str>,
         predecessor_id: Option<i64>,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
+        let row: (i64,) = sqlx::query_as(sql!(
             "INSERT INTO skill_versions \
              (skill_name, version, body, description, source, error_context, predecessor_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
-        )
+             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"
+        ))
         .bind(skill_name)
         .bind(version)
         .bind(body)
@@ -296,10 +298,10 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn distinct_session_count(&self, skill_name: &str) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
+        let row: (i64,) = sqlx::query_as(sql!(
             "SELECT COUNT(DISTINCT conversation_id) FROM skill_outcomes \
-             WHERE skill_name = ? AND conversation_id IS NOT NULL",
-        )
+             WHERE skill_name = ? AND conversation_id IS NOT NULL"
+        ))
         .bind(skill_name)
         .fetch_one(&self.pool)
         .await?;
@@ -315,11 +317,11 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<SkillVersionRow>, MemoryError> {
-        let row: Option<SkillVersionTuple> = sqlx::query_as(
+        let row: Option<SkillVersionTuple> = sqlx::query_as(sql!(
             "SELECT id, skill_name, version, body, description, source, \
                  is_active, success_count, failure_count, created_at \
-                 FROM skill_versions WHERE skill_name = ? AND is_active = 1 LIMIT 1",
-        )
+                 FROM skill_versions WHERE skill_name = ? AND is_active = 1 LIMIT 1"
+        ))
         .bind(skill_name)
         .fetch_optional(&self.pool)
         .await?;
@@ -339,14 +341,14 @@ impl SqliteStore {
     ) -> Result<(), MemoryError> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1",
-        )
+        sqlx::query(sql!(
+            "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1"
+        ))
         .bind(skill_name)
         .execute(&mut *tx)
         .await?;
 
-        sqlx::query("UPDATE skill_versions SET is_active = 1 WHERE id = ?")
+        sqlx::query(sql!("UPDATE skill_versions SET is_active = 1 WHERE id = ?"))
             .bind(version_id)
             .execute(&mut *tx)
             .await?;
@@ -361,9 +363,9 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn next_skill_version(&self, skill_name: &str) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM skill_versions WHERE skill_name = ?",
-        )
+        let row: (i64,) = sqlx::query_as(sql!(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM skill_versions WHERE skill_name = ?"
+        ))
         .bind(skill_name)
         .fetch_one(&self.pool)
         .await?;
@@ -379,11 +381,11 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<String>, MemoryError> {
-        let row: Option<(String,)> = sqlx::query_as(
+        let row: Option<(String,)> = sqlx::query_as(sql!(
             "SELECT created_at FROM skill_versions \
              WHERE skill_name = ? AND source = 'auto' \
-             ORDER BY id DESC LIMIT 1",
-        )
+             ORDER BY id DESC LIMIT 1"
+        ))
         .bind(skill_name)
         .fetch_optional(&self.pool)
         .await?;
@@ -401,11 +403,12 @@ impl SqliteStore {
         body: &str,
         description: &str,
     ) -> Result<(), MemoryError> {
-        let existing: Option<(i64,)> =
-            sqlx::query_as("SELECT id FROM skill_versions WHERE skill_name = ? LIMIT 1")
-                .bind(skill_name)
-                .fetch_optional(&self.pool)
-                .await?;
+        let existing: Option<(i64,)> = sqlx::query_as(sql!(
+            "SELECT id FROM skill_versions WHERE skill_name = ? LIMIT 1"
+        ))
+        .bind(skill_name)
+        .fetch_optional(&self.pool)
+        .await?;
 
         if existing.is_none() {
             let id = self
@@ -425,11 +428,11 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Vec<SkillVersionRow>, MemoryError> {
-        let rows: Vec<SkillVersionTuple> = sqlx::query_as(
+        let rows: Vec<SkillVersionTuple> = sqlx::query_as(sql!(
             "SELECT id, skill_name, version, body, description, source, \
                  is_active, success_count, failure_count, created_at \
-                 FROM skill_versions WHERE skill_name = ? ORDER BY version ASC",
-        )
+                 FROM skill_versions WHERE skill_name = ? ORDER BY version ASC"
+        ))
         .bind(skill_name)
         .fetch_all(&self.pool)
         .await?;
@@ -443,9 +446,9 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn count_auto_versions(&self, skill_name: &str) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM skill_versions WHERE skill_name = ? AND source = 'auto'",
-        )
+        let row: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM skill_versions WHERE skill_name = ? AND source = 'auto'"
+        ))
         .bind(skill_name)
         .fetch_one(&self.pool)
         .await?;
@@ -463,15 +466,15 @@ impl SqliteStore {
         skill_name: &str,
         max_versions: u32,
     ) -> Result<u32, MemoryError> {
-        let result = sqlx::query(
+        let result = sqlx::query(sql!(
             "DELETE FROM skill_versions WHERE id IN (\
                 SELECT id FROM skill_versions \
                 WHERE skill_name = ? AND source = 'auto' AND is_active = 0 \
                 ORDER BY id ASC \
                 LIMIT max(0, (SELECT COUNT(*) FROM skill_versions \
                     WHERE skill_name = ? AND source = 'auto') - ?)\
-            )",
-        )
+            )"
+        ))
         .bind(skill_name)
         .bind(skill_name)
         .bind(max_versions)
@@ -489,21 +492,22 @@ impl SqliteStore {
         &self,
         version_id: i64,
     ) -> Result<Option<SkillVersionRow>, MemoryError> {
-        let pred_id: Option<(Option<i64>,)> =
-            sqlx::query_as("SELECT predecessor_id FROM skill_versions WHERE id = ?")
-                .bind(version_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let pred_id: Option<(Option<i64>,)> = sqlx::query_as(sql!(
+            "SELECT predecessor_id FROM skill_versions WHERE id = ?"
+        ))
+        .bind(version_id)
+        .fetch_optional(&self.pool)
+        .await?;
 
         let Some((Some(pid),)) = pred_id else {
             return Ok(None);
         };
 
-        let row: Option<SkillVersionTuple> = sqlx::query_as(
+        let row: Option<SkillVersionTuple> = sqlx::query_as(sql!(
             "SELECT id, skill_name, version, body, description, source, \
                  is_active, success_count, failure_count, created_at \
-                 FROM skill_versions WHERE id = ?",
-        )
+                 FROM skill_versions WHERE id = ?"
+        ))
         .bind(pid)
         .fetch_optional(&self.pool)
         .await?;
@@ -518,9 +522,9 @@ impl SqliteStore {
     /// # Errors
     /// Returns [`MemoryError`] on `SQLite` query failure.
     pub async fn list_active_auto_versions(&self) -> Result<Vec<String>, MemoryError> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT skill_name FROM skill_versions WHERE is_active = 1 AND source = 'auto'",
-        )
+        let rows: Vec<(String,)> = sqlx::query_as(sql!(
+            "SELECT skill_name FROM skill_versions WHERE is_active = 1 AND source = 'auto'"
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(name,)| name).collect())
@@ -573,17 +577,17 @@ mod tests {
         let store = test_store().await;
         let pool = store.pool();
 
-        let versions: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_versions'",
-        )
+        let versions: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_versions'"
+        ))
         .fetch_one(pool)
         .await
         .unwrap();
         assert_eq!(versions.0, 1);
 
-        let outcomes: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_outcomes'",
-        )
+        let outcomes: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_outcomes'"
+        ))
         .fetch_one(pool)
         .await
         .unwrap();
@@ -949,11 +953,12 @@ mod tests {
             .unwrap();
 
         let pool = store.pool();
-        let row: (Option<i64>, Option<String>) =
-            sqlx::query_as("SELECT version_id, outcome_detail FROM skill_outcomes WHERE skill_name = 'git' LIMIT 1")
-                .fetch_one(pool)
-                .await
-                .unwrap();
+        let row: (Option<i64>, Option<String>) = sqlx::query_as(sql!(
+            "SELECT version_id, outcome_detail FROM skill_outcomes WHERE skill_name = 'git' LIMIT 1"
+        ))
+        .fetch_one(pool)
+        .await
+        .unwrap();
         assert_eq!(
             row.0,
             Some(vid),
@@ -972,9 +977,9 @@ mod tests {
             .unwrap();
 
         let pool = store.pool();
-        let row: (Option<String>,) = sqlx::query_as(
-            "SELECT outcome_detail FROM skill_outcomes WHERE skill_name = 'docker' LIMIT 1",
-        )
+        let row: (Option<String>,) = sqlx::query_as(sql!(
+            "SELECT outcome_detail FROM skill_outcomes WHERE skill_name = 'docker' LIMIT 1"
+        ))
         .fetch_one(pool)
         .await
         .unwrap();
@@ -1000,7 +1005,7 @@ mod tests {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .expect("begin immediate");
-        sqlx::query("INSERT INTO conversations DEFAULT VALUES")
+        sqlx::query(sql!("INSERT INTO conversations DEFAULT VALUES"))
             .execute(&mut *writer_tx)
             .await
             .expect("hold write lock");
@@ -1026,11 +1031,12 @@ mod tests {
             .expect("join batch task")
             .expect("record outcomes");
 
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM skill_outcomes WHERE skill_name = 'git'")
-                .fetch_one(store.pool())
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar(sql!(
+            "SELECT COUNT(*) FROM skill_outcomes WHERE skill_name = 'git'"
+        ))
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
         assert_eq!(
             count, 1,
             "expected batch insert to succeed after writer commits"

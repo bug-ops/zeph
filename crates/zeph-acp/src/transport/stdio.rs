@@ -11,7 +11,7 @@ use tokio::io::duplex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use zeph_memory::sqlite::SqliteStore;
+use zeph_memory::store::SqliteStore;
 
 use crate::agent::{AgentSpawner, ZephAcpAgent};
 use crate::error::AcpError;

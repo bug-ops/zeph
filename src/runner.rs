@@ -578,11 +578,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let managed_dir = zeph_core::bootstrap::managed_skills_dir();
         for meta in &all_meta_owned {
             let source_kind = if meta.skill_dir.starts_with(&managed_dir) {
-                zeph_memory::sqlite::SourceKind::Hub
+                zeph_memory::store::SourceKind::Hub
             } else {
-                zeph_memory::sqlite::SourceKind::Local
+                zeph_memory::store::SourceKind::Local
             };
-            let initial_level = if matches!(source_kind, zeph_memory::sqlite::SourceKind::Hub) {
+            let initial_level = if matches!(source_kind, zeph_memory::store::SourceKind::Hub) {
                 &trust_cfg.default_level
             } else {
                 &trust_cfg.local_level
@@ -1616,7 +1616,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 /// Returns an error if the database cannot be opened or the query fails.
 #[cfg(feature = "experiments")]
 async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow::Result<()> {
-    use zeph_memory::sqlite::SqliteStore;
+    use zeph_memory::store::SqliteStore;
 
     let sqlite_path = app.config().memory.sqlite_path.clone();
     let store = SqliteStore::new(&sqlite_path).await?;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::in_memory_store::InMemoryVectorStore;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 
 async fn setup() -> GraphStore {
     let store = SqliteStore::new(":memory:").await.unwrap();

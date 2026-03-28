@@ -24,8 +24,8 @@ use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
 use crate::math::cosine_similarity;
-use crate::sqlite::SqliteStore;
-use crate::sqlite::messages::PromotionCandidate;
+use crate::store::SqliteStore;
+use crate::store::messages::PromotionCandidate;
 use crate::types::ConversationId;
 
 /// Minimum cosine similarity between the merged result and at least one original for the

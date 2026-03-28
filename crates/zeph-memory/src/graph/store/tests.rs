@@ -3,7 +3,9 @@
 
 use super::*;
 use crate::graph::types::EdgeType;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 async fn setup() -> GraphStore {
     let store = SqliteStore::new(":memory:").await.unwrap();
@@ -163,13 +165,15 @@ async fn insert_edge_deduplicates_active_edge() {
     assert_eq!(id1, id2, "duplicate active edge must not be created");
 
     // Confidence should be updated to the higher value.
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL")
-        .fetch_one(&gs.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL"
+    ))
+    .fetch_one(&gs.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 1, "only one active edge must exist");
 
-    let conf: f64 = sqlx::query_scalar("SELECT confidence FROM graph_edges WHERE id = ?1")
+    let conf: f64 = sqlx::query_scalar(sql!("SELECT confidence FROM graph_edges WHERE id = ?1"))
         .bind(id1)
         .fetch_one(&gs.pool)
         .await
@@ -203,10 +207,12 @@ async fn insert_edge_different_relations_are_distinct() {
         .unwrap();
     assert_ne!(id1, id2, "different relations must produce distinct edges");
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL")
-        .fetch_one(&gs.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL"
+    ))
+    .fetch_one(&gs.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 2);
 }
 
@@ -232,7 +238,7 @@ async fn insert_edge_with_episode() {
         .await;
     match &result {
         Ok(eid) => assert!(*eid > 0, "inserted edge should have positive id"),
-        Err(MemoryError::Sqlite(_)) => {} // FK constraint failed — acceptable
+        Err(MemoryError::Sqlx(_)) => {} // FK constraint failed — acceptable
         Err(e) => panic!("unexpected error: {e}"),
     }
 }
@@ -254,12 +260,13 @@ async fn invalidate_edge_sets_timestamps() {
         .unwrap();
     gs.invalidate_edge(eid).await.unwrap();
 
-    let row: (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1")
-            .bind(eid)
-            .fetch_one(&gs.pool)
-            .await
-            .unwrap();
+    let row: (Option<String>, Option<String>) = sqlx::query_as(sql!(
+        "SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(eid)
+    .fetch_one(&gs.pool)
+    .await
+    .unwrap();
     assert!(row.0.is_some(), "valid_to should be set");
     assert!(row.1.is_some(), "expired_at should be set");
 }
@@ -831,7 +838,7 @@ async fn orphan_alias_cleanup_on_entity_delete() {
     gs.add_alias(id, "rust-lang").await.unwrap();
 
     // Delete the entity directly (bypassing FK for test purposes)
-    sqlx::query("DELETE FROM graph_entities WHERE id = ?1")
+    sqlx::query(sql!("DELETE FROM graph_entities WHERE id = ?1"))
         .bind(id)
         .execute(&gs.pool)
         .await
@@ -872,7 +879,7 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
         .unwrap();
 
     // Create pre-023 schema (migration 021 state): no canonical_name column.
-    sqlx::query(
+    sqlx::query(sql!(
         "CREATE TABLE graph_entities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -882,13 +889,13 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
             qdrant_point_id TEXT,
             UNIQUE(name, entity_type)
-         )",
-    )
+         )"
+    ))
     .execute(&pool)
     .await
     .unwrap();
 
-    sqlx::query(
+    sqlx::query(sql!(
         "CREATE TABLE graph_edges (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_entity_id INTEGER NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
@@ -902,66 +909,66 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             expired_at TEXT,
             episode_id INTEGER,
             qdrant_point_id TEXT
-         )",
-    )
+         )"
+    ))
     .execute(&pool)
     .await
     .unwrap();
 
     // Create FTS5 table and triggers (migration 023 state).
-    sqlx::query(
+    sqlx::query(sql!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS graph_entities_fts USING fts5(
             name, summary, content='graph_entities', content_rowid='id',
             tokenize='unicode61 remove_diacritics 2'
-         )",
+         )"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
+         BEGIN INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, '')); END"),
     )
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
-         BEGIN INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, '')); END",
+        sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
+         BEGIN INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, '')); END"),
     )
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
-         BEGIN INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, '')); END",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_update AFTER UPDATE ON graph_entities
+        sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_update AFTER UPDATE ON graph_entities
          BEGIN
              INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, ''));
              INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, ''));
-         END",
+         END"),
     )
     .execute(&pool)
     .await
     .unwrap();
 
     // Insert pre-existing entities and an edge.
-    let alice_id: i64 = sqlx::query_scalar(
-        "INSERT INTO graph_entities (name, entity_type) VALUES ('Alice', 'person') RETURNING id",
-    )
+    let alice_id: i64 = sqlx::query_scalar(sql!(
+        "INSERT INTO graph_entities (name, entity_type) VALUES ('Alice', 'person') RETURNING id"
+    ))
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    let rust_id: i64 = sqlx::query_scalar(
-        "INSERT INTO graph_entities (name, entity_type) VALUES ('Rust', 'language') RETURNING id",
-    )
+    let rust_id: i64 = sqlx::query_scalar(sql!(
+        "INSERT INTO graph_entities (name, entity_type) VALUES ('Rust', 'language') RETURNING id"
+    ))
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact)
-         VALUES (?1, ?2, 'uses', 'Alice uses Rust')",
-    )
+         VALUES (?1, ?2, 'uses', 'Alice uses Rust')"
+    ))
     .bind(alice_id)
     .bind(rust_id)
     .execute(&pool)
@@ -974,19 +981,23 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
     let mut conn = pool.acquire().await.unwrap();
     let conn = conn.acquire().await.unwrap();
 
-    sqlx::query("PRAGMA foreign_keys = OFF")
+    sqlx::query(sql!("PRAGMA foreign_keys = OFF"))
         .execute(&mut *conn)
         .await
         .unwrap();
-    sqlx::query("ALTER TABLE graph_entities ADD COLUMN canonical_name TEXT")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE graph_entities SET canonical_name = name WHERE canonical_name IS NULL")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    sqlx::query(
+    sqlx::query(sql!(
+        "ALTER TABLE graph_entities ADD COLUMN canonical_name TEXT"
+    ))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query(sql!(
+        "UPDATE graph_entities SET canonical_name = name WHERE canonical_name IS NULL"
+    ))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query(sql!(
         "CREATE TABLE graph_entities_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -997,119 +1008,126 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
             qdrant_point_id TEXT,
             UNIQUE(canonical_name, entity_type)
-         )",
-    )
+         )"
+    ))
     .execute(&mut *conn)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO graph_entities_new
+        sql!("INSERT INTO graph_entities_new
              (id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id)
          SELECT id, name, COALESCE(canonical_name, name), entity_type, summary,
                 first_seen_at, last_seen_at, qdrant_point_id
-         FROM graph_entities",
+         FROM graph_entities"),
     )
     .execute(&mut *conn)
     .await
     .unwrap();
-    sqlx::query("DROP TABLE graph_entities")
+    sqlx::query(sql!("DROP TABLE graph_entities"))
         .execute(&mut *conn)
         .await
         .unwrap();
-    sqlx::query("ALTER TABLE graph_entities_new RENAME TO graph_entities")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
+    sqlx::query(sql!(
+        "ALTER TABLE graph_entities_new RENAME TO graph_entities"
+    ))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
     // Rebuild FTS5 triggers (dropped with the old table) and rebuild index.
     sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
-         BEGIN INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, '')); END",
+        sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
+         BEGIN INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, '')); END"),
     )
     .execute(&mut *conn)
     .await
     .unwrap();
     sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
-         BEGIN INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, '')); END",
+        sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
+         BEGIN INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, '')); END"),
     )
     .execute(&mut *conn)
     .await
     .unwrap();
     sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS graph_entities_fts_update AFTER UPDATE ON graph_entities
+        sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_update AFTER UPDATE ON graph_entities
          BEGIN
              INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, ''));
              INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, ''));
-         END",
+         END"),
     )
     .execute(&mut *conn)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO graph_entities_fts(graph_entities_fts) VALUES('rebuild')")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    sqlx::query(
+    sqlx::query(sql!(
+        "INSERT INTO graph_entities_fts(graph_entities_fts) VALUES('rebuild')"
+    ))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query(sql!(
         "CREATE TABLE graph_entity_aliases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_id INTEGER NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
             alias_name TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(alias_name, entity_id)
-         )",
-    )
+         )"
+    ))
     .execute(&mut *conn)
     .await
     .unwrap();
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT OR IGNORE INTO graph_entity_aliases (entity_id, alias_name)
-         SELECT id, name FROM graph_entities",
-    )
+         SELECT id, name FROM graph_entities"
+    ))
     .execute(&mut *conn)
     .await
     .unwrap();
-    sqlx::query("PRAGMA foreign_keys = ON")
+    sqlx::query(sql!("PRAGMA foreign_keys = ON"))
         .execute(&mut *conn)
         .await
         .unwrap();
 
     // Verify: canonical_name backfilled from name
-    let alice_canon: String =
-        sqlx::query_scalar("SELECT canonical_name FROM graph_entities WHERE id = ?1")
-            .bind(alice_id)
-            .fetch_one(&mut *conn)
-            .await
-            .unwrap();
+    let alice_canon: String = sqlx::query_scalar(sql!(
+        "SELECT canonical_name FROM graph_entities WHERE id = ?1"
+    ))
+    .bind(alice_id)
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
     assert_eq!(
         alice_canon, "Alice",
         "canonical_name should equal pre-migration name"
     );
 
-    let rust_canon: String =
-        sqlx::query_scalar("SELECT canonical_name FROM graph_entities WHERE id = ?1")
-            .bind(rust_id)
-            .fetch_one(&mut *conn)
-            .await
-            .unwrap();
+    let rust_canon: String = sqlx::query_scalar(sql!(
+        "SELECT canonical_name FROM graph_entities WHERE id = ?1"
+    ))
+    .bind(rust_id)
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
     assert_eq!(
         rust_canon, "Rust",
         "canonical_name should equal pre-migration name"
     );
 
     // Verify: aliases seeded
-    let alice_aliases: Vec<String> =
-        sqlx::query_scalar("SELECT alias_name FROM graph_entity_aliases WHERE entity_id = ?1")
-            .bind(alice_id)
-            .fetch_all(&mut *conn)
-            .await
-            .unwrap();
+    let alice_aliases: Vec<String> = sqlx::query_scalar(sql!(
+        "SELECT alias_name FROM graph_entity_aliases WHERE entity_id = ?1"
+    ))
+    .bind(alice_id)
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap();
     assert!(
         alice_aliases.contains(&"Alice".to_owned()),
         "initial alias should be seeded from entity name"
     );
 
     // Verify: graph_edges survived (FK cascade did not wipe them)
-    let edge_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges")
+    let edge_count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM graph_edges"))
         .fetch_one(&mut *conn)
         .await
         .unwrap();
@@ -1342,13 +1360,15 @@ async fn find_entity_by_name_matches_canonical_name() {
 
 async fn insert_test_message(gs: &GraphStore, content: &str) -> crate::types::MessageId {
     // Insert a conversation first (FK constraint).
-    let conv_id: i64 = sqlx::query_scalar("INSERT INTO conversations DEFAULT VALUES RETURNING id")
-        .fetch_one(&gs.pool)
-        .await
-        .unwrap();
-    let id: i64 = sqlx::query_scalar(
-        "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', ?2) RETURNING id",
-    )
+    let conv_id: i64 = sqlx::query_scalar(sql!(
+        "INSERT INTO conversations DEFAULT VALUES RETURNING id"
+    ))
+    .fetch_one(&gs.pool)
+    .await
+    .unwrap();
+    let id: i64 = sqlx::query_scalar(sql!(
+        "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', ?2) RETURNING id"
+    ))
     .bind(conv_id)
     .bind(content)
     .fetch_one(&gs.pool)
@@ -1517,8 +1537,8 @@ async fn edges_at_timestamp_excludes_future_valid_from() {
         .unwrap();
     // Insert edge with valid_from in the far future.
     sqlx::query(
-        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'rel', 'fact', 1.0, '2100-01-01 00:00:00')",
+        sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+         VALUES (?1, ?2, 'rel', 'fact', 1.0, '2100-01-01 00:00:00')"),
     )
     .bind(a)
     .bind(b)
@@ -1550,10 +1570,10 @@ async fn edges_at_timestamp_historical_window_visible() {
         .unwrap();
     // Expired edge valid 2020-01-01 → 2021-01-01.
     sqlx::query(
-        "INSERT INTO graph_edges
+        sql!("INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'managed', 'HA managed HB', 0.8,
-                 '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')",
+                 '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')"),
     )
     .bind(a)
     .bind(b)
@@ -1637,11 +1657,11 @@ async fn bfs_at_timestamp_excludes_expired_edges() {
         .unwrap();
 
     // A → B: active edge with explicit valid_from in 2019 so it predates all test timestamps.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'knows', 'BA knows BB', 1.0, '2019-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'knows', 'BA knows BB', 1.0, '2019-01-01 00:00:00')"
+    ))
     .bind(a)
     .bind(b)
     .execute(gs.pool())
@@ -1649,10 +1669,10 @@ async fn bfs_at_timestamp_excludes_expired_edges() {
     .unwrap();
     // B → C: expired edge valid 2020→2021.
     sqlx::query(
-        "INSERT INTO graph_edges
+        sql!("INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'used', 'BB used BC', 0.9,
-                 '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')",
+                 '2020-01-01 00:00:00', '2021-01-01 00:00:00', '2021-01-01 00:00:00')"),
     )
     .bind(b)
     .bind(c)
@@ -1704,10 +1724,10 @@ async fn edge_history_returns_all_versions_ordered() {
 
     // Version 1: valid 2020→2022 (expired).
     sqlx::query(
-        "INSERT INTO graph_edges
+        sql!("INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'works_at', 'ESrc works at CompanyA', 0.9,
-                 '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')",
+                 '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')"),
     )
     .bind(src)
     .bind(tgt)
@@ -1715,11 +1735,11 @@ async fn edge_history_returns_all_versions_ordered() {
     .await
     .unwrap();
     // Version 2: active since 2022.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'works_at', 'ESrc works at CompanyB', 0.95, '2022-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'works_at', 'ESrc works at CompanyB', 0.95, '2022-01-01 00:00:00')"
+    ))
     .bind(src)
     .bind(tgt)
     .execute(gs.pool())
@@ -1805,12 +1825,13 @@ async fn invalidate_edge_sets_valid_to_and_expired_at() {
         .unwrap();
 
     // Before invalidation: valid_to and expired_at must be NULL.
-    let active_edge: (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1")
-            .bind(edge_id)
-            .fetch_one(gs.pool())
-            .await
-            .unwrap();
+    let active_edge: (Option<String>, Option<String>) = sqlx::query_as(sql!(
+        "SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(edge_id)
+    .fetch_one(gs.pool())
+    .await
+    .unwrap();
     assert!(
         active_edge.0.is_none(),
         "valid_to must be NULL before invalidation"
@@ -1823,12 +1844,13 @@ async fn invalidate_edge_sets_valid_to_and_expired_at() {
     gs.invalidate_edge(edge_id).await.unwrap();
 
     // After invalidation: both valid_to and expired_at must be set.
-    let dead_edge: (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1")
-            .bind(edge_id)
-            .fetch_one(gs.pool())
-            .await
-            .unwrap();
+    let dead_edge: (Option<String>, Option<String>) = sqlx::query_as(sql!(
+        "SELECT valid_to, expired_at FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(edge_id)
+    .fetch_one(gs.pool())
+    .await
+    .unwrap();
     assert!(
         dead_edge.0.is_some(),
         "valid_to must be set after invalidation"
@@ -1854,11 +1876,11 @@ async fn edges_at_timestamp_valid_from_inclusive() {
         .upsert_entity("VFI_B", "VFI_B", EntityType::Person, None)
         .await
         .unwrap();
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'knows', 'VFI_A knows VFI_B', 1.0, '2025-06-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'knows', 'VFI_A knows VFI_B', 1.0, '2025-06-01 00:00:00')"
+    ))
     .bind(a)
     .bind(b)
     .execute(gs.pool())
@@ -1888,13 +1910,13 @@ async fn edges_at_timestamp_valid_to_exclusive() {
         .upsert_entity("VTO_B", "VTO_B", EntityType::Person, None)
         .await
         .unwrap();
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence,
           valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'knows', 'VTO_A knows VTO_B', 1.0,
-                 '2020-01-01 00:00:00', '2025-06-01 00:00:00', '2025-06-01 00:00:00')",
-    )
+                 '2020-01-01 00:00:00', '2025-06-01 00:00:00', '2025-06-01 00:00:00')"
+    ))
     .bind(a)
     .bind(b)
     .execute(gs.pool())
@@ -1944,35 +1966,35 @@ async fn edges_at_timestamp_multiple_edges_same_entity() {
         .unwrap();
 
     // A->B: active since 2020, no expiry — visible at 2025.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'knows', 'ME_A knows ME_B', 1.0, '2020-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'knows', 'ME_A knows ME_B', 1.0, '2020-01-01 00:00:00')"
+    ))
     .bind(a)
     .bind(b)
     .execute(gs.pool())
     .await
     .unwrap();
     // A->C: expired in 2023 — NOT visible at 2025.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence,
           valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'knows', 'ME_A knows ME_C', 1.0,
-                 '2020-01-01 00:00:00', '2023-01-01 00:00:00', '2023-01-01 00:00:00')",
-    )
+                 '2020-01-01 00:00:00', '2023-01-01 00:00:00', '2023-01-01 00:00:00')"
+    ))
     .bind(a)
     .bind(c)
     .execute(gs.pool())
     .await
     .unwrap();
     // A->D: future valid_from 2030 — NOT visible at 2025.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'knows', 'ME_A knows ME_D', 1.0, '2030-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'knows', 'ME_A knows ME_D', 1.0, '2030-01-01 00:00:00')"
+    ))
     .bind(a)
     .bind(d)
     .execute(gs.pool())
@@ -2023,23 +2045,23 @@ async fn edge_history_basic_history() {
         .await
         .unwrap();
 
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence,
           valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'works_at', 'EH_Src works at OrgA', 0.9,
-                 '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')",
-    )
+                 '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')"
+    ))
     .bind(src)
     .bind(tgt)
     .execute(gs.pool())
     .await
     .unwrap();
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'works_at', 'EH_Src works at OrgB', 0.95, '2022-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'works_at', 'EH_Src works at OrgB', 0.95, '2022-01-01 00:00:00')"
+    ))
     .bind(src)
     .bind(tgt)
     .execute(gs.pool())
@@ -2170,11 +2192,11 @@ async fn edge_history_limit_parameter() {
         (2022, "worked_at_v5"),
     ] {
         let valid_from = format!("{year}-01-01 00:00:00");
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-             VALUES (?1, ?2, ?3, 'EHL_Src worked at org', 1.0, ?4)",
-        )
+             VALUES (?1, ?2, ?3, 'EHL_Src worked at org', 1.0, ?4)"
+        ))
         .bind(src)
         .bind(tgt)
         .bind(rel)
@@ -2212,11 +2234,11 @@ async fn edge_history_non_matching_relation_returns_empty() {
         .await
         .unwrap();
 
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'works_at', 'EHR_Src works at place', 1.0, '2020-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'works_at', 'EHR_Src works at place', 1.0, '2020-01-01 00:00:00')"
+    ))
     .bind(src)
     .bind(tgt)
     .execute(gs.pool())
@@ -2267,11 +2289,11 @@ async fn edge_history_fact_substring_filters_subset() {
         ("uses_lang2", "EHP_Src uses Python"),
         ("knows_person", "EHP_Src knows Bob"),
     ] {
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-             VALUES (?1, ?2, ?3, ?4, 1.0, '2020-01-01 00:00:00')",
-        )
+             VALUES (?1, ?2, ?3, ?4, 1.0, '2020-01-01 00:00:00')"
+        ))
         .bind(src)
         .bind(tgt)
         .bind(rel)
@@ -2312,11 +2334,11 @@ async fn bfs_at_timestamp_zero_hops() {
         .await
         .unwrap();
     // Use an explicit valid_from so the query timestamp is within the data range.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'knows', 'ZH_A knows ZH_B', 1.0, '2020-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'knows', 'ZH_A knows ZH_B', 1.0, '2020-01-01 00:00:00')"
+    ))
     .bind(a)
     .bind(b)
     .execute(gs.pool())
@@ -2352,24 +2374,24 @@ async fn bfs_at_timestamp_expired_intermediate_blocks() {
         .unwrap();
 
     // A->B: expired in 2022.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence,
           valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'link', 'EI_A link EI_B', 1.0,
-                 '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')",
-    )
+                 '2020-01-01 00:00:00', '2022-01-01 00:00:00', '2022-01-01 00:00:00')"
+    ))
     .bind(a)
     .bind(b)
     .execute(gs.pool())
     .await
     .unwrap();
     // B->C: active.
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'link', 'EI_B link EI_C', 1.0, '2020-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'link', 'EI_B link EI_C', 1.0, '2020-01-01 00:00:00')"
+    ))
     .bind(b)
     .bind(c)
     .execute(gs.pool())
@@ -2421,11 +2443,11 @@ async fn bfs_at_timestamp_reverse_direction() {
         .unwrap();
 
     // B -> A (B is source, A is target).
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-         VALUES (?1, ?2, 'points_to', 'RD_B points_to RD_A', 1.0, '2020-01-01 00:00:00')",
-    )
+         VALUES (?1, ?2, 'points_to', 'RD_B points_to RD_A', 1.0, '2020-01-01 00:00:00')"
+    ))
     .bind(b)
     .bind(a)
     .execute(gs.pool())
@@ -2463,13 +2485,13 @@ async fn bfs_at_timestamp_valid_to_boundary() {
         .unwrap();
 
     // A->B: valid_to = "2025-06-01 00:00:00" (exactly).
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, fact, confidence,
           valid_from, valid_to, expired_at)
          VALUES (?1, ?2, 'link', 'VTB_A link VTB_B', 1.0,
-                 '2020-01-01 00:00:00', '2025-06-01 00:00:00', '2025-06-01 00:00:00')",
-    )
+                 '2020-01-01 00:00:00', '2025-06-01 00:00:00', '2025-06-01 00:00:00')"
+    ))
     .bind(a)
     .bind(b)
     .execute(gs.pool())
@@ -2516,11 +2538,12 @@ async fn insert_edge_typed_stores_edge_type() {
         .unwrap();
     assert!(eid > 0);
 
-    let stored: String = sqlx::query_scalar("SELECT edge_type FROM graph_edges WHERE id = ?1")
-        .bind(eid)
-        .fetch_one(gs.pool())
-        .await
-        .unwrap();
+    let stored: String =
+        sqlx::query_scalar(sql!("SELECT edge_type FROM graph_edges WHERE id = ?1"))
+            .bind(eid)
+            .fetch_one(gs.pool())
+            .await
+            .unwrap();
     assert_eq!(stored, "causal");
 }
 
@@ -2540,11 +2563,12 @@ async fn insert_edge_defaults_to_semantic() {
         .await
         .unwrap();
 
-    let stored: String = sqlx::query_scalar("SELECT edge_type FROM graph_edges WHERE id = ?1")
-        .bind(eid)
-        .fetch_one(gs.pool())
-        .await
-        .unwrap();
+    let stored: String =
+        sqlx::query_scalar(sql!("SELECT edge_type FROM graph_edges WHERE id = ?1"))
+            .bind(eid)
+            .fetch_one(gs.pool())
+            .await
+            .unwrap();
     assert_eq!(stored, "semantic", "insert_edge must default to semantic");
 }
 
@@ -2592,9 +2616,9 @@ async fn insert_edge_typed_dedup_key_includes_edge_type() {
         "same relation with different edge types must produce distinct edges"
     );
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL AND source_entity_id = ?1",
-    )
+    let count: i64 = sqlx::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL AND source_entity_id = ?1"
+    ))
     .bind(a)
     .fetch_one(gs.pool())
     .await
@@ -2839,9 +2863,9 @@ async fn record_edge_retrieval_increments_count() {
         .await
         .unwrap();
     let edge_id: i64 = sqlx::query_scalar(
-        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+        sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
          VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'))
-         RETURNING id",
+         RETURNING id"),
     )
     .bind(a)
     .bind(b)
@@ -2850,32 +2874,35 @@ async fn record_edge_retrieval_increments_count() {
     .unwrap();
 
     // Baseline: retrieval_count = 0
-    let count_before: i32 =
-        sqlx::query_scalar("SELECT retrieval_count FROM graph_edges WHERE id = ?1")
-            .bind(edge_id)
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let count_before: i32 = sqlx::query_scalar(sql!(
+        "SELECT retrieval_count FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(edge_id)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
     assert_eq!(count_before, 0);
 
     store.record_edge_retrieval(&[edge_id]).await.unwrap();
 
-    let count_after: i32 =
-        sqlx::query_scalar("SELECT retrieval_count FROM graph_edges WHERE id = ?1")
-            .bind(edge_id)
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let count_after: i32 = sqlx::query_scalar(sql!(
+        "SELECT retrieval_count FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(edge_id)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
     assert_eq!(count_after, 1, "retrieval_count must be incremented to 1");
 
     store.record_edge_retrieval(&[edge_id]).await.unwrap();
 
-    let count_after2: i32 =
-        sqlx::query_scalar("SELECT retrieval_count FROM graph_edges WHERE id = ?1")
-            .bind(edge_id)
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let count_after2: i32 = sqlx::query_scalar(sql!(
+        "SELECT retrieval_count FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(edge_id)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
     assert_eq!(
         count_after2, 2,
         "retrieval_count must be 2 after second call"
@@ -2894,9 +2921,9 @@ async fn record_edge_retrieval_sets_last_retrieved_at() {
         .await
         .unwrap();
     let edge_id: i64 = sqlx::query_scalar(
-        "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+        sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
          VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'))
-         RETURNING id",
+         RETURNING id"),
     )
     .bind(a)
     .bind(b)
@@ -2904,12 +2931,13 @@ async fn record_edge_retrieval_sets_last_retrieved_at() {
     .await
     .unwrap();
 
-    let ts_before: Option<i64> =
-        sqlx::query_scalar("SELECT last_retrieved_at FROM graph_edges WHERE id = ?1")
-            .bind(edge_id)
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let ts_before: Option<i64> = sqlx::query_scalar(sql!(
+        "SELECT last_retrieved_at FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(edge_id)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
     assert!(
         ts_before.is_none(),
         "last_retrieved_at must be NULL before first retrieval"
@@ -2917,12 +2945,13 @@ async fn record_edge_retrieval_sets_last_retrieved_at() {
 
     store.record_edge_retrieval(&[edge_id]).await.unwrap();
 
-    let ts_after: Option<i64> =
-        sqlx::query_scalar("SELECT last_retrieved_at FROM graph_edges WHERE id = ?1")
-            .bind(edge_id)
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let ts_after: Option<i64> = sqlx::query_scalar(sql!(
+        "SELECT last_retrieved_at FROM graph_edges WHERE id = ?1"
+    ))
+    .bind(edge_id)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
     assert!(
         ts_after.is_some(),
         "last_retrieved_at must be set after retrieval"
@@ -2950,11 +2979,11 @@ async fn decay_edge_retrieval_counts_reduces_count() {
         .await
         .unwrap();
     // Insert edge with retrieval_count=10 and last_retrieved_at far in the past
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence,
          valid_from, retrieval_count, last_retrieved_at)
-         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 10, 0)",
-    )
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 10, 0)"
+    ))
     .bind(a)
     .bind(b)
     .execute(store.pool())
@@ -2965,9 +2994,9 @@ async fn decay_edge_retrieval_counts_reduces_count() {
     let affected = store.decay_edge_retrieval_counts(0.5, 0).await.unwrap();
     assert_eq!(affected, 1, "exactly one edge should be decayed");
 
-    let count: i32 = sqlx::query_scalar(
-        "SELECT retrieval_count FROM graph_edges WHERE source_entity_id = ?1 AND valid_to IS NULL",
-    )
+    let count: i32 = sqlx::query_scalar(sql!(
+        "SELECT retrieval_count FROM graph_edges WHERE source_entity_id = ?1 AND valid_to IS NULL"
+    ))
     .bind(a)
     .fetch_one(store.pool())
     .await
@@ -3012,11 +3041,11 @@ async fn decay_edge_retrieval_counts_respects_interval() {
         .await
         .unwrap();
     // Edge retrieved just now (last_retrieved_at = current time)
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence,
          valid_from, retrieval_count, last_retrieved_at)
-         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 5, unixepoch('now'))",
-    )
+         VALUES (?1, ?2, 'knows', 'A knows B', 0.9, datetime('now'), 5, unixepoch('now'))"
+    ))
     .bind(a)
     .bind(b)
     .execute(store.pool())
@@ -3111,9 +3140,9 @@ async fn entity_structural_scores_hub_higher_than_leaf() {
         let _ = (leaf_scores[&leaf], hub_scores[&hub]);
     }
     // Final check: hub score >= any leaf score (hub is in both as source/target)
-    let leaf0 = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM graph_entities WHERE canonical_name = 'smleaf0'",
-    )
+    let leaf0 = sqlx::query_scalar::<_, i64>(sql!(
+        "SELECT id FROM graph_entities WHERE canonical_name = 'smleaf0'"
+    ))
     .fetch_one(store.pool())
     .await
     .unwrap();
@@ -3219,10 +3248,10 @@ async fn entity_community_ids_returns_correct_mapping() {
         .unwrap();
 
     // Insert community with a and b as members
-    sqlx::query(
+    sqlx::query(sql!(
         "INSERT INTO graph_communities (name, summary, entity_ids, fingerprint)
-         VALUES ('TestCommunity', 'summary', json_array(?1, ?2), 'fp1')",
-    )
+         VALUES ('TestCommunity', 'summary', json_array(?1, ?2), 'fp1')"
+    ))
     .bind(a)
     .bind(b)
     .execute(store.pool())

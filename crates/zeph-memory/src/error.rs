@@ -4,7 +4,10 @@
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
     #[error("database error: {0}")]
-    Sqlite(#[from] sqlx::Error),
+    Sqlx(#[from] sqlx::Error),
+
+    #[error("database error: {0}")]
+    Db(#[from] zeph_db::DbError),
 
     #[error("Qdrant error: {0}")]
     Qdrant(#[from] Box<qdrant_client::QdrantError>),

@@ -76,7 +76,7 @@ mod tests {
     use zeph_llm::ollama::OllamaProvider;
     use zeph_memory::QdrantOps;
 
-    async fn create_test_pool() -> sqlx::SqlitePool {
+    async fn create_test_pool() -> zeph_db::DbPool {
         sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
     }
 

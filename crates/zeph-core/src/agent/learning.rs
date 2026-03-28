@@ -144,7 +144,7 @@ impl<C: Channel> Agent<C> {
                         .upsert_skill_trust(
                             skill_name,
                             "trusted",
-                            zeph_memory::sqlite::SourceKind::Local,
+                            zeph_memory::store::SourceKind::Local,
                             None,
                             None,
                             "",
@@ -1133,7 +1133,7 @@ struct EvidenceCounts {
 }
 
 fn count_evidence(
-    corrections: &[zeph_memory::sqlite::corrections::UserCorrectionRow],
+    corrections: &[zeph_memory::store::corrections::UserCorrectionRow],
 ) -> EvidenceCounts {
     let concise_re = CONCISE_RE.get_or_init(|| {
         regex::Regex::new(
@@ -1221,7 +1221,7 @@ fn count_evidence(
 /// Returns at most one `InferredPreference` per preference category; the
 /// caller is responsible for merging across batches via UPSERT semantics.
 pub(super) fn infer_preferences(
-    corrections: &[zeph_memory::sqlite::corrections::UserCorrectionRow],
+    corrections: &[zeph_memory::store::corrections::UserCorrectionRow],
 ) -> Vec<InferredPreference> {
     let c = count_evidence(corrections);
     let mut out = Vec::new();
@@ -2207,7 +2207,7 @@ mod tests {
         failures: u32,
         initial_trust: &str,
     ) {
-        use zeph_memory::sqlite::SourceKind;
+        use zeph_memory::store::SourceKind;
         memory
             .sqlite()
             .upsert_skill_trust(
@@ -2412,8 +2412,8 @@ mod tests {
         id: i64,
         text: &str,
         kind: &str,
-    ) -> zeph_memory::sqlite::corrections::UserCorrectionRow {
-        zeph_memory::sqlite::corrections::UserCorrectionRow {
+    ) -> zeph_memory::store::corrections::UserCorrectionRow {
+        zeph_memory::store::corrections::UserCorrectionRow {
             id,
             session_id: None,
             original_output: String::new(),

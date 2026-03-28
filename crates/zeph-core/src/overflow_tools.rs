@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use zeph_memory::sqlite::SqliteStore;
+use zeph_memory::store::SqliteStore;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use zeph_tools::registry::{InvocationHint, ToolDef};
 
@@ -105,7 +105,7 @@ impl ToolExecutor for OverflowToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeph_memory::sqlite::SqliteStore;
+    use zeph_memory::store::SqliteStore;
 
     async fn make_store_with_conv() -> (Arc<SqliteStore>, i64) {
         let store = SqliteStore::new(":memory:")

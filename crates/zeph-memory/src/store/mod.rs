@@ -17,10 +17,9 @@ mod skills;
 mod summaries;
 mod trust;
 
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::str::FromStr;
-use std::time::Duration;
+#[allow(unused_imports)]
+use zeph_db::sql;
+use zeph_db::{DbConfig, DbPool};
 
 use crate::error::MemoryError;
 
@@ -29,18 +28,16 @@ pub use messages::role_str;
 pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
 pub use trust::{SkillTrustRow, SourceKind};
 
+/// Backward-compatible type alias. Prefer [`DbStore`] in new code.
+pub type SqliteStore = DbStore;
+
 #[derive(Debug, Clone)]
-pub struct SqliteStore {
-    pool: SqlitePool,
+pub struct DbStore {
+    pool: DbPool,
 }
 
-impl SqliteStore {
-    const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// Open (or create) the `SQLite` database and run migrations.
-    ///
-    /// Enables foreign key constraints at connection level so that
-    /// `ON DELETE CASCADE` and other FK rules are enforced.
+impl DbStore {
+    /// Open (or create) the database and run migrations.
     ///
     /// # Errors
     ///
@@ -49,39 +46,23 @@ impl SqliteStore {
         Self::with_pool_size(path, 5).await
     }
 
-    /// Open (or create) the `SQLite` database with a configurable connection pool size.
+    /// Open (or create) the database with a configurable connection pool size.
     ///
     /// # Errors
     ///
     /// Returns an error if the database cannot be opened or migrations fail.
     pub async fn with_pool_size(path: &str, pool_size: u32) -> Result<Self, MemoryError> {
-        let url = if path == ":memory:" {
-            "sqlite::memory:".to_string()
-        } else {
-            if let Some(parent) = std::path::Path::new(path).parent()
-                && !parent.as_os_str().is_empty()
-            {
-                std::fs::create_dir_all(parent)?;
-            }
-            format!("sqlite:{path}?mode=rwc")
-        };
+        let pool = DbConfig {
+            url: path.to_string(),
+            max_connections: pool_size,
+            write_pool_size: 1,
+        }
+        .connect()
+        .await?;
 
-        let opts = SqliteConnectOptions::from_str(&url)?
-            .create_if_missing(true)
-            .foreign_keys(true)
-            .busy_timeout(Self::DEFAULT_BUSY_TIMEOUT)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(pool_size)
-            .connect_with(opts)
-            .await?;
-
-        sqlx::migrate!("./migrations").run(&pool).await?;
-
+        #[cfg(feature = "sqlite")]
         if path != ":memory:" {
-            sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+            sqlx::query(sql!("PRAGMA wal_checkpoint(PASSIVE)"))
                 .execute(&pool)
                 .await?;
         }
@@ -91,7 +72,7 @@ impl SqliteStore {
 
     /// Expose the underlying pool for shared access by other stores.
     #[must_use]
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &DbPool {
         &self.pool
     }
 
@@ -100,8 +81,8 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if any migration fails.
-    pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MemoryError> {
-        sqlx::migrate!("./migrations").run(pool).await?;
+    pub async fn run_migrations(pool: &DbPool) -> Result<(), MemoryError> {
+        zeph_db::run_migrations(pool).await?;
         Ok(())
     }
 }
@@ -111,14 +92,17 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
 
+    // Matches `DbConfig` busy_timeout default (5 seconds in ms)
+    const DEFAULT_BUSY_TIMEOUT_MS: i64 = 5_000;
+
     #[tokio::test]
     async fn wal_journal_mode_enabled_on_file_db() {
         let file = NamedTempFile::new().expect("tempfile");
         let path = file.path().to_str().expect("valid path");
 
-        let store = SqliteStore::new(path).await.expect("SqliteStore::new");
+        let store = DbStore::new(path).await.expect("DbStore::new");
 
-        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        let mode: String = sqlx::query_scalar(sql!("PRAGMA journal_mode"))
             .fetch_one(store.pool())
             .await
             .expect("PRAGMA query");
@@ -131,16 +115,15 @@ mod tests {
         let file = NamedTempFile::new().expect("tempfile");
         let path = file.path().to_str().expect("valid path");
 
-        let store = SqliteStore::new(path).await.expect("SqliteStore::new");
+        let store = DbStore::new(path).await.expect("DbStore::new");
 
-        let timeout_ms: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+        let timeout_ms: i64 = sqlx::query_scalar(sql!("PRAGMA busy_timeout"))
             .fetch_one(store.pool())
             .await
             .expect("PRAGMA query");
 
         assert_eq!(
-            timeout_ms,
-            i64::try_from(SqliteStore::DEFAULT_BUSY_TIMEOUT.as_millis()).unwrap(),
+            timeout_ms, DEFAULT_BUSY_TIMEOUT_MS,
             "expected busy_timeout pragma to match configured timeout"
         );
     }
@@ -150,13 +133,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let deep = dir.path().join("a/b/c/zeph.db");
         let path = deep.to_str().expect("valid path");
-        let _store = SqliteStore::new(path).await.expect("SqliteStore::new");
+        let _store = DbStore::new(path).await.expect("DbStore::new");
         assert!(deep.exists(), "database file should exist");
     }
 
     #[tokio::test]
     async fn with_pool_size_accepts_custom_size() {
-        let store = SqliteStore::with_pool_size(":memory:", 2)
+        let store = DbStore::with_pool_size(":memory:", 2)
             .await
             .expect("with_pool_size");
         // Verify the store is operational with the custom pool size.

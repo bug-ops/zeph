@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Raw graph persistence trait and `SqliteGraphStore` implementation.
+//! Raw graph persistence trait and [`DbGraphStore`] implementation.
 //!
 //! The trait operates on opaque JSON strings to avoid a dependency cycle
 //! (`zeph-core` → `zeph-memory` → `zeph-core`). `zeph-core` wraps this
 //! trait in `GraphPersistence<S>` which handles typed serialization.
 
-use sqlx::SqlitePool;
+use zeph_db::DbPool;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use crate::error::MemoryError;
 
@@ -71,21 +73,24 @@ pub trait RawGraphStore: Send + Sync {
     async fn delete_graph(&self, id: &str) -> Result<bool, MemoryError>;
 }
 
-/// `SQLite`-backed implementation of `RawGraphStore`.
+/// Database-backed implementation of [`RawGraphStore`].
 #[derive(Debug, Clone)]
-pub struct SqliteGraphStore {
-    pool: SqlitePool,
+pub struct DbGraphStore {
+    pool: DbPool,
 }
 
-impl SqliteGraphStore {
-    /// Create a new `SqliteGraphStore` backed by the given pool.
+/// Backward-compatible alias.
+pub type SqliteGraphStore = DbGraphStore;
+
+impl DbGraphStore {
+    /// Create a new [`DbGraphStore`] backed by the given pool.
     #[must_use]
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
 
-impl RawGraphStore for SqliteGraphStore {
+impl RawGraphStore for DbGraphStore {
     async fn save_graph(
         &self,
         id: &str,
@@ -95,7 +100,7 @@ impl RawGraphStore for SqliteGraphStore {
         created_at: &str,
         finished_at: Option<&str>,
     ) -> Result<(), MemoryError> {
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO task_graphs (id, goal, status, graph_json, created_at, finished_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
@@ -103,8 +108,8 @@ impl RawGraphStore for SqliteGraphStore {
                  status      = excluded.status, \
                  graph_json  = excluded.graph_json, \
                  created_at  = excluded.created_at, \
-                 finished_at = excluded.finished_at",
-        )
+                 finished_at = excluded.finished_at"
+        ))
         .bind(id)
         .bind(goal)
         .bind(status)
@@ -119,7 +124,7 @@ impl RawGraphStore for SqliteGraphStore {
 
     async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
         let row: Option<(String,)> =
-            sqlx::query_as("SELECT graph_json FROM task_graphs WHERE id = ?")
+            sqlx::query_as(sql!("SELECT graph_json FROM task_graphs WHERE id = ?"))
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await
@@ -128,12 +133,12 @@ impl RawGraphStore for SqliteGraphStore {
     }
 
     async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, MemoryError> {
-        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(sql!(
             "SELECT id, goal, status, created_at, finished_at \
              FROM task_graphs \
              ORDER BY created_at DESC \
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(limit)
         .fetch_all(&self.pool)
         .await
@@ -152,7 +157,7 @@ impl RawGraphStore for SqliteGraphStore {
     }
 
     async fn delete_graph(&self, id: &str) -> Result<bool, MemoryError> {
-        let result = sqlx::query("DELETE FROM task_graphs WHERE id = ?")
+        let result = sqlx::query(sql!("DELETE FROM task_graphs WHERE id = ?"))
             .bind(id)
             .execute(&self.pool)
             .await
@@ -164,11 +169,11 @@ impl RawGraphStore for SqliteGraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::SqliteStore;
+    use crate::store::DbStore;
 
-    async fn make_store() -> SqliteGraphStore {
-        let sqlite = SqliteStore::new(":memory:").await.expect("SqliteStore");
-        SqliteGraphStore::new(sqlite.pool().clone())
+    async fn make_store() -> DbGraphStore {
+        let db = DbStore::new(":memory:").await.expect("DbStore");
+        DbGraphStore::new(db.pool().clone())
     }
 
     #[tokio::test]

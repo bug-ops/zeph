@@ -12,7 +12,7 @@ use zeph_core::config::{Config, ProviderKind, SecurityConfig, TimeoutConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::sqlite::SqliteStore;
+use zeph_memory::store::SqliteStore;
 use zeph_skills::loader::load_skill;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::AutonomyLevel;
@@ -2296,7 +2296,7 @@ mod self_learning {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_memory::semantic::SemanticMemory;
-    use zeph_memory::sqlite::SqliteStore;
+    use zeph_memory::store::SqliteStore;
     use zeph_memory::types::ConversationId;
     use zeph_skills::registry::SkillRegistry;
     use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
@@ -3636,7 +3636,7 @@ mod trust_commands {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_memory::semantic::SemanticMemory;
-    use zeph_memory::sqlite::SourceKind;
+    use zeph_memory::store::SourceKind;
     use zeph_memory::types::ConversationId;
     use zeph_skills::registry::SkillRegistry;
 

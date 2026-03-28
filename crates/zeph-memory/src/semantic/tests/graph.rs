@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[allow(unused_imports)]
+use zeph_db::sql;
 use zeph_llm::any::AnyProvider;
 
 use crate::graph::{EntityType, GraphStore};
@@ -285,7 +287,7 @@ async fn memory_with_in_memory_vector_store() -> (
 
     use crate::embedding_store::EmbeddingStore;
     use crate::in_memory_store::InMemoryVectorStore;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
     use crate::token_counter::TokenCounter;
 
     let sqlite = SqliteStore::new(":memory:").await.unwrap();
@@ -364,12 +366,14 @@ async fn seed_entity_with_zero_embedding(
 
     // Write qdrant_point_id back to graph_entities so self-exclusion works.
     let pool = store.pool();
-    sqlx::query("UPDATE graph_entities SET qdrant_point_id = ?1 WHERE id = ?2")
-        .bind(&point_id)
-        .bind(id)
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(sql!(
+        "UPDATE graph_entities SET qdrant_point_id = ?1 WHERE id = ?2"
+    ))
+    .bind(&point_id)
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
 
     id
 }
@@ -520,13 +524,13 @@ async fn link_memory_notes_unidirectional() {
 
     // Exactly one edge between the pair (unidirectional).
     let pool = memory.sqlite.pool();
-    let count: i64 = sqlx::query_scalar(
+    let count: i64 = sqlx::query_scalar(sql!(
         "SELECT COUNT(*) FROM graph_edges
          WHERE relation = 'similar_to'
            AND ((source_entity_id = ?1 AND target_entity_id = ?2)
              OR (source_entity_id = ?2 AND target_entity_id = ?1))
-           AND valid_to IS NULL",
-    )
+           AND valid_to IS NULL"
+    ))
     .bind(id_x)
     .bind(id_y)
     .fetch_one(pool)
@@ -610,10 +614,10 @@ async fn link_memory_notes_secondary_self_skip_guard() {
     .await;
 
     // No self-edge A→A must exist.
-    let self_count: i64 = sqlx::query_scalar(
+    let self_count: i64 = sqlx::query_scalar(sql!(
         "SELECT COUNT(*) FROM graph_edges
-         WHERE source_entity_id = ?1 AND target_entity_id = ?1",
-    )
+         WHERE source_entity_id = ?1 AND target_entity_id = ?1"
+    ))
     .bind(id_a)
     .fetch_one(memory.sqlite.pool())
     .await
@@ -624,11 +628,11 @@ async fn link_memory_notes_secondary_self_skip_guard() {
     );
 
     // At least one edge to B or C must exist (confirming A was processed successfully).
-    let other_count: i64 = sqlx::query_scalar(
+    let other_count: i64 = sqlx::query_scalar(sql!(
         "SELECT COUNT(*) FROM graph_edges
          WHERE (source_entity_id = ?1 OR target_entity_id = ?1)
-           AND source_entity_id != target_entity_id",
-    )
+           AND source_entity_id != target_entity_id"
+    ))
     .bind(id_a)
     .fetch_one(memory.sqlite.pool())
     .await

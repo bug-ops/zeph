@@ -3,6 +3,8 @@
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 impl SqliteStore {
     /// Load the most recent input history entries, ordered chronologically.
@@ -11,11 +13,12 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_input_history(&self, limit: i64) -> Result<Vec<String>, MemoryError> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT input FROM input_history ORDER BY id ASC LIMIT ?")
-                .bind(limit)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(String,)> = sqlx::query_as(sql!(
+            "SELECT input FROM input_history ORDER BY id ASC LIMIT ?"
+        ))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows.into_iter().map(|(s,)| s).collect())
     }
 
@@ -25,7 +28,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the insert fails.
     pub async fn save_input_entry(&self, text: &str) -> Result<(), MemoryError> {
-        sqlx::query("INSERT INTO input_history (input) VALUES (?)")
+        sqlx::query(sql!("INSERT INTO input_history (input) VALUES (?)"))
             .bind(text)
             .execute(&self.pool)
             .await?;
@@ -38,7 +41,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the delete fails.
     pub async fn clear_input_history(&self) -> Result<(), MemoryError> {
-        sqlx::query("DELETE FROM input_history")
+        sqlx::query(sql!("DELETE FROM input_history"))
             .execute(&self.pool)
             .await?;
         Ok(())

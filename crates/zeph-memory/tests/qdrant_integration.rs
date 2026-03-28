@@ -9,7 +9,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_memory::embedding_store::{EmbeddingStore, MessageKind};
 use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::sqlite::SqliteStore;
+use zeph_memory::store::SqliteStore;
 
 const QDRANT_GRPC_PORT: ContainerPort = ContainerPort::Tcp(6334);
 

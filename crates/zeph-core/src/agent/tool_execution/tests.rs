@@ -929,7 +929,7 @@ async fn call_llm_returns_cached_response_without_provider_call() {
     use super::super::agent_tests::*;
     use std::sync::Arc;
     use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
 
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
@@ -976,7 +976,7 @@ async fn store_response_in_cache_enables_second_call_to_return_cached() {
     use super::super::agent_tests::*;
     use std::sync::Arc;
     use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
 
     // Streaming provider has one response; the second call must come from cache.
     let provider = mock_provider_streaming(vec!["provider response".into()]);
@@ -1029,7 +1029,7 @@ async fn cache_key_stable_across_growing_history() {
     use super::super::agent_tests::*;
     use std::sync::Arc;
     use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
 
     let provider = mock_provider_streaming(vec!["turn2 response".into()]);
     let channel = MockChannel::new(vec![]);
@@ -1079,7 +1079,7 @@ async fn cache_skipped_when_no_user_message() {
     use super::super::agent_tests::*;
     use std::sync::Arc;
     use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
 
     let provider = mock_provider_streaming(vec!["llm response".into()]);
     let channel = MockChannel::new(vec![]);
@@ -2099,7 +2099,7 @@ async fn native_tool_use_response_cache_hit_skips_llm_call() {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
 
     let user_content = "native cache test question";
 
@@ -2162,7 +2162,7 @@ async fn native_tool_use_cache_stores_only_text_responses() {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role, ToolUseRequest};
-    use zeph_memory::{ResponseCache, sqlite::SqliteStore};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
 
     // Provider returns ToolUse on iteration 1, Text on iteration 2.
     // The ToolUse iteration must NOT trigger store_response_in_cache.

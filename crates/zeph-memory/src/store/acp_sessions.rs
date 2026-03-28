@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::error::MemoryError;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::types::ConversationId;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 pub struct AcpSessionEvent {
     pub event_type: String,
@@ -26,7 +28,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database write fails.
     pub async fn create_acp_session(&self, session_id: &str) -> Result<(), MemoryError> {
-        sqlx::query("INSERT OR IGNORE INTO acp_sessions (id) VALUES (?)")
+        sqlx::query(sql!("INSERT OR IGNORE INTO acp_sessions (id) VALUES (?)"))
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -44,9 +46,9 @@ impl SqliteStore {
         event_type: &str,
         payload: &str,
     ) -> Result<(), MemoryError> {
-        sqlx::query(
-            "INSERT INTO acp_session_events (session_id, event_type, payload) VALUES (?, ?, ?)",
-        )
+        sqlx::query(sql!(
+            "INSERT INTO acp_session_events (session_id, event_type, payload) VALUES (?, ?, ?)"
+        ))
         .bind(session_id)
         .bind(event_type)
         .bind(payload)
@@ -65,7 +67,7 @@ impl SqliteStore {
         session_id: &str,
     ) -> Result<Vec<AcpSessionEvent>, MemoryError> {
         let rows = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT event_type, payload, created_at FROM acp_session_events WHERE session_id = ? ORDER BY id",
+            sql!("SELECT event_type, payload, created_at FROM acp_session_events WHERE session_id = ? ORDER BY id"),
         )
         .bind(session_id)
         .fetch_all(&self.pool)
@@ -87,7 +89,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database write fails.
     pub async fn delete_acp_session(&self, session_id: &str) -> Result<(), MemoryError> {
-        sqlx::query("DELETE FROM acp_sessions WHERE id = ?")
+        sqlx::query(sql!("DELETE FROM acp_sessions WHERE id = ?"))
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -181,9 +183,9 @@ impl SqliteStore {
     ) -> Result<(), MemoryError> {
         let mut tx = self.pool.begin().await?;
         for (event_type, payload) in events {
-            sqlx::query(
-                "INSERT INTO acp_session_events (session_id, event_type, payload) VALUES (?, ?, ?)",
-            )
+            sqlx::query(sql!(
+                "INSERT INTO acp_session_events (session_id, event_type, payload) VALUES (?, ?, ?)"
+            ))
             .bind(session_id)
             .bind(event_type)
             .bind(payload)
@@ -204,7 +206,7 @@ impl SqliteStore {
         session_id: &str,
         title: &str,
     ) -> Result<(), MemoryError> {
-        sqlx::query("UPDATE acp_sessions SET title = ? WHERE id = ?")
+        sqlx::query(sql!("UPDATE acp_sessions SET title = ? WHERE id = ?"))
             .bind(title)
             .bind(session_id)
             .execute(&self.pool)
@@ -218,7 +220,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     pub async fn acp_session_exists(&self, session_id: &str) -> Result<bool, MemoryError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM acp_sessions WHERE id = ?")
+        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM acp_sessions WHERE id = ?"))
             .bind(session_id)
             .fetch_one(&self.pool)
             .await?;
@@ -235,11 +237,13 @@ impl SqliteStore {
         session_id: &str,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query("INSERT OR IGNORE INTO acp_sessions (id, conversation_id) VALUES (?, ?)")
-            .bind(session_id)
-            .bind(conversation_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(sql!(
+            "INSERT OR IGNORE INTO acp_sessions (id, conversation_id) VALUES (?, ?)"
+        ))
+        .bind(session_id)
+        .bind(conversation_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -254,11 +258,12 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Option<ConversationId>, MemoryError> {
-        let row: Option<(Option<ConversationId>,)> =
-            sqlx::query_as("SELECT conversation_id FROM acp_sessions WHERE id = ?")
-                .bind(session_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(Option<ConversationId>,)> = sqlx::query_as(sql!(
+            "SELECT conversation_id FROM acp_sessions WHERE id = ?"
+        ))
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.and_then(|(cid,)| cid))
     }
 
@@ -272,11 +277,13 @@ impl SqliteStore {
         session_id: &str,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query("UPDATE acp_sessions SET conversation_id = ? WHERE id = ?")
-            .bind(conversation_id)
-            .bind(session_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(sql!(
+            "UPDATE acp_sessions SET conversation_id = ? WHERE id = ?"
+        ))
+        .bind(conversation_id)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -303,10 +310,10 @@ impl SqliteStore {
         // per-message auto-fields (id, created_at, last_accessed, access_count, qdrant_cleaned)
         // are excluded so they are generated fresh for the target conversation.
         sqlx::query(
-            "INSERT INTO messages \
+            sql!("INSERT INTO messages \
                 (conversation_id, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at) \
              SELECT ?, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at \
-             FROM messages WHERE conversation_id = ? ORDER BY id",
+             FROM messages WHERE conversation_id = ? ORDER BY id"),
         )
         .bind(target)
         .bind(source)
@@ -601,8 +608,8 @@ mod tests {
         store.save_message(src, "user", "hello").await.unwrap();
         // Insert a summary directly so we can verify it is not copied.
         sqlx::query(
-            "INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
-             VALUES (?, 'summary text', 1, 1, 10)",
+            sql!("INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
+             VALUES (?, 'summary text', 1, 1, 10)"),
         )
         .bind(src)
         .execute(&store.pool)
@@ -612,12 +619,13 @@ mod tests {
         let dst = store.create_conversation().await.unwrap();
         store.copy_conversation(src, dst).await.unwrap();
 
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM summaries WHERE conversation_id = ?")
-                .bind(dst)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar(sql!(
+            "SELECT COUNT(*) FROM summaries WHERE conversation_id = ?"
+        ))
+        .bind(dst)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
         assert_eq!(
             count, 0,
             "summaries must not be copied to forked conversation"

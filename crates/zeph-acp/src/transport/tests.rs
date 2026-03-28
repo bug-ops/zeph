@@ -695,7 +695,7 @@ async fn list_sessions_returns_503_when_store_is_none() {
 async fn list_sessions_returns_empty_array_when_no_sessions() {
     use axum::body::to_bytes;
 
-    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+    let store = zeph_memory::store::SqliteStore::new(":memory:")
         .await
         .expect("SqliteStore::new");
     let state = test_state().with_store(store);
@@ -719,7 +719,7 @@ async fn list_sessions_returns_empty_array_when_no_sessions() {
 async fn list_sessions_returns_session_data() {
     use axum::body::to_bytes;
 
-    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+    let store = zeph_memory::store::SqliteStore::new(":memory:")
         .await
         .expect("SqliteStore::new");
     store.create_acp_session("sess-1").await.unwrap();
@@ -771,7 +771,7 @@ async fn session_messages_returns_503_when_store_is_none() {
 
 #[tokio::test]
 async fn session_messages_returns_400_for_non_uuid() {
-    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+    let store = zeph_memory::store::SqliteStore::new(":memory:")
         .await
         .expect("SqliteStore::new");
     let state = test_state().with_store(store);
@@ -789,7 +789,7 @@ async fn session_messages_returns_400_for_non_uuid() {
 
 #[tokio::test]
 async fn session_messages_returns_404_for_unknown_session() {
-    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+    let store = zeph_memory::store::SqliteStore::new(":memory:")
         .await
         .expect("SqliteStore::new");
     let state = test_state().with_store(store);
@@ -809,7 +809,7 @@ async fn session_messages_returns_404_for_unknown_session() {
 async fn session_messages_returns_events_for_known_session() {
     use axum::body::to_bytes;
 
-    let store = zeph_memory::sqlite::SqliteStore::new(":memory:")
+    let store = zeph_memory::store::SqliteStore::new(":memory:")
         .await
         .expect("SqliteStore::new");
     let session_id = "00000000-0000-0000-0000-000000000001";

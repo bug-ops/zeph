@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use crate::error::MemoryError;
-use crate::sqlite::SqliteStore;
+use crate::store::SqliteStore;
 use crate::types::ConversationId;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,9 +57,10 @@ pub struct ImportStats {
 ///
 /// Returns an error if any database query fails.
 pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, MemoryError> {
-    let conv_ids: Vec<(i64,)> = sqlx::query_as("SELECT id FROM conversations ORDER BY id ASC")
-        .fetch_all(sqlite.pool())
-        .await?;
+    let conv_ids: Vec<(i64,)> =
+        sqlx::query_as(sql!("SELECT id FROM conversations ORDER BY id ASC"))
+            .fetch_all(sqlite.pool())
+            .await?;
 
     let exported_at = chrono_now();
     let mut conversations = Vec::with_capacity(conv_ids.len());
@@ -65,11 +68,11 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
     for (cid_raw,) in conv_ids {
         let cid = ConversationId(cid_raw);
 
-        let msg_rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(
+        let msg_rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(sql!(
             "SELECT id, role, content, parts, \
              COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0) \
-             FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-        )
+             FROM messages WHERE conversation_id = ? ORDER BY id ASC"
+        ))
         .bind(cid)
         .fetch_all(sqlite.pool())
         .await?;
@@ -146,13 +149,14 @@ pub async fn import_snapshot(
     let mut stats = ImportStats::default();
 
     for conv in snapshot.conversations {
-        let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM conversations WHERE id = ?")
-            .bind(conv.id)
-            .fetch_optional(sqlite.pool())
-            .await?;
+        let exists: Option<(i64,)> =
+            sqlx::query_as(sql!("SELECT id FROM conversations WHERE id = ?"))
+                .bind(conv.id)
+                .fetch_optional(sqlite.pool())
+                .await?;
 
         if exists.is_none() {
-            sqlx::query("INSERT INTO conversations (id) VALUES (?)")
+            sqlx::query(sql!("INSERT INTO conversations (id) VALUES (?)"))
                 .bind(conv.id)
                 .execute(sqlite.pool())
                 .await?;
@@ -162,10 +166,10 @@ pub async fn import_snapshot(
         }
 
         for msg in conv.messages {
-            let result = sqlx::query(
+            let result = sqlx::query(sql!(
                 "INSERT OR IGNORE INTO messages (id, conversation_id, role, content, parts) \
-                 VALUES (?, ?, ?, ?, ?)",
-            )
+                 VALUES (?, ?, ?, ?, ?)"
+            ))
             .bind(msg.id)
             .bind(msg.conversation_id)
             .bind(&msg.role)
@@ -182,11 +186,11 @@ pub async fn import_snapshot(
         }
 
         for sum in conv.summaries {
-            let result = sqlx::query(
+            let result = sqlx::query(sql!(
                 "INSERT OR IGNORE INTO summaries \
                  (id, conversation_id, content, first_message_id, last_message_id, token_estimate) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
+                 VALUES (?, ?, ?, ?, ?, ?)"
+            ))
             .bind(sum.id)
             .bind(sum.conversation_id)
             .bind(&sum.content)

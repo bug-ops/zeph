@@ -9,8 +9,10 @@
 
 use blake3;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 use zeph_config::PlanCacheConfig;
+use zeph_db::DbPool;
+#[allow(unused_imports)]
+use zeph_db::sql;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use super::dag;
@@ -203,7 +205,7 @@ pub enum PlanCacheError {
 /// (same pattern as `ResponseCache`). Graceful degradation: all failures are
 /// logged as WARN and never block the planning critical path.
 pub struct PlanCache {
-    pool: SqlitePool,
+    pool: DbPool,
     config: PlanCacheConfig,
 }
 
@@ -214,7 +216,7 @@ impl PlanCache {
     ///
     /// Returns `PlanCacheError` if the stale embedding invalidation query fails.
     pub async fn new(
-        pool: SqlitePool,
+        pool: DbPool,
         config: PlanCacheConfig,
         current_embedding_model: &str,
     ) -> Result<Self, PlanCacheError> {
@@ -231,10 +233,10 @@ impl PlanCache {
     ///
     /// Returns `PlanCacheError::Database` on query failure.
     async fn invalidate_stale_embeddings(&self, current_model: &str) -> Result<(), PlanCacheError> {
-        let affected = sqlx::query(
+        let affected = sqlx::query(sql!(
             "UPDATE plan_cache SET embedding = NULL, embedding_model = NULL \
-             WHERE embedding IS NOT NULL AND embedding_model != ?",
-        )
+             WHERE embedding IS NOT NULL AND embedding_model != ?"
+        ))
         .bind(current_model)
         .execute(&self.pool)
         .await?
@@ -266,11 +268,11 @@ impl PlanCache {
         goal_embedding: &[f32],
         embedding_model: &str,
     ) -> Result<Option<(PlanTemplate, f32)>, PlanCacheError> {
-        let rows: Vec<(String, String, Vec<u8>)> = sqlx::query_as(
+        let rows: Vec<(String, String, Vec<u8>)> = sqlx::query_as(sql!(
             "SELECT id, template, embedding FROM plan_cache \
              WHERE embedding IS NOT NULL AND embedding_model = ? \
-             ORDER BY last_accessed_at DESC LIMIT ?",
-        )
+             ORDER BY last_accessed_at DESC LIMIT ?"
+        ))
         .bind(embedding_model)
         .bind(self.config.max_templates)
         .fetch_all(&self.pool)
@@ -296,10 +298,10 @@ impl PlanCache {
         {
             // Update last_accessed_at on hit.
             let now = unix_now();
-            if let Err(e) = sqlx::query(
+            if let Err(e) = sqlx::query(sql!(
                 "UPDATE plan_cache SET last_accessed_at = ?, adapted_count = adapted_count + 1 \
-                 WHERE id = ?",
-            )
+                 WHERE id = ?"
+            ))
             .bind(now)
             .bind(&id)
             .execute(&self.pool)
@@ -340,7 +342,7 @@ impl PlanCache {
         let id = uuid::Uuid::new_v4().to_string();
         let blob = embedding_to_blob(goal_embedding);
 
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO plan_cache \
              (id, goal_hash, goal_text, template, task_count, success_count, adapted_count, \
               embedding, embedding_model, created_at, last_accessed_at) \
@@ -351,8 +353,8 @@ impl PlanCache {
                task_count = excluded.task_count, \
                embedding = excluded.embedding, \
                embedding_model = excluded.embedding_model, \
-               last_accessed_at = excluded.last_accessed_at",
-        )
+               last_accessed_at = excluded.last_accessed_at"
+        ))
         .bind(&id)
         .bind(&hash)
         .bind(&normalized)
@@ -388,24 +390,24 @@ impl PlanCache {
         let ttl_secs = i64::from(self.config.ttl_days) * 86_400;
         let cutoff = now.saturating_sub(ttl_secs);
 
-        let ttl_deleted = sqlx::query("DELETE FROM plan_cache WHERE last_accessed_at < ?")
+        let ttl_deleted = sqlx::query(sql!("DELETE FROM plan_cache WHERE last_accessed_at < ?"))
             .bind(cutoff)
             .execute(&self.pool)
             .await?
             .rows_affected();
 
         // Count remaining rows.
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plan_cache")
+        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&self.pool)
             .await?;
 
         let max = i64::from(self.config.max_templates);
         let lru_deleted = if count > max {
             let excess = count - max;
-            sqlx::query(
+            sqlx::query(sql!(
                 "DELETE FROM plan_cache WHERE id IN \
-                 (SELECT id FROM plan_cache ORDER BY last_accessed_at ASC LIMIT ?)",
-            )
+                 (SELECT id FROM plan_cache ORDER BY last_accessed_at ASC LIMIT ?)"
+            ))
             .bind(excess)
             .execute(&self.pool)
             .await?
@@ -557,14 +559,14 @@ async fn adapt_plan(
 mod tests {
     use super::super::graph::{TaskId, TaskNode};
     use super::*;
-    use zeph_memory::sqlite::SqliteStore;
+    use zeph_memory::store::SqliteStore;
 
-    async fn test_pool() -> SqlitePool {
+    async fn test_pool() -> DbPool {
         let store = SqliteStore::new(":memory:").await.unwrap();
         store.pool().clone()
     }
 
-    async fn test_cache(pool: SqlitePool) -> PlanCache {
+    async fn test_cache(pool: DbPool) -> PlanCache {
         PlanCache::new(pool, PlanCacheConfig::default(), "test-model")
             .await
             .unwrap()
@@ -749,13 +751,13 @@ mod tests {
         cache.cache_plan(&graph, &emb, "test-model").await.unwrap();
 
         // Only one row due to UNIQUE goal_hash.
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plan_cache")
+        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(count, 1);
 
-        let success: i64 = sqlx::query_scalar("SELECT success_count FROM plan_cache")
+        let success: i64 = sqlx::query_scalar(sql!("SELECT success_count FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -774,11 +776,11 @@ mod tests {
 
         // Insert a row by bypassing the API to set last_accessed_at in the past.
         let now = unix_now() - 1;
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO plan_cache \
              (id, goal_hash, goal_text, template, task_count, created_at, last_accessed_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ))
         .bind("test-id")
         .bind("hash-1")
         .bind("goal")
@@ -793,7 +795,7 @@ mod tests {
         let deleted = cache.evict().await.unwrap();
         assert!(deleted >= 1);
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plan_cache")
+        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -813,11 +815,11 @@ mod tests {
         let now = unix_now();
         // Insert 3 rows with different last_accessed_at, all recent enough to survive TTL.
         for i in 0..3_i64 {
-            sqlx::query(
+            sqlx::query(sql!(
                 "INSERT INTO plan_cache \
                  (id, goal_hash, goal_text, template, task_count, created_at, last_accessed_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-            )
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ))
             .bind(format!("id-{i}"))
             .bind(format!("hash-{i}"))
             .bind(format!("goal-{i}"))
@@ -834,7 +836,7 @@ mod tests {
         assert_eq!(deleted, 1);
 
         // The row with smallest last_accessed_at (id-0) should be gone.
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plan_cache")
+        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -848,12 +850,12 @@ mod tests {
 
         // Insert a row with "old-model" embedding.
         let emb = embedding_to_blob(&[1.0_f32, 0.0]);
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO plan_cache \
              (id, goal_hash, goal_text, template, task_count, embedding, embedding_model, \
               created_at, last_accessed_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ))
         .bind("id-old")
         .bind("hash-old")
         .bind("goal old")
@@ -872,15 +874,16 @@ mod tests {
             .await
             .unwrap();
 
-        let model: Option<String> =
-            sqlx::query_scalar("SELECT embedding_model FROM plan_cache WHERE id = 'id-old'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let model: Option<String> = sqlx::query_scalar(sql!(
+            "SELECT embedding_model FROM plan_cache WHERE id = 'id-old'"
+        ))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert!(model.is_none(), "stale embedding_model should be NULL");
 
         let emb_col: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT embedding FROM plan_cache WHERE id = 'id-old'")
+            sqlx::query_scalar(sql!("SELECT embedding FROM plan_cache WHERE id = 'id-old'"))
                 .fetch_one(&pool)
                 .await
                 .unwrap();

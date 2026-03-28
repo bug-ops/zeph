@@ -4,6 +4,8 @@
 use super::SqliteStore;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 impl SqliteStore {
     /// Save a summary and return its ID.
@@ -23,8 +25,8 @@ impl SqliteStore {
         token_estimate: i64,
     ) -> Result<i64, MemoryError> {
         let row: (i64,) = sqlx::query_as(
-            "INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
-             VALUES (?, ?, ?, ?, ?) RETURNING id",
+            sql!("INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
+             VALUES (?, ?, ?, ?, ?) RETURNING id"),
         )
         .bind(conversation_id)
         .bind(content)
@@ -66,10 +68,10 @@ impl SqliteStore {
             Option<MessageId>,
             Option<MessageId>,
             i64,
-        )> = sqlx::query_as(
+        )> = sqlx::query_as(sql!(
             "SELECT id, conversation_id, content, first_message_id, last_message_id, \
-                 token_estimate FROM summaries WHERE conversation_id = ? ORDER BY id ASC",
-        )
+                 token_estimate FROM summaries WHERE conversation_id = ? ORDER BY id ASC"
+        ))
         .bind(conversation_id)
         .fetch_all(&self.pool)
         .await?;
@@ -89,10 +91,10 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Option<MessageId>, MemoryError> {
-        let row: Option<(Option<MessageId>,)> = sqlx::query_as(
+        let row: Option<(Option<MessageId>,)> = sqlx::query_as(sql!(
             "SELECT last_message_id FROM summaries \
-             WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
-        )
+             WHERE conversation_id = ? ORDER BY id DESC LIMIT 1"
+        ))
         .bind(conversation_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -215,26 +217,28 @@ mod tests {
             .await
             .unwrap();
 
-        let before: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM summaries WHERE conversation_id = ?")
-                .bind(cid)
-                .fetch_one(pool)
-                .await
-                .unwrap();
+        let before: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM summaries WHERE conversation_id = ?"
+        ))
+        .bind(cid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
         assert_eq!(before.0, 1);
 
-        sqlx::query("DELETE FROM conversations WHERE id = ?")
+        sqlx::query(sql!("DELETE FROM conversations WHERE id = ?"))
             .bind(cid)
             .execute(pool)
             .await
             .unwrap();
 
-        let after: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM summaries WHERE conversation_id = ?")
-                .bind(cid)
-                .fetch_one(pool)
-                .await
-                .unwrap();
+        let after: (i64,) = sqlx::query_as(sql!(
+            "SELECT COUNT(*) FROM summaries WHERE conversation_id = ?"
+        ))
+        .bind(cid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
         assert_eq!(after.0, 0);
     }
 }

@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use sqlx::SqlitePool;
+use zeph_db::DbPool;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use crate::error::SchedulerError;
 
@@ -17,12 +19,12 @@ pub struct ScheduledTaskInfo {
 }
 
 pub struct JobStore {
-    pool: SqlitePool,
+    pool: DbPool,
 }
 
 impl JobStore {
     #[must_use]
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -30,42 +32,29 @@ impl JobStore {
     ///
     /// # Errors
     ///
-    /// Returns `SchedulerError::Database` if the connection cannot be established.
+    /// Returns [`SchedulerError::Db`] if the connection cannot be established.
     pub async fn open(path: &str) -> Result<Self, SchedulerError> {
-        let pool = SqlitePool::connect(&format!("sqlite:{path}?mode=rwc")).await?;
+        let pool = zeph_db::DbConfig {
+            url: path.to_string(),
+            max_connections: 5,
+            write_pool_size: 1,
+        }
+        .connect()
+        .await?;
         Ok(Self { pool })
     }
 
-    /// Initialize the `scheduled_jobs` table with oneshot support columns.
+    /// Run all pending migrations on the underlying pool.
+    ///
+    /// Replaces the former inline `CREATE TABLE IF NOT EXISTS` DDL. The
+    /// `scheduled_jobs` schema is now managed by migration
+    /// `051_scheduler_jobs.sql` in `zeph-db`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the SQL statement fails.
+    /// Returns an error if any migration fails.
     pub async fn init(&self) -> Result<(), SchedulerError> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS scheduled_jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                cron_expr TEXT NOT NULL DEFAULT '',
-                kind TEXT NOT NULL,
-                last_run TEXT,
-                next_run TEXT,
-                status TEXT NOT NULL DEFAULT 'pending',
-                task_mode TEXT NOT NULL DEFAULT 'periodic',
-                run_at TEXT
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        // Add columns if upgrading from an older schema without them.
-        let _ = sqlx::query(
-            "ALTER TABLE scheduled_jobs ADD COLUMN task_mode TEXT NOT NULL DEFAULT 'periodic'",
-        )
-        .execute(&self.pool)
-        .await;
-        let _ = sqlx::query("ALTER TABLE scheduled_jobs ADD COLUMN run_at TEXT")
-            .execute(&self.pool)
-            .await;
+        zeph_db::run_migrations(&self.pool).await?;
         Ok(())
     }
 
@@ -97,15 +86,15 @@ impl JobStore {
         task_mode: &str,
         run_at: Option<&str>,
     ) -> Result<(), SchedulerError> {
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at)
              VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(name) DO UPDATE SET
                cron_expr = excluded.cron_expr,
                kind = excluded.kind,
                task_mode = excluded.task_mode,
-               run_at = excluded.run_at",
-        )
+               run_at = excluded.run_at"
+        ))
         .bind(name)
         .bind(cron_expr)
         .bind(kind)
@@ -128,7 +117,7 @@ impl JobStore {
         next_run: &str,
     ) -> Result<(), SchedulerError> {
         sqlx::query(
-            "UPDATE scheduled_jobs SET last_run = ?, next_run = ?, status = 'completed' WHERE name = ?",
+            sql!("UPDATE scheduled_jobs SET last_run = ?, next_run = ?, status = 'completed' WHERE name = ?"),
         )
         .bind(timestamp)
         .bind(next_run)
@@ -144,9 +133,9 @@ impl JobStore {
     ///
     /// Returns an error if the SQL statement fails.
     pub async fn mark_done(&self, name: &str) -> Result<(), SchedulerError> {
-        sqlx::query(
-            "UPDATE scheduled_jobs SET status = 'done', last_run = datetime('now') WHERE name = ?",
-        )
+        sqlx::query(sql!(
+            "UPDATE scheduled_jobs SET status = 'done', last_run = datetime('now') WHERE name = ?"
+        ))
         .bind(name)
         .execute(&self.pool)
         .await?;
@@ -159,7 +148,7 @@ impl JobStore {
     ///
     /// Returns an error if the SQL statement fails.
     pub async fn delete_job(&self, name: &str) -> Result<bool, SchedulerError> {
-        let result = sqlx::query("DELETE FROM scheduled_jobs WHERE name = ?")
+        let result = sqlx::query(sql!("DELETE FROM scheduled_jobs WHERE name = ?"))
             .bind(name)
             .execute(&self.pool)
             .await?;
@@ -172,10 +161,11 @@ impl JobStore {
     ///
     /// Returns an error if the SQL query fails.
     pub async fn job_exists(&self, name: &str) -> Result<bool, SchedulerError> {
-        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM scheduled_jobs WHERE name = ?")
-            .bind(name)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row: Option<(i64,)> =
+            sqlx::query_as(sql!("SELECT 1 FROM scheduled_jobs WHERE name = ?"))
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.is_some())
     }
 
@@ -185,11 +175,13 @@ impl JobStore {
     ///
     /// Returns an error if the SQL statement fails.
     pub async fn set_next_run(&self, name: &str, next_run: &str) -> Result<(), SchedulerError> {
-        sqlx::query("UPDATE scheduled_jobs SET next_run = ? WHERE name = ?")
-            .bind(next_run)
-            .bind(name)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(sql!(
+            "UPDATE scheduled_jobs SET next_run = ? WHERE name = ?"
+        ))
+        .bind(next_run)
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -200,7 +192,7 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     pub async fn get_next_run(&self, name: &str) -> Result<Option<String>, SchedulerError> {
         let row: Option<(Option<String>,)> =
-            sqlx::query_as("SELECT next_run FROM scheduled_jobs WHERE name = ?")
+            sqlx::query_as(sql!("SELECT next_run FROM scheduled_jobs WHERE name = ?"))
                 .bind(name)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -214,7 +206,7 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs(&self) -> Result<Vec<(String, String, String, String)>, SchedulerError> {
         let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT name, kind, task_mode, COALESCE(next_run, run_at) FROM scheduled_jobs WHERE status != 'done' ORDER BY name",
+            sql!("SELECT name, kind, task_mode, COALESCE(next_run, run_at) FROM scheduled_jobs WHERE status != 'done' ORDER BY name"),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -230,10 +222,10 @@ impl JobStore {
     ///
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
-        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(sql!(
             "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at) \
-             FROM scheduled_jobs WHERE status != 'done' ORDER BY name",
-        )
+             FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -251,7 +243,7 @@ impl JobStore {
     }
 
     #[must_use]
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &DbPool {
         &self.pool
     }
 }
@@ -260,8 +252,15 @@ impl JobStore {
 mod tests {
     use super::*;
 
-    async fn test_pool() -> SqlitePool {
-        SqlitePool::connect("sqlite::memory:").await.unwrap()
+    async fn test_pool() -> DbPool {
+        zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            max_connections: 5,
+            write_pool_size: 1,
+        }
+        .connect()
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -308,10 +307,11 @@ mod tests {
             .await
             .unwrap();
 
-        let row: (String,) = sqlx::query_as("SELECT kind FROM scheduled_jobs WHERE name = 'job1'")
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+        let row: (String,) =
+            sqlx::query_as(sql!("SELECT kind FROM scheduled_jobs WHERE name = 'job1'"))
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
         assert_eq!(row.0, "memory_cleanup");
     }
 
@@ -366,11 +366,12 @@ mod tests {
             .await
             .unwrap();
         store.mark_done("os_job").await.unwrap();
-        let row: (String,) =
-            sqlx::query_as("SELECT status FROM scheduled_jobs WHERE name = 'os_job'")
-                .fetch_one(store.pool())
-                .await
-                .unwrap();
+        let row: (String,) = sqlx::query_as(sql!(
+            "SELECT status FROM scheduled_jobs WHERE name = 'os_job'"
+        ))
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
         assert_eq!(row.0, "done");
     }
 

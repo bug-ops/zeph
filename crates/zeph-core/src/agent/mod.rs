@@ -4471,11 +4471,11 @@ impl<C: Channel> Agent<C> {
                 .as_ref()
                 .is_some_and(|d| meta.skill_dir.starts_with(d))
             {
-                zeph_memory::sqlite::SourceKind::Hub
+                zeph_memory::store::SourceKind::Hub
             } else {
-                zeph_memory::sqlite::SourceKind::Local
+                zeph_memory::store::SourceKind::Local
             };
-            let initial_level = if matches!(source_kind, zeph_memory::sqlite::SourceKind::Hub) {
+            let initial_level = if matches!(source_kind, zeph_memory::store::SourceKind::Hub) {
                 &trust_cfg.default_level
             } else {
                 &trust_cfg.local_level

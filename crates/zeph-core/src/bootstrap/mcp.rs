@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
 use tokio::sync::RwLock;
+use zeph_db::DbPool;
 use zeph_llm::any::AnyProvider;
 use zeph_memory::QdrantOps;
 
@@ -184,7 +184,7 @@ fn resolve_vault_ref(value: &str, vault: Option<&Arc<RwLock<AgeVaultProvider>>>)
 pub async fn wire_trust_calibration(
     manager: zeph_mcp::McpManager,
     config: &Config,
-    pool: Option<&SqlitePool>,
+    pool: Option<&DbPool>,
 ) -> zeph_mcp::McpManager {
     if !config.mcp.trust_calibration.enabled {
         return manager;
@@ -193,7 +193,7 @@ pub async fn wire_trust_calibration(
         tracing::warn!("trust_calibration.enabled but no SQLite pool available — skipping");
         return manager;
     };
-    let store = zeph_mcp::TrustScoreStore::new(pool.clone() as sqlx::SqlitePool);
+    let store = zeph_mcp::TrustScoreStore::new(pool.clone());
     if let Err(e) = store.init().await {
         tracing::warn!("TrustScoreStore init failed: {e:#} — trust calibration skipped");
         return manager;

@@ -15,6 +15,8 @@
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use crate::error::MemoryError;
 use crate::graph::store::GraphStore;
@@ -335,7 +337,7 @@ mod tests {
     use super::*;
     use crate::graph::GraphStore;
     use crate::graph::types::EntityType;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
 
     async fn setup_store() -> GraphStore {
         let store = SqliteStore::new(":memory:").await.unwrap();
@@ -668,8 +670,8 @@ mod tests {
 
         // Insert old edge manually with a 1970 timestamp
         sqlx::query(
-            "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
-             VALUES (?1, ?2, 'uses', 'Src uses Old', 1.0, '1970-01-01 00:00:00')",
+            sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
+             VALUES (?1, ?2, 'uses', 'Src uses Old', 1.0, '1970-01-01 00:00:00')"),
         )
         .bind(src)
         .bind(old)
@@ -727,8 +729,8 @@ mod tests {
 
         // Causal edge from A (inserted with explicit edge_type)
         sqlx::query(
-            "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, edge_type)
-             VALUES (?1, ?2, 'caused', 'A caused CCausal', 1.0, datetime('now'), 'causal')",
+            sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, edge_type)
+             VALUES (?1, ?2, 'caused', 'A caused CCausal', 1.0, datetime('now'), 'causal')"),
         )
         .bind(a)
         .bind(c_causal)

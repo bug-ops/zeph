@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use futures::TryStreamExt as _;
 use petgraph::Graph;
@@ -585,7 +587,7 @@ mod tests {
 
     use super::*;
     use crate::graph::types::EntityType;
-    use crate::sqlite::SqliteStore;
+    use crate::store::SqliteStore;
 
     async fn setup() -> GraphStore {
         let store = SqliteStore::new(":memory:").await.unwrap();
@@ -765,9 +767,9 @@ mod tests {
         store.invalidate_edge(edge_id).await.unwrap();
 
         // Manually set expired_at to a date far in the past to trigger deletion.
-        sqlx::query(
-            "UPDATE graph_edges SET expired_at = datetime('now', '-200 days') WHERE id = ?1",
-        )
+        sqlx::query(sql!(
+            "UPDATE graph_edges SET expired_at = datetime('now', '-200 days') WHERE id = ?1"
+        ))
         .bind(edge_id)
         .execute(store.pool())
         .await
@@ -787,9 +789,9 @@ mod tests {
             .unwrap();
 
         // Set last_seen_at to far in the past.
-        sqlx::query(
-            "UPDATE graph_entities SET last_seen_at = datetime('now', '-200 days') WHERE id = ?1",
-        )
+        sqlx::query(sql!(
+            "UPDATE graph_entities SET last_seen_at = datetime('now', '-200 days') WHERE id = ?1"
+        ))
         .bind(iso)
         .execute(store.pool())
         .await
@@ -840,7 +842,7 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_owned();
 
         let store1 = {
-            let s = crate::sqlite::SqliteStore::new(&path).await.unwrap();
+            let s = crate::store::SqliteStore::new(&path).await.unwrap();
             GraphStore::new(s.pool().clone())
         };
 
@@ -854,7 +856,7 @@ mod tests {
 
         // Open a second handle to the same file and verify the value persists.
         let store2 = {
-            let s = crate::sqlite::SqliteStore::new(&path).await.unwrap();
+            let s = crate::store::SqliteStore::new(&path).await.unwrap();
             GraphStore::new(s.pool().clone())
         };
         assert_eq!(store2.extraction_count().await.unwrap(), 5);

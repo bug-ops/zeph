@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_common::text::truncate_to_bytes_ref;
+#[allow(unused_imports)]
+use zeph_db::sql;
 
 use super::SqliteStore;
 use crate::error::MemoryError;
@@ -65,7 +67,7 @@ impl SqliteStore {
                 "learned_preferences: value truncated to 256 bytes"
             );
         }
-        sqlx::query(
+        sqlx::query(sql!(
             "INSERT INTO learned_preferences \
              (preference_key, preference_value, confidence, evidence_count, updated_at) \
              VALUES (?, ?, ?, ?, datetime('now')) \
@@ -73,8 +75,8 @@ impl SqliteStore {
                preference_value = excluded.preference_value, \
                confidence = excluded.confidence, \
                evidence_count = excluded.evidence_count, \
-               updated_at = datetime('now')",
-        )
+               updated_at = datetime('now')"
+        ))
         .bind(key_trunc)
         .bind(value_trunc)
         .bind(confidence)
@@ -90,11 +92,11 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_learned_preferences(&self) -> Result<Vec<LearnedPreferenceRow>, MemoryError> {
-        let rows: Vec<PreferenceTuple> = sqlx::query_as(
+        let rows: Vec<PreferenceTuple> = sqlx::query_as(sql!(
             "SELECT id, preference_key, preference_value, confidence, evidence_count, updated_at \
              FROM learned_preferences \
-             ORDER BY confidence DESC",
-        )
+             ORDER BY confidence DESC"
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
@@ -125,13 +127,13 @@ impl SqliteStore {
             String,
         );
 
-        let rows: Vec<Tuple> = sqlx::query_as(
+        let rows: Vec<Tuple> = sqlx::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
              FROM user_corrections \
              WHERE id > ? \
-             ORDER BY id ASC LIMIT ?",
-        )
+             ORDER BY id ASC LIMIT ?"
+        ))
         .bind(after_id)
         .bind(limit)
         .fetch_all(&self.pool)

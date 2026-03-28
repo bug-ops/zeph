@@ -55,7 +55,7 @@ impl SemanticMemory {
         query: &str,
         limit: usize,
         min_score: f32,
-    ) -> Result<Vec<crate::sqlite::corrections::UserCorrectionRow>, MemoryError> {
+    ) -> Result<Vec<crate::store::corrections::UserCorrectionRow>, MemoryError> {
         let Some(ref store) = self.qdrant else {
             tracing::debug!("corrections: skipped, no vector store");
             return Ok(vec![]);

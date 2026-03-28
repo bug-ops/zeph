@@ -28,6 +28,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite", "migrate"] }
 thiserror.workspace = true
+zeph-db.workspace = true
 tiktoken-rs.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 tokio-util = { workspace = true, features = ["rt"] }
@@ -38,10 +39,12 @@ zeph-llm.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [features]
-default = []
+default = ["sqlite"]
 compression-guidelines = []
 experiments = []
 pdf = ["dep:pdf-extract"]
+sqlite = ["zeph-db/sqlite"]
+postgres = ["zeph-db/postgres"]
 
 [[bench]]
 name = "token_estimation"
