@@ -4767,5 +4767,13 @@ mod pre_execution_audit_tests {
             content.contains("read_file"),
             "audit log entry must reference the blocked tool id; got: {content}"
         );
+        assert!(
+            content.contains("\"error_domain\":\"security\""),
+            "error_domain not found in audit entry"
+        );
+        assert!(
+            content.contains("\"duration_ms\":0"),
+            "duration_ms not found in audit entry"
+        );
     }
 }
