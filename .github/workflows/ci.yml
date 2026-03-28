@@ -245,6 +245,8 @@ jobs:
           name: nextest-archive-zeph-db-postgres
       - name: Run postgres integration tests (testcontainers)
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-db-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only
+      - name: Run Qdrant integration tests (testcontainers)
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(qdrant_integration)'
 
   coverage:
     name: Coverage

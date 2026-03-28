@@ -101,7 +101,13 @@ macro_rules! sql {
 #[cfg(feature = "postgres")]
 #[macro_export]
 macro_rules! sql {
-    ($query:expr) => {{ $crate::rewrite_placeholders($query) }};
+    ($query:expr) => {{
+        // Leak the rewritten query string to obtain `&'static str`.
+        // The set of unique SQL strings in the application is finite, so total
+        // leaked memory is bounded and acceptable for a long-running process.
+        let s: String = $crate::rewrite_placeholders($query);
+        Box::leak(s.into_boxed_str()) as &'static str
+    }};
 }
 
 /// Returns `true` if the given database URL looks like a `PostgreSQL` connection string.
