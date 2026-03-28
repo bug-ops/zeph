@@ -134,6 +134,9 @@ struct SharedAgentDeps {
         zeph_sanitizer::guardrail::GuardrailConfig,
     )>,
 
+    /// Audit logger for pre-execution verifier blocks. `None` when audit is disabled.
+    audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>>,
+
     // Config snapshot — single source of truth for all config-derived agent settings
     session_config: zeph_core::AgentSessionConfig,
     focus_config: zeph_core::config::FocusConfig,
@@ -276,12 +279,14 @@ async fn build_acp_deps(
         )
         .with_output_filters(filter_registry);
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let mut acp_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
     {
         let logger = std::sync::Arc::new(logger);
         shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));
-        scrape_executor = scrape_executor.with_audit(logger);
+        scrape_executor = scrape_executor.with_audit(std::sync::Arc::clone(&logger));
+        acp_audit_logger = Some(logger);
     }
     let file_executor = zeph_tools::FileExecutor::new(
         config
@@ -464,6 +469,7 @@ async fn build_acp_deps(
         quarantine_provider: app.build_quarantine_provider(),
         #[cfg(feature = "guardrail")]
         guardrail_provider: app.build_guardrail_provider(),
+        audit_logger: acp_audit_logger,
         session_config,
         focus_config: config.agent.focus.clone(),
         sidequest_config: config.memory.sidequest.clone(),
@@ -697,6 +703,10 @@ async fn spawn_acp_agent(
         .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider),
     )
     .await;
+
+    if let Some(ref logger) = d.audit_logger {
+        agent = agent.with_audit_logger(std::sync::Arc::clone(logger));
+    }
 
     // Wire scheduler per session: apply update/custom receivers and add executor.
     #[cfg(feature = "scheduler")]

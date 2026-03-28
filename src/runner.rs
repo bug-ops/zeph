@@ -956,6 +956,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
 
+    let agent = if let Some(logger) = tool_setup.audit_logger {
+        agent.with_audit_logger(logger)
+    } else {
+        agent
+    };
+
     // Wire tool dependency graph if enabled (#2024).
     let agent = if config.tools.dependencies.enabled && !config.tools.dependencies.rules.is_empty()
     {

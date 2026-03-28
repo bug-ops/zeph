@@ -279,12 +279,14 @@ pub(crate) async fn run_daemon(
         )
         .with_output_filters(filter_registry);
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let mut daemon_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
     {
         let logger = std::sync::Arc::new(logger);
         shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));
-        scrape_executor = scrape_executor.with_audit(logger);
+        scrape_executor = scrape_executor.with_audit(std::sync::Arc::clone(&logger));
+        daemon_audit_logger = Some(logger);
     }
     let file_executor = zeph_tools::FileExecutor::new(
         config
@@ -392,6 +394,12 @@ pub(crate) async fn run_daemon(
         .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider),
     )
     .await;
+
+    let agent = if let Some(logger) = daemon_audit_logger {
+        agent.with_audit_logger(logger)
+    } else {
+        agent
+    };
 
     // Wire tool dependency graph if enabled (#2024).
     let agent = if config.tools.dependencies.enabled && !config.tools.dependencies.rules.is_empty()

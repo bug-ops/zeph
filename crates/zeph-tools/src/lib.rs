@@ -31,7 +31,7 @@ pub mod trust_level;
 pub mod verifier;
 
 pub use anomaly::{AnomalyDetector, AnomalySeverity};
-pub use audit::{AuditEntry, AuditLogger, AuditResult};
+pub use audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::{

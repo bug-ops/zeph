@@ -620,6 +620,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach an audit logger for pre-execution verifier blocks.
+    #[must_use]
+    pub fn with_audit_logger(mut self, logger: std::sync::Arc<zeph_tools::AuditLogger>) -> Self {
+        self.tool_orchestrator.audit_logger = Some(logger);
+        self
+    }
+
     #[must_use]
     pub fn with_redact_credentials(mut self, enabled: bool) -> Self {
         self.runtime.redact_credentials = enabled;

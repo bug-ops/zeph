@@ -691,6 +691,27 @@ impl<C: Channel> Agent<C> {
                                 &call.tool_id,
                                 format!("{}: {}", verifier.name(), reason),
                             );
+                            if let Some(ref logger) = self.tool_orchestrator.audit_logger {
+                                let args_json =
+                                    serde_json::to_string(&args_value).unwrap_or_default();
+                                let entry = zeph_tools::AuditEntry {
+                                    timestamp: zeph_tools::chrono_now(),
+                                    tool: call.tool_id.clone(),
+                                    command: args_json,
+                                    result: zeph_tools::AuditResult::Blocked {
+                                        reason: format!("{}: {}", verifier.name(), reason),
+                                    },
+                                    duration_ms: 0,
+                                    error_category: Some("pre_execution_block".to_owned()),
+                                    error_domain: Some("security".to_owned()),
+                                    claim_source: None,
+                                    mcp_server_id: None,
+                                    injection_flagged: false,
+                                    embedding_anomalous: false,
+                                };
+                                let logger = std::sync::Arc::clone(logger);
+                                tokio::spawn(async move { logger.log(&entry).await });
+                            }
                             pre_exec_blocked[idx] = true;
                             break;
                         }

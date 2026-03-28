@@ -28,6 +28,8 @@ pub(crate) struct ToolSetup {
     pub(crate) tool_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
     /// Watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     pub(crate) mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+    /// Audit logger to pass to the agent for pre-execution block recording. `None` when audit is disabled.
+    pub(crate) audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
 }
 
 #[derive(Clone)]
@@ -345,12 +347,14 @@ pub(crate) async fn build_tool_setup(
         .with_permissions(permission_policy)
         .with_output_filters(filter_registry);
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let mut audit_logger: Option<Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
     {
-        let logger = std::sync::Arc::new(logger);
-        shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));
-        scrape_executor = scrape_executor.with_audit(logger);
+        let logger = Arc::new(logger);
+        shell_executor = shell_executor.with_audit(Arc::clone(&logger));
+        scrape_executor = scrape_executor.with_audit(Arc::clone(&logger));
+        audit_logger = Some(logger);
     }
 
     let tool_event_rx = if with_tool_events {
@@ -415,6 +419,7 @@ pub(crate) async fn build_tool_setup(
         mcp_shared_tools,
         tool_event_rx,
         mcp_tool_rx,
+        audit_logger,
     }
 }
 

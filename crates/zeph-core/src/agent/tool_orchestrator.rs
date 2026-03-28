@@ -34,6 +34,8 @@ pub(crate) struct ToolOrchestrator {
     /// concerns: they inspect tool arguments at dispatch time, consistent with
     /// repeat-detection, rate-limiting, and overflow controls which also live here.
     pub(super) pre_execution_verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>>,
+    /// Audit logger for pre-execution verifier blocks. `None` when audit is disabled.
+    pub(super) audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>>,
     /// Think-Augmented Function Calling configuration.
     pub(crate) tafc: TafcConfig,
     /// Session-scoped cache for tool results. Persists across tool rounds within a session;
@@ -77,6 +79,7 @@ impl ToolOrchestrator {
             retry_base_ms: 500,
             retry_max_ms: 5_000,
             pre_execution_verifiers: Vec::new(),
+            audit_logger: None,
             tafc: TafcConfig::default(),
             result_cache: ToolResultCache::new(true, Some(Duration::from_secs(300))),
             parameter_reformat_provider: String::new(),

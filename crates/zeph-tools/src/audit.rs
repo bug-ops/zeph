@@ -101,7 +101,8 @@ impl AuditLogger {
     }
 }
 
-pub(crate) fn chrono_now() -> String {
+#[must_use]
+pub fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

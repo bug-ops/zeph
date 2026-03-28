@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tools): write `AuditEntry` with `AuditResult::Blocked` when a pre-execution verifier blocks a tool call; previously the block was logged and metered but never recorded in the audit log (#2343)
 - fix(core): `/reset` command now handled in `handle_builtin_command` as an alias for `/clear` with confirmation reply; previously fell through to LLM inference in all channels (#2339)
 - fix(telegram-e2e): reduce `scenario_long_output` prompt from 400 to 100 items and `first_timeout` from 90s to 60s to avoid LLM timeout under load (#2340)
 
