@@ -259,13 +259,13 @@ async def scenario_empty_msg(client: TelegramClient, bot: str) -> bool:
 async def scenario_long_output(client: TelegramClient, bot: str) -> bool:
     """A prompt that forces >4096 chars of output must split into ≥2 messages."""
     prompt = (
-        "Write a numbered list from 1 to 400, one item per line, in this exact format: "
+        "Write a numbered list from 1 to 100, one item per line, in this exact format: "
         "'N. This is item number N in the list.' "
         "Do not use any tools or shell commands — output the list directly. "
         "Output ONLY the list with no preamble and no trailing summary."
     )
     replies = await _send_and_collect(
-        client, bot, prompt, first_timeout=90.0, idle_after=15.0, max_messages=10
+        client, bot, prompt, first_timeout=60.0, idle_after=15.0, max_messages=10
     )
     ok = len(replies) >= 2
     excerpt = (

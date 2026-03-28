@@ -104,6 +104,13 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         feature_gate: None,
     },
     SlashCommandInfo {
+        name: "/reset",
+        args: "",
+        description: "Reset conversation history (alias for /clear, replies with confirmation)",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
+    SlashCommandInfo {
         name: "/clear-queue",
         args: "",
         description: "Discard queued messages",

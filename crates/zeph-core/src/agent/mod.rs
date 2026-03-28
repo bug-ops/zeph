@@ -2409,6 +2409,17 @@ impl<C: Channel> Agent<C> {
             return Ok(Some(false));
         }
 
+        if trimmed == "/reset" {
+            self.clear_history();
+            self.tool_orchestrator.clear_cache();
+            if let Ok(mut urls) = self.security.user_provided_urls.write() {
+                urls.clear();
+            }
+            self.channel.send("Conversation history reset.").await?;
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
         if trimmed == "/cache-stats" {
             let stats = self.tool_orchestrator.cache_stats();
             self.channel.send(&stats).await?;

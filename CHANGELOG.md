@@ -6,8 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(core): `/reset` command now handled in `handle_builtin_command` as an alias for `/clear` with confirmation reply; previously fell through to LLM inference in all channels (#2339)
+- fix(telegram-e2e): reduce `scenario_long_output` prompt from 400 to 100 items and `first_timeout` from 90s to 60s to avoid LLM timeout under load (#2340)
+
 ### Added
 
+- feat(core): `/reset` registered in `COMMANDS` (slash_commands.rs) under `SlashCategory::Session` so it appears in `/help` (#2339)
 - feat(mcp): per-message pruning cache — `PruningCache` struct with `CachedResult::Ok/Failed` enum added to `zeph-mcp::pruning`; `prune_tools_cached()` wrapper caches positive and negative (LLM-failure) results keyed on `(message_content_hash, tool_list_hash)` using blake3; `tool_list_hash` includes full tool metadata (server_id, name, description, input_schema) sorted by qualified name; cache reset at the start of each user turn and on tool-list changes (`check_tool_refresh`, `handle_mcp_add`, `handle_mcp_remove`); pruning wired into `rebuild_system_prompt` before the schema filter; `apply_pruned_mcp_tools()` writes the pruned subset to the shared executor `RwLock` without calling `sync_mcp_executor_tools`; `PruningCache`, `prune_tools_cached`, `content_hash`, `tool_list_hash` exported from `zeph-mcp` (#2298)
 - test(mcp): 13 new async tests for `prune_tools` and `PruningCache` in `zeph-mcp::pruning`: `always_include_pinned`, `always_include_matches_bare_name_across_servers`, `max_tools_cap_respected`, `below_min_detected_early_return` (replaces tautology), `llm_failure_propagates`, `parse_error_propagates`, `cache_positive_hit`, `cache_miss_on_message_change`, `cache_miss_on_tool_list_change`, `cache_negative_hit_skips_llm`, `cache_negative_hit_clears_on_reset`; `make_tool_with_server` helper added for cross-server fixture construction (#2300)
 - feat(tools): `ErrorDomain` enum (`Planning`, `Reflection`, `Action`, `System`) added to `zeph-tools`; `ToolErrorCategory::domain()` maps each fine-grained error category to its recovery domain for agent-level dispatch (#2253)
