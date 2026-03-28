@@ -558,6 +558,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         app.age_vault_arc(),
         Some(agent_status_tx.clone()),
         Some(memory.sqlite().pool()),
+        &provider,
     )
     .await;
 

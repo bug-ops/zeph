@@ -57,7 +57,7 @@ pub enum AnyProvider {
 
 impl AnyProvider {
     /// Return a cloneable closure that calls `embed()` on this provider.
-    pub fn embed_fn(&self) -> impl Fn(&str) -> crate::provider::EmbedFuture + Send + Sync {
+    pub fn embed_fn(&self) -> impl Fn(&str) -> crate::provider::EmbedFuture + Send + Sync + use<> {
         let provider = std::sync::Arc::new(self.clone());
         move |text: &str| -> crate::provider::EmbedFuture {
             let p = std::sync::Arc::clone(&provider);

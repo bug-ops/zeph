@@ -19,6 +19,7 @@ use tokio::task::JoinSet;
 use rmcp::transport::auth::CredentialStore;
 
 use crate::client::{McpClient, OAuthConnectResult, ToolRefreshEvent};
+use crate::embedding_guard::EmbeddingAnomalyGuard;
 use crate::error::McpError;
 use crate::policy::PolicyEnforcer;
 use crate::prober::DefaultMcpProber;
@@ -129,6 +130,8 @@ pub struct McpManager {
     prober: Option<DefaultMcpProber>,
     /// Optional persistent trust score store. When set, probe results are persisted.
     trust_store: Option<Arc<TrustScoreStore>>,
+    /// Optional embedding anomaly guard. When set, called after every successful tool call.
+    embedding_guard: Option<EmbeddingAnomalyGuard>,
 }
 
 impl std::fmt::Debug for McpManager {
@@ -178,6 +181,7 @@ impl McpManager {
             server_trust: Arc::new(tokio::sync::RwLock::new(server_trust)),
             prober: None,
             trust_store: None,
+            embedding_guard: None,
         }
     }
 
@@ -192,6 +196,13 @@ impl McpManager {
     #[must_use]
     pub fn with_trust_store(mut self, store: Arc<TrustScoreStore>) -> Self {
         self.trust_store = Some(store);
+        self
+    }
+
+    /// Attach an embedding anomaly guard.
+    #[must_use]
+    pub fn with_embedding_guard(mut self, guard: EmbeddingAnomalyGuard) -> Self {
+        self.embedding_guard = Some(guard);
         self
     }
 
@@ -680,7 +691,16 @@ impl McpManager {
             .ok_or_else(|| McpError::ServerNotFound {
                 server_id: server_id.into(),
             })?;
-        client.call_tool(tool_name, args).await
+        let result = client.call_tool(tool_name, args).await?;
+
+        if let Some(ref guard) = self.embedding_guard {
+            let text = extract_text_content(&result);
+            if !text.is_empty() {
+                guard.check_async(server_id, tool_name, &text);
+            }
+        }
+
+        Ok(result)
     }
 
     /// Connect a new server at runtime, return its tool list.
@@ -895,6 +915,21 @@ impl McpManager {
 
 /// Sanitize, attest, then filter tools based on trust level and allowlist.
 ///
+fn extract_text_content(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let rmcp::model::RawContent::Text(t) = &c.raw {
+                Some(t.text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Always sanitizes first (security invariant), then runs attestation against
 /// `expected_tools`, then applies allowlist filtering.
 fn ingest_tools(

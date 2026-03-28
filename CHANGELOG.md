@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(mcp): wire `EmbeddingAnomalyGuard` into `McpManager` — `with_embedding_guard()` builder added; `call_tool()` calls `guard.check_async()` fire-and-forget after every successful tool call; `build_tool_setup()` in `agent_setup.rs` creates and wires the guard when `security.content_isolation.embedding_guard.enabled = true`; background drain task logs anomalous and regex-injection events at `warn!` level; `AnyProvider::embed_fn()` return type annotated with `+ use<>` to prevent lifetime overcapture in Edition 2024 (#2331)
+
 - fix(a2a): A2A response shift — replace `try_recv()` drain with a blocking drain-until-`Flush` loop; the agent loop always emits `Flush` as the definitive end-of-turn sentinel after `FullMessage`, so waiting for it eliminates the TOCTOU race where tail events (`Usage`, `SessionTitle`, `Flush`) arrived after the drain window and leaked into the next request (#2326)
 - fix(a2a): drain timeout — the drain-until-`Flush` loop in `AgentTaskProcessor::process()` is now guarded by a configurable `tokio::time::timeout`; if the agent loop panics while holding the sender `Arc`, the drain no longer blocks indefinitely but logs a `warn` and proceeds; `A2aServerConfig` gains `drain_timeout_ms` (default `30_000`) (#2329)
 - fix(mcp): silent drop of embedding guard result on closed receiver — replace `let _ = tx.send(result)` with an explicit `is_err()` check that logs a `WARN` when the result channel is closed; prevents silent failure hiding in `EmbeddingAnomalyGuard::check_async()` (#2313)

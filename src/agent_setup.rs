@@ -294,6 +294,37 @@ fn uri_to_path(uri: &str) -> String {
         .to_string()
 }
 
+async fn drain_embedding_guard_events(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::EmbeddingGuardEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        match &event.result {
+            zeph_mcp::EmbeddingGuardResult::Anomalous {
+                distance,
+                threshold,
+            } => {
+                tracing::warn!(
+                    server_id = event.server_id,
+                    tool_name = event.tool_name,
+                    distance,
+                    threshold,
+                    "embedding anomaly detected in MCP tool output"
+                );
+            }
+            zeph_mcp::EmbeddingGuardResult::RegexFallback {
+                injection_detected: true,
+            } => {
+                tracing::warn!(
+                    server_id = event.server_id,
+                    tool_name = event.tool_name,
+                    "regex injection detected in MCP tool output (cold-start fallback)"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(crate) async fn build_tool_setup(
     config: &Config,
     permission_policy: zeph_tools::PermissionPolicy,
@@ -302,6 +333,7 @@ pub(crate) async fn build_tool_setup(
     age_vault: Option<&Arc<tokio::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pool: Option<&sqlx::SqlitePool>,
+    provider: &zeph_llm::any::AnyProvider,
 ) -> ToolSetup {
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -344,6 +376,18 @@ pub(crate) async fn build_tool_setup(
     }
     mcp_manager_builder =
         zeph_core::bootstrap::wire_trust_calibration(mcp_manager_builder, config, pool).await;
+    if config.security.content_isolation.embedding_guard.enabled {
+        let guard_config = &config.security.content_isolation.embedding_guard;
+        let embed_fn = Arc::new(provider.embed_fn());
+        let (guard, rx) = zeph_mcp::EmbeddingAnomalyGuard::new(
+            embed_fn,
+            guard_config.threshold,
+            guard_config.min_samples,
+            guard_config.ema_floor,
+        );
+        mcp_manager_builder = mcp_manager_builder.with_embedding_guard(guard);
+        tokio::spawn(drain_embedding_guard_events(rx));
+    }
     let mcp_manager = Arc::new(mcp_manager_builder);
     let (mcp_tools, mcp_outcomes) = mcp_manager.connect_all().await;
     tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
