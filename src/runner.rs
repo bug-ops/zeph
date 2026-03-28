@@ -1145,6 +1145,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    #[cfg(feature = "context-compression")]
+    let agent = {
+        let compress_provider = app.build_compress_provider();
+        if let Some(cp) = compress_provider {
+            agent.with_compress_provider(cp)
+        } else {
+            agent
+        }
+    };
     let planner_provider = app.build_planner_provider();
     let agent = if let Some(pp) = planner_provider {
         agent.with_planner_provider(pp)

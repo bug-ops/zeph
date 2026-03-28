@@ -357,6 +357,7 @@ impl<C: Channel> Agent<C> {
                 trace_collector: None,
                 iteration_counter: 0,
                 anomaly_detector: None,
+                reasoning_model_warning: true,
                 logging_config: crate::config::LoggingConfig::default(),
                 dump_dir: None,
                 trace_service_name: String::new(),
@@ -482,6 +483,8 @@ impl<C: Channel> Agent<C> {
                 provider_override: None,
                 judge_provider: None,
                 probe_provider: None,
+                #[cfg(feature = "context-compression")]
+                compress_provider: None,
                 cached_prompt_tokens: initial_prompt_tokens,
                 server_compaction_active: false,
                 stt: None,

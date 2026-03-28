@@ -738,7 +738,11 @@ impl<C: Channel> Agent<C> {
                                     duration_ms: 0,
                                     error_category: Some("pre_execution_block".to_owned()),
                                     error_domain: Some("security".to_owned()),
-                                    error_phase: None,
+                                    error_phase: Some(
+                                        zeph_tools::error_taxonomy::ToolInvocationPhase::Setup
+                                            .label()
+                                            .to_owned(),
+                                    ),
                                     claim_source: None,
                                     mcp_server_id: None,
                                     injection_flagged: false,
@@ -1510,6 +1514,13 @@ impl<C: Channel> Agent<C> {
                     tool_err_category = Some(category);
                     anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
                         AnomalyOutcome::Blocked
+                    } else if is_quality_failure
+                        && zeph_tools::is_reasoning_model(self.provider.name())
+                    {
+                        AnomalyOutcome::ReasoningQualityFailure {
+                            model: self.provider.name().to_owned(),
+                            tool: tc.name.clone(),
+                        }
                     } else {
                         AnomalyOutcome::Error
                     };
@@ -1955,9 +1966,14 @@ impl<C: Channel> Agent<C> {
             },
         ];
 
+        let compress_provider = self
+            .providers
+            .compress_provider
+            .as_ref()
+            .unwrap_or(&self.provider);
         let summary = match tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            self.provider.chat(&summary_messages),
+            compress_provider.chat(&summary_messages),
         )
         .await
         {

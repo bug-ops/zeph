@@ -23,6 +23,13 @@ enum AnomalyOutcome {
     Success,
     Error,
     Blocked,
+    /// Quality failure (`ToolNotFound`, `InvalidParameters`, `TypeMismatch`) from a
+    /// reasoning-enhanced model. Triggers `record_reasoning_quality_failure` which both
+    /// counts the error in the sliding window and emits a `reasoning_amplification` warning.
+    ReasoningQualityFailure {
+        model: String,
+        tool: String,
+    },
 }
 
 /// Result of a response cache lookup.
@@ -265,6 +272,13 @@ impl<C: Channel> Agent<C> {
             AnomalyOutcome::Success => det.record_success(),
             AnomalyOutcome::Error => det.record_error(),
             AnomalyOutcome::Blocked => det.record_blocked(),
+            AnomalyOutcome::ReasoningQualityFailure { model, tool } => {
+                if self.debug_state.reasoning_model_warning {
+                    det.record_reasoning_quality_failure(&model, &tool);
+                } else {
+                    det.record_error();
+                }
+            }
         }
         if let Some(anomaly) = det.check() {
             tracing::warn!(severity = ?anomaly.severity, "{}", anomaly.description);

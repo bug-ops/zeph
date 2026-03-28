@@ -205,6 +205,9 @@ pub(crate) struct DebugState {
     /// Used to key spans in `trace_collector.active_iterations`.
     pub(crate) iteration_counter: usize,
     pub(crate) anomaly_detector: Option<zeph_tools::AnomalyDetector>,
+    /// Whether to emit `reasoning_amplification` warnings for quality failures from reasoning
+    /// models. Mirrors `AnomalyConfig::reasoning_model_warning`. Default: `true`.
+    pub(crate) reasoning_model_warning: bool,
     pub(crate) logging_config: crate::config::LoggingConfig,
     /// Base dump directory — stored so `/dump-format trace` can create a `TracingCollector` (CR-04).
     pub(crate) dump_dir: Option<PathBuf>,
@@ -252,6 +255,10 @@ pub(crate) struct ProviderState {
     /// Dedicated provider for compaction probe LLM calls. Falls back to `summary_provider`
     /// (or primary) when `None`.
     pub(crate) probe_provider: Option<AnyProvider>,
+    /// Dedicated provider for `compress_context` LLM calls (#2356).
+    /// Falls back to the primary provider when `None`.
+    #[cfg(feature = "context-compression")]
+    pub(crate) compress_provider: Option<AnyProvider>,
     pub(crate) cached_prompt_tokens: u64,
     /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
     /// When true, client-side compaction is skipped.

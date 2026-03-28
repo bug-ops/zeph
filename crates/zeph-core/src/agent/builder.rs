@@ -461,6 +461,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set a dedicated provider for `compress_context` LLM calls (#2356).
+    ///
+    /// When not set, `handle_compress_context` falls back to the primary provider.
+    #[must_use]
+    #[cfg(feature = "context-compression")]
+    pub fn with_compress_provider(mut self, provider: AnyProvider) -> Self {
+        self.providers.compress_provider = Some(provider);
+        self
+    }
+
     #[must_use]
     pub fn with_planner_provider(mut self, provider: AnyProvider) -> Self {
         self.orchestration.planner_provider = Some(provider);
@@ -1282,6 +1292,7 @@ impl<C: Channel> Agent<C> {
             .with_graph_config(graph_config)
             .with_orchestration_config(orchestration_config);
 
+        self.debug_state.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {
             self = self.with_anomaly_detector(zeph_tools::AnomalyDetector::new(
                 anomaly_config.window_size,

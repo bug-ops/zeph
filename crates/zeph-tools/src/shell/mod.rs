@@ -536,13 +536,15 @@ impl ShellExecutor {
         error: Option<&ToolError>,
     ) {
         if let Some(ref logger) = self.audit_logger {
-            let (error_category, error_domain) = error.map_or((None, None), |e| {
-                let cat = e.category();
-                (
-                    Some(cat.label().to_owned()),
-                    Some(cat.domain().label().to_owned()),
-                )
-            });
+            let (error_category, error_domain, error_phase) =
+                error.map_or((None, None, None), |e| {
+                    let cat = e.category();
+                    (
+                        Some(cat.label().to_owned()),
+                        Some(cat.domain().label().to_owned()),
+                        Some(cat.phase().label().to_owned()),
+                    )
+                });
             let entry = AuditEntry {
                 timestamp: chrono_now(),
                 tool: "shell".into(),
@@ -551,7 +553,7 @@ impl ShellExecutor {
                 duration_ms,
                 error_category,
                 error_domain,
-                error_phase: None,
+                error_phase,
                 claim_source: Some(ClaimSource::Shell),
                 mcp_server_id: None,
                 injection_flagged: false,
