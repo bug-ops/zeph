@@ -258,6 +258,72 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn claim_source_serde_roundtrip() {
+        use crate::executor::ClaimSource;
+        let cases = [
+            (ClaimSource::Shell, "\"shell\""),
+            (ClaimSource::FileSystem, "\"file_system\""),
+            (ClaimSource::WebScrape, "\"web_scrape\""),
+            (ClaimSource::Mcp, "\"mcp\""),
+            (ClaimSource::A2a, "\"a2a\""),
+            (ClaimSource::CodeSearch, "\"code_search\""),
+            (ClaimSource::Diagnostics, "\"diagnostics\""),
+            (ClaimSource::Memory, "\"memory\""),
+        ];
+        for (variant, expected_json) in cases {
+            let serialized = serde_json::to_string(&variant).unwrap();
+            assert_eq!(serialized, expected_json, "serialize {variant:?}");
+            let deserialized: ClaimSource = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(deserialized, variant, "deserialize {variant:?}");
+        }
+    }
+
+    #[test]
+    fn audit_entry_claim_source_none_omitted() {
+        let entry = AuditEntry {
+            timestamp: "0".into(),
+            tool: "shell".into(),
+            command: "echo".into(),
+            result: AuditResult::Success,
+            duration_ms: 1,
+            error_category: None,
+            error_domain: None,
+            claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !json.contains("claim_source"),
+            "claim_source must be omitted when None: {json}"
+        );
+    }
+
+    #[test]
+    fn audit_entry_claim_source_some_present() {
+        use crate::executor::ClaimSource;
+        let entry = AuditEntry {
+            timestamp: "0".into(),
+            tool: "shell".into(),
+            command: "echo".into(),
+            result: AuditResult::Success,
+            duration_ms: 1,
+            error_category: None,
+            error_domain: None,
+            claim_source: Some(ClaimSource::Shell),
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            json.contains("\"claim_source\":\"shell\""),
+            "expected claim_source=shell in JSON: {json}"
+        );
+    }
+
     #[tokio::test]
     async fn audit_logger_multiple_entries() {
         let dir = tempfile::tempdir().unwrap();

@@ -301,7 +301,7 @@ impl ShellExecutor {
         } else {
             AuditResult::Success
         };
-        self.log_audit(block, audit_result, duration_ms).await;
+        self.log_audit(block, audit_result, duration_ms, None).await;
 
         if is_timeout {
             self.emit_completed(block, &out, false, None);
@@ -382,33 +382,37 @@ impl ShellExecutor {
         // Always check the blocklist first — it is a hard security boundary
         // that must not be bypassed by the PermissionPolicy layer.
         if let Some(blocked) = self.find_blocked_command(block) {
+            let err = ToolError::Blocked {
+                command: blocked.to_owned(),
+            };
             self.log_audit(
                 block,
                 AuditResult::Blocked {
                     reason: format!("blocked command: {blocked}"),
                 },
                 0,
+                Some(&err),
             )
             .await;
-            return Err(ToolError::Blocked {
-                command: blocked.to_owned(),
-            });
+            return Err(err);
         }
 
         if let Some(ref policy) = self.permission_policy {
             match policy.check("bash", block) {
                 PermissionAction::Deny => {
+                    let err = ToolError::Blocked {
+                        command: block.to_owned(),
+                    };
                     self.log_audit(
                         block,
                         AuditResult::Blocked {
                             reason: "denied by permission policy".to_owned(),
                         },
                         0,
+                        Some(&err),
                     )
                     .await;
-                    return Err(ToolError::Blocked {
-                        command: block.to_owned(),
-                    });
+                    return Err(err);
                 }
                 PermissionAction::Ask if !skip_confirm => {
                     return Err(ToolError::ConfirmationRequired {
@@ -524,17 +528,30 @@ impl ShellExecutor {
         None
     }
 
-    async fn log_audit(&self, command: &str, result: AuditResult, duration_ms: u64) {
+    async fn log_audit(
+        &self,
+        command: &str,
+        result: AuditResult,
+        duration_ms: u64,
+        error: Option<&ToolError>,
+    ) {
         if let Some(ref logger) = self.audit_logger {
+            let (error_category, error_domain) = error.map_or((None, None), |e| {
+                let cat = e.category();
+                (
+                    Some(cat.label().to_owned()),
+                    Some(cat.domain().label().to_owned()),
+                )
+            });
             let entry = AuditEntry {
                 timestamp: chrono_now(),
                 tool: "shell".into(),
                 command: command.into(),
                 result,
                 duration_ms,
-                error_category: None,
-                error_domain: None,
-                claim_source: None,
+                error_category,
+                error_domain,
+                claim_source: Some(ClaimSource::Shell),
                 mcp_server_id: None,
                 injection_flagged: false,
                 embedding_anomalous: false,

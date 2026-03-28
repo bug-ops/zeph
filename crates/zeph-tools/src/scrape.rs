@@ -142,14 +142,21 @@ impl ToolExecutor for WebScrapeExecutor {
                         &instruction.url,
                         AuditResult::Success,
                         duration_ms,
+                        None,
                     )
                     .await;
                     outputs.push(output);
                 }
                 Err(e) => {
                     let audit_result = tool_error_to_audit_result(&e);
-                    self.log_audit("web_scrape", &instruction.url, audit_result, duration_ms)
-                        .await;
+                    self.log_audit(
+                        "web_scrape",
+                        &instruction.url,
+                        audit_result,
+                        duration_ms,
+                        Some(&e),
+                    )
+                    .await;
                     return Err(e);
                 }
             }
@@ -184,6 +191,7 @@ impl ToolExecutor for WebScrapeExecutor {
                             &instruction.url,
                             AuditResult::Success,
                             duration_ms,
+                            None,
                         )
                         .await;
                         Ok(Some(ToolOutput {
@@ -201,8 +209,14 @@ impl ToolExecutor for WebScrapeExecutor {
                     }
                     Err(e) => {
                         let audit_result = tool_error_to_audit_result(&e);
-                        self.log_audit("web_scrape", &instruction.url, audit_result, duration_ms)
-                            .await;
+                        self.log_audit(
+                            "web_scrape",
+                            &instruction.url,
+                            audit_result,
+                            duration_ms,
+                            Some(&e),
+                        )
+                        .await;
                         Err(e)
                     }
                 }
@@ -215,7 +229,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 let duration_ms = start.elapsed().as_millis() as u64;
                 match result {
                     Ok(output) => {
-                        self.log_audit("fetch", &p.url, AuditResult::Success, duration_ms)
+                        self.log_audit("fetch", &p.url, AuditResult::Success, duration_ms, None)
                             .await;
                         Ok(Some(ToolOutput {
                             tool_name: "fetch".to_owned(),
@@ -232,7 +246,7 @@ impl ToolExecutor for WebScrapeExecutor {
                     }
                     Err(e) => {
                         let audit_result = tool_error_to_audit_result(&e);
-                        self.log_audit("fetch", &p.url, audit_result, duration_ms)
+                        self.log_audit("fetch", &p.url, audit_result, duration_ms, Some(&e))
                             .await;
                         Err(e)
                     }
@@ -260,17 +274,31 @@ fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {
 }
 
 impl WebScrapeExecutor {
-    async fn log_audit(&self, tool: &str, command: &str, result: AuditResult, duration_ms: u64) {
+    async fn log_audit(
+        &self,
+        tool: &str,
+        command: &str,
+        result: AuditResult,
+        duration_ms: u64,
+        error: Option<&ToolError>,
+    ) {
         if let Some(ref logger) = self.audit_logger {
+            let (error_category, error_domain) = error.map_or((None, None), |e| {
+                let cat = e.category();
+                (
+                    Some(cat.label().to_owned()),
+                    Some(cat.domain().label().to_owned()),
+                )
+            });
             let entry = AuditEntry {
                 timestamp: chrono_now(),
                 tool: tool.into(),
                 command: command.into(),
                 result,
                 duration_ms,
-                error_category: None,
-                error_domain: None,
-                claim_source: None,
+                error_category,
+                error_domain,
+                claim_source: Some(ClaimSource::WebScrape),
                 mcp_server_id: None,
                 injection_flagged: false,
                 embedding_anomalous: false,
@@ -1830,6 +1858,7 @@ mod tests {
                 "https://example.com/page",
                 AuditResult::Success,
                 42,
+                None,
             )
             .await;
 
@@ -1868,6 +1897,7 @@ mod tests {
                     reason: "scheme not allowed: http".into(),
                 },
                 0,
+                None,
             )
             .await;
 
