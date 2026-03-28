@@ -370,6 +370,29 @@ impl AppBuilder {
             }
         }
 
+        if self.config.skills.trust.scanner.capability_escalation_check {
+            // Build a trust-level mapping from all loaded skill metas.
+            // Skills without a trust record default to the configured default_level.
+            let default_level = self.config.skills.trust.default_level;
+            let trust_levels: Vec<(String, zeph_tools::TrustLevel)> = registry
+                .all_meta()
+                .iter()
+                .map(|meta| (meta.name.clone(), default_level))
+                .collect();
+
+            let violations = registry.check_escalations(&trust_levels);
+            for v in &violations {
+                tracing::warn!(
+                    skill = %v.skill_name,
+                    denied_tools = ?v.denied_tools,
+                    "capability escalation: skill declares tools exceeding its trust level"
+                );
+            }
+            if violations.is_empty() {
+                tracing::debug!("capability escalation check: no violations found");
+            }
+        }
+
         registry
     }
 

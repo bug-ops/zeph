@@ -20,7 +20,9 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
+use zeph_tools::TrustLevel;
 use zeph_tools::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
+use zeph_tools::trust_gate::QUARANTINE_DENIED;
 
 struct CompiledPattern {
     name: &'static str,
@@ -41,6 +43,53 @@ static PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
         })
         .collect()
 });
+
+/// Result of checking a skill's `allowed_tools` against trust-level permissions.
+#[derive(Debug, Default)]
+pub struct EscalationResult {
+    /// Name of the skill that declared tools beyond its trust level.
+    pub skill_name: String,
+    /// Tool names declared in `allowed_tools` that are denied at the skill's trust level.
+    pub denied_tools: Vec<String>,
+}
+
+/// Check whether a skill's declared `allowed_tools` exceed the permissions granted by
+/// `trust_level`.
+///
+/// Returns a list of tool names that are denied at the given trust level but declared
+/// in `allowed_tools`.
+///
+/// # Trust level semantics
+///
+/// - `Trusted` / `Verified`: all tools are permitted; always returns empty.
+/// - `Quarantined`: checks each tool against [`QUARANTINE_DENIED`]. Tools that match
+///   by exact name or `_{tool}` suffix are returned as violations.
+/// - `Blocked`: no tools are permitted; all declared tools are returned as violations.
+///
+/// # Known limitations (MVP)
+///
+/// `Sandboxed` trust level is not yet handled and behaves like `Trusted` (empty result).
+/// A dedicated sandbox allow-list will be added in a future iteration.
+#[must_use]
+pub fn check_capability_escalation(
+    allowed_tools: &[String],
+    trust_level: TrustLevel,
+) -> Vec<String> {
+    match trust_level {
+        TrustLevel::Trusted | TrustLevel::Verified => Vec::new(),
+        TrustLevel::Quarantined => allowed_tools
+            .iter()
+            .filter(|tool| {
+                QUARANTINE_DENIED
+                    .iter()
+                    .any(|denied| tool.as_str() == *denied || tool.ends_with(&format!("_{denied}")))
+            })
+            .cloned()
+            .collect(),
+        // Blocked skills must not declare any tools — all are violations.
+        TrustLevel::Blocked => allowed_tools.to_vec(),
+    }
+}
 
 /// Result of scanning a skill body for injection patterns.
 #[derive(Debug, Default)]
@@ -93,6 +142,54 @@ pub fn scan_skill_body(body: &str) -> ScanResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_escalation_trusted_allows_all() {
+        let tools = vec!["bash".to_owned(), "write".to_owned()];
+        assert!(check_capability_escalation(&tools, TrustLevel::Trusted).is_empty());
+    }
+
+    #[test]
+    fn capability_escalation_verified_allows_all() {
+        let tools = vec!["bash".to_owned()];
+        assert!(check_capability_escalation(&tools, TrustLevel::Verified).is_empty());
+    }
+
+    #[test]
+    fn capability_escalation_quarantined_detects_bash() {
+        let tools = vec!["bash".to_owned()];
+        let denied = check_capability_escalation(&tools, TrustLevel::Quarantined);
+        assert!(denied.contains(&"bash".to_owned()));
+    }
+
+    #[test]
+    fn capability_escalation_quarantined_allows_safe_tool() {
+        let tools = vec!["read_file".to_owned()];
+        let denied = check_capability_escalation(&tools, TrustLevel::Quarantined);
+        assert!(denied.is_empty());
+    }
+
+    #[test]
+    fn capability_escalation_blocked_returns_all() {
+        let tools = vec!["read_file".to_owned(), "list_dir".to_owned()];
+        let denied = check_capability_escalation(&tools, TrustLevel::Blocked);
+        assert_eq!(denied.len(), 2);
+    }
+
+    #[test]
+    fn capability_escalation_empty_allowed_tools() {
+        let tools: Vec<String> = vec![];
+        assert!(check_capability_escalation(&tools, TrustLevel::Quarantined).is_empty());
+        assert!(check_capability_escalation(&tools, TrustLevel::Blocked).is_empty());
+    }
+
+    #[test]
+    fn capability_escalation_quarantined_detects_mcp_suffixed_bash() {
+        // MCP-wrapped tool: "myserver_bash" ends with "_bash" — must be denied.
+        let tools = vec!["myserver_bash".to_owned()];
+        let denied = check_capability_escalation(&tools, TrustLevel::Quarantined);
+        assert!(denied.contains(&"myserver_bash".to_owned()));
+    }
 
     #[test]
     fn clean_body_returns_no_matches() {

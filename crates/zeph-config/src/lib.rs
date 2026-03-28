@@ -71,7 +71,7 @@ pub use sanitizer::{
 };
 #[cfg(feature = "guardrail")]
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
-pub use security::{SecurityConfig, TimeoutConfig, TrustConfig};
+pub use security::{ScannerConfig, SecurityConfig, TimeoutConfig, TrustConfig};
 pub use subagent::{
     HookDef, HookMatcher, HookType, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
     ToolPolicy,

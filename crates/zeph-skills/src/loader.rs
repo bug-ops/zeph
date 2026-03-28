@@ -15,6 +15,10 @@ pub struct SkillMeta {
     pub allowed_tools: Vec<String>,
     pub requires_secrets: Vec<String>,
     pub skill_dir: PathBuf,
+    /// Upstream URL where this skill was obtained (from `x-source-url` frontmatter field).
+    pub source_url: Option<String>,
+    /// Upstream git commit hash at install time (from `x-git-hash` frontmatter field).
+    pub git_hash: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +82,8 @@ struct RawFrontmatter {
     requires_secrets: Vec<String>,
     /// Whether `requires-secrets` (deprecated) was used instead of `x-requires-secrets`.
     deprecated_requires_secrets: bool,
+    source_url: Option<String>,
+    git_hash: Option<String>,
 }
 
 /// Detect whether `value` is a YAML block scalar indicator (`>` or `|`),
@@ -211,6 +217,16 @@ fn apply_field(raw: &mut RawFrontmatter, key: &str, value: String) {
                 .filter(|s| !s.is_empty())
                 .collect();
         }
+        "x-source-url" => {
+            if !value.is_empty() {
+                raw.source_url = Some(value);
+            }
+        }
+        "x-git-hash" => {
+            if !value.is_empty() {
+                raw.git_hash = Some(value);
+            }
+        }
         "requires-secrets" => {
             raw.deprecated_requires_secrets = true;
             // Only apply if x-requires-secrets was not already parsed.
@@ -244,6 +260,8 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
         allowed_tools: Vec::new(),
         requires_secrets: Vec::new(),
         deprecated_requires_secrets: false,
+        source_url: None,
+        git_hash: None,
     };
     let mut in_metadata = false;
 
@@ -436,6 +454,8 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         allowed_tools: raw.allowed_tools,
         requires_secrets: raw.requires_secrets,
         skill_dir,
+        source_url: raw.source_url,
+        git_hash: raw.git_hash,
     })
 }
 
@@ -1213,5 +1233,32 @@ mod tests {
             "block scalar on allowed-tools should be discarded, got {:?}",
             raw.allowed_tools
         );
+    }
+
+    #[test]
+    fn provenance_fields_parsed_from_frontmatter() {
+        let yaml = "x-source-url: https://github.com/example/skill\nx-git-hash: deadbeef\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(
+            raw.source_url.as_deref(),
+            Some("https://github.com/example/skill")
+        );
+        assert_eq!(raw.git_hash.as_deref(), Some("deadbeef"));
+    }
+
+    #[test]
+    fn provenance_fields_optional() {
+        let yaml = "name: git\ndescription: git helper\n";
+        let raw = parse_frontmatter(yaml);
+        assert!(raw.source_url.is_none());
+        assert!(raw.git_hash.is_none());
+    }
+
+    #[test]
+    fn provenance_fields_empty_value_ignored() {
+        let yaml = "x-source-url: \nx-git-hash: \n";
+        let raw = parse_frontmatter(yaml);
+        assert!(raw.source_url.is_none());
+        assert!(raw.git_hash.is_none());
     }
 }

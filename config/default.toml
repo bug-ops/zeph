@@ -159,6 +159,16 @@ cooldown_minutes = 60
 # HuggingFace repo ID for ML correction detector (requires detector_mode = "model" and classifiers feature).
 # When empty, falls back to classifiers.ner_model default.
 # detector_model = ""
+# Require cross-session validation before auto-promote/demote
+# cross_session_rollout = false
+# Minimum distinct sessions required for promotion (when cross_session_rollout = true)
+# min_sessions_before_promote = 2
+# Minimum distinct sessions before auto-demotion (when cross_session_rollout = true)
+# min_sessions_before_demote = 1
+# Maximum content sections (## headers) in auto-generated skills
+# max_auto_sections = 3
+# Domain evaluation gate before promoting auto-generated skills
+# domain_success_gate = false
 
 [skills.trust]
 # Default trust level for newly discovered skills: trusted, verified, quarantined, blocked
@@ -169,6 +179,12 @@ local_level = "trusted"
 hash_mismatch_level = "quarantined"
 # Scan skill body content for injection patterns at load time (advisory, secure by default)
 scan_on_load = true
+
+[skills.trust.scanner]
+# Scan for injection patterns in skill body (advisory, logs warnings)
+injection_patterns = true
+# Check that loaded skills don't declare tools exceeding their trust level
+# capability_escalation_check = false
 
 [memory]
 # SQLite database path for conversation history

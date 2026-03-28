@@ -85,6 +85,7 @@ impl<C: Channel> Agent<C> {
         self.update_metrics(|m| m.skill_confidence = confidences);
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn check_trust_transition(&self, skill_name: &str) {
         let Some(memory) = &self.memory_state.memory else {
             return;
@@ -101,6 +102,24 @@ impl<C: Channel> Agent<C> {
         let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
 
         if total >= config.auto_promote_min_uses && posterior > config.auto_promote_threshold {
+            if config.cross_session_rollout {
+                match memory.sqlite().distinct_session_count(skill_name).await {
+                    Ok(sessions) if sessions < i64::from(config.min_sessions_before_promote) => {
+                        tracing::debug!(
+                            skill = skill_name,
+                            sessions,
+                            required = config.min_sessions_before_promote,
+                            "cross-session rollout: insufficient sessions for promotion"
+                        );
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("cross-session count query failed for {skill_name}: {e:#}");
+                    }
+                }
+            }
+
             let trust_level = memory
                 .sqlite()
                 .load_skill_trust(skill_name)
@@ -141,6 +160,24 @@ impl<C: Channel> Agent<C> {
         }
 
         if total >= config.auto_demote_min_uses && posterior < config.auto_demote_threshold {
+            if config.cross_session_rollout {
+                match memory.sqlite().distinct_session_count(skill_name).await {
+                    Ok(sessions) if sessions < i64::from(config.min_sessions_before_demote) => {
+                        tracing::debug!(
+                            skill = skill_name,
+                            sessions,
+                            required = config.min_sessions_before_demote,
+                            "cross-session rollout: insufficient sessions for demotion"
+                        );
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("cross-session count query failed for {skill_name}: {e:#}");
+                    }
+                }
+            }
+
             let Ok(Some(trust_row)) = memory.sqlite().load_skill_trust(skill_name).await else {
                 return;
             };
@@ -343,6 +380,15 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
+        if !zeph_skills::evolution::validate_body_sections(generated_body, config.max_auto_sections)
+        {
+            tracing::warn!(
+                "improvement for {skill_name} rejected (exceeds {} sections)",
+                config.max_auto_sections
+            );
+            return Ok(());
+        }
+
         self.store_improved_version(
             memory,
             config,
@@ -461,6 +507,41 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         tracing::info!("generated v{next_ver} for skill {skill_name} (id={version_id})");
+
+        if config.domain_success_gate {
+            let gate_prompt = zeph_skills::evolution::build_domain_gate_prompt(
+                skill_name,
+                description,
+                generated_body,
+            );
+            let gate_messages = vec![Message {
+                role: Role::User,
+                content: gate_prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+            match self
+                .provider
+                .chat_typed_erased::<zeph_skills::evolution::DomainGateResult>(&gate_messages)
+                .await
+            {
+                Ok(gate) if !gate.domain_relevant => {
+                    tracing::warn!(
+                        skill = skill_name,
+                        reasoning = %gate.reasoning,
+                        "domain gate: generated skill drifts from original domain, skipping activation"
+                    );
+                    // Version is saved but not activated; return early.
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "domain gate check failed for {skill_name}, proceeding with activation: {e:#}"
+                    );
+                }
+            }
+        }
 
         if config.auto_activate {
             memory
@@ -1284,6 +1365,11 @@ mod tests {
             auto_demote_min_uses: 30,
             auto_demote_threshold: 0.40,
             feedback_provider: String::new(),
+            cross_session_rollout: false,
+            min_sessions_before_promote: 2,
+            min_sessions_before_demote: 1,
+            max_auto_sections: 3,
+            domain_success_gate: false,
         }
     }
 

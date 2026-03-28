@@ -53,6 +53,8 @@ pub struct SkillTrustRow {
     pub source_path: Option<String>,
     pub blake3_hash: String,
     pub updated_at: String,
+    /// Upstream git commit hash at install time (from `x-git-hash` frontmatter field).
+    pub git_hash: Option<String>,
 }
 
 type TrustTuple = (
@@ -63,6 +65,7 @@ type TrustTuple = (
     Option<String>,
     String,
     String,
+    Option<String>,
 );
 
 fn row_from_tuple(t: TrustTuple) -> SkillTrustRow {
@@ -75,6 +78,7 @@ fn row_from_tuple(t: TrustTuple) -> SkillTrustRow {
         source_path: t.4,
         blake3_hash: t.5,
         updated_at: t.6,
+        git_hash: t.7,
     }
 }
 
@@ -93,15 +97,49 @@ impl SqliteStore {
         source_path: Option<&str>,
         blake3_hash: &str,
     ) -> Result<(), MemoryError> {
+        self.upsert_skill_trust_with_git_hash(
+            skill_name,
+            trust_level,
+            source_kind,
+            source_url,
+            source_path,
+            blake3_hash,
+            None,
+        )
+        .await
+    }
+
+    /// Upsert trust metadata for a skill, including an optional upstream git hash.
+    ///
+    /// `git_hash` is the upstream commit hash from the `x-git-hash` SKILL.md frontmatter field.
+    /// It tracks the upstream commit at install time and is stored separately from `blake3_hash`
+    /// (which tracks content integrity).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_skill_trust_with_git_hash(
+        &self,
+        skill_name: &str,
+        trust_level: &str,
+        source_kind: SourceKind,
+        source_url: Option<&str>,
+        source_path: Option<&str>,
+        blake3_hash: &str,
+        git_hash: Option<&str>,
+    ) -> Result<(), MemoryError> {
         sqlx::query(
-            "INSERT INTO skill_trust (skill_name, trust_level, source_kind, source_url, source_path, blake3_hash, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, datetime('now')) \
+            "INSERT INTO skill_trust \
+             (skill_name, trust_level, source_kind, source_url, source_path, blake3_hash, git_hash, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) \
              ON CONFLICT(skill_name) DO UPDATE SET \
              trust_level = excluded.trust_level, \
              source_kind = excluded.source_kind, \
              source_url = excluded.source_url, \
              source_path = excluded.source_path, \
              blake3_hash = excluded.blake3_hash, \
+             git_hash = excluded.git_hash, \
              updated_at = datetime('now')",
         )
         .bind(skill_name)
@@ -110,6 +148,7 @@ impl SqliteStore {
         .bind(source_url)
         .bind(source_path)
         .bind(blake3_hash)
+        .bind(git_hash)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -125,7 +164,8 @@ impl SqliteStore {
         skill_name: &str,
     ) -> Result<Option<SkillTrustRow>, MemoryError> {
         let row: Option<TrustTuple> = sqlx::query_as(
-            "SELECT skill_name, trust_level, source_kind, source_url, source_path, blake3_hash, updated_at \
+            "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
+             blake3_hash, updated_at, git_hash \
              FROM skill_trust WHERE skill_name = ?",
         )
         .bind(skill_name)
@@ -141,7 +181,8 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn load_all_skill_trust(&self) -> Result<Vec<SkillTrustRow>, MemoryError> {
         let rows: Vec<TrustTuple> = sqlx::query_as(
-            "SELECT skill_name, trust_level, source_kind, source_url, source_path, blake3_hash, updated_at \
+            "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
+             blake3_hash, updated_at, git_hash \
              FROM skill_trust ORDER BY skill_name",
         )
         .fetch_all(&self.pool)
@@ -463,6 +504,45 @@ mod tests {
     fn source_kind_serde_json_invalid_value_errors() {
         let result: Result<SourceKind, _> = serde_json::from_str(r#""unknown""#);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn trust_row_includes_git_hash() {
+        let store = test_store().await;
+
+        store
+            .upsert_skill_trust_with_git_hash(
+                "versioned-skill",
+                "trusted",
+                SourceKind::Hub,
+                Some("https://hub.example.com/skill"),
+                None,
+                "blake3abc",
+                Some("deadbeef1234"),
+            )
+            .await
+            .unwrap();
+
+        let row = store
+            .load_skill_trust("versioned-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.git_hash.as_deref(), Some("deadbeef1234"));
+        assert_eq!(row.blake3_hash, "blake3abc");
+    }
+
+    #[tokio::test]
+    async fn upsert_without_git_hash_leaves_it_null() {
+        let store = test_store().await;
+
+        store
+            .upsert_skill_trust("git", "trusted", SourceKind::Local, None, None, "hash1")
+            .await
+            .unwrap();
+
+        let row = store.load_skill_trust("git").await.unwrap().unwrap();
+        assert!(row.git_hash.is_none());
     }
 
     #[tokio::test]

@@ -6,9 +6,11 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use zeph_tools::TrustLevel;
+
 use crate::error::SkillError;
 use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta, validate_path_within};
-use crate::scanner::{ScanResult, scan_skill_body};
+use crate::scanner::{EscalationResult, ScanResult, check_capability_escalation, scan_skill_body};
 
 struct SkillEntry {
     meta: SkillMeta,
@@ -208,6 +210,40 @@ impl SkillRegistry {
             }
         }
 
+        results
+    }
+
+    /// Check all loaded skills for capability escalation violations.
+    ///
+    /// For each skill whose `trust_level` from the skill meta is known, checks whether
+    /// its `allowed_tools` exceed the permissions of that trust level via
+    /// [`check_capability_escalation`].
+    ///
+    /// This method is **separate from [`scan_loaded`]** because escalation checks require
+    /// a trust level per skill, which is not available from the SKILL.md frontmatter alone
+    /// — it must be resolved from the trust store at the call site (bootstrap). Keeping the
+    /// two concerns separate avoids coupling the registry to the trust store.
+    ///
+    /// Returns a list of [`EscalationResult`] for every skill that has at least one violation.
+    /// Skills with no violations are omitted.
+    #[must_use]
+    pub fn check_escalations(
+        &self,
+        trust_levels: &[(String, TrustLevel)],
+    ) -> Vec<EscalationResult> {
+        let mut results = Vec::new();
+        for (skill_name, trust_level) in trust_levels {
+            let Some(entry) = self.entries.iter().find(|e| &e.meta.name == skill_name) else {
+                continue;
+            };
+            let denied = check_capability_escalation(&entry.meta.allowed_tools, *trust_level);
+            if !denied.is_empty() {
+                results.push(EscalationResult {
+                    skill_name: skill_name.clone(),
+                    denied_tools: denied,
+                });
+            }
+        }
         results
     }
 
