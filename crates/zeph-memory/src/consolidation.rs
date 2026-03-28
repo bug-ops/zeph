@@ -553,4 +553,119 @@ mod tests {
             "must return None for unknown source_id"
         );
     }
+
+    /// Sweep on an empty DB (no conversations) must return Ok with all-zero counters.
+    #[tokio::test]
+    async fn run_consolidation_sweep_empty_db_returns_ok() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        use crate::sqlite::SqliteStore;
+
+        let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
+        let provider = AnyProvider::Mock(MockProvider::default());
+        let config = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.75,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+        };
+
+        let result = run_consolidation_sweep(&store, &provider, &config).await;
+        let r = result.expect("sweep must not error on empty DB");
+        assert_eq!(r.merges, 0);
+        assert_eq!(r.updates, 0);
+        assert_eq!(r.skipped, 0);
+    }
+
+    /// When provider does not support embeddings, sweep skips the conversation
+    /// and returns with zero merges (no panic, no error).
+    #[tokio::test]
+    async fn run_consolidation_sweep_no_embedding_support_skips_gracefully() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        use crate::sqlite::SqliteStore;
+
+        let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
+        let conv_id = store.create_conversation().await.unwrap();
+        store
+            .save_message(conv_id, "user", "Alice uses Rust")
+            .await
+            .unwrap();
+        store
+            .save_message(conv_id, "user", "Alice loves Rust")
+            .await
+            .unwrap();
+
+        // MockProvider default has supports_embeddings = false
+        let provider = AnyProvider::Mock(MockProvider::default());
+        let config = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.75,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+        };
+
+        let result = run_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep must not error when embeddings unsupported");
+        assert_eq!(
+            result.merges, 0,
+            "no merges expected when embeddings unsupported"
+        );
+    }
+
+    /// `apply_consolidation_merge` with empty source list returns false without writing anything.
+    #[tokio::test]
+    async fn apply_consolidation_merge_empty_sources_skipped() {
+        use crate::sqlite::SqliteStore;
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let accepted = store
+            .apply_consolidation_merge(conv_id, "assistant", "merged", &[], 0.95, 0.7)
+            .await
+            .unwrap();
+        assert!(!accepted, "empty source list must be rejected");
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "no rows must be written for empty source list");
+    }
+
+    /// `apply_consolidation_merge` at exactly the threshold boundary (confidence == threshold)
+    /// must be accepted.
+    #[tokio::test]
+    async fn apply_consolidation_merge_at_exact_threshold_accepted() {
+        use crate::sqlite::SqliteStore;
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let m1 = store.save_message(conv_id, "user", "a").await.unwrap();
+        let m2 = store.save_message(conv_id, "user", "b").await.unwrap();
+
+        let threshold = 0.75_f32;
+        let accepted = store
+            .apply_consolidation_merge(
+                conv_id,
+                "assistant",
+                "a and b",
+                &[m1, m2],
+                threshold,
+                threshold,
+            )
+            .await
+            .unwrap();
+        assert!(
+            accepted,
+            "merge at exactly the confidence threshold must be accepted"
+        );
+    }
 }

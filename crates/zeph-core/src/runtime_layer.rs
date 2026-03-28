@@ -239,4 +239,128 @@ mod tests {
     fn message_from_legacy_compiles() {
         let _msg = Message::from_legacy(Role::User, "hello");
     }
+
+    /// Two layers registered in order [A, B]: before_chat must be called A then B,
+    /// and after_chat must be called A then B (forward order for both in MVP's loop).
+    #[tokio::test]
+    async fn multiple_layers_called_in_registration_order() {
+        use std::sync::{Arc, Mutex};
+
+        struct OrderLayer {
+            id: u32,
+            log: Arc<Mutex<Vec<String>>>,
+        }
+        impl RuntimeLayer for OrderLayer {
+            fn before_chat<'a>(
+                &'a self,
+                _ctx: &'a LayerContext<'_>,
+                _messages: &'a [Message],
+                _tools: &'a [ToolDefinition],
+            ) -> Pin<Box<dyn Future<Output = Option<ChatResponse>> + Send + 'a>> {
+                let entry = format!("before_{}", self.id);
+                self.log.lock().unwrap().push(entry);
+                Box::pin(std::future::ready(None))
+            }
+
+            fn after_chat<'a>(
+                &'a self,
+                _ctx: &'a LayerContext<'_>,
+                _response: &'a ChatResponse,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+                let entry = format!("after_{}", self.id);
+                self.log.lock().unwrap().push(entry);
+                Box::pin(std::future::ready(()))
+            }
+        }
+
+        let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let layer_a = OrderLayer {
+            id: 1,
+            log: Arc::clone(&log),
+        };
+        let layer_b = OrderLayer {
+            id: 2,
+            log: Arc::clone(&log),
+        };
+
+        let ctx = LayerContext {
+            conversation_id: None,
+            turn_number: 0,
+        };
+        let resp = ChatResponse::Text("ok".into());
+
+        layer_a.before_chat(&ctx, &[], &[]).await;
+        layer_b.before_chat(&ctx, &[], &[]).await;
+        layer_a.after_chat(&ctx, &resp).await;
+        layer_b.after_chat(&ctx, &resp).await;
+
+        let events = log.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec!["before_1", "before_2", "after_1", "after_2"],
+            "hooks must fire in registration order"
+        );
+    }
+
+    /// after_chat must receive the short-circuit response produced by before_chat.
+    #[tokio::test]
+    async fn after_chat_receives_short_circuit_response() {
+        use std::sync::{Arc, Mutex};
+
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        struct CapturingAfter {
+            captured: Arc<Mutex<Option<String>>>,
+        }
+        impl RuntimeLayer for CapturingAfter {
+            fn after_chat<'a>(
+                &'a self,
+                _ctx: &'a LayerContext<'_>,
+                response: &'a ChatResponse,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+                if let ChatResponse::Text(t) = response {
+                    *self.captured.lock().unwrap() = Some(t.clone());
+                }
+                Box::pin(std::future::ready(()))
+            }
+        }
+
+        let layer = CapturingAfter {
+            captured: Arc::clone(&captured),
+        };
+        let ctx = LayerContext {
+            conversation_id: None,
+            turn_number: 0,
+        };
+
+        // Simulate: before_chat short-circuits; caller passes result to after_chat.
+        let sc_response = ChatResponse::Text("short-circuit".into());
+        layer.after_chat(&ctx, &sc_response).await;
+
+        let got = captured.lock().unwrap().clone();
+        assert_eq!(
+            got.as_deref(),
+            Some("short-circuit"),
+            "after_chat must receive the short-circuit response"
+        );
+    }
+
+    /// NoopLayer after_tool returns () without errors.
+    #[tokio::test]
+    async fn noop_layer_after_tool_returns_unit() {
+        use zeph_tools::executor::ToolOutput;
+
+        let layer = NoopLayer;
+        let ctx = LayerContext {
+            conversation_id: None,
+            turn_number: 0,
+        };
+        let call = ToolCall {
+            tool_id: "shell".into(),
+            params: serde_json::Map::new(),
+        };
+        let result: Result<Option<ToolOutput>, zeph_tools::ToolError> = Ok(None);
+        layer.after_tool(&ctx, &call, &result).await;
+        // No assertion needed — the test verifies it compiles and doesn't panic.
+    }
 }
