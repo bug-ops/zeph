@@ -3,10 +3,12 @@
 
 //! SQLite-backed conversation persistence with Qdrant vector search.
 
+pub mod admission;
 pub mod anchored_summary;
 pub mod compaction_probe;
 pub mod compression_guidelines;
 pub mod document;
+pub mod scenes;
 pub mod tiers;
 
 pub mod embedding_registry;
@@ -28,6 +30,10 @@ pub mod token_counter;
 pub mod types;
 pub mod vector_store;
 
+pub use admission::{
+    AdmissionControl, AdmissionDecision, AdmissionFactors, AdmissionRejected, AdmissionWeights,
+    compute_content_type_prior, compute_factual_confidence, log_admission_decision,
+};
 pub use anchored_summary::AnchoredSummary;
 pub use compaction_probe::{
     CategoryScore, CompactionProbeConfig, CompactionProbeResult, ProbeCategory, ProbeQuestion,
@@ -60,6 +66,9 @@ pub use router::{
     HeuristicRouter, MemoryRoute, MemoryRouter, TemporalRange, classify_graph_subgraph,
     strip_temporal_keywords,
 };
+pub use scenes::{
+    MemScene, SceneConfig, consolidate_scenes, list_scenes, start_scene_consolidation_loop,
+};
 pub use semantic::{
     ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
     StructuredSummary, build_summarization_prompt, extract_and_store, link_memory_notes,
@@ -74,8 +83,7 @@ pub use sqlite::session_digest::SessionDigest;
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;
-pub use types::MemoryTier;
-pub use types::{ConversationId, MessageId};
+pub use types::{ConversationId, MemSceneId, MemoryTier, MessageId};
 pub use vector_store::{
     FieldCondition, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,
     VectorStoreError,

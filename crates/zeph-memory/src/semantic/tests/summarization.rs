@@ -47,9 +47,13 @@ async fn load_summaries_ordered() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    let msg_id1 = memory.remember(cid, "user", "m1").await.unwrap();
-    let msg_id2 = memory.remember(cid, "assistant", "m2").await.unwrap();
-    let msg_id3 = memory.remember(cid, "user", "m3").await.unwrap();
+    let msg_id1 = memory.remember(cid, "user", "m1").await.unwrap().unwrap();
+    let msg_id2 = memory
+        .remember(cid, "assistant", "m2")
+        .await
+        .unwrap()
+        .unwrap();
+    let msg_id3 = memory.remember(cid, "user", "m3").await.unwrap().unwrap();
 
     let s1 = memory
         .sqlite()
@@ -75,7 +79,11 @@ async fn summarize_below_threshold() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    memory.remember(cid, "user", "hello").await.unwrap();
+    memory
+        .remember(cid, "user", "hello")
+        .await
+        .unwrap()
+        .unwrap();
 
     let result = memory.summarize(cid, 10).await.unwrap();
     assert!(result.is_none());
@@ -244,6 +252,7 @@ async fn summarize_fails_when_provider_chat_fails() {
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
+        admission_control: None,
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -304,6 +313,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
+        admission_control: None,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

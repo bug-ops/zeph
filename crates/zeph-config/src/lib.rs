@@ -53,9 +53,10 @@ pub use features::{
 pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{
-    CompressionConfig, CompressionStrategy, ContextStrategy, DigestConfig, DocumentConfig,
-    GraphConfig, MemoryConfig, NoteLinkingConfig, PruningStrategy, RoutingConfig, RoutingStrategy,
-    SemanticConfig, SessionsConfig, SidequestConfig, VectorBackend,
+    AdmissionConfig, AdmissionWeights, CompressionConfig, CompressionStrategy, ContextStrategy,
+    DigestConfig, DocumentConfig, GraphConfig, MemoryConfig, NoteLinkingConfig, PruningStrategy,
+    RoutingConfig, RoutingStrategy, SemanticConfig, SessionsConfig, SidequestConfig, TierConfig,
+    VectorBackend,
 };
 pub use providers::{
     CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,

@@ -63,6 +63,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
+        admission_control: None,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -142,7 +143,11 @@ async fn recall_fts5_fallback_with_filter() {
     let cid1 = memory.sqlite.create_conversation().await.unwrap();
     let cid2 = memory.sqlite.create_conversation().await.unwrap();
 
-    memory.remember(cid1, "user", "hello world").await.unwrap();
+    memory
+        .remember(cid1, "user", "hello world")
+        .await
+        .unwrap()
+        .unwrap();
     memory
         .remember(cid2, "user", "hello universe")
         .await
@@ -161,7 +166,11 @@ async fn recall_fts5_no_matches_returns_empty() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
-    memory.remember(cid, "user", "hello world").await.unwrap();
+    memory
+        .remember(cid, "user", "hello world")
+        .await
+        .unwrap()
+        .unwrap();
 
     let recalled = memory.recall("nonexistent", 5, None).await.unwrap();
     assert!(recalled.is_empty());
@@ -370,7 +379,11 @@ async fn recall_importance_enabled_blends_score() {
         .remember(cid, "user", "remember: the API key rotates weekly")
         .await
         .unwrap();
-    memory.remember(cid, "user", "API key info").await.unwrap();
+    memory
+        .remember(cid, "user", "API key info")
+        .await
+        .unwrap()
+        .unwrap();
 
     let recalled = memory.recall("API key", 5, None).await.unwrap();
     assert!(
@@ -401,7 +414,11 @@ async fn recall_importance_disabled_no_blending() {
         .remember(cid, "user", "remember: the API key rotates weekly")
         .await
         .unwrap();
-    memory.remember(cid, "user", "API key info").await.unwrap();
+    memory
+        .remember(cid, "user", "API key info")
+        .await
+        .unwrap()
+        .unwrap();
 
     let recalled = memory.recall("API key", 5, None).await.unwrap();
     // Must return results without panicking.
@@ -459,4 +476,109 @@ fn recalled_message_debug() {
     let dbg = format!("{recalled:?}");
     assert!(dbg.contains("RecalledMessage"));
     assert!(dbg.contains("0.95"));
+}
+
+// ── A-MAC admission control integration tests (#2317) ────────────────────────
+
+fn make_always_reject_admission() -> crate::admission::AdmissionControl {
+    // Threshold of 1.1 → no message can ever score above it → always rejected.
+    let weights = crate::admission::AdmissionWeights {
+        future_utility: 0.20,
+        factual_confidence: 0.20,
+        semantic_novelty: 0.20,
+        temporal_recency: 0.20,
+        content_type_prior: 0.20,
+    };
+    crate::admission::AdmissionControl::new(1.1, 0.0, weights)
+}
+
+fn make_always_admit_admission() -> crate::admission::AdmissionControl {
+    // Threshold of 0.0 → every message is admitted.
+    let weights = crate::admission::AdmissionWeights {
+        future_utility: 0.20,
+        factual_confidence: 0.20,
+        semantic_novelty: 0.20,
+        temporal_recency: 0.20,
+        content_type_prior: 0.20,
+    };
+    crate::admission::AdmissionControl::new(0.0, 0.0, weights)
+}
+
+#[tokio::test]
+async fn remember_returns_none_when_admission_rejects() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_reject_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember(cid, "user", "this message will be rejected")
+        .await
+        .unwrap();
+    assert!(
+        result.is_none(),
+        "remember() must return None when A-MAC rejects"
+    );
+
+    // SQLite must have no messages (rejected = not persisted).
+    let history = memory.sqlite.load_history(cid, 50).await.unwrap();
+    assert!(
+        history.is_empty(),
+        "rejected messages must not be persisted"
+    );
+}
+
+#[tokio::test]
+async fn remember_returns_some_when_admission_admits() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_admit_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember(cid, "user", "important factual content")
+        .await
+        .unwrap();
+    assert!(
+        result.is_some(),
+        "remember() must return Some(id) when A-MAC admits"
+    );
+
+    let history = memory.sqlite.load_history(cid, 50).await.unwrap();
+    assert_eq!(history.len(), 1, "admitted message must be persisted");
+}
+
+#[tokio::test]
+async fn remember_with_parts_returns_none_when_admission_rejects() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_reject_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let (opt_id, stored) = memory
+        .remember_with_parts(cid, "assistant", "rejected content", "[]")
+        .await
+        .unwrap();
+    assert!(
+        opt_id.is_none(),
+        "remember_with_parts must return None when rejected"
+    );
+    assert!(!stored, "embedding_stored must be false when rejected");
+}
+
+#[tokio::test]
+async fn remember_with_parts_returns_some_when_admission_admits() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_admit_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let (opt_id, _stored) = memory
+        .remember_with_parts(cid, "user", "admitted content", "[]")
+        .await
+        .unwrap();
+    assert!(
+        opt_id.is_some(),
+        "remember_with_parts must return Some(id) when admitted"
+    );
 }

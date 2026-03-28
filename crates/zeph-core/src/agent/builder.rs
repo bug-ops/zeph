@@ -1328,6 +1328,7 @@ mod tests {
             model: String::new(),
             pruning_strategy: crate::config::PruningStrategy::default(),
             probe: Default::default(),
+            compress_provider: String::new(),
         };
         let agent = make_agent().with_compression(compression);
         assert!(

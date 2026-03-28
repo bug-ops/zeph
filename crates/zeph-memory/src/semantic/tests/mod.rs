@@ -46,6 +46,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
+        admission_control: None,
     }
 }
 
@@ -66,7 +67,11 @@ async fn remember_saves_to_sqlite() {
     let memory = test_semantic_memory(false).await;
 
     let cid = memory.sqlite.create_conversation().await.unwrap();
-    let msg_id = memory.remember(cid, "user", "hello").await.unwrap();
+    let msg_id = memory
+        .remember(cid, "user", "hello")
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(msg_id, MessageId(1));
 
@@ -83,10 +88,11 @@ async fn remember_with_parts_saves_parts_json() {
 
     let parts_json =
         r#"[{"kind":"ToolOutput","tool_name":"shell","body":"hello","compacted_at":null}]"#;
-    let (msg_id, _embedding_stored) = memory
+    let (msg_id_opt, _embedding_stored) = memory
         .remember_with_parts(cid, "assistant", "tool output", parts_json)
         .await
         .unwrap();
+    let msg_id = msg_id_opt.unwrap();
     assert!(msg_id > MessageId(0));
 
     let history = memory.sqlite.load_history(cid, 50).await.unwrap();
@@ -168,8 +174,12 @@ async fn message_count_after_saves() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    memory.remember(cid, "user", "msg1").await.unwrap();
-    memory.remember(cid, "assistant", "msg2").await.unwrap();
+    memory.remember(cid, "user", "msg1").await.unwrap().unwrap();
+    memory
+        .remember(cid, "assistant", "msg2")
+        .await
+        .unwrap()
+        .unwrap();
 
     let count = memory.message_count(cid).await.unwrap();
     assert_eq!(count, 2);
@@ -180,9 +190,21 @@ async fn remember_multiple_messages_increments_ids() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
-    let id1 = memory.remember(cid, "user", "first").await.unwrap();
-    let id2 = memory.remember(cid, "assistant", "second").await.unwrap();
-    let id3 = memory.remember(cid, "user", "third").await.unwrap();
+    let id1 = memory
+        .remember(cid, "user", "first")
+        .await
+        .unwrap()
+        .unwrap();
+    let id2 = memory
+        .remember(cid, "assistant", "second")
+        .await
+        .unwrap()
+        .unwrap();
+    let id3 = memory
+        .remember(cid, "user", "third")
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(id1 < id2);
     assert!(id2 < id3);
@@ -194,9 +216,21 @@ async fn message_count_across_conversations() {
     let cid1 = memory.sqlite().create_conversation().await.unwrap();
     let cid2 = memory.sqlite().create_conversation().await.unwrap();
 
-    memory.remember(cid1, "user", "msg1").await.unwrap();
-    memory.remember(cid1, "user", "msg2").await.unwrap();
-    memory.remember(cid2, "user", "msg3").await.unwrap();
+    memory
+        .remember(cid1, "user", "msg1")
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .remember(cid1, "user", "msg2")
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .remember(cid2, "user", "msg3")
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(memory.message_count(cid1).await.unwrap(), 2);
     assert_eq!(memory.message_count(cid2).await.unwrap(), 1);
@@ -210,10 +244,10 @@ async fn message_count_multiple_conversations_isolated() {
     let cid3 = memory.sqlite().create_conversation().await.unwrap();
 
     for _ in 0..5 {
-        memory.remember(cid1, "user", "msg").await.unwrap();
+        memory.remember(cid1, "user", "msg").await.unwrap().unwrap();
     }
     for _ in 0..3 {
-        memory.remember(cid2, "user", "msg").await.unwrap();
+        memory.remember(cid2, "user", "msg").await.unwrap().unwrap();
     }
 
     assert_eq!(memory.message_count(cid1).await.unwrap(), 5);
@@ -226,7 +260,11 @@ async fn remember_with_embeddings_supported_but_no_qdrant() {
     let memory = test_semantic_memory(true).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
-    let msg_id = memory.remember(cid, "user", "hello embed").await.unwrap();
+    let msg_id = memory
+        .remember(cid, "user", "hello embed")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(msg_id > MessageId(0));
 
     let history = memory.sqlite.load_history(cid, 50).await.unwrap();
@@ -239,9 +277,21 @@ async fn remember_verifies_content_via_load_history() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
-    memory.remember(cid, "user", "alpha").await.unwrap();
-    memory.remember(cid, "assistant", "beta").await.unwrap();
-    memory.remember(cid, "user", "gamma").await.unwrap();
+    memory
+        .remember(cid, "user", "alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .remember(cid, "assistant", "beta")
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .remember(cid, "user", "gamma")
+        .await
+        .unwrap()
+        .unwrap();
 
     let history = memory.sqlite().load_history(cid, 50).await.unwrap();
     assert_eq!(history.len(), 3);
@@ -255,9 +305,13 @@ async fn remember_preserves_role_mapping() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
-    memory.remember(cid, "user", "u").await.unwrap();
-    memory.remember(cid, "assistant", "a").await.unwrap();
-    memory.remember(cid, "system", "s").await.unwrap();
+    memory.remember(cid, "user", "u").await.unwrap().unwrap();
+    memory
+        .remember(cid, "assistant", "a")
+        .await
+        .unwrap()
+        .unwrap();
+    memory.remember(cid, "system", "s").await.unwrap().unwrap();
 
     let history = memory.sqlite.load_history(cid, 50).await.unwrap();
     assert_eq!(history.len(), 3);
@@ -280,7 +334,7 @@ async fn new_with_invalid_qdrant_url_graceful() {
 async fn has_embedding_returns_false_when_no_qdrant() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
-    let msg_id = memory.remember(cid, "user", "test").await.unwrap();
+    let msg_id = memory.remember(cid, "user", "test").await.unwrap().unwrap();
     assert!(!memory.has_embedding(msg_id).await.unwrap());
 }
 
@@ -394,6 +448,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         graph_extraction_count: Arc::new(AtomicU64::new(0)),
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
+        admission_control: None,
     };
 
     memory

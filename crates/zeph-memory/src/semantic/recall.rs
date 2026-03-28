@@ -3,6 +3,7 @@
 
 use zeph_llm::provider::{LlmProvider as _, Message};
 
+use crate::admission::log_admission_decision;
 use crate::embedding_store::{MessageKind, SearchFilter};
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
@@ -19,7 +20,8 @@ pub struct RecalledMessage {
 impl SemanticMemory {
     /// Save a message to `SQLite` and optionally embed and store in Qdrant.
     ///
-    /// Returns the message ID assigned by `SQLite`.
+    /// Returns `Ok(Some(message_id))` when admitted and persisted.
+    /// Returns `Ok(None)` when A-MAC admission control rejects the message (not an error).
     ///
     /// # Errors
     ///
@@ -30,7 +32,19 @@ impl SemanticMemory {
         conversation_id: ConversationId,
         role: &str,
         content: &str,
-    ) -> Result<MessageId, MemoryError> {
+    ) -> Result<Option<MessageId>, MemoryError> {
+        // A-MAC admission gate.
+        if let Some(ref admission) = self.admission_control {
+            let decision = admission
+                .evaluate(content, role, &self.provider, self.qdrant.as_ref())
+                .await;
+            let preview: String = content.chars().take(100).collect();
+            log_admission_decision(&decision, &preview, role, admission.threshold());
+            if !decision.admitted {
+                return Ok(None);
+            }
+        }
+
         let message_id = self
             .sqlite
             .save_message(conversation_id, role, content)
@@ -64,13 +78,13 @@ impl SemanticMemory {
             }
         }
 
-        Ok(message_id)
+        Ok(Some(message_id))
     }
 
     /// Save a message with pre-serialized parts JSON to `SQLite` and optionally embed in Qdrant.
     ///
-    /// Returns `(message_id, embedding_stored)` tuple where `embedding_stored` is `true` if
-    /// an embedding was successfully generated and stored in Qdrant.
+    /// Returns `Ok((Some(message_id), embedding_stored))` when admitted and persisted.
+    /// Returns `Ok((None, false))` when A-MAC admission control rejects the message.
     ///
     /// # Errors
     ///
@@ -81,7 +95,19 @@ impl SemanticMemory {
         role: &str,
         content: &str,
         parts_json: &str,
-    ) -> Result<(MessageId, bool), MemoryError> {
+    ) -> Result<(Option<MessageId>, bool), MemoryError> {
+        // A-MAC admission gate.
+        if let Some(ref admission) = self.admission_control {
+            let decision = admission
+                .evaluate(content, role, &self.provider, self.qdrant.as_ref())
+                .await;
+            let preview: String = content.chars().take(100).collect();
+            log_admission_decision(&decision, &preview, role, admission.threshold());
+            if !decision.admitted {
+                return Ok((None, false));
+            }
+        }
+
         let message_id = self
             .sqlite
             .save_message_with_parts(conversation_id, role, content, parts_json)
@@ -119,7 +145,7 @@ impl SemanticMemory {
             }
         }
 
-        Ok((message_id, embedding_stored))
+        Ok((Some(message_id), embedding_stored))
     }
 
     /// Save a message to `SQLite` without generating an embedding.

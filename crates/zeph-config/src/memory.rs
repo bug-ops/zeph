@@ -275,6 +275,43 @@ fn default_tier_sweep_batch_size() -> usize {
     100
 }
 
+fn default_scene_similarity_threshold() -> f32 {
+    0.80
+}
+
+fn default_scene_batch_size() -> usize {
+    50
+}
+
+fn validate_scene_similarity_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "scene_similarity_threshold must be a finite number",
+        ));
+    }
+    if !(0.5..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "scene_similarity_threshold must be in [0.5, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_scene_batch_size<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom("scene_batch_size must be >= 1"));
+    }
+    Ok(value)
+}
+
 /// Configuration for the AOI three-layer memory tier promotion system (`[memory.tiers]`).
 ///
 /// When `enabled = true`, a background sweep promotes frequently-accessed episodic messages
@@ -286,6 +323,8 @@ fn default_tier_sweep_batch_size() -> usize {
 /// - `similarity_threshold` in `[0.5, 1.0]`
 /// - `promotion_min_sessions >= 2`
 /// - `sweep_batch_size >= 1`
+/// - `scene_similarity_threshold` in `[0.5, 1.0]`
+/// - `scene_batch_size >= 1`
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct TierConfig {
@@ -305,6 +344,23 @@ pub struct TierConfig {
     /// Maximum number of messages to evaluate per sweep cycle. Must be `>= 1`. Default: `100`.
     #[serde(deserialize_with = "validate_tier_sweep_batch_size")]
     pub sweep_batch_size: usize,
+    /// Enable `MemScene` consolidation of semantic-tier messages. Default: `false`.
+    pub scene_enabled: bool,
+    /// Cosine similarity threshold for `MemScene` clustering. Must be in `[0.5, 1.0]`. Default: `0.80`.
+    #[serde(deserialize_with = "validate_scene_similarity_threshold")]
+    pub scene_similarity_threshold: f32,
+    /// Maximum unassigned semantic messages processed per scene consolidation sweep. Default: `50`.
+    #[serde(deserialize_with = "validate_scene_batch_size")]
+    pub scene_batch_size: usize,
+    /// Provider name from `[[llm.providers]]` for scene label/profile generation.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub scene_provider: String,
+    /// How often the background scene consolidation sweep runs, in seconds. Default: `7200`.
+    pub scene_sweep_interval_secs: u64,
+}
+
+fn default_scene_sweep_interval_secs() -> u64 {
+    7200
 }
 
 impl Default for TierConfig {
@@ -315,6 +371,11 @@ impl Default for TierConfig {
             similarity_threshold: default_tier_similarity_threshold(),
             sweep_interval_secs: default_tier_sweep_interval_secs(),
             sweep_batch_size: default_tier_sweep_batch_size(),
+            scene_enabled: false,
+            scene_similarity_threshold: default_scene_similarity_threshold(),
+            scene_batch_size: default_scene_batch_size(),
+            scene_provider: String::new(),
+            scene_sweep_interval_secs: default_scene_sweep_interval_secs(),
         }
     }
 }
@@ -628,6 +689,12 @@ pub struct MemoryConfig {
     /// messages to a semantic tier by clustering near-duplicates and distilling via LLM.
     #[serde(default)]
     pub tiers: TierConfig,
+    /// A-MAC adaptive memory admission control.
+    ///
+    /// When `admission.enabled = true`, each message is evaluated before saving and rejected
+    /// if its composite admission score falls below the configured threshold.
+    #[serde(default)]
+    pub admission: AdmissionConfig,
     /// Session digest generation at session end. Default: disabled.
     #[serde(default)]
     pub digest: DigestConfig,
@@ -810,6 +877,9 @@ pub enum CompressionStrategy {
         /// Maximum tokens for the compressed summary (passed to LLM as `max_tokens`).
         max_summary_tokens: usize,
     },
+    /// Agent calls `compress_context` tool explicitly. Reactive compaction still fires as a
+    /// safety net. The `compress_context` tool is also available in all other strategies.
+    Autonomous,
 }
 
 /// Pruning strategy for tool-output eviction inside the compaction pipeline (#1851, #2022).
@@ -895,6 +965,9 @@ pub struct CompressionConfig {
     /// Currently unused — the primary summary provider is used regardless of this value.
     /// Reserved for future per-compression model selection. Setting this field has no effect.
     pub model: String,
+    /// Provider name from `[[llm.providers]]` for `compress_context` summaries.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub compress_provider: String,
     /// Compaction probe: validates summary quality before committing it (#1609).
     #[serde(default)]
     pub probe: zeph_memory::CompactionProbeConfig,
@@ -1093,6 +1166,157 @@ where
     Ok(value)
 }
 
+fn validate_admission_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "threshold must be a finite number",
+        ));
+    }
+    if !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom("threshold must be in [0.0, 1.0]"));
+    }
+    Ok(value)
+}
+
+fn validate_admission_fast_path_margin<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "fast_path_margin must be a finite number",
+        ));
+    }
+    if !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "fast_path_margin must be in [0.0, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+fn default_admission_threshold() -> f32 {
+    0.40
+}
+
+fn default_admission_fast_path_margin() -> f32 {
+    0.15
+}
+
+fn validate_admission_weight<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value < 0.0 {
+        return Err(serde::de::Error::custom(
+            "admission weight must be non-negative (>= 0.0)",
+        ));
+    }
+    Ok(value)
+}
+
+/// Per-factor weights for the A-MAC admission score (`[memory.admission.weights]`).
+///
+/// Weights are normalized at runtime (divided by their sum), so they do not need to sum to 1.0.
+/// All values must be non-negative.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AdmissionWeights {
+    /// LLM-estimated future reuse probability. Default: `0.30`.
+    #[serde(deserialize_with = "validate_admission_weight")]
+    pub future_utility: f32,
+    /// Factual confidence heuristic (inverse of hedging markers). Default: `0.15`.
+    #[serde(deserialize_with = "validate_admission_weight")]
+    pub factual_confidence: f32,
+    /// Semantic novelty: 1 - max similarity to existing memories. Default: `0.30`.
+    #[serde(deserialize_with = "validate_admission_weight")]
+    pub semantic_novelty: f32,
+    /// Temporal recency: always 1.0 at write time. Default: `0.10`.
+    #[serde(deserialize_with = "validate_admission_weight")]
+    pub temporal_recency: f32,
+    /// Content type prior based on role. Default: `0.15`.
+    #[serde(deserialize_with = "validate_admission_weight")]
+    pub content_type_prior: f32,
+}
+
+impl Default for AdmissionWeights {
+    fn default() -> Self {
+        Self {
+            future_utility: 0.30,
+            factual_confidence: 0.15,
+            semantic_novelty: 0.30,
+            temporal_recency: 0.10,
+            content_type_prior: 0.15,
+        }
+    }
+}
+
+impl AdmissionWeights {
+    /// Return weights normalized so they sum to 1.0.
+    ///
+    /// All weights are non-negative; the sum is always > 0 when defaults are used.
+    #[must_use]
+    pub fn normalized(&self) -> Self {
+        let sum = self.future_utility
+            + self.factual_confidence
+            + self.semantic_novelty
+            + self.temporal_recency
+            + self.content_type_prior;
+        if sum <= f32::EPSILON {
+            return Self::default();
+        }
+        Self {
+            future_utility: self.future_utility / sum,
+            factual_confidence: self.factual_confidence / sum,
+            semantic_novelty: self.semantic_novelty / sum,
+            temporal_recency: self.temporal_recency / sum,
+            content_type_prior: self.content_type_prior / sum,
+        }
+    }
+}
+
+/// Configuration for A-MAC adaptive memory admission control (`[memory.admission]` TOML section).
+///
+/// When `enabled = true`, a write-time gate evaluates each message before saving to memory.
+/// Messages below the composite admission threshold are rejected and not persisted.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AdmissionConfig {
+    /// Enable A-MAC admission control. Default: `false`.
+    pub enabled: bool,
+    /// Composite score threshold below which messages are rejected. Range: `[0.0, 1.0]`.
+    /// Default: `0.40`.
+    #[serde(deserialize_with = "validate_admission_threshold")]
+    pub threshold: f32,
+    /// Margin above threshold at which the fast path admits without an LLM call. Range: `[0.0, 1.0]`.
+    /// When heuristic score >= threshold + margin, LLM call is skipped. Default: `0.15`.
+    #[serde(deserialize_with = "validate_admission_fast_path_margin")]
+    pub fast_path_margin: f32,
+    /// Provider name from `[[llm.providers]]` for `future_utility` LLM evaluation.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub admission_provider: String,
+    /// Per-factor weights. Normalized at runtime. Default: `{0.30, 0.15, 0.30, 0.10, 0.15}`.
+    pub weights: AdmissionWeights,
+}
+
+impl Default for AdmissionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_admission_threshold(),
+            fast_path_margin: default_admission_fast_path_margin(),
+            admission_provider: String::new(),
+            weights: AdmissionWeights::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,5 +1446,73 @@ mod tests {
     fn importance_weight_rejects_greater_than_one() {
         let result = deserialize_importance_weight("1.01");
         assert!(result.is_err(), "value > 1.0 must be rejected");
+    }
+
+    // ── AdmissionWeights::normalized() tests (#2317) ────────────────────────
+
+    // Test: weights that don't sum to 1.0 are normalized to sum to 1.0.
+    #[test]
+    fn admission_weights_normalized_sums_to_one() {
+        let w = AdmissionWeights {
+            future_utility: 2.0,
+            factual_confidence: 1.0,
+            semantic_novelty: 3.0,
+            temporal_recency: 1.0,
+            content_type_prior: 3.0,
+        };
+        let n = w.normalized();
+        let sum = n.future_utility
+            + n.factual_confidence
+            + n.semantic_novelty
+            + n.temporal_recency
+            + n.content_type_prior;
+        assert!(
+            (sum - 1.0).abs() < 0.001,
+            "normalized weights must sum to 1.0, got {sum}"
+        );
+    }
+
+    // Test: already-normalized weights are preserved.
+    #[test]
+    fn admission_weights_normalized_preserves_already_unit_sum() {
+        let w = AdmissionWeights::default();
+        let n = w.normalized();
+        let sum = n.future_utility
+            + n.factual_confidence
+            + n.semantic_novelty
+            + n.temporal_recency
+            + n.content_type_prior;
+        assert!(
+            (sum - 1.0).abs() < 0.001,
+            "default weights sum to ~1.0 after normalization"
+        );
+    }
+
+    // Test: zero weights fall back to default (no divide-by-zero panic).
+    #[test]
+    fn admission_weights_normalized_zero_sum_falls_back_to_default() {
+        let w = AdmissionWeights {
+            future_utility: 0.0,
+            factual_confidence: 0.0,
+            semantic_novelty: 0.0,
+            temporal_recency: 0.0,
+            content_type_prior: 0.0,
+        };
+        let n = w.normalized();
+        let default = AdmissionWeights::default();
+        assert!(
+            (n.future_utility - default.future_utility).abs() < 0.001,
+            "zero-sum weights must fall back to defaults"
+        );
+    }
+
+    // Test: AdmissionConfig default values match documented defaults.
+    #[test]
+    fn admission_config_defaults() {
+        let cfg = AdmissionConfig::default();
+        assert!(!cfg.enabled);
+        assert!((cfg.threshold - 0.40).abs() < 0.001);
+        assert!((cfg.fast_path_margin - 0.15).abs() < 0.001);
+        assert!(cfg.admission_provider.is_empty());
     }
 }

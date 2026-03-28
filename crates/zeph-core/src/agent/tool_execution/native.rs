@@ -92,6 +92,10 @@ impl<C: Channel> Agent<C> {
             tool_defs.extend(super::super::focus::focus_tool_definitions());
         }
 
+        // Inject compress_context tool — always available when context-compression is enabled (#2218).
+        #[cfg(feature = "context-compression")]
+        tool_defs.push(super::super::focus::compress_context_tool_definition());
+
         // Pre-compute the full tool set for iterations 1+ before filtering.
         let all_tool_defs = tool_defs.clone();
 
@@ -813,13 +817,21 @@ impl<C: Channel> Agent<C> {
         let mut tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> =
             (0..tool_calls.len()).map(|_| Ok(None)).collect();
 
-        // Pre-process focus tool calls (#1850). These need &mut self and cannot run inside the
-        // parallel tier futures. Pre-populate their results so the tier loop skips them.
+        // Pre-process focus tool calls (#1850) and compress_context (#2218).
+        // These need &mut self and cannot run inside the parallel tier futures.
+        // Pre-populate their results so the tier loop skips them.
         #[cfg(feature = "context-compression")]
-        if self.focus.config.enabled {
+        {
             for (idx, tc) in tool_calls.iter().enumerate() {
-                if tc.name == "start_focus" || tc.name == "complete_focus" {
-                    let result = self.handle_focus_tool(&tc.name, &tc.input);
+                let is_focus_tool = self.focus.config.enabled
+                    && (tc.name == "start_focus" || tc.name == "complete_focus");
+                let is_compress = tc.name == "compress_context";
+                if is_focus_tool || is_compress {
+                    let result = if is_compress {
+                        self.handle_compress_context().await
+                    } else {
+                        self.handle_focus_tool(&tc.name, &tc.input)
+                    };
                     tool_results[idx] = Ok(Some(zeph_tools::ToolOutput {
                         tool_name: tc.name.clone(),
                         summary: result,
@@ -901,10 +913,11 @@ impl<C: Channel> Agent<C> {
                 let tc = &tool_calls[idx];
                 let call = &calls[idx];
 
-                // Skip focus tools pre-handled above (they already have results).
+                // Skip focus tools and compress_context pre-handled above (they already have results).
                 #[cfg(feature = "context-compression")]
-                if self.focus.config.enabled
-                    && (tc.name == "start_focus" || tc.name == "complete_focus")
+                if tc.name == "compress_context"
+                    || (self.focus.config.enabled
+                        && (tc.name == "start_focus" || tc.name == "complete_focus"))
                 {
                     continue;
                 }
@@ -1781,6 +1794,167 @@ impl<C: Channel> Agent<C> {
 
             other => format!("[error] Unknown focus tool: {other}"),
         }
+    }
+
+    /// Handle the `compress_context` tool call (#2218).
+    ///
+    /// Summarizes non-pinned conversation history, appends to the Knowledge block, and removes
+    /// the compressed messages from context. Returns a string result to the LLM.
+    ///
+    /// Guards:
+    /// - Returns error if a focus session is active (would interfere with focus boundaries).
+    /// - Returns error if a compression is already in progress (concurrency guard).
+    #[cfg(feature = "context-compression")]
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn handle_compress_context(&mut self) -> String {
+        use zeph_llm::provider::LlmProvider as _;
+
+        // Guard: no active focus session.
+        if self.focus.is_active() {
+            return "[error] Cannot compress context while a focus session is active. \
+                    Call complete_focus first."
+                .to_string();
+        }
+
+        // Guard: concurrency — no double compression.
+        if !self.focus.try_acquire_compression() {
+            return "[error] A context compression is already in progress.".to_string();
+        }
+
+        // Collect indices of non-pinned, non-system messages (candidates for compression),
+        // then select the head slice (excluding the preserve tail) as the removal set.
+        let preserve_tail = self.context_manager.compaction_preserve_tail;
+        let compressible_indices: Vec<usize> = self
+            .msg
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.metadata.focus_pinned && m.role != zeph_llm::provider::Role::System)
+            .map(|(i, _)| i)
+            .collect();
+
+        let total = compressible_indices.len();
+        if total <= preserve_tail + 3 {
+            self.focus.release_compression();
+            return format!(
+                "Not enough messages to compress (found {total}, need at least {}).",
+                preserve_tail + 4
+            );
+        }
+
+        let to_remove_indices: std::collections::HashSet<usize> = compressible_indices
+            [..total.saturating_sub(preserve_tail)]
+            .iter()
+            .copied()
+            .collect();
+
+        let to_compress: Vec<zeph_llm::provider::Message> = to_remove_indices
+            .iter()
+            .map(|&i| self.msg.messages[i].clone())
+            .collect();
+
+        // Build summary prompt from the messages to compress.
+        let role_label = |role: &zeph_llm::provider::Role| match role {
+            zeph_llm::provider::Role::User => "user",
+            zeph_llm::provider::Role::Assistant => "assistant",
+            zeph_llm::provider::Role::System => "system",
+        };
+        let bullet_list: String = to_compress
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                format!(
+                    "{}. [{}] {}",
+                    i + 1,
+                    role_label(&m.role),
+                    m.content.chars().take(500).collect::<String>()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let system_content = "You are a context compression agent. \
+            Summarize the following conversation messages into a concise, information-dense summary. \
+            Preserve key facts, decisions, and context. Strip filler and small talk. \
+            Output ONLY the summary — no headers, no preamble.";
+
+        let summary_messages = vec![
+            zeph_llm::provider::Message {
+                role: zeph_llm::provider::Role::System,
+                content: system_content.to_owned(),
+                parts: vec![],
+                metadata: zeph_llm::provider::MessageMetadata::default(),
+            },
+            zeph_llm::provider::Message {
+                role: zeph_llm::provider::Role::User,
+                content: format!("Summarize these {total} conversation messages:\n\n{bullet_list}"),
+                parts: vec![],
+                metadata: zeph_llm::provider::MessageMetadata::default(),
+            },
+        ];
+
+        let summary = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.provider.chat(&summary_messages),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                self.focus.release_compression();
+                return format!("[error] Compression LLM call failed: {e}");
+            }
+            Err(_) => {
+                self.focus.release_compression();
+                return "[error] Compression LLM call timed out.".to_string();
+            }
+        };
+
+        if summary.trim().is_empty() {
+            self.focus.release_compression();
+            return "[error] Compression produced an empty summary.".to_string();
+        }
+
+        let tokens_freed = to_compress
+            .iter()
+            .map(|m| m.content.len() / 4)
+            .sum::<usize>();
+
+        // Append summary to Knowledge block.
+        self.focus.append_knowledge(summary.trim().to_owned());
+
+        // Remove compressed messages from in-memory history using their original indices.
+        // Index-based removal avoids false positives when two messages share identical content.
+        let mut remove_idx = to_remove_indices.iter().copied().collect::<Vec<_>>();
+        remove_idx.sort_unstable_by(|a, b| b.cmp(a)); // reverse order to preserve earlier indices
+        for idx in remove_idx {
+            if idx < self.msg.messages.len() {
+                self.msg.messages.remove(idx);
+            }
+        }
+
+        // Rebuild Knowledge block message.
+        self.msg
+            .messages
+            .retain(|m| !(m.metadata.focus_pinned && m.metadata.focus_marker_id.is_none()));
+        if let Some(kb_msg) = self.focus.build_knowledge_message() {
+            if self.msg.messages.is_empty() {
+                self.msg.messages.push(kb_msg);
+            } else {
+                self.msg.messages.insert(1, kb_msg);
+            }
+        }
+        self.recompute_prompt_tokens();
+        self.context_manager.compaction =
+            crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 };
+
+        self.focus.release_compression();
+
+        format!(
+            "Compressed {compressed_count} messages into a summary (~{tokens_freed} tokens freed). \
+             Knowledge block updated.",
+            compressed_count = to_compress.len()
+        )
     }
 
     /// Persist a tombstone `ToolResult` (`is_error=true`) for every tool call in `tool_calls`.

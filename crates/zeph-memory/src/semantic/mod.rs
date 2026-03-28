@@ -17,6 +17,7 @@ use std::sync::atomic::AtomicU64;
 
 use zeph_llm::any::AnyProvider;
 
+use crate::admission::AdmissionControl;
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::sqlite::SqliteStore;
@@ -56,6 +57,8 @@ pub struct SemanticMemory {
     pub(crate) community_detection_failures: Arc<AtomicU64>,
     pub(crate) graph_extraction_count: Arc<AtomicU64>,
     pub(crate) graph_extraction_failures: Arc<AtomicU64>,
+    /// A-MAC admission control gate. When `Some`, each `remember()` call is evaluated.
+    pub(crate) admission_control: Option<Arc<AdmissionControl>>,
 }
 
 impl SemanticMemory {
@@ -153,6 +156,7 @@ impl SemanticMemory {
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+            admission_control: None,
         })
     }
 
@@ -196,6 +200,7 @@ impl SemanticMemory {
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+            admission_control: None,
         })
     }
 
@@ -263,6 +268,16 @@ impl SemanticMemory {
         self
     }
 
+    /// Attach an A-MAC admission controller.
+    ///
+    /// When set, `remember()` and `remember_with_parts()` evaluate each message before persisting.
+    /// Messages below the admission threshold return `Ok(None)` without incrementing counts.
+    #[must_use]
+    pub fn with_admission_control(mut self, control: AdmissionControl) -> Self {
+        self.admission_control = Some(Arc::new(control));
+        self
+    }
+
     /// Construct a `SemanticMemory` from pre-built parts.
     ///
     /// Intended for tests that need full control over the backing stores.
@@ -295,6 +310,7 @@ impl SemanticMemory {
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+            admission_control: None,
         }
     }
 
@@ -357,6 +373,7 @@ impl SemanticMemory {
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+            admission_control: None,
         })
     }
 

@@ -198,6 +198,7 @@ impl Default for Config {
                 shutdown_summary_timeout_secs: 10,
                 structured_summaries: false,
                 tiers: TierConfig::default(),
+                admission: crate::memory::AdmissionConfig::default(),
                 digest: crate::memory::DigestConfig::default(),
                 context_strategy: crate::memory::ContextStrategy::default(),
                 crossover_turn_threshold: 20,

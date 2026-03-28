@@ -750,6 +750,32 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         )
     };
 
+    let _scene_consolidation_handle = {
+        let scene_cancel = zeph_memory::CancellationToken::new();
+        let scene_cancel_clone = scene_cancel.clone();
+        let mut shutdown_for_scenes = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = shutdown_for_scenes.changed().await;
+            scene_cancel_clone.cancel();
+        });
+        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+        let scene_provider = app
+            .build_scene_provider()
+            .unwrap_or_else(|| provider.clone());
+        let scene_cfg = zeph_memory::SceneConfig {
+            enabled: config.memory.tiers.scene_enabled,
+            similarity_threshold: config.memory.tiers.scene_similarity_threshold,
+            batch_size: config.memory.tiers.scene_batch_size,
+            sweep_interval_secs: config.memory.tiers.scene_sweep_interval_secs,
+        };
+        zeph_memory::start_scene_consolidation_loop(
+            sqlite_store,
+            scene_provider,
+            scene_cfg,
+            scene_cancel,
+        )
+    };
+
     #[cfg(feature = "compression-guidelines")]
     let _guidelines_handle = if config.memory.compression_guidelines.enabled {
         let guidelines_cancel = zeph_memory::CancellationToken::new();

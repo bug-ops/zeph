@@ -188,18 +188,24 @@ impl ToolExecutor for MemoryToolExecutor {
 
                 let role = params.role.as_str();
 
-                let message_id = self
+                let message_id_opt = self
                     .memory
                     .remember(self.conversation_id, role, &params.content)
                     .await
                     .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
-                Ok(Some(ToolOutput {
-                    tool_name: "memory_save".to_owned(),
-                    summary: format!(
+                let summary = match message_id_opt {
+                    Some(message_id) => format!(
                         "Saved to memory (message_id: {message_id}, conversation: {}). Content will be available for future recall.",
                         self.conversation_id
                     ),
+                    None => "Memory admission rejected: message did not meet quality threshold."
+                        .to_owned(),
+                };
+
+                Ok(Some(ToolOutput {
+                    tool_name: "memory_save".to_owned(),
+                    summary,
                     blocks_executed: 1,
                     filter_stats: None,
                     diff: None,

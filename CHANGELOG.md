@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(memory): A-MAC adaptive admission control — `AdmissionControl` in `zeph-memory::admission` evaluates 5 factors (future utility via LLM, factual confidence via hedging heuristics, semantic novelty via Qdrant top-3 cosine search, temporal recency fixed at 1.0 at write time, content-type prior by role) and rejects messages scoring below a configurable threshold; `remember()` now returns `Result<Option<MessageId>>` and `remember_with_parts()` returns `Result<(Option<MessageId>, bool)>` — `None` means admission rejected, no panic, no silent drop; `unsummarized_count` only incremented when a message is truly persisted; `[memory.admission]` config block added with `enabled`, `threshold`, `fast_path_margin`, `admission_provider`, and `weights` fields; runtime weight normalization eliminates the fragile sum-to-1.0 constraint; `memory_save` tool returns a human-readable rejection message when admission fails (#2317)
+- feat(memory): `MemScene` consolidation — `mem_scenes` and `mem_scene_members` SQLite tables (migration 049) store entity profiles derived from clusters of semantic-tier messages; `start_scene_consolidation_loop()` runs a background sweep on a configurable interval independent of tier promotion; greedy nearest-neighbor cosine clustering groups messages above `scene_similarity_threshold`; LLM generates a short label and 2–3 sentence profile per scene with JSON fallback; `[memory.tiers]` config gains `scene_enabled`, `scene_similarity_threshold`, `scene_batch_size`, `scene_provider` fields (#2332)
+- feat(core): `compress_context` native tool — always available when `context-compression` feature is enabled regardless of `CompressionStrategy`; compresses the current conversation (excluding pinned Knowledge and system messages) via LLM, appends the summary to the Knowledge block, and removes original messages from history; guarded by `Arc<AtomicBool>` concurrency lock in `FocusState` (`try_acquire_compression()` / `release_compression()`); blocked when a focus session is active; `CompressionStrategy::Autonomous` variant added; `compress_provider` field added to `CompressionConfig` (#2218)
+
 ### Fixed
 
 - fix(tools): write `AuditEntry` with `AuditResult::Blocked` when a pre-execution verifier blocks a tool call; previously the block was logged and metered but never recorded in the audit log (#2343)

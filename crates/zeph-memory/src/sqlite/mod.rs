@@ -8,6 +8,7 @@ pub mod corrections;
 pub mod experiments;
 pub mod graph_store;
 mod history;
+mod mem_scenes;
 pub(crate) mod messages;
 pub mod overflow;
 pub mod preferences;

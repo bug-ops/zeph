@@ -376,14 +376,18 @@ impl<C: Channel> Agent<C> {
             }
         };
 
-        let embedding_stored = if should_embed {
+        let (embedding_stored, was_persisted) = if should_embed {
             match memory
                 .remember_with_parts(cid, role_str(role), content, &parts_json)
                 .await
             {
-                Ok((message_id, stored)) => {
+                Ok((Some(message_id), stored)) => {
                     self.last_persisted_message_id = Some(message_id.0);
-                    stored
+                    (stored, true)
+                }
+                Ok((None, _)) => {
+                    // A-MAC admission rejected — skip increment and further processing.
+                    return;
                 }
                 Err(e) => {
                     tracing::error!("failed to persist message: {e:#}");
@@ -397,7 +401,7 @@ impl<C: Channel> Agent<C> {
             {
                 Ok(message_id) => {
                     self.last_persisted_message_id = Some(message_id.0);
-                    false
+                    (false, true)
                 }
                 Err(e) => {
                     tracing::error!("failed to persist message: {e:#}");
@@ -405,6 +409,10 @@ impl<C: Channel> Agent<C> {
                 }
             }
         };
+
+        if !was_persisted {
+            return;
+        }
 
         self.memory_state.unsummarized_count += 1;
 

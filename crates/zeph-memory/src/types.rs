@@ -53,6 +53,17 @@ pub struct ConversationId(pub i64);
 #[sqlx(transparent)]
 pub struct MessageId(pub i64);
 
+/// Strongly typed wrapper for `mem_scene` row IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct MemSceneId(pub i64);
+
+impl std::fmt::Display for MemSceneId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl std::fmt::Display for ConversationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

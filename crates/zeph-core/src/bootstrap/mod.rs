@@ -305,7 +305,60 @@ impl AppBuilder {
             tracing::info!("graph memory enabled, GraphStore attached");
         }
 
+        if self.config.memory.admission.enabled {
+            memory = memory.with_admission_control(self.build_admission_control(provider));
+        }
+
         Ok(memory)
+    }
+
+    fn build_admission_control(
+        &self,
+        fallback_provider: &AnyProvider,
+    ) -> zeph_memory::AdmissionControl {
+        let admission_provider = if self.config.memory.admission.admission_provider.is_empty() {
+            fallback_provider.clone()
+        } else {
+            match create_named_provider(
+                &self.config.memory.admission.admission_provider,
+                &self.config,
+            ) {
+                Ok(p) => {
+                    tracing::info!(
+                        provider = %self.config.memory.admission.admission_provider,
+                        "A-MAC admission provider configured"
+                    );
+                    p
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %self.config.memory.admission.admission_provider,
+                        error = %e,
+                        "A-MAC admission provider resolution failed — primary provider will be used"
+                    );
+                    fallback_provider.clone()
+                }
+            }
+        };
+        let w = &self.config.memory.admission.weights;
+        let weights = zeph_memory::AdmissionWeights {
+            future_utility: w.future_utility,
+            factual_confidence: w.factual_confidence,
+            semantic_novelty: w.semantic_novelty,
+            temporal_recency: w.temporal_recency,
+            content_type_prior: w.content_type_prior,
+        };
+        let control = zeph_memory::AdmissionControl::new(
+            self.config.memory.admission.threshold,
+            self.config.memory.admission.fast_path_margin,
+            weights,
+        )
+        .with_provider(admission_provider);
+        tracing::info!(
+            threshold = self.config.memory.admission.threshold,
+            "A-MAC admission control enabled"
+        );
+        control
     }
 
     pub async fn build_skill_matcher(
@@ -761,6 +814,31 @@ impl AppBuilder {
                     eval_model = %model_spec,
                     error = %e,
                     "failed to create eval provider — primary provider will be used as judge"
+                );
+                None
+            }
+        }
+    }
+
+    /// Build a dedicated provider for `MemScene` label/profile LLM generation.
+    ///
+    /// Returns `None` when `tiers.scene_provider` is empty (caller falls back to primary provider).
+    /// Emits a `tracing::warn` on resolution failure; primary provider is used as fallback.
+    pub fn build_scene_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.tiers.scene_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "scene consolidation provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "scene provider resolution failed — primary provider will be used"
                 );
                 None
             }

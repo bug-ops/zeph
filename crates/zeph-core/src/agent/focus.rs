@@ -9,6 +9,10 @@
 //! removed from the conversation history.
 
 #[cfg(feature = "context-compression")]
+use std::sync::Arc;
+#[cfg(feature = "context-compression")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "context-compression")]
 use uuid::Uuid;
 #[cfg(feature = "context-compression")]
 use zeph_llm::provider::{Message, MessageMetadata, Role, ToolDefinition};
@@ -66,6 +70,29 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// Build the tool definition for `compress_context` (#2218).
+///
+/// Always available when `context-compression` feature is enabled, regardless of compression
+/// strategy. The strategy controls automatic compression; this tool provides explicit control.
+#[cfg(feature = "context-compression")]
+pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "compress_context".into(),
+        description: "Compress the current conversation context. Summarizes conversation history \
+                      (excluding pinned Knowledge) into a compact summary, appends it to the \
+                      Knowledge block, and removes the original messages from context.\n\n\
+                      Use when the conversation is getting long and you want to free context space. \
+                      Cannot be called while a focus session is active or while another compression \
+                      is in progress.\n\nParameters: none.\nReturns: confirmation with token count."
+            .into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
 // Used by build_knowledge_message (context-compression feature).
 #[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) const KNOWLEDGE_BLOCK_PREFIX: &str = "[knowledge]\n";
@@ -87,6 +114,10 @@ pub(crate) struct FocusState {
     pub(crate) turns_since_focus: usize,
     /// Turns elapsed since the last reminder was injected.
     pub(crate) turns_since_reminder: usize,
+    /// Concurrency guard: `true` while `compress_context` is executing.
+    /// Prevents double compression and races with reactive compaction.
+    #[cfg(feature = "context-compression")]
+    pub(crate) compressing: Arc<AtomicBool>,
 }
 
 #[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
@@ -100,7 +131,26 @@ impl FocusState {
             active_scope: None,
             turns_since_focus: 0,
             turns_since_reminder: 0,
+            #[cfg(feature = "context-compression")]
+            compressing: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Try to acquire the compression lock.
+    ///
+    /// Returns `true` if acquired (caller must call `release_compression()` when done).
+    /// Returns `false` if another compression is already in progress.
+    #[cfg(feature = "context-compression")]
+    pub(crate) fn try_acquire_compression(&self) -> bool {
+        self.compressing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    /// Release the compression lock.
+    #[cfg(feature = "context-compression")]
+    pub(crate) fn release_compression(&self) {
+        self.compressing.store(false, Ordering::Release);
     }
 
     /// Returns `true` if a focus session is currently active.
@@ -335,5 +385,65 @@ mod tests {
         state.tick();
         assert_eq!(state.turns_since_focus, 2);
         assert_eq!(state.turns_since_reminder, 2);
+    }
+
+    // Test: concurrency guard prevents double-compression (#2218).
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn try_acquire_compression_prevents_double_call() {
+        let state = FocusState::new(FocusConfig::default());
+
+        // First acquire must succeed.
+        assert!(
+            state.try_acquire_compression(),
+            "first acquire must succeed"
+        );
+
+        // Second acquire must fail while first is held.
+        assert!(
+            !state.try_acquire_compression(),
+            "second acquire must fail while lock is held"
+        );
+
+        // After release, acquire must succeed again.
+        state.release_compression();
+        assert!(
+            state.try_acquire_compression(),
+            "acquire must succeed after release"
+        );
+        state.release_compression();
+    }
+
+    // Test: Knowledge block persists across compaction cycles (#2218).
+    // Verifies that knowledge accumulated before a compress_context call
+    // is preserved after another append_knowledge call.
+    #[test]
+    fn knowledge_block_persists_across_multiple_appends() {
+        let mut state = FocusState::new(FocusConfig::default());
+
+        state.append_knowledge("First compression summary.".to_string());
+        state.append_knowledge("Second compression summary.".to_string());
+
+        assert_eq!(
+            state.knowledge_blocks.len(),
+            2,
+            "both summaries must persist"
+        );
+        assert!(state.knowledge_blocks[0].contains("First"));
+        assert!(state.knowledge_blocks[1].contains("Second"));
+    }
+
+    // Test: Knowledge block message contains all summaries after multiple compressions.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn knowledge_message_contains_all_summaries() {
+        let mut state = FocusState::new(FocusConfig::default());
+        state.append_knowledge("Summary A: learned about auth.".to_string());
+        state.append_knowledge("Summary B: learned about storage.".to_string());
+
+        let msg = state.build_knowledge_message().unwrap();
+        assert!(msg.content.contains("Summary A"));
+        assert!(msg.content.contains("Summary B"));
+        assert!(msg.metadata.focus_pinned, "knowledge block must be pinned");
     }
 }
