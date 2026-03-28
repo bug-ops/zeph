@@ -700,6 +700,31 @@ impl AppBuilder {
         }
     }
 
+    /// Build the `PlanVerifier` provider from `[orchestration] verify_provider`.
+    ///
+    /// Returns `None` when `verify_provider` is empty (falls back to the primary provider at
+    /// runtime) or when provider resolution fails (logs a warning, fails open).
+    pub fn build_verify_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.orchestration.verify_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "verify provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "verify provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     #[cfg(feature = "experiments")]
     pub fn build_eval_provider(&self) -> Option<AnyProvider> {
         let model_spec = self.config.experiments.eval_model.as_deref()?;

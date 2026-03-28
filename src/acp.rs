@@ -126,6 +126,7 @@ struct SharedAgentDeps {
     classifiers_config: zeph_core::config::ClassifiersConfig,
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
+    verify_provider: Option<zeph_llm::any::AnyProvider>,
     quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
     #[cfg(feature = "guardrail")]
     guardrail_provider: Option<(
@@ -459,6 +460,7 @@ async fn build_acp_deps(
         classifiers_config: config.classifiers.clone(),
         probe_provider: app.build_probe_provider(),
         planner_provider: app.build_planner_provider(),
+        verify_provider: app.build_verify_provider(),
         quarantine_provider: app.build_quarantine_provider(),
         #[cfg(feature = "guardrail")]
         guardrail_provider: app.build_guardrail_provider(),
@@ -550,6 +552,7 @@ async fn spawn_acp_agent(
     let classifiers_config = d.classifiers_config.clone();
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
+    let verify_provider = d.verify_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
     #[cfg(feature = "guardrail")]
     let guardrail_provider = d.guardrail_provider.clone();
@@ -751,6 +754,10 @@ async fn spawn_acp_agent(
 
     if let Some(pp) = planner_provider {
         agent = agent.with_planner_provider(pp);
+    }
+
+    if let Some(vp) = verify_provider {
+        agent = agent.with_verify_provider(vp);
     }
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);

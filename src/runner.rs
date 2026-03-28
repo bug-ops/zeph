@@ -1092,6 +1092,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    let verify_provider = app.build_verify_provider();
+    let agent = if let Some(vp) = verify_provider {
+        agent.with_verify_provider(vp)
+    } else {
+        agent
+    };
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     #[cfg(feature = "guardrail")]
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());

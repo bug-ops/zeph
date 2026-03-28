@@ -151,6 +151,9 @@ pub struct DagScheduler {
     global_replan_count: u32,
     /// Global replan hard cap from config.
     max_replans: u32,
+    /// Completeness score threshold from config. Replan is triggered when
+    /// `VerificationResult::confidence < completeness_threshold_value` AND gaps exist.
+    completeness_threshold_value: f32,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -246,6 +249,7 @@ impl DagScheduler {
             task_replan_counts: HashMap::new(),
             global_replan_count: 0,
             max_replans: config.max_replans,
+            completeness_threshold_value: config.completeness_threshold,
         })
     }
 
@@ -337,6 +341,7 @@ impl DagScheduler {
             task_replan_counts: HashMap::new(),
             global_replan_count: 0,
             max_replans: config.max_replans,
+            completeness_threshold_value: config.completeness_threshold,
         })
     }
 
@@ -398,6 +403,37 @@ impl DagScheduler {
     #[must_use]
     pub fn topology(&self) -> &TopologyAnalysis {
         &self.topology
+    }
+
+    /// Minimum completeness score threshold from config.
+    ///
+    /// Used by the agent loop to gate whole-plan replan: replan is triggered when
+    /// `VerificationResult::confidence < completeness_threshold` AND gaps exist.
+    #[must_use]
+    pub fn completeness_threshold(&self) -> f32 {
+        self.completeness_threshold_value
+    }
+
+    /// Provider name for verification LLM calls (empty = use primary provider).
+    #[must_use]
+    pub fn verify_provider_name(&self) -> &str {
+        &self.verify_provider
+    }
+
+    /// Remaining whole-plan replan budget: `max_replans - global_replan_count`.
+    ///
+    /// Returns 0 when the global cap has been reached.
+    #[must_use]
+    pub fn max_replans_remaining(&self) -> u32 {
+        self.max_replans.saturating_sub(self.global_replan_count)
+    }
+
+    /// Increment `global_replan_count` to record a whole-plan replan cycle.
+    ///
+    /// Called by the agent loop after executing a partial DAG from whole-plan gaps.
+    /// Does NOT inject tasks into the original graph (the partial DAG is a separate run).
+    pub fn record_whole_plan_replan(&mut self) {
+        self.global_replan_count = self.global_replan_count.saturating_add(1);
     }
 
     /// Inject new tasks into the graph after a verify-replan cycle.
@@ -1239,6 +1275,7 @@ mod tests {
             verify_max_tokens: 1024,
             max_replans: 2,
             verify_completeness: false,
+            completeness_threshold: 0.7,
         }
     }
 
@@ -3319,6 +3356,79 @@ mod tests {
         assert_eq!(
             max_after_second_inject, expected_max_parallel,
             "max_parallel must not drift after second inject+tick (was: {max_after_second_inject}, expected: {expected_max_parallel})"
+        );
+    }
+
+    // --- VMAO adaptive replanning accessor tests ---
+
+    #[test]
+    fn completeness_threshold_returns_config_value() {
+        let mut config = make_config();
+        config.completeness_threshold = 0.85;
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![make_def("w")]).unwrap();
+        assert!((scheduler.completeness_threshold() - 0.85).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn completeness_threshold_default_is_0_7() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler = make_scheduler(graph);
+        assert!((scheduler.completeness_threshold() - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn verify_provider_name_returns_config_value() {
+        let mut config = make_config();
+        config.verify_provider = "fast".to_string();
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![make_def("w")]).unwrap();
+        assert_eq!(scheduler.verify_provider_name(), "fast");
+    }
+
+    #[test]
+    fn verify_provider_name_empty_when_not_set() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler = make_scheduler(graph);
+        assert_eq!(scheduler.verify_provider_name(), "");
+    }
+
+    #[test]
+    fn max_replans_remaining_initial_equals_max_replans() {
+        let mut config = make_config();
+        config.max_replans = 3;
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![make_def("w")]).unwrap();
+        assert_eq!(scheduler.max_replans_remaining(), 3);
+    }
+
+    #[test]
+    fn max_replans_remaining_decrements_after_record() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        assert_eq!(scheduler.max_replans_remaining(), 2);
+        scheduler.record_whole_plan_replan();
+        assert_eq!(scheduler.max_replans_remaining(), 1);
+        scheduler.record_whole_plan_replan();
+        assert_eq!(scheduler.max_replans_remaining(), 0);
+        // saturating: stays at 0
+        scheduler.record_whole_plan_replan();
+        assert_eq!(scheduler.max_replans_remaining(), 0);
+    }
+
+    #[test]
+    fn record_whole_plan_replan_does_not_modify_graph() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        let task_count_before = scheduler.graph().tasks.len();
+        scheduler.record_whole_plan_replan();
+        assert_eq!(
+            scheduler.graph().tasks.len(),
+            task_count_before,
+            "record_whole_plan_replan must not modify the task graph"
         );
     }
 }

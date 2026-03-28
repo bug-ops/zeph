@@ -197,6 +197,13 @@ impl Config {
                 .map_err(ConfigError::Validation)?;
         }
 
+        let ct = self.orchestration.completeness_threshold;
+        if !ct.is_finite() || !(0.0..=1.0).contains(&ct) {
+            return Err(ConfigError::Validation(format!(
+                "orchestration.completeness_threshold must be in [0.0, 1.0], got {ct}"
+            )));
+        }
+
         // Focus config validation
         if self.agent.focus.compression_interval == 0 {
             return Err(ConfigError::Validation(
@@ -377,6 +384,71 @@ mod tests {
         let err = probe_config(true, 0.3, 0.9).validate().unwrap_err();
         assert!(
             err.to_string().contains("probe.hard_fail_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn config_with_completeness_threshold(ct: f32) -> Config {
+        let mut cfg = Config::default();
+        cfg.orchestration.completeness_threshold = ct;
+        cfg
+    }
+
+    #[test]
+    fn completeness_threshold_valid_zero() {
+        assert!(config_with_completeness_threshold(0.0).validate().is_ok());
+    }
+
+    #[test]
+    fn completeness_threshold_valid_default() {
+        assert!(config_with_completeness_threshold(0.7).validate().is_ok());
+    }
+
+    #[test]
+    fn completeness_threshold_valid_one() {
+        assert!(config_with_completeness_threshold(1.0).validate().is_ok());
+    }
+
+    #[test]
+    fn completeness_threshold_invalid_negative() {
+        let err = config_with_completeness_threshold(-0.1)
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("completeness_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn completeness_threshold_invalid_above_one() {
+        let err = config_with_completeness_threshold(1.1)
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("completeness_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn completeness_threshold_invalid_nan() {
+        let err = config_with_completeness_threshold(f32::NAN)
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("completeness_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn completeness_threshold_invalid_infinity() {
+        let err = config_with_completeness_threshold(f32::INFINITY)
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("completeness_threshold"),
             "unexpected error: {err}"
         );
     }

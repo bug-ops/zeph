@@ -113,6 +113,40 @@ fn format_plan_summary(graph: &crate::orchestration::TaskGraph) -> String {
     out
 }
 
+/// Concatenate completed task outputs into a single string truncated to `max_tokens * 4` chars.
+///
+/// Logs a warning when truncation occurs (C3). Returns an empty string when no completed
+/// tasks have results.
+fn collect_and_truncate_task_outputs(
+    graph: &crate::orchestration::TaskGraph,
+    max_tokens: u32,
+) -> String {
+    use crate::orchestration::TaskStatus;
+
+    let char_budget = max_tokens as usize * 4;
+    let mut raw = String::new();
+    for task in &graph.tasks {
+        if task.status == TaskStatus::Completed
+            && let Some(ref result) = task.result
+        {
+            if !raw.is_empty() {
+                raw.push('\n');
+            }
+            raw.push_str(&result.output);
+        }
+    }
+    if raw.len() > char_budget {
+        tracing::warn!(
+            original_len = raw.len(),
+            truncated_to = char_budget,
+            "whole-plan verify: output truncated to verify_max_tokens * 4 chars"
+        );
+        raw.chars().take(char_budget).collect()
+    } else {
+        raw
+    }
+}
+
 pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
     use std::fmt::Write;
     let capacity = "[tool output: ".len()
@@ -459,6 +493,7 @@ impl<C: Channel> Agent<C> {
             },
             orchestration: OrchestrationState {
                 planner_provider: None,
+                verify_provider: None,
                 pending_graph: None,
                 plan_cancel_token: None,
                 subagent_manager: None,
@@ -866,7 +901,23 @@ impl<C: Channel> Agent<C> {
         }
 
         let final_status = scheduler_result?;
-        let completed_graph = scheduler.into_graph();
+
+        // Whole-plan verification: after all tasks complete, verify the full plan output
+        // against the original goal and trigger a single replan cycle if gaps are found.
+        // Only runs on Completed graphs — Failed/Canceled graphs skip verification.
+        // Fail-open: any error logs a warn and proceeds to aggregation unchanged.
+        let extra_task_outputs = self
+            .run_whole_plan_verify(&mut scheduler, final_status)
+            .await;
+
+        let mut completed_graph = scheduler.into_graph();
+
+        // Merge partial DAG outputs (from whole-plan replan) into the original graph so the
+        // Aggregator sees both original and gap-filling task results (C2).
+        // IDs are already offset by the original graph size (set in run_whole_plan_verify).
+        if let Some(extra_tasks) = extra_task_outputs {
+            completed_graph.tasks.extend(extra_tasks);
+        }
 
         // Final TUI snapshot update.
         let snapshot = crate::metrics::TaskGraphSnapshot::from(&completed_graph);
@@ -886,6 +937,152 @@ impl<C: Channel> Agent<C> {
             }
         });
         Ok(())
+    }
+
+    /// Run whole-plan verification after `DagScheduler` reaches `Done{Completed}`.
+    ///
+    /// Returns completed `TaskNode`s from the partial replan DAG when a replan cycle
+    /// was executed. Returns `None` when verification is disabled, not applicable, or
+    /// the plan passes the threshold. Returns `None` on any error (fail-open).
+    ///
+    /// The returned tasks must be merged into the original graph by the caller (C2)
+    /// so the `Aggregator` sees both original and gap-filling task outputs.
+    async fn run_whole_plan_verify(
+        &mut self,
+        scheduler: &mut crate::orchestration::DagScheduler,
+        final_status: crate::orchestration::GraphStatus,
+    ) -> Option<Vec<crate::orchestration::TaskNode>> {
+        use crate::orchestration::{GraphStatus, PlanVerifier};
+
+        if final_status != GraphStatus::Completed
+            || !self.orchestration.orchestration_config.verify_completeness
+            || scheduler.max_replans_remaining() == 0
+        {
+            return None;
+        }
+
+        let threshold = scheduler.completeness_threshold();
+        let max_tokens = self.orchestration.orchestration_config.verify_max_tokens;
+        let max_tasks = self.orchestration.orchestration_config.max_tasks;
+        let goal = scheduler.graph().goal.clone();
+        let truncated_output = collect_and_truncate_task_outputs(scheduler.graph(), max_tokens);
+
+        if truncated_output.is_empty() {
+            return None;
+        }
+
+        let verify_provider = self
+            .orchestration
+            .verify_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
+            .clone();
+        let mut verifier =
+            PlanVerifier::new(verify_provider, max_tokens, self.security.sanitizer.clone());
+        let result = verifier.verify_plan(&goal, &truncated_output).await;
+
+        tracing::debug!(
+            complete = result.complete,
+            confidence = result.confidence,
+            gaps = result.gaps.len(),
+            threshold,
+            "whole-plan verification result"
+        );
+
+        let should_replan =
+            !result.complete && result.confidence < f64::from(threshold) && !result.gaps.is_empty();
+
+        if !should_replan {
+            return None;
+        }
+
+        scheduler.record_whole_plan_replan();
+
+        let next_id = u32::try_from(scheduler.graph().tasks.len()).unwrap_or(u32::MAX);
+        let gap_tasks = match verifier
+            .replan_from_plan(&goal, &result.gaps, next_id, max_tasks)
+            .await
+        {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                tracing::warn!(error = %e, "whole-plan replan_from_plan failed (fail-open)");
+                return None;
+            }
+        };
+
+        if gap_tasks.is_empty() {
+            return None;
+        }
+
+        self.execute_partial_replan_dag(gap_tasks, &goal).await
+    }
+
+    /// Build and run a partial DAG from gap tasks generated by whole-plan verification.
+    ///
+    /// Uses `max_replans=0` and `verify_completeness=false` to prevent recursive replan
+    /// loops (C1 / INV-2). Returns completed task nodes on success, `None` on any error.
+    async fn execute_partial_replan_dag(
+        &mut self,
+        gap_tasks: Vec<crate::orchestration::TaskNode>,
+        goal: &str,
+    ) -> Option<Vec<crate::orchestration::TaskNode>> {
+        use crate::orchestration::{DagScheduler, RuleBasedRouter, TaskStatus};
+
+        let mut partial_graph = crate::orchestration::TaskGraph::new(goal);
+        partial_graph.tasks = gap_tasks;
+
+        let mut partial_config = self.orchestration.orchestration_config.clone();
+        // INV-2: prevent recursive whole-plan replan loops in the partial DAG.
+        partial_config.max_replans = 0;
+        partial_config.verify_completeness = false;
+
+        let available_agents = self
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+
+        let mut partial_scheduler = match DagScheduler::new(
+            partial_graph,
+            &partial_config,
+            Box::new(RuleBasedRouter),
+            available_agents,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "whole-plan replan: failed to create partial DagScheduler (fail-open)"
+                );
+                return None;
+            }
+        };
+
+        let partial_task_count = partial_scheduler.graph().tasks.len();
+        let cancel_token = CancellationToken::new();
+        if let Err(e) = self
+            .run_scheduler_loop(&mut partial_scheduler, partial_task_count, cancel_token)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "whole-plan replan: partial DAG run failed (fail-open)"
+            );
+        }
+
+        let completed: Vec<_> = partial_scheduler
+            .into_graph()
+            .tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::Completed)
+            .collect();
+
+        if completed.is_empty() {
+            None
+        } else {
+            Some(completed)
+        }
     }
 
     /// Cancel all agents referenced in `cancel_actions`.
@@ -1094,7 +1291,7 @@ impl<C: Channel> Agent<C> {
         task_count: usize,
         cancel_token: CancellationToken,
     ) -> Result<crate::orchestration::GraphStatus, error::AgentError> {
-        use crate::orchestration::SchedulerAction;
+        use crate::orchestration::{PlanVerifier, SchedulerAction};
 
         // Sequential spawn counter for human-readable "task N/M" progress messages.
         // task_id.index() reflects array position and can be non-contiguous for
@@ -1105,6 +1302,10 @@ impl<C: Channel> Agent<C> {
         // re-prompting the user when a sub-agent re-requests the same secret after denial.
         let mut denied_secrets: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
+
+        // Lazily initialized per-task verifier. Created once on the first Verify action;
+        // reused for all subsequent per-task Verify calls in this scheduler run.
+        let mut plan_verifier: Option<PlanVerifier<AnyProvider>> = None;
 
         let final_status = 'tick: loop {
             let actions = scheduler.tick();
@@ -1169,10 +1370,80 @@ impl<C: Channel> Agent<C> {
                     SchedulerAction::Done { status } => {
                         break 'tick status;
                     }
-                    SchedulerAction::Verify { .. } => {
-                        // Verification is fire-and-forget from the scheduler's perspective.
-                        // The core agent does not drive PlanVerifier directly — that is handled
-                        // by the scheduler's inject_tasks path. No action needed here.
+                    SchedulerAction::Verify { task_id, output } => {
+                        // Per-task verification: evaluate the completed task's output and
+                        // optionally inject replan tasks if gaps are found below threshold.
+                        // Fail-open: any error logs a warning and continues without blocking.
+                        let verify_provider = self
+                            .orchestration
+                            .verify_provider
+                            .as_ref()
+                            .unwrap_or(&self.provider)
+                            .clone();
+                        let max_tokens = self.orchestration.orchestration_config.verify_max_tokens;
+                        let threshold = self
+                            .orchestration
+                            .orchestration_config
+                            .completeness_threshold;
+                        let sanitizer = self.security.sanitizer.clone();
+
+                        // Initialize the verifier once; reuse across Verify actions.
+                        let verifier = plan_verifier.get_or_insert_with(|| {
+                            PlanVerifier::new(verify_provider, max_tokens, sanitizer)
+                        });
+
+                        let task = scheduler.graph().tasks.get(task_id.index()).cloned();
+
+                        if let Some(task) = task {
+                            let result = verifier.verify(&task, &output).await;
+                            tracing::debug!(
+                                task_id = %task_id,
+                                complete = result.complete,
+                                confidence = result.confidence,
+                                gaps = result.gaps.len(),
+                                "per-task verification result"
+                            );
+
+                            let should_replan = !result.complete
+                                && result.confidence < f64::from(threshold)
+                                && result.gaps.iter().any(|g| {
+                                    matches!(
+                                        g.severity,
+                                        crate::orchestration::GapSeverity::Critical
+                                            | crate::orchestration::GapSeverity::Important
+                                    )
+                                });
+
+                            if should_replan {
+                                let max_tasks_u32 =
+                                    self.orchestration.orchestration_config.max_tasks;
+                                let max_tasks = max_tasks_u32 as usize;
+                                match verifier
+                                    .replan(&task, &result.gaps, scheduler.graph(), max_tasks_u32)
+                                    .await
+                                {
+                                    Ok(new_tasks) if !new_tasks.is_empty() => {
+                                        if let Err(e) =
+                                            scheduler.inject_tasks(task_id, new_tasks, max_tasks)
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                task_id = %task_id,
+                                                "per-task replan inject_tasks failed (fail-open)"
+                                            );
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            task_id = %task_id,
+                                            "per-task replan failed (fail-open)"
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

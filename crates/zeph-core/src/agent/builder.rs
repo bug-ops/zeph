@@ -467,6 +467,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set a dedicated provider for `PlanVerifier` LLM calls.
+    ///
+    /// When not set, verification falls back to the primary provider.
+    #[must_use]
+    pub fn with_verify_provider(mut self, provider: AnyProvider) -> Self {
+        self.orchestration.verify_provider = Some(provider);
+        self
+    }
+
     /// Enable server-side compaction mode (Claude compact-2026-01-12 beta).
     ///
     /// When active, client-side reactive and proactive compaction are skipped.
