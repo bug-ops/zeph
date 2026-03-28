@@ -1071,6 +1071,26 @@ impl<C: Channel> Agent<C> {
                     continue;
                 }
 
+                // RuntimeLayer before_tool hooks: may short-circuit execution.
+                if !self.runtime_layers.is_empty() {
+                    let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+                    let ctx = crate::runtime_layer::LayerContext {
+                        conversation_id: conv_id_str.as_deref(),
+                        turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+                    };
+                    let mut sc_result: crate::runtime_layer::BeforeToolResult = None;
+                    for layer in &self.runtime_layers {
+                        if let Some(r) = layer.before_tool(&ctx, call).await {
+                            sc_result = Some(r);
+                            break;
+                        }
+                    }
+                    if let Some(r) = sc_result {
+                        tier_futs.push((idx, Box::pin(std::future::ready(r))));
+                        continue;
+                    }
+                }
+
                 let sem = std::sync::Arc::clone(&semaphore);
                 let executor = std::sync::Arc::clone(&self.tool_executor);
                 let call = call.clone();
@@ -1143,6 +1163,18 @@ impl<C: Channel> Agent<C> {
                 // Only record on success (non-error) so `requires` chains work correctly.
                 if !is_failed && self.dependency_graph.is_some() {
                     self.completed_tool_ids.insert(tool_calls[idx].name.clone());
+                }
+
+                // RuntimeLayer after_tool hooks.
+                if !self.runtime_layers.is_empty() {
+                    let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+                    let ctx = crate::runtime_layer::LayerContext {
+                        conversation_id: conv_id_str.as_deref(),
+                        turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+                    };
+                    for layer in &self.runtime_layers {
+                        layer.after_tool(&ctx, &calls[idx], &result).await;
+                    }
                 }
 
                 tool_results[idx] = result;
