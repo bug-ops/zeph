@@ -301,6 +301,9 @@ mod tests {
     #[test]
     fn is_process_alive_nonexistent_pid() {
         // u32::MAX is effectively guaranteed to not be a valid running PID.
-        assert!(!is_process_alive(u32::MAX), "PID u32::MAX must not be alive");
+        assert!(
+            !is_process_alive(u32::MAX),
+            "PID u32::MAX must not be alive"
+        );
     }
 }

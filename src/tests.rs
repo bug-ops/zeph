@@ -386,17 +386,16 @@ async fn loopback_stale_flush_drained_after_full_message() {
 
     // Simulate: agent sends FullMessage (terminates the recv loop), then emits a
     // stale Flush (e.g. emitted by a different code path after the turn ends).
-    handle
-        .output_rx
-        .try_recv()
-        .unwrap_err(); // channel is empty initially
+    handle.output_rx.try_recv().unwrap_err(); // channel is empty initially
 
     // Pre-load the channel as the agent loop would: FullMessage followed by stale Flush.
     // We drive the output_tx side via a separate sender cloned from the pair internals.
     // Because LoopbackHandle owns output_rx (not output_tx), we simulate by sending
     // through a fresh mpsc pair that mirrors the drain logic directly.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<LoopbackEvent>(8);
-    tx.send(LoopbackEvent::FullMessage("hello".to_owned())).await.unwrap();
+    tx.send(LoopbackEvent::FullMessage("hello".to_owned()))
+        .await
+        .unwrap();
     tx.send(LoopbackEvent::Flush).await.unwrap();
 
     // Consume up to and including FullMessage (mirrors the recv loop in process()).
