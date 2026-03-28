@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::MemoryError;
 use crate::graph::store::GraphStore;
-use crate::graph::types::{Edge, EdgeType, evolved_weight};
+use crate::graph::types::{Edge, EdgeType, edge_type_weight, evolved_weight};
 
 /// A graph node that was activated during spreading activation.
 #[derive(Debug, Clone)]
@@ -179,8 +179,9 @@ impl SpreadingActivation {
 
                     let recency = self.recency_weight(&edge.valid_from, now_secs);
                     let edge_weight = evolved_weight(edge.retrieval_count, edge.confidence);
+                    let type_w = edge_type_weight(edge.edge_type);
                     let spread_value =
-                        node_score * self.params.decay_lambda * edge_weight * recency;
+                        node_score * self.params.decay_lambda * edge_weight * recency * type_w;
 
                     if spread_value < self.params.activation_threshold {
                         continue;
