@@ -180,6 +180,16 @@ jobs:
           name: nextest-archive-${{ matrix.os }}
           path: nextest-archive.tar.zst
           retention-days: 1
+      - name: Build and archive zeph-db postgres integration tests
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-db --no-default-features --features test-utils --tests --archive-file nextest-archive-zeph-db-postgres.tar.zst
+      - name: Upload zeph-db postgres test archive
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v6
+        with:
+          name: nextest-archive-zeph-db-postgres
+          path: nextest-archive-zeph-db-postgres.tar.zst
+          retention-days: 1
       - name: Upload binary
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v6
@@ -229,15 +239,12 @@ jobs:
           name: nextest-archive-ubuntu-latest
       - name: Run integration tests (testcontainers)
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci -E 'binary(~integration)'
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - name: Download zeph-db postgres test archive
+        uses: actions/download-artifact@v7
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          cache-targets: "false"
-          shared-key: "ci"
+          name: nextest-archive-zeph-db-postgres
       - name: Run postgres integration tests (testcontainers)
-        run: cargo nextest run --config-file .github/nextest.toml -p zeph-db --features test-utils --run-ignored ignored-only
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-db-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only
 
   coverage:
     name: Coverage
