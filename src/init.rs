@@ -2117,6 +2117,7 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Security ==\n");
     println!(
