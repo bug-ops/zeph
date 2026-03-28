@@ -535,7 +535,6 @@ impl SqliteStore {
 mod tests {
     use std::time::Duration;
 
-    use sqlx::Connection;
     use tokio::time::sleep;
 
     use super::*;
