@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(telegram): split messages exceeding 4096 bytes at UTF-8 boundaries in `send_or_edit()`; both the new-message (None) and edit-overflow (Some) branches now iterate `utf8_chunks()` output (#2345)
+- fix(telegram): reduce streaming throttle from 10s to 3s in `should_send_update()` to improve perceived response speed (#2341)
 - fix(core): `/reset` command now handled in `handle_builtin_command` as an alias for `/clear` with confirmation reply; previously fell through to LLM inference in all channels (#2339)
 - fix(telegram-e2e): reduce `scenario_long_output` prompt from 400 to 100 items and `first_timeout` from 90s to 60s to avoid LLM timeout under load (#2340)
 
