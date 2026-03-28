@@ -582,6 +582,7 @@ pub(crate) fn apply_injection_classifier_with_cfg<C: Channel>(
             backend,
             classifiers.timeout_ms,
             classifiers.injection_threshold,
+            classifiers.injection_threshold_soft,
         )
         .with_scan_user_input(classifiers.scan_user_input)
 }

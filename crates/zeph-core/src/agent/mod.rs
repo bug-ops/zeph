@@ -3370,16 +3370,22 @@ impl<C: Channel> Agent<C> {
         // Gated by `scan_user_input`: DeBERTa is tuned for external/untrusted content, not
         // direct user chat. Disabled by default to prevent false positives on benign messages.
         #[cfg(feature = "classifiers")]
-        if self.security.sanitizer.scan_user_input()
-            && self.security.sanitizer.classify_injection(trimmed).await
-        {
-            self.push_classifier_metrics();
-            let _ = self
-                .channel
-                .send("[security] Input blocked: injection detected by classifier.")
-                .await;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
+        if self.security.sanitizer.scan_user_input() {
+            match self.security.sanitizer.classify_injection(trimmed).await {
+                zeph_sanitizer::InjectionVerdict::Blocked => {
+                    self.push_classifier_metrics();
+                    let _ = self
+                        .channel
+                        .send("[security] Input blocked: injection detected by classifier.")
+                        .await;
+                    let _ = self.channel.flush_chunks().await;
+                    return Ok(());
+                }
+                zeph_sanitizer::InjectionVerdict::Suspicious => {
+                    tracing::warn!("injection_classifier soft_signal on user input");
+                }
+                zeph_sanitizer::InjectionVerdict::Clean => {}
+            }
         }
         #[cfg(feature = "classifiers")]
         self.push_classifier_metrics();

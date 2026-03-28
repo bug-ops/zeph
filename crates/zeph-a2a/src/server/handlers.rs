@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::StreamExt;
 use futures::stream::Stream;
@@ -18,6 +18,7 @@ use crate::jsonrpc::{
 };
 use crate::types::{TaskArtifactUpdateEvent, TaskState, TaskStatusUpdateEvent};
 
+use super::router::AuthIdentity;
 use super::state::{AppState, CancelError, ProcessorEvent, now_rfc3339};
 
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
@@ -68,8 +69,10 @@ fn error_response(
 
 pub async fn jsonrpc_handler(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthIdentity>,
     Json(raw): Json<RawRequest>,
 ) -> Json<JsonRpcResponse<serde_json::Value>> {
+    tracing::debug!(authenticated = identity.authenticated, method = %raw.method, "a2a jsonrpc request");
     let id = raw.id.clone();
 
     let response = match raw.method.as_str() {
@@ -256,8 +259,10 @@ fn status_event(
 
 pub async fn stream_handler(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthIdentity>,
     Json(req): Json<StreamRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    tracing::debug!(authenticated = identity.authenticated, "a2a stream request");
     let (tx, rx) = mpsc::channel::<Event>(32);
 
     tokio::spawn(async move {

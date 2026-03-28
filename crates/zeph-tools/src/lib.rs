@@ -80,7 +80,8 @@ pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;
 pub use trust_level::TrustLevel;
 pub use verifier::{
-    DestructiveCommandVerifier, DestructiveVerifierConfig, InjectionPatternVerifier,
-    InjectionVerifierConfig, PreExecutionVerifier, PreExecutionVerifierConfig,
-    UrlGroundingVerifier, UrlGroundingVerifierConfig, VerificationResult,
+    DestructiveCommandVerifier, DestructiveVerifierConfig, FirewallVerifier,
+    FirewallVerifierConfig, InjectionPatternVerifier, InjectionVerifierConfig,
+    PreExecutionVerifier, PreExecutionVerifierConfig, UrlGroundingVerifier,
+    UrlGroundingVerifierConfig, VerificationResult,
 };

@@ -172,6 +172,8 @@ pub struct PreExecutionVerifierConfig {
     pub injection_patterns: InjectionVerifierConfig,
     #[serde(default)]
     pub url_grounding: UrlGroundingVerifierConfig,
+    #[serde(default)]
+    pub firewall: FirewallVerifierConfig,
 }
 
 impl Default for PreExecutionVerifierConfig {
@@ -181,6 +183,7 @@ impl Default for PreExecutionVerifierConfig {
             destructive_commands: DestructiveVerifierConfig::default(),
             injection_patterns: InjectionVerifierConfig::default(),
             url_grounding: UrlGroundingVerifierConfig::default(),
+            firewall: FirewallVerifierConfig::default(),
         }
     }
 }
@@ -765,6 +768,256 @@ impl PreExecutionVerifier for UrlGroundingVerifier {
                 "[UrlGroundingVerifier] fetch rejected: URL '{url}' was not provided by the user",
             ),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FirewallVerifier
+// ---------------------------------------------------------------------------
+
+/// Configuration for the firewall verifier.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FirewallVerifierConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Glob patterns for additional paths to block.
+    #[serde(default)]
+    pub blocked_paths: Vec<String>,
+    /// Additional environment variable names to block from tool arguments.
+    #[serde(default)]
+    pub blocked_env_vars: Vec<String>,
+    /// Tool IDs exempt from firewall scanning.
+    #[serde(default)]
+    pub exempt_tools: Vec<String>,
+}
+
+impl Default for FirewallVerifierConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            blocked_paths: Vec::new(),
+            blocked_env_vars: Vec::new(),
+            exempt_tools: Vec::new(),
+        }
+    }
+}
+
+/// Policy-enforcement verifier that inspects tool arguments for path traversal,
+/// environment-variable exfiltration, sensitive file access, and command chaining.
+///
+/// ## Scope delineation with `InjectionPatternVerifier`
+///
+/// `FirewallVerifier` enforces *configurable policy* (blocked paths, env vars, sensitive
+/// file patterns). `InjectionPatternVerifier` performs regex-based *injection pattern
+/// detection* (prompt injection, SSRF, etc.). They are complementary — belt-and-suspenders,
+/// the same intentional overlap documented at the top of this module.
+///
+/// Both verifiers may produce `Block` for the same call (e.g. command chaining detected
+/// by both). The pipeline stops at the first `Block` result.
+#[derive(Debug)]
+pub struct FirewallVerifier {
+    blocked_path_globs: Vec<glob::Pattern>,
+    blocked_env_vars: HashSet<String>,
+    exempt_tools: HashSet<String>,
+}
+
+/// Built-in path patterns that are always blocked regardless of config.
+static SENSITIVE_PATH_PATTERNS: LazyLock<Vec<glob::Pattern>> = LazyLock::new(|| {
+    let raw = [
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "~/.ssh/*",
+        "~/.aws/*",
+        "~/.gnupg/*",
+        "**/*.pem",
+        "**/*.key",
+        "**/id_rsa",
+        "**/id_ed25519",
+        "**/.env",
+        "**/credentials",
+    ];
+    raw.iter()
+        .filter_map(|p| {
+            glob::Pattern::new(p)
+                .map_err(|e| {
+                    tracing::error!(pattern = p, error = %e, "failed to compile built-in firewall path pattern");
+                    e
+                })
+                .ok()
+        })
+        .collect()
+});
+
+/// Built-in env var prefixes that trigger a block when found in tool arguments.
+static SENSITIVE_ENV_PREFIXES: &[&str] =
+    &["$AWS_", "$ZEPH_", "${AWS_", "${ZEPH_", "%AWS_", "%ZEPH_"];
+
+/// Argument field names to extract and inspect.
+static INSPECTED_FIELDS: &[&str] = &[
+    "command",
+    "file_path",
+    "path",
+    "url",
+    "query",
+    "uri",
+    "input",
+    "args",
+];
+
+impl FirewallVerifier {
+    /// Build a `FirewallVerifier` from config.
+    ///
+    /// Invalid glob patterns in `blocked_paths` are logged at WARN level and skipped.
+    #[must_use]
+    pub fn new(config: &FirewallVerifierConfig) -> Self {
+        let blocked_path_globs = config
+            .blocked_paths
+            .iter()
+            .filter_map(|p| {
+                glob::Pattern::new(p)
+                    .map_err(|e| {
+                        tracing::warn!(pattern = p, error = %e, "invalid glob pattern in firewall blocked_paths, skipping");
+                        e
+                    })
+                    .ok()
+            })
+            .collect();
+
+        let blocked_env_vars = config
+            .blocked_env_vars
+            .iter()
+            .map(|s| s.to_uppercase())
+            .collect();
+
+        let exempt_tools = config
+            .exempt_tools
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+
+        Self {
+            blocked_path_globs,
+            blocked_env_vars,
+            exempt_tools,
+        }
+    }
+
+    /// Extract all string argument values from a tool call's JSON args.
+    fn collect_args(args: &serde_json::Value) -> Vec<String> {
+        let mut out = Vec::new();
+        match args {
+            serde_json::Value::Object(map) => {
+                for field in INSPECTED_FIELDS {
+                    if let Some(val) = map.get(*field) {
+                        Self::collect_strings(val, &mut out);
+                    }
+                }
+            }
+            serde_json::Value::String(s) => out.push(s.clone()),
+            _ => {}
+        }
+        out
+    }
+
+    fn collect_strings(val: &serde_json::Value, out: &mut Vec<String>) {
+        match val {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    Self::collect_strings(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_arg(&self, arg: &str) -> Option<VerificationResult> {
+        // Apply NFKC normalization consistent with DestructiveCommandVerifier.
+        let normalized: String = arg.nfkc().collect();
+        let lower = normalized.to_lowercase();
+
+        // Path traversal
+        if lower.contains("../") || lower.contains("..\\") {
+            return Some(VerificationResult::Block {
+                reason: format!(
+                    "[FirewallVerifier] path traversal pattern detected in argument: {arg}"
+                ),
+            });
+        }
+
+        // Sensitive paths (built-in)
+        for pattern in SENSITIVE_PATH_PATTERNS.iter() {
+            if pattern.matches(&normalized) || pattern.matches(&lower) {
+                return Some(VerificationResult::Block {
+                    reason: format!(
+                        "[FirewallVerifier] sensitive path pattern '{pattern}' matched in argument: {arg}"
+                    ),
+                });
+            }
+        }
+
+        // User-configured blocked paths
+        for pattern in &self.blocked_path_globs {
+            if pattern.matches(&normalized) || pattern.matches(&lower) {
+                return Some(VerificationResult::Block {
+                    reason: format!(
+                        "[FirewallVerifier] blocked path pattern '{pattern}' matched in argument: {arg}"
+                    ),
+                });
+            }
+        }
+
+        // Env var exfiltration (built-in prefixes)
+        let upper = normalized.to_uppercase();
+        for prefix in SENSITIVE_ENV_PREFIXES {
+            if upper.contains(*prefix) {
+                return Some(VerificationResult::Block {
+                    reason: format!(
+                        "[FirewallVerifier] env var exfiltration pattern '{prefix}' detected in argument: {arg}"
+                    ),
+                });
+            }
+        }
+
+        // User-configured blocked env vars (match $VAR or %VAR% patterns)
+        for var in &self.blocked_env_vars {
+            let dollar_form = format!("${var}");
+            let brace_form = format!("${{{var}}}");
+            let percent_form = format!("%{var}%");
+            if upper.contains(&dollar_form)
+                || upper.contains(&brace_form)
+                || upper.contains(&percent_form)
+            {
+                return Some(VerificationResult::Block {
+                    reason: format!(
+                        "[FirewallVerifier] blocked env var '{var}' detected in argument: {arg}"
+                    ),
+                });
+            }
+        }
+
+        None
+    }
+}
+
+impl PreExecutionVerifier for FirewallVerifier {
+    fn name(&self) -> &'static str {
+        "FirewallVerifier"
+    }
+
+    fn verify(&self, tool_name: &str, args: &serde_json::Value) -> VerificationResult {
+        if self.exempt_tools.contains(&tool_name.to_lowercase()) {
+            return VerificationResult::Allow;
+        }
+
+        for arg in Self::collect_args(args) {
+            if let Some(result) = self.scan_arg(&arg) {
+                return result;
+            }
+        }
+
+        VerificationResult::Allow
     }
 }
 
@@ -1416,5 +1669,142 @@ mod tests {
         // This is an API documentation test, not a behaviour test.
         let _ = v.verify("fetch", &json!({"url": "https://example.com/"}));
         // No assertion: just verifies the struct can be built with enabled=false.
+    }
+
+    // --- FirewallVerifier ---
+
+    fn fwv() -> FirewallVerifier {
+        FirewallVerifier::new(&FirewallVerifierConfig::default())
+    }
+
+    #[test]
+    fn firewall_allows_normal_path() {
+        let v = fwv();
+        assert_eq!(
+            v.verify("shell", &json!({"command": "ls /tmp/build"})),
+            VerificationResult::Allow
+        );
+    }
+
+    #[test]
+    fn firewall_blocks_path_traversal() {
+        let v = fwv();
+        let result = v.verify("read", &json!({"file_path": "../../etc/passwd"}));
+        assert!(
+            matches!(result, VerificationResult::Block { .. }),
+            "path traversal must be blocked"
+        );
+    }
+
+    #[test]
+    fn firewall_blocks_etc_passwd() {
+        let v = fwv();
+        let result = v.verify("read", &json!({"file_path": "/etc/passwd"}));
+        assert!(
+            matches!(result, VerificationResult::Block { .. }),
+            "/etc/passwd must be blocked"
+        );
+    }
+
+    #[test]
+    fn firewall_blocks_ssh_key() {
+        let v = fwv();
+        let result = v.verify("read", &json!({"file_path": "~/.ssh/id_rsa"}));
+        assert!(
+            matches!(result, VerificationResult::Block { .. }),
+            "SSH key path must be blocked"
+        );
+    }
+
+    #[test]
+    fn firewall_blocks_aws_env_var() {
+        let v = fwv();
+        let result = v.verify("shell", &json!({"command": "echo $AWS_SECRET_ACCESS_KEY"}));
+        assert!(
+            matches!(result, VerificationResult::Block { .. }),
+            "AWS env var exfiltration must be blocked"
+        );
+    }
+
+    #[test]
+    fn firewall_blocks_zeph_env_var() {
+        let v = fwv();
+        let result = v.verify("shell", &json!({"command": "cat ${ZEPH_CLAUDE_API_KEY}"}));
+        assert!(
+            matches!(result, VerificationResult::Block { .. }),
+            "ZEPH env var exfiltration must be blocked"
+        );
+    }
+
+    #[test]
+    fn firewall_exempt_tool_bypasses_check() {
+        let cfg = FirewallVerifierConfig {
+            enabled: true,
+            blocked_paths: vec![],
+            blocked_env_vars: vec![],
+            exempt_tools: vec!["read".to_string()],
+        };
+        let v = FirewallVerifier::new(&cfg);
+        // /etc/passwd would normally be blocked but tool is exempt.
+        assert_eq!(
+            v.verify("read", &json!({"file_path": "/etc/passwd"})),
+            VerificationResult::Allow
+        );
+    }
+
+    #[test]
+    fn firewall_custom_blocked_path() {
+        let cfg = FirewallVerifierConfig {
+            enabled: true,
+            blocked_paths: vec!["/data/secrets/*".to_string()],
+            blocked_env_vars: vec![],
+            exempt_tools: vec![],
+        };
+        let v = FirewallVerifier::new(&cfg);
+        let result = v.verify("read", &json!({"file_path": "/data/secrets/master.key"}));
+        assert!(
+            matches!(result, VerificationResult::Block { .. }),
+            "custom blocked path must be blocked"
+        );
+    }
+
+    #[test]
+    fn firewall_custom_blocked_env_var() {
+        let cfg = FirewallVerifierConfig {
+            enabled: true,
+            blocked_paths: vec![],
+            blocked_env_vars: vec!["MY_SECRET".to_string()],
+            exempt_tools: vec![],
+        };
+        let v = FirewallVerifier::new(&cfg);
+        let result = v.verify("shell", &json!({"command": "echo $MY_SECRET"}));
+        assert!(
+            matches!(result, VerificationResult::Block { .. }),
+            "custom blocked env var must be blocked"
+        );
+    }
+
+    #[test]
+    fn firewall_invalid_glob_is_skipped() {
+        // Invalid glob should not panic — logged and skipped at construction.
+        let cfg = FirewallVerifierConfig {
+            enabled: true,
+            blocked_paths: vec!["[invalid-glob".to_string(), "/valid/path/*".to_string()],
+            blocked_env_vars: vec![],
+            exempt_tools: vec![],
+        };
+        let v = FirewallVerifier::new(&cfg);
+        // Valid pattern still works
+        let result = v.verify("read", &json!({"path": "/valid/path/file.txt"}));
+        assert!(matches!(result, VerificationResult::Block { .. }));
+    }
+
+    #[test]
+    fn firewall_config_default_deserialization() {
+        let cfg: FirewallVerifierConfig = toml::from_str("").unwrap();
+        assert!(cfg.enabled);
+        assert!(cfg.blocked_paths.is_empty());
+        assert!(cfg.blocked_env_vars.is_empty());
+        assert!(cfg.exempt_tools.is_empty());
     }
 }

@@ -578,6 +578,10 @@ impl<C: Channel> Agent<C> {
                     std::sync::Arc::clone(&self.security.user_provided_urls),
                 )));
             }
+            let fcfg = &security.pre_execution_verify.firewall;
+            if fcfg.enabled {
+                verifiers.push(Box::new(zeph_tools::FirewallVerifier::new(fcfg)));
+            }
         }
         self.tool_orchestrator.pre_execution_verifiers = verifiers;
 
@@ -649,6 +653,7 @@ impl<C: Channel> Agent<C> {
         backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
         timeout_ms: u64,
         threshold: f32,
+        threshold_soft: f32,
     ) -> Self {
         // Replace sanitizer in-place: move out, attach classifier, move back.
         let old = std::mem::replace(
@@ -657,7 +662,9 @@ impl<C: Channel> Agent<C> {
                 &zeph_sanitizer::ContentIsolationConfig::default(),
             ),
         );
-        self.security.sanitizer = old.with_classifier(backend, timeout_ms, threshold);
+        self.security.sanitizer = old
+            .with_classifier(backend, timeout_ms, threshold)
+            .with_injection_threshold_soft(threshold_soft);
         self
     }
 

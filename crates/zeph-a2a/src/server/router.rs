@@ -23,9 +23,18 @@ use super::state::AppState;
 #[cfg(test)]
 const DEFAULT_MAX_BODY_SIZE: usize = 1024 * 1024; // 1 MiB
 
+/// Identity extracted from a validated bearer token.
+/// Inserted into request extensions by `auth_middleware` for every request.
+#[derive(Clone, Debug)]
+pub struct AuthIdentity {
+    /// Whether the request was authenticated via a valid bearer token.
+    pub authenticated: bool,
+}
+
 #[derive(Clone)]
 struct AuthConfig {
     token: Option<String>,
+    require_auth: bool,
 }
 
 const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
@@ -57,16 +66,20 @@ pub fn build_router_with_config(
     auth_token: Option<String>,
     rate_limit: u32,
 ) -> Router {
-    build_router_with_full_config(state, auth_token, rate_limit, DEFAULT_MAX_BODY_SIZE)
+    build_router_with_full_config(state, auth_token, false, rate_limit, DEFAULT_MAX_BODY_SIZE)
 }
 
 pub fn build_router_with_full_config(
     state: AppState,
     auth_token: Option<String>,
+    require_auth: bool,
     rate_limit: u32,
     max_body_size: usize,
 ) -> Router {
-    let auth_cfg = AuthConfig { token: auth_token };
+    let auth_cfg = AuthConfig {
+        token: auth_token,
+        require_auth,
+    };
     let counters = Arc::new(Mutex::new(HashMap::new()));
     if rate_limit > 0 {
         spawn_eviction_task(Arc::clone(&counters));
@@ -94,7 +107,7 @@ pub fn build_router_with_full_config(
 
 async fn auth_middleware(
     axum::extract::State(cfg): axum::extract::State<AuthConfig>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     if let Some(ref expected) = cfg.token {
@@ -112,8 +125,25 @@ async fn auth_middleware(
         let h_token = blake3::hash(token.as_bytes());
         let h_expected = blake3::hash(expected.as_bytes());
         if !bool::from(h_token.as_bytes().ct_eq(h_expected.as_bytes())) {
+            req.extensions_mut().insert(AuthIdentity {
+                authenticated: false,
+            });
             return StatusCode::UNAUTHORIZED.into_response();
         }
+        req.extensions_mut().insert(AuthIdentity {
+            authenticated: true,
+        });
+    } else {
+        if cfg.require_auth {
+            tracing::warn!("a2a require_auth=true but no auth_token configured, rejecting request");
+            req.extensions_mut().insert(AuthIdentity {
+                authenticated: false,
+            });
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        req.extensions_mut().insert(AuthIdentity {
+            authenticated: false,
+        });
     }
 
     next.run(req).await
@@ -461,5 +491,46 @@ mod tests {
             "stale entry should be evicted"
         );
         assert!(map.contains_key(&fresh_ip), "fresh entry should remain");
+    }
+
+    #[tokio::test]
+    async fn require_auth_rejects_when_no_token_configured() {
+        let app = build_router_with_full_config(test_state(), None, true, 0, DEFAULT_MAX_BODY_SIZE);
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": "1",
+            "method": "tasks/get", "params": {"id": "x"}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/a2a")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn require_auth_false_allows_unauthenticated() {
+        let app =
+            build_router_with_full_config(test_state(), None, false, 0, DEFAULT_MAX_BODY_SIZE);
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": "1",
+            "method": "tasks/get", "params": {"id": "x"}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/a2a")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
     }
 }

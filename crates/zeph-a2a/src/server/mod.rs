@@ -20,6 +20,7 @@ pub struct A2aServer {
     addr: SocketAddr,
     shutdown_rx: watch::Receiver<bool>,
     auth_token: Option<String>,
+    require_auth: bool,
     rate_limit: u32,
     max_body_size: usize,
 }
@@ -49,6 +50,7 @@ impl A2aServer {
             addr,
             shutdown_rx,
             auth_token: None,
+            require_auth: false,
             rate_limit: 0,
             max_body_size: 1_048_576,
         }
@@ -57,6 +59,12 @@ impl A2aServer {
     #[must_use]
     pub fn with_auth(mut self, token: Option<String>) -> Self {
         self.auth_token = token;
+        self
+    }
+
+    #[must_use]
+    pub fn with_require_auth(mut self, require: bool) -> Self {
+        self.require_auth = require;
         self
     }
 
@@ -87,6 +95,7 @@ impl A2aServer {
         let router = build_router_with_full_config(
             self.state,
             self.auth_token,
+            self.require_auth,
             self.rate_limit,
             self.max_body_size,
         );

@@ -45,6 +45,7 @@ fn spawn_a2a_server(
         shutdown_rx,
     )
     .with_auth(config.a2a.auth_token.clone())
+    .with_require_auth(config.a2a.require_auth)
     .with_rate_limit(config.a2a.rate_limit)
     .with_max_body_size(config.a2a.max_body_size);
 
