@@ -25,7 +25,10 @@ use crate::registry::ToolDef;
 /// suffix matches to cover MCP-wrapped versions of these native tool IDs.
 /// False positives (a safe tool whose name ends with a denied suffix) are
 /// acceptable at the Quarantined trust level.
-const QUARANTINE_DENIED: &[&str] = &[
+///
+/// Public so that `zeph-skills::scanner::check_capability_escalation` can use
+/// this as the single source of truth for quarantine-denied tools.
+pub const QUARANTINE_DENIED: &[&str] = &[
     // Shell execution
     "bash",
     // File write/mutation tools (FileExecutor IDs)

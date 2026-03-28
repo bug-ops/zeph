@@ -67,6 +67,18 @@ fn default_auto_demote_threshold() -> f64 {
     0.40
 }
 
+fn default_min_sessions_before_promote() -> u32 {
+    2
+}
+
+fn default_min_sessions_before_demote() -> u32 {
+    1
+}
+
+fn default_max_auto_sections() -> u32 {
+    3
+}
+
 /// Strategy for detecting implicit user corrections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -92,6 +104,7 @@ pub enum DetectorMode {
     Model,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LearningConfig {
     #[serde(default)]
@@ -144,6 +157,33 @@ pub struct LearningConfig {
     pub auto_demote_min_uses: u32,
     #[serde(default = "default_auto_demote_threshold")]
     pub auto_demote_threshold: f64,
+    /// When true, auto-promote and auto-demote decisions require the skill to have been used
+    /// across at least `min_sessions_before_promote` (for promotion) or
+    /// `min_sessions_before_demote` (for demotion) distinct conversation sessions.
+    /// Prevents trust transitions from a single long session.
+    #[serde(default)]
+    pub cross_session_rollout: bool,
+    /// Minimum number of distinct `conversation_id` values in `skill_outcomes` before
+    /// auto-promotion is eligible. Only checked when `cross_session_rollout = true`.
+    #[serde(default = "default_min_sessions_before_promote")]
+    pub min_sessions_before_promote: u32,
+    /// Minimum distinct sessions before auto-demotion when `cross_session_rollout = true`.
+    ///
+    /// Default 1 (demotion can happen after a single bad session by default). Separate from
+    /// `min_sessions_before_promote` because demotion should be fast (low threshold) while
+    /// promotion benefits from conservative validation (higher threshold).
+    #[serde(default = "default_min_sessions_before_demote")]
+    pub min_sessions_before_demote: u32,
+    /// Maximum number of top-level content sections (markdown H2 headers) allowed in
+    /// auto-generated skill bodies. Bodies exceeding this limit are rejected by
+    /// `validate_body_sections()`.
+    #[serde(default = "default_max_auto_sections")]
+    pub max_auto_sections: u32,
+    /// When true, auto-generated skill versions must pass a domain-conditioned evaluation
+    /// before promotion. If the improved body drifts from the original skill's domain,
+    /// activation is skipped (the version is still saved for manual review).
+    #[serde(default)]
+    pub domain_success_gate: bool,
 }
 
 impl Default for LearningConfig {
@@ -170,6 +210,11 @@ impl Default for LearningConfig {
             auto_promote_threshold: default_auto_promote_threshold(),
             auto_demote_min_uses: default_auto_demote_min_uses(),
             auto_demote_threshold: default_auto_demote_threshold(),
+            cross_session_rollout: false,
+            min_sessions_before_promote: default_min_sessions_before_promote(),
+            min_sessions_before_demote: default_min_sessions_before_demote(),
+            max_auto_sections: default_max_auto_sections(),
+            domain_success_gate: false,
         }
     }
 }
@@ -236,5 +281,37 @@ feedback_provider = "fast""#;
         assert_eq!(cfg.min_failures, 3);
         assert_eq!(cfg.detector_mode, DetectorMode::Regex);
         assert!(cfg.feedback_provider.is_empty());
+    }
+
+    #[test]
+    fn learning_config_defaults_for_new_fields() {
+        let cfg = LearningConfig::default();
+        assert!(!cfg.cross_session_rollout);
+        assert_eq!(cfg.min_sessions_before_promote, 2);
+        assert_eq!(cfg.max_auto_sections, 3);
+        assert!(!cfg.domain_success_gate);
+    }
+
+    #[test]
+    fn learning_config_min_sessions_before_demote_default() {
+        let cfg = LearningConfig::default();
+        assert_eq!(cfg.min_sessions_before_demote, 1);
+    }
+
+    #[test]
+    fn learning_config_new_fields_serde_roundtrip() {
+        let toml = r"
+cross_session_rollout = true
+min_sessions_before_promote = 5
+min_sessions_before_demote = 2
+max_auto_sections = 4
+domain_success_gate = true
+";
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.cross_session_rollout);
+        assert_eq!(cfg.min_sessions_before_promote, 5);
+        assert_eq!(cfg.min_sessions_before_demote, 2);
+        assert_eq!(cfg.max_auto_sections, 4);
+        assert!(cfg.domain_success_gate);
     }
 }

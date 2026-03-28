@@ -130,6 +130,9 @@ pub(crate) struct WizardState {
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
     pub(crate) skill_scan_on_load: bool,
+    pub(crate) skill_cross_session_rollout: bool,
+    pub(crate) skill_min_sessions_before_promote: u32,
+    pub(crate) skill_capability_escalation_check: bool,
     pub(crate) pre_execution_verify_enabled: bool,
     pub(crate) pre_execution_verify_allowed_paths: Vec<String>,
     #[cfg(feature = "guardrail")]
@@ -274,6 +277,9 @@ impl Default for WizardState {
             pii_filter_enabled: false,
             rate_limit_enabled: false,
             skill_scan_on_load: true,
+            skill_cross_session_rollout: false,
+            skill_min_sessions_before_promote: 2,
+            skill_capability_escalation_check: false,
             pre_execution_verify_enabled: true,
             pre_execution_verify_allowed_paths: Vec::new(),
             #[cfg(feature = "guardrail")]
@@ -1348,6 +1354,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             .clone_from(&state.pre_execution_verify_allowed_paths);
     }
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
+    config.skills.trust.scanner.capability_escalation_check =
+        state.skill_capability_escalation_check;
+    if state.skill_cross_session_rollout {
+        config.skills.learning.cross_session_rollout = true;
+        config.skills.learning.min_sessions_before_promote =
+            state.skill_min_sessions_before_promote;
+    }
 
     #[cfg(feature = "guardrail")]
     if state.guardrail_enabled {
@@ -2087,10 +2100,24 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
         }
     }
 
+    state.skill_cross_session_rollout = Confirm::new()
+        .with_prompt(
+            "Require cross-session validation before skill promotion? (prevents promotion from a single long session)",
+        )
+        .default(false)
+        .interact()?;
+    if state.skill_cross_session_rollout {
+        state.skill_min_sessions_before_promote = Input::new()
+            .with_prompt("Minimum distinct sessions required for promotion")
+            .default(2u32)
+            .interact_text()?;
+    }
+
     println!();
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Security ==\n");
     println!(
@@ -2113,6 +2140,12 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             "Scan skill content for injection patterns on load? (advisory — logs warnings, does not block; recommended)",
         )
         .default(true)
+        .interact()?;
+    state.skill_capability_escalation_check = Confirm::new()
+        .with_prompt(
+            "Check skill capability escalation on load? (warns if skills declare tools exceeding their trust level)",
+        )
+        .default(false)
         .interact()?;
     state.pre_execution_verify_enabled = Confirm::new()
         .with_prompt(

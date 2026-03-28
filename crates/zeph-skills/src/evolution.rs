@@ -173,6 +173,8 @@ Successful approach: {successful_response}
 {user_feedback_section}
 Generate an improved version of the skill instructions that incorporates the lesson \
 learned. Keep the same format (markdown with bash code blocks). Be concise.
+The improved skill body must contain at most 3 top-level sections (## headers). \
+Keep it focused and concise.
 Only output the improved skill body (no frontmatter, no explanation).";
 
 /// Build an improvement prompt by substituting template placeholders.
@@ -236,6 +238,50 @@ pub fn build_evaluation_prompt(
         .replace("{success_rate}", &rate)
 }
 
+/// Domain gate prompt template for evaluating whether an auto-generated skill body stays
+/// within the domain of the original skill.
+///
+/// Placeholders: `{description}`, `{name}`, `{body}` — substituted via
+/// [`build_domain_gate_prompt`] using `str::replace` (not `format!()`).
+///
+/// The JSON example in the template uses literal curly braces, which is safe here
+/// because the string is never passed through `format!()`.
+pub const DOMAIN_GATE_PROMPT_TEMPLATE: &str = "\
+Evaluate whether the following auto-generated skill version stays within \
+the domain of the original skill.
+
+Original skill description: {description}
+Original skill name: {name}
+
+Generated skill body:
+<skill>
+{body}
+</skill>
+
+Respond in JSON: {\"domain_relevant\": bool, \"reasoning\": string}
+Return domain_relevant=true only if the generated body is focused on the \
+same domain as the original skill description. Return false if it drifts \
+into unrelated topics or adds capabilities beyond the original scope.";
+
+/// LLM response for the domain evaluation gate.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct DomainGateResult {
+    pub domain_relevant: bool,
+    pub reasoning: String,
+}
+
+/// Build a domain gate prompt by substituting template placeholders.
+///
+/// Uses [`str::replace`] rather than `format!()` to avoid interpreting the JSON
+/// example braces in the template as format arguments.
+#[must_use]
+pub fn build_domain_gate_prompt(name: &str, description: &str, body: &str) -> String {
+    DOMAIN_GATE_PROMPT_TEMPLATE
+        .replace("{description}", description)
+        .replace("{name}", name)
+        .replace("{body}", body)
+}
+
 /// Absolute maximum body size to prevent exponential growth across generations.
 pub const MAX_BODY_BYTES: usize = 65_536;
 
@@ -244,6 +290,21 @@ pub const MAX_BODY_BYTES: usize = 65_536;
 #[must_use]
 pub fn validate_body_size(original: &str, generated: &str) -> bool {
     generated.len() <= original.len() * 2 && generated.len() <= MAX_BODY_BYTES
+}
+
+/// Validate that the generated body contains at most `max_sections` top-level
+/// markdown sections (lines starting with `"## "`).
+///
+/// Only H2 headers are counted; H1 (`# `) and H3+ (`### `) are ignored.
+///
+/// # Known limitation
+///
+/// Lines starting with `"## "` inside fenced code blocks (` ``` `) are also counted.
+/// For MVP this is acceptable — SKILL.md bodies rarely contain code blocks with headers.
+#[must_use]
+pub fn validate_body_sections(body: &str, max_sections: u32) -> bool {
+    let count = body.lines().filter(|l| l.starts_with("## ")).count();
+    count <= max_sections as usize
 }
 
 #[cfg(test)]
@@ -447,6 +508,74 @@ mod tests {
         let large_generated = "x".repeat(70_000);
         // Within 2x but exceeds MAX_BODY_BYTES (65536)
         assert!(!validate_body_size(&large_original, &large_generated));
+    }
+
+    #[test]
+    fn validate_body_sections_within_limit() {
+        let body = "## Setup\ndo stuff\n## Usage\nmore stuff\n";
+        assert!(validate_body_sections(body, 3));
+    }
+
+    #[test]
+    fn validate_body_sections_at_limit() {
+        let body = "## Setup\n## Usage\n## Tips\n";
+        assert!(validate_body_sections(body, 3));
+    }
+
+    #[test]
+    fn validate_body_sections_exceeds_limit() {
+        let body = "## A\n## B\n## C\n## D\n";
+        assert!(!validate_body_sections(body, 3));
+    }
+
+    #[test]
+    fn validate_body_sections_no_sections() {
+        let body = "Just some text without any headers.\n";
+        assert!(validate_body_sections(body, 3));
+    }
+
+    #[test]
+    fn validate_body_sections_h1_not_counted() {
+        let body = "# Title\n## Section\n### Subsection\n";
+        // Only "## Section" is counted; H1 and H3+ are not.
+        assert!(validate_body_sections(body, 1));
+    }
+
+    #[test]
+    fn domain_gate_result_deserialize() {
+        let json = r#"{"domain_relevant": true, "reasoning": "matches original domain"}"#;
+        let result: DomainGateResult = serde_json::from_str(json).unwrap();
+        assert!(result.domain_relevant);
+        assert_eq!(result.reasoning, "matches original domain");
+    }
+
+    #[test]
+    fn domain_gate_result_false() {
+        let json = r#"{"domain_relevant": false, "reasoning": "drifted to unrelated topic"}"#;
+        let result: DomainGateResult = serde_json::from_str(json).unwrap();
+        assert!(!result.domain_relevant);
+    }
+
+    #[test]
+    fn build_domain_gate_prompt_substitutes() {
+        let result = build_domain_gate_prompt(
+            "git-helper",
+            "Git workflow assistant",
+            "## Usage\nRun git commands",
+        );
+        assert!(result.contains("git-helper"));
+        assert!(result.contains("Git workflow assistant"));
+        assert!(result.contains("## Usage\nRun git commands"));
+        // Ensure the JSON example braces are preserved literally.
+        assert!(result.contains("{\"domain_relevant\""));
+    }
+
+    #[test]
+    fn improvement_prompt_includes_section_limit() {
+        assert!(
+            IMPROVEMENT_PROMPT_TEMPLATE.contains("at most 3 top-level sections"),
+            "IMPROVEMENT_PROMPT_TEMPLATE must mention the section limit"
+        );
     }
 
     // Priority 2: SkillEvaluation deserialization edge cases

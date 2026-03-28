@@ -287,6 +287,25 @@ impl SqliteStore {
         Ok(row.0)
     }
 
+    /// Count the number of distinct conversation sessions in which a skill produced an outcome.
+    ///
+    /// Uses `COUNT(DISTINCT conversation_id)` from `skill_outcomes`. Rows where
+    /// `conversation_id IS NULL` are excluded (legacy rows without session tracking).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn distinct_session_count(&self, skill_name: &str) -> Result<i64, MemoryError> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(DISTINCT conversation_id) FROM skill_outcomes \
+             WHERE skill_name = ? AND conversation_id IS NOT NULL",
+        )
+        .bind(skill_name)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
     /// Load the active version for a skill.
     ///
     /// # Errors
@@ -1016,5 +1035,64 @@ mod tests {
             count, 1,
             "expected batch insert to succeed after writer commits"
         );
+    }
+
+    #[tokio::test]
+    async fn distinct_session_count_empty() {
+        let store = test_store().await;
+        let count = store.distinct_session_count("unknown-skill").await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn distinct_session_count_single_session() {
+        let store = test_store().await;
+        let cid = crate::types::ConversationId(1);
+        store
+            .record_skill_outcome("git", None, Some(cid), "success", None, None)
+            .await
+            .unwrap();
+        store
+            .record_skill_outcome("git", None, Some(cid), "tool_failure", None, None)
+            .await
+            .unwrap();
+        let count = store.distinct_session_count("git").await.unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn distinct_session_count_multiple_sessions() {
+        let store = test_store().await;
+        for i in 0..3i64 {
+            store
+                .record_skill_outcome(
+                    "git",
+                    None,
+                    Some(crate::types::ConversationId(i)),
+                    "success",
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let count = store.distinct_session_count("git").await.unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn distinct_session_count_null_conversation_ids_excluded() {
+        let store = test_store().await;
+        // Insert outcomes with NULL conversation_id (legacy rows).
+        store
+            .record_skill_outcome("git", None, None, "success", None, None)
+            .await
+            .unwrap();
+        store
+            .record_skill_outcome("git", None, None, "success", None, None)
+            .await
+            .unwrap();
+        let count = store.distinct_session_count("git").await.unwrap();
+        assert_eq!(count, 0, "NULL conversation_ids must not be counted");
     }
 }

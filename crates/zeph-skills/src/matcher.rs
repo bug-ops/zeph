@@ -221,6 +221,8 @@ mod tests {
             allowed_tools: Vec::new(),
             requires_secrets: Vec::new(),
             skill_dir: PathBuf::new(),
+            source_url: None,
+            git_hash: None,
         }
     }
 

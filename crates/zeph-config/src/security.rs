@@ -7,6 +7,35 @@ use zeph_tools::PreExecutionVerifierConfig;
 use zeph_tools::TrustLevel;
 
 use crate::defaults::default_true;
+
+/// Fine-grained controls for the skill body scanner.
+///
+/// Nested under `[skills.trust.scanner]` in TOML.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScannerConfig {
+    /// Scan skill body content for injection patterns at load time.
+    ///
+    /// More specific than `scan_on_load` (which controls whether `scan_loaded()` is called at
+    /// all). When `scan_on_load = true` and `injection_patterns = false`, the scan loop still
+    /// runs but skips the injection pattern check.
+    #[serde(default = "default_true")]
+    pub injection_patterns: bool,
+    /// Check whether a skill's `allowed_tools` exceed its trust level's permissions.
+    ///
+    /// When enabled, the bootstrap calls `check_escalations()` on the registry and logs
+    /// warnings for any tool declarations that violate the trust boundary.
+    #[serde(default)]
+    pub capability_escalation_check: bool,
+}
+
+impl Default for ScannerConfig {
+    fn default() -> Self {
+        Self {
+            injection_patterns: true,
+            capability_escalation_check: false,
+        }
+    }
+}
 use crate::rate_limit::RateLimitConfig;
 use crate::sanitizer::{
     ContentIsolationConfig, ExfiltrationGuardConfig, MemoryWriteValidationConfig, PiiFilterConfig,
@@ -65,6 +94,9 @@ pub struct TrustConfig {
     /// Defaults to `true` (secure by default).
     #[serde(default = "default_true")]
     pub scan_on_load: bool,
+    /// Fine-grained scanner controls (injection patterns, capability escalation).
+    #[serde(default)]
+    pub scanner: ScannerConfig,
 }
 
 impl Default for TrustConfig {
@@ -74,6 +106,7 @@ impl Default for TrustConfig {
             local_level: default_trust_local_level(),
             hash_mismatch_level: default_trust_hash_mismatch_level(),
             scan_on_load: true,
+            scanner: ScannerConfig::default(),
         }
     }
 }
@@ -170,6 +203,7 @@ mod tests {
             local_level: TrustLevel::Trusted,
             hash_mismatch_level: TrustLevel::Quarantined,
             scan_on_load: false,
+            scanner: ScannerConfig::default(),
         };
         let toml = toml::to_string(&config).expect("serialize");
         let deserialized: TrustConfig = toml::from_str(&toml).expect("deserialize");
@@ -188,5 +222,36 @@ hash_mismatch_level = "quarantined"
             config.scan_on_load,
             "missing scan_on_load must default to true"
         );
+    }
+
+    #[test]
+    fn scanner_config_defaults() {
+        let cfg = ScannerConfig::default();
+        assert!(cfg.injection_patterns);
+        assert!(!cfg.capability_escalation_check);
+    }
+
+    #[test]
+    fn scanner_config_serde_roundtrip() {
+        let cfg = ScannerConfig {
+            injection_patterns: false,
+            capability_escalation_check: true,
+        };
+        let toml = toml::to_string(&cfg).expect("serialize");
+        let back: ScannerConfig = toml::from_str(&toml).expect("deserialize");
+        assert!(!back.injection_patterns);
+        assert!(back.capability_escalation_check);
+    }
+
+    #[test]
+    fn trust_config_scanner_defaults_when_missing() {
+        let toml = r#"
+default_level = "quarantined"
+local_level = "trusted"
+hash_mismatch_level = "quarantined"
+"#;
+        let config: TrustConfig = toml::from_str(toml).expect("deserialize");
+        assert!(config.scanner.injection_patterns);
+        assert!(!config.scanner.capability_escalation_check);
     }
 }
