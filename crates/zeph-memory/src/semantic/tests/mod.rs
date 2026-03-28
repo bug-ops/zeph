@@ -436,7 +436,8 @@ use proptest::prelude::*;
 proptest! {
     #[test]
     fn count_tokens_never_panics(s in ".*") {
-        let counter = crate::token_counter::TokenCounter::new();
-        let _ = counter.count_tokens(&s);
+        use std::sync::LazyLock;
+        static COUNTER: LazyLock<TokenCounter> = LazyLock::new(TokenCounter::new);
+        let _ = COUNTER.count_tokens(&s);
     }
 }

@@ -24,5 +24,10 @@ path = "target/nextest/ci/junit.xml"
 # Each shard receives --partition hash:K/4 on the command line.
 test-threads = 8
 
+[[profile.ci-partition.overrides]]
+# Warn (but don't fail) if any test exceeds 30s — surfaces slow tests early.
+filter = "all()"
+slow-timeout = { period = "30s" }
+
 [profile.ci-partition.junit]
 path = "target/nextest/ci/junit.xml"
