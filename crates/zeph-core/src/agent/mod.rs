@@ -3363,8 +3363,12 @@ impl<C: Channel> Agent<C> {
         // ML classifier: lightweight injection detection on user input boundary.
         // Runs after guardrail (LLM-based) to layer defenses. On detection, blocks and returns.
         // Falls back to regex on classifier error/timeout — never degrades below regex baseline.
+        // Gated by `scan_user_input`: DeBERTa is tuned for external/untrusted content, not
+        // direct user chat. Disabled by default to prevent false positives on benign messages.
         #[cfg(feature = "classifiers")]
-        if self.security.sanitizer.classify_injection(trimmed).await {
+        if self.security.sanitizer.scan_user_input()
+            && self.security.sanitizer.classify_injection(trimmed).await
+        {
             self.push_classifier_metrics();
             let _ = self
                 .channel

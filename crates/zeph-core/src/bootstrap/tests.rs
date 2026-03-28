@@ -291,8 +291,14 @@ async fn health_check_candle_logs_device() {
     };
     let device = zeph_llm::candle_provider::Device::Cpu;
 
-    let candle_result =
-        CandleProvider::new(&source, template, gen_config, Some("embed/model"), device);
+    let candle_result = CandleProvider::new(
+        &source,
+        template,
+        gen_config,
+        Some("embed/model"),
+        None,
+        device,
+    );
 
     if let Ok(candle) = candle_result {
         let provider = AnyProvider::Candle(candle);

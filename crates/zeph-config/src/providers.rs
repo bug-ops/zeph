@@ -487,6 +487,11 @@ pub struct CandleConfig {
     pub device: String,
     #[serde(default)]
     pub embedding_repo: Option<String>,
+    /// Resolved `HuggingFace` Hub API token for authenticated model downloads.
+    ///
+    /// Must be the **token value** — resolved by the caller before constructing this config.
+    #[serde(default)]
+    pub hf_token: Option<String>,
     #[serde(default)]
     pub generation: GenerationParams,
 }
@@ -652,6 +657,9 @@ pub struct CandleInlineConfig {
     pub device: String,
     #[serde(default)]
     pub embedding_repo: Option<String>,
+    /// Resolved `HuggingFace` Hub API token for authenticated model downloads.
+    #[serde(default)]
+    pub hf_token: Option<String>,
     #[serde(default)]
     pub generation: GenerationParams,
 }
@@ -665,6 +673,7 @@ impl Default for CandleInlineConfig {
             chat_template: default_chat_template(),
             device: default_candle_device(),
             embedding_repo: None,
+            hf_token: None,
             generation: GenerationParams::default(),
         }
     }

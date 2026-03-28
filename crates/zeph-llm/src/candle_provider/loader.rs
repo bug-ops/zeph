@@ -32,7 +32,11 @@ pub struct LoadedModel {
 /// # Errors
 ///
 /// Returns an error if model loading or tokenizer initialization fails.
-pub fn load_chat_model(source: &ModelSource, device: &Device) -> Result<LoadedModel, LlmError> {
+pub fn load_chat_model(
+    source: &ModelSource,
+    hf_token: Option<&str>,
+    device: &Device,
+) -> Result<LoadedModel, LlmError> {
     match source {
         ModelSource::Local { path } => {
             let tokenizer_path = path
@@ -49,9 +53,12 @@ pub fn load_chat_model(source: &ModelSource, device: &Device) -> Result<LoadedMo
             })
         }
         ModelSource::HuggingFace { repo_id, filename } => {
-            let api = hf_hub::api::sync::Api::new().map_err(|e| {
-                LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
-            })?;
+            let api = hf_hub::api::sync::ApiBuilder::new()
+                .with_token(hf_token.map(str::to_owned))
+                .build()
+                .map_err(|e| {
+                    LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
+                })?;
             let repo = api.model(repo_id.clone());
 
             let model_filename = filename.as_deref().unwrap_or("model.gguf");

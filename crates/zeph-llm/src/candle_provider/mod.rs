@@ -55,16 +55,19 @@ impl CandleProvider {
         template: ChatTemplate,
         generation_config: GenerationConfig,
         embedding_repo: Option<&str>,
+        hf_token: Option<&str>,
         device: Device,
     ) -> Result<Self, LlmError> {
         let LoadedModel {
             weights,
             tokenizer,
             eos_token_id,
-        } = load_chat_model(source, &device)?;
+        } = load_chat_model(source, hf_token, &device)?;
 
         let embed_model = if let Some(repo) = embedding_repo {
-            Some(std::sync::Arc::new(EmbedModel::load(repo, &device)?))
+            Some(std::sync::Arc::new(EmbedModel::load(
+                repo, hf_token, &device,
+            )?))
         } else {
             None
         };

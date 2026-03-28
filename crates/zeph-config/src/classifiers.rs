@@ -42,6 +42,22 @@ pub struct ClassifiersConfig {
     #[serde(default = "default_classifier_timeout_ms")]
     pub timeout_ms: u64,
 
+    /// Resolved `HuggingFace` Hub API token.
+    ///
+    /// Must be the **token value** (not a vault key name) — resolved by the caller before
+    /// constructing `ClassifiersConfig`. When `None`, model downloads are unauthenticated,
+    /// which fails for gated or private repos.
+    #[serde(default)]
+    pub hf_token: Option<String>,
+
+    /// When `true`, the ML injection classifier runs on direct user chat messages.
+    ///
+    /// Default `false`: the `DeBERTa` model is intended for external/untrusted content
+    /// (tool output, web scrapes) — not for direct user input. Enabling this may cause
+    /// false positives on benign conversational messages.
+    #[serde(default)]
+    pub scan_user_input: bool,
+
     /// `HuggingFace` repo ID for the injection detection model.
     #[serde(default = "default_injection_model")]
     pub injection_model: String,
@@ -88,6 +104,8 @@ impl Default for ClassifiersConfig {
         Self {
             enabled: false,
             timeout_ms: default_classifier_timeout_ms(),
+            hf_token: None,
+            scan_user_input: false,
             injection_model: default_injection_model(),
             injection_threshold: default_injection_threshold(),
             injection_model_sha256: None,
@@ -108,6 +126,8 @@ mod tests {
         let cfg = ClassifiersConfig::default();
         assert!(!cfg.enabled);
         assert_eq!(cfg.timeout_ms, 5000);
+        assert!(cfg.hf_token.is_none());
+        assert!(!cfg.scan_user_input);
         assert_eq!(
             cfg.injection_model,
             "protectai/deberta-v3-small-prompt-injection-v2"
@@ -121,6 +141,17 @@ mod tests {
         );
         assert!((cfg.pii_threshold - 0.75).abs() < 1e-6);
         assert!(cfg.pii_model_sha256.is_none());
+    }
+
+    #[test]
+    fn hf_token_and_scan_user_input_round_trip() {
+        let toml = r#"
+            hf_token = "hf_secret"
+            scan_user_input = true
+        "#;
+        let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.hf_token.as_deref(), Some("hf_secret"));
+        assert!(cfg.scan_user_input);
     }
 
     #[test]
@@ -172,6 +203,8 @@ mod tests {
         let original = ClassifiersConfig {
             enabled: true,
             timeout_ms: 3000,
+            hf_token: Some("hf_test_token".into()),
+            scan_user_input: true,
             injection_model: "org/model".into(),
             injection_threshold: 0.75,
             injection_model_sha256: Some("deadbeef".into()),

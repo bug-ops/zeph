@@ -59,7 +59,11 @@ pub(crate) fn handle_classifiers_command(
                     .unwrap_or(&config.classifiers.injection_model);
                 eprintln!("Downloading injection model: {repo_id}");
                 eprintln!("This may take several minutes on first run (~100-280 MB).");
-                zeph_llm::classifier::candle::download_model(repo_id, timeout)?;
+                zeph_llm::classifier::candle::download_model(
+                    repo_id,
+                    config.classifiers.hf_token.as_deref(),
+                    timeout,
+                )?;
                 eprintln!("Injection model cached: {repo_id}");
             }
 
@@ -67,7 +71,11 @@ pub(crate) fn handle_classifiers_command(
                 let pii_repo_id = repo.as_deref().unwrap_or(&config.classifiers.pii_model);
                 eprintln!("Downloading PII model: {pii_repo_id}");
                 eprintln!("This may take several minutes on first run (~280 MB).");
-                zeph_llm::classifier::candle_pii::download_pii_model(pii_repo_id, timeout)?;
+                zeph_llm::classifier::candle_pii::download_pii_model(
+                    pii_repo_id,
+                    config.classifiers.hf_token.as_deref(),
+                    timeout,
+                )?;
                 eprintln!("PII model cached: {pii_repo_id}");
             }
 

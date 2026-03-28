@@ -101,6 +101,12 @@ impl SecretResolver for Config {
                 }
             }
         }
+        if let Some(val) = vault.get_secret("ZEPH_HF_TOKEN").await? {
+            self.classifiers.hf_token = Some(val.clone());
+            if let Some(candle) = self.llm.candle.as_mut() {
+                candle.hf_token = Some(val);
+            }
+        }
         if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
             self.gateway.auth_token = Some(val);
         }

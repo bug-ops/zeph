@@ -44,6 +44,7 @@ pub struct CandlePiiClassifier {
     repo_id: Arc<str>,
     threshold: f32,
     expected_sha256: Option<Arc<str>>,
+    hf_token: Option<Arc<str>>,
     inner: Arc<OnceLock<Result<Arc<CandlePiiInner>, String>>>,
 }
 
@@ -64,6 +65,7 @@ impl CandlePiiClassifier {
             repo_id: repo_id.into(),
             threshold,
             expected_sha256: None,
+            hf_token: None,
             inner: Arc::new(OnceLock::new()),
         }
     }
@@ -75,16 +77,27 @@ impl CandlePiiClassifier {
         self
     }
 
+    /// Attach a resolved `HuggingFace` Hub API token for authenticated model downloads.
+    #[must_use]
+    pub fn with_hf_token(mut self, token: impl Into<Arc<str>>) -> Self {
+        self.hf_token = Some(token.into());
+        self
+    }
+
     #[allow(unsafe_code)]
     fn load_inner(
         repo_id: &str,
         expected_sha256: Option<&str>,
+        hf_token: Option<&str>,
     ) -> Result<CandlePiiInner, LlmError> {
         tracing::info!(repo_id, "loading PII classifier model (first inference)…");
         let load_t0 = std::time::Instant::now();
-        let api = hf_hub::api::sync::Api::new().map_err(|e| {
-            LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
-        })?;
+        let api = hf_hub::api::sync::ApiBuilder::new()
+            .with_token(hf_token.map(str::to_owned))
+            .build()
+            .map_err(|e| {
+                LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
+            })?;
         let repo = api.model(repo_id.to_owned());
 
         let config_path = repo.get("config.json").map_err(|e| {
@@ -360,6 +373,7 @@ impl PiiDetector for CandlePiiClassifier {
         let repo_id = Arc::clone(&self.repo_id);
         let threshold = self.threshold;
         let expected_sha256 = self.expected_sha256.clone();
+        let hf_token = self.hf_token.clone();
 
         Box::pin(async move {
             let t0 = std::time::Instant::now();
@@ -368,6 +382,7 @@ impl PiiDetector for CandlePiiClassifier {
                     CandlePiiClassifier::load_inner(
                         &repo_id,
                         expected_sha256.as_deref().map(|s| s as &str),
+                        hf_token.as_deref().map(|s| s as &str),
                     )
                     .map(Arc::new)
                     .map_err(|e| e.to_string())
@@ -406,12 +421,18 @@ impl PiiDetector for CandlePiiClassifier {
 /// # Errors
 ///
 /// Returns `LlmError::ModelLoad` if the download fails.
-pub fn download_pii_model(repo_id: &str, timeout: Duration) -> Result<(), LlmError> {
+pub fn download_pii_model(
+    repo_id: &str,
+    hf_token: Option<&str>,
+    timeout: Duration,
+) -> Result<(), LlmError> {
     let (tx, rx) = std::sync::mpsc::channel();
     let repo_id_owned = repo_id.to_owned();
+    let token_owned = hf_token.map(str::to_owned);
 
     std::thread::spawn(move || {
-        let result = CandlePiiClassifier::load_inner(&repo_id_owned, None).map(|_| ());
+        let result = CandlePiiClassifier::load_inner(&repo_id_owned, None, token_owned.as_deref())
+            .map(|_| ());
         let _ = tx.send(result);
     });
 

@@ -225,6 +225,7 @@ fn build_candle_provider(
         template,
         gen_config,
         candle_cfg.embedding_repo.as_deref(),
+        candle_cfg.hf_token.as_deref(),
         device,
     )
     .map(AnyProvider::Candle)
@@ -446,6 +447,7 @@ pub fn build_provider_from_entry(
                 chat_template: candle.chat_template.clone(),
                 device: candle.device.clone(),
                 embedding_repo: candle.embedding_repo.clone(),
+                hf_token: candle.hf_token.clone(),
                 generation: candle.generation.clone(),
             };
             build_candle_provider(&source, &candle_cfg_adapter, &candle.device)

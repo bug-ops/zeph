@@ -518,18 +518,24 @@ pub(crate) fn apply_injection_classifier_with_cfg<C: Channel>(
     if !classifiers.enabled {
         return agent;
     }
-    let backend = std::sync::Arc::new(zeph_llm::classifier::candle::CandleClassifier::new(
-        classifiers.injection_model.as_str(),
-    ));
+    let mut classifier =
+        zeph_llm::classifier::candle::CandleClassifier::new(classifiers.injection_model.as_str());
+    if let Some(token) = &classifiers.hf_token {
+        classifier = classifier.with_hf_token(token.as_str());
+    }
+    let backend = std::sync::Arc::new(classifier);
     tracing::info!(
         repo_id = %classifiers.injection_model,
+        scan_user_input = classifiers.scan_user_input,
         "ML injection classifier attached (model loads lazily on first use)"
     );
-    agent.with_injection_classifier(
-        backend,
-        classifiers.timeout_ms,
-        classifiers.injection_threshold,
-    )
+    agent
+        .with_injection_classifier(
+            backend,
+            classifiers.timeout_ms,
+            classifiers.injection_threshold,
+        )
+        .with_scan_user_input(classifiers.scan_user_input)
 }
 
 /// Wire the `CandlePiiClassifier` NER backend into the agent's sanitizer.
@@ -559,6 +565,9 @@ pub(crate) fn apply_pii_classifier_with_cfg<C: Channel>(
     if let Some(hash) = &classifiers.pii_model_sha256 {
         pii_backend = pii_backend.with_sha256(hash.as_str());
     }
+    if let Some(token) = &classifiers.hf_token {
+        pii_backend = pii_backend.with_hf_token(token.as_str());
+    }
     let backend_arc: std::sync::Arc<dyn zeph_llm::classifier::PiiDetector> =
         std::sync::Arc::new(pii_backend);
     tracing::info!(
@@ -581,9 +590,12 @@ pub(crate) fn apply_pii_ner_classifier<C: Channel>(
     if !config.classifiers.enabled || !config.security.pii_filter.enabled {
         return agent;
     }
-    let backend = std::sync::Arc::new(zeph_llm::classifier::ner::CandleNerClassifier::new(
-        config.classifiers.pii_model.as_str(),
-    ));
+    let mut ner_classifier =
+        zeph_llm::classifier::ner::CandleNerClassifier::new(config.classifiers.pii_model.as_str());
+    if let Some(token) = &config.classifiers.hf_token {
+        ner_classifier = ner_classifier.with_hf_token(token.as_str());
+    }
+    let backend = std::sync::Arc::new(ner_classifier);
     tracing::info!(
         repo_id = %config.classifiers.pii_model,
         "NER PII classifier attached for union merge pipeline (model loads lazily on first use)"

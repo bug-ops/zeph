@@ -57,6 +57,7 @@ struct CandleClassifierInner {
 #[derive(Clone)]
 pub struct CandleClassifier {
     repo_id: Arc<str>,
+    hf_token: Option<Arc<str>>,
     inner: Arc<OnceLock<Result<Arc<CandleClassifierInner>, String>>>,
 }
 
@@ -74,8 +75,16 @@ impl CandleClassifier {
     pub fn new(repo_id: impl Into<Arc<str>>) -> Self {
         Self {
             repo_id: repo_id.into(),
+            hf_token: None,
             inner: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Attach a resolved `HuggingFace` Hub API token for authenticated model downloads.
+    #[must_use]
+    pub fn with_hf_token(mut self, token: impl Into<Arc<str>>) -> Self {
+        self.hf_token = Some(token.into());
+        self
     }
 
     /// Run classification on a single chunk of input ids.
@@ -199,10 +208,16 @@ impl CandleClassifier {
     }
 
     #[allow(unsafe_code)]
-    fn load_inner(repo_id: &str) -> Result<CandleClassifierInner, LlmError> {
-        let api = hf_hub::api::sync::Api::new().map_err(|e| {
-            LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
-        })?;
+    fn load_inner(
+        repo_id: &str,
+        hf_token: Option<&str>,
+    ) -> Result<CandleClassifierInner, LlmError> {
+        let api = hf_hub::api::sync::ApiBuilder::new()
+            .with_token(hf_token.map(str::to_owned))
+            .build()
+            .map_err(|e| {
+                LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
+            })?;
         let repo = api.model(repo_id.to_owned());
 
         let config_path = repo.get("config.json").map_err(|e| {
@@ -322,19 +337,26 @@ impl ClassifierBackend for CandleClassifier {
         let text = text.to_owned();
         let inner_lock = Arc::clone(&self.inner);
         let repo_id = Arc::clone(&self.repo_id);
+        let hf_token = self.hf_token.clone();
 
         Box::pin(async move {
             // spawn_blocking: model is already loaded (OnceLock), inference is CPU-bound.
             // Uses tokio's bounded blocking pool (default 512 threads, shared across callers).
             tokio::task::spawn_blocking(move || {
                 let loaded = inner_lock.get_or_init(|| {
-                    CandleClassifier::load_inner(&repo_id)
+                    CandleClassifier::load_inner(&repo_id, hf_token.as_deref())
                         .map(Arc::new)
                         .map_err(|e| e.to_string())
                 });
                 match loaded {
                     Ok(inner) => CandleClassifier::classify_sync(inner, &text),
-                    Err(e) => Err(LlmError::ModelLoad(e.clone())),
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "classifier permanently disabled due to cached load failure — check hf_token config"
+                        );
+                        Err(LlmError::ModelLoad(e.clone()))
+                    }
                 }
             })
             .await
@@ -355,12 +377,18 @@ impl ClassifierBackend for CandleClassifier {
 /// # Errors
 ///
 /// Returns `LlmError::ModelLoad` if the download fails.
-pub fn download_model(repo_id: &str, timeout: Duration) -> Result<(), LlmError> {
+pub fn download_model(
+    repo_id: &str,
+    hf_token: Option<&str>,
+    timeout: Duration,
+) -> Result<(), LlmError> {
     let (tx, rx) = std::sync::mpsc::channel();
     let repo_id_owned = repo_id.to_owned();
+    let token_owned = hf_token.map(str::to_owned);
 
     std::thread::spawn(move || {
-        let result = CandleClassifier::load_inner(&repo_id_owned).map(|_| ());
+        let result =
+            CandleClassifier::load_inner(&repo_id_owned, token_owned.as_deref()).map(|_| ());
         let _ = tx.send(result);
     });
 
@@ -502,6 +530,29 @@ mod tests {
         let classifier = CandleClassifier::new("test/model");
         // repo_id is accessible from same-module test block
         assert_eq!(&*classifier.repo_id, "test/model");
+    }
+
+    // --- hf_token propagation (issue #2292) ---
+
+    /// `with_hf_token` must store the token so it is available for authenticated downloads.
+    #[test]
+    fn hf_token_propagation_stored_in_field() {
+        let classifier = CandleClassifier::new("test/model").with_hf_token("hf_test_token_value");
+        assert_eq!(
+            classifier.hf_token.as_ref().map(|t| t.as_ref()),
+            Some("hf_test_token_value"),
+            "hf_token was not stored after with_hf_token()"
+        );
+    }
+
+    /// Without `with_hf_token`, the field must be `None` so unauthenticated repos still work.
+    #[test]
+    fn hf_token_absent_by_default() {
+        let classifier = CandleClassifier::new("test/model");
+        assert!(
+            classifier.hf_token.is_none(),
+            "hf_token must be None when not explicitly set"
+        );
     }
 
     #[test]
@@ -666,6 +717,7 @@ mod tests {
         // Use a nonexistent repo to force a network call (avoids cached model bypassing timeout)
         let result = super::download_model(
             "__nonexistent_repo_for_timeout_test__",
+            None,
             std::time::Duration::from_nanos(1),
         );
         // On a cold start (no cache), 1ns timeout will always expire.

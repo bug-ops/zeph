@@ -64,6 +64,7 @@ struct CandleNerClassifierInner {
 #[derive(Clone)]
 pub struct CandleNerClassifier {
     repo_id: Arc<str>,
+    hf_token: Option<Arc<str>>,
     inner: Arc<OnceLock<Result<Arc<CandleNerClassifierInner>, String>>>,
 }
 
@@ -81,15 +82,29 @@ impl CandleNerClassifier {
     pub fn new(repo_id: impl Into<Arc<str>>) -> Self {
         Self {
             repo_id: repo_id.into(),
+            hf_token: None,
             inner: Arc::new(OnceLock::new()),
         }
     }
 
+    /// Attach a resolved `HuggingFace` Hub API token for authenticated model downloads.
+    #[must_use]
+    pub fn with_hf_token(mut self, token: impl Into<Arc<str>>) -> Self {
+        self.hf_token = Some(token.into());
+        self
+    }
+
     #[allow(unsafe_code)]
-    fn load_inner(repo_id: &str) -> Result<CandleNerClassifierInner, LlmError> {
-        let api = hf_hub::api::sync::Api::new().map_err(|e| {
-            LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
-        })?;
+    fn load_inner(
+        repo_id: &str,
+        hf_token: Option<&str>,
+    ) -> Result<CandleNerClassifierInner, LlmError> {
+        let api = hf_hub::api::sync::ApiBuilder::new()
+            .with_token(hf_token.map(str::to_owned))
+            .build()
+            .map_err(|e| {
+                LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
+            })?;
         let repo = api.model(repo_id.to_owned());
 
         let config_path = repo.get("config.json").map_err(|e| {
@@ -515,13 +530,17 @@ impl ClassifierBackend for CandleNerClassifier {
         let text = text.to_owned();
         let inner_lock = Arc::clone(&self.inner);
         let repo_id = Arc::clone(&self.repo_id);
+        let hf_token = self.hf_token.clone();
 
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let loaded = inner_lock.get_or_init(|| {
-                    CandleNerClassifier::load_inner(&repo_id)
-                        .map(Arc::new)
-                        .map_err(|e| e.to_string())
+                    CandleNerClassifier::load_inner(
+                        &repo_id,
+                        hf_token.as_deref().map(|s| s as &str),
+                    )
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string())
                 });
                 match loaded {
                     Ok(inner) => CandleNerClassifier::classify_sync(inner, &text),

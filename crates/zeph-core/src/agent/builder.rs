@@ -643,6 +643,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure whether the ML classifier runs on direct user chat messages.
+    ///
+    /// Default `false`. See `ClassifiersConfig::scan_user_input` for rationale.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_scan_user_input(mut self, value: bool) -> Self {
+        let old = std::mem::replace(
+            &mut self.security.sanitizer,
+            zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+        );
+        self.security.sanitizer = old.with_scan_user_input(value);
+        self
+    }
+
     /// Attach a PII detector backend to the sanitizer.
     ///
     /// When attached, `detect_pii()` is called on outgoing assistant responses when
