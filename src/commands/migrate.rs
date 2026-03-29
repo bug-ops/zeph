@@ -5,8 +5,8 @@ use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
-    ConfigMigrator, migrate_agent_retry_to_tools_retry, migrate_mcp_trust_levels,
-    migrate_planner_model_to_provider, migrate_stt_to_provider,
+    ConfigMigrator, migrate_agent_retry_to_tools_retry, migrate_database_url,
+    migrate_mcp_trust_levels, migrate_planner_model_to_provider, migrate_stt_to_provider,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -43,9 +43,13 @@ pub(crate) fn handle_migrate_config(
     let retry_result = migrate_agent_retry_to_tools_retry(&after_trust)?;
     let after_retry = retry_result.output;
 
-    // Step 5: add missing default keys as commented-out entries.
+    // Step 5: add commented-out database_url under [memory] if absent.
+    let db_url_result = migrate_database_url(&after_retry)?;
+    let after_db_url = db_url_result.output;
+
+    // Step 6: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_retry)?;
+    let result = migrator.migrate(&after_db_url)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -65,6 +69,9 @@ pub(crate) fn handle_migrate_config(
         }
         if retry_result.added_count > 0 {
             eprintln!("Retry migration: [agent] retry fields migrated to [tools.retry].");
+        }
+        if db_url_result.added_count > 0 {
+            eprintln!("Database URL migration: added database_url placeholder under [memory].");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

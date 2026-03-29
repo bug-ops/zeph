@@ -3,6 +3,7 @@
 
 pub(crate) mod agents;
 pub(crate) mod classifiers;
+pub(crate) mod db;
 pub(crate) mod ingest;
 pub(crate) mod memory;
 pub(crate) mod migrate;

@@ -264,6 +264,18 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: crate::commands::classifiers::ClassifiersCommand,
     },
+    /// Manage the database
+    Db {
+        #[command(subcommand)]
+        command: DbCommand,
+    },
+}
+
+/// Database subcommands.
+#[derive(Subcommand)]
+pub(crate) enum DbCommand {
+    /// Run pending database migrations
+    Migrate,
 }
 
 #[derive(Subcommand)]

@@ -192,6 +192,9 @@ injection_patterns = true
 # ~/Library/Application Support/Zeph/data/zeph.db on macOS,
 # %LOCALAPPDATA%\Zeph\data\zeph.db on Windows).
 # sqlite_path = "/absolute/path/to/zeph.db"
+# PostgreSQL connection URL (used when binary is compiled with --features postgres).
+# Leave empty and store the actual URL in the vault: zeph vault set ZEPH_DATABASE_URL "postgres://..."
+# database_url = ""
 # Maximum number of recent messages to load into context
 history_limit = 50
 # Qdrant vector database URL for semantic memory

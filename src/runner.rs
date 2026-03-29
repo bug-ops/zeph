@@ -29,7 +29,7 @@ use zeph_llm::{ThinkingConfig, ThinkingEffort};
 use crate::acp::run_acp_http_server;
 #[cfg(feature = "acp")]
 use crate::acp::{print_acp_manifest, run_acp_server};
-use crate::cli::Command;
+use crate::cli::{Command, DbCommand};
 use crate::commands::agents::handle_agents_command;
 use crate::commands::classifiers::handle_classifiers_command;
 use crate::commands::memory::handle_memory_command;
@@ -319,6 +319,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let config_path = resolve_config_path(cli.config.as_deref());
             let config = Config::load(&config_path).unwrap_or_default();
             return handle_classifiers_command(&clf_cmd, &config);
+        }
+        Some(Command::Db { command: db_cmd }) => {
+            return match db_cmd {
+                DbCommand::Migrate => {
+                    crate::commands::db::handle_db_migrate(cli.config.as_deref()).await
+                }
+            };
         }
         None => {}
     }

@@ -112,10 +112,10 @@ macro_rules! sql {
 
 /// Returns `true` if the given database URL looks like a `PostgreSQL` connection string.
 ///
-/// Compiled only when the `sqlite` feature is active. Callers can use this to
-/// detect a misconfigured `database_url` pointing to `PostgreSQL` in a build
-/// that only supports `SQLite`.
-#[cfg(feature = "sqlite")]
+/// Check whether `url` looks like a `PostgreSQL` connection URL.
+///
+/// Used to detect misconfigured `database_url` values (e.g. a `SQLite` path passed
+/// to a postgres build, or vice versa).
 #[must_use]
 pub fn is_postgres_url(url: &str) -> bool {
     url.starts_with("postgres://") || url.starts_with("postgresql://")

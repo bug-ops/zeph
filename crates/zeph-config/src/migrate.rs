@@ -1377,6 +1377,51 @@ pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationRes
     })
 }
 
+/// Add a commented-out `database_url = ""` entry under `[memory]` if absent.
+///
+/// If the `[memory]` section does not exist it is created. This migration surfaces the
+/// `PostgreSQL` URL option for users upgrading from a pre-postgres config file.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_database_url(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    // Ensure [memory] section exists.
+    if !doc.contains_key("memory") {
+        doc.insert("memory", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+
+    let memory = doc
+        .get_mut("memory")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[memory] key exists but is not a table",
+        ))?;
+
+    if memory.contains_key("database_url") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    // Append as a commented-out line via table suffix decor (same pattern as merge_table_commented).
+    let comment = "# PostgreSQL connection URL (used when binary is compiled with --features postgres).\n\
+         # Leave empty and store the actual URL in the vault:\n\
+         #   zeph vault set ZEPH_DATABASE_URL \"postgres://user:pass@localhost:5432/zeph\"\n\
+         # database_url = \"\"\n";
+    append_comment_to_table_suffix(memory, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["memory.database_url".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -2170,5 +2215,35 @@ trust_level = "untrusted"
         let result = migrate_mcp_trust_levels(src).expect("migrate");
         assert_eq!(result.added_count, 0);
         assert!(result.sections_added.is_empty());
+    }
+
+    #[test]
+    fn migrate_database_url_adds_comment_when_absent() {
+        let src = "[memory]\nsqlite_path = \"/tmp/zeph.db\"\n";
+        let result = migrate_database_url(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert!(
+            result
+                .sections_added
+                .contains(&"memory.database_url".to_owned())
+        );
+        assert!(result.output.contains("# database_url = \"\""));
+    }
+
+    #[test]
+    fn migrate_database_url_is_noop_when_present() {
+        let src = "[memory]\nsqlite_path = \"/tmp/zeph.db\"\ndatabase_url = \"postgres://localhost/zeph\"\n";
+        let result = migrate_database_url(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert!(result.sections_added.is_empty());
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_database_url_creates_memory_section_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_database_url(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert!(result.output.contains("# database_url = \"\""));
     }
 }

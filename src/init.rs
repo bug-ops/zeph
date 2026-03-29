@@ -178,6 +178,9 @@ pub(crate) struct WizardState {
     pub(crate) mcp_discovery_strategy: String,
     pub(crate) mcp_discovery_top_k: usize,
     pub(crate) mcp_discovery_provider: String,
+    /// `PostgreSQL` database URL (set when user selects postgres backend in `step_memory`).
+    /// Empty string means the user chose postgres but was instructed to store URL in vault.
+    pub(crate) database_url: Option<String>,
 }
 
 impl Default for WizardState {
@@ -316,6 +319,7 @@ impl Default for WizardState {
             mcp_discovery_strategy: "none".to_owned(),
             mcp_discovery_top_k: 10,
             mcp_discovery_provider: String::new(),
+            database_url: None,
         }
     }
 }
@@ -676,12 +680,32 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
 fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 3/10: Memory ==\n");
 
-    state.sqlite_path = Some(
-        Input::new()
-            .with_prompt("SQLite database path")
-            .default(zeph_core::config::default_sqlite_path())
-            .interact_text()?,
-    );
+    let db_backend = Select::new()
+        .with_prompt("Database backend")
+        .items(["SQLite (local, zero-config)", "PostgreSQL (server, shared)"])
+        .default(0)
+        .interact()?;
+
+    if db_backend == 1 {
+        // PostgreSQL selected: do not prompt for sqlite_path.
+        // Instruct the user to store the URL in the vault instead of writing it to plaintext config.
+        println!(
+            "\nStore the PostgreSQL URL in the vault after init:\n  \
+             zeph vault set ZEPH_DATABASE_URL \"postgres://user:pass@localhost:5432/zeph\"\n"
+        );
+        println!(
+            "Note: binary must be compiled with --features postgres for PostgreSQL support.\n"
+        );
+        // Write empty placeholder; the vault key ZEPH_DATABASE_URL overrides it at runtime.
+        state.database_url = Some(String::new());
+    } else {
+        state.sqlite_path = Some(
+            Input::new()
+                .with_prompt("SQLite database path")
+                .default(zeph_core::config::default_sqlite_path())
+                .interact_text()?,
+        );
+    }
 
     state.sessions_max_history = Input::new()
         .with_prompt("Maximum number of sessions to list (0 = unlimited)")
@@ -1189,11 +1213,19 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         complexity_routing: None,
     };
 
-    config.memory = MemoryConfig {
-        sqlite_path: state
+    // When postgres backend was chosen, sqlite_path is left at its serde default (unused).
+    // When sqlite backend was chosen, database_url stays None.
+    let sqlite_path = if state.database_url.is_some() {
+        // Postgres selected: skip writing sqlite_path (leave serde default).
+        zeph_core::config::default_sqlite_path()
+    } else {
+        state
             .sqlite_path
             .clone()
-            .unwrap_or_else(zeph_core::config::default_sqlite_path),
+            .unwrap_or_else(zeph_core::config::default_sqlite_path)
+    };
+    config.memory = MemoryConfig {
+        sqlite_path,
         qdrant_url: state
             .qdrant_url
             .clone()
@@ -1206,6 +1238,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             max_history: state.sessions_max_history,
             title_max_chars: state.sessions_title_max_chars,
         },
+        database_url: state.database_url.clone(),
         ..config.memory
     };
     config.memory.graph.enabled = state.graph_memory_enabled;

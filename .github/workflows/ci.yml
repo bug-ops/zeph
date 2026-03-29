@@ -355,6 +355,28 @@ jobs:
         continue-on-error: ${{ matrix.allow_failure == true }}
         run: cargo check --features ${{ matrix.bundle }}
 
+  build-postgres:
+    name: Build (postgres)
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run-full-ci == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-targets: "false"
+          shared-key: "ci-postgres"
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - name: Check postgres build (zeph-db)
+        run: cargo check -p zeph-db --no-default-features --features postgres
+
   validate-specs:
     name: Validate Specs
     needs: detect-changes
@@ -374,7 +396,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, build-tests, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs]
+    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, build-tests, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs, build-postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -392,6 +414,7 @@ jobs:
             "${{ needs.docker-build-and-scan.result }}"
             "${{ needs.bundle-check.result }}"
             "${{ needs.validate-specs.result }}"
+            "${{ needs.build-postgres.result }}"
           )
           for r in "${results[@]}"; do
             if [[ "$r" != "success" && "$r" != "skipped" ]]; then
