@@ -21,7 +21,7 @@ impl SqliteStore {
     ) -> Result<String, MemoryError> {
         let id = Uuid::new_v4().to_string();
         let byte_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO tool_overflow (id, conversation_id, content, byte_size) \
              VALUES (?, ?, ?, ?)"
         ))
@@ -45,7 +45,7 @@ impl SqliteStore {
         id: &str,
         conversation_id: i64,
     ) -> Result<Option<Vec<u8>>, MemoryError> {
-        let row: Option<(Vec<u8>,)> = sqlx::query_as(sql!(
+        let row: Option<(Vec<u8>,)> = zeph_db::query_as(sql!(
             "SELECT content FROM tool_overflow WHERE id = ? AND conversation_id = ?"
         ))
         .bind(id)
@@ -62,7 +62,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database delete fails.
     pub async fn cleanup_overflow(&self, max_age_secs: u64) -> Result<u64, MemoryError> {
-        let result = sqlx::query(sql!(
+        let result = zeph_db::query(sql!(
             "DELETE FROM tool_overflow \
              WHERE created_at < datetime('now', printf('-%d seconds', ?))"
         ))
@@ -78,7 +78,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     pub async fn overflow_size(&self, conversation_id: i64) -> Result<u64, MemoryError> {
-        let total: Option<i64> = sqlx::query_scalar(sql!(
+        let total: Option<i64> = zeph_db::query_scalar(sql!(
             "SELECT COALESCE(SUM(byte_size), 0) FROM tool_overflow WHERE conversation_id = ?"
         ))
         .bind(conversation_id)
@@ -160,7 +160,7 @@ mod tests {
         let (store, cid) = make_store().await;
         let id = store.save_overflow(cid, b"data").await.expect("save");
         // Delete the conversation — overflow should cascade.
-        sqlx::query(sql!("DELETE FROM conversations WHERE id = ?"))
+        zeph_db::query(sql!("DELETE FROM conversations WHERE id = ?"))
             .bind(cid)
             .execute(store.pool())
             .await
@@ -168,7 +168,7 @@ mod tests {
         // Use a fresh store to load by id only — conversation is gone, use id=0 (will miss).
         // Verify via direct SQL that the row is gone.
         let count: i64 =
-            sqlx::query_scalar(sql!("SELECT COUNT(*) FROM tool_overflow WHERE id = ?"))
+            zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM tool_overflow WHERE id = ?"))
                 .bind(&id)
                 .fetch_one(store.pool())
                 .await
@@ -181,7 +181,7 @@ mod tests {
         let (store, cid) = make_store().await;
         // Insert a row with an old timestamp.
         let id = Uuid::new_v4().to_string();
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO tool_overflow (id, conversation_id, content, byte_size, created_at) \
              VALUES (?, ?, ?, ?, datetime('now', '-2 days'))"
         ))

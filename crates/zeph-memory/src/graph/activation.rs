@@ -669,7 +669,7 @@ mod tests {
             .unwrap();
 
         // Insert old edge manually with a 1970 timestamp
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
              VALUES (?1, ?2, 'uses', 'Src uses Old', 1.0, '1970-01-01 00:00:00')"),
         )
@@ -728,7 +728,7 @@ mod tests {
             .unwrap();
 
         // Causal edge from A (inserted with explicit edge_type)
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, edge_type)
              VALUES (?1, ?2, 'caused', 'A caused CCausal', 1.0, datetime('now'), 'causal')"),
         )

@@ -95,7 +95,7 @@ mod tests {
 
         let store = DbStore::new(path).await.expect("DbStore::new");
 
-        let mode: String = sqlx::query_scalar(sql!("PRAGMA journal_mode"))
+        let mode: String = zeph_db::query_scalar(sql!("PRAGMA journal_mode"))
             .fetch_one(store.pool())
             .await
             .expect("PRAGMA query");
@@ -110,7 +110,7 @@ mod tests {
 
         let store = DbStore::new(path).await.expect("DbStore::new");
 
-        let timeout_ms: i64 = sqlx::query_scalar(sql!("PRAGMA busy_timeout"))
+        let timeout_ms: i64 = zeph_db::query_scalar(sql!("PRAGMA busy_timeout"))
             .fetch_one(store.pool())
             .await
             .expect("PRAGMA query");

@@ -312,13 +312,13 @@ pub async fn extract_and_store(
     let store = GraphStore::new(pool);
 
     let pool = store.pool();
-    sqlx::query(sql!(
+    zeph_db::query(sql!(
         "INSERT INTO graph_metadata (key, value) VALUES ('extraction_count', '0')
          ON CONFLICT(key) DO NOTHING"
     ))
     .execute(pool)
     .await?;
-    sqlx::query(sql!(
+    zeph_db::query(sql!(
         "UPDATE graph_metadata
          SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
          WHERE key = 'extraction_count'"

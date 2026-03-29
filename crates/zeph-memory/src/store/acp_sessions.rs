@@ -34,7 +34,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
-        sqlx::query(&sql)
+        zeph_db::query(&sql)
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -52,7 +52,7 @@ impl SqliteStore {
         event_type: &str,
         payload: &str,
     ) -> Result<(), MemoryError> {
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO acp_session_events (session_id, event_type, payload) VALUES (?, ?, ?)"
         ))
         .bind(session_id)
@@ -72,7 +72,7 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<AcpSessionEvent>, MemoryError> {
-        let rows = sqlx::query_as::<_, (String, String, String)>(
+        let rows = zeph_db::query_as::<_, (String, String, String)>(
             sql!("SELECT event_type, payload, created_at FROM acp_session_events WHERE session_id = ? ORDER BY id"),
         )
         .bind(session_id)
@@ -95,7 +95,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database write fails.
     pub async fn delete_acp_session(&self, session_id: &str) -> Result<(), MemoryError> {
-        sqlx::query(sql!("DELETE FROM acp_sessions WHERE id = ?"))
+        zeph_db::query(sql!("DELETE FROM acp_sessions WHERE id = ?"))
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -117,7 +117,7 @@ impl SqliteStore {
         // LIMIT -1 in SQLite means no limit; cast limit=0 sentinel to -1.
         #[allow(clippy::cast_possible_wrap)]
         let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
-        let rows = sqlx::query_as::<_, (String, Option<String>, String, String, i64)>(
+        let rows = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
             "SELECT s.id, s.title, s.created_at, s.updated_at, \
              (SELECT COUNT(*) FROM acp_session_events WHERE session_id = s.id) AS message_count \
              FROM acp_sessions s \
@@ -153,7 +153,7 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Option<AcpSessionInfo>, MemoryError> {
-        let row = sqlx::query_as::<_, (String, Option<String>, String, String, i64)>(
+        let row = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
             "SELECT s.id, s.title, s.created_at, s.updated_at, \
              (SELECT COUNT(*) FROM acp_session_events WHERE session_id = s.id) AS message_count \
              FROM acp_sessions s \
@@ -189,7 +189,7 @@ impl SqliteStore {
     ) -> Result<(), MemoryError> {
         let mut tx = self.pool.begin().await?;
         for (event_type, payload) in events {
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "INSERT INTO acp_session_events (session_id, event_type, payload) VALUES (?, ?, ?)"
             ))
             .bind(session_id)
@@ -212,7 +212,7 @@ impl SqliteStore {
         session_id: &str,
         title: &str,
     ) -> Result<(), MemoryError> {
-        sqlx::query(sql!("UPDATE acp_sessions SET title = ? WHERE id = ?"))
+        zeph_db::query(sql!("UPDATE acp_sessions SET title = ? WHERE id = ?"))
             .bind(title)
             .bind(session_id)
             .execute(&self.pool)
@@ -226,10 +226,11 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     pub async fn acp_session_exists(&self, session_id: &str) -> Result<bool, MemoryError> {
-        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM acp_sessions WHERE id = ?"))
-            .bind(session_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let count: i64 =
+            zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM acp_sessions WHERE id = ?"))
+                .bind(session_id)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(count > 0)
     }
 
@@ -248,7 +249,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
-        sqlx::query(&sql)
+        zeph_db::query(&sql)
             .bind(session_id)
             .bind(conversation_id)
             .execute(&self.pool)
@@ -267,7 +268,7 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Option<ConversationId>, MemoryError> {
-        let row: Option<(Option<ConversationId>,)> = sqlx::query_as(sql!(
+        let row: Option<(Option<ConversationId>,)> = zeph_db::query_as(sql!(
             "SELECT conversation_id FROM acp_sessions WHERE id = ?"
         ))
         .bind(session_id)
@@ -286,7 +287,7 @@ impl SqliteStore {
         session_id: &str,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE acp_sessions SET conversation_id = ? WHERE id = ?"
         ))
         .bind(conversation_id)
@@ -318,7 +319,7 @@ impl SqliteStore {
         // Copy messages in order. Only columns present across all migrations are included;
         // per-message auto-fields (id, created_at, last_accessed, access_count, qdrant_cleaned)
         // are excluded so they are generated fresh for the target conversation.
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO messages \
                 (conversation_id, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at) \
              SELECT ?, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at \
@@ -616,7 +617,7 @@ mod tests {
         let src = store.create_conversation().await.unwrap();
         store.save_message(src, "user", "hello").await.unwrap();
         // Insert a summary directly so we can verify it is not copied.
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
              VALUES (?, 'summary text', 1, 1, 10)"),
         )
@@ -628,7 +629,7 @@ mod tests {
         let dst = store.create_conversation().await.unwrap();
         store.copy_conversation(src, dst).await.unwrap();
 
-        let count: i64 = sqlx::query_scalar(sql!(
+        let count: i64 = zeph_db::query_scalar(sql!(
             "SELECT COUNT(*) FROM summaries WHERE conversation_id = ?"
         ))
         .bind(dst)

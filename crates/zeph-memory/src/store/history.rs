@@ -13,7 +13,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_input_history(&self, limit: i64) -> Result<Vec<String>, MemoryError> {
-        let rows: Vec<(String,)> = sqlx::query_as(sql!(
+        let rows: Vec<(String,)> = zeph_db::query_as(sql!(
             "SELECT input FROM input_history ORDER BY id ASC LIMIT ?"
         ))
         .bind(limit)
@@ -28,7 +28,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the insert fails.
     pub async fn save_input_entry(&self, text: &str) -> Result<(), MemoryError> {
-        sqlx::query(sql!("INSERT INTO input_history (input) VALUES (?)"))
+        zeph_db::query(sql!("INSERT INTO input_history (input) VALUES (?)"))
             .bind(text)
             .execute(&self.pool)
             .await?;
@@ -41,7 +41,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the delete fails.
     pub async fn clear_input_history(&self) -> Result<(), MemoryError> {
-        sqlx::query(sql!("DELETE FROM input_history"))
+        zeph_db::query(sql!("DELETE FROM input_history"))
             .execute(&self.pool)
             .await?;
         Ok(())

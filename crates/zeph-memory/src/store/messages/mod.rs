@@ -126,7 +126,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the insert fails.
     pub async fn create_conversation(&self) -> Result<ConversationId, MemoryError> {
-        let row: (ConversationId,) = sqlx::query_as(sql!(
+        let row: (ConversationId,) = zeph_db::query_as(sql!(
             "INSERT INTO conversations DEFAULT VALUES RETURNING id"
         ))
         .fetch_one(&self.pool)
@@ -180,7 +180,7 @@ impl SqliteStore {
         user_visible: bool,
     ) -> Result<MessageId, MemoryError> {
         let importance_score = crate::semantic::importance::compute_importance(content, role);
-        let row: (MessageId,) = sqlx::query_as(
+        let row: (MessageId,) = zeph_db::query_as(
             sql!("INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible, importance_score) \
              VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"),
         )
@@ -206,7 +206,7 @@ impl SqliteStore {
         conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
-        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(sql!(
+        let rows: Vec<(String, String, String, i64, i64, i64)> = zeph_db::query_as(sql!(
             "SELECT role, content, parts, agent_visible, user_visible, id FROM (\
                 SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? AND deleted_at IS NULL \
@@ -261,7 +261,7 @@ impl SqliteStore {
         let av = agent_visible.map(i64::from);
         let uv = user_visible.map(i64::from);
 
-        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, i64, i64, i64)> = zeph_db::query_as(
             sql!("WITH recent AS (\
                 SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
                 WHERE conversation_id = ? \
@@ -336,7 +336,7 @@ impl SqliteStore {
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE messages SET agent_visible = 0, compacted_at = ? \
              WHERE conversation_id = ? AND id >= ? AND id <= ?"
         ))
@@ -348,7 +348,7 @@ impl SqliteStore {
         .await?;
 
         // importance_score uses schema DEFAULT 0.5 (neutral); compaction summaries are not scored at write time.
-        let row: (MessageId,) = sqlx::query_as(sql!(
+        let row: (MessageId,) = zeph_db::query_as(sql!(
             "INSERT INTO messages \
              (conversation_id, role, content, parts, agent_visible, user_visible) \
              VALUES (?, ?, ?, '[]', 1, 0) RETURNING id"
@@ -392,7 +392,7 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         for &id in hide_ids {
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "UPDATE messages SET agent_visible = 0, compacted_at = ? WHERE id = ?"
             ))
             .bind(&now)
@@ -407,7 +407,7 @@ impl SqliteStore {
                 text: summary.clone(),
             }])
             .unwrap_or_else(|_| "[]".to_string());
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "INSERT INTO messages \
                  (conversation_id, role, content, parts, agent_visible, user_visible) \
                  VALUES (?, 'assistant', ?, ?, 1, 0)"
@@ -433,7 +433,7 @@ impl SqliteStore {
         conversation_id: ConversationId,
         n: u32,
     ) -> Result<Vec<MessageId>, MemoryError> {
-        let rows: Vec<(MessageId,)> = sqlx::query_as(
+        let rows: Vec<(MessageId,)> = zeph_db::query_as(
             sql!("SELECT id FROM messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?"),
         )
         .bind(conversation_id)
@@ -449,7 +449,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn latest_conversation_id(&self) -> Result<Option<ConversationId>, MemoryError> {
-        let row: Option<(ConversationId,)> = sqlx::query_as(sql!(
+        let row: Option<(ConversationId,)> = zeph_db::query_as(sql!(
             "SELECT id FROM conversations ORDER BY id DESC LIMIT 1"
         ))
         .fetch_optional(&self.pool)
@@ -466,7 +466,7 @@ impl SqliteStore {
         &self,
         message_id: MessageId,
     ) -> Result<Option<Message>, MemoryError> {
-        let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
+        let row: Option<(String, String, String, i64, i64)> = zeph_db::query_as(
             sql!("SELECT role, content, parts, agent_visible, user_visible FROM messages WHERE id = ? AND deleted_at IS NULL"),
         )
         .bind(message_id)
@@ -513,7 +513,7 @@ impl SqliteStore {
             "SELECT id, role, content, parts FROM messages \
              WHERE id IN ({placeholders}) AND agent_visible = 1 AND deleted_at IS NULL"
         );
-        let mut q = sqlx::query_as::<_, (MessageId, String, String, String)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, String, String, String)>(&query);
         for &id in ids {
             q = q.bind(id);
         }
@@ -548,7 +548,7 @@ impl SqliteStore {
     ) -> Result<Vec<(MessageId, ConversationId, String, String)>, MemoryError> {
         let effective_limit = limit.map_or(i64::MAX, |l| i64::try_from(l).unwrap_or(i64::MAX));
 
-        let rows: Vec<(MessageId, ConversationId, String, String)> = sqlx::query_as(sql!(
+        let rows: Vec<(MessageId, ConversationId, String, String)> = zeph_db::query_as(sql!(
             "SELECT m.id, m.conversation_id, m.role, m.content \
              FROM messages m \
              LEFT JOIN embeddings_metadata em ON m.id = em.message_id \
@@ -572,7 +572,7 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND deleted_at IS NULL"
         ))
         .bind(conversation_id)
@@ -592,7 +592,7 @@ impl SqliteStore {
         after_id: MessageId,
     ) -> Result<i64, MemoryError> {
         let row: (i64,) =
-            sqlx::query_as(
+            zeph_db::query_as(
                 sql!("SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND id > ? AND deleted_at IS NULL"),
             )
             .bind(conversation_id)
@@ -623,7 +623,7 @@ impl SqliteStore {
         }
 
         let rows: Vec<(MessageId, f64)> = if let Some(cid) = conversation_id {
-            sqlx::query_as(
+            zeph_db::query_as(
                 sql!("SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
@@ -637,7 +637,7 @@ impl SqliteStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as(sql!(
+            zeph_db::query_as(sql!(
                 "SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
@@ -707,7 +707,7 @@ impl SqliteStore {
              LIMIT ?"
         );
 
-        let mut q = sqlx::query_as::<_, (MessageId, f64)>(&sql).bind(&safe_query);
+        let mut q = zeph_db::query_as::<_, (MessageId, f64)>(&sql).bind(&safe_query);
         if let Some(a) = after {
             q = q.bind(a);
         }
@@ -743,7 +743,7 @@ impl SqliteStore {
         let query = format!(
             "SELECT id, {epoch_expr} FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let mut q = sqlx::query_as::<_, (MessageId, i64)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, i64)>(&query);
         for &id in ids {
             q = q.bind(id);
         }
@@ -765,7 +765,7 @@ impl SqliteStore {
     ) -> Result<Vec<(MessageId, String, String)>, MemoryError> {
         let effective_limit = i64::try_from(limit).unwrap_or(i64::MAX);
 
-        let rows: Vec<(MessageId, String, String)> = sqlx::query_as(sql!(
+        let rows: Vec<(MessageId, String, String)> = zeph_db::query_as(sql!(
             "SELECT id, role, content FROM messages \
              WHERE conversation_id = ? AND id > ? AND deleted_at IS NULL \
              ORDER BY id ASC LIMIT ?"
@@ -789,7 +789,7 @@ impl SqliteStore {
     pub async fn get_eviction_candidates(
         &self,
     ) -> Result<Vec<crate::eviction::EvictionEntry>, crate::error::MemoryError> {
-        let rows: Vec<(MessageId, String, Option<String>, i64)> = sqlx::query_as(sql!(
+        let rows: Vec<(MessageId, String, Option<String>, i64)> = zeph_db::query_as(sql!(
             "SELECT id, created_at, last_accessed, access_count \
              FROM messages WHERE deleted_at IS NULL"
         ))
@@ -825,7 +825,7 @@ impl SqliteStore {
         }
         // SQLite does not support array binding natively. Batch via individual updates.
         for &id in ids {
-            sqlx::query(
+            zeph_db::query(
                 sql!("UPDATE messages SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL"),
             )
             .bind(id)
@@ -843,7 +843,7 @@ impl SqliteStore {
     pub async fn get_soft_deleted_message_ids(
         &self,
     ) -> Result<Vec<MessageId>, crate::error::MemoryError> {
-        let rows: Vec<(MessageId,)> = sqlx::query_as(sql!(
+        let rows: Vec<(MessageId,)> = zeph_db::query_as(sql!(
             "SELECT id FROM messages WHERE deleted_at IS NOT NULL AND qdrant_cleaned = 0"
         ))
         .fetch_all(&self.pool)
@@ -861,7 +861,7 @@ impl SqliteStore {
         ids: &[MessageId],
     ) -> Result<(), crate::error::MemoryError> {
         for &id in ids {
-            sqlx::query(sql!("UPDATE messages SET qdrant_cleaned = 1 WHERE id = ?"))
+            zeph_db::query(sql!("UPDATE messages SET qdrant_cleaned = 1 WHERE id = ?"))
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
@@ -887,7 +887,7 @@ impl SqliteStore {
         let query = format!(
             "SELECT id, importance_score FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let mut q = sqlx::query_as::<_, (MessageId, f64)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, f64)>(&query);
         for &id in ids {
             q = q.bind(id);
         }
@@ -911,7 +911,7 @@ impl SqliteStore {
             "UPDATE messages SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP \
              WHERE id IN ({placeholders})"
         );
-        let mut q = sqlx::query(&query);
+        let mut q = zeph_db::query(&query);
         for &id in ids {
             q = q.bind(id);
         }
@@ -934,7 +934,7 @@ impl SqliteStore {
     ) -> Result<Vec<PromotionCandidate>, MemoryError> {
         let limit = i64::try_from(batch_size).unwrap_or(i64::MAX);
         let min = i64::from(min_sessions);
-        let rows: Vec<(MessageId, ConversationId, String, i64, f64)> = sqlx::query_as(sql!(
+        let rows: Vec<(MessageId, ConversationId, String, i64, f64)> = zeph_db::query_as(sql!(
             "SELECT id, conversation_id, content, session_count, importance_score \
              FROM messages \
              WHERE tier = 'episodic' AND session_count >= ? AND deleted_at IS NULL \
@@ -970,7 +970,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn count_messages_by_tier(&self) -> Result<(i64, i64), MemoryError> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(sql!(
+        let rows: Vec<(String, i64)> = zeph_db::query_as(sql!(
             "SELECT tier, COUNT(*) FROM messages \
              WHERE deleted_at IS NULL AND tier IN ('episodic', 'semantic') \
              GROUP BY tier"
@@ -996,7 +996,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn count_semantic_facts(&self) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM messages WHERE tier = 'semantic' AND deleted_at IS NULL"
         ))
         .fetch_one(&self.pool)
@@ -1040,7 +1040,7 @@ impl SqliteStore {
              RETURNING id"
         );
         let promote_insert_sql = zeph_db::rewrite_placeholders(&promote_insert_raw);
-        let row: (MessageId,) = sqlx::query_as(&promote_insert_sql)
+        let row: (MessageId,) = zeph_db::query_as(&promote_insert_sql)
             .bind(conversation_id)
             .bind(merged_content)
             .fetch_one(&mut *tx)
@@ -1050,7 +1050,7 @@ impl SqliteStore {
 
         // Soft-delete originals and reset qdrant_cleaned so eviction sweep removes vectors.
         for &id in original_ids {
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "UPDATE messages \
                  SET deleted_at = CURRENT_TIMESTAMP, qdrant_cleaned = 0 \
                  WHERE id = ? AND deleted_at IS NULL"
@@ -1085,7 +1085,7 @@ impl SqliteStore {
         let manual_promote_sql = zeph_db::rewrite_placeholders(&manual_promote_raw);
         let mut count = 0usize;
         for &id in ids {
-            let result = sqlx::query(&manual_promote_sql)
+            let result = zeph_db::query(&manual_promote_sql)
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
@@ -1106,7 +1106,7 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE messages SET session_count = session_count + 1 \
              WHERE conversation_id = ? AND tier = 'episodic' AND deleted_at IS NULL"
         ))
@@ -1134,7 +1134,7 @@ impl SqliteStore {
         let query = format!(
             "SELECT id, tier FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let mut q = sqlx::query_as::<_, (MessageId, String)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, String)>(&query);
         for &id in ids {
             q = q.bind(id);
         }
@@ -1152,7 +1152,7 @@ impl SqliteStore {
     pub async fn conversations_with_unconsolidated_messages(
         &self,
     ) -> Result<Vec<ConversationId>, MemoryError> {
-        let rows: Vec<(ConversationId,)> = sqlx::query_as(sql!(
+        let rows: Vec<(ConversationId,)> = zeph_db::query_as(sql!(
             "SELECT DISTINCT conversation_id FROM messages \
              WHERE consolidated = 0 AND deleted_at IS NULL"
         ))
@@ -1175,7 +1175,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<(MessageId, String)>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows: Vec<(MessageId, String)> = sqlx::query_as(sql!(
+        let rows: Vec<(MessageId, String)> = zeph_db::query_as(sql!(
             "SELECT id, content FROM messages \
              WHERE conversation_id = ? \
                AND consolidated = 0 \
@@ -1202,7 +1202,7 @@ impl SqliteStore {
         &self,
         source_id: MessageId,
     ) -> Result<Option<MessageId>, MemoryError> {
-        let row: Option<(MessageId,)> = sqlx::query_as(sql!(
+        let row: Option<(MessageId,)> = zeph_db::query_as(sql!(
             "SELECT consolidated_id FROM memory_consolidation_sources \
              WHERE source_id = ? \
              LIMIT 1"
@@ -1245,7 +1245,7 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         let importance = crate::semantic::importance::compute_importance(merged_content, role);
-        let row: (MessageId,) = sqlx::query_as(sql!(
+        let row: (MessageId,) = zeph_db::query_as(sql!(
             "INSERT INTO messages \
                (conversation_id, role, content, parts, agent_visible, user_visible, \
                 importance_score, consolidated, consolidation_confidence) \
@@ -1267,14 +1267,14 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
         for &source_id in source_ids {
-            sqlx::query(&consol_sql)
+            zeph_db::query(&consol_sql)
                 .bind(consolidated_id)
                 .bind(source_id)
                 .execute(&mut *tx)
                 .await?;
 
             // Mark original as consolidated so future sweeps skip it.
-            sqlx::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
+            zeph_db::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
                 .bind(source_id)
                 .execute(&mut *tx)
                 .await?;

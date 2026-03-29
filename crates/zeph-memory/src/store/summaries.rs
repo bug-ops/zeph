@@ -24,7 +24,7 @@ impl SqliteStore {
         last_message_id: Option<MessageId>,
         token_estimate: i64,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(
+        let row: (i64,) = zeph_db::query_as(
             sql!("INSERT INTO summaries (conversation_id, content, first_message_id, last_message_id, token_estimate) \
              VALUES (?, ?, ?, ?, ?) RETURNING id"),
         )
@@ -68,7 +68,7 @@ impl SqliteStore {
             Option<MessageId>,
             Option<MessageId>,
             i64,
-        )> = sqlx::query_as(sql!(
+        )> = zeph_db::query_as(sql!(
             "SELECT id, conversation_id, content, first_message_id, last_message_id, \
                  token_estimate FROM summaries WHERE conversation_id = ? ORDER BY id ASC"
         ))
@@ -91,7 +91,7 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Option<MessageId>, MemoryError> {
-        let row: Option<(Option<MessageId>,)> = sqlx::query_as(sql!(
+        let row: Option<(Option<MessageId>,)> = zeph_db::query_as(sql!(
             "SELECT last_message_id FROM summaries \
              WHERE conversation_id = ? ORDER BY id DESC LIMIT 1"
         ))
@@ -217,7 +217,7 @@ mod tests {
             .await
             .unwrap();
 
-        let before: (i64,) = sqlx::query_as(sql!(
+        let before: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM summaries WHERE conversation_id = ?"
         ))
         .bind(cid)
@@ -226,13 +226,13 @@ mod tests {
         .unwrap();
         assert_eq!(before.0, 1);
 
-        sqlx::query(sql!("DELETE FROM conversations WHERE id = ?"))
+        zeph_db::query(sql!("DELETE FROM conversations WHERE id = ?"))
             .bind(cid)
             .execute(pool)
             .await
             .unwrap();
 
-        let after: (i64,) = sqlx::query_as(sql!(
+        let after: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM summaries WHERE conversation_id = ?"
         ))
         .bind(cid)

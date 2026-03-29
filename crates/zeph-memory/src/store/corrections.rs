@@ -53,7 +53,7 @@ impl SqliteStore {
         skill_name: Option<&str>,
         correction_kind: &str,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "INSERT INTO user_corrections \
              (session_id, original_output, correction_text, skill_name, correction_kind) \
              VALUES (?, ?, ?, ?, ?) RETURNING id"
@@ -78,7 +78,7 @@ impl SqliteStore {
         skill_name: &str,
         limit: u32,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = sqlx::query_as(sql!(
+        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
              FROM user_corrections WHERE skill_name = ? \
@@ -100,7 +100,7 @@ impl SqliteStore {
         &self,
         limit: u32,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = sqlx::query_as(sql!(
+        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
              FROM user_corrections ORDER BY id DESC LIMIT ?"
@@ -120,7 +120,7 @@ impl SqliteStore {
         &self,
         id: i64,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = sqlx::query_as(sql!(
+        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
              FROM user_corrections WHERE id = ?"

@@ -130,8 +130,11 @@ impl TrustScoreStore {
     /// # Errors
     ///
     /// Returns an error if any SQL query fails.
-    pub async fn load(&self, server_id: &str) -> Result<Option<ServerTrustScore>, sqlx::Error> {
-        let row: Option<(String, f64, i64, i64, i64)> = sqlx::query_as(sql!(
+    pub async fn load(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<ServerTrustScore>, zeph_db::SqlxError> {
+        let row: Option<(String, f64, i64, i64, i64)> = zeph_db::query_as(sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
              FROM mcp_trust_scores WHERE server_id = ?"
         ))
@@ -156,7 +159,7 @@ impl TrustScoreStore {
 
         if (entry.score - score_before).abs() > f64::EPSILON {
             let now = i64::try_from(entry.updated_at_secs).unwrap_or(i64::MAX);
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "UPDATE mcp_trust_scores SET score = ?, updated_at_secs = ? WHERE server_id = ?"
             ))
             .bind(entry.score)
@@ -183,9 +186,9 @@ impl TrustScoreStore {
         score_delta: f64,
         success_increment: u64,
         failure_increment: u64,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), zeph_db::SqlxError> {
         let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO mcp_trust_scores
                 (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, ?, ?, ?)
@@ -221,12 +224,12 @@ impl TrustScoreStore {
         score_delta: f64,
         success_increment: u64,
         failure_increment: u64,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), zeph_db::SqlxError> {
         let current = self.load(server_id).await?;
         let base_score = current.map_or(ServerTrustScore::INITIAL_SCORE, |s| s.score);
         let new_score = (base_score + score_delta).clamp(0.0, 1.0);
         let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO mcp_trust_scores
                 (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, ?, ?, ?)
@@ -256,8 +259,8 @@ impl TrustScoreStore {
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
-    pub async fn load_all(&self) -> Result<Vec<ServerTrustScore>, sqlx::Error> {
-        let rows: Vec<(String, f64, i64, i64, i64)> = sqlx::query_as(sql!(
+    pub async fn load_all(&self) -> Result<Vec<ServerTrustScore>, zeph_db::SqlxError> {
+        let rows: Vec<(String, f64, i64, i64, i64)> = zeph_db::query_as(sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
              FROM mcp_trust_scores"
         ))
@@ -508,7 +511,7 @@ mod tests {
 
         // Insert a score above INITIAL_SCORE with a timestamp 10 days in the past.
         let old_ts = unix_now().saturating_sub(10 * 86_400);
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, 0, 0, ?)"),
         )
@@ -524,7 +527,7 @@ mod tests {
         assert!(first.score < 0.9, "score should have decayed on load");
 
         // Read the raw DB row to confirm the persisted value changed.
-        let (db_score, db_ts): (f64, i64) = sqlx::query_as(sql!(
+        let (db_score, db_ts): (f64, i64) = zeph_db::query_as(sql!(
             "SELECT score, updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
         ))
         .bind("srv1")
@@ -560,7 +563,7 @@ mod tests {
 
         // Insert a score at or below INITIAL_SCORE — no decay should trigger.
         let now_ts = unix_now();
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, 0, 0, ?)"),
         )
@@ -578,7 +581,7 @@ mod tests {
         );
 
         // updated_at_secs in DB should remain approximately the same (no write occurred).
-        let (db_ts,): (i64,) = sqlx::query_as(sql!(
+        let (db_ts,): (i64,) = zeph_db::query_as(sql!(
             "SELECT updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
         ))
         .bind("srv1")
@@ -600,7 +603,7 @@ mod tests {
 
         // Insert score=0.8 with timestamp 10 days ago.
         let old_ts = unix_now().saturating_sub(10 * 86_400);
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, 0, 0, ?)"),
         )
@@ -657,7 +660,7 @@ mod tests {
 
         // Insert a high score with an old timestamp (simulate 30 days ago).
         let old_ts = unix_now().saturating_sub(30 * 86_400);
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, 0.9, 0, 0, ?)"),
         )

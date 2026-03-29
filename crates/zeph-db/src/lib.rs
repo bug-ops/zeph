@@ -41,7 +41,10 @@ pub use pool::{DbConfig, redact_url};
 pub use transaction::{begin, begin_write};
 
 // Re-export sqlx query builders bound to the active backend.
+pub use sqlx::query_builder::QueryBuilder;
 pub use sqlx::{Error as SqlxError, Executor, FromRow, Row, query, query_as, query_scalar};
+// Re-export the full sqlx crate so consumers can use `zeph_db::sqlx::Type` etc.
+pub use sqlx;
 
 // --- Active driver type alias ---
 
@@ -148,6 +151,37 @@ pub fn rewrite_placeholders(query: &str) -> String {
     out
 }
 
+/// Generate a single numbered placeholder for bind position `n` (1-based).
+///
+/// `SQLite`: `?N`, `PostgreSQL`: `$N`
+#[must_use]
+#[cfg(feature = "sqlite")]
+pub fn numbered_placeholder(n: usize) -> String {
+    format!("?{n}")
+}
+
+/// Generate a single numbered placeholder for bind position `n` (1-based).
+///
+/// `SQLite`: `?N`, `PostgreSQL`: `$N`
+#[must_use]
+#[cfg(feature = "postgres")]
+pub fn numbered_placeholder(n: usize) -> String {
+    format!("${n}")
+}
+
+/// Generate a comma-separated list of placeholders for `count` binds starting at position
+/// `start` (1-based).
+///
+/// Example (SQLite): `placeholder_list(3, 2)` → `"?3, ?4"`
+/// Example (PostgreSQL): `placeholder_list(3, 2)` → `"$3, $4"`
+#[must_use]
+pub fn placeholder_list(start: usize, count: usize) -> String {
+    (start..start + count)
+        .map(numbered_placeholder)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +202,35 @@ mod tests {
     fn rewrite_placeholders_no_params() {
         let out = rewrite_placeholders("SELECT 1");
         assert_eq!(out, "SELECT 1");
+    }
+
+    #[test]
+    fn numbered_placeholder_one_based() {
+        let p1 = numbered_placeholder(1);
+        let p3 = numbered_placeholder(3);
+        #[cfg(feature = "sqlite")]
+        {
+            assert_eq!(p1, "?1");
+            assert_eq!(p3, "?3");
+        }
+        #[cfg(feature = "postgres")]
+        {
+            assert_eq!(p1, "$1");
+            assert_eq!(p3, "$3");
+        }
+    }
+
+    #[test]
+    fn placeholder_list_range() {
+        let list = placeholder_list(2, 3);
+        #[cfg(feature = "sqlite")]
+        assert_eq!(list, "?2, ?3, ?4");
+        #[cfg(feature = "postgres")]
+        assert_eq!(list, "$2, $3, $4");
+    }
+
+    #[test]
+    fn placeholder_list_empty() {
+        assert_eq!(placeholder_list(1, 0), "");
     }
 }

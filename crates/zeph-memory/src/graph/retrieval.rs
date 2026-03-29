@@ -649,7 +649,7 @@ mod tests {
             .await
             .unwrap();
         // Insert an edge with valid_from = year 2100 (far future).
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
              VALUES (?1, ?2, 'knows', 'Alice knows Bob', 0.9, '2100-01-01 00:00:00')"),
         )
@@ -689,7 +689,7 @@ mod tests {
             .await
             .unwrap();
         // Insert an edge valid 2020-01-01 → 2021-01-01 (already expired by 2026).
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence, valid_from, valid_to, expired_at)
              VALUES (?1, ?2, 'manages', 'Alice manages Carol', 0.8,

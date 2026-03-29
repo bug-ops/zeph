@@ -73,7 +73,7 @@ impl VectorStore for DbVectorStore {
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
             );
-            sqlx::query(&sql)
+            zeph_db::query(&sql)
                 .bind(&collection)
                 .execute(&self.pool)
                 .await
@@ -85,7 +85,7 @@ impl VectorStore for DbVectorStore {
     fn collection_exists(&self, collection: &str) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let row: (i64,) = sqlx::query_as(sql!(
+            let row: (i64,) = zeph_db::query_as(sql!(
                 "SELECT COUNT(*) FROM vector_collections WHERE name = ?"
             ))
             .bind(&collection)
@@ -99,12 +99,12 @@ impl VectorStore for DbVectorStore {
     fn delete_collection(&self, collection: &str) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            sqlx::query(sql!("DELETE FROM vector_points WHERE collection = ?"))
+            zeph_db::query(sql!("DELETE FROM vector_points WHERE collection = ?"))
                 .bind(&collection)
                 .execute(&self.pool)
                 .await
                 .map_err(|e| VectorStoreError::Delete(e.to_string()))?;
-            sqlx::query(sql!("DELETE FROM vector_collections WHERE name = ?"))
+            zeph_db::query(sql!("DELETE FROM vector_collections WHERE name = ?"))
                 .bind(&collection)
                 .execute(&self.pool)
                 .await
@@ -125,7 +125,7 @@ impl VectorStore for DbVectorStore {
                     point.vector.iter().flat_map(|f| f.to_le_bytes()).collect();
                 let payload_json = serde_json::to_string(&point.payload)
                     .map_err(|e| VectorStoreError::Serialization(e.to_string()))?;
-                sqlx::query(
+                zeph_db::query(
                     sql!("INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?) \
                      ON CONFLICT(collection, id) DO UPDATE SET vector = excluded.vector, payload = excluded.payload"),
                 )
@@ -150,7 +150,7 @@ impl VectorStore for DbVectorStore {
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let rows: Vec<(String, Vec<u8>, String)> = sqlx::query_as(sql!(
+            let rows: Vec<(String, Vec<u8>, String)> = zeph_db::query_as(sql!(
                 "SELECT id, vector, payload FROM vector_points WHERE collection = ?"
             ))
             .bind(&collection)
@@ -202,7 +202,7 @@ impl VectorStore for DbVectorStore {
         let collection = collection.to_owned();
         Box::pin(async move {
             for id in ids {
-                sqlx::query(sql!(
+                zeph_db::query(sql!(
                     "DELETE FROM vector_points WHERE collection = ? AND id = ?"
                 ))
                 .bind(&collection)
@@ -223,7 +223,7 @@ impl VectorStore for DbVectorStore {
         let collection = collection.to_owned();
         let key_field = key_field.to_owned();
         Box::pin(async move {
-            let rows: Vec<(String, String)> = sqlx::query_as(sql!(
+            let rows: Vec<(String, String)> = zeph_db::query_as(sql!(
                 "SELECT id, payload FROM vector_points WHERE collection = ?"
             ))
             .bind(&collection)
@@ -250,7 +250,7 @@ impl VectorStore for DbVectorStore {
 
     fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
         Box::pin(async move {
-            sqlx::query_scalar::<_, i32>(sql!("SELECT 1"))
+            zeph_db::query_scalar::<_, i32>(sql!("SELECT 1"))
                 .fetch_one(&self.pool)
                 .await
                 .map(|_| true)
@@ -708,7 +708,7 @@ mod tests {
         // 3 bytes cannot be cast to f32 (needs multiples of 4)
         let corrupt_blob: Vec<u8> = vec![0xFF, 0xFE, 0xFD];
         let payload_json = r"{}";
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO vector_points (id, collection, vector, payload) VALUES (?, ?, ?, ?)"
         ))
         .bind("corrupt")

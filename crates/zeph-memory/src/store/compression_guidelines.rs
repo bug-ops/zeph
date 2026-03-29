@@ -95,7 +95,7 @@ impl SqliteStore {
         &self,
         conversation_id: Option<ConversationId>,
     ) -> Result<(i64, String), MemoryError> {
-        let row = sqlx::query_as::<_, (i64, String)>(sql!(
+        let row = zeph_db::query_as::<_, (i64, String)>(sql!(
             // When conversation_id is Some(cid): `conversation_id = cid` matches
             // conversation-specific rows; `conversation_id IS NULL` matches global rows.
             // The CASE ensures conversation-specific rows sort before global ones.
@@ -128,7 +128,7 @@ impl SqliteStore {
         &self,
         conversation_id: Option<ConversationId>,
     ) -> Result<(i64, String), MemoryError> {
-        let row = sqlx::query_as::<_, (i64, String)>(sql!(
+        let row = zeph_db::query_as::<_, (i64, String)>(sql!(
             "SELECT version, created_at FROM compression_guidelines \
              WHERE conversation_id = ? OR conversation_id IS NULL \
              ORDER BY CASE WHEN conversation_id IS NOT NULL THEN 0 ELSE 1 END, \
@@ -167,7 +167,7 @@ impl SqliteStore {
         // The INSERT...SELECT computes MAX(version)+1 across all rows (global + per-conversation)
         // and inserts it in a single statement. SQLite's single-writer WAL guarantee makes this
         // atomic — no concurrent writer can observe the same MAX and produce a duplicate version.
-        let new_version: i64 = sqlx::query_scalar(
+        let new_version: i64 = zeph_db::query_scalar(
             sql!("INSERT INTO compression_guidelines (version, guidelines, token_count, conversation_id) \
              SELECT COALESCE(MAX(version), 0) + 1, ?, ?, ? \
              FROM compression_guidelines \
@@ -199,7 +199,7 @@ impl SqliteStore {
         let ctx = truncate_field(&ctx);
         let reason = redact_sensitive(failure_reason);
         let reason = truncate_field(&reason);
-        let id = sqlx::query_scalar(sql!(
+        let id = zeph_db::query_scalar(sql!(
             "INSERT INTO compression_failure_pairs \
              (conversation_id, compressed_context, failure_reason) \
              VALUES (?, ?, ?) RETURNING id"
@@ -222,7 +222,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<CompressionFailurePair>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = sqlx::query_as::<_, (i64, i64, String, String, String)>(sql!(
+        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String)>(sql!(
             "SELECT id, conversation_id, compressed_context, failure_reason, created_at \
              FROM compression_failure_pairs \
              WHERE used_in_update = 0 \
@@ -260,7 +260,7 @@ impl SqliteStore {
         let query = format!(
             "UPDATE compression_failure_pairs SET used_in_update = 1 WHERE id IN ({placeholders})"
         );
-        let mut q = sqlx::query(&query);
+        let mut q = zeph_db::query(&query);
         for id in ids {
             q = q.bind(id);
         }
@@ -274,7 +274,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     pub async fn count_unused_failure_pairs(&self) -> Result<i64, MemoryError> {
-        let count = sqlx::query_scalar(sql!(
+        let count = zeph_db::query_scalar(sql!(
             "SELECT COUNT(*) FROM compression_failure_pairs WHERE used_in_update = 0"
         ))
         .fetch_one(&self.pool)
@@ -293,7 +293,7 @@ impl SqliteStore {
     /// Returns an error if the database query fails.
     pub async fn cleanup_old_failure_pairs(&self, keep_recent: usize) -> Result<(), MemoryError> {
         // Delete all used pairs (they've already been processed).
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "DELETE FROM compression_failure_pairs WHERE used_in_update = 1"
         ))
         .execute(&self.pool)
@@ -301,7 +301,7 @@ impl SqliteStore {
 
         // Keep only the most recent `keep_recent` unused pairs.
         let keep = i64::try_from(keep_recent).unwrap_or(i64::MAX);
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "DELETE FROM compression_failure_pairs \
              WHERE used_in_update = 0 \
              AND id NOT IN ( \
@@ -492,7 +492,7 @@ mod tests {
             .await
             .unwrap();
         // Delete the conversation row directly — should cascade-delete the guideline.
-        sqlx::query(sql!("DELETE FROM conversations WHERE id = ?"))
+        zeph_db::query(sql!("DELETE FROM conversations WHERE id = ?"))
             .bind(cid.0)
             .execute(store.pool())
             .await
@@ -684,7 +684,7 @@ mod tests {
             .unwrap();
         // store.pool() access is intentional: we need direct pool access to bypass
         // the public API and test the UNIQUE constraint at the SQL level.
-        let result = sqlx::query(
+        let result = zeph_db::query(
             sql!("INSERT INTO compression_guidelines (version, guidelines, token_count) VALUES (1, 'dup', 0)"),
         )
         .execute(store.pool())

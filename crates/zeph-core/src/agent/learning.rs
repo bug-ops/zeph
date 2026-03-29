@@ -2128,7 +2128,7 @@ mod tests {
         );
 
         let mem = agent.memory_state.memory.as_ref().unwrap();
-        let row: Option<(String,)> = sqlx::query_as(
+        let row: Option<(String,)> = zeph_db::query_as(
             "SELECT outcome FROM skill_outcomes WHERE skill_name = 'test-skill' LIMIT 1",
         )
         .fetch_optional(mem.sqlite().pool())

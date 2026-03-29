@@ -131,7 +131,7 @@ impl SqliteStore {
         blake3_hash: &str,
         git_hash: Option<&str>,
     ) -> Result<(), MemoryError> {
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO skill_trust \
              (skill_name, trust_level, source_kind, source_url, source_path, blake3_hash, git_hash, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) \
@@ -165,7 +165,7 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<SkillTrustRow>, MemoryError> {
-        let row: Option<TrustTuple> = sqlx::query_as(sql!(
+        let row: Option<TrustTuple> = zeph_db::query_as(sql!(
             "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
              blake3_hash, updated_at, git_hash \
              FROM skill_trust WHERE skill_name = ?"
@@ -182,7 +182,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_all_skill_trust(&self) -> Result<Vec<SkillTrustRow>, MemoryError> {
-        let rows: Vec<TrustTuple> = sqlx::query_as(sql!(
+        let rows: Vec<TrustTuple> = zeph_db::query_as(sql!(
             "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
              blake3_hash, updated_at, git_hash \
              FROM skill_trust ORDER BY skill_name"
@@ -202,7 +202,7 @@ impl SqliteStore {
         skill_name: &str,
         trust_level: &str,
     ) -> Result<bool, MemoryError> {
-        let result = sqlx::query(
+        let result = zeph_db::query(
             sql!("UPDATE skill_trust SET trust_level = ?, updated_at = CURRENT_TIMESTAMP WHERE skill_name = ?"),
         )
         .bind(trust_level)
@@ -218,7 +218,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the delete fails.
     pub async fn delete_skill_trust(&self, skill_name: &str) -> Result<bool, MemoryError> {
-        let result = sqlx::query(sql!("DELETE FROM skill_trust WHERE skill_name = ?"))
+        let result = zeph_db::query(sql!("DELETE FROM skill_trust WHERE skill_name = ?"))
             .bind(skill_name)
             .execute(&self.pool)
             .await?;
@@ -235,7 +235,7 @@ impl SqliteStore {
         skill_name: &str,
         blake3_hash: &str,
     ) -> Result<bool, MemoryError> {
-        let result = sqlx::query(
+        let result = zeph_db::query(
             sql!("UPDATE skill_trust SET blake3_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE skill_name = ?"),
         )
         .bind(blake3_hash)

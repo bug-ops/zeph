@@ -25,7 +25,7 @@ impl ResponseCache {
     /// Returns an error if the database query fails.
     pub async fn get(&self, key: &str) -> Result<Option<String>, MemoryError> {
         let now = unix_now();
-        let row: Option<(String,)> = sqlx::query_as(sql!(
+        let row: Option<(String,)> = zeph_db::query_as(sql!(
             "SELECT response FROM response_cache WHERE cache_key = ? AND expires_at > ?"
         ))
         .bind(key)
@@ -44,7 +44,7 @@ impl ResponseCache {
         let now = unix_now();
         // Cap TTL at 1 year (31_536_000 s) to prevent i64 overflow for extreme values.
         let expires_at = now.saturating_add(self.ttl_secs.min(31_536_000).cast_signed());
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO response_cache (cache_key, response, model, created_at, expires_at) \
              VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(cache_key) DO UPDATE SET \
@@ -80,7 +80,7 @@ impl ResponseCache {
         max_candidates: u32,
     ) -> Result<Option<(String, f32)>, MemoryError> {
         let now = unix_now();
-        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(sql!(
+        let rows: Vec<(String, Vec<u8>)> = zeph_db::query_as(sql!(
             "SELECT response, embedding FROM response_cache \
              WHERE embedding_model = ? AND embedding IS NOT NULL AND expires_at > ? \
              ORDER BY embedding_ts DESC LIMIT ?"
@@ -147,7 +147,7 @@ impl ResponseCache {
         let now = unix_now();
         let expires_at = now.saturating_add(self.ttl_secs.min(31_536_000).cast_signed());
         let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO response_cache \
              (cache_key, response, model, created_at, expires_at, embedding, embedding_model, embedding_ts) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
@@ -182,7 +182,7 @@ impl ResponseCache {
         &self,
         old_model: &str,
     ) -> Result<u64, MemoryError> {
-        let result = sqlx::query(sql!(
+        let result = zeph_db::query(sql!(
             "UPDATE response_cache \
              SET embedding = NULL, embedding_model = NULL, embedding_ts = NULL \
              WHERE embedding_model = ?"
@@ -206,13 +206,13 @@ impl ResponseCache {
     /// Returns an error if either database operation fails.
     pub async fn cleanup(&self, current_embedding_model: &str) -> Result<u64, MemoryError> {
         let now = unix_now();
-        let deleted = sqlx::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
+        let deleted = zeph_db::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
             .bind(now)
             .execute(&self.pool)
             .await?
             .rows_affected();
 
-        let updated = sqlx::query(sql!(
+        let updated = zeph_db::query(sql!(
             "UPDATE response_cache \
              SET embedding = NULL, embedding_model = NULL, embedding_ts = NULL \
              WHERE embedding IS NOT NULL AND embedding_model != ?"
@@ -232,7 +232,7 @@ impl ResponseCache {
     /// Returns an error if the database delete fails.
     pub async fn cleanup_expired(&self) -> Result<u64, MemoryError> {
         let now = unix_now();
-        let result = sqlx::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
+        let result = zeph_db::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
             .bind(now)
             .execute(&self.pool)
             .await?;
@@ -627,7 +627,7 @@ mod tests {
     async fn insert_corrupt_blob(pool: &DbPool, key: &str, blob: &[u8]) {
         let now = unix_now();
         let expires_at = now + 3600;
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO response_cache \
              (cache_key, response, model, created_at, expires_at, embedding, embedding_model, embedding_ts) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),

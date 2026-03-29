@@ -60,7 +60,7 @@ pub struct ImportStats {
 /// Returns an error if any database query fails.
 pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, MemoryError> {
     let conv_ids: Vec<(i64,)> =
-        sqlx::query_as(sql!("SELECT id FROM conversations ORDER BY id ASC"))
+        zeph_db::query_as(sql!("SELECT id FROM conversations ORDER BY id ASC"))
             .fetch_all(sqlite.pool())
             .await?;
 
@@ -75,7 +75,7 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
             "SELECT id, role, content, parts, {epoch_expr} \
             FROM messages WHERE conversation_id = ? ORDER BY id ASC"
         ));
-        let msg_rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(&msg_sql)
+        let msg_rows: Vec<(i64, String, String, String, i64)> = zeph_db::query_as(&msg_sql)
             .bind(cid)
             .fetch_all(sqlite.pool())
             .await?;
@@ -153,13 +153,13 @@ pub async fn import_snapshot(
 
     for conv in snapshot.conversations {
         let exists: Option<(i64,)> =
-            sqlx::query_as(sql!("SELECT id FROM conversations WHERE id = ?"))
+            zeph_db::query_as(sql!("SELECT id FROM conversations WHERE id = ?"))
                 .bind(conv.id)
                 .fetch_optional(sqlite.pool())
                 .await?;
 
         if exists.is_none() {
-            sqlx::query(sql!("INSERT INTO conversations (id) VALUES (?)"))
+            zeph_db::query(sql!("INSERT INTO conversations (id) VALUES (?)"))
                 .bind(conv.id)
                 .execute(sqlite.pool())
                 .await?;
@@ -174,7 +174,7 @@ pub async fn import_snapshot(
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
             );
-            let result = sqlx::query(&msg_sql)
+            let result = zeph_db::query(&msg_sql)
                 .bind(msg.id)
                 .bind(msg.conversation_id)
                 .bind(&msg.role)
@@ -196,7 +196,7 @@ pub async fn import_snapshot(
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
             );
-            let result = sqlx::query(&sum_sql)
+            let result = zeph_db::query(&sum_sql)
                 .bind(sum.id)
                 .bind(sum.conversation_id)
                 .bind(&sum.content)

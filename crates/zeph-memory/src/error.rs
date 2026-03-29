@@ -4,7 +4,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
     #[error("database error: {0}")]
-    Sqlx(#[from] sqlx::Error),
+    Sqlx(#[from] zeph_db::SqlxError),
 
     #[error("database error: {0}")]
     Db(#[from] zeph_db::DbError),

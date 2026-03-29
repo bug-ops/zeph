@@ -16,9 +16,8 @@ readme = "README.md"
 [dependencies]
 blake3.workspace = true
 schemars.workspace = true
-sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite"] }
 serde = { workspace = true, features = ["derive"] }
-zeph-db.workspace = true
+zeph-db = { workspace = true, features = ["sqlite"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
@@ -28,7 +27,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-llm.workspace = true
-zeph-memory.workspace = true
+zeph-memory = { workspace = true, features = ["sqlite"] }
 zeph-sanitizer.workspace = true
 zeph-subagent.workspace = true
 

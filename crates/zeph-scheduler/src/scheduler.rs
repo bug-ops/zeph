@@ -404,7 +404,7 @@ mod tests {
         scheduler.init().await.unwrap();
 
         // Backdate next_run to simulate a due task.
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'test'"
         ))
         .execute(&pool)
@@ -448,7 +448,7 @@ mod tests {
             .await
             .unwrap();
         // Explicitly clear next_run to ensure it's NULL.
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET next_run = NULL WHERE name = 'yearly'"
         ))
         .execute(&pool)
@@ -481,7 +481,7 @@ mod tests {
         scheduler.add_task(task);
         scheduler.init().await.unwrap();
 
-        let next: Option<String> = sqlx::query_scalar(sql!(
+        let next: Option<String> = zeph_db::query_scalar(sql!(
             "SELECT next_run FROM scheduled_jobs WHERE name = 'periodic'"
         ))
         .fetch_optional(&pool)
@@ -523,7 +523,7 @@ mod tests {
 
         // Manually set next_run to far future to prevent firing.
         let far_future = "2099-01-01T00:00:00+00:00";
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET next_run = ? WHERE name = 'future'"
         ))
         .bind(far_future)
@@ -565,7 +565,7 @@ mod tests {
         scheduler.init().await.unwrap();
 
         // Backdate next_run to force execution.
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'adv'"
         ))
         .execute(&pool)
@@ -575,7 +575,7 @@ mod tests {
         scheduler.tick().await;
 
         // next_run must now be in the future.
-        let next: Option<String> = sqlx::query_scalar(sql!(
+        let next: Option<String> = zeph_db::query_scalar(sql!(
             "SELECT next_run FROM scheduled_jobs WHERE name = 'adv'"
         ))
         .fetch_optional(&pool)

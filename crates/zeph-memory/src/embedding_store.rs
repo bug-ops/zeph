@@ -169,7 +169,7 @@ impl EmbeddingStore {
 
         self.ops.upsert(&self.collection, vec![point]).await?;
 
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
              VALUES (?, ?, ?, ?) \
              ON CONFLICT(message_id, model) DO UPDATE SET \
@@ -364,7 +364,7 @@ impl EmbeddingStore {
              JOIN vector_points vp ON vp.id = em.qdrant_point_id \
              WHERE em.message_id IN ({placeholders})"
         );
-        let mut q = sqlx::query_as::<_, (MessageId, Vec<u8>)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, Vec<u8>)>(&query);
         for &id in ids {
             q = q.bind(id);
         }
@@ -394,7 +394,7 @@ impl EmbeddingStore {
     ///
     /// Returns an error if the `SQLite` query fails.
     pub async fn has_embedding(&self, message_id: MessageId) -> Result<bool, MemoryError> {
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
         ))
         .bind(message_id)
@@ -431,7 +431,7 @@ mod tests {
     async fn has_embedding_returns_false_when_none() {
         let (_store, pool) = setup().await;
 
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
         ))
         .bind(999_i64)
@@ -449,7 +449,7 @@ mod tests {
         let msg_id = sqlite.save_message(cid, "user", "test").await.unwrap();
 
         let point_id = uuid::Uuid::new_v4().to_string();
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
              VALUES (?, ?, ?, ?)"
         ))
@@ -461,7 +461,7 @@ mod tests {
         .await
         .unwrap();
 
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
         ))
         .bind(msg_id)
@@ -588,7 +588,7 @@ mod tests {
         let msg_id = sqlite.save_message(cid, "user", "test").await.unwrap();
 
         let point_id1 = uuid::Uuid::new_v4().to_string();
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
              VALUES (?, ?, ?, ?)"
         ))
@@ -601,7 +601,7 @@ mod tests {
         .unwrap();
 
         let point_id2 = uuid::Uuid::new_v4().to_string();
-        let result = sqlx::query(sql!(
+        let result = zeph_db::query(sql!(
             "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
              VALUES (?, ?, ?, ?)"
         ))

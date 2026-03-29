@@ -86,7 +86,7 @@ impl JobStore {
         task_mode: &str,
         run_at: Option<&str>,
     ) -> Result<(), SchedulerError> {
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at)
              VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(name) DO UPDATE SET
@@ -116,7 +116,7 @@ impl JobStore {
         timestamp: &str,
         next_run: &str,
     ) -> Result<(), SchedulerError> {
-        sqlx::query(
+        zeph_db::query(
             sql!("UPDATE scheduled_jobs SET last_run = ?, next_run = ?, status = 'completed' WHERE name = ?"),
         )
         .bind(timestamp)
@@ -133,7 +133,7 @@ impl JobStore {
     ///
     /// Returns an error if the SQL statement fails.
     pub async fn mark_done(&self, name: &str) -> Result<(), SchedulerError> {
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET status = 'done', last_run = CURRENT_TIMESTAMP WHERE name = ?"
         ))
         .bind(name)
@@ -148,7 +148,7 @@ impl JobStore {
     ///
     /// Returns an error if the SQL statement fails.
     pub async fn delete_job(&self, name: &str) -> Result<bool, SchedulerError> {
-        let result = sqlx::query(sql!("DELETE FROM scheduled_jobs WHERE name = ?"))
+        let result = zeph_db::query(sql!("DELETE FROM scheduled_jobs WHERE name = ?"))
             .bind(name)
             .execute(&self.pool)
             .await?;
@@ -162,7 +162,7 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     pub async fn job_exists(&self, name: &str) -> Result<bool, SchedulerError> {
         let row: Option<(i64,)> =
-            sqlx::query_as(sql!("SELECT 1 FROM scheduled_jobs WHERE name = ?"))
+            zeph_db::query_as(sql!("SELECT 1 FROM scheduled_jobs WHERE name = ?"))
                 .bind(name)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -175,7 +175,7 @@ impl JobStore {
     ///
     /// Returns an error if the SQL statement fails.
     pub async fn set_next_run(&self, name: &str, next_run: &str) -> Result<(), SchedulerError> {
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET next_run = ? WHERE name = ?"
         ))
         .bind(next_run)
@@ -192,7 +192,7 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     pub async fn get_next_run(&self, name: &str) -> Result<Option<String>, SchedulerError> {
         let row: Option<(Option<String>,)> =
-            sqlx::query_as(sql!("SELECT next_run FROM scheduled_jobs WHERE name = ?"))
+            zeph_db::query_as(sql!("SELECT next_run FROM scheduled_jobs WHERE name = ?"))
                 .bind(name)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -205,7 +205,7 @@ impl JobStore {
     ///
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs(&self) -> Result<Vec<(String, String, String, String)>, SchedulerError> {
-        let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, Option<String>)> = zeph_db::query_as(
             sql!("SELECT name, kind, task_mode, COALESCE(next_run, run_at) FROM scheduled_jobs WHERE status != 'done' ORDER BY name"),
         )
         .fetch_all(&self.pool)
@@ -222,7 +222,7 @@ impl JobStore {
     ///
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
-        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(sql!(
+        let rows: Vec<(String, String, String, String, Option<String>)> = zeph_db::query_as(sql!(
             "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at) \
              FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
         ))
@@ -308,7 +308,7 @@ mod tests {
             .unwrap();
 
         let row: (String,) =
-            sqlx::query_as(sql!("SELECT kind FROM scheduled_jobs WHERE name = 'job1'"))
+            zeph_db::query_as(sql!("SELECT kind FROM scheduled_jobs WHERE name = 'job1'"))
                 .fetch_one(store.pool())
                 .await
                 .unwrap();
@@ -366,7 +366,7 @@ mod tests {
             .await
             .unwrap();
         store.mark_done("os_job").await.unwrap();
-        let row: (String,) = sqlx::query_as(sql!(
+        let row: (String,) = zeph_db::query_as(sql!(
             "SELECT status FROM scheduled_jobs WHERE name = 'os_job'"
         ))
         .fetch_one(store.pool())

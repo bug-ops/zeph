@@ -110,7 +110,7 @@ impl CodeStore {
         let line_start = i64::try_from(chunk.line_start)?;
         let line_end = i64::try_from(chunk.line_end)?;
 
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO chunk_metadata \
              (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type, entity_name) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
@@ -140,7 +140,7 @@ impl CodeStore {
     ///
     /// Returns an error if the `SQLite` query fails.
     pub async fn chunk_exists(&self, content_hash: &str) -> Result<bool> {
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM chunk_metadata WHERE content_hash = ?"
         ))
         .bind(content_hash)
@@ -155,7 +155,7 @@ impl CodeStore {
     ///
     /// Returns an error if `Qdrant` or `SQLite` operations fail.
     pub async fn remove_file_chunks(&self, file_path: &str) -> Result<usize> {
-        let ids: Vec<(String,)> = sqlx::query_as(sql!(
+        let ids: Vec<(String,)> = zeph_db::query_as(sql!(
             "SELECT qdrant_id FROM chunk_metadata WHERE file_path = ?"
         ))
         .bind(file_path)
@@ -171,7 +171,7 @@ impl CodeStore {
         VectorStore::delete_by_ids(&self.ops, &self.collection, point_ids).await?;
 
         let count = ids.len();
-        sqlx::query(sql!("DELETE FROM chunk_metadata WHERE file_path = ?"))
+        zeph_db::query(sql!("DELETE FROM chunk_metadata WHERE file_path = ?"))
             .bind(file_path)
             .execute(&self.pool)
             .await?;
@@ -216,7 +216,7 @@ impl CodeStore {
     /// Returns an error if the `SQLite` query fails.
     pub async fn indexed_files(&self) -> Result<Vec<String>> {
         let rows: Vec<(String,)> =
-            sqlx::query_as(sql!("SELECT DISTINCT file_path FROM chunk_metadata"))
+            zeph_db::query_as(sql!("SELECT DISTINCT file_path FROM chunk_metadata"))
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows.into_iter().map(|(p,)| p).collect())
@@ -340,7 +340,7 @@ mod tests {
     async fn chunk_exists_returns_false_then_true() {
         let pool = setup_pool().await;
 
-        let exists = sqlx::query_as::<_, (i64,)>(sql!(
+        let exists = zeph_db::query_as::<_, (i64,)>(sql!(
             "SELECT COUNT(*) FROM chunk_metadata WHERE content_hash = ?"
         ))
         .bind("abc123")
@@ -349,7 +349,7 @@ mod tests {
         .unwrap();
         assert_eq!(exists.0, 0);
 
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO chunk_metadata \
              (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
              VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -365,7 +365,7 @@ mod tests {
         .await
         .unwrap();
 
-        let exists = sqlx::query_as::<_, (i64,)>(sql!(
+        let exists = zeph_db::query_as::<_, (i64,)>(sql!(
             "SELECT COUNT(*) FROM chunk_metadata WHERE content_hash = ?"
         ))
         .bind("abc123")
@@ -380,7 +380,7 @@ mod tests {
         let pool = setup_pool().await;
 
         for i in 0..3 {
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "INSERT INTO chunk_metadata \
                  (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
                  VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -397,7 +397,7 @@ mod tests {
             .unwrap();
         }
 
-        let ids: Vec<(String,)> = sqlx::query_as(sql!(
+        let ids: Vec<(String,)> = zeph_db::query_as(sql!(
             "SELECT qdrant_id FROM chunk_metadata WHERE file_path = ?"
         ))
         .bind("src/lib.rs")
@@ -406,13 +406,13 @@ mod tests {
         .unwrap();
         assert_eq!(ids.len(), 3);
 
-        sqlx::query(sql!("DELETE FROM chunk_metadata WHERE file_path = ?"))
+        zeph_db::query(sql!("DELETE FROM chunk_metadata WHERE file_path = ?"))
             .bind("src/lib.rs")
             .execute(&pool)
             .await
             .unwrap();
 
-        let remaining: (i64,) = sqlx::query_as(sql!(
+        let remaining: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM chunk_metadata WHERE file_path = ?"
         ))
         .bind("src/lib.rs")
@@ -427,7 +427,7 @@ mod tests {
         let pool = setup_pool().await;
 
         for (i, path) in ["src/a.rs", "src/b.rs", "src/a.rs"].iter().enumerate() {
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "INSERT INTO chunk_metadata \
                  (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
                  VALUES (?, ?, ?, ?, ?, ?, ?) \
@@ -449,7 +449,7 @@ mod tests {
         }
 
         let rows: Vec<(String,)> =
-            sqlx::query_as(sql!("SELECT DISTINCT file_path FROM chunk_metadata"))
+            zeph_db::query_as(sql!("SELECT DISTINCT file_path FROM chunk_metadata"))
                 .fetch_all(&pool)
                 .await
                 .unwrap();

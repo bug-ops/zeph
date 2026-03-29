@@ -767,7 +767,7 @@ mod tests {
         store.invalidate_edge(edge_id).await.unwrap();
 
         // Manually set expired_at to a date far in the past to trigger deletion.
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE graph_edges SET expired_at = datetime('now', '-200 days') WHERE id = ?1"
         ))
         .bind(edge_id)
@@ -789,7 +789,7 @@ mod tests {
             .unwrap();
 
         // Set last_seen_at to far in the past.
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "UPDATE graph_entities SET last_seen_at = datetime('now', '-200 days') WHERE id = ?1"
         ))
         .bind(iso)

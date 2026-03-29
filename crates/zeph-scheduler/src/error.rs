@@ -8,7 +8,7 @@ pub enum SchedulerError {
     #[error("invalid cron expression: {0}")]
     InvalidCron(String),
     #[error("database error: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(#[from] zeph_db::SqlxError),
     #[error("database error: {0}")]
     Db(#[from] zeph_db::DbError),
     #[error("task execution failed: {0}")]

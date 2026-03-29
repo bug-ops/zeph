@@ -36,7 +36,7 @@ impl SqliteStore {
         token_count: i64,
     ) -> Result<(), MemoryError> {
         let safe_digest = redact_sensitive(digest);
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO session_digest (conversation_id, digest, token_count, updated_at) \
              VALUES (?, ?, ?, CURRENT_TIMESTAMP) \
              ON CONFLICT(conversation_id) DO UPDATE SET \
@@ -61,7 +61,7 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Option<SessionDigest>, MemoryError> {
-        let row = sqlx::query_as::<_, (i64, i64, String, i64, String)>(sql!(
+        let row = zeph_db::query_as::<_, (i64, i64, String, i64, String)>(sql!(
             "SELECT id, conversation_id, digest, token_count, updated_at \
              FROM session_digest WHERE conversation_id = ?"
         ))
@@ -89,7 +89,7 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        sqlx::query(sql!("DELETE FROM session_digest WHERE conversation_id = ?"))
+        zeph_db::query(sql!("DELETE FROM session_digest WHERE conversation_id = ?"))
             .bind(conversation_id.0)
             .execute(&self.pool)
             .await?;
@@ -109,7 +109,7 @@ mod tests {
     }
 
     async fn insert_conversation(store: &SqliteStore) -> ConversationId {
-        sqlx::query_scalar::<_, i64>(sql!(
+        zeph_db::query_scalar::<_, i64>(sql!(
             "INSERT INTO conversations (created_at) VALUES (CURRENT_TIMESTAMP) RETURNING id"
         ))
         .fetch_one(&store.pool)

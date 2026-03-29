@@ -130,7 +130,7 @@ impl SqliteStore {
         &self,
         result: &NewExperimentResult<'_>,
     ) -> Result<i64, MemoryError> {
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "INSERT INTO experiment_results \
              (session_id, parameter, value_json, baseline_score, candidate_score, \
               delta, latency_ms, tokens_used, accepted, source) \
@@ -162,7 +162,7 @@ impl SqliteStore {
         limit: u32,
     ) -> Result<Vec<ExperimentResultRow>, MemoryError> {
         let rows: Vec<ResultTuple> = if let Some(sid) = session_id {
-            sqlx::query_as(sql!(
+            zeph_db::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
                  FROM experiment_results WHERE session_id = ? ORDER BY id DESC LIMIT ?"
@@ -172,7 +172,7 @@ impl SqliteStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as(sql!(
+            zeph_db::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
                  FROM experiment_results ORDER BY id DESC LIMIT ?"
@@ -194,7 +194,7 @@ impl SqliteStore {
         parameter: Option<&str>,
     ) -> Result<Option<ExperimentResultRow>, MemoryError> {
         let row: Option<ResultTuple> = if let Some(param) = parameter {
-            sqlx::query_as(sql!(
+            zeph_db::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
                  FROM experiment_results \
@@ -204,7 +204,7 @@ impl SqliteStore {
             .fetch_optional(&self.pool)
             .await?
         } else {
-            sqlx::query_as(sql!(
+            zeph_db::query_as(sql!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
                  delta, latency_ms, tokens_used, accepted, source, created_at \
                  FROM experiment_results \
@@ -227,7 +227,7 @@ impl SqliteStore {
         since: &str,
     ) -> Result<Vec<ExperimentResultRow>, MemoryError> {
         validate_timestamp(since)?;
-        let rows: Vec<ResultTuple> = sqlx::query_as(sql!(
+        let rows: Vec<ResultTuple> = zeph_db::query_as(sql!(
             "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
              delta, latency_ms, tokens_used, accepted, source, created_at \
              FROM experiment_results WHERE created_at >= ? ORDER BY id DESC LIMIT 10000"
@@ -247,7 +247,7 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionSummaryRow>, MemoryError> {
-        let row: Option<(String, i64, i64, Option<f64>, i64)> = sqlx::query_as(sql!(
+        let row: Option<(String, i64, i64, Option<f64>, i64)> = zeph_db::query_as(sql!(
             "SELECT session_id, COUNT(*) as total, \
              SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) as accepted_count, \
              MAX(CASE WHEN accepted = 1 THEN delta ELSE NULL END) as best_delta, \

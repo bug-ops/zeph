@@ -14,7 +14,7 @@ pub enum IndexError {
 
     /// `SQLite` database error.
     #[error("database error: {0}")]
-    Sqlite(#[from] sqlx::Error),
+    Sqlite(#[from] zeph_db::SqlxError),
 
     /// Vector store error.
     #[error("vector store error: {0}")]

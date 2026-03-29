@@ -100,7 +100,7 @@ impl RawGraphStore for DbGraphStore {
         created_at: &str,
         finished_at: Option<&str>,
     ) -> Result<(), MemoryError> {
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO task_graphs (id, goal, status, graph_json, created_at, finished_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
@@ -124,7 +124,7 @@ impl RawGraphStore for DbGraphStore {
 
     async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
         let row: Option<(String,)> =
-            sqlx::query_as(sql!("SELECT graph_json FROM task_graphs WHERE id = ?"))
+            zeph_db::query_as(sql!("SELECT graph_json FROM task_graphs WHERE id = ?"))
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await
@@ -133,7 +133,7 @@ impl RawGraphStore for DbGraphStore {
     }
 
     async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, MemoryError> {
-        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(sql!(
+        let rows: Vec<(String, String, String, String, Option<String>)> = zeph_db::query_as(sql!(
             "SELECT id, goal, status, created_at, finished_at \
              FROM task_graphs \
              ORDER BY created_at DESC \
@@ -157,7 +157,7 @@ impl RawGraphStore for DbGraphStore {
     }
 
     async fn delete_graph(&self, id: &str) -> Result<bool, MemoryError> {
-        let result = sqlx::query(sql!("DELETE FROM task_graphs WHERE id = ?"))
+        let result = zeph_db::query(sql!("DELETE FROM task_graphs WHERE id = ?"))
             .bind(id)
             .execute(&self.pool)
             .await

@@ -751,13 +751,14 @@ mod tests {
         agent.load_history().await.unwrap();
 
         // Both episodic messages must have session_count = 1 after restore.
-        let counts: Vec<i64> =
-            sqlx::query_scalar("SELECT session_count FROM messages WHERE id IN (?, ?) ORDER BY id")
-                .bind(id1)
-                .bind(id2)
-                .fetch_all(memory_arc.sqlite().pool())
-                .await
-                .unwrap();
+        let counts: Vec<i64> = zeph_db::query_scalar(
+            "SELECT session_count FROM messages WHERE id IN (?, ?) ORDER BY id",
+        )
+        .bind(id1)
+        .bind(id2)
+        .fetch_all(memory_arc.sqlite().pool())
+        .await
+        .unwrap();
         assert_eq!(
             counts,
             vec![1, 1],
@@ -789,7 +790,7 @@ mod tests {
 
         // No rows → no session_count increments → query returns empty.
         let counts: Vec<i64> =
-            sqlx::query_scalar("SELECT session_count FROM messages WHERE conversation_id = ?")
+            zeph_db::query_scalar("SELECT session_count FROM messages WHERE conversation_id = ?")
                 .bind(cid)
                 .fetch_all(memory_arc.sqlite().pool())
                 .await

@@ -366,7 +366,7 @@ async fn seed_entity_with_zero_embedding(
 
     // Write qdrant_point_id back to graph_entities so self-exclusion works.
     let pool = store.pool();
-    sqlx::query(sql!(
+    zeph_db::query(sql!(
         "UPDATE graph_entities SET qdrant_point_id = ?1 WHERE id = ?2"
     ))
     .bind(&point_id)
@@ -524,7 +524,7 @@ async fn link_memory_notes_unidirectional() {
 
     // Exactly one edge between the pair (unidirectional).
     let pool = memory.sqlite.pool();
-    let count: i64 = sqlx::query_scalar(sql!(
+    let count: i64 = zeph_db::query_scalar(sql!(
         "SELECT COUNT(*) FROM graph_edges
          WHERE relation = 'similar_to'
            AND ((source_entity_id = ?1 AND target_entity_id = ?2)
@@ -614,7 +614,7 @@ async fn link_memory_notes_secondary_self_skip_guard() {
     .await;
 
     // No self-edge A→A must exist.
-    let self_count: i64 = sqlx::query_scalar(sql!(
+    let self_count: i64 = zeph_db::query_scalar(sql!(
         "SELECT COUNT(*) FROM graph_edges
          WHERE source_entity_id = ?1 AND target_entity_id = ?1"
     ))
@@ -628,7 +628,7 @@ async fn link_memory_notes_secondary_self_skip_guard() {
     );
 
     // At least one edge to B or C must exist (confirming A was processed successfully).
-    let other_count: i64 = sqlx::query_scalar(sql!(
+    let other_count: i64 = zeph_db::query_scalar(sql!(
         "SELECT COUNT(*) FROM graph_edges
          WHERE (source_entity_id = ?1 OR target_entity_id = ?1)
            AND source_entity_id != target_entity_id"

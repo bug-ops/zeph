@@ -67,7 +67,7 @@ impl SqliteStore {
                 "learned_preferences: value truncated to 256 bytes"
             );
         }
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO learned_preferences \
              (preference_key, preference_value, confidence, evidence_count, updated_at) \
              VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) \
@@ -92,7 +92,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_learned_preferences(&self) -> Result<Vec<LearnedPreferenceRow>, MemoryError> {
-        let rows: Vec<PreferenceTuple> = sqlx::query_as(sql!(
+        let rows: Vec<PreferenceTuple> = zeph_db::query_as(sql!(
             "SELECT id, preference_key, preference_value, confidence, evidence_count, updated_at \
              FROM learned_preferences \
              ORDER BY confidence DESC"
@@ -127,7 +127,7 @@ impl SqliteStore {
             String,
         );
 
-        let rows: Vec<Tuple> = sqlx::query_as(sql!(
+        let rows: Vec<Tuple> = zeph_db::query_as(sql!(
             "SELECT id, session_id, original_output, correction_text, \
              skill_name, correction_kind, created_at \
              FROM user_corrections \

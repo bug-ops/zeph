@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! PostgreSQL integration tests.
+//! `PostgreSQL` integration tests.
 //!
 //! These tests require Docker to be running and are skipped in CI unless the
 //! `test-postgres` CI job is active. Run locally with:

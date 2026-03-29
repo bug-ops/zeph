@@ -192,7 +192,7 @@ fn unix_now() -> i64 {
 #[derive(Debug, thiserror::Error)]
 pub enum PlanCacheError {
     #[error("database error: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(#[from] zeph_db::SqlxError),
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("plan template extraction failed: {0}")]
@@ -233,7 +233,7 @@ impl PlanCache {
     ///
     /// Returns `PlanCacheError::Database` on query failure.
     async fn invalidate_stale_embeddings(&self, current_model: &str) -> Result<(), PlanCacheError> {
-        let affected = sqlx::query(sql!(
+        let affected = zeph_db::query(sql!(
             "UPDATE plan_cache SET embedding = NULL, embedding_model = NULL \
              WHERE embedding IS NOT NULL AND embedding_model != ?"
         ))
@@ -268,7 +268,7 @@ impl PlanCache {
         goal_embedding: &[f32],
         embedding_model: &str,
     ) -> Result<Option<(PlanTemplate, f32)>, PlanCacheError> {
-        let rows: Vec<(String, String, Vec<u8>)> = sqlx::query_as(sql!(
+        let rows: Vec<(String, String, Vec<u8>)> = zeph_db::query_as(sql!(
             "SELECT id, template, embedding FROM plan_cache \
              WHERE embedding IS NOT NULL AND embedding_model = ? \
              ORDER BY last_accessed_at DESC LIMIT ?"
@@ -298,7 +298,7 @@ impl PlanCache {
         {
             // Update last_accessed_at on hit.
             let now = unix_now();
-            if let Err(e) = sqlx::query(sql!(
+            if let Err(e) = zeph_db::query(sql!(
                 "UPDATE plan_cache SET last_accessed_at = ?, adapted_count = adapted_count + 1 \
                  WHERE id = ?"
             ))
@@ -342,7 +342,7 @@ impl PlanCache {
         let id = uuid::Uuid::new_v4().to_string();
         let blob = embedding_to_blob(goal_embedding);
 
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO plan_cache \
              (id, goal_hash, goal_text, template, task_count, success_count, adapted_count, \
               embedding, embedding_model, created_at, last_accessed_at) \
@@ -390,21 +390,21 @@ impl PlanCache {
         let ttl_secs = i64::from(self.config.ttl_days) * 86_400;
         let cutoff = now.saturating_sub(ttl_secs);
 
-        let ttl_deleted = sqlx::query(sql!("DELETE FROM plan_cache WHERE last_accessed_at < ?"))
+        let ttl_deleted = zeph_db::query(sql!("DELETE FROM plan_cache WHERE last_accessed_at < ?"))
             .bind(cutoff)
             .execute(&self.pool)
             .await?
             .rows_affected();
 
         // Count remaining rows.
-        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
+        let count: i64 = zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&self.pool)
             .await?;
 
         let max = i64::from(self.config.max_templates);
         let lru_deleted = if count > max {
             let excess = count - max;
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "DELETE FROM plan_cache WHERE id IN \
                  (SELECT id FROM plan_cache ORDER BY last_accessed_at ASC LIMIT ?)"
             ))
@@ -575,6 +575,7 @@ mod tests {
     fn make_graph(goal: &str, tasks: &[(&str, &str, &[u32])]) -> TaskGraph {
         let mut graph = TaskGraph::new(goal);
         for (i, (title, desc, deps)) in tasks.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
             let mut node = TaskNode::new(i as u32, *title, *desc);
             node.depends_on = deps.iter().map(|&d| TaskId(d)).collect();
             graph.tasks.push(node);
@@ -696,8 +697,10 @@ mod tests {
     #[tokio::test]
     async fn cache_store_and_hit() {
         let pool = test_pool().await;
-        let mut config = PlanCacheConfig::default();
-        config.similarity_threshold = 0.9;
+        let config = PlanCacheConfig {
+            similarity_threshold: 0.9,
+            ..PlanCacheConfig::default()
+        };
         let cache = PlanCache::new(pool, config, "test-model").await.unwrap();
 
         let graph = make_graph("deploy service", &[("Build", "build it", &[])]);
@@ -721,8 +724,10 @@ mod tests {
     #[tokio::test]
     async fn cache_miss_on_dissimilar_goal() {
         let pool = test_pool().await;
-        let mut config = PlanCacheConfig::default();
-        config.similarity_threshold = 0.9;
+        let config = PlanCacheConfig {
+            similarity_threshold: 0.9,
+            ..PlanCacheConfig::default()
+        };
         let cache = PlanCache::new(pool, config, "test-model").await.unwrap();
 
         let graph = make_graph("goal a", &[("Task", "do it", &[])]);
@@ -751,13 +756,13 @@ mod tests {
         cache.cache_plan(&graph, &emb, "test-model").await.unwrap();
 
         // Only one row due to UNIQUE goal_hash.
-        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
+        let count: i64 = zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(count, 1);
 
-        let success: i64 = sqlx::query_scalar(sql!("SELECT success_count FROM plan_cache"))
+        let success: i64 = zeph_db::query_scalar(sql!("SELECT success_count FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -767,16 +772,18 @@ mod tests {
     #[tokio::test]
     async fn eviction_removes_ttl_expired_rows() {
         let pool = test_pool().await;
-        let mut config = PlanCacheConfig::default();
         // TTL of 0 days means everything is immediately expired.
-        config.ttl_days = 0;
+        let config = PlanCacheConfig {
+            ttl_days: 0,
+            ..PlanCacheConfig::default()
+        };
         let cache = PlanCache::new(pool.clone(), config, "test-model")
             .await
             .unwrap();
 
         // Insert a row by bypassing the API to set last_accessed_at in the past.
         let now = unix_now() - 1;
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO plan_cache \
              (id, goal_hash, goal_text, template, task_count, created_at, last_accessed_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -795,7 +802,7 @@ mod tests {
         let deleted = cache.evict().await.unwrap();
         assert!(deleted >= 1);
 
-        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
+        let count: i64 = zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -805,9 +812,11 @@ mod tests {
     #[tokio::test]
     async fn eviction_lru_when_over_max() {
         let pool = test_pool().await;
-        let mut config = PlanCacheConfig::default();
-        config.max_templates = 2;
-        config.ttl_days = 365;
+        let config = PlanCacheConfig {
+            max_templates: 2,
+            ttl_days: 365,
+            ..PlanCacheConfig::default()
+        };
         let cache = PlanCache::new(pool.clone(), config, "test-model")
             .await
             .unwrap();
@@ -815,7 +824,7 @@ mod tests {
         let now = unix_now();
         // Insert 3 rows with different last_accessed_at, all recent enough to survive TTL.
         for i in 0..3_i64 {
-            sqlx::query(sql!(
+            zeph_db::query(sql!(
                 "INSERT INTO plan_cache \
                  (id, goal_hash, goal_text, template, task_count, created_at, last_accessed_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -836,7 +845,7 @@ mod tests {
         assert_eq!(deleted, 1);
 
         // The row with smallest last_accessed_at (id-0) should be gone.
-        let count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
+        let count: i64 = zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM plan_cache"))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -850,7 +859,7 @@ mod tests {
 
         // Insert a row with "old-model" embedding.
         let emb = embedding_to_blob(&[1.0_f32, 0.0]);
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO plan_cache \
              (id, goal_hash, goal_text, template, task_count, embedding, embedding_model, \
               created_at, last_accessed_at) \
@@ -874,7 +883,7 @@ mod tests {
             .await
             .unwrap();
 
-        let model: Option<String> = sqlx::query_scalar(sql!(
+        let model: Option<String> = zeph_db::query_scalar(sql!(
             "SELECT embedding_model FROM plan_cache WHERE id = 'id-old'"
         ))
         .fetch_one(&pool)
@@ -883,7 +892,7 @@ mod tests {
         assert!(model.is_none(), "stale embedding_model should be NULL");
 
         let emb_col: Option<Vec<u8>> =
-            sqlx::query_scalar(sql!("SELECT embedding FROM plan_cache WHERE id = 'id-old'"))
+            zeph_db::query_scalar(sql!("SELECT embedding FROM plan_cache WHERE id = 'id-old'"))
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -934,9 +943,11 @@ mod tests {
         use zeph_llm::mock::MockProvider;
 
         let pool = test_pool().await;
-        let mut config = PlanCacheConfig::default();
-        config.enabled = true;
-        config.similarity_threshold = 0.5;
+        let config = PlanCacheConfig {
+            enabled: true,
+            similarity_threshold: 0.5,
+            ..PlanCacheConfig::default()
+        };
         let cache = PlanCache::new(pool, config, "test-model").await.unwrap();
 
         // Pre-populate cache with a similar goal.
@@ -981,9 +992,11 @@ mod tests {
         use zeph_llm::mock::MockProvider;
 
         let pool = test_pool().await;
-        let mut config = PlanCacheConfig::default();
-        config.enabled = true;
-        config.similarity_threshold = 0.5;
+        let config = PlanCacheConfig {
+            enabled: true,
+            similarity_threshold: 0.5,
+            ..PlanCacheConfig::default()
+        };
         let cache = PlanCache::new(pool, config, "test-model").await.unwrap();
 
         // Pre-populate cache with matching embedding.

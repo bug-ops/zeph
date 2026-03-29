@@ -453,7 +453,7 @@ mod tests {
         );
 
         // Verify originals are now marked consolidated.
-        let rows: Vec<(i64,)> = sqlx::query_as(sql!(
+        let rows: Vec<(i64,)> = zeph_db::query_as(sql!(
             "SELECT consolidated FROM messages WHERE id IN (?, ?) ORDER BY id"
         ))
         .bind(m1)
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(rows[1].0, 1, "source m2 must be marked consolidated");
 
         // Verify join table has entries.
-        let join_count: (i64,) = sqlx::query_as(sql!(
+        let join_count: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM memory_consolidation_sources WHERE source_id IN (?, ?)"
         ))
         .bind(m1)
@@ -636,7 +636,7 @@ mod tests {
             .unwrap();
         assert!(!accepted, "empty source list must be rejected");
 
-        let count: (i64,) = sqlx::query_as(sql!("SELECT COUNT(*) FROM messages"))
+        let count: (i64,) = zeph_db::query_as(sql!("SELECT COUNT(*) FROM messages"))
             .fetch_one(store.pool())
             .await
             .unwrap();
@@ -696,14 +696,14 @@ mod tests {
 
         // The transaction must have been rolled back: no rows in the join table.
         let join_count: (i64,) =
-            sqlx::query_as(sql!("SELECT COUNT(*) FROM memory_consolidation_sources"))
+            zeph_db::query_as(sql!("SELECT COUNT(*) FROM memory_consolidation_sources"))
                 .fetch_one(store.pool())
                 .await
                 .unwrap();
         assert_eq!(join_count.0, 0, "join table must be empty after rollback");
 
         // Original messages must still be unconsolidated.
-        let rows: Vec<(i64,)> = sqlx::query_as(sql!(
+        let rows: Vec<(i64,)> = zeph_db::query_as(sql!(
             "SELECT consolidated FROM messages WHERE id IN (?, ?) ORDER BY id"
         ))
         .bind(m1)
@@ -919,7 +919,7 @@ mod tests {
         assert_eq!(r.updates, 1);
 
         // Verify the consolidated message exists in DB.
-        let consol_rows: Vec<(String, i64)> = sqlx::query_as(sql!(
+        let consol_rows: Vec<(String, i64)> = zeph_db::query_as(sql!(
             "SELECT content, consolidated FROM messages \
              WHERE consolidated = 1 AND content = ?"
         ))
@@ -935,7 +935,7 @@ mod tests {
 
         // Verify source m2 is marked consolidated (m2 was the additional_source_id).
         let source_row: (i64,) =
-            sqlx::query_as(sql!("SELECT consolidated FROM messages WHERE id = ?"))
+            zeph_db::query_as(sql!("SELECT consolidated FROM messages WHERE id = ?"))
                 .bind(m2)
                 .fetch_one(store.pool())
                 .await

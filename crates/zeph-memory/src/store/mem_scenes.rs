@@ -27,7 +27,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<(MessageId, String)>, MemoryError> {
         let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows: Vec<(i64, String)> = sqlx::query_as(
+        let rows: Vec<(i64, String)> = zeph_db::query_as(
             r"
             SELECT m.id, m.content
             FROM messages m
@@ -64,7 +64,7 @@ impl SqliteStore {
         let member_count = i64::try_from(member_ids.len()).unwrap_or(0);
         let mut tx = self.pool.begin().await?;
 
-        let row: (i64,) = sqlx::query_as(sql!(
+        let row: (i64,) = zeph_db::query_as(sql!(
             "INSERT INTO mem_scenes (label, profile, member_count) VALUES (?, ?, ?) RETURNING id"
         ))
         .bind(label)
@@ -80,7 +80,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
         for &msg_id in member_ids {
-            sqlx::query(&member_sql)
+            zeph_db::query(&member_sql)
                 .bind(scene_id)
                 .bind(msg_id.0)
                 .execute(&mut *tx)
@@ -97,7 +97,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the `SQLite` query fails.
     pub async fn list_mem_scenes(&self) -> Result<Vec<MemScene>, MemoryError> {
-        let rows: Vec<(i64, String, String, i64, i64, i64)> = sqlx::query_as(sql!(
+        let rows: Vec<(i64, String, String, i64, i64, i64)> = zeph_db::query_as(sql!(
             "SELECT id, label, profile, member_count, created_at, updated_at \
              FROM mem_scenes ORDER BY created_at DESC"
         ))
@@ -128,7 +128,7 @@ impl SqliteStore {
         &self,
         scene_id: MemSceneId,
     ) -> Result<Vec<MessageId>, MemoryError> {
-        let rows: Vec<(i64,)> = sqlx::query_as(sql!(
+        let rows: Vec<(i64,)> = zeph_db::query_as(sql!(
             "SELECT message_id FROM mem_scene_members WHERE scene_id = ?"
         ))
         .bind(scene_id.0)
@@ -144,7 +144,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the `SQLite` delete fails.
     pub async fn reset_mem_scenes(&self) -> Result<u64, MemoryError> {
-        let result = sqlx::query(sql!("DELETE FROM mem_scenes"))
+        let result = zeph_db::query(sql!("DELETE FROM mem_scenes"))
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected())
@@ -220,7 +220,7 @@ mod tests {
 
         // Promote all to semantic tier.
         for id in &ids {
-            sqlx::query(sql!("UPDATE messages SET tier = 'semantic' WHERE id = ?"))
+            zeph_db::query(sql!("UPDATE messages SET tier = 'semantic' WHERE id = ?"))
                 .bind(id.0)
                 .execute(store.pool())
                 .await
@@ -276,7 +276,7 @@ mod tests {
         let ids2 = seed_messages(&store, 1).await;
 
         // Insert directly with distinct created_at values to avoid single-second collision.
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO mem_scenes (label, profile, member_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"),
         )
         .bind("First")
@@ -287,12 +287,12 @@ mod tests {
         .execute(store.pool())
         .await
         .unwrap();
-        let scene1_id: (i64,) = sqlx::query_as(sql!("SELECT last_insert_rowid()"))
+        let scene1_id: (i64,) = zeph_db::query_as(sql!("SELECT last_insert_rowid()"))
             .fetch_one(store.pool())
             .await
             .unwrap();
 
-        sqlx::query(
+        zeph_db::query(
             sql!("INSERT INTO mem_scenes (label, profile, member_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"),
         )
         .bind("Second")
@@ -303,13 +303,13 @@ mod tests {
         .execute(store.pool())
         .await
         .unwrap();
-        let scene2_id: (i64,) = sqlx::query_as(sql!("SELECT last_insert_rowid()"))
+        let scene2_id: (i64,) = zeph_db::query_as(sql!("SELECT last_insert_rowid()"))
             .fetch_one(store.pool())
             .await
             .unwrap();
 
         // Link messages to satisfy FK.
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO mem_scene_members (scene_id, message_id) VALUES (?, ?)"
         ))
         .bind(scene1_id.0)
@@ -317,7 +317,7 @@ mod tests {
         .execute(store.pool())
         .await
         .unwrap();
-        sqlx::query(sql!(
+        zeph_db::query(sql!(
             "INSERT INTO mem_scene_members (scene_id, message_id) VALUES (?, ?)"
         ))
         .bind(scene2_id.0)
