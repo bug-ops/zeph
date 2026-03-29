@@ -671,4 +671,275 @@ mod tests {
             "merge at exactly the confidence threshold must be accepted"
         );
     }
+
+    /// #2359: transaction must be rolled back when the first INSERT fails
+    /// (non-existent conversation_id violates FK on messages.conversation_id).
+    /// After the error: memory_consolidation_sources has 0 rows,
+    /// source messages remain consolidated = 0.
+    #[tokio::test]
+    async fn apply_consolidation_merge_rollback_on_mid_tx_error() {
+        use crate::store::SqliteStore;
+        use crate::types::ConversationId;
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let m1 = store.save_message(conv_id, "user", "fact x").await.unwrap();
+        let m2 = store.save_message(conv_id, "user", "fact y").await.unwrap();
+
+        // Pass a non-existent conversation_id to trigger FK violation on the
+        // INSERT INTO messages step, which is the first write inside the transaction.
+        let bad_conv = ConversationId(99999);
+        let result = store
+            .apply_consolidation_merge(bad_conv, "assistant", "merged", &[m1, m2], 0.9, 0.7)
+            .await;
+        assert!(result.is_err(), "must return Err on FK violation");
+
+        // The transaction must have been rolled back: no rows in the join table.
+        let join_count: (i64,) =
+            sqlx::query_as(sql!("SELECT COUNT(*) FROM memory_consolidation_sources"))
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(join_count.0, 0, "join table must be empty after rollback");
+
+        // Original messages must still be unconsolidated.
+        let rows: Vec<(i64,)> = sqlx::query_as(sql!(
+            "SELECT consolidated FROM messages WHERE id IN (?, ?) ORDER BY id"
+        ))
+        .bind(m1)
+        .bind(m2)
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 0, "m1 must remain consolidated=0 after rollback");
+        assert_eq!(rows[1].0, 0, "m2 must remain consolidated=0 after rollback");
+    }
+
+    /// #2360: only 1 message in DB — embedded.len() < 2 guard fires, all counters stay 0.
+    #[tokio::test]
+    async fn run_consolidation_sweep_single_candidate_skips() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
+        let conv_id = store.create_conversation().await.unwrap();
+        store
+            .save_message(conv_id, "user", "only one message")
+            .await
+            .unwrap();
+
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let config = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.7,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+        };
+
+        let r = run_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep must not error with single candidate");
+        assert_eq!(r.merges, 0);
+        assert_eq!(r.updates, 0);
+        assert_eq!(r.skipped, 0);
+    }
+
+    /// #2360: 2 messages + MockProvider returning merge op → assert r.merges == 1.
+    #[tokio::test]
+    async fn run_consolidation_sweep_merge_increments_counter() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
+        let conv_id = store.create_conversation().await.unwrap();
+        let m1 = store
+            .save_message(conv_id, "user", "Alice uses Rust")
+            .await
+            .unwrap();
+        let m2 = store
+            .save_message(conv_id, "user", "Alice loves Rust")
+            .await
+            .unwrap();
+
+        let merge_json = format!(
+            r#"{{"op":"merge","source_ids":[{},{}],"merged_content":"Alice uses and loves Rust","confidence":0.95}}"#,
+            m1.0, m2.0
+        );
+        let mut mock = MockProvider::with_responses(vec![merge_json]);
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let config = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.7,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+        };
+
+        let r = run_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep must not error");
+        assert_eq!(r.merges, 1, "exactly one merge must be counted");
+        assert_eq!(r.updates, 0);
+        assert_eq!(r.skipped, 0);
+    }
+
+    /// #2360: 2 messages + MockProvider returning update op → assert r.updates == 1.
+    #[tokio::test]
+    async fn run_consolidation_sweep_update_increments_counter() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
+        let conv_id = store.create_conversation().await.unwrap();
+        let m1 = store
+            .save_message(conv_id, "user", "Alice uses Rust")
+            .await
+            .unwrap();
+        let m2 = store
+            .save_message(conv_id, "user", "Alice loves Rust")
+            .await
+            .unwrap();
+
+        let update_json = format!(
+            r#"{{"op":"update","target_id":{},"new_content":"Alice uses and loves Rust","additional_source_ids":[{}],"confidence":0.92}}"#,
+            m1.0, m2.0
+        );
+        let mut mock = MockProvider::with_responses(vec![update_json]);
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let config = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.7,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+        };
+
+        let r = run_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep must not error");
+        assert_eq!(r.updates, 1, "exactly one update must be counted");
+        assert_eq!(r.merges, 0);
+        assert_eq!(r.skipped, 0);
+    }
+
+    /// #2360: MockProvider returns merge op with confidence 0.3, threshold is 0.7
+    /// → the op is below threshold and r.skipped == 1.
+    #[tokio::test]
+    async fn run_consolidation_sweep_skipped_below_threshold() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
+        let conv_id = store.create_conversation().await.unwrap();
+        let m1 = store
+            .save_message(conv_id, "user", "Alice uses Rust")
+            .await
+            .unwrap();
+        let m2 = store
+            .save_message(conv_id, "user", "Alice loves Rust")
+            .await
+            .unwrap();
+
+        let low_confidence_json = format!(
+            r#"{{"op":"merge","source_ids":[{},{}],"merged_content":"merged","confidence":0.3}}"#,
+            m1.0, m2.0
+        );
+        let mut mock = MockProvider::with_responses(vec![low_confidence_json]);
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let config = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.7,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+        };
+
+        let r = run_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep must not error");
+        assert_eq!(r.skipped, 1, "low-confidence op must be counted as skipped");
+        assert_eq!(r.merges, 0);
+        assert_eq!(r.updates, 0);
+    }
+
+    /// #2360: after a successful update op, verify DB state:
+    /// consolidated message is persisted, source messages are marked consolidated=1.
+    #[tokio::test]
+    async fn run_consolidation_sweep_update_db_state() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let store = Arc::new(SqliteStore::new(":memory:").await.unwrap());
+        let conv_id = store.create_conversation().await.unwrap();
+        let m1 = store
+            .save_message(conv_id, "user", "Alice uses Rust")
+            .await
+            .unwrap();
+        let m2 = store
+            .save_message(conv_id, "user", "Alice loves Rust")
+            .await
+            .unwrap();
+
+        let new_content = "Alice uses and loves Rust";
+        let update_json = format!(
+            r#"{{"op":"update","target_id":{},"new_content":"{new_content}","additional_source_ids":[{}],"confidence":0.90}}"#,
+            m1.0, m2.0
+        );
+        let mut mock = MockProvider::with_responses(vec![update_json]);
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let config = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.7,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+        };
+
+        let r = run_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep must not error");
+        assert_eq!(r.updates, 1);
+
+        // Verify the consolidated message exists in DB.
+        let consol_rows: Vec<(String, i64)> = sqlx::query_as(sql!(
+            "SELECT content, consolidated FROM messages \
+             WHERE consolidated = 1 AND content = ?"
+        ))
+        .bind(new_content)
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            consol_rows.len(),
+            1,
+            "one consolidated message must be persisted"
+        );
+
+        // Verify source m2 is marked consolidated (m2 was the additional_source_id).
+        let source_row: (i64,) =
+            sqlx::query_as(sql!("SELECT consolidated FROM messages WHERE id = ?"))
+                .bind(m2)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(source_row.0, 1, "source m2 must be marked consolidated=1");
+    }
 }
