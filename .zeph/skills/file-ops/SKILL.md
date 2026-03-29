@@ -1,5 +1,6 @@
 ---
 name: file-ops
+category: system
 description: >
   File system operations — list directory contents, find files by name or glob
   pattern, search text inside files with grep or ripgrep, read and display file

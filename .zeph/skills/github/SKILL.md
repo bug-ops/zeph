@@ -1,5 +1,6 @@
 ---
 name: github
+category: dev
 description: >
   GitHub CLI (gh) for repository management, issues, pull requests, releases,
   workflows, search, gists, and API access. Use when the user asks about any

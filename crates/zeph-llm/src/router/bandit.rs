@@ -501,7 +501,7 @@ mod tests {
         // After L2 normalisation ||x|| = 1, so UCB = alpha.
         let dim = 4;
         let arm = identity_arm(dim);
-        let x = vec![0.5f32, 0.5, 0.5, 0.5];
+        let x = [0.5f32, 0.5, 0.5, 0.5];
         let norm: f32 = x.iter().map(|v| v * v).sum::<f32>().sqrt();
         let x_norm: Vec<f32> = x.iter().map(|v| v / norm).collect();
         let alpha = 1.0f32;
@@ -519,7 +519,7 @@ mod tests {
         let score = arm.ucb_score(&x, 1.0);
         // Either None (if detected) or Some(NaN-based), but we normalise so should be None or invalid.
         // Our solve_linear will likely return a non-finite result → ucb_score returns None.
-        assert!(score.map_or(true, |s: f32| !s.is_finite()));
+        assert!(score.is_none_or(|s: f32| !s.is_finite()));
     }
 
     // ── Arm update ───────────────────────────────────────────────────────────
@@ -835,8 +835,8 @@ mod tests {
         state.update("zebra", &x, 0.5);
         state.update("apple", &x, 0.9);
         state.update("mango", &x, 0.3);
-        let stats = state.stats();
-        let names: Vec<&str> = stats.iter().map(|(n, _, _)| n.as_str()).collect();
+        let sorted = state.stats();
+        let names: Vec<&str> = sorted.iter().map(|(n, _, _)| n.as_str()).collect();
         assert_eq!(names, vec!["apple", "mango", "zebra"]);
     }
 }

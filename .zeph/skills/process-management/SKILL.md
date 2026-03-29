@@ -1,5 +1,6 @@
 ---
 name: process-management
+category: system
 description: >
   Monitor, manage, and control system processes. Use when the user asks to list
   running processes, find a process by name or PID, kill or terminate processes,

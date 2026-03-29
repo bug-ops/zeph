@@ -1,5 +1,6 @@
 ---
 name: cron
+category: system
 description: >
   Schedule recurring and one-time tasks using cron, crontab, at, and launchd.
   Use when the user asks to set up scheduled jobs, configure crontab entries,

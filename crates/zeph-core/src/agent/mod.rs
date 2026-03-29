@@ -342,6 +342,8 @@ impl<C: Channel> Agent<C> {
                 cosine_weight: 0.7,
                 hybrid_search: false,
                 bm25_index: None,
+                two_stage_matching: false,
+                confusability_threshold: 0.0,
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -3130,8 +3132,9 @@ impl<C: Channel> Agent<C> {
             handled!(self.handle_guardrail_command().await);
         }
 
-        if trimmed == "/skills" {
-            handled!(self.handle_skills_command().await);
+        if trimmed == "/skills" || trimmed.starts_with("/skills ") {
+            let subcommand = trimmed.strip_prefix("/skills").unwrap_or("").trim();
+            handled!(self.handle_skills_family(subcommand).await);
         }
 
         if trimmed == "/skill" || trimmed.starts_with("/skill ") {
@@ -4046,10 +4049,24 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    async fn handle_skills_command(&mut self) -> Result<(), error::AgentError> {
-        use std::fmt::Write;
+    async fn handle_skills_family(&mut self, subcommand: &str) -> Result<(), error::AgentError> {
+        match subcommand {
+            "" => self.handle_skills_command().await,
+            "confusability" => self.handle_skills_confusability_command().await,
+            other => {
+                self.channel
+                    .send(&format!(
+                        "Unknown /skills subcommand: '{other}'. Available: confusability"
+                    ))
+                    .await?;
+                Ok(())
+            }
+        }
+    }
 
-        let mut output = String::from("Available skills:\n\n");
+    async fn handle_skills_command(&mut self) -> Result<(), error::AgentError> {
+        use std::collections::BTreeMap;
+        use std::fmt::Write;
 
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
             .skill_state
@@ -4061,19 +4078,47 @@ impl<C: Channel> Agent<C> {
             .cloned()
             .collect();
 
+        // Collect trust info for all skills.
+        let mut trust_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for meta in &all_meta {
-            let trust_info = if let Some(memory) = &self.memory_state.memory {
-                memory
+            if let Some(memory) = &self.memory_state.memory {
+                let info = memory
                     .sqlite()
                     .load_skill_trust(&meta.name)
                     .await
                     .ok()
                     .flatten()
-                    .map_or_else(String::new, |r| format!(" [{}]", r.trust_level))
-            } else {
-                String::new()
-            };
-            let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
+                    .map_or_else(String::new, |r| format!(" [{}]", r.trust_level));
+                trust_map.insert(meta.name.clone(), info);
+            }
+        }
+
+        let mut output = String::from("Available skills:\n\n");
+
+        // Group by category when any skill has one set.
+        let has_categories = all_meta.iter().any(|m| m.category.is_some());
+        if has_categories {
+            // BTreeMap for stable alphabetical category order.
+            let mut by_category: BTreeMap<&str, Vec<&zeph_skills::loader::SkillMeta>> =
+                BTreeMap::new();
+            for meta in &all_meta {
+                let cat = meta.category.as_deref().unwrap_or("other");
+                by_category.entry(cat).or_default().push(meta);
+            }
+            for (cat, skills) in &by_category {
+                let _ = writeln!(output, "[{cat}]");
+                for meta in skills {
+                    let trust_info = trust_map.get(&meta.name).map_or("", String::as_str);
+                    let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
+                }
+                output.push('\n');
+            }
+        } else {
+            for meta in &all_meta {
+                let trust_info = trust_map.get(&meta.name).map_or("", String::as_str);
+                let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
+            }
         }
 
         if let Some(memory) = &self.memory_state.memory {
@@ -4094,6 +4139,41 @@ impl<C: Channel> Agent<C> {
         }
 
         self.channel.send(&output).await?;
+        Ok(())
+    }
+
+    async fn handle_skills_confusability_command(&mut self) -> Result<(), error::AgentError> {
+        let threshold = self.skill_state.confusability_threshold;
+        if threshold <= 0.0 {
+            self.channel
+                .send(
+                    "Confusability monitoring is disabled. \
+                     Set [skills] confusability_threshold in config (e.g. 0.85) to enable.",
+                )
+                .await?;
+            return Ok(());
+        }
+
+        let Some(matcher) = &self.skill_state.matcher else {
+            self.channel
+                .send("Skill matcher not available (no embedding provider configured).")
+                .await?;
+            return Ok(());
+        };
+
+        let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
+            .skill_state
+            .registry
+            .read()
+            .expect("registry read lock")
+            .all_meta()
+            .into_iter()
+            .cloned()
+            .collect();
+        let refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta.iter().collect();
+
+        let report = matcher.confusability_report(&refs, threshold).await;
+        self.channel.send(&report.to_string()).await?;
         Ok(())
     }
 
@@ -4681,6 +4761,9 @@ impl<C: Channel> Agent<C> {
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
         self.skill_state.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
         self.skill_state.hybrid_search = config.skills.hybrid_search;
+        self.skill_state.two_stage_matching = config.skills.two_stage_matching;
+        self.skill_state.confusability_threshold =
+            config.skills.confusability_threshold.clamp(0.0, 1.0);
 
         if config.memory.context_budget_tokens > 0 {
             self.context_manager.budget = Some(

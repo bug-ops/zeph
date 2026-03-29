@@ -83,6 +83,9 @@ pub(crate) struct SkillState {
     pub(crate) cosine_weight: f32,
     pub(crate) hybrid_search: bool,
     pub(crate) bm25_index: Option<zeph_skills::bm25::Bm25Index>,
+    pub(crate) two_stage_matching: bool,
+    /// Threshold for confusability warnings (0.0 = disabled).
+    pub(crate) confusability_threshold: f32,
 }
 
 pub(crate) struct McpState {

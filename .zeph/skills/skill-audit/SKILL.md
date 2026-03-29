@@ -1,5 +1,6 @@
 ---
 name: skill-audit
+category: dev
 description: >
   Audit installed skills for agentskills.io specification compliance and security issues.
   Use when the user asks to review, audit, check, validate, or lint skills,

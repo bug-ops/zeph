@@ -1,5 +1,6 @@
 ---
 name: code-analysis
+category: dev
 description: >
   LSP-based code analysis via mcpls MCP server. Use for compiler-accurate type
   inspection, go-to-definition, find-all-references, diagnostics, call hierarchy,

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(skills): add `category` field to SKILL.md frontmatter — optional grouping for skill library organisation; all 26 bundled skills annotated with categories (`web`, `data`, `dev`, `system`) (#2268)
+- feat(skills): `/skills` command now groups output by category when skills have `category` set; uncategorised skills appear under `[other]` (#2268)
+- feat(skills): `/skills confusability` — new command showing all skill pairs whose cosine similarity exceeds `[skills] confusability_threshold`; identifies disambiguation risk before library phase transition (#2268)
+- feat(skills): two-stage category-first skill matching — coarse category centroid selection followed by fine-grained within-category matching; enabled via `[skills] two_stage_matching = true`; singleton-category skills automatically fall back to uncategorised pool; inactive by default (#2268)
+- feat(skills): confusability report (`SkillMatcher::confusability_report`) — O(n²) pairwise cosine similarity with `spawn_blocking` offload; lists excluded skills whose embedding failed; disabled by default (`confusability_threshold = 0.0`) (#2268)
+
 ### Fixed
 
 - fix(memory): correct ESCAPE clause in spreading activation BFS alias query — `ESCAPE '\\\\'` (2 chars) changed to `ESCAPE '\\'` (1 char) as required by SQLite (closes #2393)

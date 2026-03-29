@@ -1,5 +1,6 @@
 ---
 name: docker
+category: system
 description: >
   Manage Docker containers, images, volumes, networks, and Compose stacks.
   Use when the user asks to build, run, stop, restart, remove, inspect, or debug

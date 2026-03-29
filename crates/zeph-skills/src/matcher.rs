@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
 use schemars::JsonSchema;
@@ -27,9 +28,156 @@ pub struct IntentClassification {
     pub params: HashMap<String, String>,
 }
 
+/// A pair of skills with similar embeddings.
+#[derive(Debug, Clone)]
+pub struct ConfusabilityPair {
+    pub skill_a: String,
+    pub skill_b: String,
+    pub similarity: f32,
+}
+
+/// Report of all skill pairs whose cosine similarity exceeds a threshold.
+#[derive(Debug, Clone)]
+pub struct ConfusabilityReport {
+    /// Pairs sorted descending by similarity.
+    pub pairs: Vec<ConfusabilityPair>,
+    pub threshold: f32,
+    /// Skills excluded from the report because their embedding failed.
+    pub excluded_skills: Vec<String>,
+}
+
+impl fmt::Display for ConfusabilityReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.pairs.is_empty() {
+            write!(
+                f,
+                "No confusable skill pairs found above {:.2}.",
+                self.threshold
+            )?;
+        } else {
+            writeln!(
+                f,
+                "Confusability report (threshold: {:.2}):",
+                self.threshold
+            )?;
+            for pair in &self.pairs {
+                writeln!(
+                    f,
+                    "  {} \u{2194} {}: {:.3}",
+                    pair.skill_a, pair.skill_b, pair.similarity
+                )?;
+            }
+        }
+        if !self.excluded_skills.is_empty() {
+            write!(
+                f,
+                "\nNote: {} skill(s) excluded (embedding unavailable): {}",
+                self.excluded_skills.len(),
+                self.excluded_skills.join(", ")
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Category-aware index for two-stage skill matching.
+///
+/// Categories with fewer than 2 embedded skills are treated as uncategorized
+/// (their skills always enter Stage 2 directly) to prevent Stage 1 from
+/// accidentally excluding singleton-category skills.
+#[derive(Debug, Clone)]
+struct CategoryMatcher {
+    /// Category name → embedding positions (index into `SkillMatcher::embeddings`).
+    /// Only categories with ≥ 2 embedded skills are stored here.
+    categories: HashMap<String, Vec<usize>>,
+    /// Centroid embedding per category.
+    centroids: HashMap<String, Vec<f32>>,
+    /// Embedding positions for uncategorized skills or singleton-category skills.
+    uncategorized: Vec<usize>,
+}
+
+impl CategoryMatcher {
+    /// Build from completed embeddings. `skills` is the original skill slice passed to
+    /// `SkillMatcher::new`; `embeddings` is the successful subset.
+    fn build(skills: &[&SkillMeta], embeddings: &[(usize, Vec<f32>)]) -> Self {
+        // Group embedding positions by category.
+        let mut by_category: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut uncategorized: Vec<usize> = Vec::new();
+
+        for (pos, (skill_idx, _)) in embeddings.iter().enumerate() {
+            match skills[*skill_idx].category.as_deref() {
+                Some(cat) => by_category.entry(cat.to_string()).or_default().push(pos),
+                None => uncategorized.push(pos),
+            }
+        }
+
+        // Promote singleton categories to uncategorized.
+        let mut categories: HashMap<String, Vec<usize>> = HashMap::new();
+        for (cat, positions) in by_category {
+            if positions.len() >= 2 {
+                categories.insert(cat, positions);
+            } else {
+                uncategorized.extend(positions);
+            }
+        }
+
+        // Compute centroids for multi-skill categories.
+        let mut centroids: HashMap<String, Vec<f32>> = HashMap::new();
+        for (cat, positions) in &categories {
+            let dim = embeddings[positions[0]].1.len();
+            let mut centroid = vec![0.0f32; dim];
+            for &pos in positions {
+                for (c, v) in centroid.iter_mut().zip(embeddings[pos].1.iter()) {
+                    *c += v;
+                }
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let n = positions.len() as f32;
+            for c in &mut centroid {
+                *c /= n;
+            }
+            centroids.insert(cat.clone(), centroid);
+        }
+
+        Self {
+            categories,
+            centroids,
+            uncategorized,
+        }
+    }
+
+    /// Whether two-stage matching is useful (≥2 categories with ≥2 skills each).
+    fn is_useful(&self) -> bool {
+        self.categories.len() >= 2
+    }
+
+    /// Return embedding positions in the Stage 2 candidate pool for the given query.
+    /// Selects top-2 categories by centroid cosine similarity, plus all uncategorized.
+    fn candidate_positions(&self, query_vec: &[f32]) -> Vec<usize> {
+        // Score categories by centroid similarity.
+        let mut cat_scores: Vec<(&str, f32)> = self
+            .centroids
+            .iter()
+            .map(|(cat, centroid)| (cat.as_str(), cosine_similarity(query_vec, centroid)))
+            .collect();
+        cat_scores
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut positions: Vec<usize> = self.uncategorized.clone();
+        for (cat, _) in cat_scores.iter().take(2) {
+            if let Some(cat_positions) = self.categories.get(*cat) {
+                positions.extend_from_slice(cat_positions);
+            }
+        }
+        positions
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SkillMatcher {
     embeddings: Vec<(usize, Vec<f32>)>,
+    /// Populated when at least 2 multi-skill categories exist.
+    category_matcher: Option<CategoryMatcher>,
 }
 
 impl SkillMatcher {
@@ -95,11 +243,22 @@ impl SkillMatcher {
             return None;
         }
 
-        Some(Self { embeddings })
+        let category_matcher = {
+            let cm = CategoryMatcher::build(skills, &embeddings);
+            if cm.is_useful() { Some(cm) } else { None }
+        };
+
+        Some(Self {
+            embeddings,
+            category_matcher,
+        })
     }
 
     /// Match a user query against stored skill embeddings, returning the top-K scored matches
     /// ranked by cosine similarity.
+    ///
+    /// When `two_stage` is true and a [`CategoryMatcher`] is available, uses category-first
+    /// filtering before fine-grained matching. Falls back to flat matching otherwise.
     ///
     /// Returns an empty vec if the query embedding fails.
     pub async fn match_skills<F>(
@@ -107,6 +266,7 @@ impl SkillMatcher {
         count: usize,
         query: &str,
         limit: usize,
+        two_stage: bool,
         embed_fn: F,
     ) -> Vec<ScoredMatch>
     where
@@ -125,14 +285,32 @@ impl SkillMatcher {
             }
         };
 
-        let mut scored: Vec<ScoredMatch> = self
-            .embeddings
-            .iter()
-            .map(|(idx, emb)| ScoredMatch {
-                index: *idx,
-                score: cosine_similarity(&query_vec, emb),
-            })
-            .collect();
+        // Two-stage: restrict candidate pool to top-2 categories + uncategorized.
+        let candidate_positions: Option<Vec<usize>> = if two_stage {
+            self.category_matcher
+                .as_ref()
+                .map(|cm| cm.candidate_positions(&query_vec))
+        } else {
+            None
+        };
+
+        let mut scored: Vec<ScoredMatch> = match candidate_positions {
+            Some(positions) => positions
+                .iter()
+                .map(|&pos| ScoredMatch {
+                    index: self.embeddings[pos].0,
+                    score: cosine_similarity(&query_vec, &self.embeddings[pos].1),
+                })
+                .collect(),
+            None => self
+                .embeddings
+                .iter()
+                .map(|(idx, emb)| ScoredMatch {
+                    index: *idx,
+                    score: cosine_similarity(&query_vec, emb),
+                })
+                .collect(),
+        };
 
         scored.sort_unstable_by(|a, b| {
             b.score
@@ -142,6 +320,52 @@ impl SkillMatcher {
         scored.truncate(limit);
 
         scored
+    }
+
+    /// Compute pairwise cosine similarity for all skill pairs with successful embeddings.
+    ///
+    /// Returns pairs where similarity ≥ `threshold`, sorted descending. Skills that failed
+    /// to embed are listed in [`ConfusabilityReport::excluded_skills`].
+    ///
+    /// This is an O(n²) operation. For large skill libraries, call from a blocking context.
+    #[must_use]
+    pub fn confusability_report(
+        &self,
+        skills: &[&SkillMeta],
+        threshold: f32,
+    ) -> ConfusabilityReport {
+        let embedded_indices: std::collections::HashSet<usize> =
+            self.embeddings.iter().map(|(i, _)| *i).collect();
+        let excluded_skills: Vec<String> = skills
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !embedded_indices.contains(i))
+            .map(|(_, m)| m.name.clone())
+            .collect();
+
+        let mut pairs = Vec::new();
+        for i in 0..self.embeddings.len() {
+            for j in (i + 1)..self.embeddings.len() {
+                let sim = cosine_similarity(&self.embeddings[i].1, &self.embeddings[j].1);
+                if sim >= threshold {
+                    pairs.push(ConfusabilityPair {
+                        skill_a: skills[self.embeddings[i].0].name.clone(),
+                        skill_b: skills[self.embeddings[j].0].name.clone(),
+                        similarity: sim,
+                    });
+                }
+            }
+        }
+        pairs.sort_unstable_by(|a, b| {
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        ConfusabilityReport {
+            pairs,
+            threshold,
+            excluded_skills,
+        }
     }
 }
 
@@ -165,14 +389,54 @@ impl SkillMatcherBackend {
         meta: &[&SkillMeta],
         query: &str,
         limit: usize,
+        two_stage: bool,
         embed_fn: F,
     ) -> Vec<ScoredMatch>
     where
         F: Fn(&str) -> EmbedFuture,
     {
         match self {
-            Self::InMemory(m) => m.match_skills(meta.len(), query, limit, embed_fn).await,
+            Self::InMemory(m) => {
+                m.match_skills(meta.len(), query, limit, two_stage, embed_fn)
+                    .await
+            }
             Self::Qdrant(m) => m.match_skills(meta, query, limit, embed_fn).await,
+        }
+    }
+
+    /// Compute the confusability report for the in-memory matcher.
+    ///
+    /// Offloads the O(n²) computation to a blocking thread pool to avoid stalling the
+    /// async runtime. Returns an empty report for the Qdrant backend.
+    pub async fn confusability_report(
+        &self,
+        meta: &[&SkillMeta],
+        threshold: f32,
+    ) -> ConfusabilityReport {
+        match self {
+            Self::InMemory(m) => {
+                let matcher = m.clone();
+                let meta_owned: Vec<crate::loader::SkillMeta> =
+                    meta.iter().map(|m| (*m).clone()).collect();
+                tokio::task::spawn_blocking(move || {
+                    let refs: Vec<&SkillMeta> = meta_owned.iter().collect();
+                    matcher.confusability_report(&refs, threshold)
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("confusability_report task panicked: {e}");
+                    ConfusabilityReport {
+                        pairs: vec![],
+                        threshold,
+                        excluded_skills: vec![],
+                    }
+                })
+            }
+            Self::Qdrant(_) => ConfusabilityReport {
+                pairs: vec![],
+                threshold,
+                excluded_skills: vec![],
+            },
         }
     }
 
@@ -223,6 +487,23 @@ mod tests {
             skill_dir: PathBuf::new(),
             source_url: None,
             git_hash: None,
+            category: None,
+        }
+    }
+
+    fn make_meta_with_category(name: &str, description: &str, category: &str) -> SkillMeta {
+        SkillMeta {
+            name: name.into(),
+            description: description.into(),
+            compatibility: None,
+            license: None,
+            metadata: Vec::new(),
+            allowed_tools: Vec::new(),
+            requires_secrets: Vec::new(),
+            skill_dir: PathBuf::new(),
+            source_url: None,
+            git_hash: None,
+            category: Some(category.into()),
         }
     }
 
@@ -258,7 +539,7 @@ mod tests {
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
         let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 2, embed_fn_mapping)
+            .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
             .await;
 
         assert_eq!(match_results.len(), 2);
@@ -281,7 +562,7 @@ mod tests {
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 5, embed_fn_constant)
+            .match_skills(refs.len(), "query", 5, false, embed_fn_constant)
             .await;
 
         assert_eq!(match_results.len(), 1);
@@ -392,7 +673,7 @@ mod tests {
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 100, embed_fn_constant)
+            .match_skills(refs.len(), "query", 100, false, embed_fn_constant)
             .await;
 
         assert_eq!(match_results.len(), 2);
@@ -405,7 +686,7 @@ mod tests {
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 5, embed_fn_fail)
+            .match_skills(refs.len(), "query", 5, false, embed_fn_fail)
             .await;
 
         assert!(match_results.is_empty());
@@ -447,7 +728,7 @@ mod tests {
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 0, embed_fn_constant)
+            .match_skills(refs.len(), "query", 0, false, embed_fn_constant)
             .await;
 
         assert!(match_results.is_empty());
@@ -464,7 +745,7 @@ mod tests {
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
         let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 3, embed_fn_mapping)
+            .match_skills(refs.len(), "query", 3, false, embed_fn_mapping)
             .await;
 
         assert_eq!(match_results.len(), 3);
@@ -475,6 +756,7 @@ mod tests {
     fn matcher_backend_in_memory_is_not_qdrant() {
         let matcher = SkillMatcher {
             embeddings: vec![(0, vec![1.0, 0.0])],
+            category_matcher: None,
         };
         let backend = SkillMatcherBackend::InMemory(matcher);
         assert!(!backend.is_qdrant());
@@ -482,7 +764,10 @@ mod tests {
 
     #[tokio::test]
     async fn backend_in_memory_sync_is_noop() {
-        let matcher = SkillMatcher { embeddings: vec![] };
+        let matcher = SkillMatcher {
+            embeddings: vec![],
+            category_matcher: None,
+        };
         let mut backend = SkillMatcherBackend::InMemory(matcher);
         let metas: Vec<&SkillMeta> = vec![];
         let result = backend.sync(&metas, "model", embed_fn_constant).await;
@@ -497,7 +782,7 @@ mod tests {
         let inner = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let backend = SkillMatcherBackend::InMemory(inner);
         let matches = backend
-            .match_skills(&refs, "query", 5, embed_fn_constant)
+            .match_skills(&refs, "query", 5, false, embed_fn_constant)
             .await;
         assert_eq!(matches.len(), 2);
     }
@@ -506,6 +791,7 @@ mod tests {
     fn matcher_debug() {
         let matcher = SkillMatcher {
             embeddings: vec![(0, vec![1.0])],
+            category_matcher: None,
         };
         let dbg = format!("{matcher:?}");
         assert!(dbg.contains("SkillMatcher"));
@@ -513,7 +799,10 @@ mod tests {
 
     #[test]
     fn backend_debug() {
-        let matcher = SkillMatcher { embeddings: vec![] };
+        let matcher = SkillMatcher {
+            embeddings: vec![],
+            category_matcher: None,
+        };
         let backend = SkillMatcherBackend::InMemory(matcher);
         let dbg = format!("{backend:?}");
         assert!(dbg.contains("InMemory"));
@@ -621,7 +910,7 @@ mod tests {
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
         let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 2, embed_fn_mapping)
+            .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
             .await;
 
         assert_eq!(match_results.len(), 2);
@@ -651,5 +940,205 @@ mod tests {
                 assert!((-1.01..=1.01).contains(&result), "got {result}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn two_stage_matching_uses_categories() {
+        // Skills: 2 "web" + 2 "data", query matches "web" category.
+        let metas = [
+            make_meta_with_category("web-a", "alpha", "web"),
+            make_meta_with_category("web-b", "beta", "web"),
+            make_meta_with_category("data-a", "gamma", "data"),
+            make_meta_with_category("data-b", "delta", "data"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        // Two-stage should still return results (not crash or empty).
+        let results = matcher
+            .match_skills(refs.len(), "query", 4, true, embed_fn_mapping)
+            .await;
+        assert!(!results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_stage_falls_back_when_no_categories() {
+        // All skills without category → two-stage falls back to flat.
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        // category_matcher is None when <2 multi-skill categories.
+        assert!(matcher.category_matcher.is_none());
+        let results = matcher
+            .match_skills(refs.len(), "query", 2, true, embed_fn_mapping)
+            .await;
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn two_stage_singleton_category_goes_to_uncategorized() {
+        // One category with 1 skill, one with 2 → singleton is uncategorized.
+        let metas = [
+            make_meta_with_category("lone", "alpha", "solo"),
+            make_meta_with_category("pair-a", "beta", "pair"),
+            make_meta_with_category("pair-b", "gamma", "pair"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        // Only 1 multi-skill category ("pair") → category_matcher is None (not useful).
+        assert!(matcher.category_matcher.is_none());
+    }
+
+    #[test]
+    fn confusability_report_empty_when_threshold_high() {
+        let matcher = SkillMatcher {
+            embeddings: vec![(0, vec![1.0, 0.0]), (1, vec![0.0, 1.0])],
+            category_matcher: None,
+        };
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let report = matcher.confusability_report(&refs, 0.99);
+        assert!(report.pairs.is_empty());
+        assert!(report.excluded_skills.is_empty());
+    }
+
+    #[test]
+    fn confusability_report_finds_similar_pair() {
+        let v = vec![1.0_f32, 0.0, 0.0];
+        let matcher = SkillMatcher {
+            embeddings: vec![(0, v.clone()), (1, v)],
+            category_matcher: None,
+        };
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let report = matcher.confusability_report(&refs, 0.9);
+        assert_eq!(report.pairs.len(), 1);
+        assert!((report.pairs[0].similarity - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn confusability_report_tracks_excluded_skills() {
+        // embeddings only contains index 0; index 1 has no embedding.
+        let matcher = SkillMatcher {
+            embeddings: vec![(0, vec![1.0, 0.0])],
+            category_matcher: None,
+        };
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let report = matcher.confusability_report(&refs, 0.5);
+        assert_eq!(report.excluded_skills, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn confusability_report_display_clean() {
+        let report = ConfusabilityReport {
+            pairs: vec![],
+            threshold: 0.85,
+            excluded_skills: vec![],
+        };
+        let s = report.to_string();
+        assert!(s.contains("0.85"));
+    }
+
+    #[test]
+    fn confusability_report_display_with_pairs() {
+        let report = ConfusabilityReport {
+            pairs: vec![ConfusabilityPair {
+                skill_a: "web-search".into(),
+                skill_b: "web-scrape".into(),
+                similarity: 0.91,
+            }],
+            threshold: 0.85,
+            excluded_skills: vec![],
+        };
+        let s = report.to_string();
+        assert!(s.contains("web-search"));
+        assert!(s.contains("web-scrape"));
+        assert!(s.contains("0.910"));
+    }
+
+    #[test]
+    fn confusability_report_display_with_excluded_skills() {
+        let report = ConfusabilityReport {
+            pairs: vec![],
+            threshold: 0.85,
+            excluded_skills: vec!["embed-failed".to_string(), "timeout-skill".to_string()],
+        };
+        let s = report.to_string();
+        assert!(s.contains("embed-failed"));
+        assert!(s.contains("timeout-skill"));
+        assert!(s.contains("2 skill(s) excluded"));
+    }
+
+    #[test]
+    fn confusability_report_display_with_pairs_and_excluded() {
+        let report = ConfusabilityReport {
+            pairs: vec![ConfusabilityPair {
+                skill_a: "web-search".into(),
+                skill_b: "web-scrape".into(),
+                similarity: 0.91,
+            }],
+            threshold: 0.85,
+            excluded_skills: vec!["no-embed".to_string()],
+        };
+        let s = report.to_string();
+        assert!(s.contains("web-search"));
+        assert!(s.contains("no-embed"));
+        assert!(s.contains("1 skill(s) excluded"));
+    }
+
+    #[tokio::test]
+    async fn two_stage_category_matcher_is_some_with_two_categories() {
+        let metas = [
+            make_meta_with_category("web-a", "alpha", "web"),
+            make_meta_with_category("web-b", "beta", "web"),
+            make_meta_with_category("data-a", "gamma", "data"),
+            make_meta_with_category("data-b", "delta", "data"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        assert!(
+            matcher.category_matcher.is_some(),
+            "expected CategoryMatcher with 2 multi-skill categories"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_stage_mixed_categorized_and_uncategorized_single_category() {
+        // 2 skills in one category + 1 uncategorized → only 1 multi-skill category → not useful.
+        let metas = [
+            make_meta_with_category("web-a", "alpha", "web"),
+            make_meta_with_category("web-b", "beta", "web"),
+            make_meta("no-cat", "gamma"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        assert!(
+            matcher.category_matcher.is_none(),
+            "only 1 multi-skill category is not useful for two-stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_stage_result_count_within_flat_count() {
+        let metas = [
+            make_meta_with_category("web-a", "alpha", "web"),
+            make_meta_with_category("web-b", "beta", "web"),
+            make_meta_with_category("data-a", "gamma", "data"),
+            make_meta_with_category("data-b", "delta", "data"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+
+        let flat = matcher
+            .match_skills(refs.len(), "alpha", 4, false, embed_fn_mapping)
+            .await;
+        let two = matcher
+            .match_skills(refs.len(), "alpha", 4, true, embed_fn_mapping)
+            .await;
+
+        // Top result must be the same regardless of strategy.
+        assert_eq!(flat[0].index, two[0].index);
+        // Two-stage must not return more results than flat.
+        assert!(two.len() <= flat.len());
     }
 }

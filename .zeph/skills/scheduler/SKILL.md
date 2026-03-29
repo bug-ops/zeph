@@ -1,5 +1,6 @@
 ---
 name: scheduler
+category: system
 description: >
   Create, cancel, and manage periodic (cron) and one-shot (deferred) background tasks.
   Use when the user wants to schedule recurring work (daily summaries, cleanups),

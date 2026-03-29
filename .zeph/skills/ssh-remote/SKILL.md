@@ -1,5 +1,6 @@
 ---
 name: ssh-remote
+category: system
 description: >
   Manage SSH connections, key management, remote command execution, tunneling,
   and file transfer with scp and rsync. Use when the user asks to connect to

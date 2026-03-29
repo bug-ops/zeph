@@ -159,6 +159,7 @@ mod tests {
             skill_dir: PathBuf::new(),
             source_url: None,
             git_hash: None,
+            category: None,
         }
     }
 

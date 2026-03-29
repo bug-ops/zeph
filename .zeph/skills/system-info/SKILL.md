@@ -1,5 +1,6 @@
 ---
 name: system-info
+category: system
 description: >
   System diagnostics and resource monitoring — retrieve OS version and kernel
   info, check CPU load and core count, inspect memory and swap usage, analyze

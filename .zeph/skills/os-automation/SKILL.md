@@ -1,5 +1,6 @@
 ---
 name: os-automation
+category: system
 description: >
   Cross-platform OS automation — send desktop notifications, read and write
   the clipboard, take screenshots, open files and URLs in default apps,

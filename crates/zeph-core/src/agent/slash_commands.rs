@@ -69,7 +69,14 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
     SlashCommandInfo {
         name: "/skills",
         args: "",
-        description: "List loaded skills",
+        description: "List loaded skills (grouped by category when available)",
+        category: SlashCategory::Info,
+        feature_gate: None,
+    },
+    SlashCommandInfo {
+        name: "/skills confusability",
+        args: "",
+        description: "Show skill pairs with high embedding similarity (potential disambiguation failures)",
         category: SlashCategory::Info,
         feature_gate: None,
     },

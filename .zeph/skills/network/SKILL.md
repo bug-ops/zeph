@@ -1,5 +1,6 @@
 ---
 name: network
+category: web
 description: >
   Network diagnostics, DNS lookup, port scanning, and connectivity testing.
   Use when the user asks to check if a host is reachable, trace network routes,

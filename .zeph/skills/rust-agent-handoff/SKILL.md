@@ -1,5 +1,6 @@
 ---
 name: rust-agent-handoff
+category: dev
 description: >
   Handoff protocol for Rust multi-agent development system with structured YAML communication.
   Use when working as rust-architect, rust-developer, rust-testing-engineer,

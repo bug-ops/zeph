@@ -1084,6 +1084,7 @@ impl<C: Channel> Agent<C> {
                     &all_meta,
                     query,
                     self.skill_state.max_active_skills,
+                    self.skill_state.two_stage_matching,
                     |text| {
                         let owned = text.to_owned();
                         let p = provider.clone();

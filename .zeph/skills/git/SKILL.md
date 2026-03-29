@@ -1,5 +1,6 @@
 ---
 name: git
+category: dev
 description: >
   Run git version control commands for repository management. Use when the user
   asks to check status, view history or diffs, stage and commit changes, manage

@@ -1,5 +1,6 @@
 ---
 name: skill-creator
+category: dev
 description: >
   Create new Agent Skills following the agentskills.io specification.
   Use when the user asks to create, write, build, or generate a new skill,

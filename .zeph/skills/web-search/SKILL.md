@@ -1,5 +1,6 @@
 ---
 name: web-search
+category: web
 description: >
   Search the internet for current information using the DuckDuckGo Instant
   Answer API. Use when the user asks to find, look up, or search for something

@@ -127,6 +127,14 @@ pub struct SkillsConfig {
     pub trust: TrustConfig,
     #[serde(default)]
     pub prompt_mode: SkillPromptMode,
+    /// Enable two-stage category-first skill matching (requires `category` set in SKILL.md).
+    /// Falls back to flat matching when no multi-skill categories are available.
+    #[serde(default)]
+    pub two_stage_matching: bool,
+    /// Warn when any two skills have cosine similarity ≥ this threshold.
+    /// Set to 0.0 (default) to disable the confusability check entirely.
+    #[serde(default)]
+    pub confusability_threshold: f32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

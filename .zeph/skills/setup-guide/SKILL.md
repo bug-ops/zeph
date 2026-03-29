@@ -1,5 +1,6 @@
 ---
 name: setup-guide
+category: system
 description: >
   Zeph configuration reference for LLM providers, memory, tools, channels, and features.
   Use when the user asks about setup, configuration, environment variables, TOML settings,

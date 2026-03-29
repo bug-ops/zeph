@@ -1,5 +1,6 @@
 ---
 name: api-request
+category: web
 description: >
   Send HTTP API requests using curl. Use when the user asks to call an API,
   fetch data from a URL, send POST/PUT/PATCH/DELETE requests, work with REST

@@ -1,5 +1,6 @@
 ---
 name: regex
+category: data
 description: >
   Write, test, and debug regular expressions for pattern matching, search, and
   text extraction across programming languages. Use when the user asks to match

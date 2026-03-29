@@ -162,6 +162,8 @@ impl Default for Config {
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
                 prompt_mode: SkillPromptMode::Auto,
+                two_stage_matching: false,
+                confusability_threshold: 0.0,
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),

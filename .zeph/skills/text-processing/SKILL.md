@@ -1,5 +1,6 @@
 ---
 name: text-processing
+category: data
 description: >
   Transform, filter, sort, and analyze text using sed, awk, sort, uniq, cut,
   tr, wc, and other text processing tools. Use when the user asks to find and

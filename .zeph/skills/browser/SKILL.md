@@ -1,5 +1,6 @@
 ---
 name: browser
+category: web
 description: >
   Browser automation via Playwright MCP — navigate pages, click elements,
   fill forms, take screenshots, extract text, manage tabs, and run

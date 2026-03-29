@@ -1639,6 +1639,7 @@ async fn disambiguate_skills_reorders_on_match() {
             skill_dir: std::path::PathBuf::new(),
             source_url: None,
             git_hash: None,
+            category: None,
         },
         SkillMeta {
             name: "beta_skill".into(),
@@ -1651,6 +1652,7 @@ async fn disambiguate_skills_reorders_on_match() {
             skill_dir: std::path::PathBuf::new(),
             source_url: None,
             git_hash: None,
+            category: None,
         },
     ];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
@@ -1693,6 +1695,7 @@ async fn disambiguate_skills_returns_none_on_error() {
         skill_dir: std::path::PathBuf::new(),
         source_url: None,
         git_hash: None,
+        category: None,
     }];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
     let scored = vec![ScoredMatch {
@@ -1745,6 +1748,7 @@ async fn disambiguate_skills_unknown_skill_preserves_order() {
             skill_dir: std::path::PathBuf::new(),
             source_url: None,
             git_hash: None,
+            category: None,
         },
         SkillMeta {
             name: "second".into(),
@@ -1757,6 +1761,7 @@ async fn disambiguate_skills_unknown_skill_preserves_order() {
             skill_dir: std::path::PathBuf::new(),
             source_url: None,
             git_hash: None,
+            category: None,
         },
     ];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
@@ -1801,6 +1806,7 @@ async fn disambiguate_single_candidate_no_swap() {
         skill_dir: std::path::PathBuf::new(),
         source_url: None,
         git_hash: None,
+        category: None,
     }];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
     let scored = vec![ScoredMatch {
@@ -1841,6 +1847,7 @@ async fn rebuild_system_prompt_excludes_skill_when_secret_missing() {
         skill_dir: std::path::PathBuf::new(),
         source_url: None,
         git_hash: None,
+        category: None,
     };
 
     // available_custom_secrets is empty — skill must be excluded
@@ -1893,6 +1900,7 @@ async fn rebuild_system_prompt_includes_skill_when_secret_present() {
         skill_dir: std::path::PathBuf::new(),
         source_url: None,
         git_hash: None,
+        category: None,
     };
 
     // Secret IS available
@@ -1949,6 +1957,7 @@ async fn rebuild_system_prompt_excludes_skill_when_only_partial_secrets_present(
         skill_dir: std::path::PathBuf::new(),
         source_url: None,
         git_hash: None,
+        category: None,
     };
 
     // Only "secret_a" present, "secret_b" missing — skill must be excluded.
