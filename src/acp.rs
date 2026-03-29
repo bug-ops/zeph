@@ -502,7 +502,7 @@ async fn build_acp_deps(
                     .to_string(),
             )
         },
-        sqlite_path: config.memory.sqlite_path.clone(),
+        sqlite_path: crate::db_url::resolve_db_url(config).to_owned(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
         #[cfg(feature = "scheduler")]
@@ -1273,7 +1273,7 @@ pub(crate) async fn run_acp_http_server(
         project_rules: collect_project_rules(&app.skill_paths()),
         title_max_chars: app.config().memory.sessions.title_max_chars,
         max_history: app.config().memory.sessions.max_history,
-        sqlite_path: Some(app.config().memory.sqlite_path.clone()),
+        sqlite_path: Some(crate::db_url::resolve_db_url(app.config()).to_owned()),
         ready_notification: None,
     };
     let shared_deps: Arc<RwLock<Option<Arc<SharedAgentDeps>>>> = Arc::new(RwLock::new(None));
@@ -1290,7 +1290,7 @@ pub(crate) async fn run_acp_http_server(
         })
     });
     let mut state = zeph_acp::AcpHttpState::new(spawner, server_config);
-    match zeph_memory::store::SqliteStore::new(&app.config().memory.sqlite_path).await {
+    match zeph_memory::store::SqliteStore::new(crate::db_url::resolve_db_url(app.config())).await {
         Ok(store) => state = state.with_store(store),
         Err(e) => tracing::warn!(error = %e, "failed to open SQLite for HTTP session endpoints"),
     }

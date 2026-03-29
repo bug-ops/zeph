@@ -21,7 +21,7 @@ pub(crate) async fn handle_skill_command(
 
     let mgr = SkillManager::new(managed_dir.clone());
 
-    let sqlite_path = config.memory.sqlite_path.clone();
+    let sqlite_path = crate::db_url::resolve_db_url(&config).to_owned();
 
     match cmd {
         SkillCommand::Install { source } => {

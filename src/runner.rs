@@ -1625,8 +1625,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow::Result<()> {
     use zeph_memory::store::SqliteStore;
 
-    let sqlite_path = app.config().memory.sqlite_path.clone();
-    let store = SqliteStore::new(&sqlite_path).await?;
+    let store = SqliteStore::new(crate::db_url::resolve_db_url(app.config())).await?;
     let rows = store.list_experiment_results(None, 50).await?;
 
     if rows.is_empty() {

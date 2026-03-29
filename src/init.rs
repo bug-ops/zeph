@@ -3198,4 +3198,41 @@ mod tests {
                 < f32::EPSILON
         );
     }
+
+    #[test]
+    fn build_config_postgres_backend_sets_database_url() {
+        let state = WizardState {
+            database_url: Some("postgres://localhost:5432/zeph".to_owned()),
+            provider: Some(ProviderKind::Ollama),
+            model: Some("qwen3:8b".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.memory.database_url.as_deref(),
+            Some("postgres://localhost:5432/zeph"),
+        );
+        assert_eq!(
+            config.memory.sqlite_path,
+            zeph_core::config::default_sqlite_path(),
+        );
+    }
+
+    #[test]
+    fn build_config_sqlite_backend_leaves_database_url_none() {
+        let state = WizardState {
+            database_url: None,
+            provider: Some(ProviderKind::Ollama),
+            model: Some("qwen3:8b".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.memory.database_url.is_none());
+        assert_eq!(
+            config.memory.sqlite_path,
+            zeph_core::config::default_sqlite_path(),
+        );
+    }
 }

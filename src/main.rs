@@ -7,6 +7,7 @@ mod channel;
 mod cli;
 mod commands;
 mod daemon;
+mod db_url;
 mod gateway_spawn;
 mod init;
 mod runner;

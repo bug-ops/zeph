@@ -277,7 +277,8 @@ pub(crate) async fn init_scheduler(
         return None;
     }
 
-    let store = match JobStore::open(&config.memory.sqlite_path).await {
+    let db_url = crate::db_url::resolve_db_url(config);
+    let store = match JobStore::open(db_url).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("scheduler: failed to open store: {e}");
@@ -286,7 +287,7 @@ pub(crate) async fn init_scheduler(
     };
 
     let store_arc = Arc::new(store);
-    let scheduler_store = match JobStore::open(&config.memory.sqlite_path).await {
+    let scheduler_store = match JobStore::open(db_url).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("scheduler: failed to open second store handle: {e}");

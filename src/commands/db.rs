@@ -18,12 +18,7 @@ pub(crate) async fn handle_db_migrate(config_path: Option<&std::path::Path>) -> 
     let config_path = resolve_config_path(config_path);
     let config = Config::load(&config_path).unwrap_or_default();
 
-    let db_url = config
-        .memory
-        .database_url
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&config.memory.sqlite_path);
+    let db_url = crate::db_url::resolve_db_url(&config);
 
     // C-001: validate that the URL matches the compiled-in backend.
     #[cfg(feature = "postgres")]
@@ -75,5 +70,23 @@ mod tests {
                 command: DbCommand::Migrate
             })
         ));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn is_postgres_url_accepts_postgres_schemes() {
+        assert!(zeph_db::is_postgres_url("postgres://localhost/test"));
+        assert!(zeph_db::is_postgres_url("postgresql://localhost/test"));
+        assert!(!zeph_db::is_postgres_url("/tmp/test.db"));
+        assert!(!zeph_db::is_postgres_url("sqlite:///tmp/test.db"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn is_postgres_url_rejects_sqlite_paths() {
+        assert!(!zeph_db::is_postgres_url("/tmp/test.db"));
+        assert!(!zeph_db::is_postgres_url("sqlite:///tmp/test.db"));
+        assert!(zeph_db::is_postgres_url("postgres://localhost/test"));
+        assert!(zeph_db::is_postgres_url("postgresql://localhost/test"));
     }
 }
