@@ -698,11 +698,11 @@ mod tests {
             result.is_some(),
             "valid row must be returned despite corrupt sibling"
         );
-        let (resp, score) = result.unwrap();
+        let (resp, cache_score) = result.unwrap();
         assert_eq!(resp, "valid-response");
         assert!(
-            (score - 1.0).abs() < 1e-5,
-            "identical vectors must yield score ~1.0, got {score}"
+            (cache_score - 1.0).abs() < 1e-5,
+            "identical vectors must yield score ~1.0, got {cache_score}"
         );
     }
 

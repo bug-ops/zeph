@@ -207,15 +207,14 @@ mod tests {
         .unwrap()
     }
 
-    /// Insert a real message into the conversation and return its MessageId.
+    /// Insert a real message into the conversation and return its `MessageId`.
     /// Required because the `summaries` table has FK constraints on `messages.id`.
     async fn insert_message(memory: &SemanticMemory, cid: ConversationId) -> MessageId {
-        let id = memory
+        memory
             .sqlite()
             .save_message(cid, "user", "test message")
             .await
-            .unwrap();
-        id
+            .unwrap()
     }
 
     #[tokio::test]

@@ -357,7 +357,7 @@ impl EmbeddingStore {
             return Ok(std::collections::HashMap::new());
         }
 
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
         let query = format!(
             "SELECT em.message_id, vp.vector \
              FROM embeddings_metadata em \
@@ -369,7 +369,7 @@ impl EmbeddingStore {
             q = q.bind(id);
         }
 
-        let rows = q.fetch_all(&self.pool).await.unwrap_or_default();
+        let rows = q.fetch_all(&self.pool).await?;
 
         let map = rows
             .into_iter()

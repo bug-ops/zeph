@@ -474,7 +474,7 @@ mod tests {
         config.memory.sqlite_path = ":memory:".into();
 
         let (_agent, executor_opt): (_, Option<crate::scheduler_executor::SchedulerExecutor>) =
-            bootstrap_scheduler(agent, &config, shutdown_rx, None).await;
+            Box::pin(bootstrap_scheduler(agent, &config, shutdown_rx, None)).await;
         assert!(
             executor_opt.is_some(),
             "expected Some(SchedulerExecutor) when scheduler is enabled"

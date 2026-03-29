@@ -498,7 +498,7 @@ mod tests {
         // Poll once (pending), then advance time past the timeout.
         let verdict = tokio::select! {
             v = &mut check_fut => v,
-            _ = async {
+            () = async {
                 tokio::time::advance(Duration::from_millis(150)).await;
             } => {
                 check_fut.await
@@ -524,7 +524,7 @@ mod tests {
 
         let verdict = tokio::select! {
             v = &mut check_fut => v,
-            _ = async {
+            () = async {
                 tokio::time::advance(Duration::from_millis(150)).await;
             } => {
                 check_fut.await

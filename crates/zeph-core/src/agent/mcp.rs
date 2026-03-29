@@ -709,7 +709,7 @@ mod tests {
         agent.mcp.tools = vec![zeph_mcp::McpTool {
             server_id: "srv".into(),
             name: "existing_tool".into(),
-            description: "".into(),
+            description: String::new(),
             input_schema: serde_json::json!({}),
         }];
 
@@ -734,7 +734,7 @@ mod tests {
         let new_tools = vec![zeph_mcp::McpTool {
             server_id: "srv".into(),
             name: "refreshed_tool".into(),
-            description: "".into(),
+            description: String::new(),
             input_schema: serde_json::json!({}),
         }];
         tx.send(new_tools).unwrap();

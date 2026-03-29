@@ -906,7 +906,9 @@ mod tests {
     fn rate_limit_allows_refresh_after_interval() {
         let (_, _rx, last_refresh) = make_handler();
         // Set last refresh to more than MIN_REFRESH_INTERVAL ago
-        let old = Instant::now() - MIN_REFRESH_INTERVAL - Duration::from_millis(100);
+        let old = Instant::now()
+            .checked_sub(MIN_REFRESH_INTERVAL + Duration::from_millis(100))
+            .unwrap();
         last_refresh.insert("test-server".to_owned(), old);
         let now = Instant::now();
         let is_rate_limited = last_refresh
@@ -930,7 +932,7 @@ mod tests {
 
     #[test]
     fn max_tools_per_server_constant_is_positive() {
-        assert!(MAX_TOOLS_PER_SERVER > 0);
+        const { assert!(MAX_TOOLS_PER_SERVER > 0) };
     }
 
     #[test]

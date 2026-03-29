@@ -315,8 +315,10 @@ mod tests {
     // SEC-CC-01: append_knowledge must enforce max_knowledge_tokens cap (FIFO eviction).
     #[test]
     fn append_knowledge_evicts_oldest_when_over_token_cap() {
-        let mut config = FocusConfig::default();
-        config.max_knowledge_tokens = 10; // 10 tokens ≈ 40 chars
+        let config = FocusConfig {
+            max_knowledge_tokens: 10,
+            ..FocusConfig::default()
+        }; // 10 tokens ≈ 40 chars
         let mut state = FocusState::new(config);
 
         // Add entries that will exceed the cap
@@ -341,8 +343,10 @@ mod tests {
 
     #[test]
     fn append_knowledge_preserves_single_entry_regardless_of_size() {
-        let mut config = FocusConfig::default();
-        config.max_knowledge_tokens = 1; // impossibly small cap
+        let config = FocusConfig {
+            max_knowledge_tokens: 1,
+            ..FocusConfig::default()
+        }; // impossibly small cap
         let mut state = FocusState::new(config);
         state.append_knowledge("very long summary that exceeds any token cap".to_string());
         // Must keep at least 1 block — never evict all

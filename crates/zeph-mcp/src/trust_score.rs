@@ -412,11 +412,11 @@ mod tests {
         // Apply a success delta.
         store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
 
-        let score = store.load("srv1").await.unwrap().unwrap();
-        assert_eq!(score.server_id, "srv1");
-        assert!(score.score > ServerTrustScore::INITIAL_SCORE);
-        assert_eq!(score.success_count, 1);
-        assert_eq!(score.failure_count, 0);
+        let loaded = store.load("srv1").await.unwrap().unwrap();
+        assert_eq!(loaded.server_id, "srv1");
+        assert!(loaded.score > ServerTrustScore::INITIAL_SCORE);
+        assert_eq!(loaded.success_count, 1);
+        assert_eq!(loaded.failure_count, 0);
     }
 
     #[tokio::test]
@@ -430,9 +430,9 @@ mod tests {
             .await
             .unwrap();
 
-        let score = store.load("srv1").await.unwrap().unwrap();
-        assert!(score.score < ServerTrustScore::INITIAL_SCORE);
-        assert_eq!(score.failure_count, 1);
+        let loaded = store.load("srv1").await.unwrap().unwrap();
+        assert!(loaded.score < ServerTrustScore::INITIAL_SCORE);
+        assert_eq!(loaded.failure_count, 1);
     }
 
     #[tokio::test]
@@ -458,8 +458,8 @@ mod tests {
         store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
         store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
 
-        let score = store.load("srv1").await.unwrap().unwrap();
-        assert_eq!(score.success_count, 2);
+        let loaded = store.load("srv1").await.unwrap().unwrap();
+        assert_eq!(loaded.success_count, 2);
     }
 
     #[tokio::test]
@@ -644,12 +644,12 @@ mod tests {
             .await
             .unwrap();
 
-        let score = store.load("srv1").await.unwrap().unwrap();
+        let loaded = store.load("srv1").await.unwrap().unwrap();
         assert!(
-            score.score > ServerTrustScore::INITIAL_SCORE,
+            loaded.score > ServerTrustScore::INITIAL_SCORE,
             "new entry should start at INITIAL_SCORE + delta"
         );
-        assert_eq!(score.success_count, 1);
+        assert_eq!(loaded.success_count, 1);
     }
 
     #[tokio::test]
@@ -673,18 +673,18 @@ mod tests {
         // Delta = 0.0 — decay only.
         store.load_and_apply_delta("srv1", 0.0, 0, 0).await.unwrap();
 
-        let score = store.load("srv1").await.unwrap().unwrap();
+        let loaded = store.load("srv1").await.unwrap().unwrap();
         // After 30 days of decay (0.01/day) from 0.9, effective base ≈ 0.60.
         // Written back score should be below 0.9.
         assert!(
-            score.score < 0.9,
+            loaded.score < 0.9,
             "score should have decayed from 0.9, got {}",
-            score.score
+            loaded.score
         );
         assert!(
-            score.score >= ServerTrustScore::INITIAL_SCORE,
+            loaded.score >= ServerTrustScore::INITIAL_SCORE,
             "score should not decay below INITIAL_SCORE, got {}",
-            score.score
+            loaded.score
         );
     }
 }

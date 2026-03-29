@@ -487,7 +487,7 @@ mod tests {
 
     use crate::lsp_hooks::test_helpers::RecordingCaller;
 
-    /// Rust source with one top-level symbol so extract_symbol_positions finds it.
+    /// Rust source with one top-level symbol so `extract_symbol_positions` finds it.
     const RUST_SOURCE_ONE_FN: &str = "pub fn my_function() {}";
 
     #[tokio::test]

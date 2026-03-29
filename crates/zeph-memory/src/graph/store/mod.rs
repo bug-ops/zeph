@@ -410,6 +410,12 @@ impl GraphStore {
         let confidence = confidence.clamp(0.0, 1.0);
         let edge_type_str = edge_type.as_str();
 
+        // Wrap SELECT + INSERT/UPDATE in a single transaction to eliminate the race window
+        // between existence check and write. The unique partial index uq_graph_edges_active
+        // covers (source, target, relation, edge_type) WHERE valid_to IS NULL; SQLite does not
+        // support ON CONFLICT DO UPDATE against partial indexes, so we keep two statements.
+        let mut tx = zeph_db::begin(&self.pool).await?;
+
         let existing: Option<(i64, f64)> = zeph_db::query_as(sql!(
             "SELECT id, confidence FROM graph_edges
              WHERE source_entity_id = ?
@@ -423,7 +429,7 @@ impl GraphStore {
         .bind(target_entity_id)
         .bind(relation)
         .bind(edge_type_str)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some((existing_id, stored_conf)) = existing {
@@ -431,8 +437,9 @@ impl GraphStore {
             zeph_db::query(sql!("UPDATE graph_edges SET confidence = ? WHERE id = ?"))
                 .bind(updated_conf)
                 .bind(existing_id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
+            tx.commit().await?;
             return Ok(existing_id);
         }
 
@@ -450,8 +457,9 @@ impl GraphStore {
         .bind(f64::from(confidence))
         .bind(episode_raw)
         .bind(edge_type_str)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(id)
     }
 
@@ -2024,10 +2032,10 @@ impl GraphStore {
         &self,
         ids: &[crate::types::MessageId],
     ) -> Result<(), MemoryError> {
+        const MAX_BATCH: usize = 490;
         if ids.is_empty() {
             return Ok(());
         }
-        const MAX_BATCH: usize = 490;
         for chunk in ids.chunks(MAX_BATCH) {
             let placeholders = placeholder_list(1, chunk.len());
             let sql =

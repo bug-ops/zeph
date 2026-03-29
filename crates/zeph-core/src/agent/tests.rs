@@ -4329,7 +4329,7 @@ mod shutdown_summary_tests {
         // repeat-detection which fires on identical (name, args_hash) pairs),
         // but the tool executor always returns Ok(None) → "(no output)" each time.
         // After DOOM_LOOP_WINDOW identical last-message contents, doom-loop fires.
-        let tool_responses: Vec<ChatResponse> = (0..DOOM_LOOP_WINDOW + 1)
+        let tool_responses: Vec<ChatResponse> = (0..=DOOM_LOOP_WINDOW)
             .map(|i| ChatResponse::ToolUse {
                 text: None,
                 tool_calls: vec![ToolUseRequest {
@@ -4454,6 +4454,7 @@ mod shutdown_summary_tests {
     // tool_a returns [error], triggering self-reflection which calls chat() → Text.
     // tool_b returns success with FilterStats. The remaining-tools loop processes tool_b.
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop() {
         use crate::config::LearningConfig;
         use crate::metrics::MetricsSnapshot;

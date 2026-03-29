@@ -444,7 +444,11 @@ mod tests {
     fn truncate_to_token_budget_long_input_truncated() {
         let counter = crate::token_counter::TokenCounter::new();
         // Generate a long text that definitely exceeds 10 tokens.
-        let text: String = (0..100).map(|i| format!("word{i} ")).collect();
+        let text: String = (0..100).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write as _;
+            let _ = write!(acc, "word{i} ");
+            acc
+        });
         let result = truncate_to_token_budget(&text, 10, &counter);
         assert!(
             counter.count_tokens(&result) <= 10,

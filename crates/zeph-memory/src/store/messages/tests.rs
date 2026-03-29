@@ -1325,9 +1325,9 @@ async fn find_promotion_candidates_returns_conversation_id() {
     );
 }
 
-/// `apply_tool_pair_summaries` must hide the specified message IDs (agent_visible=0) and
+/// `apply_tool_pair_summaries` must hide the specified message IDs (`agent_visible=0`) and
 /// insert a summary assistant message, such that a subsequent `load_history_filtered`
-/// with `agent_visible=Some(true)` returns no orphaned tool_use/tool_result rows.
+/// with `agent_visible=Some(true)` returns no orphaned `tool_use`/`tool_result` rows.
 #[tokio::test]
 async fn apply_tool_pair_summaries_hides_pairs_and_inserts_summary() {
     let store = test_store().await;

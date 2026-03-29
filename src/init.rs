@@ -2918,8 +2918,8 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.soft_compaction_threshold, 0.60);
-        assert_eq!(config.memory.hard_compaction_threshold, 0.85);
+        assert!((config.memory.soft_compaction_threshold - 0.60).abs() < f32::EPSILON);
+        assert!((config.memory.hard_compaction_threshold - 0.85).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -2931,8 +2931,8 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.soft_compaction_threshold, 0.70);
-        assert_eq!(config.memory.hard_compaction_threshold, 0.90);
+        assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+        assert!((config.memory.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
     }
 
     // Documents that build_config() is a dumb mapper: cross-field validation (hard > soft)
@@ -2946,8 +2946,8 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.soft_compaction_threshold, 0.80);
-        assert_eq!(config.memory.hard_compaction_threshold, 0.60);
+        assert!((config.memory.soft_compaction_threshold - 0.80).abs() < f32::EPSILON);
+        assert!((config.memory.hard_compaction_threshold - 0.60).abs() < f32::EPSILON);
     }
 
     // Documents that boundary exclusion (hard < 1.0) lives in the wizard validator,
@@ -2961,8 +2961,8 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.soft_compaction_threshold, 0.70);
-        assert_eq!(config.memory.hard_compaction_threshold, 1.0);
+        assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
+        assert!((config.memory.hard_compaction_threshold - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

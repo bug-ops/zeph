@@ -863,6 +863,7 @@ async fn orphan_alias_cleanup_on_entity_delete() {
 /// - `graph_edges` survive (FK cascade did not wipe them)
 #[tokio::test]
 #[cfg(feature = "sqlite")]
+#[allow(clippy::too_many_lines)]
 async fn migration_024_backfill_preserves_entities_and_edges() {
     use sqlx::Acquire as _;
     use sqlx::ConnectOptions as _;
@@ -3289,7 +3290,7 @@ async fn entity_community_ids_empty_input_returns_empty() {
     assert!(result.is_empty());
 }
 
-/// Regression test for #2215: insert_edge_typed must reject self-loop edges.
+/// Regression test for #2215: `insert_edge_typed` must reject self-loop edges.
 #[tokio::test]
 async fn insert_edge_typed_rejects_self_loop() {
     let gs = setup().await;

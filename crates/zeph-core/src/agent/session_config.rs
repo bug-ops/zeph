@@ -180,22 +180,22 @@ mod tests {
             crate::bootstrap::effective_embedding_model(&config)
         );
         assert_eq!(sc.semantic_cache_enabled, config.llm.semantic_cache_enabled);
-        assert_eq!(
-            sc.semantic_cache_threshold,
-            config.llm.semantic_cache_threshold
+        assert!(
+            (sc.semantic_cache_threshold - config.llm.semantic_cache_threshold).abs()
+                < f32::EPSILON
         );
         assert_eq!(
             sc.semantic_cache_max_candidates,
             config.llm.semantic_cache_max_candidates
         );
         assert_eq!(sc.budget_tokens, budget);
-        assert_eq!(
-            sc.soft_compaction_threshold,
-            config.memory.soft_compaction_threshold
+        assert!(
+            (sc.soft_compaction_threshold - config.memory.soft_compaction_threshold).abs()
+                < f32::EPSILON
         );
-        assert_eq!(
-            sc.hard_compaction_threshold,
-            config.memory.hard_compaction_threshold
+        assert!(
+            (sc.hard_compaction_threshold - config.memory.hard_compaction_threshold).abs()
+                < f32::EPSILON
         );
         assert_eq!(
             sc.compaction_preserve_tail,

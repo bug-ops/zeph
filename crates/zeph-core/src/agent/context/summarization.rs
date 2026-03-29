@@ -27,793 +27,6 @@ fn extract_overflow_ref(body: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_overflow_ref_returns_uuid_when_present() {
-        let uuid = "550e8400-e29b-41d4-a716-446655440000";
-        let body = format!(
-            "some output\n[full output stored \u{2014} ID: {uuid} \u{2014} 12345 bytes, use read_overflow tool to retrieve]"
-        );
-        assert_eq!(extract_overflow_ref(&body), Some(uuid));
-    }
-
-    #[test]
-    fn extract_overflow_ref_returns_none_when_absent() {
-        let body = "normal small output without overflow notice";
-        assert_eq!(extract_overflow_ref(body), None);
-    }
-
-    #[test]
-    fn extract_overflow_ref_returns_none_for_empty_body() {
-        assert_eq!(extract_overflow_ref(""), None);
-    }
-
-    #[test]
-    fn extract_overflow_ref_handles_notice_at_start() {
-        let uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-        let body = format!(
-            "[full output stored \u{2014} ID: {uuid} \u{2014} 9999 bytes, use read_overflow tool to retrieve]"
-        );
-        assert_eq!(extract_overflow_ref(&body), Some(uuid));
-    }
-
-    // T-CRIT-01: prune_tool_outputs must skip focus_pinned messages.
-    #[test]
-    fn prune_tool_outputs_skips_focus_pinned_messages() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
-
-        let mut agent = Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        // Disable tail protection so the pruner can evict all messages in the test.
-        agent.context_manager.prune_protect_tokens = 0;
-        // Agent::new prepopulates messages[0] with a system prompt.
-
-        // Pinned knowledge block with a large tool output part
-        let mut pinned_meta = MessageMetadata::focus_pinned();
-        pinned_meta.focus_pinned = true;
-        let big_body = "x".repeat(5000);
-        let mut pinned_msg = Message {
-            role: Role::System,
-            content: big_body.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "read".into(),
-                body: big_body.clone(),
-                compacted_at: None,
-            }],
-            metadata: pinned_meta,
-        };
-        pinned_msg.rebuild_content();
-        agent.msg.messages.push(pinned_msg);
-
-        // Non-pinned message with a large tool output
-        let big_body2 = "y".repeat(5000);
-        let mut normal_msg = Message {
-            role: Role::User,
-            content: big_body2.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "shell".into(),
-                body: big_body2.clone(),
-                compacted_at: None,
-            }],
-            metadata: MessageMetadata::default(),
-        };
-        normal_msg.rebuild_content();
-        agent.msg.messages.push(normal_msg);
-
-        let freed = agent.prune_tool_outputs(1);
-
-        // messages[0] = agent system prompt, messages[1] = pinned, messages[2] = normal.
-        let pinned = &agent.msg.messages[1];
-        if let MessagePart::ToolOutput {
-            body, compacted_at, ..
-        } = &pinned.parts[0]
-        {
-            assert_eq!(*body, "x".repeat(5000), "pinned body must not be evicted");
-            assert!(
-                compacted_at.is_none(),
-                "pinned compacted_at must remain None"
-            );
-        }
-
-        // Non-pinned body must be evicted
-        let normal = &agent.msg.messages[2];
-        if let MessagePart::ToolOutput { compacted_at, .. } = &normal.parts[0] {
-            assert!(compacted_at.is_some(), "non-pinned body must be evicted");
-        }
-
-        assert!(freed > 0, "must free tokens from non-pinned message");
-    }
-
-    // T-CRIT-03: prune_tool_outputs_oldest_first basic ordering.
-    #[test]
-    fn prune_tool_outputs_oldest_first_evicts_from_front() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessagePart, Role};
-
-        let mut agent = Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        // Disable tail protection so the pruner can evict all messages in the test.
-        agent.context_manager.prune_protect_tokens = 0;
-        // Agent::new puts system prompt at messages[0]; tool outputs go to indices 1..=3.
-
-        for i in 0..3 {
-            let body = format!("tool output {i} {}", "z".repeat(500));
-            let mut msg = Message {
-                role: Role::User,
-                content: body.clone(),
-                parts: vec![MessagePart::ToolOutput {
-                    tool_name: "shell".into(),
-                    body: body.clone(),
-                    compacted_at: None,
-                }],
-                metadata: Default::default(),
-            };
-            msg.rebuild_content();
-            agent.msg.messages.push(msg);
-        }
-
-        // Evict just enough for the first message; the last two should be intact.
-        agent.prune_tool_outputs_oldest_first(1);
-
-        // messages[0] = agent system prompt, messages[1..=3] = ToolOutput messages.
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
-            assert!(
-                compacted_at.is_some(),
-                "oldest tool output must be evicted first"
-            );
-        }
-        // Second should be intact (we only freed enough for 1)
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
-            assert!(
-                compacted_at.is_none(),
-                "second tool output must still be intact"
-            );
-        }
-    }
-
-    // --- Structured summarization tests ---
-
-    // T-STR-01: build_anchored_summary_prompt embeds conversation and all 5 JSON field names.
-    #[test]
-    fn build_anchored_summary_prompt_contains_required_fields_and_history() {
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-        let messages = vec![
-            Message {
-                role: Role::User,
-                content: "refactor the auth middleware".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-            Message {
-                role: Role::Assistant,
-                content: "I will split it into two modules".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-        ];
-
-        let prompt =
-            Agent::<crate::agent::tests::agent_tests::MockChannel>::build_anchored_summary_prompt(
-                &messages, "",
-            );
-
-        // All 5 JSON field names must appear in the prompt.
-        assert!(prompt.contains("session_intent"), "missing session_intent");
-        assert!(prompt.contains("files_modified"), "missing files_modified");
-        assert!(prompt.contains("decisions_made"), "missing decisions_made");
-        assert!(prompt.contains("open_questions"), "missing open_questions");
-        assert!(prompt.contains("next_steps"), "missing next_steps");
-
-        // Conversation content must be embedded.
-        assert!(
-            prompt.contains("refactor the auth middleware"),
-            "user message not in prompt"
-        );
-        assert!(
-            prompt.contains("I will split it into two modules"),
-            "assistant message not in prompt"
-        );
-    }
-
-    // T-STR-02: build_anchored_summary_prompt injects guidelines when non-empty.
-    #[test]
-    fn build_anchored_summary_prompt_includes_guidelines() {
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "hello".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-        let prompt =
-            Agent::<crate::agent::tests::agent_tests::MockChannel>::build_anchored_summary_prompt(
-                &messages,
-                "focus on file paths",
-            );
-
-        assert!(
-            prompt.contains("compression-guidelines"),
-            "guidelines section missing"
-        );
-        assert!(
-            prompt.contains("focus on file paths"),
-            "guidelines content missing"
-        );
-    }
-
-    // T-STR-03: try_summarize_structured returns Ok(AnchoredSummary) when mock returns valid JSON.
-    #[tokio::test]
-    async fn try_summarize_structured_returns_anchored_summary_on_valid_json() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-        use zeph_memory::AnchoredSummary;
-
-        let valid_json = serde_json::to_string(&AnchoredSummary {
-            session_intent: "Implement auth middleware".into(),
-            files_modified: vec!["src/auth.rs".into()],
-            decisions_made: vec!["Decision: use JWT — Reason: stateless".into()],
-            open_questions: vec![],
-            next_steps: vec!["Write tests".into()],
-        })
-        .unwrap();
-
-        let mut agent = Agent::new(
-            mock_provider(vec![valid_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.memory_state.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "implement auth".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.try_summarize_structured(&messages, "").await;
-        assert!(result.is_ok(), "expected Ok, got: {result:?}");
-        let summary = result.unwrap();
-        assert_eq!(summary.session_intent, "Implement auth middleware");
-        assert_eq!(summary.files_modified, vec!["src/auth.rs"]);
-        assert!(summary.is_complete());
-    }
-
-    // T-STR-04: try_summarize_structured returns Err when mandatory fields are missing.
-    #[tokio::test]
-    async fn try_summarize_structured_returns_err_when_incomplete() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-        use zeph_memory::AnchoredSummary;
-
-        // next_steps is empty → is_complete() returns false → method must return Err.
-        let incomplete_json = serde_json::to_string(&AnchoredSummary {
-            session_intent: "Some intent".into(),
-            files_modified: vec![],
-            decisions_made: vec![],
-            open_questions: vec![],
-            next_steps: vec![], // missing → incomplete
-        })
-        .unwrap();
-
-        let mut agent = Agent::new(
-            mock_provider(vec![incomplete_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.memory_state.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "do something".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.try_summarize_structured(&messages, "").await;
-        assert!(
-            result.is_err(),
-            "expected Err for incomplete summary, got Ok"
-        );
-    }
-
-    // T-STR-05: try_summarize_structured returns Err when LLM returns invalid JSON.
-    #[tokio::test]
-    async fn try_summarize_structured_returns_err_on_malformed_json() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-        // chat_typed retries once then returns StructuredParse error on bad JSON.
-        let bad_json = "this is not json at all".to_string();
-        let mut agent = Agent::new(
-            mock_provider(vec![bad_json.clone(), bad_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.memory_state.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "summarize".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.try_summarize_structured(&messages, "").await;
-        assert!(result.is_err(), "expected Err for malformed JSON, got Ok");
-    }
-
-    // T-STR-06: summarize_messages uses prose path when structured_summaries = false.
-    #[tokio::test]
-    async fn summarize_messages_uses_prose_when_flag_disabled() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-        let prose_response = "1. User Intent: test\n2. Files: none".to_string();
-        let agent = Agent::new(
-            mock_provider(vec![prose_response.clone()]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        // structured_summaries = false by default in Agent::new()
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "do a thing".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.summarize_messages(&messages, "").await;
-        assert!(result.is_ok(), "prose path must succeed");
-        // Prose path returns the raw LLM output (no markdown section headers from AnchoredSummary).
-        assert!(
-            !result.unwrap().contains("[anchored summary]"),
-            "prose path must not produce anchored summary header"
-        );
-    }
-
-    // T-STR-07: summarize_messages returns markdown with anchored headers when flag enabled.
-    #[tokio::test]
-    async fn summarize_messages_returns_anchored_markdown_when_flag_enabled() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-        use zeph_memory::AnchoredSummary;
-
-        let valid_json = serde_json::to_string(&AnchoredSummary {
-            session_intent: "Build a CLI tool".into(),
-            files_modified: vec!["src/cli.rs".into()],
-            decisions_made: vec!["Decision: use clap — Reason: ergonomic API".into()],
-            open_questions: vec![],
-            next_steps: vec!["Add help text".into()],
-        })
-        .unwrap();
-
-        let mut agent = Agent::new(
-            mock_provider(vec![valid_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.memory_state.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "build CLI".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.summarize_messages(&messages, "").await;
-        assert!(result.is_ok(), "structured path must succeed");
-        let md = result.unwrap();
-        assert!(
-            md.contains("[anchored summary]"),
-            "output must start with anchored summary header"
-        );
-        assert!(md.contains("## Session Intent"), "missing Session Intent");
-        assert!(md.contains("## Next Steps"), "missing Next Steps");
-        assert!(
-            md.contains("Build a CLI tool"),
-            "session_intent content missing"
-        );
-    }
-
-    // T-STR-08: dump_anchored_summary creates a file with required JSON fields.
-    #[test]
-    fn dump_anchored_summary_creates_file_with_required_fields() {
-        use crate::debug_dump::{DebugDumper, DumpFormat};
-        use zeph_memory::{AnchoredSummary, TokenCounter};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).expect("dumper creation");
-        let summary = AnchoredSummary {
-            session_intent: "Test dump".into(),
-            files_modified: vec!["a.rs".into(), "b.rs".into()],
-            decisions_made: vec!["Decision: async — Reason: performance".into()],
-            open_questions: vec![],
-            next_steps: vec!["Run tests".into()],
-        };
-        let counter = TokenCounter::new();
-        dumper.dump_anchored_summary(&summary, false, &counter);
-
-        // Find the anchored-summary file.
-        let entries: Vec<_> = std::fs::read_dir(dumper.dir())
-            .expect("read_dir")
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.ends_with("-anchored-summary.json"))
-            })
-            .collect();
-        assert_eq!(
-            entries.len(),
-            1,
-            "exactly one anchored-summary.json expected"
-        );
-
-        let content = std::fs::read_to_string(&entries[0]).expect("read file");
-        let v: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
-        assert!(
-            v.get("section_completeness").is_some(),
-            "missing section_completeness"
-        );
-        assert!(v.get("total_items").is_some(), "missing total_items");
-        assert!(v.get("token_estimate").is_some(), "missing token_estimate");
-        assert!(v.get("fallback").is_some(), "missing fallback field");
-        assert_eq!(v["fallback"], false, "fallback must be false");
-
-        let sc = &v["section_completeness"];
-        assert_eq!(sc["session_intent"], true);
-        assert_eq!(sc["files_modified"], true);
-        assert_eq!(sc["decisions_made"], true);
-        assert_eq!(sc["open_questions"], false);
-        assert_eq!(sc["next_steps"], true);
-    }
-
-    // T-STR-09: dump_anchored_summary with fallback=true sets fallback field correctly.
-    #[test]
-    fn dump_anchored_summary_fallback_flag_propagated() {
-        use crate::debug_dump::{DebugDumper, DumpFormat};
-        use zeph_memory::{AnchoredSummary, TokenCounter};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).expect("dumper creation");
-        let empty = AnchoredSummary {
-            session_intent: String::new(),
-            files_modified: vec![],
-            decisions_made: vec![],
-            open_questions: vec![],
-            next_steps: vec![],
-        };
-        let counter = TokenCounter::new();
-        dumper.dump_anchored_summary(&empty, true, &counter);
-
-        let entries: Vec<_> = std::fs::read_dir(dumper.dir())
-            .expect("read_dir")
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.ends_with("-anchored-summary.json"))
-            })
-            .collect();
-        assert_eq!(
-            entries.len(),
-            1,
-            "exactly one anchored-summary.json expected"
-        );
-
-        let content = std::fs::read_to_string(&entries[0]).expect("read file");
-        let v: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
-        assert_eq!(v["fallback"], true, "fallback flag must be true");
-        assert_eq!(
-            v["total_items"], 0,
-            "total_items must be 0 for empty summary"
-        );
-    }
-
-    // T-CRIT-03: prune_tool_outputs_scored basic — lowest-relevance block evicted first.
-    #[cfg(feature = "context-compression")]
-    #[test]
-    fn prune_tool_outputs_scored_evicts_lowest_relevance_first() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use crate::config::PruningStrategy;
-        use zeph_llm::provider::{Message, MessagePart, Role};
-
-        let mut agent = Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
-        agent.compression.current_task_goal =
-            Some("authentication middleware session token".to_string());
-        // Disable tail protection so the pruner can evict all messages in the test.
-        agent.context_manager.prune_protect_tokens = 0;
-        // Agent::new puts system prompt at messages[0]; rel_msg goes to index 1, irrel_msg to 2.
-
-        // High-relevance: contains goal keywords
-        let rel_body = "authentication middleware session token implementation ".repeat(50);
-        let mut rel_msg = Message {
-            role: Role::User,
-            content: rel_body.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "read".into(),
-                body: rel_body.clone(),
-                compacted_at: None,
-            }],
-            metadata: Default::default(),
-        };
-        rel_msg.rebuild_content();
-        agent.msg.messages.push(rel_msg);
-
-        // Low-relevance: unrelated content
-        let irrel_body = "database migration schema table column index ".repeat(50);
-        let mut irrel_msg = Message {
-            role: Role::User,
-            content: irrel_body.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "read".into(),
-                body: irrel_body.clone(),
-                compacted_at: None,
-            }],
-            metadata: Default::default(),
-        };
-        irrel_msg.rebuild_content();
-        agent.msg.messages.push(irrel_msg);
-
-        agent.prune_tool_outputs_scored(1);
-
-        // messages[0] = agent system prompt, messages[1] = rel_msg, messages[2] = irrel_msg.
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
-            assert!(
-                compacted_at.is_some(),
-                "low-relevance block must be evicted"
-            );
-        }
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
-            assert!(compacted_at.is_none(), "high-relevance block must survive");
-        }
-    }
-
-    // T-CRIT-04: prune_tool_outputs_mig evicts blocks with lowest MIG score first.
-    #[cfg(feature = "context-compression")]
-    #[test]
-    fn prune_tool_outputs_mig_evicts_lowest_mig_first() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use crate::config::PruningStrategy;
-        use zeph_llm::provider::{Message, MessagePart, Role};
-
-        let mut agent = Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
-        // Set a goal so MIG scorer has context for relevance scoring.
-        agent.compression.current_task_goal = Some("authentication token".to_string());
-        // Disable tail protection so the pruner can evict all messages in the test.
-        agent.context_manager.prune_protect_tokens = 0;
-
-        // High-relevance: repeated goal keywords → high relevance, low redundancy relative to goal
-        let rel_body = "authentication token session middleware ".repeat(50);
-        let mut rel_msg = Message {
-            role: Role::User,
-            content: rel_body.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "read".into(),
-                body: rel_body.clone(),
-                compacted_at: None,
-            }],
-            metadata: Default::default(),
-        };
-        rel_msg.rebuild_content();
-        agent.msg.messages.push(rel_msg);
-
-        // Low-relevance: unrelated content → low relevance → low MIG → evicted first
-        let irrel_body = "database schema table column index ".repeat(50);
-        let mut irrel_msg = Message {
-            role: Role::User,
-            content: irrel_body.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "read".into(),
-                body: irrel_body.clone(),
-                compacted_at: None,
-            }],
-            metadata: Default::default(),
-        };
-        irrel_msg.rebuild_content();
-        agent.msg.messages.push(irrel_msg);
-
-        // Ask to free only 1 token — should evict the lowest-MIG block.
-        agent.prune_tool_outputs_mig(1);
-
-        // messages[0] = system prompt, messages[1] = rel_msg, messages[2] = irrel_msg.
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
-            assert!(
-                compacted_at.is_some(),
-                "low-MIG (irrelevant) block must be evicted"
-            );
-        } else {
-            panic!("expected ToolOutput at messages[2]");
-        }
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
-            assert!(
-                compacted_at.is_none(),
-                "high-MIG (relevant) block must survive"
-            );
-        } else {
-            panic!("expected ToolOutput at messages[1]");
-        }
-    }
-
-    // T-CRIT-05: scored pruning respects prune_protect_tokens.
-    #[cfg(feature = "context-compression")]
-    #[test]
-    fn prune_tool_outputs_scored_respects_protect_tokens() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use crate::config::PruningStrategy;
-        use zeph_llm::provider::{Message, MessagePart, Role};
-
-        let mut agent = Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
-        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
-        // Protect the entire tail (999_999 tokens) — nothing should be evicted.
-        agent.context_manager.prune_protect_tokens = 999_999;
-
-        let body = "unrelated content database schema ".repeat(50);
-        let mut msg = Message {
-            role: Role::User,
-            content: body.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "read".into(),
-                body: body.clone(),
-                compacted_at: None,
-            }],
-            metadata: Default::default(),
-        };
-        msg.rebuild_content();
-        agent.msg.messages.push(msg);
-
-        let freed = agent.prune_tool_outputs_scored(1);
-        assert_eq!(
-            freed, 0,
-            "no tokens should be freed when everything is protected"
-        );
-
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
-            assert!(
-                compacted_at.is_none(),
-                "protected block must not be evicted"
-            );
-        } else {
-            panic!("expected ToolOutput at messages[1]");
-        }
-    }
-
-    // T-CRIT-06: MIG pruning respects prune_protect_tokens.
-    #[cfg(feature = "context-compression")]
-    #[test]
-    fn prune_tool_outputs_mig_respects_protect_tokens() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use crate::config::PruningStrategy;
-        use zeph_llm::provider::{Message, MessagePart, Role};
-
-        let mut agent = Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
-        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
-        // Protect the entire tail (999_999 tokens) — nothing should be evicted.
-        agent.context_manager.prune_protect_tokens = 999_999;
-
-        let body = "unrelated content database schema ".repeat(50);
-        let mut msg = Message {
-            role: Role::User,
-            content: body.clone(),
-            parts: vec![MessagePart::ToolOutput {
-                tool_name: "read".into(),
-                body: body.clone(),
-                compacted_at: None,
-            }],
-            metadata: Default::default(),
-        };
-        msg.rebuild_content();
-        agent.msg.messages.push(msg);
-
-        let freed = agent.prune_tool_outputs_mig(1);
-        assert_eq!(
-            freed, 0,
-            "no tokens should be freed when everything is protected"
-        );
-
-        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
-            assert!(
-                compacted_at.is_none(),
-                "protected block must not be evicted"
-            );
-        } else {
-            panic!("expected ToolOutput at messages[1]");
-        }
-    }
-}
-
 impl<C: Channel> Agent<C> {
     pub(super) fn build_chunk_prompt(messages: &[Message], guidelines: &str) -> String {
         let estimated_len: usize = messages
@@ -3559,6 +2772,793 @@ fn parse_subgoal_extraction_response(
     SubgoalExtractionResult {
         current: trimmed.to_string(),
         completed: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_overflow_ref_returns_uuid_when_present() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let body = format!(
+            "some output\n[full output stored \u{2014} ID: {uuid} \u{2014} 12345 bytes, use read_overflow tool to retrieve]"
+        );
+        assert_eq!(extract_overflow_ref(&body), Some(uuid));
+    }
+
+    #[test]
+    fn extract_overflow_ref_returns_none_when_absent() {
+        let body = "normal small output without overflow notice";
+        assert_eq!(extract_overflow_ref(body), None);
+    }
+
+    #[test]
+    fn extract_overflow_ref_returns_none_for_empty_body() {
+        assert_eq!(extract_overflow_ref(""), None);
+    }
+
+    #[test]
+    fn extract_overflow_ref_handles_notice_at_start() {
+        let uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let body = format!(
+            "[full output stored \u{2014} ID: {uuid} \u{2014} 9999 bytes, use read_overflow tool to retrieve]"
+        );
+        assert_eq!(extract_overflow_ref(&body), Some(uuid));
+    }
+
+    // T-CRIT-01: prune_tool_outputs must skip focus_pinned messages.
+    #[test]
+    fn prune_tool_outputs_skips_focus_pinned_messages() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+        // Agent::new prepopulates messages[0] with a system prompt.
+
+        // Pinned knowledge block with a large tool output part
+        let mut pinned_meta = MessageMetadata::focus_pinned();
+        pinned_meta.focus_pinned = true;
+        let big_body = "x".repeat(5000);
+        let mut pinned_msg = Message {
+            role: Role::System,
+            content: big_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: big_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: pinned_meta,
+        };
+        pinned_msg.rebuild_content();
+        agent.msg.messages.push(pinned_msg);
+
+        // Non-pinned message with a large tool output
+        let big_body2 = "y".repeat(5000);
+        let mut normal_msg = Message {
+            role: Role::User,
+            content: big_body2.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "shell".into(),
+                body: big_body2.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        normal_msg.rebuild_content();
+        agent.msg.messages.push(normal_msg);
+
+        let freed = agent.prune_tool_outputs(1);
+
+        // messages[0] = agent system prompt, messages[1] = pinned, messages[2] = normal.
+        let pinned = &agent.msg.messages[1];
+        if let MessagePart::ToolOutput {
+            body, compacted_at, ..
+        } = &pinned.parts[0]
+        {
+            assert_eq!(*body, "x".repeat(5000), "pinned body must not be evicted");
+            assert!(
+                compacted_at.is_none(),
+                "pinned compacted_at must remain None"
+            );
+        }
+
+        // Non-pinned body must be evicted
+        let normal = &agent.msg.messages[2];
+        if let MessagePart::ToolOutput { compacted_at, .. } = &normal.parts[0] {
+            assert!(compacted_at.is_some(), "non-pinned body must be evicted");
+        }
+
+        assert!(freed > 0, "must free tokens from non-pinned message");
+    }
+
+    // T-CRIT-03: prune_tool_outputs_oldest_first basic ordering.
+    #[test]
+    fn prune_tool_outputs_oldest_first_evicts_from_front() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+        // Agent::new puts system prompt at messages[0]; tool outputs go to indices 1..=3.
+
+        for i in 0..3 {
+            let body = format!("tool output {i} {}", "z".repeat(500));
+            let mut msg = Message {
+                role: Role::User,
+                content: body.clone(),
+                parts: vec![MessagePart::ToolOutput {
+                    tool_name: "shell".into(),
+                    body: body.clone(),
+                    compacted_at: None,
+                }],
+                metadata: MessageMetadata::default(),
+            };
+            msg.rebuild_content();
+            agent.msg.messages.push(msg);
+        }
+
+        // Evict just enough for the first message; the last two should be intact.
+        agent.prune_tool_outputs_oldest_first(1);
+
+        // messages[0] = agent system prompt, messages[1..=3] = ToolOutput messages.
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_some(),
+                "oldest tool output must be evicted first"
+            );
+        }
+        // Second should be intact (we only freed enough for 1)
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "second tool output must still be intact"
+            );
+        }
+    }
+
+    // --- Structured summarization tests ---
+
+    // T-STR-01: build_anchored_summary_prompt embeds conversation and all 5 JSON field names.
+    #[test]
+    fn build_anchored_summary_prompt_contains_required_fields_and_history() {
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: "refactor the auth middleware".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "I will split it into two modules".into(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+
+        let prompt =
+            Agent::<crate::agent::tests::agent_tests::MockChannel>::build_anchored_summary_prompt(
+                &messages, "",
+            );
+
+        // All 5 JSON field names must appear in the prompt.
+        assert!(prompt.contains("session_intent"), "missing session_intent");
+        assert!(prompt.contains("files_modified"), "missing files_modified");
+        assert!(prompt.contains("decisions_made"), "missing decisions_made");
+        assert!(prompt.contains("open_questions"), "missing open_questions");
+        assert!(prompt.contains("next_steps"), "missing next_steps");
+
+        // Conversation content must be embedded.
+        assert!(
+            prompt.contains("refactor the auth middleware"),
+            "user message not in prompt"
+        );
+        assert!(
+            prompt.contains("I will split it into two modules"),
+            "assistant message not in prompt"
+        );
+    }
+
+    // T-STR-02: build_anchored_summary_prompt injects guidelines when non-empty.
+    #[test]
+    fn build_anchored_summary_prompt_includes_guidelines() {
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let prompt =
+            Agent::<crate::agent::tests::agent_tests::MockChannel>::build_anchored_summary_prompt(
+                &messages,
+                "focus on file paths",
+            );
+
+        assert!(
+            prompt.contains("compression-guidelines"),
+            "guidelines section missing"
+        );
+        assert!(
+            prompt.contains("focus on file paths"),
+            "guidelines content missing"
+        );
+    }
+
+    // T-STR-03: try_summarize_structured returns Ok(AnchoredSummary) when mock returns valid JSON.
+    #[tokio::test]
+    async fn try_summarize_structured_returns_anchored_summary_on_valid_json() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::AnchoredSummary;
+
+        let valid_json = serde_json::to_string(&AnchoredSummary {
+            session_intent: "Implement auth middleware".into(),
+            files_modified: vec!["src/auth.rs".into()],
+            decisions_made: vec!["Decision: use JWT — Reason: stateless".into()],
+            open_questions: vec![],
+            next_steps: vec!["Write tests".into()],
+        })
+        .unwrap();
+
+        let mut agent = Agent::new(
+            mock_provider(vec![valid_json]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.memory_state.structured_summaries = true;
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "implement auth".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let result = agent.try_summarize_structured(&messages, "").await;
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+        let summary = result.unwrap();
+        assert_eq!(summary.session_intent, "Implement auth middleware");
+        assert_eq!(summary.files_modified, vec!["src/auth.rs"]);
+        assert!(summary.is_complete());
+    }
+
+    // T-STR-04: try_summarize_structured returns Err when mandatory fields are missing.
+    #[tokio::test]
+    async fn try_summarize_structured_returns_err_when_incomplete() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::AnchoredSummary;
+
+        // next_steps is empty → is_complete() returns false → method must return Err.
+        let incomplete_json = serde_json::to_string(&AnchoredSummary {
+            session_intent: "Some intent".into(),
+            files_modified: vec![],
+            decisions_made: vec![],
+            open_questions: vec![],
+            next_steps: vec![], // missing → incomplete
+        })
+        .unwrap();
+
+        let mut agent = Agent::new(
+            mock_provider(vec![incomplete_json]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.memory_state.structured_summaries = true;
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "do something".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let result = agent.try_summarize_structured(&messages, "").await;
+        assert!(
+            result.is_err(),
+            "expected Err for incomplete summary, got Ok"
+        );
+    }
+
+    // T-STR-05: try_summarize_structured returns Err when LLM returns invalid JSON.
+    #[tokio::test]
+    async fn try_summarize_structured_returns_err_on_malformed_json() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        // chat_typed retries once then returns StructuredParse error on bad JSON.
+        let bad_json = "this is not json at all".to_string();
+        let mut agent = Agent::new(
+            mock_provider(vec![bad_json.clone(), bad_json]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.memory_state.structured_summaries = true;
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "summarize".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let result = agent.try_summarize_structured(&messages, "").await;
+        assert!(result.is_err(), "expected Err for malformed JSON, got Ok");
+    }
+
+    // T-STR-06: summarize_messages uses prose path when structured_summaries = false.
+    #[tokio::test]
+    async fn summarize_messages_uses_prose_when_flag_disabled() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        let prose_response = "1. User Intent: test\n2. Files: none".to_string();
+        let agent = Agent::new(
+            mock_provider(vec![prose_response.clone()]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // structured_summaries = false by default in Agent::new()
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "do a thing".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let result = agent.summarize_messages(&messages, "").await;
+        assert!(result.is_ok(), "prose path must succeed");
+        // Prose path returns the raw LLM output (no markdown section headers from AnchoredSummary).
+        assert!(
+            !result.unwrap().contains("[anchored summary]"),
+            "prose path must not produce anchored summary header"
+        );
+    }
+
+    // T-STR-07: summarize_messages returns markdown with anchored headers when flag enabled.
+    #[tokio::test]
+    async fn summarize_messages_returns_anchored_markdown_when_flag_enabled() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::AnchoredSummary;
+
+        let valid_json = serde_json::to_string(&AnchoredSummary {
+            session_intent: "Build a CLI tool".into(),
+            files_modified: vec!["src/cli.rs".into()],
+            decisions_made: vec!["Decision: use clap — Reason: ergonomic API".into()],
+            open_questions: vec![],
+            next_steps: vec!["Add help text".into()],
+        })
+        .unwrap();
+
+        let mut agent = Agent::new(
+            mock_provider(vec![valid_json]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.memory_state.structured_summaries = true;
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "build CLI".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let result = agent.summarize_messages(&messages, "").await;
+        assert!(result.is_ok(), "structured path must succeed");
+        let md = result.unwrap();
+        assert!(
+            md.contains("[anchored summary]"),
+            "output must start with anchored summary header"
+        );
+        assert!(md.contains("## Session Intent"), "missing Session Intent");
+        assert!(md.contains("## Next Steps"), "missing Next Steps");
+        assert!(
+            md.contains("Build a CLI tool"),
+            "session_intent content missing"
+        );
+    }
+
+    // T-STR-08: dump_anchored_summary creates a file with required JSON fields.
+    #[test]
+    fn dump_anchored_summary_creates_file_with_required_fields() {
+        use crate::debug_dump::{DebugDumper, DumpFormat};
+        use zeph_memory::{AnchoredSummary, TokenCounter};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).expect("dumper creation");
+        let summary = AnchoredSummary {
+            session_intent: "Test dump".into(),
+            files_modified: vec!["a.rs".into(), "b.rs".into()],
+            decisions_made: vec!["Decision: async — Reason: performance".into()],
+            open_questions: vec![],
+            next_steps: vec!["Run tests".into()],
+        };
+        let counter = TokenCounter::new();
+        dumper.dump_anchored_summary(&summary, false, &counter);
+
+        // Find the anchored-summary file.
+        let entries: Vec<_> = std::fs::read_dir(dumper.dir())
+            .expect("read_dir")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with("-anchored-summary.json"))
+            })
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one anchored-summary.json expected"
+        );
+
+        let content = std::fs::read_to_string(&entries[0]).expect("read file");
+        let v: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+        assert!(
+            v.get("section_completeness").is_some(),
+            "missing section_completeness"
+        );
+        assert!(v.get("total_items").is_some(), "missing total_items");
+        assert!(v.get("token_estimate").is_some(), "missing token_estimate");
+        assert!(v.get("fallback").is_some(), "missing fallback field");
+        assert_eq!(v["fallback"], false, "fallback must be false");
+
+        let sc = &v["section_completeness"];
+        assert_eq!(sc["session_intent"], true);
+        assert_eq!(sc["files_modified"], true);
+        assert_eq!(sc["decisions_made"], true);
+        assert_eq!(sc["open_questions"], false);
+        assert_eq!(sc["next_steps"], true);
+    }
+
+    // T-STR-09: dump_anchored_summary with fallback=true sets fallback field correctly.
+    #[test]
+    fn dump_anchored_summary_fallback_flag_propagated() {
+        use crate::debug_dump::{DebugDumper, DumpFormat};
+        use zeph_memory::{AnchoredSummary, TokenCounter};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).expect("dumper creation");
+        let empty = AnchoredSummary {
+            session_intent: String::new(),
+            files_modified: vec![],
+            decisions_made: vec![],
+            open_questions: vec![],
+            next_steps: vec![],
+        };
+        let counter = TokenCounter::new();
+        dumper.dump_anchored_summary(&empty, true, &counter);
+
+        let entries: Vec<_> = std::fs::read_dir(dumper.dir())
+            .expect("read_dir")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with("-anchored-summary.json"))
+            })
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one anchored-summary.json expected"
+        );
+
+        let content = std::fs::read_to_string(&entries[0]).expect("read file");
+        let v: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+        assert_eq!(v["fallback"], true, "fallback flag must be true");
+        assert_eq!(
+            v["total_items"], 0,
+            "total_items must be 0 for empty summary"
+        );
+    }
+
+    // T-CRIT-03: prune_tool_outputs_scored basic — lowest-relevance block evicted first.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_scored_evicts_lowest_relevance_first() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
+        agent.compression.current_task_goal =
+            Some("authentication middleware session token".to_string());
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+        // Agent::new puts system prompt at messages[0]; rel_msg goes to index 1, irrel_msg to 2.
+
+        // High-relevance: contains goal keywords
+        let rel_body = "authentication middleware session token implementation ".repeat(50);
+        let mut rel_msg = Message {
+            role: Role::User,
+            content: rel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: rel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        rel_msg.rebuild_content();
+        agent.msg.messages.push(rel_msg);
+
+        // Low-relevance: unrelated content
+        let irrel_body = "database migration schema table column index ".repeat(50);
+        let mut irrel_msg = Message {
+            role: Role::User,
+            content: irrel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: irrel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        irrel_msg.rebuild_content();
+        agent.msg.messages.push(irrel_msg);
+
+        agent.prune_tool_outputs_scored(1);
+
+        // messages[0] = agent system prompt, messages[1] = rel_msg, messages[2] = irrel_msg.
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
+            assert!(
+                compacted_at.is_some(),
+                "low-relevance block must be evicted"
+            );
+        }
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(compacted_at.is_none(), "high-relevance block must survive");
+        }
+    }
+
+    // T-CRIT-04: prune_tool_outputs_mig evicts blocks with lowest MIG score first.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_mig_evicts_lowest_mig_first() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
+        // Set a goal so MIG scorer has context for relevance scoring.
+        agent.compression.current_task_goal = Some("authentication token".to_string());
+        // Disable tail protection so the pruner can evict all messages in the test.
+        agent.context_manager.prune_protect_tokens = 0;
+
+        // High-relevance: repeated goal keywords → high relevance, low redundancy relative to goal
+        let rel_body = "authentication token session middleware ".repeat(50);
+        let mut rel_msg = Message {
+            role: Role::User,
+            content: rel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: rel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        rel_msg.rebuild_content();
+        agent.msg.messages.push(rel_msg);
+
+        // Low-relevance: unrelated content → low relevance → low MIG → evicted first
+        let irrel_body = "database schema table column index ".repeat(50);
+        let mut irrel_msg = Message {
+            role: Role::User,
+            content: irrel_body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: irrel_body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        irrel_msg.rebuild_content();
+        agent.msg.messages.push(irrel_msg);
+
+        // Ask to free only 1 token — should evict the lowest-MIG block.
+        agent.prune_tool_outputs_mig(1);
+
+        // messages[0] = system prompt, messages[1] = rel_msg, messages[2] = irrel_msg.
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[2].parts[0] {
+            assert!(
+                compacted_at.is_some(),
+                "low-MIG (irrelevant) block must be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[2]");
+        }
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "high-MIG (relevant) block must survive"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
+    }
+
+    // T-CRIT-05: scored pruning respects prune_protect_tokens.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_scored_respects_protect_tokens() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
+        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
+        // Protect the entire tail (999_999 tokens) — nothing should be evicted.
+        agent.context_manager.prune_protect_tokens = 999_999;
+
+        let body = "unrelated content database schema ".repeat(50);
+        let mut msg = Message {
+            role: Role::User,
+            content: body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        msg.rebuild_content();
+        agent.msg.messages.push(msg);
+
+        let freed = agent.prune_tool_outputs_scored(1);
+        assert_eq!(
+            freed, 0,
+            "no tokens should be freed when everything is protected"
+        );
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "protected block must not be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
+    }
+
+    // T-CRIT-06: MIG pruning respects prune_protect_tokens.
+    #[cfg(feature = "context-compression")]
+    #[test]
+    fn prune_tool_outputs_mig_respects_protect_tokens() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
+        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
+        // Protect the entire tail (999_999 tokens) — nothing should be evicted.
+        agent.context_manager.prune_protect_tokens = 999_999;
+
+        let body = "unrelated content database schema ".repeat(50);
+        let mut msg = Message {
+            role: Role::User,
+            content: body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        msg.rebuild_content();
+        agent.msg.messages.push(msg);
+
+        let freed = agent.prune_tool_outputs_mig(1);
+        assert_eq!(
+            freed, 0,
+            "no tokens should be freed when everything is protected"
+        );
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "protected block must not be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
     }
 }
 

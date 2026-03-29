@@ -638,7 +638,7 @@ mod tests {
         let tokens_b = tokenize("database migration schema");
         let tf_a = term_frequencies(&tokens_a);
         let tf_b = term_frequencies(&tokens_b);
-        assert_eq!(tf_weighted_similarity(&tf_a, &tf_b), 0.0);
+        assert!(tf_weighted_similarity(&tf_a, &tf_b).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -646,7 +646,7 @@ mod tests {
         let tf_empty: HashMap<String, f32> = HashMap::new();
         let tokens = tokenize("authentication session");
         let tf = term_frequencies(&tokens);
-        assert_eq!(tf_weighted_similarity(&tf_empty, &tf), 0.0);
+        assert!(tf_weighted_similarity(&tf_empty, &tf).abs() < f32::EPSILON);
     }
 
     // T-HIGH-03: score_blocks_task_aware tests.

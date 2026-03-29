@@ -265,6 +265,8 @@ impl<C: Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::agent::Agent;
     use crate::agent::state::ProviderConfigSnapshot;
     use crate::agent::tests::agent_tests::{
@@ -287,7 +289,7 @@ mod tests {
             claude_api_key: None,
             openai_api_key: None,
             gemini_api_key: None,
-            compatible_api_keys: Default::default(),
+            compatible_api_keys: HashMap::default(),
             llm_request_timeout_secs: 30,
             embedding_model: "nomic-embed-text".to_owned(),
         }
@@ -440,7 +442,7 @@ mod tests {
             claude_api_key: Some("key-claude".to_owned()),
             openai_api_key: Some("key-openai".to_owned()),
             gemini_api_key: None,
-            compatible_api_keys: Default::default(),
+            compatible_api_keys: HashMap::default(),
             llm_request_timeout_secs: 60,
             embedding_model: "nomic-embed-text".to_owned(),
         };

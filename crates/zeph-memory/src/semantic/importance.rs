@@ -101,7 +101,7 @@ mod tests {
         // Empty content: marker=0, density=0, role=0.7 → raw = 0.14
         let score = compute_importance("", "user");
         assert!(
-            score >= 0.10 && score <= 0.20,
+            (0.10..=0.20).contains(&score),
             "empty content user score should be around role_adj contribution, got {score}"
         );
     }
@@ -111,7 +111,7 @@ mod tests {
         // system role adj = 0.5, density=0, marker=0 → raw = 0.10
         let score = compute_importance("", "system");
         assert!(
-            score >= 0.05 && score <= 0.15,
+            (0.05..=0.15).contains(&score),
             "empty content system score expected ~0.10, got {score}"
         );
     }
@@ -133,7 +133,7 @@ mod tests {
         let score = compute_importance(content, "user");
         // density(~0.016)*0.3 + role(0.7)*0.2 ≈ 0.145
         assert!(
-            score >= 0.10 && score <= 0.20,
+            (0.10..=0.20).contains(&score),
             "short, unmarked user msg expected in 0.10-0.20, got {score}"
         );
     }
@@ -144,33 +144,33 @@ mod tests {
         let score = compute_importance(&content, "user");
         // density(0.625)*0.3 + role(0.7)*0.2 ≈ 0.328
         assert!(
-            score >= 0.28 && score <= 0.40,
+            (0.28..=0.40).contains(&score),
             "long, unmarked user msg expected in 0.28-0.40, got {score}"
         );
     }
 
     #[test]
     fn test_marker_score_case_insensitive() {
-        assert_eq!(marker_score("Remember: test"), 1.0);
-        assert_eq!(marker_score("REMEMBER: test"), 1.0);
-        assert_eq!(marker_score("rEmEmBeR: test"), 1.0);
+        assert!((marker_score("Remember: test") - 1.0).abs() < f64::EPSILON);
+        assert!((marker_score("REMEMBER: test") - 1.0).abs() < f64::EPSILON);
+        assert!((marker_score("rEmEmBeR: test") - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_marker_score_no_marker() {
-        assert_eq!(marker_score("just a regular message"), 0.0);
+        assert!(marker_score("just a regular message").abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_density_score_empty() {
-        assert_eq!(density_score(""), 0.0);
+        assert!(density_score("").abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_density_score_100_chars() {
         let score = density_score(&"a".repeat(100));
         // x=1/3, score=0.25 exactly
-        assert!(score >= 0.24 && score <= 0.28);
+        assert!((0.24..=0.28).contains(&score));
     }
 
     #[test]
@@ -185,7 +185,10 @@ mod tests {
         // Before the fix this would panic when slicing [..500] on the lowercased string.
         let content = "é".repeat(250);
         let score = marker_score(&content);
-        assert_eq!(score, 0.0, "no marker expected in multibyte string");
+        assert!(
+            score.abs() < f64::EPSILON,
+            "no marker expected in multibyte string"
+        );
     }
 
     #[test]
@@ -193,7 +196,7 @@ mod tests {
         // Marker followed by multibyte content — must not panic and must detect marker.
         let tail = "é".repeat(300);
         let content = format!("remember: {tail}");
-        assert_eq!(marker_score(&content), 1.0);
+        assert!((marker_score(&content) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -216,10 +219,10 @@ mod tests {
 
     #[test]
     fn test_role_adjustment() {
-        assert_eq!(role_adjustment("user"), 0.7);
-        assert_eq!(role_adjustment("assistant"), 0.4);
-        assert_eq!(role_adjustment("system"), 0.5);
-        assert_eq!(role_adjustment("unknown"), 0.5);
-        assert_eq!(role_adjustment("User"), 0.7); // case-insensitive
+        assert!((role_adjustment("user") - 0.7).abs() < f64::EPSILON);
+        assert!((role_adjustment("assistant") - 0.4).abs() < f64::EPSILON);
+        assert!((role_adjustment("system") - 0.5).abs() < f64::EPSILON);
+        assert!((role_adjustment("unknown") - 0.5).abs() < f64::EPSILON);
+        assert!((role_adjustment("User") - 0.7).abs() < f64::EPSILON); // case-insensitive
     }
 }

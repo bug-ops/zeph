@@ -346,7 +346,7 @@ impl<P: LlmProvider> PlanVerifier<P> {
         self.consecutive_failures
     }
 
-    /// Return configured max_tokens (for testing).
+    /// Return configured `max_tokens` (for testing).
     #[cfg(test)]
     pub fn max_tokens(&self) -> u32 {
         self.max_tokens
@@ -724,7 +724,7 @@ mod tests {
             false
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "mock"
         }
     }
@@ -785,7 +785,7 @@ mod tests {
         // Fail-open: complete=true, no gaps, confidence=0.0
         assert!(result.complete);
         assert!(result.gaps.is_empty());
-        assert_eq!(result.confidence, 0.0);
+        assert!(result.confidence.abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -944,7 +944,7 @@ mod tests {
             .await;
         assert!(!result.complete);
         assert_eq!(result.gaps.len(), 3);
-        assert_eq!(result.confidence, 0.8);
+        assert!((result.confidence - 0.8).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -956,7 +956,7 @@ mod tests {
         let result = verifier.verify_plan("goal", "output").await;
         assert!(result.complete);
         assert!(result.gaps.is_empty());
-        assert_eq!(result.confidence, 0.0);
+        assert!(result.confidence.abs() < f64::EPSILON);
     }
 
     // --- replan_from_plan tests ---

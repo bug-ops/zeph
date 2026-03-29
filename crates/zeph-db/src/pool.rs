@@ -40,7 +40,7 @@ impl DbConfig {
         }
         #[cfg(feature = "postgres")]
         {
-            Self::connect_postgres(&self.url, self.max_connections).await
+            Self::connect_postgres(&self.url, self.pool_size).await
         }
     }
 
@@ -77,6 +77,8 @@ impl DbConfig {
         let effective_max = max_connections.max(pool_size);
         let pool = SqlitePoolOptions::new()
             .max_connections(effective_max)
+            .min_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(30))
             .connect_with(opts)
             .await
             .map_err(DbError::Sqlx)?;

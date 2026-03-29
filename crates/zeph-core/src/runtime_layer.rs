@@ -240,8 +240,8 @@ mod tests {
         let _msg = Message::from_legacy(Role::User, "hello");
     }
 
-    /// Two layers registered in order [A, B]: before_chat must be called A then B,
-    /// and after_chat must be called A then B (forward order for both in MVP's loop).
+    /// Two layers registered in order [A, B]: `before_chat` must be called A then B,
+    /// and `after_chat` must be called A then B (forward order for both in MVP's loop).
     #[tokio::test]
     async fn multiple_layers_called_in_registration_order() {
         use std::sync::{Arc, Mutex};
@@ -302,12 +302,10 @@ mod tests {
         );
     }
 
-    /// after_chat must receive the short-circuit response produced by before_chat.
+    /// `after_chat` must receive the short-circuit response produced by `before_chat`.
     #[tokio::test]
     async fn after_chat_receives_short_circuit_response() {
         use std::sync::{Arc, Mutex};
-
-        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         struct CapturingAfter {
             captured: Arc<Mutex<Option<String>>>,
@@ -325,6 +323,7 @@ mod tests {
             }
         }
 
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let layer = CapturingAfter {
             captured: Arc::clone(&captured),
         };
@@ -345,7 +344,7 @@ mod tests {
         );
     }
 
-    /// NoopLayer after_tool returns () without errors.
+    /// `NoopLayer` `after_tool` returns `()` without errors.
     #[tokio::test]
     async fn noop_layer_after_tool_returns_unit() {
         use zeph_tools::executor::ToolOutput;

@@ -435,8 +435,8 @@ mod tests {
     }
 
     /// Verifies the eviction ordering invariant from critic finding S1:
-    /// advance_turn() resets CompactedThisTurn → Ready, then eviction can set
-    /// CompactedThisTurn{0} again in the same turn, which is visible to the sidequest check.
+    /// `advance_turn()` resets `CompactedThisTurn` → `Ready`, then eviction can set
+    /// `CompactedThisTurn{0}` again in the same turn, which is visible to the sidequest check.
     #[test]
     fn advance_turn_then_eviction_compacted_is_visible() {
         // Start of turn: eviction from previous turn carries cooldown=0

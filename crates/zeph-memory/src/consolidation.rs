@@ -400,7 +400,7 @@ mod tests {
         // msg1 and msg2 should be in the same cluster; orthogonal in its own.
         assert_eq!(clusters.len(), 2);
         let sizes: Vec<usize> = {
-            let mut s: Vec<usize> = clusters.iter().map(|c| c.len()).collect();
+            let mut s: Vec<usize> = clusters.iter().map(Vec::len).collect();
             s.sort_unstable();
             s
         };
@@ -673,8 +673,8 @@ mod tests {
     }
 
     /// #2359: transaction must be rolled back when the first INSERT fails
-    /// (non-existent conversation_id violates FK on messages.conversation_id).
-    /// After the error: memory_consolidation_sources has 0 rows,
+    /// (non-existent `conversation_id` violates FK on `messages.conversation_id`).
+    /// After the error: `memory_consolidation_sources` has 0 rows,
     /// source messages remain consolidated = 0.
     #[tokio::test]
     async fn apply_consolidation_merge_rollback_on_mid_tx_error() {
@@ -716,7 +716,7 @@ mod tests {
         assert_eq!(rows[1].0, 0, "m2 must remain consolidated=0 after rollback");
     }
 
-    /// #2360: only 1 message in DB — embedded.len() < 2 guard fires, all counters stay 0.
+    /// #2360: only 1 message in DB — `embedded.len()` < 2 guard fires, all counters stay 0.
     #[tokio::test]
     async fn run_consolidation_sweep_single_candidate_skips() {
         use zeph_llm::any::AnyProvider;
@@ -750,7 +750,7 @@ mod tests {
         assert_eq!(r.skipped, 0);
     }
 
-    /// #2360: 2 messages + MockProvider returning merge op → assert r.merges == 1.
+    /// #2360: 2 messages + `MockProvider` returning merge op → assert `r.merges` == 1.
     #[tokio::test]
     async fn run_consolidation_sweep_merge_increments_counter() {
         use zeph_llm::any::AnyProvider;
@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(r.skipped, 0);
     }
 
-    /// #2360: 2 messages + MockProvider returning update op → assert r.updates == 1.
+    /// #2360: 2 messages + `MockProvider` returning update op → assert `r.updates` == 1.
     #[tokio::test]
     async fn run_consolidation_sweep_update_increments_counter() {
         use zeph_llm::any::AnyProvider;
@@ -834,8 +834,8 @@ mod tests {
         assert_eq!(r.skipped, 0);
     }
 
-    /// #2360: MockProvider returns merge op with confidence 0.3, threshold is 0.7
-    /// → the op is below threshold and r.skipped == 1.
+    /// #2360: `MockProvider` returns merge op with confidence 0.3, threshold is 0.7
+    /// → the op is below threshold and `r.skipped` == 1.
     #[tokio::test]
     async fn run_consolidation_sweep_skipped_below_threshold() {
         use zeph_llm::any::AnyProvider;

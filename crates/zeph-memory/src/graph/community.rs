@@ -1158,9 +1158,9 @@ mod tests {
         );
     }
 
-    /// Chunked loading with chunk_size=1 must produce correct community assignments.
+    /// Chunked loading with `chunk_size=1` must produce correct community assignments.
     ///
-    /// Verifies: (a) community count is correct, (b) edge_facts_map and edge_id_map are fully
+    /// Verifies: (a) community count is correct, (b) `edge_facts_map` and `edge_id_map` are fully
     /// populated (checked via community membership — all edges contribute to fingerprints),
     /// (c) the loop executes multiple iterations by using a tiny chunk size on a 3-edge graph.
     #[tokio::test]
@@ -1169,37 +1169,37 @@ mod tests {
         let provider = mock_provider();
 
         // Build two isolated clusters: A-B-C and D-E.
-        let a = store
+        let node_alpha = store
             .upsert_entity("CA", "CA", EntityType::Concept, None)
             .await
             .unwrap();
-        let b = store
+        let node_beta = store
             .upsert_entity("CB", "CB", EntityType::Concept, None)
             .await
             .unwrap();
-        let c = store
+        let node_gamma = store
             .upsert_entity("CC", "CC", EntityType::Concept, None)
             .await
             .unwrap();
-        let d = store
+        let node_delta = store
             .upsert_entity("CD", "CD", EntityType::Concept, None)
             .await
             .unwrap();
-        let e = store
+        let node_epsilon = store
             .upsert_entity("CE", "CE", EntityType::Concept, None)
             .await
             .unwrap();
 
         store
-            .insert_edge(a, b, "r", "A-B fact", 1.0, None)
+            .insert_edge(node_alpha, node_beta, "r", "A-B fact", 1.0, None)
             .await
             .unwrap();
         store
-            .insert_edge(b, c, "r", "B-C fact", 1.0, None)
+            .insert_edge(node_beta, node_gamma, "r", "B-C fact", 1.0, None)
             .await
             .unwrap();
         store
-            .insert_edge(d, e, "r", "D-E fact", 1.0, None)
+            .insert_edge(node_delta, node_epsilon, "r", "D-E fact", 1.0, None)
             .await
             .unwrap();
 
@@ -1216,19 +1216,19 @@ mod tests {
         let communities = store.all_communities().await.unwrap();
         assert_eq!(communities.len(), 2);
 
-        let abc_ids = [a, b, c];
-        let de_ids = [d, e];
+        let abc_ids = [node_alpha, node_beta, node_gamma];
+        let de_ids = [node_delta, node_epsilon];
         let has_abc = communities
             .iter()
-            .any(|c| abc_ids.iter().all(|id| c.entity_ids.contains(id)));
+            .any(|comm| abc_ids.iter().all(|id| comm.entity_ids.contains(id)));
         let has_de = communities
             .iter()
-            .any(|c| de_ids.iter().all(|id| c.entity_ids.contains(id)));
+            .any(|comm| de_ids.iter().all(|id| comm.entity_ids.contains(id)));
         assert!(has_abc, "cluster A-B-C must form a community");
         assert!(has_de, "cluster D-E must form a community");
     }
 
-    /// chunk_size=usize::MAX must load all edges in a single query and produce correct results.
+    /// `chunk_size=usize::MAX` must load all edges in a single query and produce correct results.
     #[tokio::test]
     async fn test_detect_communities_chunk_size_max() {
         let store = setup().await;
@@ -1253,7 +1253,7 @@ mod tests {
         assert_eq!(count, 1, "chunk_size=usize::MAX must detect the community");
     }
 
-    /// chunk_size=0 falls back to the stream path without panicking.
+    /// `chunk_size=0` falls back to the stream path without panicking.
     #[tokio::test]
     async fn test_detect_communities_chunk_size_zero_fallback() {
         let store = setup().await;
@@ -1281,7 +1281,7 @@ mod tests {
         );
     }
 
-    /// Verifies that edge_facts_map is fully populated during chunked loading by checking
+    /// Verifies that `edge_facts_map` is fully populated during chunked loading by checking
     /// that the community fingerprint changes when a new edge is added (fingerprint includes
     /// edge IDs, so any missed edges would produce a different or stale fingerprint).
     #[tokio::test]

@@ -331,8 +331,8 @@ async fn memory_with_in_memory_vector_store() -> (
     (memory, embedding_store)
 }
 
-/// Seed an entity into SQLite + the entity embedding collection with a zero vector
-/// (matching MockProvider's embed() output).
+/// Seed an entity into `SQLite` + the entity embedding collection with a zero vector
+/// (matching `MockProvider`'s `embed()` output).
 async fn seed_entity_with_zero_embedding(
     store: &GraphStore,
     embedding_store: &crate::embedding_store::EmbeddingStore,
@@ -378,7 +378,7 @@ async fn seed_entity_with_zero_embedding(
     id
 }
 
-/// Seed an entity with a zero embedding but WITHOUT writing qdrant_point_id back to SQLite.
+/// Seed an entity with a zero embedding but WITHOUT writing `qdrant_point_id` back to `SQLite`.
 ///
 /// Used to exercise the secondary `target_id == entity_id` guard — when `qdrant_point_id` is NULL
 /// in the DB the primary point-id comparison cannot exclude the self-result, so the secondary

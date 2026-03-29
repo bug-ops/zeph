@@ -4169,7 +4169,7 @@ mod tests {
         let count = TRANSCRIPT_MAX_ENTRIES + extra;
         let content: String = (0..count).fold(String::new(), |mut acc, i| {
             use std::fmt::Write;
-            let _ = write!(acc, "{{\"role\":\"user\",\"content\":\"msg{i}\"}}\n");
+            let _ = writeln!(acc, "{{\"role\":\"user\",\"content\":\"msg{i}\"}}");
             acc
         });
         std::fs::write(tmp.path(), &content).unwrap();

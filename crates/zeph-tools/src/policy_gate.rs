@@ -263,8 +263,8 @@ mod tests {
         }
     }
 
-    fn make_gate(config: PolicyConfig) -> PolicyGateExecutor<MockExecutor> {
-        let enforcer = Arc::new(PolicyEnforcer::compile(&config).unwrap());
+    fn make_gate(config: &PolicyConfig) -> PolicyGateExecutor<MockExecutor> {
+        let enforcer = Arc::new(PolicyEnforcer::compile(config).unwrap());
         let context = Arc::new(std::sync::RwLock::new(PolicyContext {
             trust_level: TrustLevel::Trusted,
             env: HashMap::new(),
@@ -296,7 +296,7 @@ mod tests {
             rules: vec![],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let result = gate.execute_tool_call(&make_call("bash")).await;
         assert!(result.is_ok());
     }
@@ -309,7 +309,7 @@ mod tests {
             rules: vec![],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let result = gate.execute_tool_call(&make_call("bash")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
@@ -329,7 +329,7 @@ mod tests {
             }],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let result = gate
             .execute_tool_call(&make_call_with_path("shell", "/etc/passwd"))
             .await;
@@ -351,7 +351,7 @@ mod tests {
             }],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let result = gate
             .execute_tool_call(&make_call_with_path("shell", "/tmp/foo.sh"))
             .await;
@@ -367,7 +367,7 @@ mod tests {
             rules: vec![],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let err = gate
             .execute_tool_call(&make_call("bash"))
             .await
@@ -389,7 +389,7 @@ mod tests {
             rules: vec![],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let result = gate.execute_tool_call_confirmed(&make_call("bash")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
     }
@@ -403,7 +403,7 @@ mod tests {
             rules: vec![],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let call = make_call("shell");
         let result = gate.execute_tool_call_confirmed(&call).await;
         assert!(result.is_ok(), "allow path must not return an error");
@@ -428,7 +428,7 @@ mod tests {
             rules: vec![],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         let result = gate.execute("```bash\necho hi\n```").await;
         // MockExecutor always returns None for execute().
         assert!(result.is_ok());
@@ -454,7 +454,7 @@ mod tests {
             }],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         gate.set_effective_trust(TrustLevel::Quarantined);
         let result = gate.execute_tool_call(&make_call("shell")).await;
         assert!(
@@ -481,7 +481,7 @@ mod tests {
             }],
             policy_file: None,
         };
-        let gate = make_gate(config);
+        let gate = make_gate(&config);
         gate.set_effective_trust(TrustLevel::Trusted);
         let result = gate.execute_tool_call(&make_call("shell")).await;
         assert!(

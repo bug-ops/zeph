@@ -901,6 +901,8 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_cache_not_used_in_plan_with_cache() {
+        use crate::planner::LlmPlanner;
+        use zeph_config::OrchestrationConfig;
         use zeph_llm::mock::MockProvider;
 
         let pool = test_pool().await;
@@ -913,8 +915,6 @@ mod tests {
         .to_string();
 
         let provider = MockProvider::with_responses(vec![graph_json.clone()]);
-        use crate::planner::LlmPlanner;
-        use zeph_config::OrchestrationConfig;
         let planner = LlmPlanner::new(
             MockProvider::with_responses(vec![graph_json]),
             &OrchestrationConfig::default(),

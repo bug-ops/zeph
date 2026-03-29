@@ -853,13 +853,13 @@ mod tests {
         // No legacy numbered files should be written in Trace format.
         let files: Vec<_> = std::fs::read_dir(&session_dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 e.file_name()
                     .to_string_lossy()
                     .chars()
                     .next()
-                    .map_or(false, |c| c.is_ascii_digit())
+                    .is_some_and(|c| c.is_ascii_digit())
             })
             .collect();
         assert!(
@@ -1032,9 +1032,8 @@ mod tests {
             d.dump_response(id, "hello");
             let session_dir = std::fs::read_dir(tmp.path())
                 .unwrap()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                .next()
+                .filter_map(std::result::Result::ok)
+                .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
                 .unwrap()
                 .path();
             assert!(

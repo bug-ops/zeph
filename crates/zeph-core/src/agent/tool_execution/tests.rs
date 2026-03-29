@@ -3060,6 +3060,7 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
 // Second tool fails → reflection fires → early return must append ToolResult for 2nd (is_error)
 // and a synthetic [skipped] ToolResult for the 3rd. Total: 3 ToolResults for 3 ToolUses.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn self_reflection_middle_tool_failure_no_orphans() {
     use std::sync::{Arc, Mutex};
 
@@ -3728,6 +3729,7 @@ async fn transient_error_on_non_retryable_executor_is_not_retried() {
 // tool[2] is non-retryable-transient-always-fail. Verifies all three complete with
 // the correct outcome and the retry fires only for tool[1].
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mixed_retryable_and_non_retryable_batch() {
     use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4446,6 +4448,7 @@ async fn sanitize_tool_output_memory_save_still_uses_tool_result() {
 // After the fix, both ToolResults must be present in a single User message that immediately
 // follows the Assistant{ToolUse} message, with no interleaved messages in between.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn test_parallel_tool_calls_permanent_error_emits_tool_result() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4633,8 +4636,7 @@ async fn infrastructure_error_does_not_trigger_self_reflection() {
     let msg_count = agent.msg.messages.len();
     assert!(
         msg_count <= 3,
-        "infrastructure error must not trigger self-reflection (got {} messages)",
-        msg_count
+        "infrastructure error must not trigger self-reflection (got {msg_count} messages)"
     );
 
     // Verify the error content uses structured taxonomy format.

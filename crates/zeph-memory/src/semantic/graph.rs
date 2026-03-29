@@ -435,210 +435,6 @@ pub async fn extract_and_store(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use zeph_llm::any::AnyProvider;
-
-    use super::extract_and_store;
-    use crate::embedding_store::EmbeddingStore;
-    use crate::graph::GraphStore;
-    use crate::in_memory_store::InMemoryVectorStore;
-    use crate::store::SqliteStore;
-
-    use super::GraphExtractionConfig;
-
-    async fn setup() -> (GraphStore, Arc<EmbeddingStore>) {
-        let sqlite = SqliteStore::new(":memory:").await.unwrap();
-        let pool = sqlite.pool().clone();
-        let mem_store = Box::new(InMemoryVectorStore::new());
-        let emb = Arc::new(EmbeddingStore::with_store(mem_store, pool.clone()));
-        let gs = GraphStore::new(pool);
-        (gs, emb)
-    }
-
-    /// Regression test for #1829: extract_and_store() must pass the provider to EntityResolver
-    /// so that store_entity_embedding() is called and qdrant_point_id is set in SQLite.
-    #[tokio::test]
-    async fn extract_and_store_sets_qdrant_point_id_when_embedding_store_provided() {
-        let (gs, emb) = setup().await;
-
-        // MockProvider: supports embeddings, returns a valid extraction JSON for chat
-        let extraction_json = r#"{"entities":[{"name":"Rust","type":"language","summary":"systems language"}],"edges":[]}"#;
-        let mut mock =
-            zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
-        mock.supports_embeddings = true;
-        mock.embedding = vec![1.0_f32, 0.0, 0.0, 0.0];
-        let provider = AnyProvider::Mock(mock);
-
-        let config = GraphExtractionConfig {
-            max_entities: 10,
-            max_edges: 10,
-            extraction_timeout_secs: 10,
-            ..Default::default()
-        };
-
-        let result = extract_and_store(
-            "Rust is a systems programming language.".to_owned(),
-            vec![],
-            provider,
-            gs.pool().clone(),
-            config,
-            None,
-            Some(emb.clone()),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            result.stats.entities_upserted, 1,
-            "one entity should be upserted"
-        );
-
-        // The entity must have a qdrant_point_id — this proves store_entity_embedding() was called.
-        // Before the fix, EntityResolver was built without a provider, so embed() was never called
-        // and qdrant_point_id remained NULL.
-        let entity = gs
-            .find_entity("rust", crate::graph::EntityType::Language)
-            .await
-            .unwrap()
-            .expect("entity 'rust' must exist in SQLite");
-
-        assert!(
-            entity.qdrant_point_id.is_some(),
-            "qdrant_point_id must be set when embedding_store + provider are both provided (regression for #1829)"
-        );
-    }
-
-    /// When no embedding_store is provided, extract_and_store() must still work correctly
-    /// (no embeddings stored, but entities are still upserted).
-    #[tokio::test]
-    async fn extract_and_store_without_embedding_store_still_upserts_entities() {
-        let (gs, _emb) = setup().await;
-
-        let extraction_json = r#"{"entities":[{"name":"Python","type":"language","summary":"scripting"}],"edges":[]}"#;
-        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
-        let provider = AnyProvider::Mock(mock);
-
-        let config = GraphExtractionConfig {
-            max_entities: 10,
-            max_edges: 10,
-            extraction_timeout_secs: 10,
-            ..Default::default()
-        };
-
-        let result = extract_and_store(
-            "Python is a scripting language.".to_owned(),
-            vec![],
-            provider,
-            gs.pool().clone(),
-            config,
-            None,
-            None, // no embedding_store
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.stats.entities_upserted, 1);
-
-        let entity = gs
-            .find_entity("python", crate::graph::EntityType::Language)
-            .await
-            .unwrap()
-            .expect("entity 'python' must exist");
-
-        assert!(
-            entity.qdrant_point_id.is_none(),
-            "qdrant_point_id must remain None when no embedding_store is provided"
-        );
-    }
-
-    /// Regression test for #2166: FTS5 entity writes must be visible to a new connection pool
-    /// opened after extraction completes. Without `checkpoint_wal()` in `extract_and_store`,
-    /// a fresh pool sees stale FTS5 shadow tables and `find_entities_fuzzy` returns empty.
-    #[tokio::test]
-    async fn extract_and_store_fts5_cross_session_visibility() {
-        let file = tempfile::NamedTempFile::new().expect("tempfile");
-        let path = file.path().to_str().expect("valid path").to_string();
-
-        // Session A: run extract_and_store on a file DB (not :memory:) so WAL is used.
-        {
-            let sqlite = crate::store::SqliteStore::new(&path).await.unwrap();
-            let extraction_json = r#"{"entities":[{"name":"Ferris","type":"concept","summary":"Rust mascot"}],"edges":[]}"#;
-            let mock =
-                zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
-            let provider = AnyProvider::Mock(mock);
-            let config = GraphExtractionConfig {
-                max_entities: 10,
-                max_edges: 10,
-                extraction_timeout_secs: 10,
-                ..Default::default()
-            };
-            extract_and_store(
-                "Ferris is the Rust mascot.".to_owned(),
-                vec![],
-                provider,
-                sqlite.pool().clone(),
-                config,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        }
-
-        // Session B: new pool — FTS5 must see the entity extracted in session A.
-        let sqlite_b = crate::store::SqliteStore::new(&path).await.unwrap();
-        let gs_b = crate::graph::GraphStore::new(sqlite_b.pool().clone());
-        let results = gs_b.find_entities_fuzzy("Ferris", 10).await.unwrap();
-        assert!(
-            !results.is_empty(),
-            "FTS5 cross-session (#2166): entity extracted in session A must be visible in session B"
-        );
-    }
-
-    /// Regression test for #2215: self-loop edges (source == target entity) must be silently
-    /// skipped; no edge row should be inserted.
-    #[tokio::test]
-    async fn extract_and_store_skips_self_loop_edges() {
-        let (gs, _emb) = setup().await;
-
-        // LLM returns one entity and one self-loop edge (source == target).
-        let extraction_json = r#"{
-            "entities":[{"name":"Rust","type":"language","summary":"systems language"}],
-            "edges":[{"source":"Rust","target":"Rust","relation":"is","fact":"Rust is Rust","edge_type":"semantic"}]
-        }"#;
-        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
-        let provider = AnyProvider::Mock(mock);
-
-        let config = GraphExtractionConfig {
-            max_entities: 10,
-            max_edges: 10,
-            extraction_timeout_secs: 10,
-            ..Default::default()
-        };
-
-        let result = extract_and_store(
-            "Rust is a language.".to_owned(),
-            vec![],
-            provider,
-            gs.pool().clone(),
-            config,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.stats.entities_upserted, 1);
-        assert_eq!(
-            result.stats.edges_inserted, 0,
-            "self-loop edge must be rejected (#2215)"
-        );
-    }
-}
-
 impl SemanticMemory {
     /// Spawn background graph extraction for a message. Fire-and-forget — never blocks.
     ///
@@ -832,5 +628,209 @@ impl SemanticMemory {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zeph_llm::any::AnyProvider;
+
+    use super::extract_and_store;
+    use crate::embedding_store::EmbeddingStore;
+    use crate::graph::GraphStore;
+    use crate::in_memory_store::InMemoryVectorStore;
+    use crate::store::SqliteStore;
+
+    use super::GraphExtractionConfig;
+
+    async fn setup() -> (GraphStore, Arc<EmbeddingStore>) {
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let mem_store = Box::new(InMemoryVectorStore::new());
+        let emb = Arc::new(EmbeddingStore::with_store(mem_store, pool.clone()));
+        let gs = GraphStore::new(pool);
+        (gs, emb)
+    }
+
+    /// Regression test for #1829: `extract_and_store()` must pass the provider to `EntityResolver`
+    /// so that `store_entity_embedding()` is called and `qdrant_point_id` is set in `SQLite`.
+    #[tokio::test]
+    async fn extract_and_store_sets_qdrant_point_id_when_embedding_store_provided() {
+        let (gs, emb) = setup().await;
+
+        // MockProvider: supports embeddings, returns a valid extraction JSON for chat
+        let extraction_json = r#"{"entities":[{"name":"Rust","type":"language","summary":"systems language"}],"edges":[]}"#;
+        let mut mock =
+            zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Rust is a systems programming language.".to_owned(),
+            vec![],
+            provider,
+            gs.pool().clone(),
+            config,
+            None,
+            Some(emb.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result.stats.entities_upserted, 1,
+            "one entity should be upserted"
+        );
+
+        // The entity must have a qdrant_point_id — this proves store_entity_embedding() was called.
+        // Before the fix, EntityResolver was built without a provider, so embed() was never called
+        // and qdrant_point_id remained NULL.
+        let entity = gs
+            .find_entity("rust", crate::graph::EntityType::Language)
+            .await
+            .unwrap()
+            .expect("entity 'rust' must exist in SQLite");
+
+        assert!(
+            entity.qdrant_point_id.is_some(),
+            "qdrant_point_id must be set when embedding_store + provider are both provided (regression for #1829)"
+        );
+    }
+
+    /// When no `embedding_store` is provided, `extract_and_store()` must still work correctly
+    /// (no embeddings stored, but entities are still upserted).
+    #[tokio::test]
+    async fn extract_and_store_without_embedding_store_still_upserts_entities() {
+        let (gs, _emb) = setup().await;
+
+        let extraction_json = r#"{"entities":[{"name":"Python","type":"language","summary":"scripting"}],"edges":[]}"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Python is a scripting language.".to_owned(),
+            vec![],
+            provider,
+            gs.pool().clone(),
+            config,
+            None,
+            None, // no embedding_store
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.entities_upserted, 1);
+
+        let entity = gs
+            .find_entity("python", crate::graph::EntityType::Language)
+            .await
+            .unwrap()
+            .expect("entity 'python' must exist");
+
+        assert!(
+            entity.qdrant_point_id.is_none(),
+            "qdrant_point_id must remain None when no embedding_store is provided"
+        );
+    }
+
+    /// Regression test for #2166: FTS5 entity writes must be visible to a new connection pool
+    /// opened after extraction completes. Without `checkpoint_wal()` in `extract_and_store`,
+    /// a fresh pool sees stale FTS5 shadow tables and `find_entities_fuzzy` returns empty.
+    #[tokio::test]
+    async fn extract_and_store_fts5_cross_session_visibility() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = file.path().to_str().expect("valid path").to_string();
+
+        // Session A: run extract_and_store on a file DB (not :memory:) so WAL is used.
+        {
+            let sqlite = crate::store::SqliteStore::new(&path).await.unwrap();
+            let extraction_json = r#"{"entities":[{"name":"Ferris","type":"concept","summary":"Rust mascot"}],"edges":[]}"#;
+            let mock =
+                zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+            let provider = AnyProvider::Mock(mock);
+            let config = GraphExtractionConfig {
+                max_entities: 10,
+                max_edges: 10,
+                extraction_timeout_secs: 10,
+                ..Default::default()
+            };
+            extract_and_store(
+                "Ferris is the Rust mascot.".to_owned(),
+                vec![],
+                provider,
+                sqlite.pool().clone(),
+                config,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Session B: new pool — FTS5 must see the entity extracted in session A.
+        let sqlite_b = crate::store::SqliteStore::new(&path).await.unwrap();
+        let gs_b = crate::graph::GraphStore::new(sqlite_b.pool().clone());
+        let results = gs_b.find_entities_fuzzy("Ferris", 10).await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "FTS5 cross-session (#2166): entity extracted in session A must be visible in session B"
+        );
+    }
+
+    /// Regression test for #2215: self-loop edges (source == target entity) must be silently
+    /// skipped; no edge row should be inserted.
+    #[tokio::test]
+    async fn extract_and_store_skips_self_loop_edges() {
+        let (gs, _emb) = setup().await;
+
+        // LLM returns one entity and one self-loop edge (source == target).
+        let extraction_json = r#"{
+            "entities":[{"name":"Rust","type":"language","summary":"systems language"}],
+            "edges":[{"source":"Rust","target":"Rust","relation":"is","fact":"Rust is Rust","edge_type":"semantic"}]
+        }"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Rust is a language.".to_owned(),
+            vec![],
+            provider,
+            gs.pool().clone(),
+            config,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.entities_upserted, 1);
+        assert_eq!(
+            result.stats.edges_inserted, 0,
+            "self-loop edge must be rejected (#2215)"
+        );
     }
 }

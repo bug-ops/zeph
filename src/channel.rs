@@ -253,10 +253,10 @@ mod tests {
         );
     }
 
-    /// Exhaustive Channel method coverage for AppChannel.
+    /// Exhaustive `Channel` method coverage for `AppChannel`.
     ///
-    /// When a new method is added to the Channel trait, it must be called here.
-    /// If a forwarding is missing in AppChannel, this test serves as a manual checklist
+    /// When a new method is added to the `Channel` trait, it must be called here.
+    /// If a forwarding is missing in `AppChannel`, this test serves as a manual checklist
     /// to catch the gap during review.
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]

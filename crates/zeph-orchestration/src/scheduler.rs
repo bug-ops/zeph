@@ -2298,11 +2298,11 @@ mod tests {
         scheduler.consecutive_spawn_failures = 20;
         let start = tokio::time::Instant::now();
         scheduler.wait_event().await;
-        let elapsed20 = start.elapsed();
+        let elapsed_capped = start.elapsed();
         assert!(
-            elapsed20.as_millis() >= 5000,
+            elapsed_capped.as_millis() >= 5000,
             "backoff must be capped at 5000ms with high deferrals, got {}ms",
-            elapsed20.as_millis()
+            elapsed_capped.as_millis()
         );
     }
 
@@ -2655,7 +2655,7 @@ mod tests {
     }
 
     /// Regression for #1879: deadlock with one task Running should NOT trigger the deadlock
-    /// branch (running_in_graph_now > 0 suppresses the check).
+    /// branch (`running_in_graph_now` > 0 suppresses the check).
     #[test]
     fn test_deadlock_not_triggered_when_task_running() {
         // Graph in Failed with one task still marked Running — resume_from reconstructs
@@ -2916,8 +2916,8 @@ mod tests {
         );
         // Global and per-task counters must not be incremented on error.
         assert_eq!(scheduler.global_replan_count, 0);
-        assert_eq!(
-            scheduler.topology_dirty, false,
+        assert!(
+            !scheduler.topology_dirty,
             "topology_dirty must not be set when inject fails"
         );
     }
@@ -3304,7 +3304,7 @@ mod tests {
             crate::topology::Topology::Mixed,
             "initial topology must be Mixed"
         );
-        let expected_max_parallel = (4usize / 2 + 1).min(4).max(1); // = 3
+        let expected_max_parallel = (4usize / 2 + 1).clamp(1, 4); // = 3
         assert_eq!(scheduler.max_parallel, expected_max_parallel);
 
         // Simulate inject_tasks (which sets topology_dirty=true) followed by tick().

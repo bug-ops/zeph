@@ -81,9 +81,12 @@ pub type ActiveDialect = <ActiveDriver as DatabaseDriver>::Dialect;
 /// `SQLite`: returns the input `&str` directly — zero allocation, zero runtime cost.
 ///
 /// `PostgreSQL`: rewrites `?` to `$1`, `$2`, ... using [`rewrite_placeholders`].
-/// The rewrite is cached in a `LazyLock<String>` — runs exactly once per call
-/// site. Do NOT wrap `PostgreSQL` JSONB queries using `?`/`?|`/`?&` operators
-/// through this macro; use `$N` placeholders directly for those.
+/// The rewritten string is leaked via `Box::leak` to obtain `&'static str` —
+/// no caching: each call site leaks one allocation per unique SQL string.
+/// The set of unique SQL strings is bounded (call sites are fixed at compile
+/// time), so total leaked memory is bounded and acceptable for a long-running
+/// process. Do NOT wrap `PostgreSQL` JSONB queries using `?`/`?|`/`?&`
+/// operators through this macro; use `$N` placeholders directly for those.
 ///
 /// # Example
 ///

@@ -251,7 +251,7 @@ mod tests {
         // When progress_tx is None the loop body must not panic — verified by
         // constructing the same conditional used in index_project.
         let progress_tx: Option<&tokio::sync::watch::Sender<IndexProgress>> = None;
-        let entries = vec![1usize, 2, 3];
+        let entries = [1usize, 2, 3];
         for (i, _) in entries.iter().enumerate() {
             if let Some(tx) = progress_tx {
                 let _ = tx.send(IndexProgress {
