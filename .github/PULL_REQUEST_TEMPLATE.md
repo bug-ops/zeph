@@ -21,3 +21,4 @@
 - [ ] I have run `cargo clippy --workspace -- -D warnings` and addressed all warnings
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] All existing tests pass locally with my changes
+- [ ] If env vars changed: `docker/` compose files updated and `scripts/check-env-vars.sh` passes

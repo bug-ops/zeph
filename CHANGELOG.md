@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- docker: add all missing ZEPH_* env vars to docker-compose.yml and docker-compose.dev.yml (64 vars added, ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT renamed to ZEPH_MEMORY_RECALL_LIMIT)
+- docker: add scripts/check-env-vars.sh drift-prevention script
+
 ### Added
 
 - feat(db): Phase 3 DevEx integration — `--init` wizard backend selection (SQLite vs PostgreSQL), `--migrate-config` adds `database_url` placeholder under `[memory]`, `zeph db migrate` CLI subcommand runs pending migrations with URL validation and redacted output, `build-postgres` CI job checks `zeph-db --no-default-features --features postgres` compile; `is_postgres_url()` ungated (available in all builds); `zeph-db` and `zeph-memory` workspace deps set to `default-features = false` for correct mutual-exclusivity under `--no-default-features --features postgres` (follow-up #2374 tracks remaining call site fixes)
