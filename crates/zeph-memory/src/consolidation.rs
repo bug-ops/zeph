@@ -174,17 +174,28 @@ pub async fn run_consolidation_sweep(
         }
 
         // Embed all candidates for clustering.
-        let mut embedded: Vec<(i64, String, Vec<f32>)> = Vec::with_capacity(candidates.len());
-        for (id, content) in candidates {
-            if !provider.supports_embeddings() {
-                // No embedding support — cannot cluster, skip this conversation.
-                break;
-            }
-            match provider.embed(&content).await {
-                Ok(vec) => embedded.push((id.0, content, vec)),
+        if !provider.supports_embeddings() {
+            // No embedding support — cannot cluster, skip this conversation.
+            continue;
+        }
+
+        let futures: Vec<_> = candidates
+            .iter()
+            .map(|(id, content)| {
+                let id = id.0;
+                let content = content.clone();
+                async move { (id, content.clone(), provider.embed(&content).await) }
+            })
+            .collect();
+        let results = futures::future::join_all(futures).await;
+
+        let mut embedded: Vec<(i64, String, Vec<f32>)> = Vec::with_capacity(results.len());
+        for (id, content, result) in results {
+            match result {
+                Ok(vec) => embedded.push((id, content, vec)),
                 Err(e) => {
                     tracing::warn!(
-                        message_id = id.0,
+                        message_id = id,
                         error = %e,
                         "consolidation: failed to embed candidate, skipping"
                     );
@@ -243,20 +254,18 @@ pub async fn run_consolidation_sweep(
                     }
                 }
                 Some(TopologyOp::Update {
+                    target_id,
                     new_content,
                     additional_source_ids,
                     confidence,
-                    ..
                 }) => {
-                    // Update: same apply path but with a fresh merge for MVP simplicity.
                     let source_msg_ids: Vec<crate::types::MessageId> = additional_source_ids
                         .iter()
                         .map(|&id| crate::types::MessageId(id))
                         .collect();
                     match store
-                        .apply_consolidation_merge(
-                            conv_id,
-                            "assistant",
+                        .apply_consolidation_update(
+                            crate::types::MessageId(target_id),
                             &new_content,
                             &source_msg_ids,
                             confidence,
@@ -269,6 +278,7 @@ pub async fn run_consolidation_sweep(
                         Err(e) => {
                             tracing::warn!(
                                 error = %e,
+                                target_id,
                                 "consolidation: update failed"
                             );
                         }
@@ -323,19 +333,20 @@ async fn propose_merge_op(provider: &AnyProvider, cluster: &[(i64, String)]) -> 
         .collect::<Vec<_>>()
         .join("\n");
 
-    let prompt = format!(
-        "You are a memory consolidation assistant. \
-         The following messages are semantically similar and should be consolidated.\n\n\
-         Messages:\n{entries}\n\n\
+    let system_prompt = "You are a memory consolidation assistant. \
          Produce a single JSON object representing a consolidation operation.\n\
          Use this exact schema (choose either 'merge' or 'update'):\n\
-         {{\"op\":\"merge\",\"source_ids\":[<list of ids>],\"merged_content\":\"<combined fact>\",\"confidence\":<0.0-1.0>}}\n\
+         {\"op\":\"merge\",\"source_ids\":[<list of ids>],\"merged_content\":\"<combined fact>\",\"confidence\":<0.0-1.0>}\n\
          OR\n\
-         {{\"op\":\"update\",\"target_id\":<id>,\"new_content\":\"<updated fact>\",\"additional_source_ids\":[<ids>],\"confidence\":<0.0-1.0>}}\n\n\
-         Return ONLY the JSON object, no explanation."
-    );
+         {\"op\":\"update\",\"target_id\":<id>,\"new_content\":\"<updated fact>\",\"additional_source_ids\":[<ids>],\"confidence\":<0.0-1.0>}\n\
+         Return ONLY the JSON object, no explanation.";
 
-    let messages = vec![Message::from_legacy(Role::User, &prompt)];
+    let user_prompt = format!("Messages:\n{entries}");
+
+    let messages = vec![
+        Message::from_legacy(Role::System, system_prompt),
+        Message::from_legacy(Role::User, &user_prompt),
+    ];
     let text = match provider.chat(&messages).await {
         Ok(t) => t,
         Err(e) => {
@@ -918,20 +929,26 @@ mod tests {
             .expect("sweep must not error");
         assert_eq!(r.updates, 1);
 
-        // Verify the consolidated message exists in DB.
-        let consol_rows: Vec<(String, i64)> = zeph_db::query_as(sql!(
-            "SELECT content, consolidated FROM messages \
-             WHERE consolidated = 1 AND content = ?"
+        // Update is in-place: total row count must stay 2 (no new row inserted).
+        let total: (i64,) = zeph_db::query_as(sql!("SELECT COUNT(*) FROM messages"))
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(total.0, 2, "update must not insert a new row");
+
+        // The target row (m1) must have its content changed in-place.
+        let target_row: (String, i64) = zeph_db::query_as(sql!(
+            "SELECT content, consolidated FROM messages WHERE id = ?"
         ))
-        .bind(new_content)
-        .fetch_all(store.pool())
+        .bind(m1)
+        .fetch_one(store.pool())
         .await
         .unwrap();
         assert_eq!(
-            consol_rows.len(),
-            1,
-            "one consolidated message must be persisted"
+            target_row.0, new_content,
+            "target m1 content must be updated in-place"
         );
+        assert_eq!(target_row.1, 1, "target m1 must be marked consolidated=1");
 
         // Verify source m2 is marked consolidated (m2 was the additional_source_id).
         let source_row: (i64,) =

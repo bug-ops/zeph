@@ -11,6 +11,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(memory): correct ESCAPE clause in spreading activation BFS alias query — `ESCAPE '\\\\'` (2 chars) changed to `ESCAPE '\\'` (1 char) as required by SQLite (closes #2393)
 - fix(llm): call `save_bandit_state()` in `save_router_state()` to persist PILOT LinUCB bandit state across restarts (closes #2394)
 - fix(classifiers): use Metal/CUDA device when available in candle classifiers — falls back to CPU (#2396)
+- fix(memory): consolidation LLM prompt splits into `Role::System` (instructions) + `Role::User` (memory entries) to prevent adversarial content from influencing consolidation decisions (#2362)
+- fix(memory): `TopologyOp::Update` now performs an actual in-place content UPDATE on the target row instead of duplicating `apply_consolidation_merge` logic; `target_id` is no longer ignored (#2364)
+
+### Changed
+
+- perf(memory): consolidation sweep embeds all candidates concurrently via `futures::future::join_all` instead of sequentially, reducing latency for large batches (#2365)
 
 ## [0.18.0] - 2026-03-29
 

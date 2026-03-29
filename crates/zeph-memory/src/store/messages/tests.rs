@@ -1502,3 +1502,101 @@ fn garbage_json_returns_none_from_compat() {
     assert!(try_parse_legacy_parts(r#"{"not":"an array"}"#).is_none());
     assert!(try_parse_legacy_parts(r#"[{"UnknownVariant":{"x":"y"}}]"#).is_none());
 }
+
+// ── apply_consolidation_update in-place semantics (#2364) ────────────────────
+
+#[tokio::test]
+async fn apply_consolidation_update_in_place() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    let target = store
+        .save_message(cid, "user", "Alice uses Rust")
+        .await
+        .unwrap();
+    let source = store
+        .save_message(cid, "user", "Alice loves Rust")
+        .await
+        .unwrap();
+
+    let new_content = "Alice uses and loves Rust";
+    let accepted = store
+        .apply_consolidation_update(target, new_content, &[source], 0.9, 0.7)
+        .await
+        .unwrap();
+    assert!(
+        accepted,
+        "update must be accepted when confidence >= threshold"
+    );
+
+    // Target row must have content updated in-place — same row ID, new content.
+    let row: (i64, String, i64) = sqlx::query_as(sql!(
+        "SELECT id, content, consolidated FROM messages WHERE id = ?"
+    ))
+    .bind(target)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.0, target.0, "row ID must not change (in-place update)");
+    assert_eq!(row.1, new_content, "content must be updated in-place");
+    assert_eq!(row.2, 1, "target must be marked consolidated=1");
+
+    // No new row must have been inserted — total message count stays 2.
+    let count: (i64,) = sqlx::query_as(sql!("SELECT COUNT(*) FROM messages"))
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(count.0, 2, "update must not insert a new row");
+
+    // Additional source must be marked consolidated=1.
+    let src_row: (i64,) = sqlx::query_as(sql!("SELECT consolidated FROM messages WHERE id = ?"))
+        .bind(source)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        src_row.0, 1,
+        "additional source must be marked consolidated=1"
+    );
+
+    // Join table must link target → source.
+    let join: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM memory_consolidation_sources \
+         WHERE consolidated_id = ? AND source_id = ?"
+    ))
+    .bind(target)
+    .bind(source)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(join.0, 1, "join table must record the target→source link");
+}
+
+#[tokio::test]
+async fn apply_consolidation_update_skips_below_threshold() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    let target = store.save_message(cid, "user", "fact").await.unwrap();
+    let source = store.save_message(cid, "user", "other fact").await.unwrap();
+
+    let accepted = store
+        .apply_consolidation_update(target, "combined", &[source], 0.3, 0.7)
+        .await
+        .unwrap();
+    assert!(
+        !accepted,
+        "update must be skipped when confidence < threshold"
+    );
+
+    // Content must remain unchanged.
+    let row: (String,) = sqlx::query_as(sql!("SELECT content FROM messages WHERE id = ?"))
+        .bind(target)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        row.0, "fact",
+        "content must not change when update is skipped"
+    );
+}

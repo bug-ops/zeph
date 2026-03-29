@@ -1283,6 +1283,63 @@ impl SqliteStore {
         tx.commit().await?;
         Ok(true)
     }
+
+    /// Update an existing consolidated message in-place with new content.
+    ///
+    /// Atomically:
+    /// 1. Updates `content` and `consolidation_confidence` on `target_id`.
+    /// 2. Inserts rows into `memory_consolidation_sources` linking `target_id` → each source.
+    /// 3. Marks each source message's `consolidated = 1`.
+    ///
+    /// If `confidence < confidence_threshold` the operation is skipped and `false` is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database operation fails.
+    pub async fn apply_consolidation_update(
+        &self,
+        target_id: MessageId,
+        new_content: &str,
+        additional_source_ids: &[MessageId],
+        confidence: f32,
+        confidence_threshold: f32,
+    ) -> Result<bool, MemoryError> {
+        if confidence < confidence_threshold {
+            return Ok(false);
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        zeph_db::query(sql!(
+            "UPDATE messages SET content = ?, consolidation_confidence = ?, consolidated = 1 WHERE id = ?"
+        ))
+        .bind(new_content)
+        .bind(confidence)
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let consol_sql = format!(
+            "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES (?, ?){}",
+            <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+            <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+        );
+        for &source_id in additional_source_ids {
+            zeph_db::query(&consol_sql)
+                .bind(target_id)
+                .bind(source_id)
+                .execute(&mut *tx)
+                .await?;
+
+            zeph_db::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
+                .bind(source_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(true)
+    }
 }
 
 /// A candidate message for tier promotion, returned by [`SqliteStore::find_promotion_candidates`].
