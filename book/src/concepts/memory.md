@@ -227,6 +227,43 @@ Question words override code pattern heuristics: `"how does error_handling work"
 
 The agent calls `recall_routed()` on `SemanticMemory`, which delegates to the configured router before querying. When Qdrant is unavailable, Semantic-route queries return empty results; Hybrid-route queries fall back to FTS5 only.
 
+## Adaptive Memory Admission Control (A-MAC)
+
+By default, every message that crosses the minimum length threshold is embedded and stored in the vector backend. A-MAC adds a learned gate that evaluates each candidate message against the current memory state before committing the write. Only messages that are sufficiently novel — dissimilar to recently stored content — are admitted, preventing the vector index from filling with near-duplicate information.
+
+A-MAC is disabled by default. Enable it in `[memory.admission]`:
+
+```toml
+[memory.admission]
+enabled = true
+threshold = 0.30           # Cosine similarity ceiling; messages more similar than this to recent entries are rejected (default: 0.30)
+fast_path_margin = 0.10    # If the nearest-neighbor score is below (threshold - margin), skip the full check and admit immediately (default: 0.10)
+admission_provider = "fast" # Provider name for LLM-assisted admission decisions (optional)
+
+[memory.admission.weights]
+recency = 0.4              # Weight for how recently similar content was stored
+importance = 0.3           # Weight for message importance score (requires importance_enabled = true)
+similarity = 0.3           # Weight for raw embedding similarity
+```
+
+The `fast_path_margin` short-circuits the admission check for clearly novel messages, reducing embedding lookups on low-similarity content. When `admission_provider` is set, borderline cases (similarity near `threshold`) are escalated to an LLM for a binary admit/reject decision; without it, the threshold comparison is the sole gate.
+
+## MemScene Consolidation
+
+MemScene groups semantically related messages into *scenes* — short-lived narrative units covering a coherent sub-topic within a session. Scenes are detected automatically in the background and consolidated into a single embedding before the individual messages are demoted in the recall index. This compresses the vector space without discarding information: a scene embedding captures the collective meaning of its member messages, and scene summaries are searchable in future sessions.
+
+MemScene is configured under `[memory.tiers]`:
+
+```toml
+[memory.tiers]
+scene_enabled = true
+scene_similarity_threshold = 0.80  # Minimum cosine similarity for messages to be grouped into the same scene (default: 0.80)
+scene_batch_size = 10              # Number of messages to evaluate per consolidation cycle (default: 10)
+scene_provider = "fast"            # Provider name for scene summary generation
+```
+
+`scene_provider` must reference a `[[llm.providers]]` entry. If unset, the default provider is used. Scenes are stored in SQLite alongside their member message IDs and can be inspected with `zeph memory stats`.
+
 ## Active Context Compression
 
 Zeph supports two compression strategies for managing context growth:

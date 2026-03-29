@@ -581,6 +581,36 @@ Compaction is non-destructive. Each `Message` carries `MessageMetadata` with `ag
 
 Semantic recall (vector + FTS5) filters by `agent_visible=1`, so compacted originals are excluded from retrieval. Use `load_history_filtered(conversation_id, agent_visible, user_visible)` to query messages by visibility.
 
+## Native `compress_context` Tool
+
+When the `context-compression` feature is enabled, Zeph registers a `compress_context` native tool that the model can invoke explicitly to trigger context compression on demand — without waiting for the automatic threshold-based compaction pipeline to fire.
+
+The tool supports two compression strategies:
+
+| Strategy | Behavior |
+|----------|----------|
+| `Reactive` | Apply pending deferred summaries and prune old tool outputs (no LLM call). Equivalent to a soft-tier compaction triggered on demand. |
+| `Autonomous` | Run full LLM-based chunked compaction immediately, regardless of current token usage. The model decides when to invoke this based on its own assessment of context quality. |
+
+`Autonomous` mode uses the `compress_provider` for the summarization call. Configure it in `[memory.compression]`:
+
+```toml
+[memory.compression]
+compress_provider = "fast"   # Provider name for autonomous compress_context calls
+```
+
+When `compress_provider` is unset, the default LLM provider is used. The `compress_context` tool does not appear in the tool catalog when the `context-compression` feature is disabled at build time.
+
+**Invocation:**
+
+The model calls the tool with a `strategy` parameter:
+
+```json
+{ "strategy": "Autonomous" }
+```
+
+After execution, the tool returns a summary of tokens freed and the compaction outcome. The result is visible in the chat panel and in the debug dump.
+
 ## Tool Output Management
 
 ### Truncation

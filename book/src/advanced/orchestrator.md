@@ -108,6 +108,56 @@ embedding_model = "nomic-embed-text"      # dedicated embedding model
 embed = true
 ```
 
+## SLM Provider Recommendations
+
+Each Zeph subsystem that calls an LLM exposes a `*_provider` config field. Matching the model size to task complexity reduces cost and latency without sacrificing quality. The table below lists the recommended model tier for each subsystem:
+
+| Subsystem | Config field | Recommended tier | Rationale |
+|-----------|-------------|-----------------|-----------|
+| Skill matching | `[skills] match_provider` | Fast / SLM | Binary relevance signal; a 1.7B–8B model is sufficient |
+| Tool-pair summarization | `[llm] summary_model` or `[llm.summary_provider]` | Fast / SLM | 1–2 sentence summaries; speed matters more than depth |
+| Memory admission (A-MAC) | `[memory.admission] admission_provider` | Fast / SLM | Binary admit/reject decision; cheap models work well |
+| MemScene consolidation | `[memory.tiers] scene_provider` | Fast / medium | Short scene summaries; medium model improves coherence |
+| Compaction probe | `[memory.compression.probe] model` | Fast / medium | Question answering over a summary; Haiku-class is sufficient |
+| Compress context (autonomous) | `[memory.compression] compress_provider` | Medium | Full compaction requires reasonable summarization quality |
+| Complexity triage | `[llm.complexity_routing] triage_provider` | Fast / SLM | Single-word classification; any small model works |
+| Graph entity extraction | `[memory.graph] extract_provider` | Fast / medium | NER + relation extraction; 8B models handle most cases |
+| Session shutdown summary | `[memory] summary_provider` | Fast | Short session digest; latency is visible to the user |
+| Orchestration planning | `[orchestration] planner_provider` | Quality / expert | Multi-step DAG planning requires high-capability models |
+| MCP tool discovery (`Llm` strategy) | `[mcp.tool_discovery]` | Fast / medium | Relevance ranking from a short list |
+
+A typical cost-optimized setup uses a local Ollama model (e.g., `qwen3:1.7b`) for all fast-tier subsystems and a cloud model (e.g., `claude-sonnet-4-6`) for quality-tier tasks:
+
+```toml
+[[llm.providers]]
+name = "fast"
+type = "ollama"
+model = "qwen3:1.7b"
+embed = true
+
+[[llm.providers]]
+name = "quality"
+type = "claude"
+model = "claude-sonnet-4-6"
+default = true
+
+# Route cheap subsystems to the local model
+[memory.admission]
+admission_provider = "fast"
+
+[memory.tiers]
+scene_provider = "fast"
+
+[memory.compression]
+compress_provider = "fast"
+
+[llm.complexity_routing]
+triage_provider = "fast"
+
+[orchestration]
+planner_provider = "quality"
+```
+
 ## Hybrid Setup Example
 
 Embeddings via free local Ollama, chat via paid Claude API:

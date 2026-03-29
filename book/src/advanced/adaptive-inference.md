@@ -1,6 +1,6 @@
 # Adaptive Inference
 
-When multiple providers are configured and `routing` is set in `[llm]`, Zeph routes each LLM request through the provider list. The **routing strategy** determines which provider is tried first. Three strategies are available:
+When multiple providers are configured and `routing` is set in `[llm]`, Zeph routes each LLM request through the provider list. The **routing strategy** determines which provider is tried first. Four strategies are available:
 
 | Strategy | Config value | Description |
 |----------|-------------|-------------|
@@ -8,6 +8,7 @@ When multiple providers are configured and `routing` is set in `[llm]`, Zeph rou
 | **Thompson Sampling** | `"thompson"` | Bayesian exploration/exploitation via Beta distributions. Tracks per-provider success/failure counts and samples to choose the best provider |
 | **Cascade** | `"cascade"` | Cost-escalation routing. Tries providers cheapest-first; escalates to the next provider only when the response is classified as degenerate (empty, repetitive, incoherent) |
 | **Complexity Triage** | `"triage"` | Pre-inference classification routing. A cheap triage model classifies each request as `simple`, `medium`, `complex`, or `expert` and delegates to the matching tier provider. See [Complexity Triage Routing](complexity-triage.md) |
+| **Bandit** | `"bandit"` | PILOT LinUCB contextual bandit. Embeds each request and selects the provider that maximizes the upper confidence bound given observed cost-weighted rewards. See [Bandit Routing](#bandit-routing) |
 
 ## Thompson Sampling
 
@@ -176,8 +177,9 @@ This separates the fallback chain definition (used by all strategies) from the c
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `routing` | `"none"`, `"ema"`, `"thompson"`, `"cascade"`, `"task"` | `"none"` | Routing strategy |
+| `routing` | `"none"`, `"ema"`, `"thompson"`, `"cascade"`, `"task"`, `"bandit"` | `"none"` | Routing strategy |
 | `thompson_state_path` | string? | `~/.zeph/router_thompson_state.json` | Path for Thompson state persistence |
+| `bandit_state_path` | string? | `~/.config/zeph/router_bandit_state.json` | Path for bandit state persistence |
 
 `[llm.cascade]` fields (when `routing = "cascade"`):
 
@@ -197,6 +199,80 @@ EMA-specific fields live in `[llm]`:
 | `router_ema_enabled` | bool | `false` | Enable EMA latency tracking |
 | `router_ema_alpha` | float | `0.1` | EMA smoothing factor |
 | `router_reorder_interval` | int | `10` | Reorder interval in requests |
+
+## Bandit Routing
+
+The `"bandit"` strategy implements the PILOT LinUCB contextual bandit algorithm. Unlike Thompson Sampling (which tracks success/failure counts) or EMA (which tracks latency), the bandit embeds the current request as a feature vector and selects the provider that maximizes the upper confidence bound given observed cost-weighted rewards. This allows the router to learn which providers perform best for different *types* of requests, not just which provider is fastest or most reliable overall.
+
+### How It Works
+
+1. The incoming request is embedded using `embedding_provider` to produce a context vector.
+2. Each provider maintains a LinUCB model: a ridge regression matrix and a reward vector.
+3. The router computes a UCB score for every provider: the estimated reward plus an exploration bonus scaled by `alpha`.
+4. The provider with the highest score handles the request.
+5. After the request completes, the reward (quality signal minus cost penalty) is used to update that provider's model.
+6. The `decay_factor` attenuates historical observations over time, allowing the bandit to adapt to changes in provider behavior.
+
+### Enabling Bandit Routing
+
+```toml
+[llm]
+routing = "bandit"
+
+[llm.router.bandit]
+alpha = 1.0                          # Exploration bonus coefficient (default: 1.0)
+dim = 64                             # Embedding dimension for context features (default: 64)
+cost_weight = 0.1                    # Weight applied to token cost in the reward signal (default: 0.1)
+decay_factor = 0.99                  # Per-request exponential decay of historical observations (default: 0.99)
+embedding_provider = "fast"          # Provider name to use for request embedding
+embedding_timeout_ms = 500           # Timeout for the embedding call in milliseconds (default: 500)
+cache_size = 256                     # LRU cache size for repeated request embeddings (default: 256)
+
+[[llm.providers]]
+name = "fast"
+type = "openai"
+model = "gpt-4o-mini"
+embed = true
+
+[[llm.providers]]
+name = "quality"
+type = "claude"
+model = "claude-sonnet-4-6"
+```
+
+### State Persistence
+
+Bandit model state (the per-provider LinUCB matrices) is saved on agent shutdown and restored on startup. The default path is `~/.config/zeph/router_bandit_state.json`. Override with:
+
+```toml
+[llm]
+bandit_state_path = "/path/to/custom-bandit-state.json"
+```
+
+The file is written atomically (tmp + rename) with `0o600` permissions on Unix. On startup, loaded matrices are validated for dimensionality consistency — mismatched dimensions (e.g., after changing `dim`) cause a clean reset to the uniform prior.
+
+### Configuration Reference
+
+`[llm.router.bandit]` fields (active when `routing = "bandit"`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `alpha` | float | `1.0` | Exploration bonus coefficient. Higher values favor exploration of less-tested providers |
+| `dim` | usize | `64` | Embedding dimension. Must match the embedding model's output; changing this resets the state |
+| `cost_weight` | float | `0.1` | Relative weight of token cost in the reward signal. Higher values penalize expensive providers more aggressively |
+| `decay_factor` | float | `0.99` | Per-request multiplicative decay applied to historical observations. Values closer to 1.0 retain history longer |
+| `embedding_provider` | string? | — | Provider `name` used to embed requests. Should reference a fast, cheap embedding-capable provider |
+| `embedding_timeout_ms` | u64 | `500` | Timeout for the embedding call. On timeout, the bandit falls back to the first provider in the chain |
+| `cache_size` | usize | `256` | LRU cache capacity for request embeddings. Repeated or similar requests reuse cached vectors |
+
+### Inspecting State
+
+```bash
+# Show per-provider bandit statistics
+zeph router stats --strategy bandit
+```
+
+The output includes the estimated reward mean and uncertainty per provider, the number of observations, and the current `alpha`/`decay_factor` parameters.
 
 ## Known Limitations
 

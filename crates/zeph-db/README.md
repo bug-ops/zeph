@@ -16,6 +16,34 @@ Database abstraction layer for [Zeph](https://github.com/bug-ops/zeph) — unifi
 - **Safe URL logging** — `redact_url` strips credentials from connection strings before they appear in logs
 - **Write transactions** — `begin_write` issues `BEGIN IMMEDIATE` on SQLite (prevents `SQLITE_BUSY`); falls back to standard `BEGIN` on PostgreSQL
 
+## Runtime backend selection
+
+The active backend is determined at compile time by feature flag. For deployments that need to switch between SQLite and PostgreSQL without recompiling, set `ZEPH_DATABASE_URL` or `database_url` in `config.toml`:
+
+```toml
+[database]
+database_url = "postgres://user:pass@localhost/zeph"
+```
+
+```bash
+ZEPH_DATABASE_URL=postgres://user:pass@localhost/zeph zeph
+```
+
+> [!IMPORTANT]
+> The URL scheme (`sqlite:` / `postgres:`) must match the compiled feature. A `postgres://` URL with the `sqlite` feature (or vice versa) will fail at startup with a clear error.
+
+## CLI migrations
+
+Run pending migrations without starting the agent:
+
+```bash
+zeph db migrate                               # apply pending migrations using config database_url
+zeph db migrate --url postgres://user:pass@localhost/zeph
+```
+
+> [!TIP]
+> Use `zeph db migrate --dry-run` to print the SQL that would be applied without executing it.
+
 ## Installation
 
 This crate is an internal workspace member of Zeph. To use it in a workspace crate:

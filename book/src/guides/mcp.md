@@ -92,6 +92,31 @@ The shared tool list (`Arc<RwLock<Vec<McpTool>>>`) is updated automatically when
 
 For providers without native tool support (Ollama with `tool_use = false`, Candle), `append_mcp_prompt()` falls back to injecting tool descriptions as text into the system prompt, filtered by relevance score via Qdrant.
 
+## Semantic Tool Discovery
+
+By default, MCP tools are matched against the current request using the same cosine similarity pipeline as skills. The `SemanticToolIndex` adds a configurable discovery layer on top of this baseline:
+
+```toml
+[mcp.tool_discovery]
+strategy = "Embedding"          # "Embedding" (default), "Llm", or "None"
+top_k = 10                      # Maximum tools to inject per turn (default: 10)
+min_similarity = 0.30           # Minimum cosine similarity for a tool to be included (default: 0.30)
+always_include = ["read_file"]  # Tool names that bypass the similarity gate entirely
+min_tools_to_filter = 5         # Only apply filtering when the server exposes at least this many tools (default: 5)
+```
+
+`strategy` controls how candidate tools are ranked:
+
+| Value | Behavior |
+|-------|----------|
+| `Embedding` | Embed the user query and rank tools by cosine similarity. Requires an embedding provider. |
+| `Llm` | Ask a lightweight LLM to select the most relevant tools from the full list. Higher latency; useful for tools with ambiguous descriptions. |
+| `None` | Disable filtering; all tools from all servers are injected on every turn. |
+
+`always_include` accepts bare tool names or qualified `server_id:tool_name` strings. Entries in this list are injected regardless of their similarity score. Use it for tools the agent should always have available (e.g., `read_file`, `list_directory`).
+
+`min_tools_to_filter` prevents aggressive filtering on small servers. When a server exposes fewer tools than this value, all tools from that server are included unconditionally.
+
 ## How Matching Works
 
 MCP tools are embedded in Qdrant (`zeph_mcp_tools` collection) with BLAKE3 content-hash delta sync. Unified matching injects both skills and MCP tools into the system prompt by relevance score — keeping prompt size O(K) instead of O(N) where N is total tools across all servers.

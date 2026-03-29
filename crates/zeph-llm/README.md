@@ -114,6 +114,54 @@ Tier assignment uses a lightweight classifier (`TriageClassifier`) that runs bef
 > [!TIP]
 > Use `ClassifierMode::Judge` to route classification through a separate LLM call when heuristic scoring is insufficient for your workload.
 
+## PILOT LinUCB bandit routing
+
+The `bandit` strategy applies a contextual LinUCB bandit to provider selection. On each request, context features (query complexity score, recent per-provider latency, time-of-day bucket) are assembled into a feature vector; the bandit computes an upper confidence bound per provider and selects the highest. After each response, the reward signal (success × inverse latency) updates the ridge regression weights.
+
+State is persisted to `~/.zeph/router_bandit_state.json` (configurable) and restored on restart.
+
+```toml
+[llm.router]
+strategy = "bandit"
+chain    = ["ollama", "claude", "openai"]
+
+[llm.router.bandit]
+alpha            = 1.0     # exploration parameter; higher = more exploration
+state_path       = "~/.zeph/router_bandit_state.json"
+feature_dim      = 8       # dimensionality of the context feature vector
+```
+
+> [!NOTE]
+> PILOT (Provider Intelligent Linucb Online Tracking) is most effective when providers have meaningfully different latency/quality profiles and the workload has varied query complexity. For uniform workloads, Thompson Sampling may converge faster.
+
+> [!TIP]
+> Inspect learned weights and UCB scores with `zeph router stats` (same command as Thompson Sampling) or `/router stats` in the TUI.
+
+## SLM provider recommendations
+
+For cost-sensitive or resource-constrained deployments, the following Small Language Models are verified to work well with Zeph:
+
+| Task | Recommended SLM | Notes |
+|------|----------------|-------|
+| Embeddings | `nomic-embed-text` (Ollama) | Default embedding model |
+| Simple queries / routing | `qwen3:8b` (Ollama) | Fast, low memory footprint |
+| Summarization / compaction | `qwen3:8b` or `phi-4-mini` | Good quality at 8B scale |
+| Graph extraction | `qwen3:8b` | Structured output via JSON Schema |
+| STT | `whisper-tiny` / `whisper-base` (Candle) | Local offline, no API key |
+
+Pair SLMs with a cloud provider for complex/expert tasks using triage routing:
+
+```toml
+[llm.router]
+strategy = "triage"
+
+[llm.complexity_routing]
+simple_providers  = ["ollama"]   # qwen3:8b handles simple queries
+medium_providers  = ["ollama"]
+complex_providers = ["claude"]
+expert_providers  = ["claude"]
+```
+
 ## Claude extended thinking
 
 `ClaudeProvider` supports two thinking modes via `ThinkingConfig`:

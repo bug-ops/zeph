@@ -70,7 +70,8 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 | `e` | Toggle expanded/compact view for tool output and diffs |
 | `d` | Toggle side panels on/off |
 | `p` | Toggle Plan View / Sub-agents view in the side panel |
-| `Tab` | Cycle side panel focus |
+| `Tab` | Cycle side panel focus (includes SubAgents panel) |
+| `a` | Focus the SubAgents panel |
 
 ### Insert Mode
 
@@ -458,6 +459,27 @@ Plan View requires the `tui` feature flag:
 ```bash
 cargo build --release --features tui
 ```
+
+## SubAgent Sidebar
+
+When [sub-agent orchestration](sub-agents.md) is active, the SubAgents panel in the right sidebar shows each running sub-agent, its current status, and allows you to inspect the full execution transcript.
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `a` (Normal mode) | Focus the SubAgents panel |
+| `j` / `Down` | Move selection down the agent list |
+| `k` / `Up` | Move selection up the agent list |
+| `Enter` | Load the JSONL transcript for the selected sub-agent |
+| `Esc` | Return focus to the chat panel |
+| `Tab` | Cycle side panel focus (SubAgents is included in the rotation) |
+
+### Transcript Viewer
+
+Pressing `Enter` on a sub-agent entry loads its JSONL execution transcript into the chat panel. The transcript shows all messages exchanged by that sub-agent, including tool calls and intermediate reasoning, rendered with the same markdown and diff highlighting as the main conversation. Press `Esc` to return to the normal view.
+
+The SubAgents panel is replaced by the Security panel when recent security events exist (< 60 seconds). Press `a` explicitly to bring the SubAgents panel back when security events are active.
 
 ## Deferred Model Warmup
 

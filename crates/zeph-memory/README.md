@@ -62,6 +62,61 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`, `AnchoredSummary`, `CompactionProbeConfig`, `validate_compaction`
 
+## A-MAC adaptive admission control
+
+`AdaptiveAdmissionController` (`[memory.admission]`) gates memory writes using a learned relevance threshold. Each candidate message is scored by embedding similarity against recent context; messages below the threshold are dropped before Qdrant upsert, reducing noise in semantic recall.
+
+The threshold adapts over time: when recall precision drops (detected via probe validation), the threshold is tightened; when recall is sparse, it is relaxed.
+
+```toml
+[memory.admission]
+enabled   = true
+threshold = 0.30   # initial relevance threshold (0.0–1.0)
+```
+
+> [!TIP]
+> Set `threshold = 0.0` to disable filtering while keeping the subsystem active (useful for debugging admission decisions).
+
+## MemScene consolidation
+
+`MemScene` (`[memory.tiers]`) organises memories into tiered stores — hot working memory, episodic scene buffer, and long-term archive — and runs background consolidation that promotes and demotes entries based on access frequency and recency.
+
+```toml
+[memory.tiers]
+scene_enabled          = true
+scene_capacity         = 64        # max entries in the scene buffer
+scene_consolidation_interval_secs = 300
+```
+
+Scene entries are injected into the context window ahead of standard semantic recall when they score above the relevance threshold, giving recently active knowledge priority.
+
+## Session digest
+
+At the end of each session, `SessionDigest` computes a compact summary of the conversation — key decisions, entities introduced, and open questions — and stores it as a Qdrant point in the `zeph_session_digests` collection. On the next session start, the most relevant digest is retrieved and prepended to the system prompt.
+
+Configure via `[memory.digest]`:
+
+```toml
+[memory.digest]
+enabled          = true
+max_digest_chars = 1200   # character cap for the injected digest
+top_k            = 1      # number of session digests retrieved per session
+```
+
+## Context strategy
+
+`ContextStrategy` controls how recalled memories are assembled before context injection. Two strategies are available:
+
+| Strategy | Description |
+|----------|-------------|
+| `memory_first` | Recalled memories are prepended to the context window before conversation history. Prioritises long-term knowledge over recency. |
+| `adaptive` | Dynamically interleaves recalled memories with conversation history based on relevance scores. Favours recency for high-scoring recent turns and long-term recall for low-scoring ones. |
+
+```toml
+[memory]
+context_strategy = "adaptive"   # "memory_first" | "adaptive" (default: "memory_first")
+```
+
 ## Document RAG
 
 `IngestionPipeline` loads, chunks, embeds, and stores documents into the `zeph_documents` Qdrant collection. When `memory.documents.rag_enabled = true`, the agent automatically queries this collection on every turn and prepends the top-K most relevant chunks to the context window.

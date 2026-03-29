@@ -22,6 +22,56 @@ Implements the Model Context Protocol client for Zeph, managing connections to m
 - **prompt** — MCP prompt template support
 - **error** — `McpError` error types
 
+## Semantic tool discovery
+
+`SemanticToolIndex` indexes all registered MCP tool definitions as embedding vectors in Qdrant (or the SQLite vector backend). On each LLM turn, only the top-K most relevant tools — ranked by cosine similarity to the current query — are included in the tools array sent to the model. This keeps the tools payload small for models with narrow context windows and reduces prompt injection surface area.
+
+```toml
+[mcp.tool_discovery]
+enabled      = true
+top_k        = 20         # max tools sent per request (0 = all tools, disables discovery)
+min_score    = 0.55       # minimum similarity threshold
+collection   = "zeph_mcp_tools"
+```
+
+> [!NOTE]
+> Tool discovery requires an embedding model. Configure `[llm.orchestrator] embedding_model` or set a dedicated `embedding_provider` for the mcp subsystem. When Qdrant is unavailable the index falls back to BM25 keyword matching.
+
+## Per-message pruning cache
+
+`PruningCache` tracks which tool set was sent in the previous LLM request. If the ranked tool list for the current turn is identical, the cache returns the pre-serialized JSON blob directly, skipping re-serialization and re-ranking.
+
+Cache invalidation triggers on: new tool registered, tool removed, `tools/list_changed` notification, or config reload. No manual configuration is required; the cache is always active when `[mcp.tool_discovery] enabled = true`.
+
+## Tool attestation
+
+`expected_tools` in a server config entry declares the tool names that server is authorised to expose. If a tool name appears in `tools/list` that is not in `expected_tools`, it is logged as a security warning and excluded from the registry.
+
+```toml
+[[mcp.servers]]
+id             = "filesystem"
+command        = "npx"
+args           = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+expected_tools = ["read_file", "write_file", "list_directory"]
+```
+
+> [!IMPORTANT]
+> Leave `expected_tools` empty (or omit it) to allow all tools from a server. Setting it to an empty list `[]` blocks all tools from that server.
+
+## MCPShield trust calibration
+
+`MCPShield` assigns a per-server trust score that starts at 1.0 and degrades on anomalous events: tool definition mutations between `tools/list_changed` cycles, sanitization hits, unexpected tool names, and tool execution errors. When the trust score drops below `shield.quarantine_threshold`, the server is quarantined and its tools are excluded from the registry until the score recovers (exponential half-life decay).
+
+```toml
+[mcp.shield]
+enabled               = true
+quarantine_threshold  = 0.4    # score below which a server is quarantined
+decay_half_life_secs  = 3600   # half-life for trust score recovery
+```
+
+> [!TIP]
+> View per-server trust scores in the TUI with `mcp:list` from the command palette — the trust column shows the current score and a coloured indicator (green ≥ 0.7, yellow ≥ 0.4, red < 0.4).
+
 ## Configuration
 
 ```toml

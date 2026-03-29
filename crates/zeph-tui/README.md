@@ -40,6 +40,24 @@ Press `a` in the TUI to open the interactive agents panel. It provides full CRUD
 
 Keybindings: `c` — create, `e` — edit, `d` — delete, Enter — detail view, Esc — go back.
 
+## SubAgents sidebar and transcript viewer
+
+The `SubAgents` side panel (`a` keybinding) was extended in v0.18.0 with live status tracking for running sub-agents and an inline transcript viewer.
+
+When a sub-agent is active, the panel shows a spinner alongside the agent name and its current tool/status line. Completed agents display their final turn count.
+
+**Transcript viewer** — press `j`/`k` to navigate the agent list, then `Enter` to open the full JSONL transcript for the selected agent in a scrollable overlay. The overlay renders each turn with role label, timestamp, and message content. Press `Esc` to dismiss.
+
+| Key | Action |
+|-----|--------|
+| `a` | Toggle SubAgents sidebar |
+| `j` / `k` | Move selection down / up in the agent list |
+| `Enter` | Open transcript viewer for selected agent |
+| `Esc` | Close transcript viewer or sidebar |
+
+> [!NOTE]
+> The transcript viewer reads from the persistent JSONL transcript stored by `zeph-core`. Transcripts are available for both active and completed agents as long as the session file exists. Use `/agent resume <id>` to continue a completed session.
+
 ## Graph memory commands
 
 When the `graph-memory` feature is enabled, the TUI provides `/graph` slash commands for inspecting the knowledge graph:

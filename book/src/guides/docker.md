@@ -36,6 +36,44 @@ docker compose --profile gpu run --rm ollama ollama pull qwen3-embedding
 docker compose --profile gpu -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up
 ```
 
+## PostgreSQL Backend
+
+Zeph supports PostgreSQL as an alternative to the default SQLite backend via the `zeph-db` crate. The `docker-compose.yml` includes a `postgres` service that exposes the `ZEPH_DATABASE_URL` environment variable automatically.
+
+To use PostgreSQL with Docker Compose:
+
+```bash
+# Start Zeph with PostgreSQL
+ZEPH_DATABASE_URL=postgres://zeph:zeph@localhost:5432/zeph docker compose --profile postgres up
+```
+
+Or set `database_url` in your config:
+
+```toml
+[memory]
+database_url = "postgres://zeph:zeph@localhost:5432/zeph"
+```
+
+### Schema Migration
+
+When using PostgreSQL for the first time, or after an upgrade, run the migration CLI to apply schema changes:
+
+```bash
+zeph db migrate
+```
+
+The `--init` setup wizard includes a backend selection step. Choose **PostgreSQL** to generate a config with `database_url` and the corresponding Docker Compose snippet.
+
+### Environment Variable
+
+`ZEPH_DATABASE_URL` overrides `[memory] database_url` at runtime. This is the recommended way to inject connection strings in containerised deployments rather than embedding credentials in config files:
+
+```bash
+ZEPH_DATABASE_URL=postgres://user:pass@db:5432/zeph zeph
+```
+
+SQLite remains the default when `database_url` is not set.
+
 ## Age Vault (Encrypted Secrets)
 
 ```bash
