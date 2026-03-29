@@ -770,14 +770,15 @@ impl<C: Channel> Agent<C> {
         // MemoryFirst: drain conversation history BEFORE inserting memory messages so that the
         // memory inserts land into the shorter array and are not accidentally removed.
         if memory_first {
-            let keep_tail = 2usize; // keep last 2 messages as a coherence anchor
             let history_start = 1usize; // skip system prompt
             let len = self.msg.messages.len();
+            let keep_tail = memory_first_keep_tail(&self.msg.messages, history_start);
             if len > history_start + keep_tail {
                 self.msg.messages.drain(history_start..len - keep_tail);
                 self.recompute_prompt_tokens();
                 tracing::debug!(
                     strategy = "memory_first",
+                    keep_tail,
                     "dropped conversation history, kept last {keep_tail} messages"
                 );
             }
@@ -1564,5 +1565,131 @@ impl<C: Channel> Agent<C> {
         if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }
+    }
+}
+
+/// Compute the number of tail messages to retain during a `MemoryFirst` drain.
+///
+/// Starts at 2 (coherence anchor) and extends backward past any leading `Role::User` messages
+/// that carry `MessagePart::ToolResult` parts. Such messages must always be immediately preceded
+/// by the `Role::Assistant` message that issued the corresponding `ToolUse`, otherwise the
+/// provider returns HTTP 400.
+///
+/// `history_start` is the index of the first non-system message (typically 1).
+fn memory_first_keep_tail(messages: &[Message], history_start: usize) -> usize {
+    let mut keep_tail = 2usize;
+    let len = messages.len();
+
+    while keep_tail < len.saturating_sub(history_start) {
+        let first_retained = &messages[len - keep_tail];
+        if first_retained.role == Role::User
+            && first_retained
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+        {
+            keep_tail += 1;
+        } else {
+            break;
+        }
+    }
+
+    keep_tail
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeph_llm::provider::{Message, MessagePart, Role};
+
+    fn sys() -> Message {
+        Message::from_legacy(Role::System, "system prompt")
+    }
+
+    fn user(text: &str) -> Message {
+        Message::from_legacy(Role::User, text)
+    }
+
+    fn assistant(text: &str) -> Message {
+        Message::from_legacy(Role::Assistant, text)
+    }
+
+    fn tool_use_msg() -> Message {
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "tu1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }],
+        )
+    }
+
+    fn tool_result_msg() -> Message {
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "tu1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        )
+    }
+
+    #[test]
+    fn keep_tail_no_tool_calls_returns_two() {
+        // Normal conversation: no tool calls at boundary — keep_tail stays 2.
+        let msgs = vec![
+            sys(),
+            user("hello"),
+            assistant("hi"),
+            user("how are you"),
+            assistant("fine"),
+        ];
+        assert_eq!(memory_first_keep_tail(&msgs, 1), 2);
+    }
+
+    #[test]
+    fn keep_tail_tool_result_at_boundary_extends_by_one() {
+        // Last 2 messages: [tool_result, assistant_reply]
+        // first_retained (index len-2) = tool_result  → must extend by 1 to include tool_use
+        //   then first_retained becomes tool_use (Assistant) → stop
+        let msgs = vec![
+            sys(),
+            user("q1"),
+            assistant("a1"),
+            tool_use_msg(),    // index 3: assistant issues tool call
+            tool_result_msg(), // index 4: tool result
+            assistant("done"), // index 5: assistant reply after tool
+        ];
+        // len=6, keep_tail starts at 2 → msgs[4]=tool_result → extend to 3 → msgs[3]=tool_use (Assistant) → stop
+        assert_eq!(memory_first_keep_tail(&msgs, 1), 3);
+    }
+
+    #[test]
+    fn keep_tail_multiple_tool_rounds_at_boundary() {
+        // Two consecutive tool call/result pairs right before the final reply.
+        let msgs = vec![
+            sys(),
+            user("q1"),
+            assistant("a1"),
+            tool_use_msg(),    // index 3
+            tool_result_msg(), // index 4
+            tool_use_msg(),    // index 5: second tool call
+            tool_result_msg(), // index 6: second tool result
+            assistant("done"), // index 7
+        ];
+        // len=8
+        // keep_tail=2: msgs[6]=tool_result → extend
+        // keep_tail=3: msgs[5]=tool_use (Assistant) → stop
+        assert_eq!(memory_first_keep_tail(&msgs, 1), 3);
+    }
+
+    #[test]
+    fn keep_tail_capped_at_available_history() {
+        // Only system + one tool_result message (degenerate): keep_tail must not exceed len-history_start.
+        let msgs = vec![sys(), tool_result_msg()];
+        // len=2, len-history_start=1 → while condition `keep_tail < 1` is false from the start
+        assert_eq!(memory_first_keep_tail(&msgs, 1), 2);
     }
 }

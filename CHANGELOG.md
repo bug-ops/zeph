@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(core): `MemoryFirst` context drain no longer orphans `role=tool` messages when a tool-call turn lands at the keep-tail boundary, preventing OpenAI HTTP 400 errors (#2366)
 - fix(tools): wire `is_reasoning_model()` and `record_reasoning_quality_failure()` into the agent tool execution path; quality failures (`ToolNotFound`, `InvalidParameters`, `TypeMismatch`) from reasoning models (o1, o3, o4-mini, QwQ, DeepSeek-R1, Claude extended-thinking) now call `record_reasoning_quality_failure()` on the anomaly detector which emits a `reasoning_amplification` WARN log; `reasoning_model_warning = false` suppresses the WARN while still counting the error; `AuditEntry.error_phase` now populated from `ToolErrorCategory::phase()` in `ShellExecutor`, `WebScrapeExecutor`, and pre-execution verifier audit entries (#2357)
 - fix(memory): `handle_compress_context()` now resolves `compression.compress_provider` from `[[llm.providers]]` at bootstrap and passes the named provider to the LLM summarization call; falls back to the primary provider when the field is empty or resolution fails (#2356)
 - fix(classifiers): resolve DeBERTa tensor namespace by passing `vb.pp("deberta")` at model load sites in `ner.rs`, `candle_pii.rs`, and `candle.rs`; backbone weights in both piiranha-v1 and deberta-v3-small-prompt-injection-v2 are stored under `deberta.*` in their safetensors files, causing a tensor-not-found error when loading with a root `VarBuilder` (#2353)
