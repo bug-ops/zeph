@@ -59,7 +59,7 @@ pub use memory::{
     VectorBackend,
 };
 pub use providers::{
-    CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
+    BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
     ComplexityRoutingConfig, GenerationParams, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP,
     ProviderEntry, ProviderKind, RouterConfig, RouterStrategyConfig, SttConfig, TierMapping,
     validate_pool,

@@ -1,19 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Provider router: EMA-based, Thompson Sampling, and Cascade strategies.
+//! Provider router: EMA-based, Thompson Sampling, Cascade, and PILOT Bandit strategies.
 //!
 //! # Security
 //!
-//! Thompson state is loaded from a user-controlled path at startup. The file is
+//! Thompson and Bandit state are loaded from user-controlled paths at startup. Files are
 //! validated (finite floats, clamped range) and written with `0o600` permissions
-//! on Unix. Do not store the state file in world-writable directories.
+//! on Unix. Do not store state files in world-writable directories.
 
+pub mod bandit;
 pub mod cascade;
 pub mod reputation;
 pub mod thompson;
 pub mod triage;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -22,9 +24,55 @@ use crate::ema::EmaTracker;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
+use bandit::{BanditState, embedding_to_features};
 use cascade::{CascadeState, ClassifierMode, heuristic_score};
 use reputation::ReputationTracker;
 use thompson::ThompsonState;
+
+/// Simple bounded embedding cache for bandit feature vectors.
+///
+/// Keyed by `u64` hash of query text (using `std::hash`). Eviction is FIFO on insertion
+/// order (not LRU) — acceptable for a routing cache where hot queries repeat often.
+/// The `lru` crate is not in the workspace; a `HashMap` + insertion-order Vec avoids a new dep.
+#[derive(Debug)]
+struct BanditEmbedCache {
+    map: HashMap<u64, Vec<f32>>,
+    order: std::collections::VecDeque<u64>,
+    capacity: usize,
+}
+
+impl BanditEmbedCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(capacity),
+            order: std::collections::VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn get(&self, key: u64) -> Option<&Vec<f32>> {
+        self.map.get(&key)
+    }
+
+    fn insert(&mut self, key: u64, value: Vec<f32>) {
+        if self.map.contains_key(&key) {
+            return;
+        }
+        if self.map.len() >= self.capacity
+            && let Some(evict) = self.order.pop_front()
+        {
+            self.map.remove(&evict);
+        }
+        self.map.insert(key, value);
+        self.order.push_back(key);
+    }
+}
+
+impl Default for BanditEmbedCache {
+    fn default() -> Self {
+        Self::new(512)
+    }
+}
 
 /// Routing strategy used by [`RouterProvider`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -36,6 +84,47 @@ pub enum RouterStrategy {
     Thompson,
     /// Cascade: try cheapest provider first, escalate on degenerate output.
     Cascade,
+    /// PILOT: `LinUCB` contextual bandit with online learning and budget-aware selection.
+    Bandit,
+}
+
+/// Configuration for PILOT bandit routing in `RouterProvider`.
+///
+/// See [`bandit`] module for the algorithm details and trade-offs.
+#[derive(Debug, Clone)]
+#[allow(clippy::doc_markdown)] // PILOT, LinUCB, Thompson are proper nouns/acronyms
+pub struct BanditRouterConfig {
+    /// `LinUCB` exploration parameter. Higher = more exploration. Default: 1.0.
+    pub alpha: f32,
+    /// Feature vector dimension (first `dim` components of embedding). Default: 32.
+    pub dim: usize,
+    /// Cost penalty weight in the reward signal: `reward = quality - cost_weight * cost_fraction`.
+    /// Default: 0.1. Increase to penalise expensive providers more aggressively.
+    pub cost_weight: f32,
+    /// Session-level decay factor: values < 1.0 cause re-exploration over time. Default: 1.0.
+    pub decay_factor: f32,
+    /// Minimum total updates before `LinUCB` takes over from Thompson fallback.
+    /// Default: `10 * num_providers` (computed at construction time from provider count).
+    pub warmup_queries: u64,
+    /// Hard timeout for the embedding call (milliseconds). If exceeded, falls back
+    /// to Thompson/uniform selection. Default: 50.
+    pub embedding_timeout_ms: u64,
+    /// Maximum number of cached embeddings (keyed by query string hash). Default: 512.
+    pub cache_size: usize,
+}
+
+impl Default for BanditRouterConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 1.0,
+            dim: 32,
+            cost_weight: 0.1,
+            decay_factor: 1.0,
+            warmup_queries: 0, // overridden by with_bandit() based on provider count
+            embedding_timeout_ms: 50,
+            cache_size: 512,
+        }
+    }
 }
 
 /// Configuration for cascade routing in `RouterProvider`.
@@ -95,6 +184,18 @@ pub struct RouterProvider {
     /// Name of the sub-provider that served the most recent successful tool call.
     /// Used by `record_quality_outcome` to attribute quality to the right provider.
     last_active_provider: Arc<Mutex<Option<String>>>,
+    /// PILOT bandit state.
+    bandit: Option<Arc<Mutex<BanditState>>>,
+    /// Path for persisting bandit state. `None` disables persistence.
+    bandit_state_path: Option<std::path::PathBuf>,
+    /// Bandit routing configuration.
+    bandit_config: Option<BanditRouterConfig>,
+    /// Dedicated embedding provider for bandit feature vectors.
+    /// When `None`, bandit falls back to Thompson/uniform on embed failure.
+    bandit_embedding_provider: Option<AnyProvider>,
+    /// LRU embedding cache: maps query-string hash to feature vector.
+    /// Shared across requests; keyed by `u64` hash of query text.
+    bandit_embed_cache: Arc<Mutex<BanditEmbedCache>>,
 }
 
 impl RouterProvider {
@@ -115,6 +216,11 @@ impl RouterProvider {
             reputation_state_path: None,
             reputation_weight: 0.3,
             last_active_provider: Arc::new(Mutex::new(None)),
+            bandit: None,
+            bandit_state_path: None,
+            bandit_config: None,
+            bandit_embedding_provider: None,
+            bandit_embed_cache: Arc::new(Mutex::new(BanditEmbedCache::default())),
         }
     }
 
@@ -141,6 +247,106 @@ impl RouterProvider {
         self.thompson = Some(Arc::new(Mutex::new(state)));
         self.thompson_state_path = Some(path);
         self
+    }
+
+    /// Enable PILOT bandit routing strategy (`LinUCB` contextual bandit).
+    ///
+    /// Loads existing state from `state_path` (or the default path). Applies session-level
+    /// decay if `config.decay_factor < 1.0`, and prunes arms for removed providers.
+    ///
+    /// `embedding_provider` is used to obtain feature vectors for each query.
+    /// When `None`, the bandit falls back to Thompson/uniform selection whenever an
+    /// embedding cannot be obtained within `config.embedding_timeout_ms`.
+    ///
+    /// The `warmup_queries` default of `0` in `BanditRouterConfig` is overridden here to
+    /// `10 * num_providers` to ensure sufficient initial exploration.
+    #[must_use]
+    pub fn with_bandit(
+        mut self,
+        mut config: BanditRouterConfig,
+        state_path: Option<&Path>,
+        embedding_provider: Option<AnyProvider>,
+    ) -> Self {
+        self.strategy = RouterStrategy::Bandit;
+        let n = self.providers.len();
+        if config.warmup_queries == 0 {
+            config.warmup_queries = u64::try_from(10 * n.max(1)).unwrap_or(100);
+        }
+        let cache_size = config.cache_size;
+        let path = state_path.map_or_else(BanditState::default_path, Path::to_path_buf);
+        let mut state = BanditState::load(&path);
+        if state.dim == 0 {
+            state = BanditState::new(config.dim);
+        } else if state.dim != config.dim {
+            // Config changed dim — reset state rather than use mismatched arms.
+            tracing::warn!(
+                old_dim = state.dim,
+                new_dim = config.dim,
+                "bandit: dim changed, resetting state"
+            );
+            state = BanditState::new(config.dim);
+        }
+        // Validate config bounds before applying. Clamp to safe ranges with a warning.
+        if config.alpha <= 0.0 {
+            tracing::warn!(alpha = config.alpha, "bandit: alpha <= 0, clamping to 0.01");
+            config.alpha = 0.01;
+        }
+        if config.dim == 0 || config.dim > 256 {
+            tracing::warn!(
+                dim = config.dim,
+                "bandit: dim out of range [1, 256], clamping to 32"
+            );
+            config.dim = 32;
+        }
+        if config.decay_factor <= 0.0 || config.decay_factor > 1.0 {
+            tracing::warn!(
+                decay_factor = config.decay_factor,
+                "bandit: decay_factor out of (0.0, 1.0], clamping to 1.0"
+            );
+            config.decay_factor = 1.0;
+        }
+        if config.decay_factor < 1.0 {
+            state.apply_decay(config.decay_factor);
+        }
+        let known: std::collections::HashSet<String> =
+            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        state.prune(&known);
+        self.bandit = Some(Arc::new(Mutex::new(state)));
+        self.bandit_state_path = Some(path);
+        self.bandit_embed_cache = Arc::new(Mutex::new(BanditEmbedCache::new(cache_size)));
+        self.bandit_embedding_provider = embedding_provider;
+        // Initialize Thompson state for cold-start fallback (total_updates < warmup_queries).
+        // Uses default uniform priors; no persistence path needed since it's a fallback only.
+        self.thompson = Some(Arc::new(Mutex::new(ThompsonState::default())));
+        self.bandit_config = Some(config);
+        self
+    }
+
+    /// Persist current bandit state to disk. No-op if bandit strategy is not active.
+    pub fn save_bandit_state(&self) {
+        let (Some(bandit), Some(path)) = (&self.bandit, &self.bandit_state_path) else {
+            return;
+        };
+        let state = bandit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(e) = state.save(path) {
+            tracing::warn!(error = %e, "failed to save bandit state");
+        }
+    }
+
+    /// Return bandit diagnostic stats: `(provider_name, pulls, mean_reward)`.
+    ///
+    /// Returns an empty vec if bandit strategy is not active.
+    #[must_use]
+    pub fn bandit_stats(&self) -> Vec<(String, u64, f32)> {
+        let Some(ref bandit) = self.bandit else {
+            return vec![];
+        };
+        let state = bandit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.stats()
     }
 
     /// Enable Bayesian reputation scoring (RAPS).
@@ -195,7 +401,12 @@ impl RouterProvider {
     /// The `_provider_name` parameter is ignored — quality is attributed to the sub-provider
     /// that served the most recent `chat_with_tools` call, tracked via `last_active_provider`.
     pub fn record_quality_outcome(&self, _provider_name: &str, success: bool) {
-        if self.strategy == RouterStrategy::Cascade {
+        if matches!(
+            self.strategy,
+            RouterStrategy::Cascade | RouterStrategy::Bandit
+        ) {
+            // Cascade: quality tracked via CascadeState.
+            // Bandit: quality fed via bandit_record_reward() after each response.
             return;
         }
         let Some(ref reputation) = self.reputation else {
@@ -313,14 +524,156 @@ impl RouterProvider {
         }
     }
 
+    /// Hash a query string to a `u64` cache key.
+    fn query_hash(query: &str) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        query.hash(&mut h);
+        h.finish()
+    }
+
+    /// Fetch or compute the feature vector for `query` using the bandit embedding provider.
+    ///
+    /// Returns `None` if:
+    /// - No embedding provider is configured.
+    /// - The embedding call exceeds `embedding_timeout_ms`.
+    /// - The embedding is shorter than `dim` or is all-zero.
+    async fn bandit_features(&self, query: &str) -> Option<Vec<f32>> {
+        let cfg = self.bandit_config.as_ref()?;
+        let key = Self::query_hash(query);
+
+        // Check cache first (no async needed).
+        {
+            let cache = self
+                .bandit_embed_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(cached) = cache.get(key) {
+                return Some(cached.clone());
+            }
+        }
+
+        let provider = self.bandit_embedding_provider.as_ref()?;
+        let timeout = std::time::Duration::from_millis(cfg.embedding_timeout_ms);
+        let embed_future = provider.embed(query);
+        let embedding = match tokio::time::timeout(timeout, embed_future).await {
+            Ok(Ok(emb)) => emb,
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "bandit: embedding failed, falling back");
+                return None;
+            }
+            Err(_) => {
+                tracing::debug!(
+                    timeout_ms = cfg.embedding_timeout_ms,
+                    "bandit: embedding timed out, falling back"
+                );
+                return None;
+            }
+        };
+
+        let features = embedding_to_features(&embedding, cfg.dim)?;
+
+        // Insert into cache.
+        {
+            let mut cache = self
+                .bandit_embed_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.insert(key, features.clone());
+        }
+        Some(features)
+    }
+
+    /// Select a provider using `LinUCB` bandit, with Thompson fallback on cold start / missing features.
+    ///
+    /// Falls through to Thompson or first available provider when bandit cannot decide.
+    /// Budget enforcement via global `CostTracker` is handled at the caller level.
+    /// Per-provider budget fractions are intentionally NOT implemented (scope creep, see #2230).
+    async fn bandit_select_provider(&self, query: &str) -> Option<AnyProvider> {
+        let Some(ref bandit_arc) = self.bandit else {
+            return self.providers.first().cloned();
+        };
+        let cfg = self.bandit_config.as_ref()?;
+
+        let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
+
+        // Try LinUCB selection with feature vector.
+        if let Some(features) = self.bandit_features(query).await {
+            let selected = {
+                let state = bandit_arc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.select(&names, &features, cfg.alpha, cfg.warmup_queries, &|_| true)
+            };
+            if let Some(name) = selected {
+                tracing::debug!(provider = %name, strategy = "bandit", "selected provider");
+                return self.providers.iter().find(|p| p.name() == name).cloned();
+            }
+        }
+
+        // Fallback: Thompson sampling.
+        if let Some(ref thompson) = self.thompson {
+            let mut state = thompson
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(sel) = state.select(&names) {
+                tracing::debug!(
+                    provider = %sel.provider,
+                    strategy = "bandit-fallback-thompson",
+                    "selected provider"
+                );
+                return self
+                    .providers
+                    .iter()
+                    .find(|p| p.name() == sel.provider)
+                    .cloned();
+            }
+        }
+
+        // Last resort: first provider.
+        self.providers.first().cloned()
+    }
+
+    /// Record the bandit reward for a completed request.
+    ///
+    /// `quality_score`: heuristic quality in [0, 1] from `heuristic_score()`.
+    /// `cost_fraction`: `request_cost_cents / max_daily_cents` (0 when budget is unlimited).
+    fn bandit_record_reward(
+        &self,
+        provider_name: &str,
+        features: &[f32],
+        quality_score: f64,
+        cost_fraction: f64,
+    ) {
+        let Some(ref bandit_arc) = self.bandit else {
+            return;
+        };
+        let Some(cfg) = &self.bandit_config else {
+            return;
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let reward = (quality_score as f32) - cfg.cost_weight * (cost_fraction as f32);
+        let reward = reward.clamp(-1.0, 1.0);
+        let mut state = bandit_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.update(provider_name, features, reward);
+        tracing::debug!(
+            provider = provider_name,
+            reward,
+            quality = quality_score,
+            "bandit: recorded reward"
+        );
+    }
+
     fn ordered_providers(&self) -> Vec<AnyProvider> {
         match self.strategy {
             RouterStrategy::Thompson => self.thompson_ordered_providers(),
             RouterStrategy::Ema => self.ema_ordered_providers(),
-            // Cascade: providers are sorted at construction time. clone() here is only
-            // reached from debug_request_json(); the hot chat/chat_stream paths pass
-            // &self.providers directly to avoid this Vec allocation.
-            RouterStrategy::Cascade => self.providers.to_vec(),
+            // Cascade/Bandit: sync path used only for debug_request_json(); hot paths use
+            // dedicated async selection methods. For Cascade, providers are sorted at
+            // construction time.
+            RouterStrategy::Cascade | RouterStrategy::Bandit => self.providers.to_vec(),
         }
     }
 
@@ -453,8 +806,9 @@ impl RouterProvider {
             RouterStrategy::Ema => {
                 self.ema_record(provider_name, success, latency_ms);
             }
-            RouterStrategy::Cascade => {
+            RouterStrategy::Cascade | RouterStrategy::Bandit => {
                 // Cascade does not use Thompson/EMA for ordering; no-op.
+                // Bandit tracks rewards separately via bandit_record_reward().
             }
         }
     }
@@ -615,6 +969,9 @@ impl LlmProvider for RouterProvider {
                     .cascade_chat(&router.providers, &messages, status_tx)
                     .await;
             }
+            if router.strategy == RouterStrategy::Bandit {
+                return router.bandit_chat(&messages, status_tx).await;
+            }
             let providers = router.ordered_providers();
             for p in &providers {
                 let start = std::time::Instant::now();
@@ -657,6 +1014,20 @@ impl LlmProvider for RouterProvider {
                 return router
                     .cascade_chat_stream(&router.providers, &messages, status_tx)
                     .await;
+            }
+            if router.strategy == RouterStrategy::Bandit {
+                // Bandit stream: select provider then stream from it.
+                // Reward is not recorded for streams (stream completion is async);
+                // this is a known pre-1.0 limitation — same as Thompson stream mode.
+                let query = messages
+                    .last()
+                    .map(super::provider::Message::to_llm_content)
+                    .unwrap_or_default();
+                let p = router
+                    .bandit_select_provider(query)
+                    .await
+                    .ok_or(LlmError::NoProviders)?;
+                return p.chat_stream(&messages).await;
             }
             let providers = router.ordered_providers();
             for p in &providers {
@@ -758,22 +1129,46 @@ impl LlmProvider for RouterProvider {
             .collect()
     }
 
-    #[allow(async_fn_in_trait)]
-    async fn chat_with_tools(
+    #[allow(refining_impl_trait_reachable)]
+    fn chat_with_tools(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-    ) -> Result<ChatResponse, LlmError> {
-        // Cascade is intentionally skipped for tool calls: evaluating quality of
-        // a tool-call response (structured JSON with tool name + args) requires
-        // different heuristics than text quality. Skipping cascade for tool calls
-        // avoids inappropriate escalation based on text signals (HIGH-04).
-        let providers = self.ordered_providers();
+    ) -> impl std::future::Future<Output = Result<ChatResponse, LlmError>> + Send {
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         let status_tx = self.status_tx.clone();
         let router = self.clone();
         Box::pin(async move {
+            // Bandit routing for tool calls: select a single provider, no quality escalation.
+            if router.strategy == RouterStrategy::Bandit {
+                let query = messages
+                    .last()
+                    .map(super::provider::Message::to_llm_content)
+                    .unwrap_or_default();
+                let p = router
+                    .bandit_select_provider(query)
+                    .await
+                    .ok_or(LlmError::NoProviders)?;
+                if !p.supports_tool_use() {
+                    return Err(LlmError::NoProviders);
+                }
+                let result = p.chat_with_tools(&messages, &tools).await;
+                if result.is_ok() {
+                    *router
+                        .last_active_provider
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(p.name().to_owned());
+                }
+                return result;
+            }
+
+            // Cascade is intentionally skipped for tool calls: evaluating quality of
+            // a tool-call response (structured JSON with tool name + args) requires
+            // different heuristics than text quality. Skipping cascade for tool calls
+            // avoids inappropriate escalation based on text signals (HIGH-04).
+            let providers = router.ordered_providers();
             for p in &providers {
                 if !p.supports_tool_use() {
                     continue;
@@ -812,7 +1207,6 @@ impl LlmProvider for RouterProvider {
             }
             Err(LlmError::NoProviders)
         })
-        .await
     }
 
     fn debug_request_json(
@@ -836,6 +1230,59 @@ impl LlmProvider for RouterProvider {
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         None
+    }
+}
+
+// ── Bandit routing helpers ────────────────────────────────────────────────────
+
+impl RouterProvider {
+    /// Bandit `chat()` implementation: select provider, call, record reward.
+    async fn bandit_chat(
+        &self,
+        messages: &[Message],
+        status_tx: Option<StatusTx>,
+    ) -> Result<String, LlmError> {
+        let query = messages
+            .last()
+            .map(super::provider::Message::to_llm_content)
+            .unwrap_or_default();
+        let features = self.bandit_features(query.as_ref()).await;
+
+        let p = self
+            .bandit_select_provider(query.as_ref())
+            .await
+            .ok_or(LlmError::NoProviders)?;
+
+        if let Some(ref tx) = status_tx {
+            let _ = tx.send(format!("bandit: routing to {}", p.name()));
+        }
+
+        let result = p.chat(messages).await;
+        match &result {
+            Ok(response) => {
+                let verdict = heuristic_score(response);
+                // Record reward even when embedding failed (use zero vector so the arm's
+                // update count increments — prevents permanent cold-start on flaky embedders).
+                let feat_ref: &[f32];
+                let zero_vec: Vec<f32>;
+                let dim = self.bandit_config.as_ref().map_or(32, |c| c.dim);
+                if let Some(ref feat) = features {
+                    feat_ref = feat;
+                } else {
+                    zero_vec = vec![0.0; dim];
+                    feat_ref = &zero_vec;
+                    tracing::debug!(
+                        provider = p.name(),
+                        "bandit: recording reward with zero features (embed unavailable)"
+                    );
+                }
+                self.bandit_record_reward(p.name(), feat_ref, verdict.score, 0.0);
+            }
+            Err(e) => {
+                tracing::warn!(provider = p.name(), error = %e, "bandit: provider failed");
+            }
+        }
+        result
     }
 }
 

@@ -11,8 +11,27 @@ max_tool_iterations = 10
 # instruction_files = ["custom-instructions.md"]
 
 [llm]
-# Routing strategy for multi-provider configs: "none" (default), "ema", "thompson", "cascade", "task"
+# Routing strategy for multi-provider configs: "none" (default), "ema", "thompson", "cascade", "task", "bandit"
 # routing = "none"
+
+# ── PILOT bandit routing ──────────────────────────────────────────────────────
+# Set routing = "bandit" to enable LinUCB contextual bandit provider selection.
+# The bandit learns which provider performs best for each query context using
+# online reward feedback. Falls back to Thompson sampling during warmup.
+#
+# [llm.router.bandit]
+# alpha = 1.0                  # exploration parameter (higher = more exploration)
+# dim = 32                     # embedding truncation dimension (NOT PCA; see docs)
+# cost_weight = 0.1            # cost penalty weight in reward signal
+# decay_factor = 1.0           # session decay (< 1.0 enables re-exploration)
+# embedding_timeout_ms = 50    # hard timeout for embed call; fallback on exceeded
+# cache_size = 512             # max cached query embeddings
+# # embedding_provider:
+# # SLM recommended: use a fast local embedding model (Ollama nomic-embed-text,
+# # Candle, or text-embedding-3-small). This is called on every bandit request.
+# # Empty string disables LinUCB (always falls back to Thompson).
+# embedding_provider = ""
+# state_path = ""              # default: ~/.config/zeph/router_bandit_state.json
 
 # Dedicated provider for tool-pair summarization and context compaction (optional).
 # Falls back to the primary provider when unset.
@@ -796,7 +815,10 @@ max_files = 7
 # Do not enable when processing conversations with sensitive personal data.
 # [memory.graph]
 # enabled = false
-# # LLM model used for entity/relation extraction (required when enabled)
+# # LLM model used for entity/relation extraction (required when enabled).
+# # SLM recommended: prefer gpt-4o-mini or claude-haiku-4-5 for this narrow structured-output task.
+# # Do NOT use 8B local models (qwen3:8b, llama3.1:8b) without constrained decoding —
+# # they frequently produce malformed JSON and miss implicit entities (see #2192).
 # extract_model = "claude-sonnet-4-5-20250929"
 # # Maximum entities extracted per message
 # max_entities_per_message = 10
@@ -900,3 +922,63 @@ similarity_threshold = 0.92
 sweep_interval_secs = 3600
 # Maximum messages evaluated per sweep cycle. Must be >= 1.
 sweep_batch_size = 100
+
+# ── Multi-Model (SLM) Configuration Guide ────────────────────────────────────
+# Each subsystem exposes a `*_provider` config field that accepts a provider
+# name from [[llm.providers]]. Pointing narrow, repetitive tasks at a fast/cheap
+# Small Language Model (SLM) reduces cost and latency without sacrificing quality.
+#
+# SLM suitability table:
+#
+#   Subsystem                 | Config field                         | Recommended SLM
+#   --------------------------|--------------------------------------|------------------
+#   Complexity triage         | [llm.complexity_routing].triage_provider | gpt-4o-mini, qwen3:8b
+#   Context compaction        | [memory.compression].compress_provider   | gpt-4o-mini, claude-haiku-4-5
+#   Compaction probe          | [memory.compression.probe].probe_provider| gpt-4o-mini, qwen3:8b
+#   Scene labeling            | [memory.semantic].scene_provider         | gpt-4o-mini, qwen3:8b
+#   Memory admission          | [memory.admission].admission_provider    | gpt-4o-mini, claude-haiku-4-5
+#   Graph consolidation       | [memory.graph.consolidation].consolidation_provider | gpt-4o-mini, claude-haiku-4-5
+#   Feedback detection        | [learning].feedback_provider             | gpt-4o-mini, qwen3:8b
+#   Response verifier         | [sanitizer.response_verification].verifier_provider | gpt-4o-mini (security trade-off: see note)
+#   Quarantine summarizer     | [security.content_isolation.quarantine].model | gpt-4o-mini, claude-haiku-4-5
+#   Orchestration planner     | [orchestration].planner_provider         | Keep on quality provider (complex reasoning)
+#   Graph entity extraction   | [memory.graph].extract_model             | gpt-4o-mini, claude-haiku-4-5 (NOT 8B local without constrained decoding)
+#   Bandit embeddings         | [llm.router.bandit].embedding_provider   | Local embed model (Ollama, Candle)
+#
+# Note on response verifier: this is a security-sensitive task. Using a smaller model
+# increases the risk of false negatives (missed prompt injections). Consider keeping it
+# on the quality provider in high-security deployments.
+#
+# Example cost-optimized multi-provider setup:
+#
+# [[llm.providers]]
+# name = "fast"
+# type = "openai"
+# model = "gpt-4o-mini"
+#
+# [[llm.providers]]
+# name = "quality"
+# type = "claude"
+# model = "claude-opus-4-6"
+# default = true
+#
+# [llm.complexity_routing]
+# triage_provider = "fast"   # SLM: narrow classification task
+#
+# [memory.compression]
+# compress_provider = "fast" # SLM: summarization
+#
+# [memory.compression.probe]
+# probe_provider = "fast"    # SLM: single-number quality scoring
+#
+# [memory.semantic]
+# scene_provider = "fast"    # SLM: short label generation
+#
+# [memory.admission]
+# admission_provider = "fast" # SLM: structured scoring
+#
+# [learning]
+# feedback_provider = "fast" # SLM: three-class classification
+#
+# [orchestration]
+# planner_provider = "quality" # Keep on quality provider (planning = complex reasoning)

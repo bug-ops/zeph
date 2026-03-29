@@ -344,12 +344,14 @@ pub enum RouterStrategyConfig {
     Thompson,
     /// Cascade routing: try cheapest provider first, escalate on degenerate output.
     Cascade,
+    /// PILOT: `LinUCB` contextual bandit with online learning and cost-aware reward.
+    Bandit,
 }
 
 /// Routing configuration for multi-provider setups.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
-    /// Routing strategy: `"ema"` (default), `"thompson"`, or `"cascade"`.
+    /// Routing strategy: `"ema"` (default), `"thompson"`, `"cascade"`, or `"bandit"`.
     #[serde(default)]
     pub strategy: RouterStrategyConfig,
     /// Path for persisting Thompson Sampling state. Defaults to `~/.zeph/router_thompson_state.json`.
@@ -367,6 +369,9 @@ pub struct RouterConfig {
     /// Bayesian reputation scoring configuration (RAPS). Disabled by default.
     #[serde(default)]
     pub reputation: Option<ReputationConfig>,
+    /// PILOT bandit routing configuration. Only used when `strategy = "bandit"`.
+    #[serde(default)]
+    pub bandit: Option<BanditConfig>,
 }
 
 /// Configuration for Bayesian reputation scoring (RAPS — Reputation-Adjusted Provider Selection).
@@ -473,6 +478,110 @@ pub enum CascadeClassifierMode {
     Judge,
 }
 
+fn default_bandit_alpha() -> f32 {
+    1.0
+}
+
+fn default_bandit_dim() -> usize {
+    32
+}
+
+fn default_bandit_cost_weight() -> f32 {
+    0.1
+}
+
+fn default_bandit_decay_factor() -> f32 {
+    1.0
+}
+
+fn default_bandit_embedding_timeout_ms() -> u64 {
+    50
+}
+
+fn default_bandit_cache_size() -> usize {
+    512
+}
+
+/// Configuration for PILOT bandit routing (`strategy = "bandit"`).
+///
+/// PILOT (Provider Intelligence via Learned Online Tuning) uses a `LinUCB` contextual
+/// bandit to learn which provider performs best for a given query context. The feature
+/// vector is derived from the query embedding (first `dim` components, L2-normalised).
+///
+/// **Cold start**: the bandit falls back to Thompson sampling for the first
+/// `10 * num_providers` queries (configurable). After warmup, `LinUCB` takes over.
+///
+/// **Embedding**: an `embedding_provider` must be set for feature vectors. If the embed
+/// call exceeds `embedding_timeout_ms` or fails, the bandit falls back to Thompson/uniform.
+/// Use a local provider (Ollama, Candle) to avoid network latency on the hot path.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BanditConfig {
+    /// `LinUCB` exploration parameter. Default: 1.0.
+    /// Higher values increase exploration; lower values favour exploitation.
+    #[serde(default = "default_bandit_alpha")]
+    pub alpha: f32,
+
+    /// Feature vector dimension (first `dim` components of the embedding).
+    ///
+    /// This is simple truncation, not PCA. The first raw embedding dimensions do not
+    /// necessarily capture the most variance. For `OpenAI` `text-embedding-3-*` models,
+    /// consider using the `dimensions` API parameter (Matryoshka embeddings) instead.
+    /// Default: 32.
+    #[serde(default = "default_bandit_dim")]
+    pub dim: usize,
+
+    /// Cost penalty weight in the reward signal: `reward = quality - cost_weight * cost_fraction`.
+    /// Default: 0.1. Increase to penalise expensive providers more aggressively.
+    #[serde(default = "default_bandit_cost_weight")]
+    pub cost_weight: f32,
+
+    /// Session-level decay applied to arm state on startup: `A = I + decay*(A-I)`, `b = decay*b`.
+    /// Values < 1.0 cause re-exploration after provider quality changes. Default: 1.0 (no decay).
+    #[serde(default = "default_bandit_decay_factor")]
+    pub decay_factor: f32,
+
+    /// Provider name from `[[llm.providers]]` used for query embeddings.
+    ///
+    /// SLM recommended: prefer a fast local model (e.g. Ollama `nomic-embed-text`,
+    /// Candle, or `text-embedding-3-small`) — this is called on every bandit request.
+    /// Empty string disables `LinUCB` (bandit always falls back to Thompson/uniform).
+    #[serde(default)]
+    pub embedding_provider: String,
+
+    /// Hard timeout for the embedding call in milliseconds. Default: 50.
+    /// If exceeded, the request falls back to Thompson/uniform selection.
+    #[serde(default = "default_bandit_embedding_timeout_ms")]
+    pub embedding_timeout_ms: u64,
+
+    /// Maximum cached embeddings (keyed by query text hash). Default: 512.
+    #[serde(default = "default_bandit_cache_size")]
+    pub cache_size: usize,
+
+    /// Path for persisting bandit state. Defaults to `~/.config/zeph/router_bandit_state.json`.
+    ///
+    /// # Security
+    ///
+    /// This path is user-controlled. The file is created with mode `0o600` on Unix.
+    /// Do not place it in world-writable directories.
+    #[serde(default)]
+    pub state_path: Option<String>,
+}
+
+impl Default for BanditConfig {
+    fn default() -> Self {
+        Self {
+            alpha: default_bandit_alpha(),
+            dim: default_bandit_dim(),
+            cost_weight: default_bandit_cost_weight(),
+            decay_factor: default_bandit_decay_factor(),
+            embedding_provider: String::new(),
+            embedding_timeout_ms: default_bandit_embedding_timeout_ms(),
+            cache_size: default_bandit_cache_size(),
+            state_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandleConfig {
     #[serde(default = "default_candle_source")]
@@ -556,6 +665,8 @@ pub enum LlmRoutingStrategy {
     Task,
     /// Complexity triage routing: pre-classify each request, delegate to appropriate tier.
     Triage,
+    /// PILOT: `LinUCB` contextual bandit with online learning and budget-aware reward.
+    Bandit,
 }
 
 fn default_triage_timeout_secs() -> u64 {

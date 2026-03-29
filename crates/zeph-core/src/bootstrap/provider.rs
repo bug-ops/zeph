@@ -30,7 +30,7 @@ use zeph_llm::http::llm_client;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::openai::OpenAiProvider;
 use zeph_llm::router::cascade::ClassifierMode;
-use zeph_llm::router::{CascadeRouterConfig, RouterProvider};
+use zeph_llm::router::{BanditRouterConfig, CascadeRouterConfig, RouterProvider};
 
 use crate::agent::state::ProviderConfigSnapshot;
 use crate::config::{Config, LlmRoutingStrategy, ProviderEntry, ProviderKind};
@@ -521,6 +521,58 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
             let router_cascade_cfg = build_cascade_router_config(&cascade_cfg, config);
             Ok(AnyProvider::Router(Box::new(
                 RouterProvider::new(providers).with_cascade(router_cascade_cfg),
+            )))
+        }
+        LlmRoutingStrategy::Bandit => {
+            let providers = build_all_pool_providers(pool, config)?;
+            let bandit_cfg = config
+                .llm
+                .router
+                .as_ref()
+                .and_then(|r| r.bandit.clone())
+                .unwrap_or_default();
+            let state_path = bandit_cfg.state_path.as_deref().map(std::path::Path::new);
+            let router_bandit_cfg = BanditRouterConfig {
+                alpha: bandit_cfg.alpha,
+                dim: bandit_cfg.dim,
+                cost_weight: bandit_cfg.cost_weight,
+                decay_factor: bandit_cfg.decay_factor,
+                warmup_queries: 0, // computed by with_bandit() from provider count
+                embedding_timeout_ms: bandit_cfg.embedding_timeout_ms,
+                cache_size: bandit_cfg.cache_size,
+            };
+            // Resolve embedding provider for feature vectors.
+            let embed_provider = if bandit_cfg.embedding_provider.is_empty() {
+                None
+            } else if let Some(entry) = pool
+                .iter()
+                .find(|e| e.effective_name() == bandit_cfg.embedding_provider)
+            {
+                match build_provider_from_entry(entry, config) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %bandit_cfg.embedding_provider,
+                            error = %e,
+                            "bandit: embedding provider failed to init, bandit will use Thompson fallback"
+                        );
+                        None
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    provider = %bandit_cfg.embedding_provider,
+                    "bandit: embedding_provider not found in [[llm.providers]], \
+                     bandit will use Thompson fallback"
+                );
+                None
+            };
+            Ok(AnyProvider::Router(Box::new(
+                RouterProvider::new(providers).with_bandit(
+                    router_bandit_cfg,
+                    state_path,
+                    embed_provider,
+                ),
             )))
         }
         LlmRoutingStrategy::Task => {
