@@ -324,7 +324,7 @@ impl CandleThreeClassClassifier {
 
         validate_safetensors(&weights_path)?;
 
-        let device = Device::Cpu;
+        let device = crate::device::detect_device();
         // SAFETY: validated safetensors header above; file not modified during VarBuilder lifetime
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };

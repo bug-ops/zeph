@@ -11,6 +11,8 @@ pub mod candle_whisper;
 pub mod classifier;
 pub mod claude;
 pub mod compatible;
+#[cfg(feature = "candle")]
+pub(crate) mod device;
 pub mod ema;
 pub mod error;
 pub mod extractor;

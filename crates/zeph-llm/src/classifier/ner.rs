@@ -31,7 +31,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::debertav2::{Config as DebertaConfig, DebertaV2NERModel};
 use tokenizers::Tokenizer;
@@ -149,7 +149,7 @@ impl CandleNerClassifier {
 
         validate_safetensors(&weights_path)?;
 
-        let device = Device::Cpu;
+        let device = crate::device::detect_device();
         // SAFETY: validated safetensors header above; file not modified during VarBuilder lifetime
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };

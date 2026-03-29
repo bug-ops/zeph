@@ -40,22 +40,6 @@ fn device_name(d: &Device) -> &'static str {
     }
 }
 
-fn detect_device() -> Device {
-    #[cfg(feature = "metal")]
-    {
-        if let Ok(d) = Device::new_metal(0) {
-            return d;
-        }
-    }
-    #[cfg(feature = "cuda")]
-    {
-        if let Ok(d) = Device::new_cuda(0) {
-            return d;
-        }
-    }
-    Device::Cpu
-}
-
 impl CandleWhisperProvider {
     /// Load a Whisper model from a `HuggingFace` repo.
     ///
@@ -64,7 +48,7 @@ impl CandleWhisperProvider {
     /// Returns `LlmError::ModelLoad` if downloading or loading fails.
     #[allow(unsafe_code)]
     pub fn load(repo_id: &str, device: Option<Device>, language: &str) -> Result<Self, LlmError> {
-        let device = device.unwrap_or_else(detect_device);
+        let device = device.unwrap_or_else(crate::device::detect_device);
         tracing::info!(
             repo = repo_id,
             device = device_name(&device),
@@ -354,6 +338,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Llm
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device::detect_device;
 
     #[test]
     fn device_detection_returns_cpu_by_default() {
