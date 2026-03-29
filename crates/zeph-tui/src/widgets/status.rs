@@ -23,6 +23,7 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
     let uptime = format_uptime(metrics.uptime_seconds);
 
     let plan_mode_segment = plan_mode_segment(app, metrics);
+    let subagent_view_segment = subagent_view_segment(app);
     let cancel_hint = if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
         " | [Esc to cancel]"
     } else {
@@ -44,7 +45,7 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
     };
 
     let main_text = format!(
-        " [{mode}]{model}{channel_segment}{plan_mode_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
+        " [{mode}]{model}{channel_segment}{plan_mode_segment}{subagent_view_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
         model = if metrics.model_name.is_empty() {
             String::new()
         } else {
@@ -75,6 +76,14 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).style(theme.status_bar);
     frame.render_widget(paragraph, area);
+}
+
+fn subagent_view_segment(app: &App) -> String {
+    if let Some(name) = app.view_target.subagent_name() {
+        format!(" | Viewing: {name}")
+    } else {
+        String::new()
+    }
 }
 
 fn plan_mode_segment<'a>(app: &App, metrics: &MetricsSnapshot) -> &'a str {

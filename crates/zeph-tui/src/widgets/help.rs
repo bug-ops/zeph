@@ -9,8 +9,8 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Row, Table};
 use crate::layout::centered_rect;
 use crate::theme::Theme;
 
-// 23 data rows + 1 header row + 2 border lines
-const POPUP_HEIGHT: u16 = 26;
+// 29 data rows + 1 header row + 2 border lines
+const POPUP_HEIGHT: u16 = 32;
 
 pub fn render(frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
@@ -31,8 +31,29 @@ pub fn render(frame: &mut Frame, area: Rect) {
         keybind_row("d", "toggle side panels"),
         keybind_row("e", "expand tools"),
         keybind_row("c", "compact tools"),
-        keybind_row("Tab", "cycle panels"),
+        keybind_row(
+            "Tab",
+            "cycle panels (Chat/Skills/Memory/Resources/SubAgents)",
+        ),
+        keybind_row("a", "focus Sub-Agents panel"),
         keybind_row("?", "toggle this help"),
+        Row::new([Cell::from(""), Cell::from("")]),
+        Row::new([
+            Cell::from(Span::styled(
+                "Sub-Agents panel (focused)",
+                theme.panel_title,
+            )),
+            Cell::from(""),
+        ]),
+        keybind_row("j / k", "navigate agent list"),
+        keybind_row("Enter", "view selected agent transcript"),
+        keybind_row("Esc", "close panel focus"),
+        Row::new([Cell::from(""), Cell::from("")]),
+        Row::new([
+            Cell::from(Span::styled("Subagent transcript view", theme.panel_title)),
+            Cell::from(""),
+        ]),
+        keybind_row("Esc", "return to main conversation"),
         Row::new([Cell::from(""), Cell::from("")]),
         Row::new([
             Cell::from(Span::styled("Insert mode", theme.panel_title)),

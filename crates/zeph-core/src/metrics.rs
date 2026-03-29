@@ -182,6 +182,9 @@ pub struct SubAgentMetrics {
     /// Stringified `PermissionMode`: `"default"`, `"accept_edits"`, `"dont_ask"`,
     /// `"bypass_permissions"`, `"plan"`. Empty string when mode is `Default`.
     pub permission_mode: String,
+    /// Path to the directory containing this agent's JSONL transcript file.
+    /// `None` when transcript writing is disabled for this agent.
+    pub transcript_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -9,53 +9,87 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use zeph_core::subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name};
 
-use crate::metrics::MetricsSnapshot;
+use crate::metrics::{MetricsSnapshot, SubAgentMetrics};
 use crate::theme::Theme;
 
 // ── Runtime sub-agent monitor ─────────────────────────────────────────────────
 
+/// Spinner frames for working agents.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+fn state_color(state: &str) -> Color {
+    match state {
+        "working" | "submitted" => Color::Yellow,
+        "completed" => Color::Green,
+        "failed" => Color::Red,
+        "input_required" => Color::Cyan,
+        _ => Color::DarkGray,
+    }
+}
+
+fn build_agent_list_item<'a>(sa: &SubAgentMetrics, tick: u8, selected: bool) -> ListItem<'a> {
+    let color = state_color(&sa.state);
+    let is_working = matches!(sa.state.as_str(), "working" | "submitted");
+    let spinner = if is_working {
+        let idx = (tick as usize) % SPINNER_FRAMES.len();
+        SPINNER_FRAMES[idx].to_string()
+    } else {
+        "  ".to_owned()
+    };
+
+    let bg_marker = if sa.background { " [bg]" } else { "" };
+    let perm_badge = match sa.permission_mode.as_str() {
+        "plan" => " [plan]",
+        "bypass_permissions" => " [bypass!]",
+        "dont_ask" => " [dont_ask]",
+        "accept_edits" => " [accept_edits]",
+        _ => "",
+    };
+
+    let base_style = if selected {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default()
+    };
+
+    let line = Line::from(vec![
+        Span::styled(format!(" {spinner} "), Style::default().fg(color)),
+        Span::styled(
+            format!("{}{}{}", sa.name, bg_marker, perm_badge),
+            base_style,
+        ),
+        Span::styled(
+            format!(" {}", sa.state.to_uppercase()),
+            base_style.fg(color),
+        ),
+        Span::styled(
+            format!(" {}/{}  {}s", sa.turns_used, sa.max_turns, sa.elapsed_secs),
+            base_style,
+        ),
+    ]);
+    ListItem::new(line)
+}
+
+/// Non-interactive render (used when `SubAgents` panel is not focused).
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
+    let theme = Theme::default();
+
     if metrics.sub_agents.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.panel_border)
+            .title(" Sub-Agents ");
+        let paragraph = Paragraph::new(" No sub-agents. Use /agent spawn <name> to create one.")
+            .block(block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
         return;
     }
-
-    let theme = Theme::default();
 
     let items: Vec<ListItem<'_>> = metrics
         .sub_agents
         .iter()
-        .map(|sa| {
-            let state_color = match sa.state.as_str() {
-                "working" | "submitted" => Color::Yellow,
-                "completed" => Color::Green,
-                "failed" => Color::Red,
-                "input_required" => Color::Cyan,
-                _ => Color::DarkGray,
-            };
-            let bg_marker = if sa.background { " [bg]" } else { "" };
-            let perm_badge = match sa.permission_mode.as_str() {
-                "plan" => " [plan]",
-                "bypass_permissions" => " [bypass!]",
-                "dont_ask" => " [dont_ask]",
-                "accept_edits" => " [accept_edits]",
-                _ => "",
-            };
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("  {}{}{}", sa.name, bg_marker, perm_badge),
-                    Style::default(),
-                ),
-                Span::styled(
-                    format!("  {}", sa.state.to_uppercase()),
-                    Style::default().fg(state_color),
-                ),
-                Span::raw(format!(
-                    "  {}/{}  {}s",
-                    sa.turns_used, sa.max_turns, sa.elapsed_secs
-                )),
-            ]);
-            ListItem::new(line)
-        })
+        .map(|sa| build_agent_list_item(sa, 0, false))
         .collect();
 
     let list = List::new(items).block(
@@ -65,6 +99,50 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
             .title(format!(" Sub-Agents ({}) ", metrics.sub_agents.len())),
     );
     frame.render_widget(list, area);
+}
+
+/// Interactive render: shows selection highlight and spinner animation.
+/// Called when the `SubAgents` panel has keyboard focus (`a` key).
+pub fn render_interactive(
+    metrics: &MetricsSnapshot,
+    sidebar: &mut crate::app::SubAgentSidebarState,
+    frame: &mut Frame,
+    area: Rect,
+    tick: u8,
+) {
+    use crate::theme::Theme;
+    let theme = Theme::default();
+
+    if metrics.sub_agents.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.highlight)
+            .title(" Sub-Agents [focused] ");
+        let paragraph = Paragraph::new(" No sub-agents. Use /agent spawn <name> to create one.")
+            .block(block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let selected = sidebar.selected();
+    let items: Vec<ListItem<'_>> = metrics
+        .sub_agents
+        .iter()
+        .enumerate()
+        .map(|(i, sa)| build_agent_list_item(sa, tick, selected == Some(i)))
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.highlight)
+            .title(format!(
+                " Sub-Agents ({}) [j/k=nav  Enter=view  Esc=close] ",
+                metrics.sub_agents.len()
+            )),
+    );
+    frame.render_stateful_widget(list, area, &mut sidebar.list_state);
 }
 
 // ── Definition manager ────────────────────────────────────────────────────────
@@ -927,12 +1005,15 @@ mod tests {
     // ── Runtime monitor tests ─────────────────────────────────────────────────
 
     #[test]
-    fn subagents_widget_renders_nothing_when_empty() {
+    fn subagents_widget_renders_placeholder_when_empty() {
         let metrics = MetricsSnapshot::default();
-        let output = render_to_string(30, 5, |frame, area| {
+        let output = render_to_string(60, 5, |frame, area| {
             super::render(&metrics, frame, area);
         });
-        assert!(output.chars().all(|c| c == ' ' || c == '\n'));
+        assert!(
+            output.contains("Sub-Agents") && output.contains("No sub-agents"),
+            "expected placeholder text, got: {output:?}"
+        );
     }
 
     #[test]
@@ -948,6 +1029,7 @@ mod tests {
                     background: false,
                     elapsed_secs: 42,
                     permission_mode: String::new(),
+                    transcript_dir: None,
                 },
                 SubAgentMetrics {
                     id: "def456".into(),
@@ -958,6 +1040,7 @@ mod tests {
                     background: true,
                     elapsed_secs: 100,
                     permission_mode: "dont_ask".into(),
+                    transcript_dir: None,
                 },
             ],
             ..MetricsSnapshot::default()
@@ -984,6 +1067,7 @@ mod tests {
                     background: false,
                     elapsed_secs: 1,
                     permission_mode: "plan".into(),
+                    transcript_dir: None,
                 },
                 SubAgentMetrics {
                     id: "b".into(),
@@ -994,6 +1078,7 @@ mod tests {
                     background: false,
                     elapsed_secs: 1,
                     permission_mode: "bypass_permissions".into(),
+                    transcript_dir: None,
                 },
             ],
             ..MetricsSnapshot::default()

@@ -145,6 +145,135 @@ pub enum Panel {
     Skills,
     Memory,
     Resources,
+    SubAgents,
+}
+
+/// Discriminates what the main chat area is currently displaying.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentViewTarget {
+    Main,
+    SubAgent { id: String, name: String },
+}
+
+impl AgentViewTarget {
+    #[must_use]
+    pub fn is_main(&self) -> bool {
+        matches!(self, Self::Main)
+    }
+
+    #[must_use]
+    pub fn subagent_id(&self) -> Option<&str> {
+        if let Self::SubAgent { id, .. } = self {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn subagent_name(&self) -> Option<&str> {
+        if let Self::SubAgent { name, .. } = self {
+            Some(name)
+        } else {
+            None
+        }
+    }
+}
+
+/// A single entry from a subagent's JSONL transcript, ready for TUI display.
+#[derive(Debug, Clone)]
+pub struct TuiTranscriptEntry {
+    pub role: String,
+    pub content: String,
+    pub tool_name: Option<String>,
+    pub timestamp: Option<String>,
+}
+
+impl TuiTranscriptEntry {
+    /// Convert to a `ChatMessage` for rendering in the chat widget.
+    #[must_use]
+    pub fn to_chat_message(&self) -> ChatMessage {
+        let role = match self.role.as_str() {
+            "user" => MessageRole::User,
+            "assistant" => MessageRole::Assistant,
+            "tool" => MessageRole::Tool,
+            _ => MessageRole::System,
+        };
+        let mut msg = ChatMessage::new(role, self.content.clone());
+        if let Some(ref name) = self.tool_name {
+            msg.tool_name = Some(name.clone());
+        }
+        if let Some(ref ts) = self.timestamp {
+            msg.timestamp.clone_from(ts);
+        }
+        msg
+    }
+}
+
+/// Transcript cache for a single subagent.
+pub struct TranscriptCache {
+    pub agent_id: String,
+    pub entries: Vec<TuiTranscriptEntry>,
+    /// `turns_used` value at the time of last load, for staleness detection (W2).
+    pub turns_at_load: u32,
+    /// Total entries in file (before truncation to last N).
+    pub total_in_file: usize,
+}
+
+/// Selection and scroll state for the interactive subagent sidebar.
+pub struct SubAgentSidebarState {
+    pub list_state: ratatui::widgets::ListState,
+}
+
+impl SubAgentSidebarState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            list_state: ratatui::widgets::ListState::default(),
+        }
+    }
+
+    pub fn select_next(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let next = match self.list_state.selected() {
+            Some(i) => (i + 1).min(count - 1),
+            None => 0,
+        };
+        self.list_state.select(Some(next));
+    }
+
+    pub fn select_prev(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let prev = match self.list_state.selected() {
+            Some(0) | None => 0,
+            Some(i) => i - 1,
+        };
+        self.list_state.select(Some(prev));
+    }
+
+    /// Ensure the selection is valid given the current agent count.
+    pub fn clamp(&mut self, count: usize) {
+        if count == 0 {
+            self.list_state.select(None);
+        } else if self.list_state.selected().is_some_and(|i| i >= count) {
+            self.list_state.select(Some(count - 1));
+        }
+    }
+
+    #[must_use]
+    pub fn selected(&self) -> Option<usize> {
+        self.list_state.selected()
+    }
+}
+
+impl Default for SubAgentSidebarState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct ConfirmState {
@@ -192,6 +321,14 @@ pub struct App {
     /// Default `false` = auto-show plan view when a graph is active.
     /// Toggled with the `p` key.
     plan_view_active: bool,
+    /// Which agent's transcript the chat area is currently displaying.
+    pub view_target: AgentViewTarget,
+    /// Interactive selection state for the subagent sidebar.
+    pub subagent_sidebar: SubAgentSidebarState,
+    /// Cached transcript for the currently-focused subagent.
+    pub transcript_cache: Option<TranscriptCache>,
+    /// Pending transcript load result from background task.
+    pending_transcript: Option<oneshot::Receiver<(Vec<TuiTranscriptEntry>, usize)>>,
 }
 
 impl App {
@@ -236,6 +373,10 @@ impl App {
             render_cache: RenderCache::default(),
             pending_file_index: None,
             plan_view_active: false,
+            view_target: AgentViewTarget::Main,
+            subagent_sidebar: SubAgentSidebarState::new(),
+            transcript_cache: None,
+            pending_transcript: None,
         }
     }
 
@@ -326,6 +467,160 @@ impl App {
                 self.plan_view_active = false;
             }
             self.metrics = new_metrics;
+        }
+        // Clamp sidebar selection in case subagents count changed.
+        let count = self.metrics.sub_agents.len();
+        self.subagent_sidebar.clamp(count);
+        // Trigger transcript reload when turns count increased.
+        self.maybe_reload_transcript();
+    }
+
+    /// Switch the chat view target. Clears render cache and scroll offset.
+    /// All view changes MUST go through this method (W5).
+    pub fn set_view_target(&mut self, target: AgentViewTarget) {
+        if self.view_target == target {
+            return;
+        }
+        self.view_target = target;
+        self.render_cache.clear();
+        self.scroll_offset = 0;
+        self.transcript_cache = None;
+        self.pending_transcript = None;
+        // Kick off transcript load if switching to a subagent.
+        if let AgentViewTarget::SubAgent { ref id, .. } = self.view_target {
+            let id = id.clone();
+            self.start_transcript_load(&id);
+        }
+    }
+
+    /// Initiates a background transcript load for the given agent ID.
+    fn start_transcript_load(&mut self, agent_id: &str) {
+        // Find transcript_dir from current metrics.
+        let transcript_path = self
+            .metrics
+            .sub_agents
+            .iter()
+            .find(|sa| sa.id == agent_id)
+            .and_then(|sa| sa.transcript_dir.as_deref())
+            .map(|dir| std::path::PathBuf::from(dir).join(format!("{agent_id}.jsonl")));
+
+        let Some(path) = transcript_path else {
+            return;
+        };
+
+        let (tx, rx) = oneshot::channel();
+        self.pending_transcript = Some(rx);
+        // Determine if the agent is still active (for C2: skip warning on partial last line).
+        let is_active = self
+            .metrics
+            .sub_agents
+            .iter()
+            .find(|sa| sa.id == agent_id)
+            .is_some_and(|sa| matches!(sa.state.as_str(), "working" | "submitted"));
+
+        tokio::task::spawn_blocking(move || {
+            let result = load_transcript_file(&path, is_active);
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Poll the pending transcript load and install result if ready.
+    pub fn poll_pending_transcript(&mut self) {
+        let Some(rx) = self.pending_transcript.as_mut() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((entries, total)) => {
+                self.pending_transcript = None;
+                let turns_at_load = self
+                    .view_target
+                    .subagent_id()
+                    .and_then(|id| self.metrics.sub_agents.iter().find(|sa| sa.id == id))
+                    .map_or(0, |sa| sa.turns_used);
+                if let AgentViewTarget::SubAgent { ref id, .. } = self.view_target.clone() {
+                    self.transcript_cache = Some(TranscriptCache {
+                        agent_id: id.clone(),
+                        entries,
+                        turns_at_load,
+                        total_in_file: total,
+                    });
+                }
+                self.render_cache.clear();
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {}
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.pending_transcript = None;
+            }
+        }
+    }
+
+    /// Check if the transcript needs reloading (turns count increased).
+    fn maybe_reload_transcript(&mut self) {
+        let AgentViewTarget::SubAgent { ref id, .. } = self.view_target.clone() else {
+            return;
+        };
+        // Don't start a new load while one is already in flight.
+        if self.pending_transcript.is_some() {
+            return;
+        }
+        let current_turns = self
+            .metrics
+            .sub_agents
+            .iter()
+            .find(|sa| sa.id == *id)
+            .map_or(0, |sa| sa.turns_used);
+        let cached_turns = self
+            .transcript_cache
+            .as_ref()
+            .map_or(0, |c| c.turns_at_load);
+        if current_turns > cached_turns {
+            let agent_id = id.to_owned();
+            self.start_transcript_load(&agent_id);
+        }
+    }
+
+    /// Returns the messages to display in the chat area.
+    /// When viewing a subagent, returns transcript entries converted to `ChatMessage`.
+    /// When no transcript is loaded yet, returns a loading placeholder.
+    #[must_use]
+    pub fn visible_messages(&self) -> std::borrow::Cow<'_, [ChatMessage]> {
+        if self.view_target.is_main() {
+            return std::borrow::Cow::Borrowed(&self.messages);
+        }
+        if let Some(ref cache) = self.transcript_cache {
+            let msgs: Vec<ChatMessage> = cache
+                .entries
+                .iter()
+                .map(TuiTranscriptEntry::to_chat_message)
+                .collect();
+            std::borrow::Cow::Owned(msgs)
+        } else if self.pending_transcript.is_some() {
+            // Loading in progress — show placeholder.
+            std::borrow::Cow::Owned(vec![ChatMessage::new(
+                MessageRole::System,
+                "Loading transcript...".to_owned(),
+            )])
+        } else {
+            // No transcript available.
+            let name = self.view_target.subagent_name().unwrap_or("unknown");
+            std::borrow::Cow::Owned(vec![ChatMessage::new(
+                MessageRole::System,
+                format!("Transcript not available for {name}."),
+            )])
+        }
+    }
+
+    /// Returns the truncation info string if the transcript was truncated.
+    #[must_use]
+    pub fn transcript_truncation_info(&self) -> Option<String> {
+        let cache = self.transcript_cache.as_ref()?;
+        if cache.total_in_file > TRANSCRIPT_MAX_ENTRIES {
+            Some(format!(
+                "[showing last {TRANSCRIPT_MAX_ENTRIES} of {} messages]",
+                cache.total_in_file
+            ))
+        } else {
+            None
         }
     }
 
@@ -691,7 +986,7 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    fn draw_side_panel(&self, frame: &mut ratatui::Frame, layout: &AppLayout) {
+    fn draw_side_panel(&mut self, frame: &mut ratatui::Frame, layout: &AppLayout) {
         widgets::skills::render(&self.metrics, frame, layout.skills);
         widgets::memory::render(&self.metrics, frame, layout.memory);
         widgets::resources::render(&self.metrics, frame, layout.resources);
@@ -701,11 +996,19 @@ impl App {
             // Use is_stale() to check if snapshot is too old to show (IC4).
             !s.is_stale()
         });
+        let panel_focused = self.active_panel == Panel::SubAgents;
 
-        // `plan_view_active`: false = auto mode (show plan when graph active, default);
-        //                       true = user toggled to show subagents despite active graph.
-        // Pressing `p` switches between the two modes.
-        if has_graph && !self.plan_view_active {
+        // When SubAgents panel is focused (`a` key), always show the interactive sidebar.
+        // Otherwise: auto-show plan when graph active, security events, or subagents list.
+        if panel_focused {
+            widgets::subagents::render_interactive(
+                &self.metrics,
+                &mut self.subagent_sidebar,
+                frame,
+                layout.subagents,
+                tick,
+            );
+        } else if has_graph && !self.plan_view_active {
             widgets::plan_view::render(&self.metrics, frame, layout.subagents, tick);
         } else if self.has_recent_security_events() {
             widgets::security::render(&self.metrics, frame, layout.subagents);
@@ -1108,7 +1411,52 @@ impl App {
             .is_some_and(|ev| now.saturating_sub(ev.timestamp) <= 60)
     }
 
+    /// Handle keys specific to the `SubAgents` panel and transcript view.
+    /// Returns `true` if the key was consumed.
+    fn handle_subagent_panel_key(&mut self, key: KeyEvent) -> bool {
+        if self.active_panel == Panel::SubAgents {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let count = self.metrics.sub_agents.len();
+                    self.subagent_sidebar.select_next(count);
+                    return true;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    let count = self.metrics.sub_agents.len();
+                    self.subagent_sidebar.select_prev(count);
+                    return true;
+                }
+                KeyCode::Enter => {
+                    if let Some(idx) = self.subagent_sidebar.selected()
+                        && let Some(sa) = self.metrics.sub_agents.get(idx)
+                    {
+                        let target = AgentViewTarget::SubAgent {
+                            id: sa.id.clone(),
+                            name: sa.name.clone(),
+                        };
+                        self.set_view_target(target);
+                    }
+                    return true;
+                }
+                KeyCode::Esc => {
+                    self.active_panel = Panel::Chat;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        // Esc while viewing a subagent transcript returns to Main.
+        if key.code == KeyCode::Esc && !self.view_target.is_main() {
+            self.set_view_target(AgentViewTarget::Main);
+            return true;
+        }
+        false
+    }
+
     fn handle_normal_key(&mut self, key: KeyEvent) {
+        if self.handle_subagent_panel_key(key) {
+            return;
+        }
         match key.code {
             KeyCode::Esc if self.is_agent_busy() => {
                 if let Some(ref signal) = self.cancel_signal {
@@ -1134,7 +1482,11 @@ impl App {
                 self.scroll_offset = self.scroll_offset.saturating_sub(10);
             }
             KeyCode::Home => {
-                self.scroll_offset = self.messages.len();
+                self.scroll_offset = if let Some(cache) = &self.transcript_cache {
+                    cache.entries.len()
+                } else {
+                    self.messages.len()
+                };
             }
             KeyCode::End => {
                 self.scroll_offset = 0;
@@ -1155,11 +1507,14 @@ impl App {
                     Panel::Chat => Panel::Skills,
                     Panel::Skills => Panel::Memory,
                     Panel::Memory => Panel::Resources,
-                    Panel::Resources => Panel::Chat,
+                    Panel::Resources => Panel::SubAgents,
+                    Panel::SubAgents => Panel::Chat,
                 };
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.messages.clear();
+                if self.view_target.is_main() {
+                    self.messages.clear();
+                }
                 self.render_cache.clear();
                 self.scroll_offset = 0;
             }
@@ -1168,6 +1523,14 @@ impl App {
             }
             KeyCode::Char('p') => {
                 self.plan_view_active = !self.plan_view_active;
+            }
+            KeyCode::Char('a') => {
+                self.active_panel = Panel::SubAgents;
+                // Auto-select first agent if nothing selected yet.
+                if self.subagent_sidebar.selected().is_none() && !self.metrics.sub_agents.is_empty()
+                {
+                    self.subagent_sidebar.list_state.select(Some(0));
+                }
             }
             _ => {}
         }
@@ -1444,6 +1807,131 @@ impl App {
         // Message is visible in chat but not processed; acceptable for interactive TUI.
         let _ = self.user_input_tx.try_send(text);
     }
+}
+
+/// Maximum number of transcript entries loaded into the TUI (W4).
+pub const TRANSCRIPT_MAX_ENTRIES: usize = 200;
+
+/// Load transcript entries from a JSONL file in a blocking context.
+/// Returns `(entries, total_line_count)` where `total_line_count` is the number
+/// of lines in the file (before truncation), used for the truncation indicator.
+///
+/// When `is_active` is true, silently discards the last line if it fails to parse
+/// (C2: partial-write race condition mitigation).
+fn load_transcript_file(
+    path: &std::path::Path,
+    is_active: bool,
+) -> (Vec<TuiTranscriptEntry>, usize) {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return (Vec::new(), 0);
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    if total == 0 {
+        return (Vec::new(), 0);
+    }
+
+    // C2: when agent is active, check if last line looks like partial write.
+    let parse_end = if is_active && total > 0 {
+        let last = lines[total - 1].trim();
+        // A complete JSON object ends with '}'. Discard last line if partial write.
+        if last.ends_with('}') {
+            total
+        } else {
+            total - 1
+        }
+    } else {
+        total
+    };
+
+    let entries: Vec<TuiTranscriptEntry> = lines[..parse_end]
+        .iter()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            // Parse minimal fields needed for display.
+            // Using serde_json::Value to avoid coupling to zeph-subagent types.
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            // TranscriptEntry wraps a Message in a `message` field.
+            // Schema: { seq, timestamp, message: { role, parts: [{content}], tool_name? } }
+            // Also support flat format: { role, content, tool_name?, timestamp? }
+            let (role, content, tool_name, timestamp) = if let Some(msg) = v.get("message") {
+                let role = msg
+                    .get("role")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("system")
+                    .to_owned();
+                // Extract content from first text part or direct content field.
+                let content = msg
+                    .get("parts")
+                    .and_then(|p| p.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|part| part.get("content"))
+                    .and_then(|c| c.as_str())
+                    .or_else(|| msg.get("content").and_then(|c| c.as_str()))
+                    .unwrap_or("")
+                    .to_owned();
+                let tool_name = msg
+                    .get("tool_name")
+                    .and_then(|t| t.as_str())
+                    .map(ToOwned::to_owned);
+                let timestamp = v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .map(ToOwned::to_owned);
+                (role, content, tool_name, timestamp)
+            } else {
+                // Flat format fallback.
+                let role = v
+                    .get("role")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("system")
+                    .to_owned();
+                let content = v
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let tool_name = v
+                    .get("tool_name")
+                    .and_then(|t| t.as_str())
+                    .map(ToOwned::to_owned);
+                let timestamp = v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .map(ToOwned::to_owned);
+                (role, content, tool_name, timestamp)
+            };
+
+            if content.is_empty() && tool_name.is_none() {
+                return None;
+            }
+
+            Some(TuiTranscriptEntry {
+                role,
+                content,
+                tool_name,
+                timestamp,
+            })
+        })
+        .collect();
+
+    // Take only the last N entries (W4).
+    let truncated: Vec<TuiTranscriptEntry> = if entries.len() > TRANSCRIPT_MAX_ENTRIES {
+        entries
+            .into_iter()
+            .rev()
+            .take(TRANSCRIPT_MAX_ENTRIES)
+            .rev()
+            .collect()
+    } else {
+        entries
+    };
+
+    (truncated, total)
 }
 
 fn format_local_time() -> String {
@@ -1728,6 +2216,9 @@ mod tests {
 
         app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::Resources);
+
+        app.handle_event(AppEvent::Key(tab));
+        assert_eq!(app.active_panel, Panel::SubAgents);
 
         app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::Chat);
@@ -3350,10 +3841,12 @@ mod tests {
             let (_at, ar) = mpsc::channel(4);
             (u, ar)
         };
-        let mut initial = MetricsSnapshot::default();
-        initial.graph_entities_total = 42;
-        initial.graph_edges_total = 7;
-        initial.graph_communities_total = 3;
+        let initial = MetricsSnapshot {
+            graph_entities_total: 42,
+            graph_edges_total: 7,
+            graph_communities_total: 3,
+            ..MetricsSnapshot::default()
+        };
 
         let (tx, rx) = watch::channel(initial);
         let app = App::new(user_tx, agent_rx).with_metrics_rx(rx);
@@ -3423,5 +3916,411 @@ mod tests {
         // Must contain exactly one copy of "hello\n", not two.
         assert_eq!(msg.content, "$ echo hello\nhello\n");
         assert!(!msg.streaming);
+    }
+
+    // ── AgentViewTarget ──────────────────────────────────────────────────────
+
+    #[test]
+    fn agent_view_target_main_is_main() {
+        assert!(AgentViewTarget::Main.is_main());
+        assert!(AgentViewTarget::Main.subagent_id().is_none());
+        assert!(AgentViewTarget::Main.subagent_name().is_none());
+    }
+
+    #[test]
+    fn agent_view_target_subagent_accessors() {
+        let t = AgentViewTarget::SubAgent {
+            id: "abc".into(),
+            name: "Worker".into(),
+        };
+        assert!(!t.is_main());
+        assert_eq!(t.subagent_id(), Some("abc"));
+        assert_eq!(t.subagent_name(), Some("Worker"));
+    }
+
+    // ── SubAgentSidebarState ─────────────────────────────────────────────────
+
+    #[test]
+    fn sidebar_select_next_advances() {
+        let mut s = SubAgentSidebarState::new();
+        // start with nothing selected
+        assert!(s.selected().is_none());
+        s.select_next(3);
+        assert_eq!(s.selected(), Some(0));
+        s.select_next(3);
+        assert_eq!(s.selected(), Some(1));
+        s.select_next(3);
+        assert_eq!(s.selected(), Some(2));
+        // at last item — stays clamped
+        s.select_next(3);
+        assert_eq!(s.selected(), Some(2));
+    }
+
+    #[test]
+    fn sidebar_select_next_noop_when_empty() {
+        let mut s = SubAgentSidebarState::new();
+        s.select_next(0);
+        assert!(s.selected().is_none());
+    }
+
+    #[test]
+    fn sidebar_select_prev_decrements() {
+        let mut s = SubAgentSidebarState::new();
+        s.list_state.select(Some(2));
+        s.select_prev(3);
+        assert_eq!(s.selected(), Some(1));
+        s.select_prev(3);
+        assert_eq!(s.selected(), Some(0));
+        // at 0 — stays at 0
+        s.select_prev(3);
+        assert_eq!(s.selected(), Some(0));
+    }
+
+    #[test]
+    fn sidebar_select_prev_from_none_goes_to_zero() {
+        let mut s = SubAgentSidebarState::new();
+        s.select_prev(3);
+        assert_eq!(s.selected(), Some(0));
+    }
+
+    #[test]
+    fn sidebar_select_prev_noop_when_empty() {
+        let mut s = SubAgentSidebarState::new();
+        s.select_prev(0);
+        assert!(s.selected().is_none());
+    }
+
+    #[test]
+    fn sidebar_clamp_removes_selection_when_empty() {
+        let mut s = SubAgentSidebarState::new();
+        s.list_state.select(Some(2));
+        s.clamp(0);
+        assert!(s.selected().is_none());
+    }
+
+    #[test]
+    fn sidebar_clamp_reduces_out_of_bounds_selection() {
+        let mut s = SubAgentSidebarState::new();
+        s.list_state.select(Some(5));
+        s.clamp(3); // valid range: 0..2
+        assert_eq!(s.selected(), Some(2));
+    }
+
+    #[test]
+    fn sidebar_clamp_leaves_valid_selection_unchanged() {
+        let mut s = SubAgentSidebarState::new();
+        s.list_state.select(Some(1));
+        s.clamp(3);
+        assert_eq!(s.selected(), Some(1));
+    }
+
+    // ── TuiTranscriptEntry::to_chat_message ──────────────────────────────────
+
+    #[test]
+    fn transcript_entry_to_chat_message_role_mapping() {
+        let cases = [
+            ("user", MessageRole::User),
+            ("assistant", MessageRole::Assistant),
+            ("tool", MessageRole::Tool),
+            ("system", MessageRole::System),
+            ("unknown_role", MessageRole::System),
+        ];
+        for (role_str, expected) in cases {
+            let entry = TuiTranscriptEntry {
+                role: role_str.into(),
+                content: "hello".into(),
+                tool_name: None,
+                timestamp: None,
+            };
+            let msg = entry.to_chat_message();
+            assert_eq!(msg.role, expected, "role_str={role_str}");
+        }
+    }
+
+    #[test]
+    fn transcript_entry_to_chat_message_copies_tool_name_and_timestamp() {
+        let entry = TuiTranscriptEntry {
+            role: "tool".into(),
+            content: "result".into(),
+            tool_name: Some("bash".into()),
+            timestamp: Some("12:34".into()),
+        };
+        let msg = entry.to_chat_message();
+        assert_eq!(msg.tool_name.as_deref(), Some("bash"));
+        assert_eq!(msg.timestamp, "12:34");
+        assert_eq!(msg.content, "result");
+    }
+
+    // ── load_transcript_file ─────────────────────────────────────────────────
+
+    #[test]
+    fn load_transcript_file_returns_empty_for_nonexistent_path() {
+        let (entries, total) =
+            load_transcript_file(std::path::Path::new("/nonexistent/path/x.jsonl"), false);
+        assert!(entries.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn load_transcript_file_parses_flat_format() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"{"role":"user","content":"hello"}
+{"role":"assistant","content":"world"}
+"#,
+        )
+        .unwrap();
+        let (entries, total) = load_transcript_file(tmp.path(), false);
+        assert_eq!(total, 2);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].role, "user");
+        assert_eq!(entries[0].content, "hello");
+        assert_eq!(entries[1].role, "assistant");
+        assert_eq!(entries[1].content, "world");
+    }
+
+    #[test]
+    fn load_transcript_file_parses_nested_format() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"{"seq":1,"timestamp":"12:00","message":{"role":"user","parts":[{"content":"hi"}]}}
+"#,
+        )
+        .unwrap();
+        let (entries, total) = load_transcript_file(tmp.path(), false);
+        assert_eq!(total, 1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, "user");
+        assert_eq!(entries[0].content, "hi");
+        assert_eq!(entries[0].timestamp.as_deref(), Some("12:00"));
+    }
+
+    #[test]
+    fn load_transcript_file_skips_partial_last_line_when_active() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // Last line is missing closing brace — partial write.
+        std::fs::write(
+            tmp.path(),
+            r#"{"role":"user","content":"complete"}
+{"role":"assistant","content":"incomplet"#,
+        )
+        .unwrap();
+        let (entries, total) = load_transcript_file(tmp.path(), true);
+        // is_active=true: last partial line discarded
+        assert_eq!(total, 2); // total = raw line count
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "complete");
+    }
+
+    #[test]
+    fn load_transcript_file_keeps_partial_last_line_when_inactive() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // Valid JSON that ends with '}' but missing "content" — will be skipped by filter.
+        std::fs::write(
+            tmp.path(),
+            r#"{"role":"user","content":"complete"}
+{"role":"assistant","content":"also complete"}
+"#,
+        )
+        .unwrap();
+        // is_active=false: no line skipping, both lines parsed
+        let (entries, total) = load_transcript_file(tmp.path(), false);
+        assert_eq!(total, 2);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn load_transcript_file_skips_empty_content_without_tool_name() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"{"role":"user","content":""}
+{"role":"assistant","content":"real"}
+"#,
+        )
+        .unwrap();
+        let (entries, _total) = load_transcript_file(tmp.path(), false);
+        // Entry with empty content and no tool_name is filtered out.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "real");
+    }
+
+    #[test]
+    fn load_transcript_file_keeps_empty_content_with_tool_name() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"{"role":"tool","content":"","tool_name":"bash"}
+"#,
+        )
+        .unwrap();
+        let (entries, _total) = load_transcript_file(tmp.path(), false);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tool_name.as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn load_transcript_file_truncates_to_max_entries() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // Write TRANSCRIPT_MAX_ENTRIES + 5 lines.
+        let extra = 5;
+        let count = TRANSCRIPT_MAX_ENTRIES + extra;
+        let content: String = (0..count).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{{\"role\":\"user\",\"content\":\"msg{i}\"}}\n");
+            acc
+        });
+        std::fs::write(tmp.path(), &content).unwrap();
+        let (entries, total) = load_transcript_file(tmp.path(), false);
+        assert_eq!(total, count);
+        assert_eq!(entries.len(), TRANSCRIPT_MAX_ENTRIES);
+        // Must keep the LAST N entries, not first N.
+        assert_eq!(entries[0].content, format!("msg{extra}"));
+        assert_eq!(
+            entries[TRANSCRIPT_MAX_ENTRIES - 1].content,
+            format!("msg{}", count - 1)
+        );
+    }
+
+    // ── transcript_truncation_info ────────────────────────────────────────────
+
+    #[test]
+    fn transcript_truncation_info_returns_none_when_no_cache() {
+        let (app, _rx, _tx) = make_app();
+        assert!(app.transcript_truncation_info().is_none());
+    }
+
+    #[test]
+    fn transcript_truncation_info_returns_none_when_not_truncated() {
+        let (mut app, _rx, _tx) = make_app();
+        app.transcript_cache = Some(TranscriptCache {
+            agent_id: "a".into(),
+            entries: vec![],
+            turns_at_load: 1,
+            total_in_file: TRANSCRIPT_MAX_ENTRIES,
+        });
+        assert!(app.transcript_truncation_info().is_none());
+    }
+
+    #[test]
+    fn transcript_truncation_info_returns_message_when_truncated() {
+        let (mut app, _rx, _tx) = make_app();
+        let total = TRANSCRIPT_MAX_ENTRIES + 50;
+        app.transcript_cache = Some(TranscriptCache {
+            agent_id: "a".into(),
+            entries: vec![],
+            turns_at_load: 1,
+            total_in_file: total,
+        });
+        let info = app.transcript_truncation_info().unwrap();
+        assert!(info.contains(&total.to_string()), "info={info}");
+        assert!(
+            info.contains(&TRANSCRIPT_MAX_ENTRIES.to_string()),
+            "info={info}"
+        );
+    }
+
+    // ── visible_messages ─────────────────────────────────────────────────────
+
+    #[test]
+    fn visible_messages_returns_main_messages_when_in_main_view() {
+        let (mut app, _rx, _tx) = make_app();
+        app.messages
+            .push(ChatMessage::new(MessageRole::User, String::from("hello")));
+        let msgs = app.visible_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "hello");
+    }
+
+    #[test]
+    fn visible_messages_returns_transcript_when_cache_present() {
+        let (mut app, _rx, _tx) = make_app();
+        app.view_target = AgentViewTarget::SubAgent {
+            id: "x".into(),
+            name: "X".into(),
+        };
+        app.transcript_cache = Some(TranscriptCache {
+            agent_id: "x".into(),
+            entries: vec![TuiTranscriptEntry {
+                role: "user".into(),
+                content: "from transcript".into(),
+                tool_name: None,
+                timestamp: None,
+            }],
+            turns_at_load: 1,
+            total_in_file: 1,
+        });
+        let msgs = app.visible_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "from transcript");
+    }
+
+    #[test]
+    fn visible_messages_returns_loading_placeholder_when_pending() {
+        let (mut app, _rx, _tx) = make_app();
+        app.view_target = AgentViewTarget::SubAgent {
+            id: "x".into(),
+            name: "X".into(),
+        };
+        // Simulate pending by installing a oneshot receiver that is not yet resolved.
+        let (_tx2, rx2) = tokio::sync::oneshot::channel::<(Vec<TuiTranscriptEntry>, usize)>();
+        app.pending_transcript = Some(rx2);
+        let msgs = app.visible_messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(
+            msgs[0].content.contains("Loading"),
+            "content={}",
+            msgs[0].content
+        );
+    }
+
+    #[test]
+    fn visible_messages_returns_unavailable_when_no_cache_and_no_pending() {
+        let (mut app, _rx, _tx) = make_app();
+        app.view_target = AgentViewTarget::SubAgent {
+            id: "x".into(),
+            name: "MyAgent".into(),
+        };
+        let msgs = app.visible_messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(
+            msgs[0].content.contains("MyAgent"),
+            "content={}",
+            msgs[0].content
+        );
+    }
+
+    // ── set_view_target ───────────────────────────────────────────────────────
+
+    #[test]
+    fn set_view_target_same_target_is_noop() {
+        let (mut app, _rx, _tx) = make_app();
+        app.scroll_offset = 5;
+        // Already in Main — set to Main again.
+        app.set_view_target(AgentViewTarget::Main);
+        // scroll_offset must not be reset because nothing changed.
+        assert_eq!(app.scroll_offset, 5);
+    }
+
+    #[test]
+    fn set_view_target_clears_cache_and_scroll_on_switch() {
+        let (mut app, _rx, _tx) = make_app();
+        app.scroll_offset = 10;
+        app.transcript_cache = Some(TranscriptCache {
+            agent_id: "a".into(),
+            entries: vec![],
+            turns_at_load: 1,
+            total_in_file: 1,
+        });
+        // Switch to Main (was implicitly Main — set a SubAgent first).
+        app.view_target = AgentViewTarget::SubAgent {
+            id: "a".into(),
+            name: "A".into(),
+        };
+        app.set_view_target(AgentViewTarget::Main);
+        assert_eq!(app.scroll_offset, 0);
+        assert!(app.transcript_cache.is_none());
     }
 }

@@ -1,9 +1,8 @@
 ---
 source: crates/zeph-tui/src/widgets/help.rs
+assertion_line: 107
 expression: output
 ---
-                                                                                
-                                                                                
             ┌─────────── Help — press ? or Esc to close ───────────┐            
             │Key                 Action                            │            
             │Normal mode                                           │            
@@ -15,8 +14,17 @@ expression: output
             │d                   toggle side panels                │            
             │e                   expand tools                      │            
             │c                   compact tools                     │            
-            │Tab                 cycle panels                      │            
+            │Tab                 cycle panels (Chat/Skills/Memory/R│            
+            │a                   focus Sub-Agents panel            │            
             │?                   toggle this help                  │            
+            │                                                      │            
+            │Sub-Agents panel (f                                   │            
+            │j / k               navigate agent list               │            
+            │Enter               view selected agent transcript    │            
+            │Esc                 close panel focus                 │            
+            │                                                      │            
+            │Subagent transcript                                   │            
+            │Esc                 return to main conversation       │            
             │                                                      │            
             │Insert mode                                           │            
             │Enter               send message                      │            
@@ -24,9 +32,4 @@ expression: output
             │Esc                 return to normal mode             │            
             │Ctrl+U              clear input                       │            
             │Ctrl+K              clear queue                       │            
-            │Up / Down           navigate history                  │            
-            │                                                      │            
-            │Confirm mode                                          │            
-            │y                   confirm                           │            
-            │n / Esc             cancel                            │            
             └──────────────────────────────────────────────────────┘

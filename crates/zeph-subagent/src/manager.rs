@@ -1545,6 +1545,14 @@ impl SubAgentManager {
         self.agents.get(task_id).map(|h| &h.def)
     }
 
+    /// Return the transcript directory for a specific agent by `task_id`.
+    #[must_use]
+    pub fn agent_transcript_dir(&self, task_id: &str) -> Option<&std::path::Path> {
+        self.agents
+            .get(task_id)
+            .and_then(|h| h.transcript_dir.as_deref())
+    }
+
     /// Spawn a sub-agent for an orchestrated task.
     ///
     /// Identical to [`spawn`][Self::spawn] but wraps the `JoinHandle` to send a

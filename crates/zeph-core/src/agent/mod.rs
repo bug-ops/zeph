@@ -2496,6 +2496,9 @@ impl<C: Channel> Agent<C> {
                             PermissionMode::Plan => "plan".into(),
                         }
                     }),
+                    transcript_dir: mgr
+                        .agent_transcript_dir(&id)
+                        .map(|p| p.to_string_lossy().into_owned()),
                 }
             })
             .collect();

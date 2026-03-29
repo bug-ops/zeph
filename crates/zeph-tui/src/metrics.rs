@@ -4,6 +4,6 @@
 pub use zeph_core::metrics::{
     CategoryScore, ClassifierMetricsSnapshot, McpServerConnectionStatus, McpServerStatus,
     MetricsCollector, MetricsSnapshot, ProbeCategory, ProbeVerdict, SecurityEvent,
-    SecurityEventCategory, SkillConfidence, TaskGraphSnapshot, TaskMetricsSnapshot,
-    TaskSnapshotRow,
+    SecurityEventCategory, SkillConfidence, SubAgentMetrics, TaskGraphSnapshot,
+    TaskMetricsSnapshot, TaskSnapshotRow,
 };

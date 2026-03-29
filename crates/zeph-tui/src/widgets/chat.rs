@@ -32,8 +32,32 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     // 2 for block borders + 2 for accent prefix ("▎ ") added per line
     let wrap_width = area.width.saturating_sub(4) as usize;
 
-    let (mut lines, all_md_links) =
-        collect_message_lines(app, cache, area.width, wrap_width, &theme);
+    // Use visible_messages() to support subagent transcript view.
+    let messages = app.visible_messages().into_owned();
+    let truncation_info = app.transcript_truncation_info();
+    let title = if let Some(ref name) = app.view_target.subagent_name().map(str::to_owned) {
+        format!(" Subagent: {name} ")
+    } else {
+        " Chat ".to_owned()
+    };
+
+    let (mut lines, all_md_links) = collect_message_lines_from(
+        &messages,
+        truncation_info.as_deref(),
+        cache,
+        area.width,
+        wrap_width,
+        &theme,
+        app.tool_expanded(),
+        app.compact_tools(),
+        app.show_source_labels(),
+        usize::try_from(
+            app.throbber_state()
+                .index()
+                .rem_euclid(i8::try_from(BRAILLE_SIX.symbols.len()).unwrap_or(i8::MAX)),
+        )
+        .unwrap_or(0),
+    );
 
     let total = lines.len();
 
@@ -54,7 +78,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme.panel_border)
-                .title(" Chat "),
+                .title(title),
         )
         .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
 
@@ -81,27 +105,30 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     max_scroll
 }
 
-fn collect_message_lines(
-    app: &mut App,
+#[allow(clippy::too_many_arguments)]
+fn collect_message_lines_from(
+    messages: &[crate::app::ChatMessage],
+    truncation_info: Option<&str>,
     cache: &mut RenderCache,
     terminal_width: u16,
     wrap_width: usize,
     theme: &Theme,
+    tool_expanded: bool,
+    compact_tools: bool,
+    show_labels: bool,
+    throbber_idx: usize,
 ) -> (Vec<Line<'static>>, Vec<MdLink>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut all_md_links: Vec<MdLink> = Vec::new();
 
-    let tool_expanded = app.tool_expanded();
-    let compact_tools = app.compact_tools();
-    let show_labels = app.show_source_labels();
-    let throbber_len = BRAILLE_SIX.symbols.len();
-    let throbber_idx = usize::try_from(
-        app.throbber_state()
-            .index()
-            .rem_euclid(i8::try_from(throbber_len).unwrap_or(i8::MAX)),
-    )
-    .unwrap_or(0);
-    let messages: Vec<_> = app.messages().to_vec();
+    // Show truncation marker at the top when transcript was truncated (W4).
+    if let Some(info) = truncation_info {
+        lines.push(Line::from(Span::styled(
+            format!("  {info}"),
+            theme.system_message,
+        )));
+        lines.push(Line::default());
+    }
 
     for (idx, msg) in messages.iter().enumerate() {
         let accent = match msg.role {
