@@ -221,7 +221,6 @@ schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
-sqlx.workspace = true
 tempfile.workspace = true
 zeph-db.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
@@ -249,6 +248,7 @@ zeph-tui = { workspace = true, optional = true }
 
 [dev-dependencies]
 serial_test.workspace = true
+sqlx.workspace = true
 tempfile.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true

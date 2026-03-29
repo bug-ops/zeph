@@ -33,6 +33,8 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the Qdrant client cannot be created.
+    // TODO(#2389): add optional `api_key: Option<String>` parameter and wire it via
+    // `.with_api_key()` on the builder once the Qdrant config struct exposes the field.
     pub fn new(url: &str) -> QdrantResult<Self> {
         let client = Qdrant::from_url(url).build().map_err(Box::new)?;
         Ok(Self { client })

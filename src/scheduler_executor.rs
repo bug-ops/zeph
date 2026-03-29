@@ -534,7 +534,9 @@ mod tests {
     use super::*;
 
     async fn make_executor() -> (SchedulerExecutor, mpsc::Receiver<SchedulerMessage>) {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         let store = Arc::new(store);
@@ -578,7 +580,7 @@ mod tests {
         assert!(result.summary.contains("every5m"));
         // Verify normalized cron is persisted to DB (must be 6-field, not raw 5-field)
         let row: (String,) =
-            sqlx::query_as("SELECT cron_expr FROM scheduled_jobs WHERE name = 'every5m'")
+            zeph_db::query_as("SELECT cron_expr FROM scheduled_jobs WHERE name = 'every5m'")
                 .fetch_one(exec.store.pool())
                 .await
                 .unwrap();
@@ -638,7 +640,9 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_existing_task() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store
@@ -677,7 +681,9 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_name_returns_updated_message() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store
@@ -712,7 +718,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_tasks_with_jobs() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store
@@ -1003,7 +1011,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_fenced_cancel_task_dispatches() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store

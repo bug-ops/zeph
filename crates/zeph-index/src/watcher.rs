@@ -77,7 +77,9 @@ mod tests {
     use zeph_memory::QdrantOps;
 
     async fn create_test_pool() -> zeph_db::DbPool {
-        sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
+        zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap()
     }
 
     async fn create_test_indexer() -> Arc<CodeIndexer> {

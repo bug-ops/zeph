@@ -374,7 +374,9 @@ mod tests {
     }
 
     async fn test_pool() -> DbPool {
-        sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
+        zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

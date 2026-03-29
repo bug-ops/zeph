@@ -1129,7 +1129,7 @@ mod tests {
     async fn apply_response_cache_disabled_returns_agent_unchanged() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
         let result = apply_response_cache(agent, false, pool, 300, false, "embed-model".into());
         drop(result);
@@ -1139,7 +1139,7 @@ mod tests {
     async fn apply_response_cache_enabled_attaches_cache() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
         let result = apply_response_cache(agent, true, pool, 300, false, "embed-model".into());
         drop(result);
@@ -1153,7 +1153,7 @@ mod tests {
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
 
         let (retriever, watcher, progress_rx) =
             apply_code_indexer(&config, None, offline_provider(), pool, false).await;
@@ -1171,7 +1171,7 @@ mod tests {
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
 
         let (retriever, watcher, _progress_rx) =
