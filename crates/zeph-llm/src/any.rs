@@ -137,6 +137,7 @@ impl AnyProvider {
         if let Self::Router(p) = self {
             p.save_thompson_state();
             p.save_reputation_state();
+            p.save_bandit_state();
         }
     }
 

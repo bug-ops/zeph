@@ -1078,7 +1078,7 @@ impl GraphStore {
                         0.5 AS fts_rank \
                  FROM graph_entity_aliases a \
                  JOIN graph_entities e ON e.id = a.entity_id \
-                 WHERE a.alias_name LIKE ? ESCAPE '\\\\' {} \
+                 WHERE a.alias_name LIKE ? ESCAPE '\\' {} \
              ) \
              ORDER BY fts_rank DESC \
              LIMIT ?",

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(memory): correct ESCAPE clause in spreading activation BFS alias query — `ESCAPE '\\\\'` (2 chars) changed to `ESCAPE '\\'` (1 char) as required by SQLite (closes #2393)
+- fix(llm): call `save_bandit_state()` in `save_router_state()` to persist PILOT LinUCB bandit state across restarts (closes #2394)
+
 ## [0.18.0] - 2026-03-29
 
 ### Changed
