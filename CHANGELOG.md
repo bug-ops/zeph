@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- feat(db): complete database abstraction layer — remove direct `sqlx` dependencies from all 6 consumer crates (`zeph-memory`, `zeph-core`, `zeph-index`, `zeph-mcp`, `zeph-orchestration`, `zeph-scheduler`); all SQL access now routes through `zeph-db` re-exports (#2386)
+- feat(db): fix 8 dynamic `format!()`-built SQL queries in `graph/store/mod.rs` that used SQLite-only `?` placeholders; now use `numbered_placeholder()`/`placeholder_list()` helpers for backend-portable IN clause construction (#2386)
+- feat(db): pool config hardening — SQLite pool gains `min_connections(1)` and `acquire_timeout(30s)`; PostgreSQL `connect()` now correctly uses `pool_size` config field (#2387)
+- feat(db): `insert_edge_typed` wrapped in atomic transaction; `get_vectors` error propagation fixed (was silently swallowing DB errors via `unwrap_or_default()`); Qdrant hot-path upsert switched from `wait(true)` to `wait(false)` (-3–15ms per call) (#2387)
+- feat(db): add `importance_score` index migration (053) to prevent full table scans on messages (#2387)
+- feat(db): fix `sql!` macro doc comment — remove false claim of `LazyLock` caching, document actual `Box::leak` per-call-site behavior (#2387)
+- feat(db): migrate remaining `sqlx::SqlitePool::connect` usages in test code to `zeph_db::sqlx` re-exports; move `sqlx` from `[dependencies]` to `[dev-dependencies]` in root binary (#2388)
+- feat(db): security hardening — warn on postgres connections without `sslmode`; set SQLite file permissions to `0o600` on unix; confirm `sqlx-mysql` excluded (RUSTSEC-2023-0071); add TODO for Qdrant api_key gap (#2389)
+
+### Added
+
+- feat(db): `numbered_placeholder(n)` and `placeholder_list(start, count)` helpers in `zeph-db` for dialect-agnostic dynamic SQL construction (#2386)
+
 - docker: add all missing ZEPH_* env vars to docker-compose.yml and docker-compose.dev.yml (64 vars added, ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT renamed to ZEPH_MEMORY_RECALL_LIMIT)
 - docker: add scripts/check-env-vars.sh drift-prevention script
 
