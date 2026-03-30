@@ -77,6 +77,24 @@ threshold = 0.30   # initial relevance threshold (0.0–1.0)
 > [!TIP]
 > Set `threshold = 0.0` to disable filtering while keeping the subsystem active (useful for debugging admission decisions).
 
+### RL admission strategy
+
+The default `admission_strategy = "heuristic"` uses the embedding-similarity threshold above. Setting `admission_strategy = "rl"` replaces the static threshold with a logistic regression model trained on the `was_recalled` signal.
+
+All messages — admitted and rejected alike — are recorded as training samples. When a stored message is later retrieved (i.e., recalled into context), the sample is labelled positive; all others remain negative. The model is retrained periodically on this dataset and the resulting decision boundary replaces the fixed threshold.
+
+```toml
+[memory.admission]
+enabled              = true
+threshold            = 0.30          # used as heuristic fallback below rl_min_samples
+admission_strategy   = "rl"          # opt-in: learned write-gate
+rl_min_samples       = 500           # minimum training samples before RL activates
+rl_retrain_interval_secs = 3600      # retrain frequency
+```
+
+> [!NOTE]
+> Until `rl_min_samples` is accumulated, the controller falls back to the heuristic threshold automatically. No configuration change is required when the model becomes active.
+
 ## MemScene consolidation
 
 `MemScene` (`[memory.tiers]`) organises memories into tiered stores — hot working memory, episodic scene buffer, and long-term archive — and runs background consolidation that promotes and demotes entries based on access frequency and recency.
@@ -89,6 +107,34 @@ scene_consolidation_interval_secs = 300
 ```
 
 Scene entries are injected into the context window ahead of standard semantic recall when they score above the relevance threshold, giving recently active knowledge priority.
+
+## Memex tool-output archive
+
+When `archive_tool_outputs = true`, the compaction pipeline saves the full body of each tool output to SQLite before the LLM compaction call. After the compacted summary is produced, a UUID back-reference is appended to it so the original output remains addressable via `read_overflow`. Archive rows are never deleted by the periodic overflow cleanup — they are retained until the conversation is deleted.
+
+This prevents permanent information loss when large tool outputs are compacted away from the live context window while still keeping them retrievable on demand.
+
+```toml
+[memory.compression]
+archive_tool_outputs = true   # opt-in: archive tool outputs before compaction (default: false)
+```
+
+> [!NOTE]
+> Archive rows live in the `tool_overflow` SQLite table alongside regular overflow entries but are protected from the cleanup sweep by a `is_archive` flag. Querying them uses the same `read_overflow` tool exposed to the LLM.
+
+## ACON per-category compression guidelines
+
+The failure-driven compression guideline system (ACON) normally maintains a single `<compression-guidelines>` block shared across all message categories. Enabling `categorized_guidelines = true` adds per-category tracking so that failures caused by compressing tool outputs, assistant reasoning, and user context are each handled with a dedicated guideline block.
+
+Each failure pair is tagged with its category at detection time. Guideline updates for a category are only triggered when enough new failures accumulate for that category (lazy evaluation). The resulting category-specific blocks are injected alongside the global block into every future compaction prompt.
+
+```toml
+[memory.compression_guidelines]
+categorized_guidelines = true   # opt-in: per-category guideline optimization (default: false)
+```
+
+> [!TIP]
+> Enable this when your workload produces a mix of large tool outputs and long reasoning chains — the agent can then independently tune compression behaviour for each category rather than averaging across all failure types.
 
 ## Session digest
 

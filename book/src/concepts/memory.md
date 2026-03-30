@@ -236,17 +236,39 @@ A-MAC is disabled by default. Enable it in `[memory.admission]`:
 ```toml
 [memory.admission]
 enabled = true
-threshold = 0.30           # Cosine similarity ceiling; messages more similar than this to recent entries are rejected (default: 0.30)
-fast_path_margin = 0.10    # If the nearest-neighbor score is below (threshold - margin), skip the full check and admit immediately (default: 0.10)
+threshold = 0.40            # Composite score threshold; messages below this are rejected (default: 0.40)
+fast_path_margin = 0.15     # Skip full check and admit immediately when score >= threshold + margin (default: 0.15)
 admission_provider = "fast" # Provider name for LLM-assisted admission decisions (optional)
 
 [memory.admission.weights]
-recency = 0.4              # Weight for how recently similar content was stored
-importance = 0.3           # Weight for message importance score (requires importance_enabled = true)
-similarity = 0.3           # Weight for raw embedding similarity
+future_utility = 0.30       # LLM-estimated future reuse probability (heuristic mode only)
+factual_confidence = 0.15   # Inverse of hedging markers (e.g. "I think", "maybe")
+semantic_novelty = 0.30     # 1 - max similarity to existing memories
+temporal_recency = 0.10     # Always 1.0 at write time
+content_type_prior = 0.15   # Role-based prior (user messages score higher)
 ```
 
 The `fast_path_margin` short-circuits the admission check for clearly novel messages, reducing embedding lookups on low-similarity content. When `admission_provider` is set, borderline cases (similarity near `threshold`) are escalated to an LLM for a binary admit/reject decision; without it, the threshold comparison is the sole gate.
+
+### RL-Based Admission Strategy
+
+The default `heuristic` strategy uses static weights and an optional LLM call for the `future_utility` factor. The `rl` strategy replaces the `future_utility` LLM call with a trained logistic regression model that learns from actual recall outcomes.
+
+The RL model collects `(query, content, was_recalled)` triples from every admitted and rejected message over time. When the training corpus reaches `rl_min_samples`, the model is trained and deployed. Below that threshold the system automatically falls back to `heuristic`.
+
+```toml
+[memory.admission]
+enabled = true
+admission_strategy = "rl"          # "heuristic" (default) or "rl"
+rl_min_samples = 500               # Training samples required before RL activates (default: 500)
+rl_retrain_interval_secs = 3600    # Background retraining interval in seconds (default: 3600)
+```
+
+> [!WARNING]
+> `admission_strategy = "rl"` is currently a preview feature. The model infrastructure is wired and sample collection is active, but the trained model is not yet connected to the admission path — the system will emit a startup warning and fall back to `heuristic`. Full RL-gated admission is tracked in [#2416](https://github.com/bug-ops/zeph/issues/2416).
+
+> [!NOTE]
+> Migration 055 adds the tables required for RL sample storage. Run `zeph --migrate-config` when upgrading an existing installation.
 
 ## MemScene Consolidation
 
@@ -289,7 +311,24 @@ Proactive and reactive compression are mutually exclusive per turn: if proactive
 
 Proactive compression emits two metrics: `compression_events` (count) and `compression_tokens_saved` (cumulative tokens freed).
 
-> **Note:** Validation rejects `threshold_tokens < 1000` and `max_summary_tokens < 128` at startup.
+> [!NOTE]
+> Validation rejects `threshold_tokens < 1000` and `max_summary_tokens < 128` at startup.
+
+### Tool Output Archive (Memex)
+
+When `archive_tool_outputs = true`, Zeph saves the full body of every tool output in the compaction range to SQLite before summarization begins. The archived entries are stored in the `tool_overflow` table with `archive_type = 'archive'` and are excluded from the normal overflow cleanup pass.
+
+During compaction the LLM sees placeholder messages instead of the full outputs, keeping the summarization prompt small. After the LLM produces its summary, Zeph appends UUID reference lines (one per archived output) to the summary text. This gives you a complete audit trail of tool outputs that survived context compaction.
+
+This feature is disabled by default because it increases SQLite storage usage. Enable it when you need durable tool output history across long sessions:
+
+```toml
+[memory.compression]
+archive_tool_outputs = true
+```
+
+> [!TIP]
+> Tool output archives are written by database migration 054. Run `zeph --migrate-config` if you are upgrading an existing installation.
 
 ## Failure-Driven Compression Guidelines
 
@@ -310,7 +349,33 @@ update_interval_secs = 300       # Seconds between background updater checks (de
 max_stored_pairs = 100           # Maximum unused failure pairs retained (default: 100)
 ```
 
-> **Note:** Guidelines are injected only when `enabled = true` and at least one guidelines version exists in SQLite. The guidelines document grows incrementally as the agent accumulates failure experience.
+> [!NOTE]
+> Guidelines are injected only when `enabled = true` and at least one guidelines version exists in SQLite. The guidelines document grows incrementally as the agent accumulates failure experience.
+
+### Per-Category Compression Guidelines
+
+By default a single global guidelines document is maintained for the entire conversation. When `categorized_guidelines = true`, the updater maintains **four independent documents** — one per content category — and injects only the relevant document during compaction:
+
+| Category | Content covered |
+|----------|----------------|
+| `tool_output` | Tool call results, shell output, file reads |
+| `assistant_reasoning` | Agent reasoning steps and explanations |
+| `user_context` | User instructions, preferences, and goals |
+| `unknown` | Messages that do not match a category |
+
+Each category runs its own update cycle: a category is updated only when its unprocessed failure pair count reaches `update_threshold`, avoiding unnecessary LLM calls for categories that have few failures.
+
+Enable per-category guidelines alongside the base feature:
+
+```toml
+[memory.compression_guidelines]
+enabled = true
+categorized_guidelines = true    # Maintain separate guidelines per content category (default: false)
+update_threshold = 5
+```
+
+> [!TIP]
+> Per-category guidelines reduce the chance that tool-output compression rules interfere with how assistant reasoning is compressed, and vice versa. Enable this when you have long sessions mixing heavy tool use with extended reasoning chains.
 
 ## Graph Memory
 

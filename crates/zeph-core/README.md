@@ -143,6 +143,21 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 | `sqlite_pool_size` | u32 | `5` | SQLite connection pool size for memory storage |
 | `response_cache_cleanup_interval_secs` | u64 | `3600` | Interval for expiring stale response cache entries |
 
+Key `CompressionConfig` fields (TOML section `[memory.compression]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `archive_tool_outputs` | bool | `false` | Archive tool output bodies to SQLite (Memex) before compaction; UUID back-references are injected into summaries |
+
+Key `CompressionGuidelinesConfig` fields (TOML section `[memory.compression_guidelines]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `categorized_guidelines` | bool | `false` | Tag ACON failure pairs by category (tool_output / assistant_reasoning / user_context) and maintain per-category guideline blocks |
+
+> [!NOTE]
+> `archive_tool_outputs` requires the `compression-guidelines` feature flag. `categorized_guidelines` is also gated behind `compression-guidelines`. Both are disabled by default and must be explicitly opted in.
+
 ```toml
 [agent]
 auto_update_check = true   # set to false to disable update notifications
@@ -317,7 +332,7 @@ In-session commands for autonomous self-experimentation (requires `experiments` 
 | `metal` | Metal backend for Candle on Apple Silicon (implies `candle`) |
 | `guardrail` | Advanced content guardrails via `zeph-sanitizer` |
 | `lsp-context` | LSP context injection hooks via `LspHookRunner` |
-| `compression-guidelines` | LLM-guided compaction guidelines in context assembly |
+| `compression-guidelines` | LLM-guided compaction guidelines in context assembly; enables `archive_tool_outputs` (Memex) and `categorized_guidelines` (ACON per-category) config options |
 | `experiments` | Autonomous self-experimentation engine |
 | `policy-enforcer` | Policy enforcement for tool execution |
 | `scheduler` | Integration with `zeph-scheduler` for cron-based tasks |

@@ -287,12 +287,29 @@ importance_weight = 0.15              # Blend weight for importance in ranking, 
 [memory.routing]
 strategy = "heuristic"        # Routing strategy for memory backend selection (default: "heuristic")
 
+# [memory.admission]
+# enabled = false                    # Enable A-MAC adaptive memory admission control (default: false)
+# threshold = 0.40                   # Composite score threshold; messages below this are rejected (default: 0.40)
+# fast_path_margin = 0.15            # Admit immediately when score >= threshold + margin (default: 0.15)
+# admission_provider = "fast"        # Provider for LLM-assisted admission decisions (optional, default: "")
+# admission_strategy = "heuristic"   # "heuristic" (default) or "rl" (preview — falls back to heuristic)
+# rl_min_samples = 500               # Training samples required before RL model activates (default: 500)
+# rl_retrain_interval_secs = 3600    # Background RL retraining interval in seconds (default: 3600)
+#
+# [memory.admission.weights]
+# future_utility = 0.30              # LLM-estimated future reuse probability (heuristic mode only)
+# factual_confidence = 0.15          # Inverse of hedging markers
+# semantic_novelty = 0.30            # 1 - max similarity to existing memories
+# temporal_recency = 0.10            # Always 1.0 at write time
+# content_type_prior = 0.15          # Role-based prior
+
 [memory.compression]
 strategy = "reactive"         # "reactive" (default) or "proactive"
 # Proactive strategy fields (required when strategy = "proactive"):
 # threshold_tokens = 80000   # Fire compression when context exceeds this token count (>= 1000)
 # max_summary_tokens = 4000  # Cap for the compressed summary (>= 128)
 # model = ""                 # Reserved — currently unused
+# archive_tool_outputs = false  # Archive tool output bodies to SQLite before compaction (default: false)
 
 [memory.compression.probe]
 # enabled = false           # Enable compaction probe validation (default: false)
@@ -310,6 +327,7 @@ enabled = false                # Enable failure-driven compression guidelines (d
 # detection_window_turns = 10 # Turns after hard compaction to watch for context loss (default: 10)
 # update_interval_secs = 300  # Interval in seconds between background updater checks (default: 300)
 # max_stored_pairs = 100      # Maximum unused failure pairs retained before cleanup (default: 100)
+# categorized_guidelines = false  # Maintain separate guideline documents per content category (default: false)
 
 [memory.graph]
 enabled = false                        # Enable graph memory (default: false, requires graph-memory feature)
