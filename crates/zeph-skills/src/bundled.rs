@@ -99,9 +99,28 @@ pub fn provision_bundled_skills(managed_dir: &Path) -> Result<ProvisionReport, s
         // Skill dir exists — check marker.
         match read_marker_version(&marker_path) {
             MarkerState::NoMarker => {
-                // User-owned skill — never overwrite.
-                debug!(skill = %skill_name, "skipping user-owned skill (no .bundled marker)");
-                report.skipped.push(skill_name);
+                // Check if this is a legacy bundled skill (provisioned before the
+                // .bundled marker system): compare on-disk SKILL.md to embedded.
+                if is_legacy_bundled(&target_dir, &skill_name) {
+                    match write_skill(skill_dir, &target_dir, &marker_path, &embedded_version) {
+                        Ok(()) => {
+                            info!(
+                                skill = %skill_name,
+                                to = %embedded_version,
+                                "migrated legacy bundled skill (added .bundled marker)"
+                            );
+                            report.updated.push(skill_name);
+                        }
+                        Err(e) => {
+                            warn!(skill = %skill_name, error = %e, "failed to migrate legacy bundled skill");
+                            report.failed.push((skill_name, e.to_string()));
+                        }
+                    }
+                } else {
+                    // User-owned skill — never overwrite.
+                    debug!(skill = %skill_name, "skipping user-owned skill (no .bundled marker)");
+                    report.skipped.push(skill_name);
+                }
             }
             MarkerState::CorruptMarker => {
                 warn!(
@@ -255,6 +274,26 @@ fn extract_embedded_version(skill_dir: &include_dir::Dir<'_>) -> String {
     parse_frontmatter_version(content).unwrap_or_else(|| "1.0".to_owned())
 }
 
+/// Check whether an on-disk skill dir (without a `.bundled` marker) matches the
+/// embedded version — indicating it was provisioned before the marker system.
+///
+/// Returns `true` only when the on-disk `SKILL.md` content (trimmed) equals the
+/// embedded `SKILL.md` content (trimmed). A mismatch means the user modified the
+/// file, so we treat the skill as user-owned.
+fn is_legacy_bundled(target_dir: &Path, skill_name: &str) -> bool {
+    let embedded_path = format!("{skill_name}/SKILL.md");
+    let Some(embedded_file) = BUNDLED_SKILLS_DIR.get_file(&embedded_path) else {
+        return false;
+    };
+    let Ok(embedded_content) = std::str::from_utf8(embedded_file.contents()) else {
+        return false;
+    };
+    match fs::read_to_string(target_dir.join("SKILL.md")) {
+        Ok(on_disk) => on_disk.trim() == embedded_content.trim(),
+        Err(_) => false,
+    }
+}
+
 /// Parse the `version:` key from the `metadata:` block in SKILL.md frontmatter.
 ///
 /// Frontmatter is delimited by `---` lines. Within `metadata:`, lines of the
@@ -347,6 +386,109 @@ mod tests {
             read_marker_version(&path),
             MarkerState::Version(v) if v == "1.5"
         ));
+    }
+
+    /// `is_legacy_bundled` returns true when on-disk SKILL.md matches embedded content (trimmed).
+    #[test]
+    fn is_legacy_bundled_matches_identical_content() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        // Write the same content that would be in an embedded skill.
+        let skill_md_content = make_skill_md("1.0");
+        fs::write(skill_dir.join("SKILL.md"), &skill_md_content).unwrap();
+
+        // We can't directly call is_legacy_bundled with a real include_dir::Dir,
+        // so we test the provision path: provision to empty dir first (installs),
+        // then remove the .bundled marker and re-provision — the skill must be
+        // migrated (moved to updated), not skipped.
+        let managed = TempDir::new().unwrap();
+        let report1 = provision_bundled_skills(managed.path()).expect("first provision");
+        assert!(report1.failed.is_empty());
+
+        // Remove all .bundled markers to simulate pre-marker state.
+        for name in &report1.installed {
+            let marker = managed.path().join(name).join(".bundled");
+            if marker.exists() {
+                fs::remove_file(&marker).unwrap();
+            }
+        }
+
+        // Re-provision: skills whose SKILL.md matches embedded → migrate (updated).
+        // Skills whose SKILL.md was modified → skip.
+        let report2 = provision_bundled_skills(managed.path()).expect("second provision");
+        assert!(
+            report2.failed.is_empty(),
+            "no failures on re-provision: {:?}",
+            report2.failed
+        );
+        // All skills without markers should be migrated (updated), none skipped.
+        assert!(
+            report2.installed.is_empty(),
+            "no new installs expected on re-provision"
+        );
+        assert!(
+            report2.skipped.is_empty(),
+            "no skills should be skipped when content matches embedded"
+        );
+        assert!(
+            !report2.updated.is_empty(),
+            "all skills without marker must be migrated to updated"
+        );
+
+        // After migration, each skill must have a .bundled marker.
+        for name in &report2.updated {
+            let marker = managed.path().join(name).join(".bundled");
+            assert!(
+                marker.exists(),
+                "{name}: .bundled marker missing after migration"
+            );
+        }
+    }
+
+    /// `is_legacy_bundled` returns false when on-disk SKILL.md differs from embedded.
+    #[test]
+    fn is_legacy_bundled_skips_modified_skill() {
+        let managed = TempDir::new().unwrap();
+        let report1 = provision_bundled_skills(managed.path()).expect("first provision");
+        assert!(report1.failed.is_empty());
+        assert!(!report1.installed.is_empty());
+
+        // Remove .bundled markers AND modify SKILL.md to simulate user edits.
+        for name in &report1.installed {
+            let skill_dir = managed.path().join(name);
+            let marker = skill_dir.join(".bundled");
+            if marker.exists() {
+                fs::remove_file(&marker).unwrap();
+            }
+            let skill_md = skill_dir.join("SKILL.md");
+            if skill_md.exists() {
+                let mut content = fs::read_to_string(&skill_md).unwrap();
+                content.push_str("\n# user modification\n");
+                fs::write(&skill_md, content).unwrap();
+            }
+        }
+
+        let report2 = provision_bundled_skills(managed.path()).expect("second provision");
+        assert!(
+            report2.failed.is_empty(),
+            "no failures: {:?}",
+            report2.failed
+        );
+        // All modified skills must be skipped (treated as user-owned).
+        assert!(
+            report2.updated.is_empty(),
+            "modified skills must not be updated"
+        );
+        assert!(
+            report2.installed.is_empty(),
+            "no re-installs expected when dir exists"
+        );
+        assert!(
+            !report2.skipped.is_empty(),
+            "modified skills must be skipped"
+        );
     }
 
     /// Provision to an empty managed dir: all bundled skills are installed and

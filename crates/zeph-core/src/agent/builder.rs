@@ -264,6 +264,18 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_two_stage_matching(mut self, enabled: bool) -> Self {
+        self.skill_state.two_stage_matching = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_confusability_threshold(mut self, threshold: f32) -> Self {
+        self.skill_state.confusability_threshold = threshold.clamp(0.0, 1.0);
+        self
+    }
+
+    #[must_use]
     pub fn with_skill_prompt_mode(mut self, mode: crate::config::SkillPromptMode) -> Self {
         self.skill_state.prompt_mode = mode;
         self
@@ -1630,6 +1642,42 @@ mod tests {
         assert!(
             agent.debug_state.anomaly_detector.is_none(),
             "apply_session_config must not create anomaly_detector when disabled"
+        );
+    }
+
+    #[test]
+    fn with_two_stage_matching_sets_flag() {
+        let agent = make_agent().with_two_stage_matching(true);
+        assert!(
+            agent.skill_state.two_stage_matching,
+            "with_two_stage_matching(true) must enable two_stage_matching"
+        );
+
+        let agent = make_agent().with_two_stage_matching(false);
+        assert!(
+            !agent.skill_state.two_stage_matching,
+            "with_two_stage_matching(false) must disable two_stage_matching"
+        );
+    }
+
+    #[test]
+    fn with_confusability_threshold_sets_and_clamps() {
+        let agent = make_agent().with_confusability_threshold(0.85);
+        assert!(
+            (agent.skill_state.confusability_threshold - 0.85).abs() < f32::EPSILON,
+            "with_confusability_threshold must store the provided value"
+        );
+
+        let agent = make_agent().with_confusability_threshold(1.5);
+        assert_eq!(
+            agent.skill_state.confusability_threshold, 1.0,
+            "with_confusability_threshold must clamp values above 1.0"
+        );
+
+        let agent = make_agent().with_confusability_threshold(-0.1);
+        assert_eq!(
+            agent.skill_state.confusability_threshold, 0.0,
+            "with_confusability_threshold must clamp values below 0.0"
         );
     }
 }

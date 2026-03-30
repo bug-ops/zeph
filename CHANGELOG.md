@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - fix(classifiers): sha2 0.11 hex formatting — replace `format!("{:x}", ...)` with `hex::encode(...)` in `verify_sha256` and its test helper (#2401)
 - fix(deps): bump sha2 0.10→0.11, ordered-float 5.1→5.3, proptest 1.10→1.11, toml 1.0→1.1, uuid 1.22→1.23 (#2401)
+- fix(skills): `two_stage_matching` and `confusability_threshold` config fields are now applied at agent startup; `AgentBuilder` gains `with_two_stage_matching` and `with_confusability_threshold` builder methods wired in `runner.rs` and `daemon.rs` (closes #2404)
+- fix(skills): bundled skills provisioned before the `.bundled` marker system are now migrated on upgrade — `provision_bundled_skills` re-provisions skills whose `SKILL.md` matches the embedded version, restoring the `category` field without overwriting user-modified skills (closes #2403)
 - fix(memory): correct ESCAPE clause in spreading activation BFS alias query — `ESCAPE '\\\\'` (2 chars) changed to `ESCAPE '\\'` (1 char) as required by SQLite (closes #2393)
 - fix(llm): call `save_bandit_state()` in `save_router_state()` to persist PILOT LinUCB bandit state across restarts (closes #2394)
 - fix(classifiers): use Metal/CUDA device when available in candle classifiers — falls back to CPU (#2396)

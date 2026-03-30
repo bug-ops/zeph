@@ -374,6 +374,8 @@ pub(crate) async fn run_daemon(
         )
         .apply_session_config(session_config)
         .with_disambiguation_threshold(config.skills.disambiguation_threshold)
+        .with_two_stage_matching(config.skills.two_stage_matching)
+        .with_confusability_threshold(config.skills.confusability_threshold)
         .with_skill_reload(skill_paths, reload_rx)
         .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
         .with_memory(
