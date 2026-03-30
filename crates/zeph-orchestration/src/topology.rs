@@ -54,6 +54,15 @@ pub enum DispatchStrategy {
     /// Scheduler falls back to default ready-task dispatch with conservative parallelism.
     /// Used for: `Mixed`.
     Adaptive,
+    /// Priority-queue dispatch ordering tasks by critical path distance (deepest first).
+    ///
+    /// Applied to `FanOut`/`FanIn` topologies when `tree_optimized_dispatch = true`.
+    /// Dispatches tasks closer to sinks first to minimise end-to-end latency.
+    TreeOptimized,
+    /// Monitor failure rates per subgraph region; deprioritize tasks in failing subtrees.
+    ///
+    /// Applied to `Mixed` topology when `cascade_routing = true`.
+    CascadeAware,
 }
 
 /// Complete topology analysis result computed in a single O(|V|+|E|) pass.
@@ -182,10 +191,20 @@ impl TopologyClassifier {
         }
     }
 
-    /// Map a `Topology` variant to the appropriate `DispatchStrategy`.
+    /// Map a `Topology` variant to the appropriate `DispatchStrategy`, considering config.
+    ///
+    /// This is the single source of truth for topology → strategy mapping. All callers
+    /// (including the dirty-reanalysis path in `tick()`) must go through this method.
+    ///
+    /// Pass `config = &OrchestrationConfig::default()` when no config-specific overrides
+    /// are needed (e.g., in unit tests that only care about base topology behaviour).
     #[must_use]
-    pub fn strategy(topology: Topology) -> DispatchStrategy {
+    pub fn strategy(topology: Topology, config: &OrchestrationConfig) -> DispatchStrategy {
         match topology {
+            Topology::FanOut | Topology::FanIn if config.tree_optimized_dispatch => {
+                DispatchStrategy::TreeOptimized
+            }
+            Topology::Mixed if config.cascade_routing => DispatchStrategy::CascadeAware,
             Topology::AllParallel | Topology::FanOut | Topology::FanIn => {
                 DispatchStrategy::FullParallel
             }
@@ -221,7 +240,7 @@ impl TopologyClassifier {
 
         let (longest, depths) = compute_longest_path_and_depths(tasks);
         let topology = Self::classify_with_depths(graph, longest, &depths);
-        let strategy = Self::strategy(topology);
+        let strategy = Self::strategy(topology, config);
         let base = config.max_parallel as usize;
         let max_parallel = Self::compute_max_parallel(topology, base);
 
@@ -453,10 +472,20 @@ mod tests {
 
     // --- strategy tests ---
 
+    fn no_overrides_config() -> zeph_config::OrchestrationConfig {
+        zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            cascade_routing: false,
+            tree_optimized_dispatch: false,
+            ..zeph_config::OrchestrationConfig::default()
+        }
+    }
+
     #[test]
     fn strategy_all_parallel_is_full_parallel() {
         assert_eq!(
-            TopologyClassifier::strategy(Topology::AllParallel),
+            TopologyClassifier::strategy(Topology::AllParallel, &no_overrides_config()),
             DispatchStrategy::FullParallel
         );
     }
@@ -464,7 +493,7 @@ mod tests {
     #[test]
     fn strategy_fan_out_is_full_parallel() {
         assert_eq!(
-            TopologyClassifier::strategy(Topology::FanOut),
+            TopologyClassifier::strategy(Topology::FanOut, &no_overrides_config()),
             DispatchStrategy::FullParallel
         );
     }
@@ -472,7 +501,7 @@ mod tests {
     #[test]
     fn strategy_fan_in_is_full_parallel() {
         assert_eq!(
-            TopologyClassifier::strategy(Topology::FanIn),
+            TopologyClassifier::strategy(Topology::FanIn, &no_overrides_config()),
             DispatchStrategy::FullParallel
         );
     }
@@ -480,7 +509,7 @@ mod tests {
     #[test]
     fn strategy_linear_chain_is_sequential() {
         assert_eq!(
-            TopologyClassifier::strategy(Topology::LinearChain),
+            TopologyClassifier::strategy(Topology::LinearChain, &no_overrides_config()),
             DispatchStrategy::Sequential
         );
     }
@@ -488,7 +517,7 @@ mod tests {
     #[test]
     fn strategy_hierarchical_is_level_barrier() {
         assert_eq!(
-            TopologyClassifier::strategy(Topology::Hierarchical),
+            TopologyClassifier::strategy(Topology::Hierarchical, &no_overrides_config()),
             DispatchStrategy::LevelBarrier
         );
     }
@@ -496,7 +525,49 @@ mod tests {
     #[test]
     fn strategy_mixed_is_adaptive() {
         assert_eq!(
-            TopologyClassifier::strategy(Topology::Mixed),
+            TopologyClassifier::strategy(Topology::Mixed, &no_overrides_config()),
+            DispatchStrategy::Adaptive
+        );
+    }
+
+    #[test]
+    fn strategy_fan_out_tree_optimized_when_enabled() {
+        let mut cfg = no_overrides_config();
+        cfg.tree_optimized_dispatch = true;
+        assert_eq!(
+            TopologyClassifier::strategy(Topology::FanOut, &cfg),
+            DispatchStrategy::TreeOptimized
+        );
+        assert_eq!(
+            TopologyClassifier::strategy(Topology::FanIn, &cfg),
+            DispatchStrategy::TreeOptimized
+        );
+    }
+
+    #[test]
+    fn strategy_mixed_cascade_aware_when_enabled() {
+        let mut cfg = no_overrides_config();
+        cfg.cascade_routing = true;
+        assert_eq!(
+            TopologyClassifier::strategy(Topology::Mixed, &cfg),
+            DispatchStrategy::CascadeAware
+        );
+    }
+
+    #[test]
+    fn strategy_tree_optimized_does_not_affect_non_fan_topologies() {
+        let mut cfg = no_overrides_config();
+        cfg.tree_optimized_dispatch = true;
+        assert_eq!(
+            TopologyClassifier::strategy(Topology::Hierarchical, &cfg),
+            DispatchStrategy::LevelBarrier
+        );
+        assert_eq!(
+            TopologyClassifier::strategy(Topology::LinearChain, &cfg),
+            DispatchStrategy::Sequential
+        );
+        assert_eq!(
+            TopologyClassifier::strategy(Topology::Mixed, &cfg),
             DispatchStrategy::Adaptive
         );
     }

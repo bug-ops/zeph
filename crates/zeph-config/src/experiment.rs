@@ -55,6 +55,10 @@ fn default_completeness_threshold() -> f32 {
     0.7
 }
 
+fn default_cascade_failure_threshold() -> f32 {
+    0.5
+}
+
 fn default_plan_cache_similarity_threshold() -> f32 {
     0.90
 }
@@ -199,6 +203,20 @@ pub struct OrchestrationConfig {
     /// Values outside [0.0, 1.0] are rejected at startup by `Config::validate()`.
     #[serde(default = "default_completeness_threshold")]
     pub completeness_threshold: f32,
+    /// Enable cascade-aware routing for Mixed-topology DAGs. Requires `topology_selection = true`.
+    /// When enabled, tasks in failing subtrees are deprioritized in favour of healthy branches.
+    /// Default: false (opt-in).
+    #[serde(default)]
+    pub cascade_routing: bool,
+    /// Failure rate threshold (0.0–1.0) above which a DAG region is considered "cascading".
+    /// Must be in (0.0, 1.0]. Default: 0.5.
+    #[serde(default = "default_cascade_failure_threshold")]
+    pub cascade_failure_threshold: f32,
+    /// Enable tree-optimized dispatch for FanOut/FanIn topologies.
+    /// Sorts the ready queue by critical-path distance (deepest tasks first) to minimize
+    /// end-to-end latency. Default: false (opt-in).
+    #[serde(default)]
+    pub tree_optimized_dispatch: bool,
 }
 
 impl Default for OrchestrationConfig {
@@ -224,6 +242,9 @@ impl Default for OrchestrationConfig {
             verify_completeness: false,
             completeness_threshold: default_completeness_threshold(),
             tool_provider: String::new(),
+            cascade_routing: false,
+            cascade_failure_threshold: default_cascade_failure_threshold(),
+            tree_optimized_dispatch: false,
         }
     }
 }

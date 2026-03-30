@@ -1325,6 +1325,7 @@ impl<C: Channel> Agent<C> {
             graph_config,
             anomaly_config,
             result_cache_config,
+            utility_config,
             orchestration_config,
             // Not applied here: caller clones this before `apply_session_config` and applies
             // it per-session (e.g. `spawn_acp_agent` passes it to `with_debug_config`).
@@ -1381,6 +1382,7 @@ impl<C: Channel> Agent<C> {
         self.runtime.semantic_cache_threshold = semantic_cache_threshold;
         self.runtime.semantic_cache_max_candidates = semantic_cache_max_candidates;
         self = self.with_result_cache_config(&result_cache_config);
+        self.tool_orchestrator.set_utility_config(utility_config);
 
         self
     }

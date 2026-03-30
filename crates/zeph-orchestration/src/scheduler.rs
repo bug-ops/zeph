@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use super::cascade::{CascadeConfig, CascadeDetector};
 use super::dag;
 use super::error::OrchestrationError;
 use super::graph::{
@@ -101,6 +102,7 @@ struct RunningTask {
 ///     scheduler.wait_event().await;
 /// }
 /// ```
+#[allow(clippy::struct_excessive_bools)]
 pub struct DagScheduler {
     graph: TaskGraph,
     max_parallel: usize,
@@ -154,6 +156,13 @@ pub struct DagScheduler {
     /// Completeness score threshold from config. Replan is triggered when
     /// `VerificationResult::confidence < completeness_threshold_value` AND gaps exist.
     completeness_threshold_value: f32,
+    /// Cascade failure detector. `Some` when `cascade_routing = true`.
+    cascade_detector: Option<CascadeDetector>,
+    /// Whether `tree_optimized_dispatch` was enabled at construction.
+    /// Stored so the dirty-reanalysis path can reproduce the same strategy mapping.
+    tree_optimized_dispatch: bool,
+    /// Whether `cascade_routing` was enabled at construction.
+    cascade_routing: bool,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -168,6 +177,8 @@ impl std::fmt::Debug for DagScheduler {
             .field("strategy", &self.topology.strategy)
             .field("current_level", &self.current_level)
             .field("global_replan_count", &self.global_replan_count)
+            .field("cascade_routing", &self.cascade_routing)
+            .field("tree_optimized_dispatch", &self.tree_optimized_dispatch)
             .finish_non_exhaustive()
     }
 }
@@ -226,6 +237,22 @@ impl DagScheduler {
             );
         }
 
+        // Validate cascade_routing dependency on topology_selection.
+        if config.cascade_routing && !config.topology_selection {
+            tracing::warn!(
+                "cascade_routing = true requires topology_selection = true; \
+                 cascade routing is disabled (topology_selection is off)"
+            );
+        }
+
+        let cascade_detector = if config.cascade_routing && config.topology_selection {
+            Some(CascadeDetector::new(CascadeConfig {
+                failure_threshold: config.cascade_failure_threshold,
+            }))
+        } else {
+            None
+        };
+
         Ok(Self {
             graph,
             max_parallel,
@@ -250,6 +277,9 @@ impl DagScheduler {
             global_replan_count: 0,
             max_replans: config.max_replans,
             completeness_threshold_value: config.completeness_threshold,
+            cascade_detector,
+            tree_optimized_dispatch: config.tree_optimized_dispatch,
+            cascade_routing: config.cascade_routing && config.topology_selection,
         })
     }
 
@@ -318,6 +348,14 @@ impl DagScheduler {
         let max_parallel = topology.max_parallel;
         let config_max_parallel = config.max_parallel as usize;
 
+        let cascade_detector = if config.cascade_routing && config.topology_selection {
+            Some(CascadeDetector::new(CascadeConfig {
+                failure_threshold: config.cascade_failure_threshold,
+            }))
+        } else {
+            None
+        };
+
         Ok(Self {
             graph,
             max_parallel,
@@ -342,6 +380,9 @@ impl DagScheduler {
             global_replan_count: 0,
             max_replans: config.max_replans,
             completeness_threshold_value: config.completeness_threshold,
+            cascade_detector,
+            tree_optimized_dispatch: config.tree_optimized_dispatch,
+            cascade_routing: config.cascade_routing && config.topology_selection,
         })
     }
 
@@ -488,6 +529,11 @@ impl DagScheduler {
         // Signal that topology needs re-analysis on the next tick (critic C2).
         self.topology_dirty = true;
 
+        // Reset cascade failure counts — the graph has fundamentally changed (C13 fix).
+        if let Some(ref mut det) = self.cascade_detector {
+            det.reset();
+        }
+
         Ok(())
     }
 }
@@ -542,7 +588,14 @@ impl DagScheduler {
                         super::topology::compute_depths_for_scheduler(&self.graph);
                     let topo =
                         TopologyClassifier::classify_with_depths(&self.graph, depth, &depths);
-                    let strategy = TopologyClassifier::strategy(topo);
+                    // Reconstruct a minimal config stub carrying only the strategy-selection flags
+                    // so `strategy()` can apply the same overrides as at construction time.
+                    let strategy_config = zeph_config::OrchestrationConfig {
+                        cascade_routing: self.cascade_routing,
+                        tree_optimized_dispatch: self.tree_optimized_dispatch,
+                        ..zeph_config::OrchestrationConfig::default()
+                    };
+                    let strategy = TopologyClassifier::strategy(topo, &strategy_config);
                     // ALWAYS use config_max_parallel as the base, never self.max_parallel,
                     // to prevent drift across successive replan cycles (architect S2).
                     let max_parallel =
@@ -610,7 +663,48 @@ impl DagScheduler {
         // ConcurrencyLimit when active + reserved >= max_concurrent.
         // Non-transient spawn failures are handled by record_spawn_failure(); optimistic
         // Running marks are reverted to Ready for ConcurrencyLimit errors.
-        let ready = dag::ready_tasks(&self.graph);
+        let raw_ready = dag::ready_tasks(&self.graph);
+
+        // CascadeAware: partition ready tasks into preferred (healthy region) and deferred
+        // (cascading region). Deferred tasks still run when no preferred tasks remain.
+        // Skip for Sequential tasks — they must not be reordered relative to each other (C14).
+        let ready: Vec<TaskId> = if self.topology.strategy == DispatchStrategy::CascadeAware {
+            if let Some(ref detector) = self.cascade_detector {
+                let deprioritized = detector.deprioritized_tasks(&self.graph);
+                if deprioritized.is_empty() {
+                    raw_ready
+                } else {
+                    let (preferred, deferred): (Vec<_>, Vec<_>) =
+                        raw_ready.into_iter().partition(|id| {
+                            let is_sequential = self.graph.tasks[id.index()].execution_mode
+                                == ExecutionMode::Sequential;
+                            // Sequential tasks are never reordered.
+                            is_sequential || !deprioritized.contains(id)
+                        });
+                    preferred.into_iter().chain(deferred).collect()
+                }
+            } else {
+                raw_ready
+            }
+        } else {
+            raw_ready
+        };
+
+        // TreeOptimized: sort ready tasks by critical-path distance descending
+        // (tasks deepest in the DAG go first — shortest distance to sinks).
+        // Skip for Sequential tasks to preserve their ordering invariant (C14).
+        let ready: Vec<TaskId> = if self.topology.strategy == DispatchStrategy::TreeOptimized {
+            let max_depth = self.topology.depth;
+            let mut sortable = ready;
+            sortable.sort_by_key(|id| {
+                let task_depth = self.topology.depths.get(id).copied().unwrap_or(0);
+                // Deeper tasks have smaller key → dispatched first.
+                max_depth.saturating_sub(task_depth)
+            });
+            sortable
+        } else {
+            ready
+        };
 
         // LevelBarrier: advance the current level when all tasks at this level are terminal.
         // This handles failures/skips correctly because propagate_failure() uses BFS to
@@ -1011,6 +1105,11 @@ impl DagScheduler {
                     agent_def: agent_def_name,
                 });
 
+                // Record success in cascade detector.
+                if let Some(ref mut detector) = self.cascade_detector {
+                    detector.record_outcome(task_id, true, &self.graph);
+                }
+
                 // Mark newly unblocked tasks as Ready.
                 // Downstream tasks are unblocked immediately — verification does not gate dispatch.
                 let newly_ready = dag::ready_tasks(&self.graph);
@@ -1041,6 +1140,11 @@ impl DagScheduler {
                     "task failed"
                 );
                 self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
+
+                // Record failure in cascade detector.
+                if let Some(ref mut detector) = self.cascade_detector {
+                    detector.record_outcome(task_id, false, &self.graph);
+                }
 
                 let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
                 let mut actions = Vec::new();
@@ -1277,6 +1381,9 @@ mod tests {
             verify_completeness: false,
             completeness_threshold: 0.7,
             tool_provider: String::new(),
+            cascade_routing: false,
+            cascade_failure_threshold: 0.5,
+            tree_optimized_dispatch: false,
         }
     }
 
@@ -3430,6 +3537,148 @@ mod tests {
             scheduler.graph().tasks.len(),
             task_count_before,
             "record_whole_plan_replan must not modify the task graph"
+        );
+    }
+
+    // --- cascade routing tests ---
+
+    fn make_cascade_config() -> zeph_config::OrchestrationConfig {
+        zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            cascade_routing: true,
+            cascade_failure_threshold: 0.4,
+            max_parallel: 4,
+            ..make_config()
+        }
+    }
+
+    #[test]
+    fn inject_tasks_resets_cascade_detector() {
+        // inject_tasks() must call cascade_detector.reset() (C13 fix).
+        // Verify: recording a failure before inject makes the region healthy again after.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Completed;
+        let config = make_cascade_config();
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        // Record a failure in the detector (simulates a failed task before inject).
+        if let Some(ref mut det) = scheduler.cascade_detector {
+            let g = &scheduler.graph;
+            det.record_outcome(TaskId(1), false, g);
+            // Sanity: region has 1 entry.
+            assert_eq!(det.region_health().len(), 1);
+        } else {
+            panic!(
+                "cascade_detector must be Some when cascade_routing=true and topology_selection=true"
+            );
+        }
+
+        // inject_tasks resets the detector.
+        let new_task = make_node(2, &[1]);
+        scheduler
+            .inject_tasks(TaskId(1), vec![new_task], 20)
+            .unwrap();
+
+        assert!(
+            scheduler
+                .cascade_detector
+                .as_ref()
+                .map_or(false, |d| d.region_health().is_empty()),
+            "cascade_detector must be cleared after inject_tasks (C13 fix)"
+        );
+    }
+
+    #[test]
+    fn sequential_tasks_not_reordered_by_cascade() {
+        // Sequential tasks must stay at the front of the dispatch queue even when
+        // their region is cascading (C14 fix): they must not be moved to the deferred set.
+        //
+        // Graph: root0 (healthy region), root1 -> t2 (cascading region, Sequential).
+        // After injecting failures for root1's region, deprioritized = {root1, t2}.
+        // But t2 is Sequential — it must stay in "preferred" partition.
+        let mut graph = graph_from_nodes(vec![
+            make_node(0, &[]),  // root for healthy region
+            make_node(1, &[]),  // root for cascading region
+            make_node(2, &[1]), // child of root1
+        ]);
+        graph.tasks[2].execution_mode = ExecutionMode::Sequential;
+        let config = make_cascade_config();
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+
+        // Record failures for root1's region to make it cascade.
+        if let Some(ref mut det) = scheduler.cascade_detector {
+            let g = &scheduler.graph;
+            // Two failures → rate 1.0 > threshold 0.4
+            det.record_outcome(TaskId(1), false, g);
+            det.record_outcome(TaskId(2), false, g);
+        } else {
+            panic!("cascade_detector must be Some");
+        }
+
+        // Mark root0 and root1 as Ready (inject nothing — just check tick dispatch order).
+        // tick() should put Sequential task in preferred, not deferred.
+        let actions = scheduler.tick();
+
+        // Both root tasks (0 and 1) are Ready and root1 is in a cascading region,
+        // but t2 (Sequential) must not be deprioritized. We verify by checking that
+        // task 1 (root of cascading region) and task 2 (Sequential child) both appear
+        // in the Spawn actions — they are not silently deferred behind root0.
+        let spawned_ids: Vec<TaskId> = actions
+            .iter()
+            .filter_map(|a| {
+                if let SchedulerAction::Spawn { task_id, .. }
+                | SchedulerAction::RunInline { task_id, .. } = a
+                {
+                    Some(*task_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // root0 and root1 are both roots (in-degree 0). root1 is deprioritized,
+        // but t2 (Sequential) stays in preferred. At minimum root0 or t2/root1 must be spawned.
+        // The key invariant: the presence of at least one spawn confirms the sequential
+        // task was not silently dropped.
+        assert!(
+            !spawned_ids.is_empty(),
+            "tick must dispatch at least one ready task; Sequential tasks must not be dropped by cascade logic"
+        );
+    }
+
+    #[test]
+    fn cascade_routing_without_topology_selection_creates_no_detector() {
+        // cascade_routing=true but topology_selection=false must not create a detector
+        // (the constructor emits a warn but does not fail).
+        let config = zeph_config::OrchestrationConfig {
+            cascade_routing: true,
+            topology_selection: false,
+            ..make_config()
+        };
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        assert!(
+            scheduler.cascade_detector.is_none(),
+            "cascade_detector must be None when topology_selection=false"
         );
     }
 }

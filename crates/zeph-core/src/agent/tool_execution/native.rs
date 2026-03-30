@@ -76,6 +76,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.tool_orchestrator.clear_doom_history();
         self.tool_orchestrator.clear_recent_tool_calls();
+        self.tool_orchestrator.clear_utility_state();
 
         // `mut` required when context-compression is enabled to inject focus tool definitions.
         #[cfg_attr(not(feature = "context-compression"), allow(unused_mut))]
@@ -791,6 +792,57 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Utility gate: score each call before dispatch. Calls below the threshold are skipped.
+        // Fail-closed on scoring errors (None when scoring produces invalid result).
+        // user_requested is only true for explicit /tool slash commands — never set from
+        // LLM-requested calls to prevent prompt-injection bypass (C2 fix).
+        let utility_blocked: Vec<bool> = {
+            #[allow(clippy::cast_possible_truncation)]
+            let tokens_consumed =
+                usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+            // token_budget = 0 signals "unknown" to UtilityContext — cost component is zeroed.
+            let token_budget: usize = 0;
+            let tool_calls_this_turn = self.tool_orchestrator.recent_tool_calls.len();
+            calls
+                .iter()
+                .enumerate()
+                .map(|(idx, call)| {
+                    if pre_exec_blocked[idx] {
+                        return false; // already blocked, no need to score
+                    }
+                    let ctx = zeph_tools::UtilityContext {
+                        tool_calls_this_turn: tool_calls_this_turn + idx,
+                        tokens_consumed,
+                        token_budget,
+                        // Never set from LLM call content to prevent prompt-injection bypass.
+                        user_requested: false,
+                    };
+                    let score = self.tool_orchestrator.utility_scorer.score(call, &ctx);
+                    tracing::debug!(
+                        tool = %call.tool_id,
+                        score = ?score.as_ref().map(|s| s.total),
+                        threshold = self.tool_orchestrator.utility_scorer.threshold(),
+                        "utility gate: scored tool call"
+                    );
+                    let execute = self
+                        .tool_orchestrator
+                        .utility_scorer
+                        .should_execute(score.as_ref(), false);
+                    if !execute {
+                        tracing::warn!(
+                            tool = %call.tool_id,
+                            score = ?score.as_ref().map(|s| s.total),
+                            threshold = self.tool_orchestrator.utility_scorer.threshold(),
+                            "utility gate: skipping low-utility tool call"
+                        );
+                    }
+                    // Record call regardless so subsequent calls in this batch see it as prior.
+                    self.tool_orchestrator.utility_scorer.record_call(call);
+                    !execute
+                })
+                .collect()
+        };
+
         // Repeat-detection (CRIT-3): record LLM-initiated calls BEFORE execution.
         // Retry re-executions must NOT be pushed here — they are handled inside the retry loop.
         // Build args hashes and check for repeats. Blocked calls get a pre-built error result.
@@ -1023,6 +1075,30 @@ impl<C: Channel> Agent<C> {
                     let msg = format!(
                         "[error] Tool call to {} was blocked by pre-execution verifier. \
                          The requested operation is not permitted.",
+                        tc.name
+                    );
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                        claim_source: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                if utility_blocked[idx] {
+                    let threshold = self.tool_orchestrator.utility_scorer.threshold();
+                    let msg = format!(
+                        "[skipped] Tool call to {} was skipped by the utility gate \
+                         (score below threshold {threshold:.2}). \
+                         Try a different approach or disable the utility gate in config.",
                         tc.name
                     );
                     let out = zeph_tools::ToolOutput {
@@ -2324,6 +2400,94 @@ mod tests {
         assert!(
             !result.starts_with("[error]"),
             "tool must not enforce min_messages_per_focus: {result}"
+        );
+    }
+
+    // --- utility gate integration ---
+
+    #[test]
+    fn utility_gate_disabled_by_default_scorer_is_not_enabled() {
+        // The default ToolOrchestrator has scoring disabled — no calls are gated.
+        let agent = make_agent();
+        assert!(
+            !agent.tool_orchestrator.utility_scorer.is_enabled(),
+            "utility scorer must be disabled by default"
+        );
+    }
+
+    #[test]
+    fn set_utility_config_enables_scorer_on_agent() {
+        // set_utility_config wires the scorer into the tool orchestrator (integration path).
+        let mut agent = make_agent();
+        agent
+            .tool_orchestrator
+            .set_utility_config(zeph_tools::UtilityScoringConfig {
+                enabled: true,
+                threshold: 0.5,
+                ..zeph_tools::UtilityScoringConfig::default()
+            });
+        assert!(
+            agent.tool_orchestrator.utility_scorer.is_enabled(),
+            "scorer must be enabled after set_utility_config"
+        );
+        assert!(
+            (agent.tool_orchestrator.utility_scorer.threshold() - 0.5).abs() < f32::EPSILON,
+            "threshold must match config"
+        );
+    }
+
+    #[test]
+    fn clear_utility_state_resets_per_turn_redundancy_tracking() {
+        // Verify that clear_utility_state() clears the redundancy state so the
+        // next turn treats all calls as fresh (no stale redundancy carry-over).
+        use zeph_tools::{ToolCall, UtilityContext};
+
+        let mut agent = make_agent();
+        agent
+            .tool_orchestrator
+            .set_utility_config(zeph_tools::UtilityScoringConfig {
+                enabled: true,
+                threshold: 0.0,
+                ..zeph_tools::UtilityScoringConfig::default()
+            });
+
+        let call = ToolCall {
+            tool_id: "bash".to_owned(),
+            params: serde_json::Map::new(),
+        };
+        let ctx = UtilityContext {
+            tool_calls_this_turn: 0,
+            tokens_consumed: 0,
+            token_budget: 1000,
+            user_requested: false,
+        };
+
+        // Record the call to create redundancy state.
+        agent.tool_orchestrator.utility_scorer.record_call(&call);
+
+        // Before clear: redundancy is 1.0.
+        let score_before = agent
+            .tool_orchestrator
+            .utility_scorer
+            .score(&call, &ctx)
+            .unwrap();
+        assert!(
+            (score_before.redundancy - 1.0).abs() < f32::EPSILON,
+            "redundancy must be 1.0 before clear"
+        );
+
+        // clear_utility_state simulates turn start.
+        agent.tool_orchestrator.clear_utility_state();
+
+        // After clear: redundancy is 0.0.
+        let score_after = agent
+            .tool_orchestrator
+            .utility_scorer
+            .score(&call, &ctx)
+            .unwrap();
+        assert!(
+            score_after.redundancy.abs() < f32::EPSILON,
+            "redundancy must be 0.0 after clear_utility_state"
         );
     }
 }

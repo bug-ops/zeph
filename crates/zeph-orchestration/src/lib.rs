@@ -7,6 +7,7 @@
 pub(crate) use zeph_db::sql;
 
 pub mod aggregator;
+pub mod cascade;
 pub mod command;
 pub mod dag;
 pub mod error;
@@ -19,6 +20,7 @@ pub mod topology;
 pub mod verifier;
 
 pub use aggregator::{Aggregator, LlmAggregator};
+pub use cascade::{CascadeConfig, CascadeDetector, RegionHealth};
 pub use command::PlanCommand;
 pub use error::OrchestrationError;
 pub use graph::{

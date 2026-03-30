@@ -32,6 +32,7 @@ pub mod shell;
 pub mod tool_filter;
 pub mod trust_gate;
 pub mod trust_level;
+pub mod utility;
 pub mod verifier;
 
 #[cfg(feature = "policy-enforcer")]
@@ -49,7 +50,7 @@ pub use composite::CompositeExecutor;
 pub use config::AdversarialPolicyConfig;
 pub use config::{
     AnomalyConfig, AuditConfig, DependencyConfig, OverflowConfig, ResultCacheConfig, RetryConfig,
-    ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
+    ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig, UtilityScoringConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use error_taxonomy::{
@@ -93,6 +94,7 @@ pub use shell::{
 pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;
 pub use trust_level::TrustLevel;
+pub use utility::{UtilityContext, UtilityScore, UtilityScorer};
 pub use verifier::{
     DestructiveCommandVerifier, DestructiveVerifierConfig, FirewallVerifier,
     FirewallVerifierConfig, InjectionPatternVerifier, InjectionVerifierConfig,

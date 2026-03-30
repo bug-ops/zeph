@@ -180,6 +180,92 @@ impl TafcConfig {
     }
 }
 
+fn default_utility_threshold() -> f32 {
+    0.1
+}
+
+fn default_utility_gain_weight() -> f32 {
+    1.0
+}
+
+fn default_utility_cost_weight() -> f32 {
+    0.5
+}
+
+fn default_utility_redundancy_weight() -> f32 {
+    0.3
+}
+
+fn default_utility_uncertainty_bonus() -> f32 {
+    0.2
+}
+
+/// Configuration for utility-guided tool dispatch (`[tools.utility]` TOML section).
+///
+/// Implements the utility gate from arXiv:2603.19896: each tool call is scored
+/// `U = gain_weight*gain - cost_weight*cost - redundancy_weight*redundancy + uncertainty_bonus*uncertainty`.
+/// Calls with `U < threshold` are skipped (fail-closed on scoring errors).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct UtilityScoringConfig {
+    /// Enable utility-guided gating. Default: false (opt-in).
+    pub enabled: bool,
+    /// Minimum utility score required to execute a tool call. Default: 0.1.
+    #[serde(default = "default_utility_threshold")]
+    pub threshold: f32,
+    /// Weight for the estimated gain component. Must be >= 0. Default: 1.0.
+    #[serde(default = "default_utility_gain_weight")]
+    pub gain_weight: f32,
+    /// Weight for the step cost component. Must be >= 0. Default: 0.5.
+    #[serde(default = "default_utility_cost_weight")]
+    pub cost_weight: f32,
+    /// Weight for the redundancy penalty. Must be >= 0. Default: 0.3.
+    #[serde(default = "default_utility_redundancy_weight")]
+    pub redundancy_weight: f32,
+    /// Weight for the exploration bonus. Must be >= 0. Default: 0.2.
+    #[serde(default = "default_utility_uncertainty_bonus")]
+    pub uncertainty_bonus: f32,
+}
+
+impl Default for UtilityScoringConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_utility_threshold(),
+            gain_weight: default_utility_gain_weight(),
+            cost_weight: default_utility_cost_weight(),
+            redundancy_weight: default_utility_redundancy_weight(),
+            uncertainty_bonus: default_utility_uncertainty_bonus(),
+        }
+    }
+}
+
+impl UtilityScoringConfig {
+    /// Validate that all weights and threshold are non-negative and finite.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first invalid field found.
+    pub fn validate(&self) -> Result<(), String> {
+        let fields = [
+            ("threshold", self.threshold),
+            ("gain_weight", self.gain_weight),
+            ("cost_weight", self.cost_weight),
+            ("redundancy_weight", self.redundancy_weight),
+            ("uncertainty_bonus", self.uncertainty_bonus),
+        ];
+        for (name, val) in fields {
+            if !val.is_finite() {
+                return Err(format!("[tools.utility] {name} must be finite, got {val}"));
+            }
+            if val < 0.0 {
+                return Err(format!("[tools.utility] {name} must be >= 0, got {val}"));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn default_boost_per_dep() -> f32 {
     0.15
 }
@@ -339,6 +425,9 @@ pub struct ToolsConfig {
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
     pub adversarial_policy: AdversarialPolicyConfig,
+    /// Utility-guided tool dispatch gate.
+    #[serde(default)]
+    pub utility: UtilityScoringConfig,
 }
 
 impl ToolsConfig {
@@ -425,6 +514,7 @@ impl Default for ToolsConfig {
             policy: PolicyConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             adversarial_policy: AdversarialPolicyConfig::default(),
+            utility: UtilityScoringConfig::default(),
         }
     }
 }

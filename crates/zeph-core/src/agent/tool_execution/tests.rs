@@ -4820,3 +4820,111 @@ async fn sanitize_tool_output_non_acp_session_normal_path() {
         "non-ACP session must NOT emit CrossBoundaryMcpToAcp"
     );
 }
+
+// --- utility gate integration tests ---
+
+#[tokio::test]
+async fn utility_gate_blocks_call_and_produces_skipped_output() {
+    // When threshold = 1.0, no realistic tool call can pass the gate.
+    // handle_native_tool_calls must produce a ToolResult with "[skipped]" content.
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::{Message, MessagePart, Role, ToolUseRequest};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+    // Push a system prompt so the assistant message has a valid preceding context.
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+
+    // Enable utility gate with threshold = 1.0 (blocks every call).
+    agent
+        .tool_orchestrator
+        .set_utility_config(zeph_tools::UtilityScoringConfig {
+            enabled: true,
+            threshold: 1.0,
+            ..zeph_tools::UtilityScoringConfig::default()
+        });
+
+    let tool_calls = vec![ToolUseRequest {
+        id: "call-1".to_owned(),
+        name: "bash".to_owned(),
+        input: serde_json::json!({"command": "ls"}),
+    }];
+
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    // Find the ToolResult message injected by the utility gate.
+    let skipped = agent.msg.messages.iter().any(|m| {
+        m.parts.iter().any(|p| {
+            if let MessagePart::ToolResult { content, .. } = p {
+                content.contains("[skipped]")
+            } else {
+                false
+            }
+        })
+    });
+    assert!(
+        skipped,
+        "utility gate must produce [skipped] ToolResult when score < threshold"
+    );
+}
+
+#[tokio::test]
+async fn utility_gate_disabled_does_not_produce_skipped_output() {
+    // Default config has scoring disabled — calls must not produce [skipped] ToolResult.
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::{Message, MessagePart, Role, ToolUseRequest};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+
+    // Utility scorer is disabled by default (enabled = false).
+    assert!(!agent.tool_orchestrator.utility_scorer.is_enabled());
+
+    let tool_calls = vec![ToolUseRequest {
+        id: "call-2".to_owned(),
+        name: "bash".to_owned(),
+        input: serde_json::json!({"command": "ls"}),
+    }];
+
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    // No ToolResult must contain [skipped] — gate is disabled.
+    let has_skipped = agent.msg.messages.iter().any(|m| {
+        m.parts.iter().any(|p| {
+            if let MessagePart::ToolResult { content, .. } = p {
+                content.contains("[skipped]")
+            } else {
+                false
+            }
+        })
+    });
+    assert!(
+        !has_skipped,
+        "disabled utility gate must not produce [skipped] ToolResult"
+    );
+}

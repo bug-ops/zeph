@@ -4,7 +4,10 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use zeph_tools::{OverflowConfig, ResultCacheConfig, TafcConfig, ToolResultCache};
+use zeph_tools::{
+    OverflowConfig, ResultCacheConfig, TafcConfig, ToolResultCache, UtilityScorer,
+    UtilityScoringConfig,
+};
 
 use super::DOOM_LOOP_WINDOW;
 
@@ -45,6 +48,10 @@ pub(crate) struct ToolOrchestrator {
     /// Provider name for LLM-based parameter reformatting on `InvalidParameters`/`TypeMismatch`
     /// errors. Empty string = disabled. References a `[[llm.providers]]` name from config.
     pub(super) parameter_reformat_provider: String,
+    /// Utility-guided dispatch gate. Scores each tool call before execution; calls below the
+    /// threshold are skipped (fail-closed on scoring errors). Per-turn state cleared at the
+    /// start of each tool round.
+    pub(super) utility_scorer: UtilityScorer,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -83,6 +90,7 @@ impl ToolOrchestrator {
             tafc: TafcConfig::default(),
             result_cache: ToolResultCache::new(true, Some(Duration::from_secs(300))),
             parameter_reformat_provider: String::new(),
+            utility_scorer: UtilityScorer::new(UtilityScoringConfig::default()),
         }
     }
 
@@ -99,6 +107,16 @@ impl ToolOrchestrator {
     /// Clear the result cache. Called on `/clear`.
     pub(crate) fn clear_cache(&mut self) {
         self.result_cache.clear();
+    }
+
+    /// Configure the utility scorer from config.
+    pub(crate) fn set_utility_config(&mut self, config: UtilityScoringConfig) {
+        self.utility_scorer = UtilityScorer::new(config);
+    }
+
+    /// Clear per-turn utility scorer state. Called at the start of each tool round.
+    pub(super) fn clear_utility_state(&mut self) {
+        self.utility_scorer.clear();
     }
 
     /// Returns a formatted cache stats string for `/cache-stats` command.
