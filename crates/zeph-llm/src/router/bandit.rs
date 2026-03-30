@@ -514,7 +514,7 @@ mod tests {
     fn ucb_score_nan_feature_returns_none() {
         let dim = 4;
         let arm = identity_arm(dim);
-        let x = vec![f32::NAN, 0.5, 0.5, 0.5];
+        let x = [f32::NAN, 0.5, 0.5, 0.5];
         // NaN propagates through dot products; ucb_score must return None.
         let score = arm.ucb_score(&x, 1.0);
         // Either None (if detected) or Some(NaN-based), but we normalise so should be None or invalid.
@@ -835,8 +835,8 @@ mod tests {
         state.update("zebra", &x, 0.5);
         state.update("apple", &x, 0.9);
         state.update("mango", &x, 0.3);
-        let sorted = state.stats();
-        let names: Vec<&str> = sorted.iter().map(|(n, _, _)| n.as_str()).collect();
+        let arm_stats = state.stats();
+        let names: Vec<&str> = arm_stats.iter().map(|(n, _, _)| n.as_str()).collect();
         assert_eq!(names, vec!["apple", "mango", "zebra"]);
     }
 }

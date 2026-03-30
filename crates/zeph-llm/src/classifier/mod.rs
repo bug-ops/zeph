@@ -95,6 +95,7 @@ pub trait PiiDetector: Send + Sync {
 /// Returns `LlmError::ModelLoad` if the file cannot be read or the digest mismatches.
 #[cfg(feature = "classifiers")]
 pub(super) fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<(), LlmError> {
+    use hex;
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
@@ -111,7 +112,7 @@ pub(super) fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<()
         }
         hasher.update(&buf[..n]);
     }
-    let computed = format!("{:x}", hasher.finalize());
+    let computed = hex::encode(hasher.finalize());
     if computed != expected.to_lowercase() {
         return Err(LlmError::ModelLoad(format!(
             "SHA-256 mismatch for {}: expected {}, got {} \
@@ -201,7 +202,7 @@ mod sha256_tests {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(data);
-        format!("{:x}", h.finalize())
+        hex::encode(h.finalize())
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use futures::FutureExt as _;
 use zeph_llm::provider::{
     ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
     ToolDefinition,
@@ -371,10 +372,20 @@ impl<C: Channel> Agent<C> {
                 turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
             };
             for layer in &self.runtime_layers {
-                if let Some(sc) = layer.before_chat(&ctx, &self.msg.messages, tool_defs).await {
-                    // Layer short-circuited the LLM call.
-                    tracing::debug!("RuntimeLayer short-circuited LLM call");
-                    return Ok(Some(sc));
+                let hook_result = std::panic::AssertUnwindSafe(layer.before_chat(
+                    &ctx,
+                    &self.msg.messages,
+                    tool_defs,
+                ))
+                .catch_unwind()
+                .await;
+                match hook_result {
+                    Ok(Some(sc)) => {
+                        tracing::debug!("RuntimeLayer short-circuited LLM call");
+                        return Ok(Some(sc));
+                    }
+                    Ok(None) => {}
+                    Err(_) => tracing::warn!("RuntimeLayer::before_chat panicked, continuing"),
                 }
             }
         }
@@ -442,7 +453,12 @@ impl<C: Channel> Agent<C> {
                 turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
             };
             for layer in &self.runtime_layers {
-                layer.after_chat(&ctx, &result).await;
+                let hook_result = std::panic::AssertUnwindSafe(layer.after_chat(&ctx, &result))
+                    .catch_unwind()
+                    .await;
+                if hook_result.is_err() {
+                    tracing::warn!("RuntimeLayer::after_chat panicked, continuing");
+                }
             }
         }
 
@@ -1100,9 +1116,19 @@ impl<C: Channel> Agent<C> {
                     };
                     let mut sc_result: crate::runtime_layer::BeforeToolResult = None;
                     for layer in &self.runtime_layers {
-                        if let Some(r) = layer.before_tool(&ctx, call).await {
-                            sc_result = Some(r);
-                            break;
+                        let hook_result =
+                            std::panic::AssertUnwindSafe(layer.before_tool(&ctx, call))
+                                .catch_unwind()
+                                .await;
+                        match hook_result {
+                            Ok(Some(r)) => {
+                                sc_result = Some(r);
+                                break;
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                tracing::warn!("RuntimeLayer::before_tool panicked, continuing");
+                            }
                         }
                     }
                     if let Some(r) = sc_result {
@@ -1193,7 +1219,16 @@ impl<C: Channel> Agent<C> {
                         turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
                     };
                     for layer in &self.runtime_layers {
-                        layer.after_tool(&ctx, &calls[idx], &result).await;
+                        let hook_result = std::panic::AssertUnwindSafe(layer.after_tool(
+                            &ctx,
+                            &calls[idx],
+                            &result,
+                        ))
+                        .catch_unwind()
+                        .await;
+                        if hook_result.is_err() {
+                            tracing::warn!("RuntimeLayer::after_tool panicked, continuing");
+                        }
                     }
                 }
 

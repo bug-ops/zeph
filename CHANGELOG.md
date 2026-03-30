@@ -13,9 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(skills): `/skills confusability` — new command showing all skill pairs whose cosine similarity exceeds `[skills] confusability_threshold`; identifies disambiguation risk before library phase transition (#2268)
 - feat(skills): two-stage category-first skill matching — coarse category centroid selection followed by fine-grained within-category matching; enabled via `[skills] two_stage_matching = true`; singleton-category skills automatically fall back to uncategorised pool; inactive by default (#2268)
 - feat(skills): confusability report (`SkillMatcher::confusability_report`) — O(n²) pairwise cosine similarity with `spawn_blocking` offload; lists excluded skills whose embedding failed; disabled by default (`confusability_threshold = 0.0`) (#2268)
+- feat(core): catch_unwind guard for all RuntimeLayer hook invocations (before_chat, after_chat, before_tool, after_tool) — panicking hooks no longer crash the agent turn (#2363)
 
 ### Fixed
 
+- fix(classifiers): sha2 0.11 hex formatting — replace `format!("{:x}", ...)` with `hex::encode(...)` in `verify_sha256` and its test helper (#2401)
+- fix(deps): bump sha2 0.10→0.11, ordered-float 5.1→5.3, proptest 1.10→1.11, toml 1.0→1.1, uuid 1.22→1.23 (#2401)
 - fix(memory): correct ESCAPE clause in spreading activation BFS alias query — `ESCAPE '\\\\'` (2 chars) changed to `ESCAPE '\\'` (1 char) as required by SQLite (closes #2393)
 - fix(llm): call `save_bandit_state()` in `save_router_state()` to persist PILOT LinUCB bandit state across restarts (closes #2394)
 - fix(classifiers): use Metal/CUDA device when available in candle classifiers — falls back to CPU (#2396)
