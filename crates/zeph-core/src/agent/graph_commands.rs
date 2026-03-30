@@ -371,6 +371,10 @@ impl<C: Channel> Agent<C> {
                     note_linking: zeph_memory::NoteLinkingConfig::default(),
                     link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda,
                     link_weight_decay_interval_secs: graph_cfg.link_weight_decay_interval_secs,
+                    belief_revision_enabled: graph_cfg.belief_revision.enabled,
+                    belief_revision_similarity_threshold: graph_cfg
+                        .belief_revision
+                        .similarity_threshold,
                 };
                 let pool = store.pool().clone();
                 match extract_and_store(

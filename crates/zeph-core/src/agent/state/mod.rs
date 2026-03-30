@@ -63,6 +63,9 @@ pub(crate) struct MemoryState {
     pub(crate) context_strategy: crate::config::ContextStrategy,
     /// Turn threshold for `Adaptive` strategy crossover (#2288).
     pub(crate) crossover_turn_threshold: u32,
+    /// D-MEM RPE router. `Some` when `graph_config.rpe.enabled = true`.
+    /// Protected by `std::sync::Mutex` for non-async access from `maybe_spawn_graph_extraction`.
+    pub(crate) rpe_router: Option<std::sync::Mutex<zeph_memory::RpeRouter>>,
 }
 
 pub(crate) struct SkillState {

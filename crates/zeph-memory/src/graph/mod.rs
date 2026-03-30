@@ -5,10 +5,12 @@ pub mod store;
 pub mod types;
 
 pub mod activation;
+pub mod belief_revision;
 pub mod community;
 pub mod extractor;
 pub mod resolver;
 pub mod retrieval;
+pub mod rpe;
 
 pub use store::GraphStore;
 pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphFact};
@@ -16,6 +18,7 @@ pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, Grap
 pub use activation::{
     ActivatedFact, ActivatedNode, SpreadingActivation, SpreadingActivationParams,
 };
+pub use belief_revision::{BeliefRevisionConfig, cosine_similarity, find_superseded_edges};
 pub use community::{
     GraphEvictionStats, assign_to_community, cleanup_stale_entity_embeddings, detect_communities,
     run_graph_eviction,
@@ -23,3 +26,4 @@ pub use community::{
 pub use extractor::{ExtractedEdge, ExtractedEntity, ExtractionResult, GraphExtractor};
 pub use resolver::{EntityResolver, ResolutionOutcome};
 pub use retrieval::{graph_recall, graph_recall_activated};
+pub use rpe::{RpeRouter, RpeSignal, extract_candidate_entities};

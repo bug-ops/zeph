@@ -324,6 +324,7 @@ impl<C: Channel> Agent<C> {
                 cached_session_digest: None,
                 context_strategy: crate::config::ContextStrategy::default(),
                 crossover_turn_threshold: 20,
+                rpe_router: None,
             },
             skill_state: SkillState {
                 registry,
@@ -4802,7 +4803,20 @@ impl<C: Channel> Agent<C> {
         }
 
         {
-            self.memory_state.graph_config = config.memory.graph.clone();
+            let graph_cfg = &config.memory.graph;
+            if graph_cfg.rpe.enabled {
+                // Re-create router only if it doesn't exist yet; preserve state on hot-reload.
+                if self.memory_state.rpe_router.is_none() {
+                    self.memory_state.rpe_router =
+                        Some(std::sync::Mutex::new(zeph_memory::RpeRouter::new(
+                            graph_cfg.rpe.threshold,
+                            graph_cfg.rpe.max_skip_turns,
+                        )));
+                }
+            } else {
+                self.memory_state.rpe_router = None;
+            }
+            self.memory_state.graph_config = graph_cfg.clone();
         }
         self.context_manager.soft_compaction_threshold = config.memory.soft_compaction_threshold;
         self.context_manager.hard_compaction_threshold = config.memory.hard_compaction_threshold;

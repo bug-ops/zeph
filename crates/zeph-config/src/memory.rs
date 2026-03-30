@@ -547,6 +547,63 @@ impl Default for SpreadingActivationConfig {
     }
 }
 
+/// Kumiho belief revision configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BeliefRevisionConfig {
+    /// Enable semantic contradiction detection for graph edges. Default: `false`.
+    pub enabled: bool,
+    /// Cosine similarity threshold for considering two facts as contradictory.
+    /// Only edges with similarity >= this value are candidates for revision. Default: `0.85`.
+    #[serde(deserialize_with = "validate_similarity_threshold")]
+    pub similarity_threshold: f32,
+}
+
+fn default_belief_revision_similarity_threshold() -> f32 {
+    0.85
+}
+
+impl Default for BeliefRevisionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            similarity_threshold: default_belief_revision_similarity_threshold(),
+        }
+    }
+}
+
+/// D-MEM RPE-based tiered graph extraction routing configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RpeConfig {
+    /// Enable RPE-based routing to skip extraction on low-surprise turns. Default: `false`.
+    pub enabled: bool,
+    /// RPE threshold. Turns with RPE < this value skip graph extraction. Range: `[0.0, 1.0]`.
+    /// Default: `0.3`.
+    #[serde(deserialize_with = "validate_similarity_threshold")]
+    pub threshold: f32,
+    /// Maximum consecutive turns to skip before forcing extraction (safety valve). Default: `5`.
+    pub max_skip_turns: u32,
+}
+
+fn default_rpe_threshold() -> f32 {
+    0.3
+}
+
+fn default_rpe_max_skip_turns() -> u32 {
+    5
+}
+
+impl Default for RpeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_rpe_threshold(),
+            max_skip_turns: default_rpe_max_skip_turns(),
+        }
+    }
+}
+
 /// Configuration for A-MEM dynamic note linking.
 ///
 /// When enabled, after each graph extraction pass, entities extracted from the message are
@@ -1132,6 +1189,19 @@ pub struct GraphConfig {
     /// Seconds between link weight decay passes. Default: `86400` (24 hours).
     #[serde(default = "default_link_weight_decay_interval_secs")]
     pub link_weight_decay_interval_secs: u64,
+    /// Kumiho AGM-inspired belief revision configuration.
+    ///
+    /// When `belief_revision.enabled = true`, new edges that semantically contradict existing
+    /// edges for the same entity pair trigger revision: the old edge is invalidated with a
+    /// `superseded_by` pointer and the new edge becomes the current belief.
+    #[serde(default)]
+    pub belief_revision: BeliefRevisionConfig,
+    /// D-MEM RPE-based tiered graph extraction routing.
+    ///
+    /// When `rpe.enabled = true`, low-surprise turns skip the expensive MAGMA LLM extraction
+    /// pipeline. A consecutive-skip safety valve ensures no turn is silently skipped indefinitely.
+    #[serde(default)]
+    pub rpe: RpeConfig,
 }
 
 impl Default for GraphConfig {
@@ -1159,6 +1229,8 @@ impl Default for GraphConfig {
             spreading_activation: SpreadingActivationConfig::default(),
             link_weight_decay_lambda: default_link_weight_decay_lambda(),
             link_weight_decay_interval_secs: default_link_weight_decay_interval_secs(),
+            belief_revision: BeliefRevisionConfig::default(),
+            rpe: RpeConfig::default(),
         }
     }
 }

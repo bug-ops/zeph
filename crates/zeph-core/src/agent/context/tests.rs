@@ -3183,6 +3183,7 @@ fn make_mem_state(
         cached_session_digest: None,
         context_strategy: crate::config::ContextStrategy::default(),
         crossover_turn_threshold: 20,
+        rpe_router: None,
     }
 }
 

@@ -63,7 +63,10 @@ pub use embedding_registry::{
 pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
 pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy, start_eviction_loop};
-pub use graph::{Community, Edge, EdgeType, Entity, EntityType, GraphFact, GraphStore};
+pub use graph::{
+    BeliefRevisionConfig, Community, Edge, EdgeType, Entity, EntityType, GraphFact, GraphStore,
+    RpeRouter, RpeSignal, extract_candidate_entities,
+};
 pub use math::cosine_similarity;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;

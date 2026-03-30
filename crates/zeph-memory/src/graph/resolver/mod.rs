@@ -863,6 +863,10 @@ impl<'a> EntityResolver<'a> {
     /// An active edge with the same `(source, target, relation, edge_type)` and identical
     /// fact returns `None`; same relation+type with different fact is superseded.
     ///
+    /// When `belief_revision` is `Some`, uses semantic contradiction detection to find edges
+    /// to supersede across the same relation domain. The new fact embedding is pre-computed
+    /// here (one embed call) to avoid N+1 embedding calls.
+    ///
     /// This ensures that different MAGMA edge types for the same entity pair are stored
     /// independently (critic mitigation: dedup key includes `edge_type`).
     ///
@@ -879,6 +883,7 @@ impl<'a> EntityResolver<'a> {
         confidence: f32,
         episode_id: Option<crate::types::MessageId>,
         edge_type: crate::graph::EdgeType,
+        belief_revision: Option<&crate::graph::BeliefRevisionConfig>,
     ) -> Result<Option<i64>, MemoryError> {
         let relation_clean = strip_control_chars(&relation.trim().to_lowercase());
         let normalized_relation =
@@ -889,17 +894,61 @@ impl<'a> EntityResolver<'a> {
 
         let existing_edges = self.store.edges_exact(source_id, target_id).await?;
 
-        // Match on (relation, edge_type) — different types are distinct edges
+        // Exact dedup: same (relation, edge_type, fact) → skip.
         let matching = existing_edges
             .iter()
             .find(|e| e.relation == normalized_relation && e.edge_type == edge_type);
 
-        if let Some(old) = matching {
-            if old.fact == normalized_fact {
-                return Ok(None);
-            }
-            self.store.invalidate_edge(old.id).await?;
+        if matching.is_some_and(|old| old.fact == normalized_fact) {
+            return Ok(None);
         }
+
+        // Determine which edges to supersede.
+        let superseded_ids: Vec<i64> = if let (Some(cfg), Some(provider)) =
+            (belief_revision, self.provider)
+        {
+            // Kumiho belief revision: embed new fact once, find semantically contradicted edges.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                provider.embed(&normalized_fact),
+            )
+            .await
+            {
+                Ok(Ok(new_emb)) => {
+                    match crate::graph::belief_revision::find_superseded_edges(
+                        &existing_edges,
+                        &new_emb,
+                        &normalized_relation,
+                        edge_type,
+                        provider,
+                        cfg,
+                    )
+                    .await
+                    {
+                        Ok(ids) => ids,
+                        Err(err) => {
+                            tracing::warn!(error = %err,
+                                    "belief_revision: find_superseded_edges failed, falling back to exact match");
+                            matching.map(|e| vec![e.id]).unwrap_or_default()
+                        }
+                    }
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err,
+                            "belief_revision: embed new fact failed, falling back to exact match");
+                    matching.map(|e| vec![e.id]).unwrap_or_default()
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "belief_revision: embed new fact timed out, falling back to exact match"
+                    );
+                    matching.map(|e| vec![e.id]).unwrap_or_default()
+                }
+            }
+        } else {
+            // Legacy: exact (relation, edge_type) match with different fact.
+            matching.map(|e| vec![e.id]).unwrap_or_default()
+        };
 
         let new_id = self
             .store
@@ -913,6 +962,18 @@ impl<'a> EntityResolver<'a> {
                 edge_type,
             )
             .await?;
+
+        // Supersede old edges with audit trail (belief revision) or plain invalidation (legacy).
+        for old_id in superseded_ids {
+            if belief_revision.is_some() {
+                self.store
+                    .invalidate_edge_with_supersession(old_id, new_id)
+                    .await?;
+            } else {
+                self.store.invalidate_edge(old_id).await?;
+            }
+        }
+
         Ok(Some(new_id))
     }
 }

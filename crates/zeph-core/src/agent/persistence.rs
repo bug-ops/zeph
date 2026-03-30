@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::channel::Channel;
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, MessagePart, Role};
 use zeph_memory::store::role_str;
 
 use super::Agent;
@@ -435,6 +435,7 @@ impl<C: Channel> Agent<C> {
             .await;
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn maybe_spawn_graph_extraction(
         &mut self,
         content: &str,
@@ -484,8 +485,16 @@ impl<C: Channel> Agent<C> {
                 },
                 link_weight_decay_lambda: cfg.link_weight_decay_lambda,
                 link_weight_decay_interval_secs: cfg.link_weight_decay_interval_secs,
+                belief_revision_enabled: cfg.belief_revision.enabled,
+                belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold,
             }
         };
+
+        // D-MEM RPE routing: skip extraction when the turn has low surprise.
+        if self.rpe_should_skip(content).await {
+            tracing::debug!("D-MEM RPE: low-surprise turn, skipping graph extraction");
+            return;
+        }
 
         // FIX-2: collect last 4 genuine conversational user messages as context for extraction.
         // Exclude tool result messages (Role::User with ToolResult parts) — they contain
@@ -584,6 +593,35 @@ impl<C: Channel> Agent<C> {
                 }
             }
             let _ = self.channel.send_status("").await;
+        }
+    }
+
+    /// D-MEM RPE check: returns `true` when the current turn should skip graph extraction.
+    ///
+    /// Embeds `content`, computes RPE via the router, and updates the router state.
+    /// Returns `false` (do not skip) on any error — conservative fallback.
+    async fn rpe_should_skip(&mut self, content: &str) -> bool {
+        let Some(ref rpe_mutex) = self.memory_state.rpe_router else {
+            return false;
+        };
+        let Some(memory) = &self.memory_state.memory else {
+            return false;
+        };
+        let candidates = zeph_memory::extract_candidate_entities(content);
+        let provider = memory.provider();
+        let Ok(Ok(emb_vec)) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), provider.embed(content)).await
+        else {
+            return false; // embed failed/timed out → extract
+        };
+        if let Ok(mut router) = rpe_mutex.lock() {
+            let signal = router.compute(&emb_vec, &candidates);
+            router.push_embedding(emb_vec);
+            router.push_entities(&candidates);
+            !signal.should_extract
+        } else {
+            tracing::warn!("rpe_router mutex poisoned; falling through to extract");
+            false
         }
     }
 }

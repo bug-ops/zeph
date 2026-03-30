@@ -323,6 +323,14 @@ impl<C: Channel> Agent<C> {
                  Do not use with sensitive personal data until redaction is implemented."
             );
         }
+        // Initialize RPE router when RPE routing is enabled.
+        if config.rpe.enabled {
+            self.memory_state.rpe_router = Some(std::sync::Mutex::new(
+                zeph_memory::RpeRouter::new(config.rpe.threshold, config.rpe.max_skip_turns),
+            ));
+        } else {
+            self.memory_state.rpe_router = None;
+        }
         self.memory_state.graph_config = config;
         self
     }

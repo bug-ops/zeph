@@ -406,6 +406,11 @@ impl SemanticMemory {
         self.qdrant.as_ref()
     }
 
+    /// Return a reference to the underlying LLM provider (used for RPE embedding).
+    pub fn provider(&self) -> &AnyProvider {
+        &self.provider
+    }
+
     /// Count messages in a conversation.
     ///
     /// # Errors

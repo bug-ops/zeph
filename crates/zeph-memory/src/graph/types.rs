@@ -149,6 +149,9 @@ pub struct Edge {
     pub retrieval_count: i32,
     /// Unix timestamp of the last retrieval. `None` if never retrieved.
     pub last_retrieved_at: Option<i64>,
+    /// ID of the edge that superseded this one during Kumiho belief revision.
+    /// `None` for active edges and for edges invalidated by legacy exact-match dedup.
+    pub superseded_by: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

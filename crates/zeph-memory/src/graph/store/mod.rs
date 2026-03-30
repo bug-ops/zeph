@@ -479,6 +479,32 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Invalidate an edge and record the supersession pointer for Kumiho belief revision audit trail.
+    ///
+    /// Sets `valid_to`, `expired_at`, and `superseded_by` on the old edge to link it to its replacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database update fails.
+    pub async fn invalidate_edge_with_supersession(
+        &self,
+        old_edge_id: i64,
+        new_edge_id: i64,
+    ) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "UPDATE graph_edges
+             SET valid_to = CURRENT_TIMESTAMP,
+                 expired_at = CURRENT_TIMESTAMP,
+                 superseded_by = ?
+             WHERE id = ?"
+        ))
+        .bind(new_edge_id)
+        .bind(old_edge_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Get all active edges for a batch of entity IDs, with optional MAGMA edge type filtering.
     ///
     /// Fetches all currently-active edges (`valid_to IS NULL`) where either endpoint
@@ -539,7 +565,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))"
@@ -551,7 +577,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))
@@ -584,7 +610,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE valid_to IS NULL
                AND (source_entity_id = ? OR target_entity_id = ?)"
@@ -611,7 +637,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE source_entity_id = ? OR target_entity_id = ?
              ORDER BY valid_from DESC
@@ -638,7 +664,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE valid_to IS NULL
                AND ((source_entity_id = ? AND target_entity_id = ?)
@@ -666,7 +692,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE valid_to IS NULL
                AND source_entity_id = ?
@@ -922,7 +948,7 @@ impl GraphStore {
         zeph_db::query_as::<_, EdgeRow>(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE valid_to IS NULL
              ORDER BY id ASC"
@@ -955,7 +981,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE valid_to IS NULL AND id > ?
              ORDER BY id ASC
@@ -1426,7 +1452,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?
@@ -1434,7 +1460,7 @@ impl GraphStore {
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?
@@ -1479,7 +1505,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1497,7 +1523,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1830,7 +1856,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -1908,7 +1934,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -2136,6 +2162,7 @@ struct EdgeRow {
     edge_type: String,
     retrieval_count: i32,
     last_retrieved_at: Option<i64>,
+    superseded_by: Option<i64>,
 }
 
 fn edge_from_row(row: EdgeRow) -> Edge {
@@ -2160,6 +2187,7 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         edge_type,
         retrieval_count: row.retrieval_count,
         last_retrieved_at: row.last_retrieved_at,
+        superseded_by: row.superseded_by,
     }
 }
 

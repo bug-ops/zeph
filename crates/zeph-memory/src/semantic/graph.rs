@@ -45,6 +45,10 @@ pub struct GraphExtractionConfig {
     pub link_weight_decay_lambda: f64,
     /// Seconds between link weight decay passes. Default: `86400`.
     pub link_weight_decay_interval_secs: u64,
+    /// Kumiho belief revision: enable semantic contradiction detection for edges.
+    pub belief_revision_enabled: bool,
+    /// Cosine similarity threshold for belief revision contradiction detection.
+    pub belief_revision_similarity_threshold: f32,
 }
 
 impl Default for GraphExtractionConfig {
@@ -62,6 +66,8 @@ impl Default for GraphExtractionConfig {
             note_linking: NoteLinkingConfig::default(),
             link_weight_decay_lambda: 0.95,
             link_weight_decay_interval_secs: 86400,
+            belief_revision_enabled: false,
+            belief_revision_similarity_threshold: 0.85,
         }
     }
 }
@@ -402,6 +408,12 @@ pub async fn extract_and_store(
                 );
                 crate::graph::EdgeType::Semantic
             });
+        let belief_cfg =
+            config
+                .belief_revision_enabled
+                .then_some(crate::graph::BeliefRevisionConfig {
+                    similarity_threshold: config.belief_revision_similarity_threshold,
+                });
         match resolver
             .resolve_edge_typed(
                 src_id,
@@ -411,6 +423,7 @@ pub async fn extract_and_store(
                 0.8,
                 None,
                 edge_type,
+                belief_cfg.as_ref(),
             )
             .await
         {
