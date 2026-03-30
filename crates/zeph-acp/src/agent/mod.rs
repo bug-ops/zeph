@@ -756,6 +756,9 @@ impl acp::Agent for ZephAcpAgent {
             .auth(acp::AgentAuthCapabilities::default().logout(acp::LogoutCapabilities::default()));
 
         Ok(acp::InitializeResponse::new(acp::ProtocolVersion::LATEST)
+            .auth_methods(vec![acp::AuthMethod::Agent(acp::AuthMethodAgent::new(
+                "zeph", "Zeph",
+            ))])
             .agent_info(
                 acp::Implementation::new(&self.agent_name, &self.agent_version).title(title),
             )

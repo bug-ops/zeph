@@ -175,6 +175,39 @@ async fn initialize_returns_load_session_capability_and_auth_hint() {
 }
 
 #[tokio::test]
+async fn initialize_response_includes_agent_auth_method() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (agent, _rx) = make_agent();
+            let resp = agent
+                .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.auth_methods.len(),
+                1,
+                "expected exactly one authMethod in InitializeResponse"
+            );
+            let method = &resp.auth_methods[0];
+            let acp::AuthMethod::Agent(agent_method) = method else {
+                panic!("expected AuthMethod::Agent, got a different variant");
+            };
+            assert_eq!(
+                agent_method.id.0.as_ref(),
+                "zeph",
+                "authMethod id must be 'zeph'"
+            );
+            assert_eq!(
+                agent_method.name.as_str(),
+                "Zeph",
+                "authMethod name must be 'Zeph'"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn ext_notification_accepts_unknown_method() {
     let local = tokio::task::LocalSet::new();
     local

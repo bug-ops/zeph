@@ -39,3 +39,24 @@ pub async fn discovery_handler(State(state): State<AcpHttpState>) -> impl IntoRe
 
     Json(manifest)
 }
+
+/// `GET /agent.json` — machine-readable agent identity manifest for ACP Registry discovery.
+///
+/// Returns static agent metadata: identifier, display name, version, description, and
+/// distribution targets. This endpoint is never behind auth middleware.
+pub async fn agent_json_handler(State(state): State<AcpHttpState>) -> impl IntoResponse {
+    // `id` and `description` are fixed software-identity values for the Zeph project (not
+    // deployment-configurable); `name` and `version` are deployment-specific from server config.
+    let manifest = json!({
+        "id": "zeph",
+        "name": state.server_config.agent_name,
+        "version": state.server_config.agent_version,
+        "description": "Lightweight Rust AI agent with hybrid inference, semantic memory, and multi-channel I/O",
+        "distribution": {
+            "type": "binary",
+            "platforms": ["linux-x64", "darwin-arm64", "darwin-x64"]
+        }
+    });
+
+    Json(manifest)
+}

@@ -621,6 +621,79 @@ async fn discovery_disabled_returns_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+// ── agent.json endpoint tests ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn agent_json_returns_expected_fields() {
+    use axum::body::to_bytes;
+
+    let router = acp_router(test_state());
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/agent.json")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["id"], "zeph");
+    assert_eq!(json["name"], "test");
+    assert_eq!(json["version"], "0.0.1");
+    assert!(
+        json["description"].is_string(),
+        "description must be a string"
+    );
+    assert!(
+        json["distribution"].is_object(),
+        "distribution must be an object"
+    );
+    assert_eq!(json["distribution"]["type"], "binary");
+    assert!(
+        json["distribution"]["platforms"].is_array(),
+        "platforms must be an array"
+    );
+}
+
+#[tokio::test]
+async fn agent_json_disabled_returns_404() {
+    let state = AcpHttpState::new(
+        noop_spawner(),
+        AcpServerConfig {
+            agent_name: "test".into(),
+            agent_version: "0.0.1".into(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+            permission_file: None,
+            provider_factory: None,
+            available_models: shared_models(vec![]),
+            mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: false,
+            terminal_timeout_secs: 120,
+            project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
+            ready_notification: None,
+        },
+    );
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/agent.json")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 // ── Reaper test ───────────────────────────────────────────────────────────────
 
 #[tokio::test(start_paused = true)]

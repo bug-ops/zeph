@@ -20,11 +20,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(memory): use `wait=true` on Qdrant upsert to eliminate testcontainer timing race — points are now indexed and queryable immediately after `upsert` returns (closes #2413)
+- fix(acp): populate `authMethods` in `initialize` response with `Agent` auth method — ACP clients now receive `[{type: "agent", id: "zeph", name: "Zeph"}]` in the `authMethods` field of every `InitializeResponse` (closes #2422)
+- fix(acp): serve agent identity manifest at `GET /agent.json` — new endpoint gated on `discovery_enabled`, returns `id`, `name`, `version`, `description`, and `distribution` fields for ACP Registry discovery (closes #2422)
+- fix(acp): eliminate IPI wiring duplication in `acp.rs` `spawn_acp_agent` — extract `apply_three_class_classifier_with_cfg` and `apply_causal_analyzer_with_cfg` helpers in `agent_setup.rs`; `spawn_acp_agent` now delegates to shared helpers instead of inlining classifier construction (closes #2370)
+- fix(acp): discovery endpoint already reflects `ProtocolVersion::LATEST` — confirmed fixed in PR #2423; no code change required (#2412)
 
 ### Added (tests)
 
 - test(core): add `multi_layer_before_after_tool_ordering` — verifies both layers are called in FIFO order for `before_tool` and `after_tool` (#2361)
-
 - fix(classifiers): sha2 0.11 hex formatting — replace `format!("{:x}", ...)` with `hex::encode(...)` in `verify_sha256` and its test helper (#2401)
 - fix(deps): bump sha2 0.10→0.11, ordered-float 5.1→5.3, proptest 1.10→1.11, toml 1.0→1.1, uuid 1.22→1.23 (#2401)
 - fix(skills): `two_stage_matching` and `confusability_threshold` config fields are now applied at agent startup; `AgentBuilder` gains `with_two_stage_matching` and `with_confusability_threshold` builder methods wired in `runner.rs` and `daemon.rs` (closes #2404)

@@ -13,7 +13,7 @@ use tower_http::cors::CorsLayer;
 #[cfg(feature = "acp-http")]
 use crate::transport::auth::BearerAuthLayer;
 #[cfg(feature = "acp-http")]
-use crate::transport::discovery::discovery_handler;
+use crate::transport::discovery::{agent_json_handler, discovery_handler};
 #[cfg(feature = "acp-http")]
 use crate::transport::http::{
     AcpHttpState, get_handler, health_handler, list_sessions_handler, post_handler,
@@ -34,6 +34,7 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 /// - `GET /acp/ws` — WebSocket upgrade
 /// - `GET /health` — public readiness probe
 /// - `GET /.well-known/acp.json` — discovery manifest (always public, no auth)
+/// - `GET /agent.json` — agent identity manifest for ACP Registry (always public, no auth)
 ///
 /// Security layers applied:
 /// - `DefaultBodyLimit::max(1_048_576)` — rejects oversized POST bodies
@@ -64,7 +65,9 @@ pub fn acp_router(state: AcpHttpState) -> Router {
         .merge(acp_routes);
 
     if state.server_config.discovery_enabled {
-        router = router.route("/.well-known/acp.json", get(discovery_handler));
+        router = router
+            .route("/.well-known/acp.json", get(discovery_handler))
+            .route("/agent.json", get(agent_json_handler));
     }
 
     router.with_state(state)

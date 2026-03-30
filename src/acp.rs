@@ -783,30 +783,12 @@ async fn spawn_acp_agent(
         agent = agent_setup::apply_injection_classifier_with_cfg(agent, &classifiers_config);
         if classifiers_config.enabled {
             agent = agent.with_enforcement_mode(classifiers_config.enforcement_mode);
-            if let Some(ref repo_id) = classifiers_config.three_class_model {
-                let mut tc = zeph_llm::classifier::three_class::CandleThreeClassClassifier::new(
-                    repo_id.as_str(),
-                );
-                if let Some(ref token) = classifiers_config.hf_token {
-                    tc = tc.with_hf_token(token.as_str());
-                }
-                if let Some(ref hash) = classifiers_config.three_class_model_sha256 {
-                    tc = tc.with_sha256(hash.as_str());
-                }
-                agent = agent.with_three_class_classifier(
-                    std::sync::Arc::new(tc),
-                    classifiers_config.three_class_threshold,
-                );
-            }
         }
+        agent = agent_setup::apply_three_class_classifier_with_cfg(agent, &classifiers_config);
         agent = agent_setup::apply_pii_classifier_with_cfg(agent, &classifiers_config);
     }
-    if causal_ipi_config.enabled {
-        agent = agent.with_causal_analyzer(zeph_sanitizer::causal_ipi::TurnCausalAnalyzer::new(
-            provider.clone(),
-            &causal_ipi_config,
-        ));
-    }
+    agent =
+        agent_setup::apply_causal_analyzer_with_cfg(agent, provider.clone(), &causal_ipi_config);
 
     if debug_config.enabled {
         // Use session_id as a subdirectory prefix so concurrent sessions never share the same
