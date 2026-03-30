@@ -363,13 +363,51 @@ impl AppBuilder {
             semantic_novelty: w.semantic_novelty,
             temporal_recency: w.temporal_recency,
             content_type_prior: w.content_type_prior,
+            goal_utility: w.goal_utility,
         };
-        let control = zeph_memory::AdmissionControl::new(
+        let mut control = zeph_memory::AdmissionControl::new(
             self.config.memory.admission.threshold,
             self.config.memory.admission.fast_path_margin,
             weights,
         )
         .with_provider(admission_provider);
+
+        if self.config.memory.admission.goal_conditioned_write {
+            let goal_provider = if self
+                .config
+                .memory
+                .admission
+                .goal_utility_provider
+                .is_empty()
+            {
+                None
+            } else {
+                match create_named_provider(
+                    &self.config.memory.admission.goal_utility_provider,
+                    &self.config,
+                ) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %self.config.memory.admission.goal_utility_provider,
+                            error = %e,
+                            "goal_utility_provider not found, LLM refinement disabled"
+                        );
+                        None
+                    }
+                }
+            };
+            control = control.with_goal_gate(zeph_memory::GoalGateConfig {
+                threshold: self.config.memory.admission.goal_utility_threshold,
+                provider: goal_provider,
+                weight: self.config.memory.admission.goal_utility_weight,
+            });
+            tracing::info!(
+                threshold = self.config.memory.admission.goal_utility_threshold,
+                weight = self.config.memory.admission.goal_utility_weight,
+                "A-MAC: goal-conditioned write gate enabled"
+            );
+        }
 
         if self.config.memory.admission.admission_strategy == zeph_config::AdmissionStrategy::Rl {
             tracing::warn!(

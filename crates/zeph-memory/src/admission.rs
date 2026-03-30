@@ -27,6 +27,9 @@ pub struct AdmissionFactors {
     pub temporal_recency: f32,
     /// Prior based on message role. `[0, 1]`.
     pub content_type_prior: f32,
+    /// Goal-conditioned utility (#2408). Cosine similarity between goal embedding and
+    /// candidate memory. `0.0` when `goal_conditioned_write = false` or goal text is absent/trivial.
+    pub goal_utility: f32,
 }
 
 /// Result of an admission evaluation.
@@ -45,6 +48,8 @@ pub struct AdmissionWeights {
     pub semantic_novelty: f32,
     pub temporal_recency: f32,
     pub content_type_prior: f32,
+    /// Goal-conditioned utility weight. `0.0` when goal gate is disabled.
+    pub goal_utility: f32,
 }
 
 impl AdmissionWeights {
@@ -58,15 +63,17 @@ impl AdmissionWeights {
         let sn = self.semantic_novelty.max(0.0);
         let tr = self.temporal_recency.max(0.0);
         let cp = self.content_type_prior.max(0.0);
-        let sum = fu + fc + sn + tr + cp;
+        let gu = self.goal_utility.max(0.0);
+        let sum = fu + fc + sn + tr + cp + gu;
         if sum <= f32::EPSILON {
-            // Equal fallback weights.
+            // Equal fallback weights (6 factors when goal gate is enabled).
             return Self {
                 future_utility: 0.2,
                 factual_confidence: 0.2,
                 semantic_novelty: 0.2,
                 temporal_recency: 0.2,
                 content_type_prior: 0.2,
+                goal_utility: 0.0,
             };
         }
         Self {
@@ -75,8 +82,20 @@ impl AdmissionWeights {
             semantic_novelty: sn / sum,
             temporal_recency: tr / sum,
             content_type_prior: cp / sum,
+            goal_utility: gu / sum,
         }
     }
+}
+
+/// Goal-conditioned write gate configuration for `AdmissionControl`.
+#[derive(Debug, Clone)]
+pub struct GoalGateConfig {
+    /// Minimum cosine similarity to consider memory goal-relevant.
+    pub threshold: f32,
+    /// LLM provider for borderline refinement (similarity within 0.1 of threshold).
+    pub provider: Option<AnyProvider>,
+    /// Weight of the `goal_utility` factor in the composite score.
+    pub weight: f32,
 }
 
 /// A-MAC admission controller.
@@ -87,6 +106,8 @@ pub struct AdmissionControl {
     /// Dedicated provider for LLM-based evaluation. Falls back to the caller-supplied provider
     /// when `None` (e.g. in tests or when `admission_provider` is not configured).
     provider: Option<AnyProvider>,
+    /// Goal-conditioned write gate. `None` when `goal_conditioned_write = false`.
+    goal_gate: Option<GoalGateConfig>,
 }
 
 impl AdmissionControl {
@@ -97,6 +118,7 @@ impl AdmissionControl {
             fast_path_margin,
             weights: weights.normalized(),
             provider: None,
+            goal_gate: None,
         }
     }
 
@@ -109,6 +131,20 @@ impl AdmissionControl {
         self
     }
 
+    /// Enable goal-conditioned write gate (#2408).
+    #[must_use]
+    pub fn with_goal_gate(mut self, config: GoalGateConfig) -> Self {
+        // Redistribute goal_utility weight from future_utility.
+        let gu = config.weight.clamp(0.0, 1.0);
+        let mut weights = self.weights;
+        weights.goal_utility = gu;
+        // Reduce future_utility by the same amount (soft redistribution).
+        weights.future_utility = (weights.future_utility - gu).max(0.0);
+        self.weights = weights.normalized();
+        self.goal_gate = Some(config);
+        self
+    }
+
     /// Return the configured admission threshold.
     #[must_use]
     pub fn threshold(&self) -> f32 {
@@ -116,6 +152,9 @@ impl AdmissionControl {
     }
 
     /// Evaluate admission for a message.
+    ///
+    /// `goal_text`: optional current-turn goal context for goal-conditioned scoring.
+    /// Ignored when the goal gate is disabled or `goal_text` is `None`/trivial (< 10 chars).
     ///
     /// Fast path: skips LLM when heuristic-only score is already above `threshold + fast_path_margin`.
     /// Slow path: calls LLM for `future_utility` when borderline.
@@ -127,6 +166,7 @@ impl AdmissionControl {
         role: &str,
         fallback_provider: &AnyProvider,
         qdrant: Option<&Arc<EmbeddingStore>>,
+        goal_text: Option<&str>,
     ) -> AdmissionDecision {
         let effective_provider = self.provider.as_ref().unwrap_or(fallback_provider);
         let factual_confidence = compute_factual_confidence(content);
@@ -136,6 +176,19 @@ impl AdmissionControl {
         // Semantic novelty requires an async embedding search.
         let semantic_novelty = compute_semantic_novelty(content, effective_provider, qdrant).await;
 
+        // Goal-conditioned utility (W3.1 fix: skip trivial goal text < 10 chars).
+        let goal_utility = match &self.goal_gate {
+            Some(gate) => {
+                let effective_goal = goal_text.filter(|t| t.trim().len() >= 10);
+                if let Some(goal) = effective_goal {
+                    compute_goal_utility(content, goal, gate, effective_provider, qdrant).await
+                } else {
+                    0.0
+                }
+            }
+            None => 0.0,
+        };
+
         // Heuristic-only composite (future_utility treated as 0.5 neutral placeholder).
         let heuristic_score = self.weighted_score(
             0.5,
@@ -143,6 +196,7 @@ impl AdmissionControl {
             semantic_novelty,
             temporal_recency,
             content_type_prior,
+            goal_utility,
         );
 
         // Fast path: admit without LLM if score is clearly above threshold + margin.
@@ -158,6 +212,7 @@ impl AdmissionControl {
             semantic_novelty,
             temporal_recency,
             content_type_prior,
+            goal_utility,
         );
 
         let admitted = composite_score >= self.threshold
@@ -172,6 +227,7 @@ impl AdmissionControl {
                 semantic_novelty,
                 temporal_recency,
                 content_type_prior,
+                goal_utility,
             },
         }
     }
@@ -183,12 +239,14 @@ impl AdmissionControl {
         semantic_novelty: f32,
         temporal_recency: f32,
         content_type_prior: f32,
+        goal_utility: f32,
     ) -> f32 {
         future_utility * self.weights.future_utility
             + factual_confidence * self.weights.factual_confidence
             + semantic_novelty * self.weights.semantic_novelty
             + temporal_recency * self.weights.temporal_recency
             + content_type_prior * self.weights.content_type_prior
+            + goal_utility * self.weights.goal_utility
     }
 }
 
@@ -325,6 +383,142 @@ async fn compute_future_utility(content: &str, role: &str, provider: &AnyProvide
     result.trim().parse::<f32>().unwrap_or(0.5).clamp(0.0, 1.0)
 }
 
+/// Compute goal-conditioned utility for a candidate memory.
+///
+/// Embeds the goal text and candidate content, then returns cosine similarity.
+/// For borderline cases (similarity within 0.1 of threshold), optionally calls
+/// the LLM for refinement if a `goal_utility_provider` is configured.
+///
+/// Returns a soft-floored score: min similarity is 0.1 to avoid fully eliminating
+/// memories that are somewhat off-goal but otherwise high-value (W3.4 fix).
+///
+/// Returns `0.0` on embedding failure (safe admission without goal factor).
+async fn compute_goal_utility(
+    content: &str,
+    goal_text: &str,
+    gate: &GoalGateConfig,
+    provider: &AnyProvider,
+    qdrant: Option<&Arc<EmbeddingStore>>,
+) -> f32 {
+    use zeph_llm::provider::LlmProvider as _;
+
+    if !provider.supports_embeddings() {
+        return 0.0;
+    }
+
+    let goal_emb = match provider.embed(goal_text).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(error = %e, "goal_utility: failed to embed goal text, using 0.0");
+            return 0.0;
+        }
+    };
+    let content_emb = match provider.embed(content).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(error = %e, "goal_utility: failed to embed content, using 0.0");
+            return 0.0;
+        }
+    };
+
+    // Qdrant is used for novelty search, not for goal utility — we compute cosine directly.
+    let _ = qdrant; // unused here; kept for API symmetry
+
+    let similarity = cosine_similarity(&goal_emb, &content_emb);
+
+    // Borderline: call LLM for refinement when configured (W3.5: skipped when no provider).
+    let borderline_lo = gate.threshold - 0.1;
+    let borderline_hi = gate.threshold + 0.1;
+    let in_borderline = similarity >= borderline_lo && similarity <= borderline_hi;
+
+    let final_similarity = if in_borderline {
+        if let Some(ref goal_provider) = gate.provider {
+            refine_goal_utility_llm(content, goal_text, similarity, goal_provider).await
+        } else {
+            similarity
+        }
+    } else {
+        similarity
+    };
+
+    // Hard gate below threshold; soft floor of 0.1 above threshold (W3.4 fix).
+    if final_similarity < gate.threshold {
+        0.0
+    } else {
+        final_similarity.max(0.1)
+    }
+}
+
+/// Cosine similarity between two float vectors. Returns 0.0 for zero-length or mismatched vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a < f32::EPSILON || norm_b < f32::EPSILON {
+        return 0.0;
+    }
+    (dot / (norm_a * norm_b)).clamp(0.0, 1.0)
+}
+
+/// LLM-based goal utility refinement for borderline cases.
+///
+/// Returns the original `embedding_sim` on failure (safe fallback).
+async fn refine_goal_utility_llm(
+    content: &str,
+    goal_text: &str,
+    embedding_sim: f32,
+    provider: &AnyProvider,
+) -> f32 {
+    use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
+
+    let system = "You are a memory relevance judge. Given a task goal and a candidate memory, \
+        rate how relevant the memory is to the goal on a scale of 0.0 to 1.0. \
+        Respond with ONLY a decimal number between 0.0 and 1.0, nothing else.";
+
+    let user = format!(
+        "Goal: {}\nMemory: {}\n\nRelevance score (0.0-1.0):",
+        goal_text.chars().take(200).collect::<String>(),
+        content.chars().take(300).collect::<String>(),
+    );
+
+    let messages = vec![
+        Message {
+            role: Role::System,
+            content: system.to_owned(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+        Message {
+            role: Role::User,
+            content: user,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+    ];
+
+    let result = match tokio::time::timeout(Duration::from_secs(6), provider.chat(&messages)).await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "goal_utility LLM refinement failed, using embedding sim");
+            return embedding_sim;
+        }
+        Err(_) => {
+            tracing::debug!("goal_utility LLM refinement timed out, using embedding sim");
+            return embedding_sim;
+        }
+    };
+
+    result
+        .trim()
+        .parse::<f32>()
+        .unwrap_or(embedding_sim)
+        .clamp(0.0, 1.0)
+}
+
 /// Log an admission decision to the audit log via `tracing`.
 ///
 /// Rejections are always logged at debug level. Admissions are trace-level.
@@ -414,10 +608,11 @@ mod tests {
             semantic_novelty: 0.30,
             temporal_recency: 0.10,
             content_type_prior: 0.15,
+            goal_utility: 0.0,
         };
         let ctrl = AdmissionControl::new(0.40, 0.15, weights);
         // Score all factors at 1.0 → composite = 1.0.
-        let score = ctrl.weighted_score(1.0, 1.0, 1.0, 1.0, 1.0);
+        let score = ctrl.weighted_score(1.0, 1.0, 1.0, 1.0, 1.0, 0.0);
         assert!(score >= 0.99);
         // Admitted when score >= threshold.
         let admitted = score >= ctrl.threshold;
@@ -432,10 +627,11 @@ mod tests {
             semantic_novelty: 0.30,
             temporal_recency: 0.10,
             content_type_prior: 0.15,
+            goal_utility: 0.0,
         };
         let ctrl = AdmissionControl::new(0.40, 0.15, weights);
         // Score all factors at 0.0 → composite = 0.0.
-        let score = ctrl.weighted_score(0.0, 0.0, 0.0, 0.0, 0.0);
+        let score = ctrl.weighted_score(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert!(score < ctrl.threshold);
     }
 
@@ -449,13 +645,14 @@ mod tests {
             semantic_novelty: 0.20,
             temporal_recency: 0.20,
             content_type_prior: 0.20,
+            goal_utility: 0.0,
         };
         let threshold = 0.40f32;
         let margin = 0.15f32;
         let ctrl = AdmissionControl::new(threshold, margin, weights);
 
         // All non-future_utility factors at 1.0; future_utility treated as 0.5 (fast path neutral).
-        let heuristic = ctrl.weighted_score(0.5, 1.0, 1.0, 1.0, 1.0);
+        let heuristic = ctrl.weighted_score(0.5, 1.0, 1.0, 1.0, 1.0, 0.0);
         // heuristic = 0.5*0.2 + 1.0*0.2 + 1.0*0.2 + 1.0*0.2 + 1.0*0.2 = 0.1 + 0.8 = 0.9
         assert!(
             heuristic >= threshold + margin,
@@ -476,13 +673,14 @@ mod tests {
             semantic_novelty: 0.15,
             temporal_recency: 0.15,
             content_type_prior: 0.15,
+            goal_utility: 0.0,
         };
         let threshold = 0.50f32;
         let margin = 0.20f32;
         let ctrl = AdmissionControl::new(threshold, margin, weights);
 
         // All factors low — heuristic will be below threshold + margin.
-        let heuristic = ctrl.weighted_score(0.5, 0.3, 0.3, 0.3, 0.3);
+        let heuristic = ctrl.weighted_score(0.5, 0.3, 0.3, 0.3, 0.3, 0.0);
         assert!(
             heuristic < threshold + margin,
             "heuristic {heuristic} must be below threshold+margin {}",
@@ -502,6 +700,7 @@ mod tests {
                 semantic_novelty: 0.7,
                 temporal_recency: 1.0,
                 content_type_prior: 0.7,
+                goal_utility: 0.0,
             },
         };
         log_admission_decision(&admitted_decision, "preview text", "user", 0.40);
@@ -515,6 +714,7 @@ mod tests {
                 semantic_novelty: 0.3,
                 temporal_recency: 1.0,
                 content_type_prior: 0.3,
+                goal_utility: 0.0,
             },
         };
         log_admission_decision(&rejected_decision, "maybe short content", "assistant", 0.40);
@@ -541,6 +741,7 @@ mod tests {
             semantic_novelty: 0.20,
             temporal_recency: 0.20,
             content_type_prior: 0.20,
+            goal_utility: 0.0,
         };
         let ctrl = AdmissionControl::new(0.55, 0.10, weights);
         assert!((ctrl.threshold() - 0.55).abs() < 0.001);
@@ -550,5 +751,91 @@ mod tests {
     #[test]
     fn content_type_prior_tool_result_alias() {
         assert!((compute_content_type_prior("tool_result") - 0.8).abs() < 0.01);
+    }
+
+    // ── cosine_similarity tests ───────────────────────────────────────────────
+
+    #[test]
+    fn cosine_similarity_identical_vectors() {
+        let v = vec![1.0f32, 0.0, 0.0];
+        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal_vectors() {
+        let a = vec![1.0f32, 0.0];
+        let b = vec![0.0f32, 1.0];
+        assert!(cosine_similarity(&a, &b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector_returns_zero() {
+        let z = vec![0.0f32, 0.0, 0.0];
+        let v = vec![1.0f32, 2.0, 3.0];
+        assert_eq!(cosine_similarity(&z, &v), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_length_mismatch_returns_zero() {
+        let a = vec![1.0f32, 0.0];
+        let b = vec![1.0f32, 0.0, 0.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    // ── with_goal_gate tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn with_goal_gate_sets_goal_utility_weight() {
+        let weights = AdmissionWeights {
+            future_utility: 0.30,
+            factual_confidence: 0.15,
+            semantic_novelty: 0.30,
+            temporal_recency: 0.10,
+            content_type_prior: 0.15,
+            goal_utility: 0.0,
+        };
+        let ctrl = AdmissionControl::new(0.40, 0.15, weights);
+        let config = GoalGateConfig {
+            weight: 0.20,
+            threshold: 0.5,
+            provider: None,
+        };
+        let ctrl = ctrl.with_goal_gate(config);
+        assert!(
+            ctrl.weights.goal_utility > 0.0,
+            "goal_utility must be nonzero after with_goal_gate"
+        );
+        // Normalized weights must sum to ~1.0.
+        let w = &ctrl.weights;
+        let total = w.future_utility
+            + w.factual_confidence
+            + w.semantic_novelty
+            + w.temporal_recency
+            + w.content_type_prior
+            + w.goal_utility;
+        assert!(
+            (total - 1.0).abs() < 0.01,
+            "normalized weights must sum to 1.0, got {total}"
+        );
+    }
+
+    #[test]
+    fn with_goal_gate_zero_weight_leaves_goal_utility_at_zero() {
+        let weights = AdmissionWeights {
+            future_utility: 0.30,
+            factual_confidence: 0.15,
+            semantic_novelty: 0.30,
+            temporal_recency: 0.10,
+            content_type_prior: 0.15,
+            goal_utility: 0.0,
+        };
+        let ctrl = AdmissionControl::new(0.40, 0.15, weights);
+        let config = GoalGateConfig {
+            weight: 0.0,
+            threshold: 0.5,
+            provider: None,
+        };
+        let ctrl = ctrl.with_goal_gate(config);
+        assert_eq!(ctrl.weights.goal_utility, 0.0);
     }
 }

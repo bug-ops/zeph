@@ -490,6 +490,7 @@ fn make_always_reject_admission() -> crate::admission::AdmissionControl {
         semantic_novelty: 0.20,
         temporal_recency: 0.20,
         content_type_prior: 0.20,
+        goal_utility: 0.0,
     };
     crate::admission::AdmissionControl::new(1.1, 0.0, weights)
 }
@@ -502,6 +503,7 @@ fn make_always_admit_admission() -> crate::admission::AdmissionControl {
         semantic_novelty: 0.20,
         temporal_recency: 0.20,
         content_type_prior: 0.20,
+        goal_utility: 0.0,
     };
     crate::admission::AdmissionControl::new(0.0, 0.0, weights)
 }

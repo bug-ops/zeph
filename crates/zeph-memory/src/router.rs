@@ -26,10 +26,32 @@ pub enum MemoryRoute {
     Episodic,
 }
 
+/// Routing decision with confidence and optional LLM reasoning.
+#[derive(Debug, Clone)]
+pub struct RoutingDecision {
+    pub route: MemoryRoute,
+    /// Confidence in `[0, 1]`. `1.0` = certain, `0.5` = ambiguous.
+    pub confidence: f32,
+    /// Only populated when an LLM classifier was used.
+    pub reasoning: Option<String>,
+}
+
 /// Decides which memory backend(s) to query for a given input.
 pub trait MemoryRouter: Send + Sync {
     /// Route a query to the appropriate backend(s).
     fn route(&self, query: &str) -> MemoryRoute;
+
+    /// Route with a confidence signal. Default implementation wraps `route()` with confidence 1.0.
+    ///
+    /// Override this in routers that can express ambiguity (e.g. `HeuristicRouter`)
+    /// so that `HybridRouter` can escalate uncertain decisions to LLM.
+    fn route_with_confidence(&self, query: &str) -> RoutingDecision {
+        RoutingDecision {
+            route: self.route(query),
+            confidence: 1.0,
+            reasoning: None,
+        }
+    }
 }
 
 /// Resolved datetime boundaries for a temporal query.
@@ -470,6 +492,52 @@ fn is_pure_snake_case(word: &str) -> bool {
 }
 
 impl MemoryRouter for HeuristicRouter {
+    /// Returns a confidence signal based on pattern match count (W2.1 fix: gradual scale).
+    ///
+    /// - Exactly one route pattern matches → confidence `1.0` (clear signal)
+    /// - Zero patterns match → confidence `0.0` (pure default fallback)
+    /// - More than one pattern matches → confidence `1.0 / matched_count` (ambiguous, decreasing)
+    fn route_with_confidence(&self, query: &str) -> RoutingDecision {
+        let lower = query.to_ascii_lowercase();
+        let mut matched: u32 = 0;
+        if has_temporal_cue(&lower) {
+            matched += 1;
+        }
+        if RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p)) {
+            matched += 1;
+        }
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let word_count = words.len();
+        let has_structural = query.contains('/') || query.contains("::");
+        let question = starts_with_question(&words);
+        let has_snake = words.iter().any(|w| is_pure_snake_case(w));
+        if has_structural && !question {
+            matched += 1;
+        }
+        if question || word_count >= 6 {
+            matched += 1;
+        }
+        if word_count <= 3 && !question {
+            matched += 1;
+        }
+        if has_snake {
+            matched += 1;
+        }
+
+        #[allow(clippy::cast_precision_loss)]
+        let confidence = match matched {
+            0 => 0.0,
+            1 => 1.0,
+            n => 1.0 / n as f32,
+        };
+
+        RoutingDecision {
+            route: self.route(query),
+            confidence,
+            reasoning: None,
+        }
+    }
+
     fn route(&self, query: &str) -> MemoryRoute {
         let lower = query.to_ascii_lowercase();
 
@@ -518,6 +586,233 @@ impl MemoryRouter for HeuristicRouter {
 
         // Default
         MemoryRoute::Hybrid
+    }
+}
+
+/// LLM-based memory router.
+///
+/// Sends the query to the configured provider and parses a JSON response:
+/// `{"route": "keyword|semantic|hybrid|graph|episodic", "confidence": 0.0-1.0}`.
+///
+/// On LLM failure, falls back to `HeuristicRouter`.
+pub struct LlmRouter {
+    provider: std::sync::Arc<zeph_llm::any::AnyProvider>,
+    fallback_route: MemoryRoute,
+}
+
+impl LlmRouter {
+    #[must_use]
+    pub fn new(
+        provider: std::sync::Arc<zeph_llm::any::AnyProvider>,
+        fallback_route: MemoryRoute,
+    ) -> Self {
+        Self {
+            provider,
+            fallback_route,
+        }
+    }
+
+    async fn classify_async(&self, query: &str) -> RoutingDecision {
+        use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
+
+        let system = "You are a memory store routing classifier. \
+            Given a user query, decide which memory backend is most appropriate. \
+            Respond with ONLY a JSON object: \
+            {\"route\": \"<route>\", \"confidence\": <0.0-1.0>, \"reasoning\": \"<brief>\"} \
+            where <route> is one of: keyword, semantic, hybrid, graph, episodic. \
+            Use 'keyword' for exact/code lookups, 'semantic' for conceptual questions, \
+            'hybrid' for mixed, 'graph' for relationship queries, 'episodic' for time-scoped queries.";
+
+        // Wrap query in delimiters to prevent injection (W2.2 fix).
+        let user = format!(
+            "<query>{}</query>",
+            query.chars().take(500).collect::<String>()
+        );
+
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: system.to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: user,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.provider.chat(&messages),
+        )
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "LlmRouter: LLM call failed, falling back to heuristic");
+                return Self::heuristic_fallback(query);
+            }
+            Err(_) => {
+                tracing::debug!("LlmRouter: LLM timed out, falling back to heuristic");
+                return Self::heuristic_fallback(query);
+            }
+        };
+
+        self.parse_llm_response(&result, query)
+    }
+
+    fn parse_llm_response(&self, raw: &str, query: &str) -> RoutingDecision {
+        // Extract JSON object from the response (may have surrounding text).
+        let json_str = raw
+            .find('{')
+            .and_then(|start| raw[start..].rfind('}').map(|end| &raw[start..=start + end]))
+            .unwrap_or("");
+
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+            let route_str = v.get("route").and_then(|r| r.as_str()).unwrap_or("hybrid");
+            #[allow(clippy::cast_possible_truncation)]
+            let confidence = v
+                .get("confidence")
+                .and_then(serde_json::Value::as_f64)
+                .map_or(0.5, |c| c.clamp(0.0, 1.0) as f32);
+            let reasoning = v
+                .get("reasoning")
+                .and_then(|r| r.as_str())
+                .map(str::to_owned);
+
+            let route = parse_route_str(route_str, self.fallback_route);
+
+            tracing::debug!(
+                query = &query[..query.len().min(60)],
+                ?route,
+                confidence,
+                "LlmRouter: classified"
+            );
+
+            return RoutingDecision {
+                route,
+                confidence,
+                reasoning,
+            };
+        }
+
+        tracing::debug!("LlmRouter: failed to parse JSON response, falling back to heuristic");
+        Self::heuristic_fallback(query)
+    }
+
+    fn heuristic_fallback(query: &str) -> RoutingDecision {
+        HeuristicRouter.route_with_confidence(query)
+    }
+}
+
+fn parse_route_str(s: &str, fallback: MemoryRoute) -> MemoryRoute {
+    match s {
+        "keyword" => MemoryRoute::Keyword,
+        "semantic" => MemoryRoute::Semantic,
+        "hybrid" => MemoryRoute::Hybrid,
+        "graph" => MemoryRoute::Graph,
+        "episodic" => MemoryRoute::Episodic,
+        _ => fallback,
+    }
+}
+
+impl MemoryRouter for LlmRouter {
+    fn route(&self, query: &str) -> MemoryRoute {
+        // Sync path: LLM is not available without an async executor.
+        // Falls back to heuristic — use route_async() for LLM-based classification.
+        HeuristicRouter.route(query)
+    }
+
+    fn route_with_confidence(&self, query: &str) -> RoutingDecision {
+        // LlmRouter is designed for use in async contexts via classify_async.
+        // When called synchronously (e.g. in tests), fall back to heuristic.
+        HeuristicRouter.route_with_confidence(query)
+    }
+}
+
+/// Async extension for LLM-capable routers.
+pub trait AsyncMemoryRouter: MemoryRouter {
+    fn route_async<'a>(
+        &'a self,
+        query: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RoutingDecision> + Send + 'a>>;
+}
+
+impl AsyncMemoryRouter for LlmRouter {
+    fn route_async<'a>(
+        &'a self,
+        query: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RoutingDecision> + Send + 'a>> {
+        Box::pin(self.classify_async(query))
+    }
+}
+
+/// Hybrid router: heuristic-first, escalates to LLM when confidence is low.
+///
+/// The `HybridRouter` runs `HeuristicRouter` first. If the heuristic confidence
+/// is below `confidence_threshold`, it escalates to the LLM router.
+/// LLM failures always fall back to the heuristic result.
+pub struct HybridRouter {
+    llm: LlmRouter,
+    confidence_threshold: f32,
+}
+
+impl HybridRouter {
+    #[must_use]
+    pub fn new(
+        provider: std::sync::Arc<zeph_llm::any::AnyProvider>,
+        fallback_route: MemoryRoute,
+        confidence_threshold: f32,
+    ) -> Self {
+        Self {
+            llm: LlmRouter::new(provider, fallback_route),
+            confidence_threshold,
+        }
+    }
+
+    pub async fn route_async(&self, query: &str) -> RoutingDecision {
+        let heuristic = HeuristicRouter.route_with_confidence(query);
+        if heuristic.confidence >= self.confidence_threshold {
+            tracing::debug!(
+                query = &query[..query.len().min(60)],
+                confidence = heuristic.confidence,
+                route = ?heuristic.route,
+                "HybridRouter: heuristic sufficient, skipping LLM"
+            );
+            return heuristic;
+        }
+
+        tracing::debug!(
+            query = &query[..query.len().min(60)],
+            confidence = heuristic.confidence,
+            threshold = self.confidence_threshold,
+            "HybridRouter: low confidence, escalating to LLM"
+        );
+
+        let llm_result = self.llm.classify_async(query).await;
+
+        // LLM failure path: classify_async returns a heuristic fallback on error.
+        // Always log the final decision.
+        tracing::debug!(
+            route = ?llm_result.route,
+            confidence = llm_result.confidence,
+            "HybridRouter: final route after LLM escalation"
+        );
+        llm_result
+    }
+}
+
+impl MemoryRouter for HybridRouter {
+    fn route(&self, query: &str) -> MemoryRoute {
+        HeuristicRouter.route(query)
+    }
+
+    fn route_with_confidence(&self, query: &str) -> RoutingDecision {
+        // Synchronous path: can't call async LLM, use heuristic only.
+        HeuristicRouter.route_with_confidence(query)
     }
 }
 
@@ -908,5 +1203,65 @@ mod tests {
             "both occurrences must be removed: got '{cleaned}'"
         );
         assert!(cleaned.contains("mentioned"));
+    }
+
+    // ── route_with_confidence tests ───────────────────────────────────────────
+
+    fn confidence(q: &str) -> f32 {
+        HeuristicRouter.route_with_confidence(q).confidence
+    }
+
+    #[test]
+    fn confidence_multiple_matches_is_less_than_one() {
+        // Structural code pattern + snake_case + short query fire 3 signals →
+        // confidence = 1.0 / 3 < 1.0
+        let d = HeuristicRouter.route_with_confidence("zeph_memory::recall");
+        assert!(
+            d.confidence < 1.0,
+            "ambiguous query should have confidence < 1.0, got {}",
+            d.confidence
+        );
+        assert_eq!(d.route, MemoryRoute::Keyword);
+    }
+
+    #[test]
+    fn confidence_long_question_with_snake_fires_multiple_signals() {
+        // Long question with snake_case fires multiple signals → confidence < 1.0
+        let d = HeuristicRouter
+            .route_with_confidence("what is the purpose of memory_limit in the config system");
+        assert!(
+            d.confidence < 1.0,
+            "ambiguous query must have confidence < 1.0, got {}",
+            d.confidence
+        );
+    }
+
+    #[test]
+    fn confidence_empty_query_is_nonzero() {
+        // Empty string: word_count=0 → short path fires (<=3 && !question) → matched=1 → confidence=1.0
+        let d = HeuristicRouter.route_with_confidence("");
+        assert!(
+            d.confidence > 0.0,
+            "empty query must match short-path signal"
+        );
+    }
+
+    #[test]
+    fn routing_decision_route_matches_route_fn() {
+        // route_with_confidence().route must agree with route()
+        let queries = [
+            "qdrant",
+            "what is the agent loop",
+            "context window token budget",
+            "what did we discuss yesterday",
+        ];
+        for q in queries {
+            let decision = HeuristicRouter.route_with_confidence(q);
+            assert_eq!(
+                decision.route,
+                HeuristicRouter.route(q),
+                "mismatch for query: {q}"
+            );
+        }
     }
 }

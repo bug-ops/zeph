@@ -206,6 +206,7 @@ impl Default for Config {
                 crossover_turn_threshold: 20,
                 consolidation: crate::memory::ConsolidationConfig::default(),
                 database_url: None,
+                store_routing: crate::memory::StoreRoutingConfig::default(),
             },
             telegram: None,
             discord: None,

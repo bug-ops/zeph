@@ -36,7 +36,7 @@ impl SemanticMemory {
         // A-MAC admission gate.
         if let Some(ref admission) = self.admission_control {
             let decision = admission
-                .evaluate(content, role, &self.provider, self.qdrant.as_ref())
+                .evaluate(content, role, &self.provider, self.qdrant.as_ref(), None)
                 .await;
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
@@ -99,7 +99,7 @@ impl SemanticMemory {
         // A-MAC admission gate.
         if let Some(ref admission) = self.admission_control {
             let decision = admission
-                .evaluate(content, role, &self.provider, self.qdrant.as_ref())
+                .evaluate(content, role, &self.provider, self.qdrant.as_ref(), None)
                 .await;
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());

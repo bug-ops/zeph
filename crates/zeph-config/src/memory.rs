@@ -775,6 +775,12 @@ pub struct MemoryConfig {
     /// Default: `None` (uses `sqlite_path` instead).
     #[serde(default)]
     pub database_url: Option<String>,
+    /// Cost-sensitive store routing (#2444).
+    ///
+    /// When `store_routing.enabled = true`, query intent is classified and routed to
+    /// the cheapest sufficient backend instead of querying all stores on every turn.
+    #[serde(default)]
+    pub store_routing: StoreRoutingConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -1419,6 +1425,11 @@ pub struct AdmissionWeights {
     /// Content type prior based on role. Default: `0.15`.
     #[serde(deserialize_with = "validate_admission_weight")]
     pub content_type_prior: f32,
+    /// Goal-conditioned utility (#2408). `0.0` when `goal_conditioned_write = false`.
+    /// When enabled, set this alongside reducing `future_utility` so total sums remain stable.
+    /// Normalized automatically at runtime. Default: `0.0`.
+    #[serde(deserialize_with = "validate_admission_weight")]
+    pub goal_utility: f32,
 }
 
 impl Default for AdmissionWeights {
@@ -1429,6 +1440,7 @@ impl Default for AdmissionWeights {
             semantic_novelty: 0.30,
             temporal_recency: 0.10,
             content_type_prior: 0.15,
+            goal_utility: 0.0,
         }
     }
 }
@@ -1443,7 +1455,8 @@ impl AdmissionWeights {
             + self.factual_confidence
             + self.semantic_novelty
             + self.temporal_recency
-            + self.content_type_prior;
+            + self.content_type_prior
+            + self.goal_utility;
         if sum <= f32::EPSILON {
             return Self::default();
         }
@@ -1453,6 +1466,7 @@ impl AdmissionWeights {
             semantic_novelty: self.semantic_novelty / sum,
             temporal_recency: self.temporal_recency / sum,
             content_type_prior: self.content_type_prior / sum,
+            goal_utility: self.goal_utility / sum,
         }
     }
 }
@@ -1489,6 +1503,32 @@ pub struct AdmissionConfig {
     /// Background RL model retraining interval in seconds. Default: `3600`.
     #[serde(default = "default_rl_retrain_interval_secs")]
     pub rl_retrain_interval_secs: u64,
+    /// Enable goal-conditioned write gate (#2408). When `true`, memories are scored
+    /// against the current task goal and rejected if relevance is below `goal_utility_threshold`.
+    /// Zero regression when `false`. Default: `false`.
+    #[serde(default)]
+    pub goal_conditioned_write: bool,
+    /// Provider name from `[[llm.providers]]` for goal-utility LLM refinement.
+    /// Used only for borderline cases (similarity within 0.1 of threshold).
+    /// Falls back to the primary provider when empty. Default: `""`.
+    #[serde(default)]
+    pub goal_utility_provider: String,
+    /// Minimum cosine similarity between goal embedding and candidate memory
+    /// to consider it goal-relevant. Below this, `goal_utility = 0.0`. Default: `0.4`.
+    #[serde(default = "default_goal_utility_threshold")]
+    pub goal_utility_threshold: f32,
+    /// Weight of the `goal_utility` factor in the composite admission score.
+    /// Set to `0.0` to disable (equivalent to `goal_conditioned_write = false`). Default: `0.25`.
+    #[serde(default = "default_goal_utility_weight")]
+    pub goal_utility_weight: f32,
+}
+
+fn default_goal_utility_threshold() -> f32 {
+    0.4
+}
+
+fn default_goal_utility_weight() -> f32 {
+    0.25
 }
 
 impl Default for AdmissionConfig {
@@ -1502,6 +1542,58 @@ impl Default for AdmissionConfig {
             admission_strategy: AdmissionStrategy::default(),
             rl_min_samples: default_rl_min_samples(),
             rl_retrain_interval_secs: default_rl_retrain_interval_secs(),
+            goal_conditioned_write: false,
+            goal_utility_provider: String::new(),
+            goal_utility_threshold: default_goal_utility_threshold(),
+            goal_utility_weight: default_goal_utility_weight(),
+        }
+    }
+}
+
+/// Routing strategy for `[memory.store_routing]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreRoutingStrategy {
+    /// Pure heuristic pattern matching. Zero LLM calls. Default.
+    #[default]
+    Heuristic,
+    /// LLM-based classification via `routing_classifier_provider`.
+    Llm,
+    /// Heuristic first; escalates to LLM only when confidence is low.
+    Hybrid,
+}
+
+/// Configuration for cost-sensitive store routing (`[memory.store_routing]`).
+///
+/// Controls how each query is classified and routed to the appropriate memory
+/// backend(s), avoiding unnecessary store queries for simple lookups.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct StoreRoutingConfig {
+    /// Enable configurable store routing. When `false`, `HeuristicRouter` is used
+    /// directly (existing behavior). Default: `false`.
+    pub enabled: bool,
+    /// Routing strategy. Default: `heuristic`.
+    pub strategy: StoreRoutingStrategy,
+    /// Provider name from `[[llm.providers]]` for LLM-based classification.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub routing_classifier_provider: String,
+    /// Route to use when the classifier is uncertain (confidence < threshold).
+    /// Default: `"hybrid"`.
+    pub fallback_route: String,
+    /// Confidence threshold below which `HybridRouter` escalates to LLM.
+    /// Range: `[0.0, 1.0]`. Default: `0.7`.
+    pub confidence_threshold: f32,
+}
+
+impl Default for StoreRoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            strategy: StoreRoutingStrategy::Heuristic,
+            routing_classifier_provider: String::new(),
+            fallback_route: "hybrid".into(),
+            confidence_threshold: 0.7,
         }
     }
 }
@@ -1648,6 +1740,7 @@ mod tests {
             semantic_novelty: 3.0,
             temporal_recency: 1.0,
             content_type_prior: 3.0,
+            goal_utility: 0.0,
         };
         let n = w.normalized();
         let sum = n.future_utility
@@ -1686,6 +1779,7 @@ mod tests {
             semantic_novelty: 0.0,
             temporal_recency: 0.0,
             content_type_prior: 0.0,
+            goal_utility: 0.0,
         };
         let n = w.normalized();
         let default = AdmissionWeights::default();

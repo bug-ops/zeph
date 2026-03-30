@@ -34,7 +34,7 @@ pub mod vector_store;
 
 pub use admission::{
     AdmissionControl, AdmissionDecision, AdmissionFactors, AdmissionRejected, AdmissionWeights,
-    compute_content_type_prior, compute_factual_confidence, log_admission_decision,
+    GoalGateConfig, compute_content_type_prior, compute_factual_confidence, log_admission_decision,
 };
 pub use anchored_summary::AnchoredSummary;
 pub use compaction_probe::{
@@ -71,8 +71,8 @@ pub use math::cosine_similarity;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
 pub use router::{
-    HeuristicRouter, MemoryRoute, MemoryRouter, TemporalRange, classify_graph_subgraph,
-    strip_temporal_keywords,
+    AsyncMemoryRouter, HeuristicRouter, HybridRouter, LlmRouter, MemoryRoute, MemoryRouter,
+    RoutingDecision, TemporalRange, classify_graph_subgraph, strip_temporal_keywords,
 };
 pub use scenes::{
     MemScene, SceneConfig, consolidate_scenes, list_scenes, start_scene_consolidation_loop,
