@@ -337,6 +337,28 @@ pub struct ShellConfig {
     pub allow_network: bool,
     #[serde(default = "default_confirm_patterns")]
     pub confirm_patterns: Vec<String>,
+    /// Environment variable name prefixes to strip from subprocess environment.
+    /// Variables whose names start with any of these prefixes are removed before
+    /// spawning shell commands. Default covers common credential naming conventions.
+    #[serde(default = "ShellConfig::default_env_blocklist")]
+    pub env_blocklist: Vec<String>,
+}
+
+impl ShellConfig {
+    #[must_use]
+    pub fn default_env_blocklist() -> Vec<String> {
+        vec![
+            "ZEPH_".into(),
+            "AWS_".into(),
+            "AZURE_".into(),
+            "GCP_".into(),
+            "GOOGLE_".into(),
+            "OPENAI_".into(),
+            "ANTHROPIC_".into(),
+            "HF_".into(),
+            "HUGGING".into(),
+        ]
+    }
 }
 
 /// Configuration for audit logging of tool executions.
@@ -379,6 +401,7 @@ impl Default for ShellConfig {
             allowed_paths: Vec::new(),
             allow_network: true,
             confirm_patterns: default_confirm_patterns(),
+            env_blocklist: Self::default_env_blocklist(),
         }
     }
 }

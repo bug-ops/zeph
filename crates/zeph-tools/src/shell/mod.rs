@@ -98,6 +98,7 @@ pub struct ShellExecutor {
     blocked_commands: Vec<String>,
     allowed_paths: Vec<PathBuf>,
     confirm_patterns: Vec<String>,
+    env_blocklist: Vec<String>,
     audit_logger: Option<Arc<AuditLogger>>,
     tool_event_tx: Option<ToolEventTx>,
     permission_policy: Option<PermissionPolicy>,
@@ -145,6 +146,7 @@ impl ShellExecutor {
             blocked_commands: blocked,
             allowed_paths,
             confirm_patterns: config.confirm_patterns.clone(),
+            env_blocklist: config.env_blocklist.clone(),
             audit_logger: None,
             tool_event_tx: None,
             permission_policy: None,
@@ -278,6 +280,7 @@ impl ShellExecutor {
             self.tool_event_tx.as_ref(),
             self.cancel_token.as_ref(),
             skill_env_snapshot.as_ref(),
+            &self.env_blocklist,
         )
         .await;
         if exit_code == 130
@@ -932,6 +935,7 @@ async fn execute_bash(
     event_tx: Option<&ToolEventTx>,
     cancel_token: Option<&CancellationToken>,
     extra_env: Option<&std::collections::HashMap<String, String>>,
+    env_blocklist: &[String],
 ) -> (String, i32) {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -943,6 +947,16 @@ async fn execute_bash(
         .arg(code)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    for (key, _) in std::env::vars() {
+        if env_blocklist
+            .iter()
+            .any(|prefix| key.starts_with(prefix.as_str()))
+        {
+            cmd.env_remove(&key);
+        }
+    }
+
     if let Some(env) = extra_env {
         cmd.envs(env);
     }

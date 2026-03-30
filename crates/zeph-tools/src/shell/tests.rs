@@ -11,6 +11,7 @@ fn default_config() -> ShellConfig {
         allowed_paths: Vec::new(),
         allow_network: true,
         confirm_patterns: Vec::new(),
+        env_blocklist: ShellConfig::default_env_blocklist(),
     }
 }
 
@@ -60,7 +61,7 @@ fn unclosed_block_ignored() {
 #[cfg(not(target_os = "windows"))]
 async fn execute_simple_command() {
     let (result, code) =
-        execute_bash("echo hello", Duration::from_secs(30), None, None, None).await;
+        execute_bash("echo hello", Duration::from_secs(30), None, None, None, &[]).await;
     assert!(result.contains("hello"));
     assert_eq!(code, 0);
 }
@@ -68,7 +69,15 @@ async fn execute_simple_command() {
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_stderr_output() {
-    let (result, _) = execute_bash("echo err >&2", Duration::from_secs(30), None, None, None).await;
+    let (result, _) = execute_bash(
+        "echo err >&2",
+        Duration::from_secs(30),
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await;
     assert!(result.contains("[stderr]"));
     assert!(result.contains("err"));
 }
@@ -82,6 +91,7 @@ async fn execute_stdout_and_stderr_combined() {
         None,
         None,
         None,
+        &[],
     )
     .await;
     assert!(result.contains("out"));
@@ -93,7 +103,7 @@ async fn execute_stdout_and_stderr_combined() {
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_empty_output() {
-    let (result, code) = execute_bash("true", Duration::from_secs(30), None, None, None).await;
+    let (result, code) = execute_bash("true", Duration::from_secs(30), None, None, None, &[]).await;
     assert_eq!(result, "(no output)");
     assert_eq!(code, 0);
 }
@@ -899,6 +909,7 @@ async fn execute_bash_injects_extra_env() {
         None,
         None,
         Some(&env),
+        &[],
     )
     .await;
     assert_eq!(code, 0);
@@ -912,11 +923,8 @@ async fn shell_executor_set_skill_env_injects_vars() {
 
     let config = ShellConfig {
         timeout: 5,
-        allowed_commands: vec![],
-        blocked_commands: vec![],
-        allowed_paths: vec![],
-        confirm_patterns: vec![],
         allow_network: false,
+        ..default_config()
     };
 
     let executor = ShellExecutor::new(&config);
@@ -935,7 +943,7 @@ async fn shell_executor_set_skill_env_injects_vars() {
 #[cfg(unix)]
 #[tokio::test]
 async fn execute_bash_error_handling() {
-    let (result, code) = execute_bash("false", Duration::from_secs(5), None, None, None).await;
+    let (result, code) = execute_bash("false", Duration::from_secs(5), None, None, None, &[]).await;
     assert_eq!(result, "(no output)");
     assert_eq!(code, 1);
 }
@@ -949,6 +957,7 @@ async fn execute_bash_command_not_found() {
         None,
         None,
         None,
+        &[],
     )
     .await;
     assert!(result.contains("[stderr]") || result.contains("[error]"));
@@ -1056,6 +1065,7 @@ async fn cancel_token_kills_child_process() {
         None,
         Some(&token),
         None,
+        &[],
     )
     .await;
     assert_eq!(code, 130);
@@ -1065,7 +1075,8 @@ async fn cancel_token_kills_child_process() {
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn cancel_token_none_does_not_cancel() {
-    let (result, code) = execute_bash("echo ok", Duration::from_secs(5), None, None, None).await;
+    let (result, code) =
+        execute_bash("echo ok", Duration::from_secs(5), None, None, None, &[]).await;
     assert_eq!(code, 0);
     assert!(result.contains("ok"));
 }
@@ -1082,8 +1093,15 @@ async fn cancel_kills_child_process_group() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         token_clone.cancel();
     });
-    let (result, code) =
-        execute_bash(&script, Duration::from_secs(30), None, Some(&token), None).await;
+    let (result, code) = execute_bash(
+        &script,
+        Duration::from_secs(30),
+        None,
+        Some(&token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(code, 130);
     assert!(result.contains("[cancelled]"));
     // Wait briefly, then verify the subprocess did NOT create the marker file
@@ -1549,4 +1567,129 @@ fn classify_exit_0_returns_none() {
 #[test]
 fn classify_exit_1_generic_returns_none() {
     assert_eq!(classify_shell_exit(1, "some other error"), None);
+}
+
+// --- env_blocklist / scrubbing tests ---
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+#[tokio::test]
+async fn env_blocklist_strips_sensitive_vars() {
+    // Set a fake sensitive env var in the current process
+    unsafe { std::env::set_var("ZEPH_SECRET_TEST_VAR", "should-not-leak") };
+    let blocklist = vec!["ZEPH_".to_owned()];
+    let (result, code) = execute_bash(
+        "echo ${ZEPH_SECRET_TEST_VAR:-absent}",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &blocklist,
+    )
+    .await;
+    unsafe { std::env::remove_var("ZEPH_SECRET_TEST_VAR") };
+    assert_eq!(code, 0);
+    assert!(
+        result.contains("absent"),
+        "ZEPH_ var should have been stripped, got: {result}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn env_blocklist_preserves_safe_vars() {
+    let blocklist = vec!["ZEPH_".to_owned()];
+    // PATH and HOME are always set in the test environment; verify they are inherited.
+    let (result, code) = execute_bash(
+        "echo ${PATH:+present}",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &blocklist,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(
+        result.contains("present"),
+        "PATH should be preserved, got: {result}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn env_blocklist_extra_env_still_injected() {
+    // Even with a blocklist active, skill-provided extra_env vars must be passed through.
+    let blocklist = vec!["ZEPH_".to_owned()];
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("SKILL_TEST_VAR".to_owned(), "skill-value".to_owned());
+    let (result, code) = execute_bash(
+        "echo $SKILL_TEST_VAR",
+        Duration::from_secs(5),
+        None,
+        None,
+        Some(&extra),
+        &blocklist,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(
+        result.contains("skill-value"),
+        "skill extra_env should be injected, got: {result}"
+    );
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+#[tokio::test]
+async fn env_blocklist_multiple_prefixes() {
+    unsafe {
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret");
+        std::env::set_var("OPENAI_API_KEY", "openai-secret");
+    }
+    let blocklist = vec!["AWS_".to_owned(), "OPENAI_".to_owned()];
+    let (result, code) = execute_bash(
+        "echo ${AWS_SECRET_ACCESS_KEY:-absent1} ${OPENAI_API_KEY:-absent2}",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &blocklist,
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+    }
+    assert_eq!(code, 0);
+    assert!(
+        result.contains("absent1"),
+        "AWS_ var should be stripped, got: {result}"
+    );
+    assert!(
+        result.contains("absent2"),
+        "OPENAI_ var should be stripped, got: {result}"
+    );
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+#[tokio::test]
+async fn empty_env_blocklist_passes_all_vars() {
+    unsafe { std::env::set_var("ZEPH_EMPTY_BLOCKLIST_TEST", "visible") };
+    let (result, code) = execute_bash(
+        "echo ${ZEPH_EMPTY_BLOCKLIST_TEST:-absent}",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await;
+    unsafe { std::env::remove_var("ZEPH_EMPTY_BLOCKLIST_TEST") };
+    assert_eq!(code, 0);
+    assert!(
+        result.contains("visible"),
+        "empty blocklist should pass all vars, got: {result}"
+    );
 }

@@ -35,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(acp): discovery endpoint already reflects `ProtocolVersion::LATEST` — confirmed fixed in PR #2423; no code change required (closes #2412)
 - fix(security): extend MCP env var blocklist — `PATH`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `BASH_ENV`, `ENV`, `PYTHONPATH`, `NODE_PATH`, `RUBYLIB` are now stripped from ACP-provided env vars for MCP stdio child processes (closes #2437)
 - fix(tools): `AuditLogger::log` now emits `tracing::error!` when `serde_json` serialization fails instead of silently dropping the audit entry (closes #2438)
+- fix(security): scrub credential env vars (`ZEPH_*`, `AWS_*`, `ANTHROPIC_*`, `OPENAI_*`, `AZURE_*`, `GCP_*`, `GOOGLE_*`, `HF_*`, `HUGGING*`) from `ShellExecutor` subprocess environment to prevent exfiltration via shell commands; configurable via `[tools.shell] env_blocklist` (closes #2449)
 
 ### Added (tests)
 
