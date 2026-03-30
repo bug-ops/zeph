@@ -713,7 +713,7 @@ mod tests {
             name: "existing_tool".into(),
             description: String::new(),
             input_schema: serde_json::json!({}),
-            security_meta: Default::default(),
+            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
         }];
 
         let (_tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
@@ -739,7 +739,7 @@ mod tests {
             name: "refreshed_tool".into(),
             description: String::new(),
             input_schema: serde_json::json!({}),
-            security_meta: Default::default(),
+            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
         }];
         tx.send(new_tools).unwrap();
 

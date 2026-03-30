@@ -3590,7 +3590,7 @@ mod tests {
             scheduler
                 .cascade_detector
                 .as_ref()
-                .map_or(false, |d| d.region_health().is_empty()),
+                .is_some_and(|d| d.region_health().is_empty()),
             "cascade_detector must be cleared after inject_tasks (C13 fix)"
         );
     }

@@ -418,7 +418,7 @@ impl ToolExecutor for SearchCodeExecutor {
     fn tool_definitions(&self) -> Vec<ToolDef> {
         vec![ToolDef {
             id: "search_code".into(),
-            description: "Search the codebase using semantic, structural, and LSP sources.\n\nParameters: query (string, optional) - natural language description to find semantically similar code; symbol (string, optional) - exact or partial symbol name for definition search; file_pattern (string, optional) - glob restricting files; include_references (boolean, optional) - also return symbol references when LSP is available; max_results (integer, optional) - cap results 1-50, default 10\nReturns: ranked code locations with file path, line range, snippet, source label, and score\nErrors: InvalidParams when both query and symbol are empty\nExample: {\"query\": \"where is retry backoff calculated\", \"symbol\": \"retry_backoff_ms\", \"include_references\": true}".into(),
+            description: "Search the codebase using semantic, structural, and LSP sources. Use only to search source code files — not for user-provided facts, preferences, or statements made in conversation.\n\nParameters: query (string, optional) - natural language description to find semantically similar code; symbol (string, optional) - exact or partial symbol name for definition search; file_pattern (string, optional) - glob restricting files; include_references (boolean, optional) - also return symbol references when LSP is available; max_results (integer, optional) - cap results 1-50, default 10\nReturns: ranked code locations with file path, line range, snippet, source label, and score\nErrors: InvalidParams when both query and symbol are empty\nExample: {\"query\": \"where is retry backoff calculated\", \"symbol\": \"retry_backoff_ms\", \"include_references\": true}".into(),
             schema: schemars::schema_for!(SearchCodeParams),
             invocation: InvocationHint::ToolCall,
         }]
@@ -742,6 +742,26 @@ mod tests {
         assert!(
             !output.contains("/tmp/myproject"),
             "absolute path must not appear in output, got: {output}"
+        );
+    }
+
+    /// `search_code` description must explicitly state it is not for user-provided facts
+    /// so the model does not use it when recalling conversation context (#2475).
+    #[tokio::test]
+    async fn search_code_description_excludes_user_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let exec = SearchCodeExecutor::new(vec![dir.path().to_path_buf()]);
+        let defs = exec.tool_definitions();
+        let search_code = defs
+            .iter()
+            .find(|d| d.id.as_ref() == "search_code")
+            .unwrap();
+        assert!(
+            search_code
+                .description
+                .contains("not for user-provided facts"),
+            "search_code description must contain disambiguation phrase; got: {}",
+            search_code.description
         );
     }
 }

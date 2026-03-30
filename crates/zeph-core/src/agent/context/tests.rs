@@ -4326,3 +4326,48 @@ async fn probe_rejected_does_not_trigger_exhausted() {
         "ProbeRejected must not transition to Exhausted (H1 invariant)"
     );
 }
+
+// --- #2475: memory_save session hint in system prompt ---
+
+/// When `memory_save` is present in `completed_tool_ids`, `rebuild_system_prompt`
+/// must append the disambiguation hint directing the model to use `memory_search`
+/// rather than `search_code` for user-provided facts.
+#[tokio::test]
+async fn rebuild_system_prompt_injects_memory_save_hint_when_tool_was_used() {
+    use zeph_skills::registry::SkillRegistry;
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = SkillRegistry::default();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.completed_tool_ids.insert("memory_save".to_owned());
+    agent.rebuild_system_prompt("test query").await;
+
+    let prompt = &agent.msg.messages[0].content;
+    assert!(
+        prompt.contains("memory_save — use memory_search to recall them, not search_code"),
+        "session hint must be present when memory_save was used; prompt: {prompt}"
+    );
+}
+
+/// When `completed_tool_ids` does NOT contain `memory_save`, no hint must be
+/// appended — the system prompt must stay clean to avoid unnecessary noise.
+#[tokio::test]
+async fn rebuild_system_prompt_omits_memory_save_hint_when_tool_not_used() {
+    use zeph_skills::registry::SkillRegistry;
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = SkillRegistry::default();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    // completed_tool_ids is empty by default — no memory_save.
+    agent.rebuild_system_prompt("test query").await;
+
+    let prompt = &agent.msg.messages[0].content;
+    assert!(
+        !prompt.contains("memory_save — use memory_search to recall them, not search_code"),
+        "session hint must NOT be present when memory_save was not used"
+    );
+}

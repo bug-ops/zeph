@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - feat(tools): `[tools.shell] max_snapshot_bytes` config option to limit transaction snapshot size — returns `SnapshotFailed` when cumulative copied bytes exceed the limit; `0` means unlimited (default)
@@ -95,12 +99,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(db): migrate remaining `sqlx::SqlitePool::connect` usages in test code to `zeph_db::sqlx` re-exports; move `sqlx` from `[dependencies]` to `[dev-dependencies]` in root binary (#2388)
 - feat(db): security hardening — warn on postgres connections without `sslmode`; set SQLite file permissions to `0o600` on unix; confirm `sqlx-mysql` excluded (RUSTSEC-2023-0071); add TODO for Qdrant api_key gap (#2389)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - feat(db): `numbered_placeholder(n)` and `placeholder_list(start, count)` helpers in `zeph-db` for dialect-agnostic dynamic SQL construction (#2386)
 
 - docker: add all missing ZEPH_* env vars to docker-compose.yml and docker-compose.dev.yml (64 vars added, ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT renamed to ZEPH_MEMORY_RECALL_LIMIT)
 - docker: add scripts/check-env-vars.sh drift-prevention script
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -130,6 +142,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(telegram): reduce streaming throttle from 10s to 3s in `should_send_update()` to improve perceived response speed (#2341)
 - fix(core): `/reset` command now handled in `handle_builtin_command` as an alias for `/clear` with confirmation reply; previously fell through to LLM inference in all channels (#2339)
 - fix(telegram-e2e): reduce `scenario_long_output` prompt from 400 to 100 items and `first_timeout` from 90s to 60s to avoid LLM timeout under load (#2340)
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -213,6 +229,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - triage routing: `debug_request_json` now reflects the actual selected tier provider instead of always showing the first-tier model (#2229)
 - triage routing: removed context size metadata (`msg_count`/`token_estimate`) from classification prompt to prevent bias toward higher tiers in long conversations (#2228)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - feat(classifiers): `ClassifierMetrics` ring buffer in `zeph-llm` — per-task (Injection, PII, Feedback) latency samples with p50/p95 percentiles computed via nearest-rank with `.round()`; capacity 100 samples per task; `record()` emits structured `tracing::info!` event with task, latency_ms, p50_ms, p95_ms, call_count; `snapshot()` returns `ClassifierMetricsSnapshot` for TUI consumption; `ContentSanitizer::with_classifier_metrics()` records Injection and PII call latencies; `LlmClassifier::with_metrics()` records Feedback call latencies; `MetricsSnapshot` extended with `classifier: ClassifierMetricsSnapshot`; TUI Resources panel shows compact classifier rows (calls/p50/p95) when at least one task has been called (#2249)
@@ -275,6 +295,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ci: increase publish-crates timeout from 20 to 60 minutes and add `no-verify: true` to skip recompilation during publish (workspace has 21 crates; sequential publish with 15 s delays exceeded the previous limit)
 
 ## [0.17.0] - 2026-03-23
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -348,6 +372,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - docs: document `semantic_cache_max_candidates` and `semantic_cache_threshold` recall-vs-performance tradeoff with detailed doc comments and tuning guidance; add DEBUG-level diagnostic logs for semantic cache lookup lifecycle (candidate count, per-candidate scores, hit/miss verdicts) (#2031)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - feat(memory): SYNAPSE spreading activation retrieval over entity graph (#1888) — `SpreadingActivation` engine iteratively propagates activation scores from seed entities discovered via semantic search; implements all SA-INV-{01..09} invariants: decay by edge weight and `decay_lambda` per hop, lateral inhibition gate (nodes above `inhibition_threshold` stop receiving), per-hop pruning to `max_activated_nodes` bound (SA-INV-04), temporal recency weight `1/(1 + age_days * temporal_decay_rate)`, clamped sum for multi-path convergence signal, edge-type subgraph filtering (MAGMA integration); `graph_recall_activated()` retrieval function wraps spreading activation with 500ms `tokio::time::timeout`; `recall_graph_activated()` on `SemanticMemory`; `SpreadingActivationConfig` in `[memory.graph.spreading_activation]` with serde validation (`max_hops >= 1`, `decay_lambda > 0.0`, `activation_threshold < inhibition_threshold`); `/status` reports recall mode (spreading activation with lambda/hops, or BFS); `--init` wizard step inside graph-memory block; `edges_for_entities()` batch query on `GraphStore` with SQLite bind-limit safety (chunks at 490 IDs, `?NNN`-parameterized IN clause reuses slots for source/target); 11 unit tests covering decay chains, inhibition, per-hop pruning, diamond convergence, edge-type filtering, and seed-list batch loading
@@ -419,6 +447,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - perf(memory): add `expires_at` to `idx_response_cache_semantic` composite index (migration 038) — `get_semantic()` now filters expired rows within the index scan instead of post-filtering on the heap (#2030)
 
 ## [0.16.0] - 2026-03-19
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - refactor(orchestration): extract task orchestration into new `zeph-orchestration` crate (Epic #1973 Phase 1g, #1979)
@@ -539,6 +571,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `record_filter_metrics` extracted to `agent/utils.rs` as shared helper; called from all four metric-recording sites (3 native + 1 legacy)
   - Added two regression tests: normal native path and self-reflection remaining-tools path
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - test(memory): add integration tests for `store_session_summary` → Qdrant upsert roundtrip (closes #1916) — four `#[ignore]` tests in `crates/zeph-memory/tests/qdrant_integration.rs` using testcontainers: `store_session_summary_roundtrip`, `store_session_summary_multiple_conversations`, `store_shutdown_summary_full_roundtrip`, `search_session_summaries_returns_empty_when_no_data`; each test guards against silent Qdrant disconnection and verifies both the Qdrant vector path and (where applicable) the SQLite content path
@@ -598,6 +634,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Pin all GitHub Actions to full commit SHAs to prevent supply chain attacks (closes #1906)
 
 ## [0.15.2] - 2026-03-16
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -662,6 +702,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(memory): `save_compression_guidelines` now uses a single atomic `INSERT ... SELECT COALESCE(MAX(version), 0) + 1` statement instead of a read-then-write pattern, eliminating the TOCTOU race where two concurrent callers could insert duplicate version numbers; migration 033 adds a `UNIQUE(version)` constraint to the `compression_guidelines` table with row-level deduplication for pre-existing corrupt data (closes #1799)
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -775,6 +819,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: parallel tool dispatch now respects intra-turn `tool_use_id` dependencies — independent calls execute concurrently, dependent calls execute in topological tiers (closes #1646). A lightweight `ToolCallDag` (Kahn's algorithm) partitions tool calls into parallel tiers; when no dependencies exist the existing `join_all` fast path is used with zero overhead. Dependent calls whose prerequisite failed or requires confirmation receive a synthetic error. Cycle detection falls back to sequential execution of all calls.
 - **Claude 3 model ID retirement** (#1625): replaced retired Claude 3 model IDs (`claude-3-opus`, `claude-3`, `claude:claude-3-5-sonnet`) with `claude-sonnet-4-6` in test files. `ClaudeProvider::new()` now emits a `tracing::warn!` when the configured model starts with `claude-3`, alerting users with stale configs before the first API call fails.
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - **Integration test for `ConfirmationRequired` dependency propagation in tiered dispatch** (closes #1713): added `confirmation_propagation_tests` module to `zeph-core` agent tests with two tests — `confirmation_required_propagates_to_dependent_tier` verifies that a tier-1 dependent tool receives a synthetic `ToolResult::Error` containing "Skipped: a prerequisite tool failed or requires confirmation" when the tier-0 prerequisite returns `ConfirmationRequired`; `independent_tool_not_affected_by_confirmation_required` verifies that an independent tool in the same dispatch executes normally.
@@ -864,6 +912,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `warm_model_caches()` no longer blocks ACP server startup; model warming is dispatched as a background task and the shared model list is stored in a `RwLock` for multi-session consistency (#1576, #1583)
 - ACP `[acp] enabled = true` in config now auto-starts the server without requiring `--acp` CLI flag; `--acp` and `--acp-http` remain functional and bypass the config field (#1574, #1590)
 - `apply_code_index()` now starts `CodeIndexer` and `IndexWatcher` for native-tool-use providers so the tree-sitter index is available to the `search_code` tool regardless of provider type (#1556, #1591)
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -972,6 +1024,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Parallelize LLM summarization calls across communities in `detect_communities` using `tokio::task::JoinSet` bounded by `Arc<Semaphore>`. New `GraphConfig.community_summary_concurrency` field (default: 4) controls the concurrency limit; `concurrency=1` provides sequential fallback (#1260)
 - Incremental community detection: store BLAKE3 fingerprint (sorted entity IDs + intra-community edge IDs) per community in `graph_communities`. On refresh, only re-summarize communities whose membership changed; unchanged partitions skip LLM calls entirely. Adds migration 028 (`fingerprint TEXT` column). Second refresh with no graph changes triggers 0 LLM calls (#1262)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - Add `ErrorKind::{Transient, Permanent}` enum to `zeph-tools` and `ToolError::kind()` method for typed error classification. `Execution(io::Error)` is sub-classified by `io::ErrorKind`: transient variants (`TimedOut`, `WouldBlock`, `Interrupted`, `ConnectionReset`, `ConnectionAborted`, `BrokenPipe`) are retryable; `NotFound`, `PermissionDenied`, `AlreadyExists`, and all others are permanent (#1340)
@@ -1012,6 +1068,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Remove `daemon`, `mock`, `orchestration`, and `graph-memory` Cargo feature flags. All four are now compiled unconditionally into every build. Remove these flags from any `--features` lists or CI matrix entries. The `full` feature set no longer includes them.
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - Add configurable log file path (`[logging]` config section, `--log-file` CLI flag, `ZEPH_LOG_FILE`/`ZEPH_LOG_LEVEL` env overrides). File logging uses a separate level filter from `RUST_LOG`, supports daily/hourly/never rotation via `tracing-appender`, defaults to `.zeph/logs/zeph.log`. Single unified `init_tracing()` replaces scattered tracing init calls in `runner.rs`. TUI `/log` command shows current log config and recent entries; tail output is redacted via `scrub_content()` and capped at 512 chars/line and 4 KiB total. Init wizard `--init` includes a logging configuration step with level validation (#1355)
@@ -1036,6 +1096,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.14.1] - 2026-03-07
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - Extend `[agent] summary_model` to support all provider backends: `claude[/<model>]` (requires `ZEPH_CLAUDE_API_KEY`), `openai[/<model>]` (requires `ZEPH_OPENAI_API_KEY`), `compatible/<name>` (named entry from `[[llm.compatible]]`), `candle` (uses `[llm.candle]` config, feature-gated). Previously only `ollama/<model>` was supported.
@@ -1058,6 +1122,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fix `persist_message` saving parts from wrong message — `self.messages.last()` returned the previous message's parts instead of the current one, causing 100% parts corruption in SQLite for all tool interactions; now takes explicit `parts` parameter (#1279)
 - Fix token counting using flattened `content` instead of structured `parts` — add `count_message_tokens` to `TokenCounter` that estimates tokens per `MessagePart` variant matching API payload structure, update 6 call sites in context budget tracking (#1280)
 
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -1205,6 +1273,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI command palette: `AgentStatus` now correctly dispatches `/agent status` (was `/agent list`)
 - Telegram `confirm()` timeout increased to 30s with distinct `tracing::warn!` logs for channel-close vs timeout (#1147)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - `/agents` management UI: interactive CLI subcommand (`zeph agents list|show|create|edit|delete`) and TUI panel with 5-state FSM (List, Detail, Create form, Edit form, ConfirmDelete) for full CRUD of sub-agent definitions; CLI `edit` opens `$VISUAL`/`$EDITOR` with fallback to `vi`; TUI wizard covers name, description, model, permission_mode, max_turns, background fields; atomic file writes via `tempfile::NamedTempFile::persist()`; `AGENT_NAME_RE` validation on all create paths; extra confirmation for non-project scope delete in TUI (#1154)
@@ -1267,6 +1339,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.12.6] - 2026-03-04
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - Hot reload for instruction files: `InstructionWatcher` in `zeph-core` subscribes to filesystem events via `notify-debouncer-mini` (500ms debounce) and reloads `instruction_blocks` in-place on `.md` file changes without agent restart (#1124)
@@ -1277,6 +1353,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - PERF-SC-04: `Scheduler::tick()` `Ok(None)` branch now computes and persists `next_run` via the cron schedule instead of treating missing `next_run` as "due now" — cron expressions are now respected at runtime (#1133)
 - `tick_interval_secs` from `[scheduler]` config and `--scheduler-tick` CLI flag now control the actual tick interval; previously hardcoded to 60s; zero/sub-1s values are clamped to 1s (#1136)
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -1298,6 +1378,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI `scheduler:list` command palette entry: displays all active scheduled tasks (name, kind, mode, next run) from `MetricsSnapshot.scheduled_tasks`; `JobStore::list_jobs()` queries non-done jobs; a 30-second background refresh task populates the metrics when both `tui` and `scheduler` features are enabled (#1141)
 
 ## [0.12.5] - 2026-03-02
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -1350,6 +1434,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI Skills panel now shows Wilson score confidence bars immediately after skill match, not only after the first LLM outcome is recorded (`context.rs`: call `update_skill_confidence_metrics()` at skill resolution time) (#1077)
 - TUI event loop redraws on every tick unconditionally; previously the dirty-flag was never set by the tick arm, causing confidence bars to stay stale between user keypresses (#1077)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 - `zeph-core::testing` module (feature `mock`): reusable `MockChannel`, `MockToolExecutor`, `AgentTestHarness` builder — wires `MockProvider` + `MockChannel` + `MockToolExecutor` + `InMemoryVectorStore` into a ready-to-use agent for unit tests (#1113)
@@ -1365,6 +1453,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Total test count: 3218 (+20 new mock infrastructure tests)
 
 ## [0.12.4] - 2026-03-01
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -1390,6 +1482,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 
 - ACP tool notifications: `raw_response` (file content for `read_file`, stdout for `bash`) is now passed through `redact_json` before forwarding to `claudeCode.toolResponse`; prevents secrets from bypassing the `redact_secrets` pipeline when content reaches the IDE (SEC-ACP-001)
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - `FailureKind` enum on `SkillOutcome::ToolFailure` with 7 variants and `from_error()` heuristic classifier
@@ -1451,6 +1547,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Skill matching fallback: when `QdrantSkillMatcher` returns an empty result set (embed error or Qdrant unavailable), the agent now falls back to all registered skills instead of running with an empty active-skill list
 - Orchestrator context window detection: `build_provider` now calls `auto_detect_context_window` for `AnyProvider::Orchestrator` so that `auto_budget_tokens` returns a correct value and `prepare_context` injects semantic recall, summaries, and cross-session memories
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - `docs/src/guides/ide-integration.md` — IDE integration guide covering ACP stdio setup, Zed and VS Code configuration, and subagent visibility features (nesting, terminal streaming, agent following) (#1011)
@@ -1533,6 +1633,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.12.2] - 2026-02-26
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `MemoryToolExecutor` in `zeph-core` exposes `memory_search` and `memory_save` as native tools the model can invoke explicitly
 - `memory_search` queries SemanticMemory recall, key facts, and session summaries; `memory_save` persists content to long-term memory
@@ -1596,6 +1700,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Performance
 - `ClaudeProvider` caches pre-serialized `ToolDefinition` slices as `serde_json::Value`; cache is keyed by tool names and invalidated only when the set changes, eliminating per-call JSON construction overhead (#894)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `sqlite_pool_size: u32` field in `MemoryConfig` (default 5) — pool size configurable via `[memory] sqlite_pool_size` in config.toml; `SqliteStore::with_pool_size()` wires the value into the connection pool builder (#893)
 - Background `tokio::spawn` cleanup task for `ResponseCache::cleanup_expired()` — interval configurable via `[memory] response_cache_cleanup_interval_secs` (default 3600s), first tick skipped to avoid startup overhead (#891)
@@ -1641,6 +1749,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Age private key reads, decrypt plaintext buffer, and encrypt JSON buffer wrapped in `Zeroizing` (#874)
 
 ## [0.12.0] - 2026-02-24
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - ACP custom methods framework via `ext_method` dispatch — `_session/list`, `_session/get`, `_session/delete`, `_session/export`, `_session/import`, `_agent/tools`, `_agent/working_dir/update` (#787)
@@ -1734,6 +1846,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Auto-create parent directories for `sqlite_path` on startup (#756)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `autosave_assistant` and `autosave_min_length` config fields in `MemoryConfig` — assistant responses skip embedding when disabled (#748)
 - `SemanticMemory::save_only()` — persist message to SQLite without generating a vector embedding (#748)
@@ -1766,6 +1882,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.11.5] - 2026-02-22
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - Declarative TOML-based output filter engine with 9 strategy types: `strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`
 - Embedded `default-filters.toml` with 25 pre-configured rules for CLI tools (cargo, git, docker, npm, pip, make, pytest, go, terraform, kubectl, brew, ls, journalctl, find, grep/rg, curl/wget, du/df/ps, jest/mocha/vitest, eslint/ruff/mypy/pylint)
@@ -1797,6 +1917,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.11.4] - 2026-02-21
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `validate_skill_references(body, skill_dir)` in zeph-skills loader: parses Markdown links targeting `references/`, `scripts/`, or `assets/` subdirs, warns on missing files and symlink traversal attempts (#689)
 - `sanitize_skill_body(body)` in zeph-skills prompt: escapes XML structural tags (`<skill`, `</skill>`, `<instructions`, `</instructions>`, `<available_skills`, `</available_skills>`) to prevent prompt injection (#689)
@@ -1827,6 +1951,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Skill resource files (references, scripts, assets) are no longer eagerly injected into the system prompt on skill activation; only filenames are listed as available resources — **breaking change** for skills relying on auto-injected reference content (#687)
 
 ## [0.11.3] - 2026-02-20
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - `LoopbackChannel` / `LoopbackHandle` / `LoopbackEvent` in zeph-core — headless channel for daemon mode, pairs with a handle that exposes `input_tx` / `output_rx` for programmatic agent I/O
@@ -1892,6 +2020,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.11.2] - 2026-02-19
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `base_url` and `language` fields in `[llm.stt]` config for OpenAI-compatible local whisper servers (e.g. whisper.cpp)
 - `ZEPH_STT_BASE_URL` and `ZEPH_STT_LANGUAGE` environment variable overrides
@@ -1911,6 +2043,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Orchestrator sub-providers now resolve `base_url` and `embedding_model` via fallback chain: per-provider, parent section, global default
 
 ## [0.11.1] - 2026-02-19
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - Persistent CLI input history with rustyline: arrow key navigation, prefix search, line editing, SQLite-backed persistence across restarts (#604)
@@ -1938,6 +2074,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API key and channel token prompts skipped when age vault backend is selected (#598)
 
 ## [0.11.0] - 2026-02-19
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - Vision (image input) support across Claude, OpenAI, and Ollama providers (#490)
@@ -2011,6 +2151,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Duplicate `ToolEvent::Completed` emission in shell executor before filtering was applied (#480)
 - TUI feature gate compilation errors (#435)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - GitHub CLI skill with token-saving patterns (#507)
 - Parallel execution of native tool_use calls with configurable concurrency (#486)
@@ -2079,6 +2223,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.9.9] - 2026-02-17
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `zeph-gateway` crate: axum HTTP gateway with POST /webhook ingestion, bearer auth (blake3 + ct_eq), per-IP rate limiting, GET /health endpoint, feature-gated (`gateway`) (#379)
 - `zeph-core::daemon` module: component supervisor with health monitoring, PID file management, graceful shutdown, feature-gated (`daemon`) (#380)
@@ -2108,6 +2256,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Configurable Slack webhook bind address (`webhook_host`)
 
 ## [0.9.8] - 2026-02-16
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - Graceful shutdown on Ctrl-C with farewell message and MCP server cleanup (#355)
@@ -2175,6 +2327,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Removed `anyhow` dependency from zeph-channels
 - Message persistence now uses `MessageKind` enum instead of `is_summary` bool for qdrant storage
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `ChannelError` enum with typed variants for channel operation failures
 - `AgentError` enum with 7 typed variants for agent operation failures (streaming, persistence, configuration, etc.)
@@ -2188,6 +2344,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Direct `anyhow::Error` usage in agent module (replaced with `AgentError`)
 
 ## [0.9.5] - 2026-02-14
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - Pattern-based permission policy with glob matching per tool (allow/ask/deny), first-match-wins evaluation (#248)
@@ -2225,6 +2385,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A2A error responses sanitized to prevent provider URL leakage
 
 ## [0.9.4] - 2026-02-14
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - Bounded FIFO message queue (max 10) in agent loop: users can submit messages during inference, queued messages are delivered sequentially when response cycle completes
@@ -2298,6 +2462,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.9.3] - 2026-02-12
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - New `zeph-index` crate: AST-based code indexing and semantic retrieval pipeline
   - Language detection and grammar registry with feature-gated tree-sitter grammars (Rust, Python, JavaScript, TypeScript, Go, Bash, TOML, JSON, Markdown)
@@ -2311,6 +2479,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `inject_code_context()` method in Agent for transient code chunk injection before semantic recall
 
 ## [0.9.2] - 2026-02-12
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - Runtime context compaction for long sessions: automatic LLM-based summarization of middle messages when context usage exceeds configurable threshold (default 75%)
@@ -2329,6 +2501,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.9.1] - 2026-02-12
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - Mouse scroll support for TUI chat widget (scroll up/down via mouse wheel)
 - Splash screen with colored block-letter "ZEPH" banner on TUI startup
@@ -2342,6 +2518,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Scroll no longer sticks at top after over-scrolling past content boundary
 
 ## [0.9.0] - 2026-02-12
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - ratatui-based TUI dashboard with real-time agent metrics (feature-gated `tui`, opt-in)
@@ -2389,6 +2569,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.8.1] - 2026-02-10
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - Shell sandbox: configurable `allowed_paths` directory allowlist and `allow_network` toggle blocking curl/wget/nc in `ShellExecutor` (Issue #91)
 - Sandbox validation before every shell command execution with path canonicalization
@@ -2413,6 +2597,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - LLM calls wrapped with `tokio::time::timeout` in agent loop
 
 ## [0.8.0] - 2026-02-10
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - `VaultProvider` trait with pluggable secret backends, `Secret` newtype with redacted debug output, `EnvVaultProvider` for environment variable secrets (Issue #70)
@@ -2482,6 +2670,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.7.1] - 2026-02-09
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `WebScrapeExecutor`: safe HTML scraping via scrape-core with CSS selectors, SSRF protection, and HTTPS-only enforcement (Issue #57)
 - `CompositeExecutor<A, B>`: generic executor chaining with first-match-wins dispatch
@@ -2494,6 +2686,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ShellExecutor` block extraction now uses shared `extract_fenced_blocks()`
 
 ## [0.7.0] - 2026-02-08
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - A2A Server: axum-based HTTP server with JSON-RPC 2.0 routing for `message/send`, `tasks/get`, `tasks/cancel` (Issue #83)
@@ -2515,6 +2711,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.6.0] - 2026-02-08
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - New `zeph-a2a` crate: A2A protocol implementation for agent-to-agent communication (Issue #78)
 - A2A protocol types: `Task`, `TaskState`, `TaskStatus`, `Message`, `Part`, `Artifact`, `AgentCard`, `AgentSkill`, `AgentCapabilities` with full serde camelCase serialization (Issue #79)
@@ -2529,6 +2729,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - 42 new unit tests for protocol types, JSON-RPC envelopes, agent card builder, discovery registry, and client operations
 
 ## [0.5.0] - 2026-02-08
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - Embedding-based skill matcher: `SkillMatcher` with cosine similarity selects top-K relevant skills per query instead of injecting all skills into the system prompt (Issue #75)
@@ -2558,6 +2762,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Telegram "Bad Request: text must be non-empty" error when LLM returns whitespace-only content. Added `is_empty()` guard after `markdown_to_telegram` conversion in both `send()` and `send_or_edit()` (Issue #73)
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 - `Dockerfile.dev`: multi-stage build from source with cargo registry/build cache layers for fast rebuilds
 - `docker-compose.dev.yml`: full dev stack (Qdrant + Zeph) with debug tracing (`RUST_LOG`, `RUST_BACKTRACE=1`), uses host Ollama via `host.docker.internal`
@@ -2569,6 +2777,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Telegram MarkdownV2 parsing errors (Issue #69). Replaced manual character-by-character escaping with AST-based event-driven rendering using pulldown-cmark 0.13.0
 - UTF-8 safe text chunking for messages exceeding Telegram's 4096-byte limit. Uses `str::is_char_boundary()` with newline preference to prevent splitting multi-byte characters (emoji, CJK)
 - Link URL over-escaping. Dedicated `escape_url()` method only escapes `)` and `\` per Telegram MarkdownV2 spec, fixing broken URLs like `https://example\.com`
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 - `TelegramRenderer` state machine for context-aware escaping: 19 special characters in text, only `\` and `` ` `` in code blocks
@@ -2591,6 +2803,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Docker Compose: Added environment variables for semantic memory configuration (`ZEPH_MEMORY_SEMANTIC_ENABLED`, `ZEPH_MEMORY_SEMANTIC_RECALL_LIMIT`) and Qdrant URL override (`ZEPH_QDRANT_URL`) to enable full semantic memory stack via `.env` file
 
 ## [0.4.0] - 2026-02-08
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 
@@ -2681,6 +2897,10 @@ let message_id = store.save_message(conv_id, "user", "hello").await?;
 
 ## [0.3.0] - 2026-02-07
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 #### M7 Phase 1: Tool Execution Framework - zeph-tools crate (Issue #39)
@@ -2744,6 +2964,10 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 ## [0.2.0] - 2026-02-06
 
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+
 ### Added
 
 #### M6 Phase 1: Streaming trait extension (Issue #35)
@@ -2799,6 +3023,10 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - All existing channels (`CliChannel`, `TelegramChannel`) updated with no-op implementations (Phase 1: streaming not yet wired into agent loop)
 
 ## [0.1.0] - 2026-02-05
+
+### Fixed
+
+- fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
 
 ### Added
 

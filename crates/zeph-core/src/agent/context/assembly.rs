@@ -1745,6 +1745,14 @@ impl<C: Channel> Agent<C> {
         // do not invalidate the stable/semi-stable cache blocks (S2 fix).
         self.inject_learned_preferences(&mut system_prompt).await;
 
+        // If memory_save was used this session, remind the model to use memory_search
+        // (not search_code) to recall user-provided facts (#2475).
+        if self.completed_tool_ids.contains("memory_save") {
+            system_prompt.push_str(
+                "\n\nFacts provided by the user in this session have been saved with memory_save — use memory_search to recall them, not search_code.",
+            );
+        }
+
         tracing::debug!(
             len = system_prompt.len(),
             skills = ?self.skill_state.active_skill_names,

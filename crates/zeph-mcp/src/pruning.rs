@@ -382,7 +382,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             input_schema: serde_json::Value::Null,
-            security_meta: Default::default(),
+            security_meta: crate::tool::ToolSecurityMeta::default(),
         }
     }
 
@@ -392,7 +392,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             input_schema: serde_json::Value::Null,
-            security_meta: Default::default(),
+            security_meta: crate::tool::ToolSecurityMeta::default(),
         }
     }
 

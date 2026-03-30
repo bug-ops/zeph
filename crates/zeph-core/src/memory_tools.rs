@@ -76,7 +76,7 @@ impl ToolExecutor for MemoryToolExecutor {
         vec![
             ToolDef {
                 id: "memory_search".into(),
-                description: "Search long-term memory for relevant past messages, facts, and session summaries. Use when the user references past conversations or you need historical context.\n\nParameters: query (string, required) - natural language search query; limit (integer, optional) - max results 1-20 (default: 5)\nReturns: ranked list of memory entries with similarity scores and timestamps\nErrors: Execution on database failure\nExample: {\"query\": \"user preference for output format\", \"limit\": 5}".into(),
+                description: "Search long-term memory for relevant past messages, facts, and session summaries. Use to recall facts, preferences, or information the user provided during this or previous conversations.\n\nParameters: query (string, required) - natural language search query; limit (integer, optional) - max results 1-20 (default: 5)\nReturns: ranked list of memory entries with similarity scores and timestamps\nErrors: Execution on database failure\nExample: {\"query\": \"user preference for output format\", \"limit\": 5}".into(),
                 schema: schemars::schema_for!(MemorySearchParams),
                 invocation: InvocationHint::ToolCall,
             },
@@ -349,5 +349,25 @@ mod tests {
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
+    }
+
+    /// `memory_search` description must mention user-provided facts so the model
+    /// prefers it over `search_code` for recalling information from conversation (#2475).
+    #[tokio::test]
+    async fn memory_search_description_mentions_user_provided_facts() {
+        let memory = make_memory().await;
+        let executor = make_executor(memory);
+        let defs = executor.tool_definitions();
+        let memory_search = defs
+            .iter()
+            .find(|d| d.id.as_ref() == "memory_search")
+            .unwrap();
+        assert!(
+            memory_search
+                .description
+                .contains("user provided during this or previous conversations"),
+            "memory_search description must contain disambiguation phrase; got: {}",
+            memory_search.description
+        );
     }
 }

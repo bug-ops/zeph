@@ -2214,9 +2214,9 @@ mod tests {
         let result = zero_injections();
         apply_injection_penalties(Some(&store), "srv", &result, &server_trust).await;
         // No score entry should exist (no penalty applied to a new server with 0 injections).
-        let score = store.load("srv").await.unwrap();
+        let trust_score = store.load("srv").await.unwrap();
         assert!(
-            score.is_none(),
+            trust_score.is_none(),
             "no penalty should be written for zero injections"
         );
     }
@@ -2227,17 +2227,17 @@ mod tests {
         let server_trust = make_server_trust("srv", McpTrustLevel::Trusted);
         let result = n_injections(1);
         apply_injection_penalties(Some(&store), "srv", &result, &server_trust).await;
-        let score = store.load("srv").await.unwrap().unwrap();
+        let trust_score = store.load("srv").await.unwrap().unwrap();
         // One penalty from INITIAL_SCORE (1.0) should produce exactly INITIAL - PENALTY.
         let expected = (crate::trust_score::ServerTrustScore::INITIAL_SCORE
             - crate::trust_score::ServerTrustScore::INJECTION_PENALTY)
             .max(0.0);
         assert!(
-            (score.score - expected).abs() < 1e-6,
+            (trust_score.score - expected).abs() < 1e-6,
             "expected score {expected}, got {}",
-            score.score
+            trust_score.score
         );
-        assert_eq!(score.failure_count, 1);
+        assert_eq!(trust_score.failure_count, 1);
     }
 
     #[tokio::test]
@@ -2246,8 +2246,8 @@ mod tests {
         let server_trust = make_server_trust("srv", McpTrustLevel::Trusted);
         let result = n_injections(3);
         apply_injection_penalties(Some(&store), "srv", &result, &server_trust).await;
-        let score = store.load("srv").await.unwrap().unwrap();
-        assert_eq!(score.failure_count, 3);
+        let trust_score = store.load("srv").await.unwrap().unwrap();
+        assert_eq!(trust_score.failure_count, 3);
     }
 
     #[tokio::test]
@@ -2257,9 +2257,9 @@ mod tests {
         // 10 injections — must cap at MAX_INJECTION_PENALTIES_PER_REGISTRATION = 3.
         let result = n_injections(10);
         apply_injection_penalties(Some(&store), "srv", &result, &server_trust).await;
-        let score = store.load("srv").await.unwrap().unwrap();
+        let trust_score = store.load("srv").await.unwrap().unwrap();
         assert_eq!(
-            score.failure_count, MAX_INJECTION_PENALTIES_PER_REGISTRATION as u64,
+            trust_score.failure_count, MAX_INJECTION_PENALTIES_PER_REGISTRATION as u64,
             "failure_count must be capped at MAX_INJECTION_PENALTIES_PER_REGISTRATION"
         );
     }

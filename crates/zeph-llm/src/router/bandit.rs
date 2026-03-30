@@ -682,7 +682,7 @@ mod tests {
             10,
             &|_| true,
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -703,7 +703,7 @@ mod tests {
             10,
             &|_| false,
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -723,7 +723,7 @@ mod tests {
             10,
             &|_| true,
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -745,7 +745,7 @@ mod tests {
             10,
             &|name| name != "b",
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -775,7 +775,7 @@ mod tests {
                     0,
                     &|_| true,
                     0.0,
-                    &Default::default(),
+                    &HashMap::default(),
                     None,
                     0.9,
                 )
@@ -883,7 +883,7 @@ mod tests {
             10,
             &|_| true,
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -903,7 +903,7 @@ mod tests {
             0,
             &|_| true,
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -926,7 +926,7 @@ mod tests {
             0,
             &|_| true,
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -955,7 +955,7 @@ mod tests {
             0,
             &|_| true,
             0.0,
-            &Default::default(),
+            &HashMap::default(),
             None,
             0.9,
         );
@@ -1035,7 +1035,7 @@ mod tests {
         // Expensive tier.
         assert!(provider_cost_estimate("best", "claude-opus-4") >= 0.7);
         // Unknown: conservative mid-low default.
-        assert_eq!(provider_cost_estimate("unknown-provider", ""), 0.3);
+        assert!((provider_cost_estimate("unknown-provider", "") - 0.3_f32).abs() < 1e-6);
     }
 
     #[test]
