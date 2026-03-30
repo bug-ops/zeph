@@ -69,6 +69,94 @@ use crate::channel::Channel;
 
 use super::Agent;
 
+/// Generate and persist a digest for a completed conversation from a background task.
+///
+/// Called fire-and-forget from `reset_conversation`. All errors are logged as warnings
+/// and swallowed.
+pub(super) async fn generate_and_store_digest(
+    provider: &zeph_llm::any::AnyProvider,
+    memory: &zeph_memory::semantic::SemanticMemory,
+    conversation_id: zeph_memory::ConversationId,
+    messages: &[zeph_llm::provider::Message],
+    digest_config: &crate::config::DigestConfig,
+    tc: &zeph_memory::TokenCounter,
+) {
+    if messages.is_empty() {
+        return;
+    }
+
+    let max_input = digest_config.max_input_messages;
+    let max_tokens = digest_config.max_tokens;
+
+    let slice = if messages.len() > max_input {
+        &messages[messages.len() - max_input..]
+    } else {
+        messages
+    };
+
+    let mut conv_text = String::new();
+    for msg in slice {
+        let role = match msg.role {
+            zeph_llm::provider::Role::User => "User",
+            zeph_llm::provider::Role::Assistant => "Assistant",
+            zeph_llm::provider::Role::System => "System",
+        };
+        let _ =
+            std::fmt::Write::write_fmt(&mut conv_text, format_args!("{role}: {}\n\n", msg.content));
+    }
+
+    let prompt = format!(
+        "You are a session summarizer. Read the following conversation excerpt and produce \
+         a compact digest (under {max_tokens} tokens) of the key facts, decisions, outcomes, \
+         and open questions from this session. Be specific and concise. \
+         Output ONLY the digest text, no preamble.\n\n\
+         Conversation:\n{conv_text}\n\
+         Digest:"
+    );
+
+    let chat_messages = vec![zeph_llm::provider::Message {
+        role: zeph_llm::provider::Role::User,
+        content: prompt,
+        parts: vec![],
+        metadata: zeph_llm::provider::MessageMetadata::default(),
+    }];
+
+    let timeout = Duration::from_secs(30);
+    let digest_text = tokio::select! {
+        () = async { tokio::time::sleep(timeout).await } => {
+            tracing::warn!("session digest (/new): LLM call timed out");
+            return;
+        }
+        result = provider.chat_with_named_provider(&digest_config.provider, &chat_messages) => {
+            match result {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!("session digest (/new): LLM call failed: {e:#}");
+                    return;
+                }
+            }
+        }
+    };
+
+    let sanitized = sanitize_digest(&digest_text);
+    let final_text = truncate_digest(&sanitized, max_tokens, tc);
+    let token_count = i64::try_from(tc.count_tokens(&final_text)).unwrap_or(i64::MAX);
+
+    if let Err(e) = memory
+        .sqlite()
+        .save_session_digest(conversation_id, &final_text, token_count)
+        .await
+    {
+        tracing::warn!("session digest (/new): storage failed: {e:#}");
+    } else {
+        tracing::info!(
+            conversation_id = conversation_id.0,
+            tokens = token_count,
+            "session digest stored (via /new)"
+        );
+    }
+}
+
 impl<C: Channel> Agent<C> {
     /// Generate and persist a session digest at shutdown when digest is enabled.
     ///

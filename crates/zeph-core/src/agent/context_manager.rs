@@ -151,6 +151,15 @@ impl ContextManager {
         }
     }
 
+    /// Reset compaction state for a new conversation.
+    ///
+    /// Clears cooldown, exhaustion, and turn counters so the new conversation starts
+    /// with a clean compaction slate.
+    pub(crate) fn reset_compaction(&mut self) {
+        self.compaction = CompactionState::Ready;
+        self.turns_since_last_hard_compaction = None;
+    }
+
     /// Determine which compaction tier applies for the given token count.
     ///
     /// - `Hard` when `cached_tokens > budget * hard_compaction_threshold`
@@ -449,5 +458,15 @@ mod tests {
         // Later in the same turn, eviction fires at mod.rs:4055
         let after_eviction = CompactionState::CompactedThisTurn { cooldown: 0 };
         assert!(after_eviction.is_compacted_this_turn());
+    }
+
+    #[test]
+    fn reset_compaction_clears_exhausted_state() {
+        let mut cm = ContextManager::new();
+        cm.compaction = CompactionState::Exhausted { warned: true };
+        cm.turns_since_last_hard_compaction = Some(5);
+        cm.reset_compaction();
+        assert_eq!(cm.compaction, CompactionState::Ready);
+        assert!(cm.turns_since_last_hard_compaction.is_none());
     }
 }

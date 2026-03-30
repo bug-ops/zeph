@@ -2646,6 +2646,7 @@ impl<C: Channel> Agent<C> {
     /// Returns `Some(true)` to break the loop (exit), `Some(false)` to continue to the next
     /// iteration, or `None` if the command was not recognized (caller should call
     /// `process_user_message`).
+    #[allow(clippy::too_many_lines)]
     async fn handle_builtin_command(
         &mut self,
         trimmed: &str,
@@ -2684,6 +2685,31 @@ impl<C: Channel> Agent<C> {
                 }
             } else {
                 let _ = self.channel.send("Nothing to compact.").await;
+            }
+            let _ = self.channel.flush_chunks().await;
+            return Ok(Some(false));
+        }
+
+        if trimmed == "/new" || trimmed.starts_with("/new ") {
+            let args = trimmed.strip_prefix("/new").unwrap_or("").trim();
+            let keep_plan = args.split_whitespace().any(|a| a == "--keep-plan");
+            let no_digest = args.split_whitespace().any(|a| a == "--no-digest");
+            match self.reset_conversation(keep_plan, no_digest).await {
+                Ok((old_id, new_id)) => {
+                    let old = old_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let new = new_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let keep_note = if keep_plan { " (plan preserved)" } else { "" };
+                    self.channel
+                        .send(&format!(
+                            "New conversation started. Previous: {old} → Current: {new}{keep_note}"
+                        ))
+                        .await?;
+                }
+                Err(e) => {
+                    self.channel
+                        .send(&format!("Failed to start new conversation: {e}"))
+                        .await?;
+                }
             }
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));

@@ -104,6 +104,13 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         feature_gate: None,
     },
     SlashCommandInfo {
+        name: "/new",
+        args: "[--no-digest] [--keep-plan]",
+        description: "Start a new conversation (reset context, preserve memory and MCP)",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
+    SlashCommandInfo {
         name: "/clear",
         args: "",
         description: "Clear conversation history",

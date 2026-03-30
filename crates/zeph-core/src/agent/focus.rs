@@ -166,6 +166,23 @@ impl FocusState {
         }
     }
 
+    /// Reset focus state for a new conversation.
+    ///
+    /// Clears the active session and accumulated knowledge so the new conversation
+    /// starts without stale focus context.
+    pub(crate) fn reset(&mut self) {
+        self.knowledge_blocks.clear();
+        #[cfg(feature = "context-compression")]
+        {
+            self.active_marker = None;
+            self.compressing
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+        self.active_scope = None;
+        self.turns_since_focus = 0;
+        self.turns_since_reminder = 0;
+    }
+
     /// Increment turn counters. Called at the start of each user-message turn.
     pub(crate) fn tick(&mut self) {
         self.turns_since_focus = self.turns_since_focus.saturating_add(1);
@@ -449,5 +466,19 @@ mod tests {
         assert!(msg.content.contains("Summary A"));
         assert!(msg.content.contains("Summary B"));
         assert!(msg.metadata.focus_pinned, "knowledge block must be pinned");
+    }
+
+    #[test]
+    fn reset_clears_all_session_state() {
+        let mut state = FocusState::new(FocusConfig::default());
+        state.knowledge_blocks.push("some knowledge".to_string());
+        state.active_scope = Some("active scope".to_string());
+        state.turns_since_focus = 7;
+        state.turns_since_reminder = 3;
+        state.reset();
+        assert!(state.knowledge_blocks.is_empty());
+        assert!(state.active_scope.is_none());
+        assert_eq!(state.turns_since_focus, 0);
+        assert_eq!(state.turns_since_reminder, 0);
     }
 }

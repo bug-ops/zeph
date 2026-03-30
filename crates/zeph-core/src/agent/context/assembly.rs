@@ -366,6 +366,177 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::User || !m.content.starts_with(SESSION_DIGEST_PREFIX));
     }
 
+    /// Spawn a fire-and-forget background task to generate and persist a session digest for
+    /// `conversation_id`. No-op when digest is disabled or the conversation has no messages.
+    fn spawn_outgoing_digest(&self, conversation_id: Option<zeph_memory::ConversationId>) {
+        if !self.memory_state.digest_config.enabled {
+            return;
+        }
+        let non_system: Vec<_> = self
+            .msg
+            .messages
+            .iter()
+            .skip(1)
+            .filter(|m| m.role != zeph_llm::provider::Role::System)
+            .cloned()
+            .collect();
+        if non_system.is_empty() {
+            return;
+        }
+        let digest_config = self.memory_state.digest_config.clone();
+        let memory = self.memory_state.memory.clone();
+        let provider = self.provider.clone();
+        let tc = self.metrics.token_counter.clone();
+        let status_tx = self.session.status_tx.clone();
+        if let Some(ref tx) = self.session.status_tx {
+            let _ = tx.send("Generating session digest...".to_string());
+        }
+        tokio::spawn(async move {
+            if let (Some(mem), Some(cid)) = (memory, conversation_id) {
+                super::super::session_digest::generate_and_store_digest(
+                    &provider,
+                    &mem,
+                    cid,
+                    &non_system,
+                    &digest_config,
+                    &tc,
+                )
+                .await;
+            }
+            if let Some(tx) = status_tx {
+                let _ = tx.send(String::new());
+            }
+        });
+    }
+
+    /// Reset the conversation window for `/new`.
+    ///
+    /// Creates a new `ConversationId` in `SQLite` first (fail-fast: no state is mutated
+    /// if the `DB` call fails). Then resets all session-scoped state while preserving
+    /// cross-session state (memory, MCP, providers, skills).
+    ///
+    /// `keep_plan` — when `true`, `orchestration.pending_graph` is preserved.
+    /// `no_digest` — when `true`, skip generating a session digest for the outgoing
+    ///               conversation. Default behaviour: generate digest fire-and-forget.
+    ///
+    /// Returns the old and new `ConversationId` for the confirmation message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`create_conversation`](zeph_memory::store::SqliteStore::create_conversation)
+    /// fails. In that case no agent state is modified.
+    pub(in crate::agent) async fn reset_conversation(
+        &mut self,
+        keep_plan: bool,
+        no_digest: bool,
+    ) -> Result<
+        (
+            Option<zeph_memory::ConversationId>,
+            Option<zeph_memory::ConversationId>,
+        ),
+        super::super::error::AgentError,
+    > {
+        // --- Step 1: create new ConversationId FIRST (fail-fast) ---
+        let new_conversation_id = if let Some(ref memory) = self.memory_state.memory {
+            match memory.sqlite().create_conversation().await {
+                Ok(id) => Some(id),
+                Err(e) => return Err(super::super::error::AgentError::Memory(e)),
+            }
+        } else {
+            None
+        };
+
+        let old_conversation_id = self.memory_state.conversation_id;
+
+        // --- Step 2: fire-and-forget digest for outgoing conversation ---
+        if !no_digest {
+            self.spawn_outgoing_digest(old_conversation_id);
+        }
+
+        // --- Step 3: TUI status ---
+        if let Some(ref tx) = self.session.status_tx {
+            let _ = tx.send("Resetting conversation...".to_string());
+        }
+
+        // --- Step 4: abort background compression tasks (context-compression) ---
+        #[cfg(feature = "context-compression")]
+        {
+            if let Some(h) = self.compression.pending_task_goal.take() {
+                h.abort();
+            }
+            if let Some(h) = self.compression.pending_sidequest_result.take() {
+                h.abort();
+            }
+            if let Some(h) = self.compression.pending_subgoal.take() {
+                h.abort();
+            }
+            self.compression.current_task_goal = None;
+            self.compression.task_goal_user_msg_hash = None;
+            self.compression.subgoal_registry =
+                crate::agent::compaction_strategy::SubgoalRegistry::default();
+            self.compression.subgoal_user_msg_hash = None;
+        }
+
+        // --- Step 5: cancel running plan and clear orchestration ---
+        if !keep_plan {
+            if let Some(token) = self.orchestration.plan_cancel_token.take() {
+                token.cancel();
+            }
+            self.orchestration.pending_graph = None;
+            self.orchestration.pending_goal_embedding = None;
+        }
+        // Cancel running sub-agents regardless of keep_plan.
+        if let Some(ref mut mgr) = self.orchestration.subagent_manager {
+            mgr.shutdown_all();
+        }
+
+        // --- Step 6: reset message history and caches ---
+        self.clear_history();
+        self.tool_orchestrator.clear_cache();
+
+        // Drain message queue, logging discarded entries.
+        let discarded = self.clear_queue();
+        if discarded > 0 {
+            tracing::debug!(
+                discarded,
+                "/new: discarded queued messages that arrived during reset"
+            );
+        }
+        self.msg.pending_image_parts.clear();
+
+        // --- Step 7: reset security URL sets ---
+        if let Ok(mut urls) = self.security.user_provided_urls.write() {
+            urls.clear();
+        }
+        self.security.flagged_urls.clear();
+
+        // --- Step 8: reset compaction and compression states ---
+        self.context_manager.reset_compaction();
+        self.focus.reset();
+        self.sidequest.reset();
+
+        // --- Step 9: reset misc session-scoped fields ---
+        self.debug_state.iteration_counter = 0;
+        self.last_persisted_message_id = None;
+        self.deferred_db_hide_ids.clear();
+        self.deferred_db_summaries.clear();
+        self.cached_filtered_tool_ids = None;
+        self.providers.cached_prompt_tokens = 0;
+
+        // --- Step 10: update conversation ID and memory state ---
+        self.memory_state.conversation_id = new_conversation_id;
+        self.memory_state.unsummarized_count = 0;
+        // Clear cached digest — the new conversation has no prior digest yet.
+        self.memory_state.cached_session_digest = None;
+
+        // --- Step 11: clear TUI status ---
+        if let Some(ref tx) = self.session.status_tx {
+            let _ = tx.send(String::new());
+        }
+
+        Ok((old_conversation_id, new_conversation_id))
+    }
+
     async fn fetch_document_rag(
         memory_state: &MemoryState,
         query: &str,

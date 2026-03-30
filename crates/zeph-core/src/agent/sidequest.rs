@@ -77,6 +77,14 @@ impl SidequestState {
         }
     }
 
+    /// Reset sidequest state for a new conversation.
+    pub(crate) fn reset(&mut self) {
+        self.turn_counter = 0;
+        self.tool_output_cursors.clear();
+        self.total_evicted = 0;
+        self.passes_run = 0;
+    }
+
     /// Increment turn counter. Returns `true` if eviction should fire this turn.
     pub(crate) fn tick(&mut self) -> bool {
         self.turn_counter = self.turn_counter.saturating_add(1);
@@ -543,5 +551,25 @@ mod tests {
             prompt.contains("UNTRUSTED DATA"),
             "eviction prompt must contain untrusted-content boundary (SEC-CC-02)"
         );
+    }
+
+    #[test]
+    fn reset_zeroes_all_counters() {
+        let mut state = SidequestState::new(make_config());
+        state.turn_counter = 12;
+        state.total_evicted = 5;
+        state.passes_run = 3;
+        state.tool_output_cursors.push(ToolOutputCursor {
+            msg_index: 0,
+            part_index: 0,
+            tool_name: "shell".to_string(),
+            token_count: 100,
+            preview: "output".to_string(),
+        });
+        state.reset();
+        assert_eq!(state.turn_counter, 0);
+        assert_eq!(state.total_evicted, 0);
+        assert_eq!(state.passes_run, 0);
+        assert!(state.tool_output_cursors.is_empty());
     }
 }
