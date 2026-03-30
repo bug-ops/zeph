@@ -535,11 +535,12 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
             let router_bandit_cfg = BanditRouterConfig {
                 alpha: bandit_cfg.alpha,
                 dim: bandit_cfg.dim,
-                cost_weight: bandit_cfg.cost_weight,
+                cost_weight: bandit_cfg.cost_weight.clamp(0.0, 1.0),
                 decay_factor: bandit_cfg.decay_factor,
                 warmup_queries: 0, // computed by with_bandit() from provider count
                 embedding_timeout_ms: bandit_cfg.embedding_timeout_ms,
                 cache_size: bandit_cfg.cache_size,
+                memory_confidence_threshold: bandit_cfg.memory_confidence_threshold.clamp(0.0, 1.0),
             };
             // Resolve embedding provider for feature vectors.
             let embed_provider = if bandit_cfg.embedding_provider.is_empty() {

@@ -320,6 +320,7 @@ impl<C: Channel> Agent<C> {
                 shutdown_summary_max_messages: 20,
                 shutdown_summary_timeout_secs: 10,
                 structured_summaries: false,
+                last_recall_confidence: None,
                 digest_config: crate::config::DigestConfig::default(),
                 cached_session_digest: None,
                 context_strategy: crate::config::ContextStrategy::default(),
@@ -3770,6 +3771,10 @@ impl<C: Channel> Agent<C> {
         if let Err(e) = Box::pin(self.prepare_context(trimmed)).await {
             tracing::warn!("context preparation failed: {e:#}");
         }
+
+        // MAR: propagate top-1 recall confidence to the router for cost-aware routing.
+        self.provider
+            .set_memory_confidence(self.memory_state.last_recall_confidence);
 
         self.learning_engine.reset_reflection();
 

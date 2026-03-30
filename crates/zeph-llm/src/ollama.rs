@@ -404,6 +404,10 @@ impl LlmProvider for OllamaProvider {
         "ollama"
     }
 
+    fn model_identifier(&self) -> &str {
+        &self.model
+    }
+
     fn last_usage(&self) -> Option<(u64, u64)> {
         self.usage.last_usage()
     }

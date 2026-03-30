@@ -56,6 +56,16 @@ pub enum AnyProvider {
 }
 
 impl AnyProvider {
+    /// Set the MAR memory recall confidence for the current turn.
+    ///
+    /// Delegates to [`RouterProvider::set_memory_confidence`] when the inner provider is
+    /// a bandit router. No-op for all other provider types.
+    pub fn set_memory_confidence(&self, confidence: Option<f32>) {
+        if let AnyProvider::Router(r) = self {
+            r.set_memory_confidence(confidence);
+        }
+    }
+
     /// Return a cloneable closure that calls `embed()` on this provider.
     pub fn embed_fn(&self) -> impl Fn(&str) -> crate::provider::EmbedFuture + Send + Sync + use<> {
         let provider = std::sync::Arc::new(self.clone());
@@ -294,6 +304,10 @@ impl LlmProvider for AnyProvider {
 
     fn name(&self) -> &str {
         delegate_provider!(self, |p| p.name())
+    }
+
+    fn model_identifier(&self) -> &str {
+        delegate_provider!(self, |p| p.model_identifier())
     }
 
     fn supports_structured_output(&self) -> bool {

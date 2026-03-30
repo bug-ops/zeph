@@ -3179,6 +3179,7 @@ fn make_mem_state(
         shutdown_summary_max_messages: 20,
         shutdown_summary_timeout_secs: 10,
         structured_summaries: false,
+        last_recall_confidence: None,
         digest_config: crate::config::DigestConfig::default(),
         cached_session_digest: None,
         context_strategy: crate::config::ContextStrategy::default(),

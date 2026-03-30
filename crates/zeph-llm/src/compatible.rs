@@ -105,6 +105,10 @@ impl LlmProvider for CompatibleProvider {
         &self.provider_name
     }
 
+    fn model_identifier(&self) -> &str {
+        self.inner.model_identifier()
+    }
+
     fn list_models(&self) -> Vec<String> {
         self.inner.list_models()
     }

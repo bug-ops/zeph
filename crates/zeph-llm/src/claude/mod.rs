@@ -814,6 +814,10 @@ impl LlmProvider for ClaudeProvider {
         "claude"
     }
 
+    fn model_identifier(&self) -> &str {
+        &self.model
+    }
+
     fn supports_structured_output(&self) -> bool {
         true
     }

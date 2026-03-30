@@ -237,14 +237,15 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_recall_messages();
 
-        if let Some(msg) = Self::fetch_semantic_recall(
+        let (msg, _score) = Self::fetch_semantic_recall(
             &self.memory_state,
             query,
             token_budget,
             &self.metrics.token_counter,
             None,
         )
-        .await?
+        .await?;
+        if let Some(msg) = msg
             && self.msg.messages.len() > 1
         {
             self.msg.messages.insert(1, msg);
@@ -259,12 +260,12 @@ impl<C: Channel> Agent<C> {
         token_budget: usize,
         tc: &TokenCounter,
         router: Option<&dyn zeph_memory::MemoryRouter>,
-    ) -> Result<Option<Message>, super::super::error::AgentError> {
+    ) -> Result<(Option<Message>, Option<f32>), super::super::error::AgentError> {
         let Some(memory) = &memory_state.memory else {
-            return Ok(None);
+            return Ok((None, None));
         };
         if memory_state.recall_limit == 0 || token_budget == 0 {
-            return Ok(None);
+            return Ok((None, None));
         }
 
         let recalled = if let Some(r) = router {
@@ -277,8 +278,10 @@ impl<C: Channel> Agent<C> {
                 .await?
         };
         if recalled.is_empty() {
-            return Ok(None);
+            return Ok((None, None));
         }
+
+        let top_score = recalled.first().map(|r| r.score);
 
         let mut recall_text = String::with_capacity(token_budget * 3);
         recall_text.push_str(RECALL_PREFIX);
@@ -300,12 +303,15 @@ impl<C: Channel> Agent<C> {
         }
 
         if tokens_used > tc.count_tokens(RECALL_PREFIX) {
-            Ok(Some(Message::from_parts(
-                Role::System,
-                vec![MessagePart::Recall { text: recall_text }],
-            )))
+            Ok((
+                Some(Message::from_parts(
+                    Role::System,
+                    vec![MessagePart::Recall { text: recall_text }],
+                )),
+                top_score,
+            ))
         } else {
-            Ok(None)
+            Ok((None, None))
         }
     }
 
@@ -852,6 +858,7 @@ impl<C: Channel> Agent<C> {
         let mut summaries_msg: Option<Message> = None;
         let mut cross_session_msg: Option<Message> = None;
         let mut recall_msg: Option<Message> = None;
+        let mut recall_confidence: Option<f32> = None;
         let mut doc_rag_msg: Option<Message> = None;
         let mut corrections_msg: Option<Message> = None;
         let mut code_rag_text: Option<String> = None;
@@ -894,7 +901,7 @@ impl<C: Channel> Agent<C> {
                     Some(&router),
                 )
                 .await
-                .map(ContextSlot::SemanticRecall)
+                .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
             }));
             fetchers.push(Box::pin(async {
                 Self::fetch_document_rag(memory_state, &query, alloc.semantic_recall, &tc)
@@ -922,7 +929,10 @@ impl<C: Channel> Agent<C> {
                     Ok(slot) => match slot {
                         ContextSlot::Summaries(msg) => summaries_msg = msg,
                         ContextSlot::CrossSession(msg) => cross_session_msg = msg,
-                        ContextSlot::SemanticRecall(msg) => recall_msg = msg,
+                        ContextSlot::SemanticRecall(msg, score) => {
+                            recall_msg = msg;
+                            recall_confidence = score;
+                        }
                         ContextSlot::DocumentRag(msg) => doc_rag_msg = msg,
                         ContextSlot::Corrections(msg) => corrections_msg = msg,
                         ContextSlot::CodeContext(text) => code_rag_text = text,
@@ -937,6 +947,9 @@ impl<C: Channel> Agent<C> {
                 }
             }
         }
+
+        // Store top-1 recall score on agent state for MAR routing signal.
+        self.memory_state.last_recall_confidence = recall_confidence;
 
         // MemoryFirst: drain conversation history BEFORE inserting memory messages so that the
         // memory inserts land into the shorter array and are not accidentally removed.

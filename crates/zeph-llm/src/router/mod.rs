@@ -111,6 +111,9 @@ pub struct BanditRouterConfig {
     pub embedding_timeout_ms: u64,
     /// Maximum number of cached embeddings (keyed by query string hash). Default: 512.
     pub cache_size: usize,
+    /// MAR threshold: when `memory_hit_confidence >= this`, bias toward cheap providers.
+    /// Default: 0.9. Set to 1.0 to disable MAR.
+    pub memory_confidence_threshold: f32,
 }
 
 impl Default for BanditRouterConfig {
@@ -123,6 +126,7 @@ impl Default for BanditRouterConfig {
             warmup_queries: 0, // overridden by with_bandit() based on provider count
             embedding_timeout_ms: 50,
             cache_size: 512,
+            memory_confidence_threshold: 0.9,
         }
     }
 }
@@ -196,12 +200,22 @@ pub struct RouterProvider {
     /// LRU embedding cache: maps query-string hash to feature vector.
     /// Shared across requests; keyed by `u64` hash of query text.
     bandit_embed_cache: Arc<Mutex<BanditEmbedCache>>,
+    /// MAR signal: top-1 semantic memory recall score for the current turn.
+    /// Set by the agent before each `chat`/`chat_stream` call; read by `bandit_select_provider`.
+    last_memory_confidence: Arc<Mutex<Option<f32>>>,
+    /// Maps provider name to model identifier for cost estimation.
+    /// Built at construction time from `self.providers`.
+    provider_models: Arc<std::collections::HashMap<String, String>>,
 }
 
 impl RouterProvider {
     #[must_use]
     pub fn new(providers: Vec<AnyProvider>) -> Self {
         let n = providers.len();
+        let provider_models: std::collections::HashMap<String, String> = providers
+            .iter()
+            .map(|p| (p.name().to_owned(), p.model_identifier().to_owned()))
+            .collect();
         Self {
             providers: Arc::from(providers),
             status_tx: None,
@@ -221,6 +235,18 @@ impl RouterProvider {
             bandit_config: None,
             bandit_embedding_provider: None,
             bandit_embed_cache: Arc::new(Mutex::new(BanditEmbedCache::default())),
+            last_memory_confidence: Arc::new(Mutex::new(None)),
+            provider_models: Arc::new(provider_models),
+        }
+    }
+
+    /// Set the MAR (Memory-Augmented Routing) signal for the current turn.
+    ///
+    /// Must be called before `chat` / `chat_stream` to influence bandit provider selection.
+    /// Pass `None` to disable MAR for this turn.
+    pub fn set_memory_confidence(&self, confidence: Option<f32>) {
+        if let Ok(mut guard) = self.last_memory_confidence.lock() {
+            *guard = confidence;
         }
     }
 
@@ -599,14 +625,35 @@ impl RouterProvider {
 
         // Try LinUCB selection with feature vector.
         if let Some(features) = self.bandit_features(query).await {
+            let memory_confidence = self
+                .last_memory_confidence
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .copied();
             let selected = {
                 let state = bandit_arc
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.select(&names, &features, cfg.alpha, cfg.warmup_queries, &|_| true)
+                state.select(
+                    &names,
+                    &features,
+                    cfg.alpha,
+                    cfg.warmup_queries,
+                    &|_| true,
+                    cfg.cost_weight,
+                    &self.provider_models,
+                    memory_confidence,
+                    cfg.memory_confidence_threshold,
+                )
             };
             if let Some(name) = selected {
-                tracing::debug!(provider = %name, strategy = "bandit", "selected provider");
+                tracing::debug!(
+                    provider = %name,
+                    strategy = "bandit",
+                    memory_confidence = ?memory_confidence,
+                    "selected provider"
+                );
                 return self.providers.iter().find(|p| p.name() == name).cloned();
             }
         }

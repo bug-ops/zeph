@@ -55,6 +55,10 @@ pub(crate) struct MemoryState {
     /// When `true`, hard compaction uses `AnchoredSummary` (structured JSON) instead of
     /// free-form prose. Falls back to prose on any LLM or validation failure.
     pub(crate) structured_summaries: bool,
+    /// Top-1 semantic recall score from the most recent `prepare_context` cycle.
+    /// Used by MAR (Memory-Augmented Routing) to bias the bandit toward cheap providers
+    /// when memory confidence is high. Reset to `None` at the start of each turn.
+    pub(crate) last_recall_confidence: Option<f32>,
     /// Session digest configuration (#2289).
     pub(crate) digest_config: crate::config::DigestConfig,
     /// Cached session digest text and its token count, loaded at session start.

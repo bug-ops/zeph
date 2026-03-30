@@ -146,6 +146,61 @@ impl LinUcbArm {
     }
 }
 
+/// Static cost estimate for a provider, normalised to [0.0, 1.0].
+///
+/// Checks both provider name and model identifier for known cost-tier patterns.
+/// This is a coarse heuristic — the bandit learns actual quality/cost tradeoffs
+/// online. The estimate only provides an initial directional bias.
+///
+/// Returns 0.3 for unknown providers (conservative mid-low fallback).
+#[must_use]
+pub fn provider_cost_estimate(provider_name: &str, model_id: &str) -> f32 {
+    // Check model identifier first (more specific), then provider name as fallback.
+    for s in [model_id, provider_name] {
+        let s = s.to_ascii_lowercase();
+        // Local / free tier: ollama, candle, local runners.
+        if s.contains("ollama") || s.contains("candle") || s.contains("local") {
+            return 0.1;
+        }
+        // Cheap cloud: mini, nano, small, haiku, flash, qwen, llama, phi, gemma.
+        if s.contains("mini")
+            || s.contains("nano")
+            || s.contains("small")
+            || s.contains("haiku")
+            || s.contains("flash")
+            || s.contains("qwen")
+            || s.contains("llama")
+            || s.contains("phi")
+            || s.contains("gemma")
+        {
+            return 0.2;
+        }
+        // Mid tier: gpt-4o (not mini), sonnet, mistral, gemini-pro.
+        if s.contains("sonnet")
+            || s.contains("4o")
+            || s.contains("gemini-pro")
+            || s.contains("mistral")
+            || s.contains("medium")
+        {
+            return 0.5;
+        }
+        // Expensive tier: opus, gpt-5, o1, o3, gpt-4 (not 4o), claude-3, claude-opus.
+        if s.contains("opus")
+            || s.contains("gpt-5")
+            || s.contains("o1-")
+            || s.contains("-o1")
+            || s.contains("o3-")
+            || s.contains("-o3")
+            || s.contains("gpt-4-")
+            || s.contains("-4-")
+        {
+            return 0.8;
+        }
+    }
+    // Unknown provider/model: conservative mid-low default.
+    0.3
+}
+
 /// PILOT bandit state for all providers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BanditState {
@@ -180,7 +235,13 @@ impl BanditState {
     /// When all available providers are filtered out, returns `None`.
     ///
     /// Ties broken by provider name (deterministic).
+    ///
+    /// `provider_models`: maps provider name to model identifier for cost estimation.
+    /// `cost_weight`: BaRP dial clamped to [0.0, 1.0]. 0.0 disables cost influence entirely.
+    /// `memory_hit_confidence`: MAR signal. When `>= memory_confidence_threshold`, cheap
+    /// providers receive a boost proportional to `(1 - cost_estimate) * confidence * cost_weight`.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn select(
         &self,
         providers: &[String],
@@ -188,6 +249,10 @@ impl BanditState {
         alpha: f32,
         warmup_queries: u64,
         budget_filter: &dyn Fn(&str) -> bool,
+        cost_weight: f32,
+        provider_models: &std::collections::HashMap<String, String>,
+        memory_hit_confidence: Option<f32>,
+        memory_confidence_threshold: f32,
     ) -> Option<String> {
         // Cold-start: defer to Thompson until we have enough observations.
         if self.total_updates < warmup_queries {
@@ -203,18 +268,38 @@ impl BanditState {
             return None;
         }
 
+        let mar_active = memory_hit_confidence.is_some_and(|c| c >= memory_confidence_threshold);
+
         let mut best_name: Option<&str> = None;
         let mut best_score = f32::NEG_INFINITY;
 
         for name in &candidates {
-            // Fresh arm: compute UCB with identity arm without inserting into state.
-            let score = if let Some(arm) = self.arms.get(name.as_str()) {
+            let raw_ucb = if let Some(arm) = self.arms.get(name.as_str()) {
                 arm.ucb_score(features, alpha).unwrap_or(0.0)
             } else {
                 LinUcbArm::new(self.dim)
                     .ucb_score(features, alpha)
                     .unwrap_or(0.0)
             };
+
+            let model_id = provider_models
+                .get(name.as_str())
+                .map_or("", String::as_str);
+            let cost_est = provider_cost_estimate(name, model_id);
+
+            // BaRP: penalise expensive providers when cost_weight > 0.
+            let cost_penalty = cost_weight * cost_est;
+
+            // MAR: when memory confidence is high, boost cheaper providers.
+            // When cost_weight = 0.0, no boost is applied (operator disabled cost awareness).
+            let memory_boost = if mar_active {
+                let conf = memory_hit_confidence.unwrap_or(0.0);
+                (1.0 - cost_est) * conf * cost_weight
+            } else {
+                0.0
+            };
+
+            let score = raw_ucb - cost_penalty + memory_boost;
 
             let is_better = score > best_score
                 || (score.total_cmp(&best_score).is_eq()
@@ -590,7 +675,17 @@ mod tests {
         let state = BanditState::new(4);
         let providers = vec!["a".to_owned(), "b".to_owned()];
         let x = vec![1.0f32, 0.0, 0.0, 0.0];
-        let result = state.select(&providers, &x, 1.0, 10, &|_| true);
+        let result = state.select(
+            &providers,
+            &x,
+            1.0,
+            10,
+            &|_| true,
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert!(result.is_none(), "should fall back during warmup");
     }
 
@@ -601,7 +696,17 @@ mod tests {
         state.total_updates = 100;
         let providers = vec!["a".to_owned(), "b".to_owned()];
         let x = vec![1.0f32, 0.0];
-        let result = state.select(&providers, &x, 1.0, 10, &|_| false);
+        let result = state.select(
+            &providers,
+            &x,
+            1.0,
+            10,
+            &|_| false,
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert!(result.is_none());
     }
 
@@ -611,7 +716,17 @@ mod tests {
         state.total_updates = 100;
         let providers = vec!["a".to_owned(), "b".to_owned()];
         let x = vec![1.0f32, 0.0];
-        let result = state.select(&providers, &x, 1.0, 10, &|_| true);
+        let result = state.select(
+            &providers,
+            &x,
+            1.0,
+            10,
+            &|_| true,
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert!(result.is_some());
         assert!(providers.contains(result.as_ref().unwrap()));
     }
@@ -623,7 +738,17 @@ mod tests {
         let providers = vec!["a".to_owned(), "b".to_owned()];
         let x = vec![1.0f32, 0.0];
         // Provider "b" is over budget.
-        let result = state.select(&providers, &x, 1.0, 10, &|name| name != "b");
+        let result = state.select(
+            &providers,
+            &x,
+            1.0,
+            10,
+            &|name| name != "b",
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert_eq!(result.as_deref(), Some("a"));
     }
 
@@ -642,7 +767,21 @@ mod tests {
         // Run many selections, count how often "a" wins.
         let mut a_wins = 0usize;
         for _ in 0..100 {
-            if state.select(&providers, &x, 0.01, 0, &|_| true).as_deref() == Some("a") {
+            if state
+                .select(
+                    &providers,
+                    &x,
+                    0.01,
+                    0,
+                    &|_| true,
+                    0.0,
+                    &Default::default(),
+                    None,
+                    0.9,
+                )
+                .as_deref()
+                == Some("a")
+            {
                 a_wins += 1;
             }
         }
@@ -737,7 +876,17 @@ mod tests {
         state.total_updates = 100;
         let providers = vec!["only".to_owned()];
         let x = vec![1.0f32, 0.0];
-        let result = state.select(&providers, &x, 1.0, 10, &|_| true);
+        let result = state.select(
+            &providers,
+            &x,
+            1.0,
+            10,
+            &|_| true,
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert_eq!(result.as_deref(), Some("only"));
     }
 
@@ -747,7 +896,17 @@ mod tests {
         state.total_updates = 100;
         let providers: Vec<String> = vec![];
         let x = vec![1.0f32, 0.0];
-        let result = state.select(&providers, &x, 1.0, 0, &|_| true);
+        let result = state.select(
+            &providers,
+            &x,
+            1.0,
+            0,
+            &|_| true,
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert!(result.is_none());
     }
 
@@ -760,7 +919,17 @@ mod tests {
         state.update("b", &x, 0.1);
         let providers = vec!["a".to_owned(), "b".to_owned()];
         // warmup_queries=0 skips cold-start; "a" should win after more reward.
-        let result = state.select(&providers, &x, 0.0, 0, &|_| true);
+        let result = state.select(
+            &providers,
+            &x,
+            0.0,
+            0,
+            &|_| true,
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert_eq!(
             result.as_deref(),
             Some("a"),
@@ -779,7 +948,17 @@ mod tests {
             state.update("low", &x, -1.0);
         }
         let providers = vec!["high".to_owned(), "low".to_owned()];
-        let result = state.select(&providers, &x, 0.0, 0, &|_| true);
+        let result = state.select(
+            &providers,
+            &x,
+            0.0,
+            0,
+            &|_| true,
+            0.0,
+            &Default::default(),
+            None,
+            0.9,
+        );
         assert_eq!(
             result.as_deref(),
             Some("high"),
@@ -838,5 +1017,169 @@ mod tests {
         let arm_stats = state.stats();
         let names: Vec<&str> = arm_stats.iter().map(|(n, _, _)| n.as_str()).collect();
         assert_eq!(names, vec!["apple", "mango", "zebra"]);
+    }
+
+    // ── BaRP cost_weight ────────────────────────────────────────────────────
+
+    #[test]
+    fn provider_cost_estimate_tiers() {
+        // Local / free tier.
+        assert!(provider_cost_estimate("my-ollama", "") < 0.3);
+        assert!(provider_cost_estimate("provider", "ollama/llama3") < 0.3);
+        // Cheap cloud tier.
+        assert!(provider_cost_estimate("fast", "gpt-4o-mini") < 0.4);
+        assert!(provider_cost_estimate("fast", "claude-haiku-3") < 0.4);
+        // Mid tier.
+        assert!(provider_cost_estimate("quality", "claude-sonnet-4-6") >= 0.4);
+        assert!(provider_cost_estimate("quality", "gpt-4o-2024") >= 0.4);
+        // Expensive tier.
+        assert!(provider_cost_estimate("best", "claude-opus-4") >= 0.7);
+        // Unknown: conservative mid-low default.
+        assert_eq!(provider_cost_estimate("unknown-provider", ""), 0.3);
+    }
+
+    #[test]
+    fn cost_weight_biases_toward_cheap_provider() {
+        let dim = 2;
+        let mut state = BanditState::new(dim);
+        let x = vec![1.0f32, 0.0];
+        // Give both providers equal rewards so pure quality is a tie.
+        for _ in 0..20 {
+            state.update("cheap", &x, 0.5);
+            state.update("expensive", &x, 0.5);
+        }
+        let providers = vec!["cheap".to_owned(), "expensive".to_owned()];
+        // Map "expensive" to an expensive model.
+        let mut models = std::collections::HashMap::new();
+        models.insert("expensive".to_owned(), "claude-opus-4".to_owned());
+        models.insert("cheap".to_owned(), "gpt-4o-mini".to_owned());
+        // With cost_weight=1.0, cheap provider should be preferred.
+        let result = state.select(&providers, &x, 0.0, 0, &|_| true, 1.0, &models, None, 0.9);
+        assert_eq!(
+            result.as_deref(),
+            Some("cheap"),
+            "cost_weight=1.0 should prefer cheap provider"
+        );
+    }
+
+    #[test]
+    fn cost_weight_zero_no_bias() {
+        let dim = 2;
+        let mut state = BanditState::new(dim);
+        let x = vec![1.0f32, 0.0];
+        for _ in 0..20 {
+            state.update("cheap", &x, 0.1);
+            state.update("expensive", &x, 0.9);
+        }
+        let providers = vec!["cheap".to_owned(), "expensive".to_owned()];
+        let mut models = std::collections::HashMap::new();
+        models.insert("expensive".to_owned(), "claude-opus-4".to_owned());
+        models.insert("cheap".to_owned(), "gpt-4o-mini".to_owned());
+        // cost_weight=0.0 → pure quality, expensive wins.
+        let result = state.select(&providers, &x, 0.0, 0, &|_| true, 0.0, &models, None, 0.9);
+        assert_eq!(
+            result.as_deref(),
+            Some("expensive"),
+            "cost_weight=0.0 should pick highest quality"
+        );
+    }
+
+    // ── MAR memory_hit_confidence ────────────────────────────────────────────
+
+    #[test]
+    fn mar_high_confidence_boosts_cheap_provider() {
+        let dim = 2;
+        let mut state = BanditState::new(dim);
+        let x = vec![1.0f32, 0.0];
+        // Equal rewards.
+        for _ in 0..20 {
+            state.update("cheap", &x, 0.5);
+            state.update("expensive", &x, 0.5);
+        }
+        let providers = vec!["cheap".to_owned(), "expensive".to_owned()];
+        let mut models = std::collections::HashMap::new();
+        models.insert("expensive".to_owned(), "claude-opus-4".to_owned());
+        models.insert("cheap".to_owned(), "gpt-4o-mini".to_owned());
+        // High memory confidence + cost_weight > 0 → cheap provider boosted.
+        let result = state.select(
+            &providers,
+            &x,
+            0.0,
+            0,
+            &|_| true,
+            0.5,
+            &models,
+            Some(0.95),
+            0.9,
+        );
+        assert_eq!(
+            result.as_deref(),
+            Some("cheap"),
+            "MAR should boost cheap provider on high recall confidence"
+        );
+    }
+
+    #[test]
+    fn mar_low_confidence_no_boost() {
+        let dim = 2;
+        let mut state = BanditState::new(dim);
+        let x = vec![1.0f32, 0.0];
+        for _ in 0..20 {
+            state.update("cheap", &x, 0.1);
+            state.update("expensive", &x, 0.9);
+        }
+        let providers = vec!["cheap".to_owned(), "expensive".to_owned()];
+        let mut models = std::collections::HashMap::new();
+        models.insert("expensive".to_owned(), "claude-opus-4".to_owned());
+        models.insert("cheap".to_owned(), "gpt-4o-mini".to_owned());
+        // Confidence below threshold → no MAR boost, quality wins.
+        let result = state.select(
+            &providers,
+            &x,
+            0.0,
+            0,
+            &|_| true,
+            0.5,
+            &models,
+            Some(0.5),
+            0.9,
+        );
+        assert_eq!(
+            result.as_deref(),
+            Some("expensive"),
+            "below threshold: no MAR boost"
+        );
+    }
+
+    #[test]
+    fn mar_cost_weight_zero_no_boost_even_high_confidence() {
+        let dim = 2;
+        let mut state = BanditState::new(dim);
+        let x = vec![1.0f32, 0.0];
+        for _ in 0..20 {
+            state.update("cheap", &x, 0.1);
+            state.update("expensive", &x, 0.9);
+        }
+        let providers = vec!["cheap".to_owned(), "expensive".to_owned()];
+        let mut models = std::collections::HashMap::new();
+        models.insert("expensive".to_owned(), "claude-opus-4".to_owned());
+        models.insert("cheap".to_owned(), "gpt-4o-mini".to_owned());
+        // cost_weight=0.0 → memory_boost=0 even with high confidence; quality wins.
+        let result = state.select(
+            &providers,
+            &x,
+            0.0,
+            0,
+            &|_| true,
+            0.0,
+            &models,
+            Some(0.99),
+            0.9,
+        );
+        assert_eq!(
+            result.as_deref(),
+            Some("expensive"),
+            "cost_weight=0 → no MAR effect"
+        );
     }
 }

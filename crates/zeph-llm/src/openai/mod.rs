@@ -452,6 +452,10 @@ impl LlmProvider for OpenAiProvider {
         "openai"
     }
 
+    fn model_identifier(&self) -> &str {
+        &self.model
+    }
+
     fn list_models(&self) -> Vec<String> {
         vec![self.model.clone()]
     }

@@ -565,6 +565,18 @@ pub struct BanditConfig {
     /// Do not place it in world-writable directories.
     #[serde(default)]
     pub state_path: Option<String>,
+
+    /// MAR (Memory-Augmented Routing) confidence threshold.
+    ///
+    /// When the top-1 semantic recall score for the current query is >= this value,
+    /// the bandit biases toward cheaper providers (the answer is likely in memory).
+    /// Set to 1.0 to disable MAR. Default: 0.9.
+    #[serde(default = "default_bandit_memory_confidence_threshold")]
+    pub memory_confidence_threshold: f32,
+}
+
+fn default_bandit_memory_confidence_threshold() -> f32 {
+    0.9
 }
 
 impl Default for BanditConfig {
@@ -578,6 +590,7 @@ impl Default for BanditConfig {
             embedding_timeout_ms: default_bandit_embedding_timeout_ms(),
             cache_size: default_bandit_cache_size(),
             state_path: None,
+            memory_confidence_threshold: default_bandit_memory_confidence_threshold(),
         }
     }
 }

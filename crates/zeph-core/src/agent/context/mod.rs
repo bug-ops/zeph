@@ -93,7 +93,8 @@ pub(super) enum CompactionOutcome {
 pub(super) enum ContextSlot {
     Summaries(Option<Message>),
     CrossSession(Option<Message>),
-    SemanticRecall(Option<Message>),
+    /// Semantic recall result. Carries the formatted message and the top-1 similarity score.
+    SemanticRecall(Option<Message>, Option<f32>),
     DocumentRag(Option<Message>),
     Corrections(Option<Message>),
     CodeContext(Option<String>),
