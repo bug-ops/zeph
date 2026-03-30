@@ -336,6 +336,7 @@ mod tests {
             name: "create_issue".into(),
             description: "Create a GitHub issue".into(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);
         let defs = executor.tool_definitions();
@@ -353,6 +354,7 @@ mod tests {
             name: "list_dir".into(),
             description: "List directory".into(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }]);
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 1);
@@ -400,6 +402,7 @@ mod tests {
             name: "tool".into(),
             description: "d".into(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }]);
         let text = "```mcp\n{\"server\":\"srv\",\"tool\":\"tool\"}\n```";
         // Server not actually connected, so execute_tool_call returns Err.
@@ -441,6 +444,7 @@ mod tests {
             name: "create_issue".into(),
             description: "desc".into(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);
 
@@ -463,6 +467,7 @@ mod tests {
             name: "some_tool".into(),
             description: "desc".into(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);
 
@@ -485,12 +490,14 @@ mod tests {
                 name: "tool:with:colons".into(),
                 description: "d".into(),
                 input_schema: serde_json::json!({}),
+                security_meta: Default::default(),
             },
             McpTool {
                 server_id: "srv.two".into(),
                 name: "normal_tool".into(),
                 description: "d".into(),
                 input_schema: serde_json::json!({}),
+                security_meta: Default::default(),
             },
         ]));
         let executor = McpToolExecutor::new(mgr, tools);
@@ -514,6 +521,7 @@ mod tests {
             name: "tool name!".into(),
             description: "d".into(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);
         let defs = executor.tool_definitions();

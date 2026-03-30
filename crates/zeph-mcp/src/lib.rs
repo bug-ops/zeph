@@ -40,7 +40,9 @@ pub use executor::McpToolExecutor;
 pub use manager::{McpManager, McpTransport, McpTrustLevel, ServerConnectOutcome, ServerEntry};
 #[cfg(feature = "mock")]
 pub use mock::{McpCall, MockMcpCaller};
-pub use policy::{McpPolicy, PolicyEnforcer, PolicyViolation, RateLimit};
+pub use policy::{
+    DataFlowViolation, McpPolicy, PolicyEnforcer, PolicyViolation, RateLimit, check_data_flow,
+};
 pub use prober::{DefaultMcpProber, ProbeResult};
 pub use prompt::format_mcp_tools_prompt;
 pub use pruning::{
@@ -48,8 +50,9 @@ pub use pruning::{
     tool_list_hash,
 };
 pub use registry::McpToolRegistry;
+pub use sanitize::SanitizeResult;
 pub use semantic_index::{
     DiscoveryParams, SemanticIndexError, SemanticToolIndex, ToolDiscoveryStrategy,
 };
-pub use tool::McpTool;
+pub use tool::{CapabilityClass, DataSensitivity, McpTool, ToolSecurityMeta, infer_security_meta};
 pub use trust_score::{ServerTrustScore, TrustScoreStore};

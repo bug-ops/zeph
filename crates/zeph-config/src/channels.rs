@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::defaults::default_true;
 
-pub use zeph_mcp::McpTrustLevel;
+pub use zeph_mcp::{McpTrustLevel, tool::ToolSecurityMeta};
 
 fn default_slack_port() -> u16 {
     3000
@@ -422,6 +422,10 @@ pub struct McpServerConfig {
     /// When empty, the server receives an empty roots list.
     #[serde(default)]
     pub roots: Vec<McpRootEntry>,
+    /// Per-tool security metadata overrides. Keys are tool names.
+    /// When absent for a tool, metadata is inferred from the tool name via heuristics.
+    #[serde(default)]
+    pub tool_metadata: HashMap<String, ToolSecurityMeta>,
 }
 
 /// A filesystem root exposed to an MCP server via `roots/list`.
@@ -504,6 +508,10 @@ impl std::fmt::Debug for McpServerConfig {
             .field("tool_allowlist", &self.tool_allowlist)
             .field("expected_tools", &self.expected_tools)
             .field("roots", &self.roots)
+            .field(
+                "tool_metadata_keys",
+                &self.tool_metadata.keys().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }

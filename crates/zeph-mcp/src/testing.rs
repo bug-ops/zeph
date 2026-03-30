@@ -59,6 +59,7 @@ impl MockMcpServer {
             name: name.into(),
             description: description.into(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            security_meta: Default::default(),
         });
         self
     }

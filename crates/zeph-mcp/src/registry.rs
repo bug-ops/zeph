@@ -166,6 +166,7 @@ impl McpToolRegistry {
                     name,
                     description,
                     input_schema: serde_json::Value::Object(serde_json::Map::new()),
+                    security_meta: crate::tool::ToolSecurityMeta::default(),
                 })
             })
             .collect()
@@ -182,6 +183,7 @@ mod tests {
             name: name.into(),
             description: "test".into(),
             input_schema: serde_json::json!({}),
+            security_meta: crate::tool::ToolSecurityMeta::default(),
         }
     }
 
@@ -230,12 +232,14 @@ mod tests {
             name: "tool".into(),
             description: "test".into(),
             input_schema: serde_json::json!({}),
+            security_meta: crate::tool::ToolSecurityMeta::default(),
         };
         let t2 = McpTool {
             server_id: "server-b".into(),
             name: "tool".into(),
             description: "test".into(),
             input_schema: serde_json::json!({}),
+            security_meta: crate::tool::ToolSecurityMeta::default(),
         };
         assert_ne!(compute_hash(&t1), compute_hash(&t2));
     }

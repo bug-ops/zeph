@@ -322,6 +322,7 @@ mod tests {
             name: name.into(),
             description: desc.into(),
             input_schema: serde_json::Value::Null,
+            security_meta: Default::default(),
         }
     }
 

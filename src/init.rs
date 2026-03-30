@@ -1459,6 +1459,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             tool_allowlist: None,
             expected_tools: Vec::new(),
             roots: Vec::new(),
+            tool_metadata: std::collections::HashMap::new(),
         });
     }
     for server in state.mcp_remote_servers.clone() {
@@ -1891,6 +1892,7 @@ fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             tool_allowlist: None,
             expected_tools: Vec::new(),
             roots: Vec::new(),
+            tool_metadata: std::collections::HashMap::new(),
         });
 
         println!("Server added.");

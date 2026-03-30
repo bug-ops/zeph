@@ -44,6 +44,7 @@ mod tests {
             name: name.into(),
             description: desc.into(),
             input_schema: serde_json::json!({"type": "object"}),
+            security_meta: Default::default(),
         }
     }
 

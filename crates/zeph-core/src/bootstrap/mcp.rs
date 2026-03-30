@@ -51,6 +51,7 @@ pub fn create_mcp_manager_with_vault(
                 tool_allowlist: s.tool_allowlist.clone(),
                 expected_tools: s.expected_tools.clone(),
                 roots,
+                tool_metadata: s.tool_metadata.clone(),
             }
         })
         .collect();

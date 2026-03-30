@@ -16,6 +16,62 @@ use std::time::Instant;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::manager::McpTrustLevel;
+use crate::tool::{DataSensitivity, McpTool};
+
+// ── Data-flow policy ─────────────────────────────────────────────────────────
+
+/// Data-flow policy violation.
+#[derive(Debug, thiserror::Error)]
+pub enum DataFlowViolation {
+    #[error(
+        "tool '{tool_name}' (sensitivity={sensitivity:?}) on server '{server_id}' \
+         (trust={trust:?}) violates data-flow policy: \
+         high-sensitivity tools require trusted servers"
+    )]
+    SensitivityTrustMismatch {
+        server_id: String,
+        tool_name: String,
+        sensitivity: DataSensitivity,
+        trust: McpTrustLevel,
+    },
+}
+
+/// Check data-flow constraints at tool registration time.
+///
+/// High-sensitivity tools (shell, database write) must not be registered on
+/// untrusted or sandboxed servers. Medium-sensitivity tools on sandboxed servers
+/// emit a warning but are allowed.
+///
+/// # Errors
+///
+/// Returns `DataFlowViolation::SensitivityTrustMismatch` when a high-sensitivity
+/// tool is registered on an untrusted or sandboxed server.
+pub fn check_data_flow(
+    tool: &McpTool,
+    server_trust: McpTrustLevel,
+) -> Result<(), DataFlowViolation> {
+    match (tool.security_meta.data_sensitivity, server_trust) {
+        (DataSensitivity::High, McpTrustLevel::Untrusted | McpTrustLevel::Sandboxed) => {
+            Err(DataFlowViolation::SensitivityTrustMismatch {
+                server_id: tool.server_id.clone(),
+                tool_name: tool.name.clone(),
+                sensitivity: tool.security_meta.data_sensitivity,
+                trust: server_trust,
+            })
+        }
+        (DataSensitivity::Medium, McpTrustLevel::Sandboxed) => {
+            tracing::warn!(
+                server_id = %tool.server_id,
+                tool_name = %tool.name,
+                "medium-sensitivity tool on sandboxed server — use with caution"
+            );
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// Rate limit configuration for a single MCP server.
@@ -250,6 +306,87 @@ mod tests {
         assert!(enforcer.check("other-srv", "rm").is_ok());
     }
 
+    // --- check_data_flow ---
+
+    fn make_tool_with_meta(
+        name: &str,
+        sensitivity: crate::tool::DataSensitivity,
+    ) -> crate::tool::McpTool {
+        use crate::tool::ToolSecurityMeta;
+        crate::tool::McpTool {
+            server_id: "srv".into(),
+            name: name.into(),
+            description: "test".into(),
+            input_schema: serde_json::json!({}),
+            security_meta: ToolSecurityMeta {
+                data_sensitivity: sensitivity,
+                capabilities: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn data_flow_high_sensitivity_untrusted_blocked() {
+        let tool = make_tool_with_meta("exec_shell", crate::tool::DataSensitivity::High);
+        let result = check_data_flow(&tool, McpTrustLevel::Untrusted);
+        assert!(matches!(
+            result,
+            Err(DataFlowViolation::SensitivityTrustMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn data_flow_high_sensitivity_sandboxed_blocked() {
+        let tool = make_tool_with_meta("exec_shell", crate::tool::DataSensitivity::High);
+        let result = check_data_flow(&tool, McpTrustLevel::Sandboxed);
+        assert!(matches!(
+            result,
+            Err(DataFlowViolation::SensitivityTrustMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn data_flow_high_sensitivity_trusted_allowed() {
+        let tool = make_tool_with_meta("exec_shell", crate::tool::DataSensitivity::High);
+        assert!(check_data_flow(&tool, McpTrustLevel::Trusted).is_ok());
+    }
+
+    #[test]
+    fn data_flow_medium_sensitivity_untrusted_allowed() {
+        let tool = make_tool_with_meta("write_file", crate::tool::DataSensitivity::Medium);
+        assert!(check_data_flow(&tool, McpTrustLevel::Untrusted).is_ok());
+    }
+
+    #[test]
+    fn data_flow_medium_sensitivity_sandboxed_warns_but_allows() {
+        let tool = make_tool_with_meta("write_file", crate::tool::DataSensitivity::Medium);
+        // Medium on Sandboxed should warn but not block
+        assert!(check_data_flow(&tool, McpTrustLevel::Sandboxed).is_ok());
+    }
+
+    #[test]
+    fn data_flow_low_sensitivity_any_trust_allowed() {
+        let tool = make_tool_with_meta("get_info", crate::tool::DataSensitivity::Low);
+        assert!(check_data_flow(&tool, McpTrustLevel::Untrusted).is_ok());
+        assert!(check_data_flow(&tool, McpTrustLevel::Sandboxed).is_ok());
+        assert!(check_data_flow(&tool, McpTrustLevel::Trusted).is_ok());
+    }
+
+    #[test]
+    fn data_flow_none_sensitivity_any_trust_allowed() {
+        let tool = make_tool_with_meta("read_info", crate::tool::DataSensitivity::None);
+        assert!(check_data_flow(&tool, McpTrustLevel::Untrusted).is_ok());
+    }
+
+    #[test]
+    fn data_flow_violation_message_descriptive() {
+        let tool = make_tool_with_meta("exec_shell", crate::tool::DataSensitivity::High);
+        let err = check_data_flow(&tool, McpTrustLevel::Untrusted).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("exec_shell"));
+        assert!(msg.contains("high-sensitivity"));
+    }
+
     #[test]
     fn policy_violation_messages_are_descriptive() {
         let denied = PolicyViolation::ToolDenied {
@@ -269,5 +406,11 @@ mod tests {
             max_calls_per_minute: 10,
         };
         assert!(rate.to_string().contains("rate limit"));
+    }
+
+    #[test]
+    fn data_flow_medium_sensitivity_trusted_allowed() {
+        let tool = make_tool_with_meta("write_file", crate::tool::DataSensitivity::Medium);
+        assert!(check_data_flow(&tool, McpTrustLevel::Trusted).is_ok());
     }
 }

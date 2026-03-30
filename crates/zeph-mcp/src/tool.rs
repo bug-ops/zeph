@@ -3,12 +3,131 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How sensitive the data this tool accesses or produces is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataSensitivity {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+}
+
+/// Coarse capability classification for tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityClass {
+    FilesystemRead,
+    FilesystemWrite,
+    Network,
+    Shell,
+    DatabaseRead,
+    DatabaseWrite,
+    MemoryWrite,
+    ExternalApi,
+}
+
+/// Per-tool security metadata.
+///
+/// Assigned by operator config or inferred from tool name heuristics at registration time.
+/// Stored alongside `McpTool` in the tool registry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolSecurityMeta {
+    /// Data sensitivity of this tool's outputs.
+    #[serde(default)]
+    pub data_sensitivity: DataSensitivity,
+    /// Capability classes this tool exercises.
+    #[serde(default)]
+    pub capabilities: Vec<CapabilityClass>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
     pub server_id: String,
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// Per-tool security metadata. Populated from config or heuristics at registration time.
+    #[serde(default)]
+    pub security_meta: ToolSecurityMeta,
+}
+
+/// Infer security metadata from tool name when no explicit config exists.
+///
+/// Uses narrow keyword matching to minimize false positives. Generic verbs
+/// ("get", "list", "search") are excluded — they appear in API tools that have
+/// nothing to do with filesystem access. Only explicitly filesystem-related
+/// keywords trigger filesystem capabilities.
+///
+/// Unknown tools (no keyword match) default to `DataSensitivity::Low` with
+/// empty capabilities — mild suspicion, not zero concern.
+///
+/// Operator config always takes precedence over heuristic inference.
+#[must_use]
+pub fn infer_security_meta(tool_name: &str) -> ToolSecurityMeta {
+    let name = tool_name.to_lowercase();
+    let mut caps = Vec::new();
+    let mut sensitivity = DataSensitivity::Low;
+
+    // Filesystem write — explicit mutation verbs + filesystem context
+    if name.contains("write")
+        || name.contains("delete")
+        || name.contains("move")
+        || name.contains("copy")
+    {
+        caps.push(CapabilityClass::FilesystemWrite);
+        sensitivity = sensitivity.max(DataSensitivity::Medium);
+    }
+    // Filesystem read — only when name contains explicit filesystem keywords
+    if (name.contains("read") || name.contains("cat"))
+        && (name.contains("file")
+            || name.contains("dir")
+            || name.contains("path")
+            || name.contains("folder"))
+    {
+        caps.push(CapabilityClass::FilesystemRead);
+        // sensitivity stays Low (read-only)
+    }
+    // "create" + filesystem context → write; "create" alone is too generic
+    if name.contains("create")
+        && (name.contains("file") || name.contains("dir") || name.contains("folder"))
+    {
+        caps.push(CapabilityClass::FilesystemWrite);
+        sensitivity = sensitivity.max(DataSensitivity::Medium);
+    }
+    // Shell execution — high sensitivity
+    if name.contains("shell") || name.contains("bash") || name.contains("exec") {
+        caps.push(CapabilityClass::Shell);
+        sensitivity = sensitivity.max(DataSensitivity::High);
+    }
+    // Network — explicit network verbs
+    if name.contains("fetch")
+        || name.contains("http")
+        || name.contains("request")
+        || name.contains("scrape")
+        || name.contains("curl")
+    {
+        caps.push(CapabilityClass::Network);
+        sensitivity = sensitivity.max(DataSensitivity::Medium);
+    }
+    // Memory write — requires "memory" in name
+    if name.contains("memory")
+        && (name.contains("save") || name.contains("write") || name.contains("store"))
+    {
+        caps.push(CapabilityClass::MemoryWrite);
+        sensitivity = sensitivity.max(DataSensitivity::Medium);
+    }
+    // Database — explicit SQL/database keywords
+    if name.contains("sql") || name.contains("database") {
+        caps.push(CapabilityClass::DatabaseRead);
+        sensitivity = sensitivity.max(DataSensitivity::Medium);
+    }
+
+    ToolSecurityMeta {
+        data_sensitivity: sensitivity,
+        capabilities: caps,
+    }
 }
 
 impl McpTool {
@@ -63,6 +182,7 @@ mod tests {
             name: name.into(),
             description: "test tool".into(),
             input_schema: serde_json::json!({}),
+            security_meta: ToolSecurityMeta::default(),
         }
     }
 
@@ -169,5 +289,206 @@ mod tests {
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
             "got unexpected chars in: {id}"
         );
+    }
+
+    #[test]
+    fn tool_roundtrip_json_with_security_meta() {
+        let tool = McpTool {
+            server_id: "fs".into(),
+            name: "write_file".into(),
+            description: "Write a file".into(),
+            input_schema: serde_json::json!({}),
+            security_meta: ToolSecurityMeta {
+                data_sensitivity: DataSensitivity::Medium,
+                capabilities: vec![CapabilityClass::FilesystemWrite],
+            },
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        let parsed: McpTool = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.security_meta.data_sensitivity,
+            DataSensitivity::Medium
+        );
+        assert_eq!(
+            parsed.security_meta.capabilities,
+            vec![CapabilityClass::FilesystemWrite]
+        );
+    }
+
+    #[test]
+    fn tool_default_security_meta_is_none_sensitivity() {
+        let tool = make_tool("srv", "some_tool");
+        assert_eq!(tool.security_meta.data_sensitivity, DataSensitivity::None);
+        assert!(tool.security_meta.capabilities.is_empty());
+    }
+
+    // infer_security_meta tests
+
+    #[test]
+    fn infer_shell_tools_get_high_sensitivity() {
+        let meta = infer_security_meta("exec_command");
+        assert_eq!(meta.data_sensitivity, DataSensitivity::High);
+        assert!(meta.capabilities.contains(&CapabilityClass::Shell));
+    }
+
+    #[test]
+    fn infer_bash_tool_is_shell() {
+        let meta = infer_security_meta("run_bash");
+        assert_eq!(meta.data_sensitivity, DataSensitivity::High);
+        assert!(meta.capabilities.contains(&CapabilityClass::Shell));
+    }
+
+    #[test]
+    fn infer_write_file_gets_filesystem_write_medium() {
+        let meta = infer_security_meta("write_file");
+        assert_eq!(meta.data_sensitivity, DataSensitivity::Medium);
+        assert!(
+            meta.capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+    }
+
+    #[test]
+    fn infer_read_file_gets_filesystem_read_low() {
+        let meta = infer_security_meta("read_file");
+        assert_eq!(meta.data_sensitivity, DataSensitivity::Low);
+        assert!(meta.capabilities.contains(&CapabilityClass::FilesystemRead));
+    }
+
+    #[test]
+    fn infer_delete_gets_filesystem_write() {
+        let meta = infer_security_meta("delete_file");
+        assert!(
+            meta.capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+    }
+
+    #[test]
+    fn infer_create_dir_gets_filesystem_write() {
+        let meta = infer_security_meta("create_dir");
+        assert!(
+            meta.capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+    }
+
+    #[test]
+    fn infer_network_fetch_gets_network() {
+        let meta = infer_security_meta("fetch_url");
+        assert!(meta.capabilities.contains(&CapabilityClass::Network));
+        assert_eq!(meta.data_sensitivity, DataSensitivity::Medium);
+    }
+
+    #[test]
+    fn infer_scrape_gets_network() {
+        let meta = infer_security_meta("web_scrape");
+        assert!(meta.capabilities.contains(&CapabilityClass::Network));
+    }
+
+    #[test]
+    fn infer_sql_query_gets_database() {
+        let meta = infer_security_meta("run_sql_query");
+        assert!(meta.capabilities.contains(&CapabilityClass::DatabaseRead));
+    }
+
+    #[test]
+    fn infer_memory_save_gets_memory_write() {
+        let meta = infer_security_meta("memory_save");
+        assert!(meta.capabilities.contains(&CapabilityClass::MemoryWrite));
+    }
+
+    // No false positives on generic names
+    #[test]
+    fn infer_generic_get_weather_no_filesystem_caps() {
+        let meta = infer_security_meta("get_weather");
+        assert!(!meta.capabilities.contains(&CapabilityClass::FilesystemRead));
+        assert!(
+            !meta
+                .capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+        assert!(!meta.capabilities.contains(&CapabilityClass::Shell));
+    }
+
+    #[test]
+    fn infer_list_models_no_filesystem_caps() {
+        let meta = infer_security_meta("list_models");
+        assert!(!meta.capabilities.contains(&CapabilityClass::FilesystemRead));
+        assert!(
+            !meta
+                .capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+    }
+
+    #[test]
+    fn infer_search_docs_no_filesystem_caps() {
+        let meta = infer_security_meta("search_docs");
+        assert!(!meta.capabilities.contains(&CapabilityClass::FilesystemRead));
+        assert!(
+            !meta
+                .capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+    }
+
+    #[test]
+    fn infer_save_note_no_memory_write_without_memory_keyword() {
+        // "save" alone should not trigger MemoryWrite — needs "memory" in name
+        let meta = infer_security_meta("save_note");
+        assert!(!meta.capabilities.contains(&CapabilityClass::MemoryWrite));
+    }
+
+    #[test]
+    fn infer_unknown_tool_defaults_to_low_sensitivity_empty_caps() {
+        let meta = infer_security_meta("do_something_random");
+        assert_eq!(meta.data_sensitivity, DataSensitivity::Low);
+        assert!(meta.capabilities.is_empty());
+    }
+
+    #[test]
+    fn data_sensitivity_ordering() {
+        assert!(DataSensitivity::None < DataSensitivity::Low);
+        assert!(DataSensitivity::Low < DataSensitivity::Medium);
+        assert!(DataSensitivity::Medium < DataSensitivity::High);
+    }
+
+    #[test]
+    fn infer_http_keyword_gets_network() {
+        let meta = infer_security_meta("make_http_request");
+        assert!(meta.capabilities.contains(&CapabilityClass::Network));
+        assert_eq!(meta.data_sensitivity, DataSensitivity::Medium);
+    }
+
+    #[test]
+    fn infer_database_keyword_gets_database_read() {
+        let meta = infer_security_meta("query_database");
+        assert!(meta.capabilities.contains(&CapabilityClass::DatabaseRead));
+    }
+
+    #[test]
+    fn infer_move_gets_filesystem_write() {
+        let meta = infer_security_meta("move_file");
+        assert!(
+            meta.capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+    }
+
+    #[test]
+    fn infer_copy_gets_filesystem_write() {
+        let meta = infer_security_meta("copy_file");
+        assert!(
+            meta.capabilities
+                .contains(&CapabilityClass::FilesystemWrite)
+        );
+    }
+
+    #[test]
+    fn infer_curl_gets_network() {
+        let meta = infer_security_meta("run_curl");
+        assert!(meta.capabilities.contains(&CapabilityClass::Network));
+        assert_eq!(meta.data_sensitivity, DataSensitivity::Medium);
     }
 }

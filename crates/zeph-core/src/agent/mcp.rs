@@ -87,6 +87,7 @@ impl<C: Channel> Agent<C> {
             tool_allowlist: None,
             expected_tools: Vec::new(),
             roots: Vec::new(),
+            tool_metadata: std::collections::HashMap::new(),
         };
 
         let _ = self.channel.send_status("connecting to mcp...").await;
@@ -712,6 +713,7 @@ mod tests {
             name: "existing_tool".into(),
             description: String::new(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }];
 
         let (_tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
@@ -737,6 +739,7 @@ mod tests {
             name: "refreshed_tool".into(),
             description: String::new(),
             input_schema: serde_json::json!({}),
+            security_meta: Default::default(),
         }];
         tx.send(new_tools).unwrap();
 
