@@ -590,6 +590,68 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Archive tool output bodies from `to_compact` messages before compaction (Memex #2432).
+    ///
+    /// Saves each non-empty, non-already-archived `ToolOutput` body to `tool_overflow`
+    /// with `archive_type = 'archive'`. Returns a list of reference strings in the format
+    /// `[archived:{uuid} — tool: {tool_name} — {bytes} bytes]` for use as a postfix.
+    ///
+    /// References are injected AFTER summarization (fix C1: LLM would destroy them).
+    /// Returns an empty vec when `archive_tool_outputs` is disabled or memory is unavailable.
+    async fn archive_tool_outputs_for_compaction(&self, to_compact: &[Message]) -> Vec<String> {
+        if !self.context_manager.compression.archive_tool_outputs {
+            return Vec::new();
+        }
+        let (Some(memory), Some(cid)) =
+            (&self.memory_state.memory, self.memory_state.conversation_id)
+        else {
+            return Vec::new();
+        };
+
+        let mut refs = Vec::new();
+        let sqlite = memory.sqlite();
+
+        for msg in to_compact {
+            for part in &msg.parts {
+                if let MessagePart::ToolOutput {
+                    body, tool_name, ..
+                } = part
+                {
+                    // Skip empty, already-archived, or already-overflowed bodies.
+                    if body.is_empty()
+                        || body.starts_with("[archived:")
+                        || body.starts_with("[full output stored")
+                        || body.starts_with("[tool output pruned")
+                    {
+                        continue;
+                    }
+                    match sqlite.save_archive(cid.0, body.as_bytes()).await {
+                        Ok(uuid) => {
+                            let bytes = body.len();
+                            refs.push(format!(
+                                "[archived:{uuid} — tool: {tool_name} — {bytes} bytes]"
+                            ));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Memex: failed to archive tool output (non-fatal)"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if !refs.is_empty() {
+            tracing::debug!(
+                archived = refs.len(),
+                "Memex: archived tool outputs before compaction"
+            );
+        }
+        refs
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(in crate::agent) async fn compact_context(
         &mut self,
@@ -699,6 +761,17 @@ impl<C: Channel> Agent<C> {
         #[cfg(not(feature = "compression-guidelines"))]
         let guidelines = String::new();
 
+        // Memex: archive tool output bodies before compaction (#2432).
+        //
+        // Archives are saved BEFORE summarization, but references are injected AFTER
+        // summarization as a postfix (fix C1: LLM would destroy [archived:UUID] markers).
+        // The LLM summarizes the original messages without placeholders.
+        //
+        // Invariant: save_archive() is called before the placeholder is created;
+        // the placeholder is only inserted into the postfix, not into `to_compact`.
+        let archived_refs: Vec<String> =
+            self.archive_tool_outputs_for_compaction(&to_compact).await;
+
         let summary = self.summarize_messages(&to_compact, &guidelines).await?;
 
         // Compaction probe: validate summary quality before committing it.
@@ -789,8 +862,17 @@ impl<C: Channel> Agent<C> {
         }
 
         let compacted_count = to_compact.len();
-        let summary_content =
-            format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
+        // Inject archived references as a postfix AFTER the LLM summary (fix C1).
+        // The LLM summary is unaware of archives; the postfix ensures references survive.
+        let archive_postfix = if archived_refs.is_empty() {
+            String::new()
+        } else {
+            let refs = archived_refs.join("\n");
+            format!("\n\n[archived tool outputs — retrievable via read_overflow]\n{refs}")
+        };
+        let summary_content = format!(
+            "[conversation summary — {compacted_count} messages compacted]\n{summary}{archive_postfix}"
+        );
         // Drain the original range (includes pinned, active-subgoal, and non-pinned messages).
         self.msg.messages.drain(1..compact_end);
         // Insert the compaction summary at position 1.
@@ -964,6 +1046,8 @@ impl<C: Channel> Agent<C> {
                 } = part
                     && compacted_at.is_none()
                     && !body.is_empty()
+                    // Skip already-archived bodies — they are tiny and irretrievable if pruned.
+                    && !body.starts_with("[archived:")
                 {
                     freed += self.metrics.token_counter.count_tokens(body);
                     let ref_notice = extract_overflow_ref(body)
@@ -2134,13 +2218,23 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
+        // Memex: archive tool output bodies before compaction (#2432).
+        let archived_refs: Vec<String> = self.archive_tool_outputs_for_compaction(to_compact).await;
+
         let summary = self
             .summarize_messages_with_budget(to_compact, max_summary_tokens)
             .await?;
 
         let compacted_count = to_compact.len();
-        let summary_content =
-            format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
+        let archive_postfix = if archived_refs.is_empty() {
+            String::new()
+        } else {
+            let refs = archived_refs.join("\n");
+            format!("\n\n[archived tool outputs — retrievable via read_overflow]\n{refs}")
+        };
+        let summary_content = format!(
+            "[conversation summary — {compacted_count} messages compacted]\n{summary}{archive_postfix}"
+        );
         self.msg.messages.drain(1..compact_end);
         self.msg.messages.insert(
             1,

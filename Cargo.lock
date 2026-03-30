@@ -9804,6 +9804,7 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "tempfile",
  "testcontainers",

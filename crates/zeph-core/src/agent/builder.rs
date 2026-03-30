@@ -1408,6 +1408,7 @@ mod tests {
             pruning_strategy: crate::config::PruningStrategy::default(),
             probe: zeph_memory::CompactionProbeConfig::default(),
             compress_provider: String::new(),
+            archive_tool_outputs: false,
         };
         let agent = make_agent().with_compression(compression);
         assert!(

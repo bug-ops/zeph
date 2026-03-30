@@ -967,6 +967,8 @@ sweep_batch_size = 100
 #
 # [memory.compression]
 # compress_provider = "fast" # SLM: summarization
+# # Archive tool output bodies to SQLite before compaction and inject references postfix (Memex #2432)
+# archive_tool_outputs = false
 #
 # [memory.compression.probe]
 # probe_provider = "fast"    # SLM: single-number quality scoring
@@ -976,6 +978,10 @@ sweep_batch_size = 100
 #
 # [memory.admission]
 # admission_provider = "fast" # SLM: structured scoring
+# # Admission strategy: "heuristic" (default) or "rl" (logistic regression, requires rl_min_samples)
+# admission_strategy = "heuristic"
+# # Minimum training samples before switching from heuristic to RL model
+# rl_min_samples = 500
 #
 # [learning]
 # feedback_provider = "fast" # SLM: three-class classification

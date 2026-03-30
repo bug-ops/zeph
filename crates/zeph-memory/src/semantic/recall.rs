@@ -428,6 +428,14 @@ impl SemanticMemory {
             tracing::warn!("recall: failed to increment access counts: {e:#}");
         }
 
+        // Update RL admission training data: mark recalled messages as positive examples.
+        if let Err(e) = self.sqlite.mark_training_recalled(&ids).await {
+            tracing::debug!(
+                error = %e,
+                "recall: failed to mark training data as recalled (non-fatal)"
+            );
+        }
+
         let messages = self.sqlite.messages_by_ids(&ids).await?;
         let msg_map: std::collections::HashMap<MessageId, _> = messages.into_iter().collect();
 

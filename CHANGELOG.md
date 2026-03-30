@@ -8,15 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory): Memex tool output archive — before compaction, `ToolOutput` bodies in the compaction range are saved to `tool_overflow` with `archive_type = 'archive'`; archived UUIDs are appended as a postfix after LLM summarization so references survive compaction; controlled by `[memory.compression] archive_tool_outputs = false`; archives are excluded from the short-lived cleanup job via `archive_type` column (migration 054, closes #2432)
+- feat(memory): ACON per-category compression guidelines — `compression_failure_pairs` now stores a `category` column (`tool_output`, `assistant_reasoning`, `user_context`, `unknown`); the compression guidelines table gains a `category` column with `UNIQUE(version, category)` constraint; the `compression_guidelines` updater can now maintain per-category guideline documents when `categorized_guidelines = true`; failure category is classified from the compaction summary content before calling the LLM (migration 054, closes #2433)
+- feat(memory): RL-based admission control — new `AdmissionStrategy` enum with `heuristic` (default) and `rl` variants; `admission_training_data` table records all messages seen by A-MAC (admitted and rejected) to eliminate survivorship bias; `was_recalled` flag is set by `SemanticMemory::recall()` to provide positive training signal; lightweight logistic regression model in `admission_rl.rs` replaces the LLM `future_utility` factor when enough samples are available; weights persisted in `admission_rl_weights` table; controlled by `[memory.admission] admission_strategy`, `rl_min_samples = 500`, `rl_retrain_interval_secs = 3600` (migration 055, closes #2416)
 - feat(security): MCP-to-ACP confused-deputy boundary enforcement — when `mcp_to_acp_boundary = true` (default) and agent is in an ACP session, MCP tool results are unconditionally quarantined before entering the ACP response stream; cross-boundary flows emit `CrossBoundaryMcpToAcp` security events and `cross_boundary_mcp_to_acp: true` audit entries (#2417)
 - feat(security): env var sanitization for MCP stdio child processes — `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `DYLD_FALLBACK_LIBRARY_PATH` are stripped from ACP-provided env vars (#2417)
 
 ### Changed
 
 - **BREAKING**: `tool_allowlist` type changed from `Vec<String>` to `Option<Vec<String>>` in `ServerEntry` and `McpServerConfig` — `None` means no override (all tools, with untrusted warning), `Some(vec![])` means explicit deny-all (fail-closed), `Some(vec![...])` filters to named tools (#2417)
-
-### Added (continued)
-
 - feat(acp): implement `session/close` handler — `ZephAcpAgent::close_session` removes the in-memory session entry, fires `cancel_signal` to stop any running turn, and returns idempotent `Ok` for unknown session IDs; advertise `session.close` capability in `initialize()`; gated behind `unstable-session-close` feature included in `default` and `acp-unstable` (closes #2421)
 - feat(acp): bump `agent-client-protocol` 0.10.2→0.10.3, `agent-client-protocol-schema` 0.11.2→0.11.3; add `unstable-logout` feature with no-op logout handler and `auth.logout` capability advertisement; add `unstable-elicitation` feature gate (exposes schema types; SDK methods not yet available upstream); fix discovery endpoint `protocol_version` to use `ProtocolVersion::LATEST`; fix double-feature-activation antipattern in `zeph-acp` feature flags (#2411)
 - feat(skills): add `category` field to SKILL.md frontmatter — optional grouping for skill library organisation; all 26 bundled skills annotated with categories (`web`, `data`, `dev`, `system`) (#2268)

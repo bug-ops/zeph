@@ -4,6 +4,7 @@
 //! Database-backed conversation persistence with Qdrant vector search.
 
 pub mod admission;
+pub mod admission_rl;
 pub mod anchored_summary;
 pub mod compaction_probe;
 pub mod compression_guidelines;

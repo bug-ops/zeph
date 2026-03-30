@@ -370,6 +370,14 @@ impl AppBuilder {
             weights,
         )
         .with_provider(admission_provider);
+
+        if self.config.memory.admission.admission_strategy == zeph_config::AdmissionStrategy::Rl {
+            tracing::warn!(
+                "admission_strategy = \"rl\" is configured but the RL model is not yet wired \
+                 into the admission path — falling back to heuristic. See #2416."
+            );
+        }
+
         tracing::info!(
             threshold = self.config.memory.admission.threshold,
             "A-MAC admission control enabled"

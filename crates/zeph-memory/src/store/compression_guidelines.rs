@@ -66,6 +66,7 @@ pub struct CompressionFailurePair {
     pub conversation_id: ConversationId,
     pub compressed_context: String,
     pub failure_reason: String,
+    pub category: String,
     pub created_at: String,
 }
 
@@ -184,6 +185,7 @@ impl SqliteStore {
     /// Log a compression failure pair.
     ///
     /// Both `compressed_context` and `failure_reason` are truncated to 4096 chars.
+    /// `category` should be one of: `tool_output`, `assistant_reasoning`, `user_context`, `unknown`.
     /// Returns the inserted row id.
     ///
     /// # Errors
@@ -194,6 +196,7 @@ impl SqliteStore {
         conversation_id: ConversationId,
         compressed_context: &str,
         failure_reason: &str,
+        category: &str,
     ) -> Result<i64, MemoryError> {
         let ctx = redact_sensitive(compressed_context);
         let ctx = truncate_field(&ctx);
@@ -201,12 +204,13 @@ impl SqliteStore {
         let reason = truncate_field(&reason);
         let id = zeph_db::query_scalar(sql!(
             "INSERT INTO compression_failure_pairs \
-             (conversation_id, compressed_context, failure_reason) \
-             VALUES (?, ?, ?) RETURNING id"
+             (conversation_id, compressed_context, failure_reason, category) \
+             VALUES (?, ?, ?, ?) RETURNING id"
         ))
         .bind(conversation_id.0)
         .bind(ctx)
         .bind(reason)
+        .bind(category)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -222,8 +226,8 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<CompressionFailurePair>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String)>(sql!(
-            "SELECT id, conversation_id, compressed_context, failure_reason, created_at \
+        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(sql!(
+            "SELECT id, conversation_id, compressed_context, failure_reason, category, created_at \
              FROM compression_failure_pairs \
              WHERE used_in_update = 0 \
              ORDER BY created_at ASC \
@@ -236,15 +240,132 @@ impl SqliteStore {
         Ok(rows
             .into_iter()
             .map(
-                |(id, cid, ctx, reason, created_at)| CompressionFailurePair {
+                |(id, cid, ctx, reason, category, created_at)| CompressionFailurePair {
                     id,
                     conversation_id: ConversationId(cid),
                     compressed_context: ctx,
                     failure_reason: reason,
+                    category,
                     created_at,
                 },
             )
             .collect())
+    }
+
+    /// Get unused failure pairs for a specific category (oldest first), up to `limit`.
+    ///
+    /// Used by the categorized ACON updater to run per-category update cycles.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn get_unused_failure_pairs_by_category(
+        &self,
+        category: &str,
+        limit: usize,
+    ) -> Result<Vec<CompressionFailurePair>, MemoryError> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(sql!(
+            "SELECT id, conversation_id, compressed_context, failure_reason, category, created_at \
+             FROM compression_failure_pairs \
+             WHERE used_in_update = 0 AND category = ? \
+             ORDER BY created_at ASC \
+             LIMIT ?"
+        ))
+        .bind(category)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, cid, ctx, reason, cat, created_at)| CompressionFailurePair {
+                    id,
+                    conversation_id: ConversationId(cid),
+                    compressed_context: ctx,
+                    failure_reason: reason,
+                    category: cat,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Count unused failure pairs for a specific category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn count_unused_failure_pairs_by_category(
+        &self,
+        category: &str,
+    ) -> Result<i64, MemoryError> {
+        let count = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM compression_failure_pairs \
+             WHERE used_in_update = 0 AND category = ?"
+        ))
+        .bind(category)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
+    /// Load the latest compression guidelines for a specific category.
+    ///
+    /// When `conversation_id` is `Some`, prefers conversation-specific rows.
+    /// Returns `(0, "")` if no guidelines exist for this category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn load_compression_guidelines_by_category(
+        &self,
+        category: &str,
+        conversation_id: Option<ConversationId>,
+    ) -> Result<(i64, String), MemoryError> {
+        let row = zeph_db::query_as::<_, (i64, String)>(sql!(
+            "SELECT version, guidelines FROM compression_guidelines \
+             WHERE category = ? \
+             AND (conversation_id = ? OR conversation_id IS NULL) \
+             ORDER BY CASE WHEN conversation_id IS NOT NULL THEN 0 ELSE 1 END, \
+                      version DESC \
+             LIMIT 1"
+        ))
+        .bind(category)
+        .bind(conversation_id.map(|c| c.0))
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.unwrap_or((0, String::new())))
+    }
+
+    /// Save a new version of compression guidelines for a specific category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database insert fails.
+    pub async fn save_compression_guidelines_with_category(
+        &self,
+        guidelines: &str,
+        token_count: i64,
+        category: &str,
+        conversation_id: Option<ConversationId>,
+    ) -> Result<i64, MemoryError> {
+        let new_version: i64 = zeph_db::query_scalar(sql!(
+            "INSERT INTO compression_guidelines \
+             (version, category, guidelines, token_count, conversation_id) \
+             SELECT COALESCE(MAX(version), 0) + 1, ?, ?, ?, ? \
+             FROM compression_guidelines \
+             RETURNING version"
+        ))
+        .bind(category)
+        .bind(guidelines)
+        .bind(token_count)
+        .bind(conversation_id.map(|c| c.0))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(new_version)
     }
 
     /// Mark failure pairs as consumed by the updater.
@@ -507,7 +628,7 @@ mod tests {
         let store = make_store().await;
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         store
-            .log_compression_failure(cid, "compressed ctx", "i don't recall that")
+            .log_compression_failure(cid, "compressed ctx", "i don't recall that", "unknown")
             .await
             .unwrap();
         let count = store.count_unused_failure_pairs().await.unwrap();
@@ -519,11 +640,11 @@ mod tests {
         let store = make_store().await;
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         store
-            .log_compression_failure(cid, "ctx A", "reason A")
+            .log_compression_failure(cid, "ctx A", "reason A", "unknown")
             .await
             .unwrap();
         store
-            .log_compression_failure(cid, "ctx B", "reason B")
+            .log_compression_failure(cid, "ctx B", "reason B", "unknown")
             .await
             .unwrap();
         let pairs = store.get_unused_failure_pairs(10).await.unwrap();
@@ -536,7 +657,7 @@ mod tests {
         let store = make_store().await;
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         let id = store
-            .log_compression_failure(cid, "ctx", "reason")
+            .log_compression_failure(cid, "ctx", "reason", "unknown")
             .await
             .unwrap();
         store.mark_failure_pairs_used(&[id]).await.unwrap();
@@ -550,15 +671,15 @@ mod tests {
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         // Add 3 pairs and mark 1 used.
         let id1 = store
-            .log_compression_failure(cid, "ctx1", "r1")
+            .log_compression_failure(cid, "ctx1", "r1", "tool_output")
             .await
             .unwrap();
         store
-            .log_compression_failure(cid, "ctx2", "r2")
+            .log_compression_failure(cid, "ctx2", "r2", "tool_output")
             .await
             .unwrap();
         store
-            .log_compression_failure(cid, "ctx3", "r3")
+            .log_compression_failure(cid, "ctx3", "r3", "unknown")
             .await
             .unwrap();
         store.mark_failure_pairs_used(&[id1]).await.unwrap();
@@ -613,7 +734,12 @@ mod tests {
         let store = make_store().await;
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         store
-            .log_compression_failure(cid, "token sk-abc123def456 used for auth", "context lost")
+            .log_compression_failure(
+                cid,
+                "token sk-abc123def456 used for auth",
+                "context lost",
+                "unknown",
+            )
             .await
             .unwrap();
         let pairs = store.get_unused_failure_pairs(10).await.unwrap();
@@ -633,7 +759,12 @@ mod tests {
         let store = make_store().await;
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         store
-            .log_compression_failure(cid, "/Users/dev/project/config.toml was loaded", "lost")
+            .log_compression_failure(
+                cid,
+                "/Users/dev/project/config.toml was loaded",
+                "lost",
+                "unknown",
+            )
             .await
             .unwrap();
         let pairs = store.get_unused_failure_pairs(10).await.unwrap();
@@ -652,7 +783,12 @@ mod tests {
         let store = make_store().await;
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         store
-            .log_compression_failure(cid, "some context", "secret ghp_abc123xyz was leaked")
+            .log_compression_failure(
+                cid,
+                "some context",
+                "secret ghp_abc123xyz was leaked",
+                "unknown",
+            )
             .await
             .unwrap();
         let pairs = store.get_unused_failure_pairs(10).await.unwrap();
@@ -780,6 +916,122 @@ mod tests {
             !result.contains("eyJhbGciOiJub25lIn0"),
             "raw alg=none JWT header must not appear: {result}"
         );
+    }
+
+    // ── Category-aware store methods (MF-4) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn get_unused_pairs_by_category_filters_correctly() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .log_compression_failure(cid, "tool ctx", "lost tool output", "tool_output")
+            .await
+            .unwrap();
+        store
+            .log_compression_failure(cid, "user ctx", "lost user context", "user_context")
+            .await
+            .unwrap();
+
+        let tool_pairs = store
+            .get_unused_failure_pairs_by_category("tool_output", 10)
+            .await
+            .unwrap();
+        assert_eq!(tool_pairs.len(), 1);
+        assert_eq!(tool_pairs[0].category, "tool_output");
+        assert_eq!(tool_pairs[0].compressed_context, "tool ctx");
+
+        let user_pairs = store
+            .get_unused_failure_pairs_by_category("user_context", 10)
+            .await
+            .unwrap();
+        assert_eq!(user_pairs.len(), 1);
+        assert_eq!(user_pairs[0].category, "user_context");
+
+        // Unknown category returns nothing.
+        let unknown_pairs = store
+            .get_unused_failure_pairs_by_category("assistant_reasoning", 10)
+            .await
+            .unwrap();
+        assert!(unknown_pairs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn count_unused_pairs_by_category_returns_correct_count() {
+        let store = make_store().await;
+        let cid = ConversationId(store.create_conversation().await.unwrap().0);
+        store
+            .log_compression_failure(cid, "ctx A", "reason", "tool_output")
+            .await
+            .unwrap();
+        store
+            .log_compression_failure(cid, "ctx B", "reason", "tool_output")
+            .await
+            .unwrap();
+        store
+            .log_compression_failure(cid, "ctx C", "reason", "user_context")
+            .await
+            .unwrap();
+
+        let tool_count = store
+            .count_unused_failure_pairs_by_category("tool_output")
+            .await
+            .unwrap();
+        assert_eq!(tool_count, 2);
+
+        let user_count = store
+            .count_unused_failure_pairs_by_category("user_context")
+            .await
+            .unwrap();
+        assert_eq!(user_count, 1);
+
+        let unknown_count = store
+            .count_unused_failure_pairs_by_category("assistant_reasoning")
+            .await
+            .unwrap();
+        assert_eq!(unknown_count, 0);
+    }
+
+    #[tokio::test]
+    async fn save_and_load_guidelines_by_category() {
+        let store = make_store().await;
+        store
+            .save_compression_guidelines_with_category(
+                "preserve tool names",
+                3,
+                "tool_output",
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .save_compression_guidelines_with_category("keep user intent", 3, "user_context", None)
+            .await
+            .unwrap();
+
+        let (_, tool_text) = store
+            .load_compression_guidelines_by_category("tool_output", None)
+            .await
+            .unwrap();
+        assert_eq!(tool_text, "preserve tool names");
+
+        let (_, user_text) = store
+            .load_compression_guidelines_by_category("user_context", None)
+            .await
+            .unwrap();
+        assert_eq!(user_text, "keep user intent");
+    }
+
+    #[tokio::test]
+    async fn load_guidelines_by_category_returns_defaults_when_empty() {
+        let store = make_store().await;
+        // No guidelines saved for this category.
+        let (version, text) = store
+            .load_compression_guidelines_by_category("tool_output", None)
+            .await
+            .unwrap();
+        assert_eq!(version, 0, "version must be 0 when no entries exist");
+        assert!(text.is_empty(), "text must be empty when no entries exist");
     }
 
     /// Concurrent saves must produce strictly unique versions with no collisions.

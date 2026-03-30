@@ -22,8 +22,36 @@ impl SqliteStore {
         let id = Uuid::new_v4().to_string();
         let byte_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
         zeph_db::query(sql!(
-            "INSERT INTO tool_overflow (id, conversation_id, content, byte_size) \
-             VALUES (?, ?, ?, ?)"
+            "INSERT INTO tool_overflow (id, conversation_id, content, byte_size, archive_type) \
+             VALUES (?, ?, ?, ?, 'overflow')"
+        ))
+        .bind(&id)
+        .bind(conversation_id)
+        .bind(content)
+        .bind(byte_size)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Save a Memex compaction-time archive, returning the generated UUID.
+    ///
+    /// Archives use `archive_type = 'archive'` and are excluded from the short-lived
+    /// `cleanup_overflow()` job. They persist as long as the conversation exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database insert fails.
+    pub async fn save_archive(
+        &self,
+        conversation_id: i64,
+        content: &[u8],
+    ) -> Result<String, MemoryError> {
+        let id = Uuid::new_v4().to_string();
+        let byte_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
+        zeph_db::query(sql!(
+            "INSERT INTO tool_overflow (id, conversation_id, content, byte_size, archive_type) \
+             VALUES (?, ?, ?, ?, 'archive')"
         ))
         .bind(&id)
         .bind(conversation_id)
@@ -55,7 +83,10 @@ impl SqliteStore {
         Ok(row.map(|(content,)| content))
     }
 
-    /// Delete overflow entries older than `max_age_secs` seconds.
+    /// Delete execution-time overflow entries (`archive_type = 'overflow'`) older than
+    /// `max_age_secs` seconds. Compaction-time archives (`archive_type = 'archive'`) are
+    /// intentionally excluded — they persist for the lifetime of the conversation.
+    ///
     /// Returns the number of deleted rows.
     ///
     /// # Errors
@@ -64,7 +95,8 @@ impl SqliteStore {
     pub async fn cleanup_overflow(&self, max_age_secs: u64) -> Result<u64, MemoryError> {
         let result = zeph_db::query(sql!(
             "DELETE FROM tool_overflow \
-             WHERE created_at < datetime('now', printf('-%d seconds', ?))"
+             WHERE archive_type = 'overflow' \
+             AND created_at < datetime('now', printf('-%d seconds', ?))"
         ))
         .bind(max_age_secs.cast_signed())
         .execute(&self.pool)
@@ -223,5 +255,74 @@ mod tests {
         // Cleanup with 1 day retention — fresh entries should not be removed.
         let deleted = store.cleanup_overflow(86400).await.expect("cleanup");
         assert_eq!(deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn save_archive_and_load_roundtrip() {
+        let (store, cid) = make_store().await;
+        let content = b"archived tool output body";
+        let id = store
+            .save_archive(cid, content)
+            .await
+            .expect("save_archive");
+        // Archives are stored in the same table and loadable by the same API.
+        let loaded = store.load_overflow(&id, cid).await.expect("load");
+        assert_eq!(loaded, Some(content.to_vec()));
+    }
+
+    #[tokio::test]
+    async fn cleanup_does_not_remove_old_archives() {
+        let (store, cid) = make_store().await;
+        // Insert a very old archive-type row directly.
+        let archive_id = Uuid::new_v4().to_string();
+        zeph_db::query(sql!(
+            "INSERT INTO tool_overflow \
+             (id, conversation_id, content, byte_size, archive_type, created_at) \
+             VALUES (?, ?, ?, ?, 'archive', datetime('now', '-30 days'))"
+        ))
+        .bind(&archive_id)
+        .bind(cid)
+        .bind(b"old archive".as_slice())
+        .bind(11i64)
+        .execute(store.pool())
+        .await
+        .expect("insert old archive");
+
+        // Insert an old overflow-type row — this should be cleaned up.
+        let overflow_id = Uuid::new_v4().to_string();
+        zeph_db::query(sql!(
+            "INSERT INTO tool_overflow \
+             (id, conversation_id, content, byte_size, archive_type, created_at) \
+             VALUES (?, ?, ?, ?, 'overflow', datetime('now', '-30 days'))"
+        ))
+        .bind(&overflow_id)
+        .bind(cid)
+        .bind(b"old overflow".as_slice())
+        .bind(12i64)
+        .execute(store.pool())
+        .await
+        .expect("insert old overflow");
+
+        let deleted = store.cleanup_overflow(86400).await.expect("cleanup");
+        assert_eq!(deleted, 1, "only the overflow-type row should be deleted");
+
+        // Archive must still be retrievable.
+        assert!(
+            store
+                .load_overflow(&archive_id, cid)
+                .await
+                .expect("load archive")
+                .is_some(),
+            "archive must not be removed by cleanup"
+        );
+        // Overflow must be gone.
+        assert!(
+            store
+                .load_overflow(&overflow_id, cid)
+                .await
+                .expect("load overflow")
+                .is_none(),
+            "old overflow must be removed by cleanup"
+        );
     }
 }

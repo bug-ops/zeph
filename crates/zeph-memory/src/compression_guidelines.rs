@@ -29,6 +29,17 @@ pub struct CompressionGuidelinesConfig {
     /// Falls back to the primary provider when empty. Default: `""`.
     #[serde(default)]
     pub guidelines_provider: String,
+    /// Maintain separate guideline documents per content category (ACON #2433).
+    ///
+    /// When `true`, the updater runs an independent update cycle for each content
+    /// category that has accumulated enough failure pairs (`update_threshold`).
+    /// Categories with fewer than `update_threshold` failures are skipped to avoid
+    /// unnecessary LLM calls.
+    ///
+    /// Categories: `tool_output`, `assistant_reasoning`, `user_context`, `unknown`.
+    /// Default: `false` (single global guideline, existing behavior).
+    #[serde(default)]
+    pub categorized_guidelines: bool,
 }
 
 impl Default for CompressionGuidelinesConfig {
@@ -42,6 +53,7 @@ impl Default for CompressionGuidelinesConfig {
             update_interval_secs: 300,
             max_stored_pairs: 100,
             guidelines_provider: String::new(),
+            categorized_guidelines: false,
         }
     }
 }
@@ -464,6 +476,7 @@ mod tests {
             conversation_id: crate::types::ConversationId(1),
             compressed_context: "compressed ctx".to_string(),
             failure_reason: "I don't recall that".to_string(),
+            category: "unknown".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         }];
         let prompt = build_guidelines_update_prompt("existing rules", &pairs, 500);
@@ -481,6 +494,7 @@ mod tests {
             conversation_id: crate::types::ConversationId(1),
             compressed_context: "ctx".to_string(),
             failure_reason: "lost context".to_string(),
+            category: "unknown".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         }];
         let prompt = build_guidelines_update_prompt("", &pairs, 500);

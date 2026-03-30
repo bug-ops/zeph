@@ -69,6 +69,48 @@ static PRIOR_CONTEXT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     ]
 });
 
+/// Classify which content category was likely lost in a compaction failure.
+///
+/// Classification is performed on the compaction summary text (before LLM summarization
+/// destroys original markers), not on the post-summary response. This heuristic works
+/// because `compact_context()` builds the summary prefix from the original messages,
+/// and the compressed context snapshot captured by `extract_last_compaction_summary()`
+/// includes those original message markers.
+///
+/// Returns one of: `tool_output`, `assistant_reasoning`, `user_context`, `unknown`.
+#[must_use]
+pub fn classify_failure_category(compressed_context: &str) -> &'static str {
+    // Tool output markers appear when the compacted range contained tool results.
+    let has_tool_markers = compressed_context.contains("[tool output")
+        || compressed_context.contains("ToolOutput")
+        || compressed_context.contains("ToolResult")
+        || compressed_context.contains("[archived:")
+        || compressed_context.contains("read_overflow");
+
+    // User context markers: the compacted range was heavy in user messages.
+    let has_user_markers = compressed_context.contains("[user]:") ||
+        // Heuristic: high density of "[user]:" relative to "[assistant]:" suggests user context.
+        compressed_context
+            .matches("[user]:")
+            .count()
+            .saturating_mul(2)
+            > compressed_context.matches("[assistant]:").count();
+
+    // Assistant reasoning: the compacted range was heavy in assistant reasoning.
+    let has_assistant_markers =
+        compressed_context.contains("[assistant]:") && !has_tool_markers && !has_user_markers;
+
+    if has_tool_markers {
+        "tool_output"
+    } else if has_assistant_markers {
+        "assistant_reasoning"
+    } else if has_user_markers {
+        "user_context"
+    } else {
+        "unknown"
+    }
+}
+
 /// Detect whether `response` contains signals of context loss after compaction.
 ///
 /// Returns `Some(reason)` only when ALL of:
@@ -148,17 +190,22 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
+        // Classify the failure category based on the compaction summary content.
+        // Classification happens before calling the LLM (which would destroy original markers).
+        let category = classify_failure_category(&compressed_context);
+
         // Store the actual LLM response (failure signal) so the guidelines updater
         // can derive specific rules from it, not the detection metadata string.
         let sqlite = memory.sqlite();
         if let Err(e) = sqlite
-            .log_compression_failure(cid, &compressed_context, response)
+            .log_compression_failure(cid, &compressed_context, response, category)
             .await
         {
             tracing::warn!("failed to log compression failure pair: {e:#}");
         } else {
             tracing::info!(
                 turns_since_compaction = turns,
+                category,
                 "compression failure detected and logged"
             );
         }
@@ -288,5 +335,62 @@ mod tests {
             reason.contains("prior-ref="),
             "reason must include prior-ref match"
         );
+    }
+
+    // ── classify_failure_category() unit tests ────────────────────────────────
+
+    #[test]
+    fn classify_tool_output_by_tool_output_marker() {
+        let ctx = "[tool output]: file listing returned 42 items";
+        assert_eq!(classify_failure_category(ctx), "tool_output");
+    }
+
+    #[test]
+    fn classify_tool_output_by_archived_marker() {
+        let ctx = "[archived:550e8400-e29b-41d4-a716-446655440000 — tool: shell — 1024 bytes]";
+        assert_eq!(classify_failure_category(ctx), "tool_output");
+    }
+
+    #[test]
+    fn classify_tool_output_by_tooloutput_struct_name() {
+        let ctx = "ToolOutput { body: \"...\", tool_name: \"shell\" }";
+        assert_eq!(classify_failure_category(ctx), "tool_output");
+    }
+
+    #[test]
+    fn classify_assistant_reasoning_pure_assistant_context() {
+        // Only assistant turns, no tool or user markers.
+        let ctx = "[assistant]: Let me think about this step by step.\n\
+                   [assistant]: First, we need to consider the constraints.";
+        assert_eq!(classify_failure_category(ctx), "assistant_reasoning");
+    }
+
+    #[test]
+    fn classify_user_context_dominant_user_turns() {
+        // 3 user turns vs 1 assistant turn — user wins the 2:1 ratio heuristic.
+        let ctx = "[user]: what is X?\n[user]: and also Y?\n[user]: and Z?\n[assistant]: ...";
+        assert_eq!(classify_failure_category(ctx), "user_context");
+    }
+
+    #[test]
+    fn classify_tool_output_wins_over_user_markers() {
+        // Both tool and user markers present — tool takes priority.
+        let ctx = "[user]: please run the command\n[tool output]: exit 0";
+        assert_eq!(
+            classify_failure_category(ctx),
+            "tool_output",
+            "tool_output must take priority when both markers are present"
+        );
+    }
+
+    #[test]
+    fn classify_unknown_for_empty_context() {
+        assert_eq!(classify_failure_category(""), "unknown");
+    }
+
+    #[test]
+    fn classify_unknown_for_context_without_markers() {
+        let ctx = "This is a generic summary without any role markers or tool output.";
+        assert_eq!(classify_failure_category(ctx), "unknown");
     }
 }

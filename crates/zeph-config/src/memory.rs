@@ -985,6 +985,15 @@ pub struct CompressionConfig {
     /// Compaction probe: validates summary quality before committing it (#1609).
     #[serde(default)]
     pub probe: zeph_memory::CompactionProbeConfig,
+    /// Archive tool output bodies to `SQLite` before compaction (Memex #2432).
+    ///
+    /// When enabled, tool output bodies in the compaction range are saved to
+    /// `tool_overflow` with `archive_type = 'archive'` before summarization.
+    /// The LLM summarizes placeholder messages; archived content is appended as
+    /// a postfix after summarization so references survive compaction.
+    /// Default: `false`.
+    #[serde(default)]
+    pub archive_tool_outputs: bool,
 }
 
 fn default_sidequest_interval_turns() -> u32 {
@@ -1280,6 +1289,29 @@ fn default_admission_fast_path_margin() -> f32 {
     0.15
 }
 
+fn default_rl_min_samples() -> u32 {
+    500
+}
+
+fn default_rl_retrain_interval_secs() -> u64 {
+    3600
+}
+
+/// Admission decision strategy.
+///
+/// `Heuristic` uses the existing multi-factor weighted score with an optional LLM call.
+/// `Rl` replaces the LLM-based `future_utility` factor with a trained logistic regression model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionStrategy {
+    /// Current A-MAC behavior: weighted heuristics + optional LLM call. Default.
+    #[default]
+    Heuristic,
+    /// Learned model: logistic regression trained on recall feedback.
+    /// Falls back to `Heuristic` when training data is below `rl_min_samples`.
+    Rl,
+}
+
 fn validate_admission_weight<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1375,6 +1407,16 @@ pub struct AdmissionConfig {
     pub admission_provider: String,
     /// Per-factor weights. Normalized at runtime. Default: `{0.30, 0.15, 0.30, 0.10, 0.15}`.
     pub weights: AdmissionWeights,
+    /// Admission decision strategy. Default: `heuristic`.
+    #[serde(default)]
+    pub admission_strategy: AdmissionStrategy,
+    /// Minimum training samples before the RL model is activated.
+    /// Below this count the system falls back to `Heuristic`. Default: `500`.
+    #[serde(default = "default_rl_min_samples")]
+    pub rl_min_samples: u32,
+    /// Background RL model retraining interval in seconds. Default: `3600`.
+    #[serde(default = "default_rl_retrain_interval_secs")]
+    pub rl_retrain_interval_secs: u64,
 }
 
 impl Default for AdmissionConfig {
@@ -1385,6 +1427,9 @@ impl Default for AdmissionConfig {
             fast_path_margin: default_admission_fast_path_margin(),
             admission_provider: String::new(),
             weights: AdmissionWeights::default(),
+            admission_strategy: AdmissionStrategy::default(),
+            rl_min_samples: default_rl_min_samples(),
+            rl_retrain_interval_secs: default_rl_retrain_interval_secs(),
         }
     }
 }
