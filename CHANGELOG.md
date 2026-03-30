@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
+- fix(db): in-memory SQLite pool forced to `max_connections = 1` so all queries share the same connection and the migrated schema — previously each additional connection in the pool opened a separate empty in-memory database, causing `no such column: superseded_by` in 91 graph tests after migration 056 was introduced (closes #2468)
 
 ### Added
 

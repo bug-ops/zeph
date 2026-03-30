@@ -74,7 +74,13 @@ impl DbConfig {
 
         // BEGIN IMMEDIATE serializes concurrent writers at the SQLite level.
         // pool_size controls the connection count; max_connections is the upper bound.
-        let effective_max = max_connections.max(pool_size);
+        // In-memory databases are connection-scoped: each new connection is a separate
+        // empty DB. Force a single connection so all queries share the migrated schema.
+        let effective_max = if path == ":memory:" {
+            1
+        } else {
+            max_connections.max(pool_size)
+        };
         let pool = SqlitePoolOptions::new()
             .max_connections(effective_max)
             .min_connections(1)
