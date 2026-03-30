@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: taiki-e/install-action@d03f93f522d3f26de755b383f3ba3f8d77b79f69 # cargo-deny
+      - uses: taiki-e/install-action@774b5dad4c868e7771d039330a5633d0fac11c3d # cargo-deny
       - name: Check advisories and licenses
         run: cargo deny check --config .github/deny.toml
         env:
