@@ -1,6 +1,6 @@
 [package]
 name = "zeph-skills"
-version.workspace = true
+version = "0.18.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
