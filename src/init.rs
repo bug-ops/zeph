@@ -133,6 +133,9 @@ pub(crate) struct WizardState {
     pub(crate) skill_cross_session_rollout: bool,
     pub(crate) skill_min_sessions_before_promote: u32,
     pub(crate) skill_capability_escalation_check: bool,
+    pub(crate) arise_enabled: bool,
+    pub(crate) stem_enabled: bool,
+    pub(crate) erl_enabled: bool,
     pub(crate) pre_execution_verify_enabled: bool,
     pub(crate) pre_execution_verify_allowed_paths: Vec<String>,
     #[cfg(feature = "guardrail")]
@@ -286,6 +289,9 @@ impl Default for WizardState {
             skill_cross_session_rollout: false,
             skill_min_sessions_before_promote: 2,
             skill_capability_escalation_check: false,
+            arise_enabled: false,
+            stem_enabled: false,
+            erl_enabled: false,
             pre_execution_verify_enabled: true,
             pre_execution_verify_allowed_paths: Vec::new(),
             #[cfg(feature = "guardrail")]
@@ -1401,6 +1407,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.skills.learning.min_sessions_before_promote =
             state.skill_min_sessions_before_promote;
     }
+    config.skills.learning.arise_enabled = state.arise_enabled;
+    config.skills.learning.stem_enabled = state.stem_enabled;
+    config.skills.learning.erl_enabled = state.erl_enabled;
 
     #[cfg(feature = "guardrail")]
     if state.guardrail_enabled {
@@ -2156,6 +2165,26 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
             .default(2u32)
             .interact_text()?;
     }
+
+    println!("\n-- Skill Evolution (ARISE / STEM / ERL) --\n");
+    state.arise_enabled = Confirm::new()
+        .with_prompt(
+            "Enable ARISE? (trace-based skill improvement — refines skill bodies from successful tool sequences)",
+        )
+        .default(false)
+        .interact()?;
+    state.stem_enabled = Confirm::new()
+        .with_prompt(
+            "Enable STEM? (pattern-to-skill conversion — detects recurring tool sequences and generates skill candidates)",
+        )
+        .default(false)
+        .interact()?;
+    state.erl_enabled = Confirm::new()
+        .with_prompt(
+            "Enable ERL? (experiential reflective learning — extracts and injects heuristics from successful tasks)",
+        )
+        .default(false)
+        .interact()?;
 
     println!();
     Ok(())

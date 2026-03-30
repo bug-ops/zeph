@@ -6,6 +6,7 @@
 pub mod bm25;
 #[cfg(feature = "bundled-skills")]
 pub mod bundled;
+pub mod erl;
 pub mod error;
 pub mod evolution;
 pub mod loader;
@@ -16,6 +17,7 @@ pub mod qdrant_matcher;
 pub mod registry;
 pub mod resource;
 pub mod scanner;
+pub mod stem;
 pub mod trust;
 pub mod trust_score;
 pub mod watcher;

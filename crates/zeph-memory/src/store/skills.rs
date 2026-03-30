@@ -529,6 +529,184 @@ impl SqliteStore {
         .await?;
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
+
+    // --- STEM: skill_usage_log queries ---
+
+    /// Insert a tool usage log entry.
+    ///
+    /// `tool_sequence` must be a normalized compact JSON array (see `stem::normalize_tool_sequence`).
+    /// `sequence_hash` is the 16-char blake3 hex of `tool_sequence`.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on insert failure.
+    pub async fn insert_tool_usage_log(
+        &self,
+        tool_sequence: &str,
+        sequence_hash: &str,
+        context_hash: &str,
+        outcome: &str,
+        conversation_id: Option<crate::types::ConversationId>,
+    ) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "INSERT INTO skill_usage_log \
+             (tool_sequence, sequence_hash, context_hash, outcome, conversation_id) \
+             VALUES (?, ?, ?, ?, ?)"
+        ))
+        .bind(tool_sequence)
+        .bind(sequence_hash)
+        .bind(context_hash)
+        .bind(outcome)
+        .bind(conversation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Find tool sequences that have been seen at least `min_count` times within the last
+    /// `window_days` days.
+    ///
+    /// Returns `(tool_sequence, sequence_hash, occurrence_count, success_count)` tuples.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on query failure.
+    pub async fn find_recurring_patterns(
+        &self,
+        min_count: u32,
+        window_days: u32,
+    ) -> Result<Vec<(String, String, u32, u32)>, MemoryError> {
+        let rows: Vec<(String, String, i64, i64)> = zeph_db::query_as(sql!(
+            "SELECT tool_sequence, sequence_hash, \
+                    COUNT(*) as occurrence_count, \
+                    SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as success_count \
+             FROM skill_usage_log \
+             WHERE created_at > datetime('now', '-' || ? || ' days') \
+             GROUP BY sequence_hash \
+             HAVING occurrence_count >= ? \
+             ORDER BY occurrence_count DESC \
+             LIMIT 10"
+        ))
+        .bind(window_days)
+        .bind(min_count)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(seq, hash, occ, suc)| {
+                (
+                    seq,
+                    hash,
+                    u32::try_from(occ).unwrap_or(u32::MAX),
+                    u32::try_from(suc).unwrap_or(0),
+                )
+            })
+            .collect())
+    }
+
+    /// Delete `skill_usage_log` rows older than `retention_days` days.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on delete failure.
+    pub async fn prune_tool_usage_log(&self, retention_days: u32) -> Result<u64, MemoryError> {
+        let result = zeph_db::query(sql!(
+            "DELETE FROM skill_usage_log \
+             WHERE created_at < datetime('now', '-' || ? || ' days')"
+        ))
+        .bind(retention_days)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    // --- ERL: skill_heuristics queries ---
+
+    /// Insert a new heuristic (no dedup — caller must check first).
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on insert failure.
+    pub async fn insert_skill_heuristic(
+        &self,
+        skill_name: Option<&str>,
+        heuristic_text: &str,
+        confidence: f64,
+    ) -> Result<i64, MemoryError> {
+        let row: (i64,) = zeph_db::query_as(sql!(
+            "INSERT INTO skill_heuristics (skill_name, heuristic_text, confidence) \
+             VALUES (?, ?, ?) RETURNING id"
+        ))
+        .bind(skill_name)
+        .bind(heuristic_text)
+        .bind(confidence)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// Increment `use_count` and update `updated_at` for an existing heuristic by ID.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on update failure.
+    pub async fn increment_heuristic_use_count(&self, id: i64) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "UPDATE skill_heuristics \
+             SET use_count = use_count + 1, updated_at = datetime('now') \
+             WHERE id = ?"
+        ))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Load heuristics for a given skill (exact match + NULL/general), ordered by confidence DESC.
+    ///
+    /// Returns `(id, heuristic_text, confidence, use_count)` tuples.
+    /// At most `limit` rows are returned.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on query failure.
+    pub async fn load_skill_heuristics(
+        &self,
+        skill_name: &str,
+        min_confidence: f64,
+        limit: u32,
+    ) -> Result<Vec<(i64, String, f64, i64)>, MemoryError> {
+        let rows: Vec<(i64, String, f64, i64)> = zeph_db::query_as(sql!(
+            "SELECT id, heuristic_text, confidence, use_count \
+             FROM skill_heuristics \
+             WHERE (skill_name = ? OR skill_name IS NULL) \
+               AND confidence >= ? \
+             ORDER BY confidence DESC \
+             LIMIT ?"
+        ))
+        .bind(skill_name)
+        .bind(min_confidence)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Load all heuristics for a skill (for dedup checks), without confidence filter.
+    ///
+    /// Returns `(id, heuristic_text)` tuples.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on query failure.
+    pub async fn load_all_heuristics_for_skill(
+        &self,
+        skill_name: Option<&str>,
+    ) -> Result<Vec<(i64, String)>, MemoryError> {
+        let rows: Vec<(i64, String)> = zeph_db::query_as(sql!(
+            "SELECT id, heuristic_text FROM skill_heuristics \
+             WHERE (skill_name = ? OR (? IS NULL AND skill_name IS NULL))"
+        ))
+        .bind(skill_name)
+        .bind(skill_name)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -1095,5 +1273,209 @@ mod tests {
             .unwrap();
         let count = store.distinct_session_count("git").await.unwrap();
         assert_eq!(count, 0, "NULL conversation_ids must not be counted");
+    }
+
+    // --- STEM: skill_usage_log ---
+
+    #[tokio::test]
+    async fn insert_and_find_recurring_patterns() {
+        let store = test_store().await;
+        let seq = r#"["shell","web_scrape"]"#;
+        let hash = "abcdef0123456789";
+        let ctx = "ctxhash000000000";
+
+        for _ in 0..3 {
+            store
+                .insert_tool_usage_log(seq, hash, ctx, "success", None)
+                .await
+                .unwrap();
+        }
+        store
+            .insert_tool_usage_log(seq, hash, ctx, "failure", None)
+            .await
+            .unwrap();
+
+        let patterns = store.find_recurring_patterns(3, 90).await.unwrap();
+        assert_eq!(patterns.len(), 1);
+        let (s, h, occ, suc) = &patterns[0];
+        assert_eq!(s, seq);
+        assert_eq!(h, hash);
+        assert_eq!(*occ, 4);
+        assert_eq!(*suc, 3);
+    }
+
+    #[tokio::test]
+    async fn find_recurring_patterns_below_threshold_returns_empty() {
+        let store = test_store().await;
+        let seq = r#"["shell"]"#;
+        let hash = "0000000000000001";
+        let ctx = "0000000000000001";
+
+        store
+            .insert_tool_usage_log(seq, hash, ctx, "success", None)
+            .await
+            .unwrap();
+
+        let patterns = store.find_recurring_patterns(3, 90).await.unwrap();
+        assert!(patterns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_tool_usage_log_removes_old_rows() {
+        let store = test_store().await;
+        // Insert a row with an artificially old timestamp so it falls within 0-day window.
+        zeph_db::query(sql!(
+            "INSERT INTO skill_usage_log \
+             (tool_sequence, sequence_hash, context_hash, outcome, created_at) \
+             VALUES (?, ?, ?, ?, datetime('now', '-2 days'))"
+        ))
+        .bind(r#"["shell"]"#)
+        .bind("hash0000000000001")
+        .bind("ctx00000000000001")
+        .bind("success")
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+        // Prune rows older than 1 day — the row above is 2 days old so it must be removed.
+        let removed = store.prune_tool_usage_log(1).await.unwrap();
+        assert_eq!(removed, 1);
+    }
+
+    // --- ERL: skill_heuristics ---
+
+    #[tokio::test]
+    async fn insert_and_load_skill_heuristics() {
+        let store = test_store().await;
+
+        let id = store
+            .insert_skill_heuristic(Some("git"), "always commit in small chunks", 0.9)
+            .await
+            .unwrap();
+        assert!(id > 0);
+
+        let rows = store.load_skill_heuristics("git", 0.5, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "always commit in small chunks");
+        assert!((rows[0].2 - 0.9).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn load_skill_heuristics_includes_general() {
+        let store = test_store().await;
+
+        store
+            .insert_skill_heuristic(None, "general tip", 0.7)
+            .await
+            .unwrap();
+        store
+            .insert_skill_heuristic(Some("git"), "git tip", 0.8)
+            .await
+            .unwrap();
+
+        // querying for "git" should include both the git-specific and the general (NULL) heuristic
+        let rows = store.load_skill_heuristics("git", 0.5, 10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn load_skill_heuristics_filters_by_min_confidence() {
+        let store = test_store().await;
+
+        store
+            .insert_skill_heuristic(Some("git"), "low confidence tip", 0.3)
+            .await
+            .unwrap();
+        store
+            .insert_skill_heuristic(Some("git"), "high confidence tip", 0.9)
+            .await
+            .unwrap();
+
+        let rows = store.load_skill_heuristics("git", 0.5, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "high confidence tip");
+    }
+
+    #[tokio::test]
+    async fn increment_heuristic_use_count_works() {
+        let store = test_store().await;
+
+        let id = store
+            .insert_skill_heuristic(Some("git"), "tip", 0.8)
+            .await
+            .unwrap();
+
+        store.increment_heuristic_use_count(id).await.unwrap();
+        store.increment_heuristic_use_count(id).await.unwrap();
+
+        let rows = store.load_skill_heuristics("git", 0.0, 10).await.unwrap();
+        assert_eq!(rows[0].3, 2); // use_count
+    }
+
+    #[tokio::test]
+    async fn load_all_heuristics_for_skill_exact_match() {
+        let store = test_store().await;
+
+        store
+            .insert_skill_heuristic(Some("git"), "git tip", 0.8)
+            .await
+            .unwrap();
+        store
+            .insert_skill_heuristic(Some("docker"), "docker tip", 0.8)
+            .await
+            .unwrap();
+
+        let rows = store
+            .load_all_heuristics_for_skill(Some("git"))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "git tip");
+    }
+
+    #[tokio::test]
+    async fn load_all_heuristics_for_skill_null() {
+        let store = test_store().await;
+
+        store
+            .insert_skill_heuristic(None, "general", 0.8)
+            .await
+            .unwrap();
+        store
+            .insert_skill_heuristic(Some("git"), "git tip", 0.8)
+            .await
+            .unwrap();
+
+        let rows = store.load_all_heuristics_for_skill(None).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "general");
+    }
+
+    #[tokio::test]
+    async fn skill_trust_default_is_quarantined() {
+        // Verify the DB schema default for skill_trust.trust_level is 'quarantined'.
+        // ARISE-generated versions do not call set_skill_trust_level, so they inherit
+        // this default when the trust row is first created by the scanner.
+        let store = test_store().await;
+
+        // Insert a trust row without specifying trust_level to exercise the DEFAULT.
+        zeph_db::query(sql!(
+            "INSERT INTO skill_trust (skill_name, blake3_hash) VALUES ('test-arise', 'abc')"
+        ))
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+        let trust: (String,) = zeph_db::query_as(sql!(
+            "SELECT trust_level FROM skill_trust WHERE skill_name = 'test-arise'"
+        ))
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(
+            trust.0, "quarantined",
+            "schema default for skill_trust.trust_level must be 'quarantined'"
+        );
     }
 }

@@ -1484,11 +1484,16 @@ impl<C: Channel> Agent<C> {
             other => other,
         };
 
-        let skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact {
+        let mut skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact {
             format_skills_prompt_compact(&active_skills)
         } else {
             format_skills_prompt(&active_skills, &trust_map, &health_map)
         };
+        // ERL: append learned heuristics for active skills (no-op when erl_enabled = false).
+        let erl_suffix = self.build_erl_heuristics_prompt().await;
+        if !erl_suffix.is_empty() {
+            skills_prompt.push_str(&erl_suffix);
+        }
         let catalog_prompt = format_skills_catalog(&remaining_skills);
         self.skill_state
             .last_skills_prompt

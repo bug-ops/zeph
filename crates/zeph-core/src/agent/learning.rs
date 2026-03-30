@@ -61,6 +61,15 @@ impl<C: Channel> Agent<C> {
             self.check_trust_transition(name).await;
         }
         self.update_skill_confidence_metrics().await;
+
+        // ARISE + STEM + ERL background tasks (fire-and-forget, never block response).
+        self.spawn_stem_detection(outcome);
+        if outcome == "success" {
+            for name in &names {
+                self.spawn_arise_trace_improvement(name);
+                self.spawn_erl_reflection(name);
+            }
+        }
     }
 
     pub(super) async fn update_skill_confidence_metrics(&self) {
@@ -952,6 +961,680 @@ impl<C: Channel> Agent<C> {
             .await?;
         Ok(())
     }
+
+    // --- ERL: heuristic injection at skill matching time ---
+
+    /// Build a heuristics suffix to append to the skills prompt.
+    ///
+    /// Queries `skill_heuristics` for each active skill and returns a formatted section.
+    /// Returns an empty string when ERL is disabled, memory is unavailable, or no heuristics exist.
+    pub(super) async fn build_erl_heuristics_prompt(&self) -> String {
+        let Some(config) = self.learning_engine.config.as_ref() else {
+            return String::new();
+        };
+        if !config.erl_enabled {
+            return String::new();
+        }
+        let Some(memory) = &self.memory_state.memory else {
+            return String::new();
+        };
+
+        let mut sections = String::new();
+        for skill_name in &self.skill_state.active_skill_names {
+            let heuristics = match memory
+                .sqlite()
+                .load_skill_heuristics(
+                    skill_name,
+                    config.erl_min_confidence,
+                    config.erl_max_heuristics_per_skill,
+                )
+                .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!("ERL: load_skill_heuristics failed for {skill_name}: {e:#}");
+                    continue;
+                }
+            };
+
+            if heuristics.is_empty() {
+                continue;
+            }
+
+            let texts: Vec<String> = heuristics.into_iter().map(|(_, text, _, _)| text).collect();
+            let section = zeph_skills::erl::format_heuristics_section(&texts);
+            if !section.is_empty() {
+                sections.push_str("\n\n<!-- ERL heuristics for skill: ");
+                sections.push_str(skill_name);
+                sections.push_str(" -->\n");
+                sections.push_str(&section);
+            }
+        }
+        sections
+    }
+
+    // --- ARISE: trace-based skill improvement ---
+
+    /// Resolve a named provider from the pool, falling back to the primary provider.
+    /// Returns a clone of the primary provider if the name is empty, unknown, or resolution fails.
+    fn resolve_background_provider(&self, provider_name: &str) -> zeph_llm::any::AnyProvider {
+        if provider_name.is_empty() {
+            return self.provider.clone();
+        }
+        let Some(entry) = self
+            .providers
+            .provider_pool
+            .iter()
+            .find(|e| e.effective_name().eq_ignore_ascii_case(provider_name))
+            .cloned()
+        else {
+            tracing::warn!(
+                provider = provider_name,
+                "provider not found in [[llm.providers]], falling back to primary"
+            );
+            return self.provider.clone();
+        };
+        let Some(ref snapshot) = self.providers.provider_config_snapshot else {
+            return self.provider.clone();
+        };
+        match crate::bootstrap::build_provider_for_switch(&entry, snapshot) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("failed to build provider '{provider_name}': {e:#}, using primary");
+                self.provider.clone()
+            }
+        }
+    }
+
+    /// Extract tool names used in the most recent assistant turn from message history.
+    ///
+    /// Scans messages in reverse until the previous user message boundary, collecting
+    /// all `ToolUse` part names. Returns an empty vec when no tool calls are found.
+    fn extract_last_turn_tool_names(&self) -> Vec<String> {
+        use zeph_llm::provider::MessagePart;
+        let mut names = Vec::new();
+        let mut past_assistant = false;
+        for msg in self.msg.messages.iter().rev() {
+            match msg.role {
+                Role::Assistant => {
+                    past_assistant = true;
+                    for part in &msg.parts {
+                        if let MessagePart::ToolUse { name, .. } = part {
+                            names.push(name.clone());
+                        }
+                    }
+                }
+                Role::User if past_assistant => {
+                    // Stop at the user message that preceded the assistant turn.
+                    break;
+                }
+                _ => {}
+            }
+        }
+        names.reverse();
+        names
+    }
+
+    /// Fire-and-forget ARISE trace improvement after a successful multi-tool turn.
+    ///
+    /// All three features (ARISE, STEM, ERL) MUST be background tasks — never awaited inline.
+    pub(super) fn spawn_arise_trace_improvement(&self, skill_name: &str) {
+        let Some(config) = self.learning_engine.config.as_ref() else {
+            return;
+        };
+        if !config.arise_enabled {
+            return;
+        }
+        let tool_names = self.extract_last_turn_tool_names();
+        if tool_names.len() < config.arise_min_tool_calls as usize {
+            return;
+        }
+        let Some(memory) = self.memory_state.memory.clone() else {
+            return;
+        };
+        let Ok(skill) = self
+            .skill_state
+            .registry
+            .read()
+            .expect("registry read lock")
+            .get_skill(skill_name)
+        else {
+            return;
+        };
+        let status_tx = self.session.status_tx.clone();
+        if let Some(ref tx) = self.session.status_tx {
+            let _ = tx.send(format!("Evolving skill: {skill_name}…"));
+        }
+        let args = AriseTaskArgs {
+            provider: self.resolve_background_provider(&config.arise_trace_provider),
+            memory,
+            skill_name: skill_name.to_string(),
+            skill_body: skill.body.clone(),
+            skill_desc: skill.description().to_string(),
+            trace: tool_names.join(" \u{2192} "),
+            max_auto_sections: config.max_auto_sections,
+            skill_paths: self.skill_state.skill_paths.clone(),
+            auto_activate: config.auto_activate,
+            max_versions: config.max_versions,
+            domain_success_gate: config.domain_success_gate,
+            status_tx,
+        };
+        tokio::spawn(arise_trace_task(args));
+    }
+
+    // --- STEM: tool pattern detection ---
+
+    /// Fire-and-forget STEM tool usage log insert + pattern check.
+    ///
+    /// Called after every tool execution turn regardless of outcome.
+    pub(super) fn spawn_stem_detection(&self, outcome: &str) {
+        let Some(config) = self.learning_engine.config.as_ref() else {
+            return;
+        };
+        if !config.stem_enabled {
+            return;
+        }
+        let tool_names = self.extract_last_turn_tool_names();
+        if tool_names.is_empty() {
+            return;
+        }
+        let Some(memory) = self.memory_state.memory.clone() else {
+            return;
+        };
+        let tool_sequence = zeph_skills::stem::normalize_tool_sequence(
+            &tool_names.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        let sequence_hash = zeph_skills::stem::sequence_hash(&tool_sequence);
+        let user_msg = self
+            .msg
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let ctx_bytes = blake3::hash(user_msg.chars().take(256).collect::<String>().as_bytes());
+        let context_hash = ctx_bytes.to_hex()[..16].to_string();
+        let outcome_owned = if outcome == "success" {
+            "success"
+        } else {
+            "failure"
+        }
+        .to_string();
+        let status_tx = self.session.status_tx.clone();
+        if let Some(ref tx) = self.session.status_tx {
+            let _ = tx.send("Learning from patterns…".to_string());
+        }
+        let args = StemTaskArgs {
+            provider: self.resolve_background_provider(&config.stem_provider),
+            memory,
+            tool_sequence,
+            sequence_hash,
+            context_hash,
+            outcome: outcome_owned,
+            conv_id: self.memory_state.conversation_id,
+            min_occurrences: config.stem_min_occurrences,
+            min_success_rate: config.stem_min_success_rate,
+            window_days: config.stem_pattern_window_days,
+            retention_days: config.stem_retention_days,
+            max_auto_sections: config.max_auto_sections,
+            skill_paths: self.skill_state.skill_paths.clone(),
+            status_tx,
+        };
+        tokio::spawn(stem_detection_task(args));
+    }
+
+    // --- ERL: experiential reflective learning ---
+
+    /// Fire-and-forget ERL heuristic extraction after a successful skill+tool turn.
+    pub(super) fn spawn_erl_reflection(&self, skill_name: &str) {
+        let Some(config) = self.learning_engine.config.as_ref() else {
+            return;
+        };
+        if !config.erl_enabled {
+            return;
+        }
+        let tool_names = self.extract_last_turn_tool_names();
+        if tool_names.is_empty() {
+            return;
+        }
+        let Some(memory) = self.memory_state.memory.clone() else {
+            return;
+        };
+        let task_summary = self
+            .msg
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.content.chars().take(512).collect::<String>())
+            .unwrap_or_default();
+        let status_tx = self.session.status_tx.clone();
+        if let Some(ref tx) = self.session.status_tx {
+            let _ = tx.send("Reflecting on experience…".to_string());
+        }
+        let args = ErlTaskArgs {
+            provider: self.resolve_background_provider(&config.erl_extract_provider),
+            memory,
+            skill_name: skill_name.to_string(),
+            task_summary,
+            tool_calls_str: tool_names.join(", "),
+            dedup_threshold: config.erl_dedup_threshold,
+            status_tx,
+        };
+        tokio::spawn(erl_reflection_task(args));
+    }
+}
+
+// ── Background task helpers ───────────────────────────────────────────────────
+
+/// Drop guard that sends an empty string to `status_tx` when dropped, clearing the TUI spinner.
+struct ClearStatusOnDrop(Option<tokio::sync::mpsc::UnboundedSender<String>>);
+
+impl Drop for ClearStatusOnDrop {
+    fn drop(&mut self) {
+        if let Some(ref tx) = self.0 {
+            let _ = tx.send(String::new());
+        }
+    }
+}
+
+fn defer_clear_status(tx: Option<tokio::sync::mpsc::UnboundedSender<String>>) -> ClearStatusOnDrop {
+    ClearStatusOnDrop(tx)
+}
+
+// ── ARISE background task ─────────────────────────────────────────────────────
+
+struct AriseTaskArgs {
+    provider: zeph_llm::any::AnyProvider,
+    memory: std::sync::Arc<SemanticMemory>,
+    skill_name: String,
+    skill_body: String,
+    skill_desc: String,
+    trace: String,
+    max_auto_sections: u32,
+    skill_paths: Vec<PathBuf>,
+    auto_activate: bool,
+    max_versions: u32,
+    domain_success_gate: bool,
+    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+}
+
+async fn arise_trace_task(args: AriseTaskArgs) {
+    let _clear_status = defer_clear_status(args.status_tx.clone());
+    let prompt = zeph_skills::evolution::build_trace_improvement_prompt(
+        &args.skill_name,
+        &args.skill_body,
+        &args.trace,
+    );
+    let messages = vec![
+        Message {
+            role: Role::System,
+            content: "You are a skill improvement assistant. Output only the improved skill body."
+                .into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+        Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+    ];
+    let generated = match args.provider.chat(&messages).await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!("ARISE trace improvement LLM call failed: {e:#}");
+            return;
+        }
+    };
+    let generated = generated.trim().to_string();
+    if generated.is_empty()
+        || generated.len() > zeph_skills::evolution::MAX_BODY_BYTES
+        || !zeph_skills::evolution::validate_body_size(&args.skill_body, &generated)
+        || !zeph_skills::evolution::validate_body_sections(&generated, args.max_auto_sections)
+    {
+        tracing::warn!(skill = %args.skill_name, "ARISE: generated body rejected (validation)");
+        return;
+    }
+    if !arise_check_domain_gate(&args, &generated).await {
+        return;
+    }
+    arise_store_version(args, generated).await;
+}
+
+async fn arise_check_domain_gate(args: &AriseTaskArgs, generated: &str) -> bool {
+    if !args.domain_success_gate {
+        return true;
+    }
+    let gate_prompt = zeph_skills::evolution::build_domain_gate_prompt(
+        &args.skill_name,
+        &args.skill_desc,
+        generated,
+    );
+    let gate_messages = vec![Message {
+        role: Role::User,
+        content: gate_prompt,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    match args
+        .provider
+        .chat_typed_erased::<zeph_skills::evolution::DomainGateResult>(&gate_messages)
+        .await
+    {
+        Ok(gate) if !gate.domain_relevant => {
+            tracing::warn!(skill = %args.skill_name, "ARISE: domain gate rejected generated body");
+            false
+        }
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(
+                "ARISE: domain gate check failed for {}: {e:#}",
+                args.skill_name
+            );
+            true // proceed on gate failure
+        }
+    }
+}
+
+async fn arise_store_version(args: AriseTaskArgs, generated: String) {
+    let active = match args
+        .memory
+        .sqlite()
+        .active_skill_version(&args.skill_name)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                "ARISE: read active version failed for {}: {e:#}",
+                args.skill_name
+            );
+            return;
+        }
+    };
+    let next_ver = match args
+        .memory
+        .sqlite()
+        .next_skill_version(&args.skill_name)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("ARISE: next version query failed: {e:#}");
+            return;
+        }
+    };
+    let predecessor_id = active.as_ref().map(|v| v.id);
+    // CRITICAL: ARISE-generated versions MUST start at quarantined trust level.
+    let version_id = match args
+        .memory
+        .sqlite()
+        .save_skill_version(
+            &args.skill_name,
+            next_ver,
+            &generated,
+            &args.skill_desc,
+            "arise_trace",
+            None,
+            predecessor_id,
+        )
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!("ARISE: save_skill_version failed: {e:#}");
+            return;
+        }
+    };
+    tracing::info!(skill = %args.skill_name, version = next_ver, "ARISE: saved trace-improved version (quarantined)");
+    if args.auto_activate {
+        if let Err(e) = args
+            .memory
+            .sqlite()
+            .activate_skill_version(&args.skill_name, version_id)
+            .await
+        {
+            tracing::warn!("ARISE: activate_skill_version failed: {e:#}");
+            return;
+        }
+        if let Err(e) = write_skill_file(
+            &args.skill_paths,
+            &args.skill_name,
+            &args.skill_desc,
+            &generated,
+        )
+        .await
+        {
+            tracing::warn!("ARISE: write_skill_file failed: {e:#}");
+        }
+    }
+    if let Err(e) = args
+        .memory
+        .sqlite()
+        .prune_skill_versions(&args.skill_name, args.max_versions)
+        .await
+    {
+        tracing::warn!("ARISE: prune_skill_versions failed: {e:#}");
+    }
+}
+
+// ── STEM background task ─────────────────────────────────────────────────────
+
+struct StemTaskArgs {
+    provider: zeph_llm::any::AnyProvider,
+    memory: std::sync::Arc<SemanticMemory>,
+    tool_sequence: String,
+    sequence_hash: String,
+    context_hash: String,
+    outcome: String,
+    conv_id: Option<zeph_memory::ConversationId>,
+    min_occurrences: u32,
+    min_success_rate: f64,
+    window_days: u32,
+    retention_days: u32,
+    max_auto_sections: u32,
+    skill_paths: Vec<PathBuf>,
+    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+}
+
+async fn stem_detection_task(args: StemTaskArgs) {
+    let _clear_status = defer_clear_status(args.status_tx.clone());
+    if let Err(e) = args
+        .memory
+        .sqlite()
+        .insert_tool_usage_log(
+            &args.tool_sequence,
+            &args.sequence_hash,
+            &args.context_hash,
+            &args.outcome,
+            args.conv_id,
+        )
+        .await
+    {
+        tracing::warn!("STEM: insert_tool_usage_log failed: {e:#}");
+        return;
+    }
+    let _ = args
+        .memory
+        .sqlite()
+        .prune_tool_usage_log(args.retention_days)
+        .await;
+    let patterns = match args
+        .memory
+        .sqlite()
+        .find_recurring_patterns(args.min_occurrences, args.window_days)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("STEM: find_recurring_patterns failed: {e:#}");
+            return;
+        }
+    };
+    for (seq, hash, occ, suc) in patterns {
+        let pattern = zeph_skills::stem::ToolPattern {
+            tool_sequence: seq.clone(),
+            sequence_hash: hash,
+            occurrence_count: occ,
+            success_count: suc,
+        };
+        if !zeph_skills::stem::should_generate_skill(
+            &pattern,
+            args.min_occurrences,
+            args.min_success_rate,
+        ) {
+            continue;
+        }
+        stem_generate_skill(&args, &seq, &pattern, occ).await;
+    }
+}
+
+async fn stem_generate_skill(
+    args: &StemTaskArgs,
+    seq: &str,
+    pattern: &zeph_skills::stem::ToolPattern,
+    occ: u32,
+) {
+    let prompt = zeph_skills::stem::build_pattern_to_skill_prompt(seq, &[]);
+    let messages = vec![
+        Message {
+            role: Role::System,
+            content: "You are a skill generation assistant. Output only the SKILL.md body.".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+        Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+    ];
+    let generated = match args.provider.chat(&messages).await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!("STEM: skill generation LLM call failed: {e:#}");
+            return;
+        }
+    };
+    let generated = generated.trim().to_string();
+    if generated.is_empty()
+        || generated.len() > zeph_skills::evolution::MAX_BODY_BYTES
+        || !zeph_skills::evolution::validate_body_sections(&generated, args.max_auto_sections)
+    {
+        tracing::warn!("STEM: generated body rejected for pattern '{seq}'");
+        return;
+    }
+    let skill_name = format!("stem-{}", &pattern.sequence_hash[..8].to_lowercase());
+    let description = format!("Auto-generated from tool pattern: {seq}");
+    let Some(skill_dir) = args.skill_paths.first() else {
+        return;
+    };
+    let skill_file = skill_dir.join(format!("{skill_name}.md"));
+    if skill_file.exists() {
+        tracing::debug!("STEM: skill file already exists for pattern '{seq}', skipping");
+        return;
+    }
+    let content = format!(
+        "---\nname: {skill_name}\ndescription: {description}\ntrust: quarantined\nsource: stem\n---\n\n{generated}"
+    );
+    if let Err(e) = tokio::fs::write(&skill_file, &content).await {
+        tracing::warn!(
+            "STEM: failed to write skill file {}: {e:#}",
+            skill_file.display()
+        );
+        return;
+    }
+    tracing::info!(
+        "STEM: generated quarantined skill '{skill_name}' from pattern '{seq}' (occurrences={occ})"
+    );
+}
+
+// ── ERL background task ───────────────────────────────────────────────────────
+
+struct ErlTaskArgs {
+    provider: zeph_llm::any::AnyProvider,
+    memory: std::sync::Arc<SemanticMemory>,
+    skill_name: String,
+    task_summary: String,
+    tool_calls_str: String,
+    dedup_threshold: f32,
+    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+}
+
+async fn erl_reflection_task(args: ErlTaskArgs) {
+    let _clear_status = defer_clear_status(args.status_tx.clone());
+    let prompt = zeph_skills::erl::build_reflection_extract_prompt(
+        &args.task_summary,
+        &args.tool_calls_str,
+        "success",
+    );
+    let messages = vec![Message {
+        role: Role::User,
+        content: prompt,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    let result = match args
+        .provider
+        .chat_typed_erased::<zeph_skills::erl::ReflectionResult>(&messages)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("ERL: heuristic extraction LLM call failed: {e:#}");
+            return;
+        }
+    };
+    for entry in result.heuristics {
+        let text = entry.text.trim().to_string();
+        if text.is_empty() || text.len() > 512 {
+            continue;
+        }
+        let effective_skill = entry
+            .skill_name
+            .as_deref()
+            .or(Some(args.skill_name.as_str()))
+            .filter(|s| !s.is_empty());
+        let existing = match args
+            .memory
+            .sqlite()
+            .load_all_heuristics_for_skill(effective_skill)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("ERL: load_all_heuristics_for_skill failed: {e:#}");
+                continue;
+            }
+        };
+        let duplicate = existing.iter().find(|(_, existing_text)| {
+            zeph_skills::erl::text_similarity(&text, existing_text) >= args.dedup_threshold
+        });
+        if let Some((id, _)) = duplicate {
+            if let Err(e) = args
+                .memory
+                .sqlite()
+                .increment_heuristic_use_count(*id)
+                .await
+            {
+                tracing::warn!("ERL: increment_heuristic_use_count failed: {e:#}");
+            }
+        } else {
+            match args
+                .memory
+                .sqlite()
+                .insert_skill_heuristic(effective_skill, &text, 0.5)
+                .await
+            {
+                Ok(id) => tracing::debug!(id, skill = ?effective_skill, "ERL: stored heuristic"),
+                Err(e) => tracing::warn!("ERL: insert_skill_heuristic failed: {e:#}"),
+            }
+        }
+    }
 }
 
 pub(super) async fn write_skill_file(
@@ -1370,6 +2053,7 @@ mod tests {
             min_sessions_before_demote: 1,
             max_auto_sections: 3,
             domain_success_gate: false,
+            ..LearningConfig::default()
         }
     }
 

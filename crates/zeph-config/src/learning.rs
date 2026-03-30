@@ -79,6 +79,38 @@ fn default_max_auto_sections() -> u32 {
     3
 }
 
+fn default_arise_min_tool_calls() -> u32 {
+    2
+}
+
+fn default_stem_min_occurrences() -> u32 {
+    3
+}
+
+fn default_stem_min_success_rate() -> f64 {
+    0.8
+}
+
+fn default_stem_retention_days() -> u32 {
+    90
+}
+
+fn default_stem_pattern_window_days() -> u32 {
+    30
+}
+
+fn default_erl_max_heuristics_per_skill() -> u32 {
+    3
+}
+
+fn default_erl_dedup_threshold() -> f32 {
+    0.9
+}
+
+fn default_erl_min_confidence() -> f64 {
+    0.5
+}
+
 /// Strategy for detecting implicit user corrections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -184,6 +216,58 @@ pub struct LearningConfig {
     /// activation is skipped (the version is still saved for manual review).
     #[serde(default)]
     pub domain_success_gate: bool,
+
+    // --- ARISE: trace-based skill improvement ---
+    /// Enable ARISE trace-based skill improvement (disabled by default).
+    #[serde(default)]
+    pub arise_enabled: bool,
+    /// Minimum tool calls in a turn to trigger ARISE trace improvement.
+    #[serde(default = "default_arise_min_tool_calls")]
+    pub arise_min_tool_calls: u32,
+    /// Provider name from `[[llm.providers]]` for ARISE trace summarization.
+    /// Empty = fall back to primary provider.
+    #[serde(default)]
+    pub arise_trace_provider: String,
+
+    // --- STEM: pattern-to-skill conversion ---
+    /// Enable STEM automatic tool pattern detection and skill generation (disabled by default).
+    #[serde(default)]
+    pub stem_enabled: bool,
+    /// Minimum occurrences of a tool sequence before generating a skill candidate.
+    #[serde(default = "default_stem_min_occurrences")]
+    pub stem_min_occurrences: u32,
+    /// Minimum success rate of the pattern before generating a skill candidate.
+    #[serde(default = "default_stem_min_success_rate")]
+    pub stem_min_success_rate: f64,
+    /// Provider name from `[[llm.providers]]` for STEM skill generation.
+    /// Empty = fall back to primary provider.
+    #[serde(default)]
+    pub stem_provider: String,
+    /// Days to retain rows in `skill_usage_log` before pruning.
+    #[serde(default = "default_stem_retention_days")]
+    pub stem_retention_days: u32,
+    /// Window in days for pattern detection queries (limits scan cost on large tables).
+    #[serde(default = "default_stem_pattern_window_days")]
+    pub stem_pattern_window_days: u32,
+
+    // --- ERL: experiential reflective learning ---
+    /// Enable ERL post-task heuristic extraction (disabled by default).
+    #[serde(default)]
+    pub erl_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for ERL heuristic extraction.
+    /// Empty = fall back to primary provider.
+    #[serde(default)]
+    pub erl_extract_provider: String,
+    /// Maximum heuristics prepended per skill at match time.
+    #[serde(default = "default_erl_max_heuristics_per_skill")]
+    pub erl_max_heuristics_per_skill: u32,
+    /// Text similarity threshold (Jaccard) for heuristic deduplication.
+    /// When exact text match exceeds this, increment `use_count` instead of inserting.
+    #[serde(default = "default_erl_dedup_threshold")]
+    pub erl_dedup_threshold: f32,
+    /// Minimum confidence to include a heuristic at match time.
+    #[serde(default = "default_erl_min_confidence")]
+    pub erl_min_confidence: f64,
 }
 
 impl Default for LearningConfig {
@@ -215,6 +299,20 @@ impl Default for LearningConfig {
             min_sessions_before_demote: default_min_sessions_before_demote(),
             max_auto_sections: default_max_auto_sections(),
             domain_success_gate: false,
+            arise_enabled: false,
+            arise_min_tool_calls: default_arise_min_tool_calls(),
+            arise_trace_provider: String::new(),
+            stem_enabled: false,
+            stem_min_occurrences: default_stem_min_occurrences(),
+            stem_min_success_rate: default_stem_min_success_rate(),
+            stem_provider: String::new(),
+            stem_retention_days: default_stem_retention_days(),
+            stem_pattern_window_days: default_stem_pattern_window_days(),
+            erl_enabled: false,
+            erl_extract_provider: String::new(),
+            erl_max_heuristics_per_skill: default_erl_max_heuristics_per_skill(),
+            erl_dedup_threshold: default_erl_dedup_threshold(),
+            erl_min_confidence: default_erl_min_confidence(),
         }
     }
 }
@@ -296,6 +394,68 @@ feedback_provider = "fast""#;
     fn learning_config_min_sessions_before_demote_default() {
         let cfg = LearningConfig::default();
         assert_eq!(cfg.min_sessions_before_demote, 1);
+    }
+
+    #[test]
+    fn arise_stem_erl_defaults() {
+        let cfg = LearningConfig::default();
+        assert!(!cfg.arise_enabled);
+        assert_eq!(cfg.arise_min_tool_calls, 2);
+        assert!(cfg.arise_trace_provider.is_empty());
+        assert!(!cfg.stem_enabled);
+        assert_eq!(cfg.stem_min_occurrences, 3);
+        assert!((cfg.stem_min_success_rate - 0.8).abs() < f64::EPSILON);
+        assert!(cfg.stem_provider.is_empty());
+        assert_eq!(cfg.stem_retention_days, 90);
+        assert_eq!(cfg.stem_pattern_window_days, 30);
+        assert!(!cfg.erl_enabled);
+        assert!(cfg.erl_extract_provider.is_empty());
+        assert_eq!(cfg.erl_max_heuristics_per_skill, 3);
+        assert!((cfg.erl_dedup_threshold - 0.9).abs() < f32::EPSILON);
+        assert!((cfg.erl_min_confidence - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn arise_stem_erl_serde_roundtrip() {
+        let toml = r#"
+arise_enabled = true
+arise_min_tool_calls = 3
+arise_trace_provider = "fast"
+stem_enabled = true
+stem_min_occurrences = 5
+stem_min_success_rate = 0.9
+stem_provider = "mid"
+stem_retention_days = 60
+stem_pattern_window_days = 14
+erl_enabled = true
+erl_extract_provider = "fast"
+erl_max_heuristics_per_skill = 5
+erl_dedup_threshold = 0.85
+erl_min_confidence = 0.6
+"#;
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.arise_enabled);
+        assert_eq!(cfg.arise_min_tool_calls, 3);
+        assert_eq!(cfg.arise_trace_provider, "fast");
+        assert!(cfg.stem_enabled);
+        assert_eq!(cfg.stem_min_occurrences, 5);
+        assert!((cfg.stem_min_success_rate - 0.9).abs() < f64::EPSILON);
+        assert_eq!(cfg.stem_provider, "mid");
+        assert_eq!(cfg.stem_retention_days, 60);
+        assert_eq!(cfg.stem_pattern_window_days, 14);
+        assert!(cfg.erl_enabled);
+        assert_eq!(cfg.erl_extract_provider, "fast");
+        assert_eq!(cfg.erl_max_heuristics_per_skill, 5);
+        assert!((cfg.erl_dedup_threshold - 0.85_f32).abs() < f32::EPSILON);
+        assert!((cfg.erl_min_confidence - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn arise_stem_erl_empty_section_uses_defaults() {
+        let cfg: LearningConfig = toml::from_str("").unwrap();
+        assert!(!cfg.arise_enabled);
+        assert!(!cfg.stem_enabled);
+        assert!(!cfg.erl_enabled);
     }
 
     #[test]

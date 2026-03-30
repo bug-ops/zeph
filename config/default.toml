@@ -188,6 +188,23 @@ cooldown_minutes = 60
 # max_auto_sections = 3
 # Domain evaluation gate before promoting auto-generated skills
 # domain_success_gate = false
+# ARISE: trace-based skill improvement from successful multi-tool turns
+# arise_enabled = false
+# arise_min_tool_calls = 2
+# arise_trace_provider = ""
+# STEM: automatic tool pattern detection and skill candidate generation
+# stem_enabled = false
+# stem_min_occurrences = 3
+# stem_min_success_rate = 0.8
+# stem_provider = ""
+# stem_retention_days = 90
+# stem_pattern_window_days = 30
+# ERL: post-task heuristic extraction and injection at skill match time
+# erl_enabled = false
+# erl_extract_provider = ""
+# erl_max_heuristics_per_skill = 3
+# erl_dedup_threshold = 0.9
+# erl_min_confidence = 0.5
 
 [skills.trust]
 # Default trust level for newly discovered skills: trusted, verified, quarantined, blocked

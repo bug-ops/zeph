@@ -282,6 +282,36 @@ pub fn build_domain_gate_prompt(name: &str, description: &str, body: &str) -> St
         .replace("{body}", body)
 }
 
+// --- ARISE: trace-based improvement ---
+
+/// Prompt template for ARISE trace-based skill improvement.
+///
+/// Placeholders: `{name}`, `{original_body}`, `{tool_trace}` — substituted via
+/// [`build_trace_improvement_prompt`] using `str::replace`.
+pub const TRACE_IMPROVEMENT_PROMPT_TEMPLATE: &str = "\
+The following skill was used to complete a task successfully using multiple tools.
+
+<skill name=\"{name}\">
+{original_body}
+</skill>
+
+Successful tool call sequence:
+{tool_trace}
+
+Generate an improved version of the skill instructions that captures the successful pattern.
+Keep the same markdown format with bash code blocks. Be concise.
+The improved skill body must contain at most 3 top-level sections (## headers).
+Only output the improved skill body (no frontmatter, no explanation).";
+
+/// Build an ARISE trace improvement prompt.
+#[must_use]
+pub fn build_trace_improvement_prompt(name: &str, original_body: &str, tool_trace: &str) -> String {
+    TRACE_IMPROVEMENT_PROMPT_TEMPLATE
+        .replace("{name}", name)
+        .replace("{original_body}", original_body)
+        .replace("{tool_trace}", tool_trace)
+}
+
 /// Absolute maximum body size to prevent exponential growth across generations.
 pub const MAX_BODY_BYTES: usize = 65_536;
 
