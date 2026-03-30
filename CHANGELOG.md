@@ -32,7 +32,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(acp): populate `authMethods` in `initialize` response with `Agent` auth method — ACP clients now receive `[{type: "agent", id: "zeph", name: "Zeph"}]` in the `authMethods` field of every `InitializeResponse` (closes #2422)
 - fix(acp): serve agent identity manifest at `GET /agent.json` — new endpoint gated on `discovery_enabled`, returns `id`, `name`, `version`, `description`, and `distribution` fields for ACP Registry discovery (closes #2422)
 - fix(acp): eliminate IPI wiring duplication in `acp.rs` `spawn_acp_agent` — extract `apply_three_class_classifier_with_cfg` and `apply_causal_analyzer_with_cfg` helpers in `agent_setup.rs`; `spawn_acp_agent` now delegates to shared helpers instead of inlining classifier construction (closes #2370)
-- fix(acp): discovery endpoint already reflects `ProtocolVersion::LATEST` — confirmed fixed in PR #2423; no code change required (#2412)
+- fix(acp): discovery endpoint already reflects `ProtocolVersion::LATEST` — confirmed fixed in PR #2423; no code change required (closes #2412)
+- fix(security): extend MCP env var blocklist — `PATH`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `BASH_ENV`, `ENV`, `PYTHONPATH`, `NODE_PATH`, `RUBYLIB` are now stripped from ACP-provided env vars for MCP stdio child processes (closes #2437)
+- fix(tools): `AuditLogger::log` now emits `tracing::error!` when `serde_json` serialization fails instead of silently dropping the audit entry (closes #2438)
 
 ### Added (tests)
 

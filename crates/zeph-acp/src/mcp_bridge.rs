@@ -73,17 +73,33 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
 }
 
 /// Env vars that must never be passed from ACP clients to MCP child processes.
-/// These enable library injection, path hijacking, and other privilege escalation vectors.
+/// These enable library injection, path hijacking, proxy interception, and other privilege
+/// escalation vectors.
 fn is_dangerous_env_var(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     matches!(
         upper.as_str(),
+        // Library injection (Linux / macOS)
         "LD_PRELOAD"
             | "LD_LIBRARY_PATH"
             | "DYLD_INSERT_LIBRARIES"
             | "DYLD_LIBRARY_PATH"
             | "DYLD_FRAMEWORK_PATH"
             | "DYLD_FALLBACK_LIBRARY_PATH"
+            // Path hijacking — attacker-controlled PATH redirects binary execution
+            | "PATH"
+            // Network proxy interception
+            | "HTTP_PROXY"
+            | "HTTPS_PROXY"
+            | "ALL_PROXY"
+            | "NO_PROXY"
+            // Shell startup injection — executed by bash/sh unconditionally on startup
+            | "BASH_ENV"
+            | "ENV"
+            // Interpreted-runtime module injection
+            | "PYTHONPATH"
+            | "NODE_PATH"
+            | "RUBYLIB"
     )
 }
 
@@ -198,6 +214,16 @@ mod tests {
             acp::EnvVariable::new("LD_PRELOAD", "/tmp/evil.so"),
             acp::EnvVariable::new("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
             acp::EnvVariable::new("LD_LIBRARY_PATH", "/tmp"),
+            acp::EnvVariable::new("PATH", "/tmp/evil/bin:/bin"),
+            acp::EnvVariable::new("HTTP_PROXY", "http://evil.proxy:8080"),
+            acp::EnvVariable::new("HTTPS_PROXY", "http://evil.proxy:8080"),
+            acp::EnvVariable::new("ALL_PROXY", "http://evil.proxy:8080"),
+            acp::EnvVariable::new("NO_PROXY", ""),
+            acp::EnvVariable::new("BASH_ENV", "/tmp/evil.sh"),
+            acp::EnvVariable::new("ENV", "/tmp/evil.sh"),
+            acp::EnvVariable::new("PYTHONPATH", "/tmp/evil"),
+            acp::EnvVariable::new("NODE_PATH", "/tmp/evil"),
+            acp::EnvVariable::new("RUBYLIB", "/tmp/evil"),
         ]);
         let entries = acp_mcp_servers_to_entries(&[acp::McpServer::Stdio(stdio)]);
         if let McpTransport::Stdio { env, .. } = &entries[0].transport {
@@ -205,6 +231,16 @@ mod tests {
             assert!(env.get("LD_PRELOAD").is_none());
             assert!(env.get("DYLD_INSERT_LIBRARIES").is_none());
             assert!(env.get("LD_LIBRARY_PATH").is_none());
+            assert!(env.get("PATH").is_none());
+            assert!(env.get("HTTP_PROXY").is_none());
+            assert!(env.get("HTTPS_PROXY").is_none());
+            assert!(env.get("ALL_PROXY").is_none());
+            assert!(env.get("NO_PROXY").is_none());
+            assert!(env.get("BASH_ENV").is_none());
+            assert!(env.get("ENV").is_none());
+            assert!(env.get("PYTHONPATH").is_none());
+            assert!(env.get("NODE_PATH").is_none());
+            assert!(env.get("RUBYLIB").is_none());
         } else {
             panic!("expected Stdio transport");
         }
@@ -229,14 +265,32 @@ mod tests {
 
     #[test]
     fn is_dangerous_env_var_cases() {
+        // Library injection
         assert!(super::is_dangerous_env_var("LD_PRELOAD"));
         assert!(super::is_dangerous_env_var("ld_preload"));
         assert!(super::is_dangerous_env_var("DYLD_INSERT_LIBRARIES"));
         assert!(super::is_dangerous_env_var("DYLD_LIBRARY_PATH"));
         assert!(super::is_dangerous_env_var("DYLD_FRAMEWORK_PATH"));
         assert!(super::is_dangerous_env_var("DYLD_FALLBACK_LIBRARY_PATH"));
-        assert!(!super::is_dangerous_env_var("PATH"));
+        // Path hijacking
+        assert!(super::is_dangerous_env_var("PATH"));
+        assert!(super::is_dangerous_env_var("path"));
+        // Network proxy interception
+        assert!(super::is_dangerous_env_var("HTTP_PROXY"));
+        assert!(super::is_dangerous_env_var("HTTPS_PROXY"));
+        assert!(super::is_dangerous_env_var("ALL_PROXY"));
+        assert!(super::is_dangerous_env_var("NO_PROXY"));
+        assert!(super::is_dangerous_env_var("http_proxy"));
+        // Shell startup injection
+        assert!(super::is_dangerous_env_var("BASH_ENV"));
+        assert!(super::is_dangerous_env_var("ENV"));
+        // Runtime module injection
+        assert!(super::is_dangerous_env_var("PYTHONPATH"));
+        assert!(super::is_dangerous_env_var("NODE_PATH"));
+        assert!(super::is_dangerous_env_var("RUBYLIB"));
+        // Safe vars
         assert!(!super::is_dangerous_env_var("HOME"));
         assert!(!super::is_dangerous_env_var("MY_VAR"));
+        assert!(!super::is_dangerous_env_var("LANG"));
     }
 }

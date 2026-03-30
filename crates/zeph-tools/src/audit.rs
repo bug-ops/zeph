@@ -86,8 +86,12 @@ impl AuditLogger {
     }
 
     pub async fn log(&self, entry: &AuditEntry) {
-        let Ok(json) = serde_json::to_string(entry) else {
-            return;
+        let json = match serde_json::to_string(entry) {
+            Ok(j) => j,
+            Err(err) => {
+                tracing::error!("audit entry serialization failed: {err}");
+                return;
+            }
         };
 
         match &self.destination {
