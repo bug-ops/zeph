@@ -480,6 +480,7 @@ impl ToolsConfig {
 
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ShellConfig {
     #[serde(default = "default_timeout")]
     pub timeout: u64,
@@ -498,6 +499,27 @@ pub struct ShellConfig {
     /// spawning shell commands. Default covers common credential naming conventions.
     #[serde(default = "ShellConfig::default_env_blocklist")]
     pub env_blocklist: Vec<String>,
+    /// Enable transactional mode: snapshot files before write commands, rollback on failure.
+    #[serde(default)]
+    pub transactional: bool,
+    /// Glob patterns defining which paths are eligible for snapshotting.
+    /// Only files matching these patterns (relative to cwd) are captured.
+    /// Empty = snapshot all files referenced in the command.
+    #[serde(default)]
+    pub transaction_scope: Vec<String>,
+    /// Automatically rollback when exit code >= 2. Default: false.
+    /// Exit code 1 is excluded because many tools (grep, diff, test) use it for
+    /// non-error conditions.
+    #[serde(default)]
+    pub auto_rollback: bool,
+    /// Exit codes that trigger auto-rollback. Default: empty (uses >= 2 heuristic).
+    /// When non-empty, only these exact exit codes trigger rollback.
+    #[serde(default)]
+    pub auto_rollback_exit_codes: Vec<i32>,
+    /// When true, snapshot failure aborts execution with an error.
+    /// When false (default), snapshot failure emits a warning and execution proceeds.
+    #[serde(default)]
+    pub snapshot_required: bool,
 }
 
 impl ShellConfig {
@@ -561,6 +583,11 @@ impl Default for ShellConfig {
             allow_network: true,
             confirm_patterns: default_confirm_patterns(),
             env_blocklist: Self::default_env_blocklist(),
+            transactional: false,
+            transaction_scope: Vec::new(),
+            auto_rollback: false,
+            auto_rollback_exit_codes: Vec::new(),
+            snapshot_required: false,
         }
     }
 }

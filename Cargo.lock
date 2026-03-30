@@ -9940,6 +9940,7 @@ version = "0.18.0"
 dependencies = [
  "dirs",
  "glob",
+ "globset",
  "insta",
  "proptest",
  "regex",

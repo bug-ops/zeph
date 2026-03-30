@@ -12,6 +12,11 @@ fn default_config() -> ShellConfig {
         allow_network: true,
         confirm_patterns: Vec::new(),
         env_blocklist: ShellConfig::default_env_blocklist(),
+        transactional: false,
+        transaction_scope: Vec::new(),
+        auto_rollback: false,
+        auto_rollback_exit_codes: Vec::new(),
+        snapshot_required: false,
     }
 }
 
@@ -1692,4 +1697,491 @@ async fn empty_env_blocklist_passes_all_vars() {
         result.contains("visible"),
         "empty blocklist should pass all vars, got: {result}"
     );
+}
+
+// ============================================================
+// Transactional ShellExecutor tests (#2414)
+// ============================================================
+
+#[test]
+fn transaction_snapshot_capture_and_rollback() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("data.txt");
+    std::fs::write(&file, b"original").unwrap();
+
+    let snap = super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
+    assert_eq!(snap.file_count(), 1);
+
+    std::fs::write(&file, b"modified").unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"modified");
+
+    snap.rollback().unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"original");
+}
+
+#[test]
+fn transaction_snapshot_new_file_rollback() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("new.txt");
+
+    let snap = super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
+    assert_eq!(snap.file_count(), 1);
+
+    std::fs::write(&file, b"created").unwrap();
+    assert!(file.exists());
+
+    snap.rollback().unwrap();
+    assert!(!file.exists());
+}
+
+#[test]
+fn transaction_snapshot_empty_paths() {
+    let snap = super::transaction::TransactionSnapshot::capture(&[]).unwrap();
+    assert_eq!(snap.file_count(), 0);
+    assert_eq!(snap.total_bytes(), 0);
+    let report = snap.rollback().unwrap();
+    assert_eq!(report.restored_count, 0);
+    assert_eq!(report.deleted_count, 0);
+}
+
+#[test]
+fn is_write_command_positive() {
+    use super::transaction::is_write_command;
+    assert!(is_write_command("echo hello > out.txt"));
+    assert!(is_write_command("echo hello >> out.txt"));
+    assert!(is_write_command("rm old.txt"));
+    assert!(is_write_command("mv src dst"));
+    assert!(is_write_command("cp a b"));
+    assert!(is_write_command("sed -i 's/a/b/' file"));
+    assert!(is_write_command("touch new.txt"));
+    assert!(is_write_command("mkdir newdir"));
+    assert!(is_write_command("tee output.log"));
+}
+
+#[test]
+fn is_write_command_negative() {
+    use super::transaction::is_write_command;
+    assert!(!is_write_command("ls -la"));
+    assert!(!is_write_command("cat file.txt"));
+    assert!(!is_write_command("grep pattern file"));
+    assert!(!is_write_command("echo hello"));
+    assert!(!is_write_command("pwd"));
+    assert!(!is_write_command("wc -l file.txt"));
+}
+
+#[test]
+fn extract_redirection_targets_basic() {
+    use super::transaction::extract_redirection_targets;
+    let targets = extract_redirection_targets("echo x > file.txt");
+    assert!(targets.contains(&"file.txt".to_owned()), "{targets:?}");
+}
+
+#[test]
+fn extract_redirection_targets_append_and_stderr() {
+    use super::transaction::extract_redirection_targets;
+    let targets = extract_redirection_targets("cmd >> log 2> err.txt");
+    assert!(targets.contains(&"log".to_owned()), "{targets:?}");
+    assert!(targets.contains(&"err.txt".to_owned()), "{targets:?}");
+
+    let targets2 = extract_redirection_targets("cmd 2>> stderr.log &> combined.log");
+    assert!(targets2.contains(&"stderr.log".to_owned()), "{targets2:?}");
+    assert!(
+        targets2.contains(&"combined.log".to_owned()),
+        "{targets2:?}"
+    );
+}
+
+#[test]
+fn affected_paths_with_scope() {
+    use super::transaction::affected_paths;
+    use globset::Glob;
+
+    // Use redirection so extract_redirection_targets picks up the file names.
+    // *.rs scope should include main.rs but not backup.txt
+    let matcher = Glob::new("*.rs").unwrap().compile_matcher();
+    let scope = vec![matcher];
+
+    let paths = affected_paths("cat ./main.rs > /tmp/backup.txt", &scope);
+    // ./main.rs matches *.rs, /tmp/backup.txt does not
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.to_string_lossy().ends_with("main.rs")),
+        "{paths:?}"
+    );
+    assert!(
+        !paths
+            .iter()
+            .any(|p| p.to_string_lossy().ends_with("backup.txt")),
+        "{paths:?}"
+    );
+}
+
+#[test]
+fn affected_paths_no_scope() {
+    use super::transaction::affected_paths;
+
+    // Use a redirect so extract_redirection_targets captures the target path.
+    let paths = affected_paths("echo hello > /tmp/out.txt", &[]);
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.to_string_lossy().ends_with("out.txt")),
+        "expected /tmp/out.txt in paths, got {paths:?}"
+    );
+}
+
+#[test]
+fn config_deserialization() {
+    let toml_str = r#"
+        [shell]
+        transactional = true
+        transaction_scope = ["*.rs", "src/**"]
+        auto_rollback = true
+        auto_rollback_exit_codes = [2, 126]
+        snapshot_required = true
+    "#;
+    let config: crate::config::ToolsConfig = toml::from_str(toml_str).unwrap();
+    assert!(config.shell.transactional);
+    assert_eq!(config.shell.transaction_scope, vec!["*.rs", "src/**"]);
+    assert!(config.shell.auto_rollback);
+    assert_eq!(config.shell.auto_rollback_exit_codes, vec![2, 126]);
+    assert!(config.shell.snapshot_required);
+}
+
+#[test]
+fn config_deserialization_defaults() {
+    let toml_str = "[shell]\ntimeout = 30";
+    let config: crate::config::ToolsConfig = toml::from_str(toml_str).unwrap();
+    assert!(!config.shell.transactional);
+    assert!(config.shell.transaction_scope.is_empty());
+    assert!(!config.shell.auto_rollback);
+    assert!(config.shell.auto_rollback_exit_codes.is_empty());
+    assert!(!config.shell.snapshot_required);
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn auto_rollback_on_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.txt");
+    std::fs::write(&file, b"original").unwrap();
+
+    let config = ShellConfig {
+        transactional: true,
+        auto_rollback: true,
+        allowed_paths: vec![
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+        ],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let path_str = file
+        .canonicalize()
+        .unwrap_or_else(|_| file.clone())
+        .to_string_lossy()
+        .into_owned();
+    // Write something then exit with code 2 (triggers rollback)
+    let cmd = format!("```bash\necho modified > {path_str} && exit 2\n```");
+    let _ = executor.execute(&cmd).await;
+
+    // File should be restored to original
+    let content = std::fs::read(&file).unwrap();
+    assert_eq!(
+        content, b"original",
+        "file should be restored after rollback"
+    );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn no_rollback_on_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.txt");
+    std::fs::write(&file, b"original").unwrap();
+
+    let config = ShellConfig {
+        transactional: true,
+        auto_rollback: true,
+        allowed_paths: vec![
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+        ],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let path_str = file
+        .canonicalize()
+        .unwrap_or_else(|_| file.clone())
+        .to_string_lossy()
+        .into_owned();
+    let cmd = format!("```bash\necho modified > {path_str}\n```");
+    let result = executor.execute(&cmd).await;
+    assert!(result.is_ok());
+
+    let content = std::fs::read(&file).unwrap();
+    assert_eq!(
+        content.trim_ascii_end(),
+        b"modified",
+        "successful command should not be rolled back"
+    );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn snapshot_failure_does_not_block() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let locked = dir.path().join("locked.txt");
+    let output = dir.path().join("out.txt");
+    std::fs::write(&locked, b"locked data").unwrap();
+
+    // Make the existing file unreadable so snapshot copy fails.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let canonical_dir = dir.path().canonicalize().unwrap();
+    let config = ShellConfig {
+        transactional: true,
+        auto_rollback: false,
+        snapshot_required: false, // failure must NOT abort execution
+        allowed_paths: vec![canonical_dir.to_string_lossy().into_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let locked_str = locked
+        .canonicalize()
+        .unwrap_or_else(|_| locked.clone())
+        .to_string_lossy()
+        .into_owned();
+    let output_str = output.to_string_lossy().into_owned();
+    // Write command referencing both locked (snapshot fails) and output (redirection target).
+    let cmd = format!("```bash\ncp {locked_str} {output_str}\n```");
+    let result = executor.execute(&cmd).await;
+
+    // Restore permissions for cleanup.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    // Execution must proceed (snapshot failure is non-fatal when snapshot_required=false).
+    // The cp may fail at the OS level (unreadable src) but must not return SnapshotFailed.
+    assert!(
+        !matches!(
+            result,
+            Err(crate::executor::ToolError::SnapshotFailed { .. })
+        ),
+        "snapshot_required=false should not return SnapshotFailed, got {result:?}"
+    );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn snapshot_failure_aborts_when_required() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("locked.txt");
+    std::fs::write(&file, b"data").unwrap();
+
+    // Make file unreadable so copy fails
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let config = ShellConfig {
+        transactional: true,
+        auto_rollback: false,
+        snapshot_required: true,
+        allowed_paths: vec![
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+        ],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let path_str = file
+        .canonicalize()
+        .unwrap_or_else(|_| file.clone())
+        .to_string_lossy()
+        .into_owned();
+    let cmd = format!("```bash\ncp {path_str} {path_str}.bak\n```");
+    let result = executor.execute(&cmd).await;
+
+    // Restore permissions for cleanup
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        matches!(
+            result,
+            Err(crate::executor::ToolError::SnapshotFailed { .. })
+        ),
+        "expected SnapshotFailed, got {result:?}"
+    );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn transactional_false_skips_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.txt");
+    std::fs::write(&file, b"original").unwrap();
+
+    let config = ShellConfig {
+        transactional: false, // disabled
+        auto_rollback: true,
+        allowed_paths: vec![
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+        ],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let path_str = file
+        .canonicalize()
+        .unwrap_or_else(|_| file.clone())
+        .to_string_lossy()
+        .into_owned();
+    let cmd = format!("```bash\necho modified > {path_str} && exit 2\n```");
+    let _ = executor.execute(&cmd).await;
+
+    // No snapshot was taken, so file stays modified
+    let content = std::fs::read(&file).unwrap();
+    assert_eq!(
+        content.trim_ascii_end(),
+        b"modified",
+        "without transactional, file should not be restored"
+    );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn no_rollback_on_exit_code_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.txt");
+    std::fs::write(&file, b"original").unwrap();
+
+    let config = ShellConfig {
+        transactional: true,
+        auto_rollback: true, // heuristic: rollback on exit >= 2, NOT on exit 1
+        allowed_paths: vec![
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+        ],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let path_str = file
+        .canonicalize()
+        .unwrap_or_else(|_| file.clone())
+        .to_string_lossy()
+        .into_owned();
+    let cmd = format!("```bash\necho modified > {path_str} && exit 1\n```");
+    let _ = executor.execute(&cmd).await;
+
+    let content = std::fs::read(&file).unwrap();
+    assert_eq!(
+        content.trim_ascii_end(),
+        b"modified",
+        "exit code 1 should NOT trigger rollback"
+    );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn rollback_on_exit_code_2() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.txt");
+    std::fs::write(&file, b"original").unwrap();
+
+    let config = ShellConfig {
+        transactional: true,
+        auto_rollback: true,
+        allowed_paths: vec![
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+        ],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let path_str = file
+        .canonicalize()
+        .unwrap_or_else(|_| file.clone())
+        .to_string_lossy()
+        .into_owned();
+    let cmd = format!("```bash\necho modified > {path_str} && exit 2\n```");
+    let _ = executor.execute(&cmd).await;
+
+    let content = std::fs::read(&file).unwrap();
+    assert_eq!(content, b"original", "exit code 2 should trigger rollback");
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn custom_rollback_exit_codes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.txt");
+    std::fs::write(&file, b"original").unwrap();
+
+    let config = ShellConfig {
+        transactional: true,
+        auto_rollback: true,
+        auto_rollback_exit_codes: vec![42],
+        allowed_paths: vec![
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+        ],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let path_str = file
+        .canonicalize()
+        .unwrap_or_else(|_| file.clone())
+        .to_string_lossy()
+        .into_owned();
+
+    // exit 2 should NOT trigger rollback (not in the list)
+    let cmd = format!("```bash\necho modified > {path_str} && exit 2\n```");
+    let _ = executor.execute(&cmd).await;
+    let content = std::fs::read(&file).unwrap();
+    assert_eq!(
+        content.trim_ascii_end(),
+        b"modified",
+        "exit 2 should not rollback when custom_rollback_exit_codes=[42]"
+    );
+
+    // Reset
+    std::fs::write(&file, b"original").unwrap();
+
+    // exit 42 SHOULD trigger rollback
+    let cmd2 = format!("```bash\necho modified > {path_str} && exit 42\n```");
+    let _ = executor.execute(&cmd2).await;
+    let content2 = std::fs::read(&file).unwrap();
+    assert_eq!(content2, b"original", "exit 42 should trigger rollback");
 }

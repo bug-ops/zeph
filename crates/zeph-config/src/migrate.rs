@@ -1422,6 +1422,62 @@ pub fn migrate_database_url(toml_src: &str) -> Result<MigrationResult, MigrateEr
     })
 }
 
+/// No-op migration for `[tools.shell]` transactional fields added in #2414.
+///
+/// All 5 new fields have `#[serde(default)]` so existing configs parse without changes.
+/// This step adds them as commented-out hints in `[tools.shell]` if not already present.
+///
+/// # Errors
+///
+/// Returns `MigrateError` if the TOML cannot be parsed or `[tools.shell]` is malformed.
+pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    let tools_shell_exists = doc
+        .get("tools")
+        .and_then(toml_edit::Item::as_table)
+        .is_some_and(|t| t.contains_key("shell"));
+    if !tools_shell_exists {
+        // No [tools.shell] section — nothing to annotate; new configs will get defaults.
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let shell = doc
+        .get_mut("tools")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|t| t.get_mut("shell"))
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[tools.shell] is not a table",
+        ))?;
+
+    if shell.contains_key("transactional") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "# Transactional shell: snapshot files before write commands, rollback on failure.\n\
+         # transactional = false\n\
+         # transaction_scope = []          # glob patterns; empty = all extracted paths\n\
+         # auto_rollback = false           # rollback when exit code >= 2\n\
+         # auto_rollback_exit_codes = []   # explicit exit codes; overrides >= 2 heuristic\n\
+         # snapshot_required = false       # abort if snapshot fails (default: warn and proceed)\n";
+    append_comment_to_table_suffix(shell, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["tools.shell.transactional".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {

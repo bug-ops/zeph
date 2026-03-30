@@ -68,6 +68,8 @@ pub enum AuditResult {
     Error { message: String },
     #[serde(rename = "timeout")]
     Timeout,
+    #[serde(rename = "rollback")]
+    Rollback { restored: usize, deleted: usize },
 }
 
 impl AuditLogger {

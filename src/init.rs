@@ -181,6 +181,9 @@ pub(crate) struct WizardState {
     /// `PostgreSQL` database URL (set when user selects postgres backend in `step_memory`).
     /// Empty string means the user chose postgres but was instructed to store URL in vault.
     pub(crate) database_url: Option<String>,
+    // Transactional shell (#2414)
+    pub(crate) shell_transactional: bool,
+    pub(crate) shell_auto_rollback: bool,
 }
 
 impl Default for WizardState {
@@ -320,6 +323,8 @@ impl Default for WizardState {
             mcp_discovery_top_k: 10,
             mcp_discovery_provider: String::new(),
             database_url: None,
+            shell_transactional: false,
+            shell_auto_rollback: false,
         }
     }
 }
@@ -1386,6 +1391,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             .allowed_paths
             .clone_from(&state.pre_execution_verify_allowed_paths);
     }
+    config.tools.shell.transactional = state.shell_transactional;
+    config.tools.shell.auto_rollback = state.shell_auto_rollback;
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
     config.skills.trust.scanner.capability_escalation_check =
         state.skill_capability_escalation_check;
@@ -2203,6 +2210,20 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+    }
+    state.shell_transactional = Confirm::new()
+        .with_prompt(
+            "Enable transactional shell? (snapshots files before write commands and rolls back on failure; see transaction_scope, auto_rollback_exit_codes in config.toml)",
+        )
+        .default(false)
+        .interact()?;
+    if state.shell_transactional {
+        state.shell_auto_rollback = Confirm::new()
+            .with_prompt(
+                "Auto-rollback on shell failure? (restores files when exit code >= 2; set auto_rollback_exit_codes in config.toml for exact codes)",
+            )
+            .default(false)
+            .interact()?;
     }
 
     #[cfg(feature = "guardrail")]

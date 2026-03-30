@@ -6,7 +6,8 @@ use std::path::Path;
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
     ConfigMigrator, migrate_agent_retry_to_tools_retry, migrate_database_url,
-    migrate_mcp_trust_levels, migrate_planner_model_to_provider, migrate_stt_to_provider,
+    migrate_mcp_trust_levels, migrate_planner_model_to_provider, migrate_shell_transactional,
+    migrate_stt_to_provider,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -47,9 +48,13 @@ pub(crate) fn handle_migrate_config(
     let db_url_result = migrate_database_url(&after_retry)?;
     let after_db_url = db_url_result.output;
 
-    // Step 6: add missing default keys as commented-out entries.
+    // Step 6: add commented-out [tools.shell] transactional fields if absent (#2414).
+    let shell_txn_result = migrate_shell_transactional(&after_db_url)?;
+    let after_shell_txn = shell_txn_result.output;
+
+    // Step 7: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_db_url)?;
+    let result = migrator.migrate(&after_shell_txn)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -72,6 +77,11 @@ pub(crate) fn handle_migrate_config(
         }
         if db_url_result.added_count > 0 {
             eprintln!("Database URL migration: added database_url placeholder under [memory].");
+        }
+        if shell_txn_result.added_count > 0 {
+            eprintln!(
+                "Shell transactional migration: added commented-out transactional fields to [tools.shell]."
+            );
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

@@ -16,12 +16,14 @@ readme = "README.md"
 [dependencies]
 dirs.workspace = true
 glob.workspace = true
+globset.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
 schemars.workspace = true
 scrape-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
@@ -45,7 +47,6 @@ zeph-common = { workspace = true, features = ["treesitter"] }
 [dev-dependencies]
 insta.workspace = true
 proptest.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 toml.workspace = true
 wiremock.workspace = true

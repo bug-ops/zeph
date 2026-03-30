@@ -224,6 +224,13 @@ pub(crate) async fn forward_tool_events_to_tui(
                 command,
                 chunk: zeph_tools::strip_ansi(&chunk),
             },
+            zeph_tools::ToolEvent::Rollback {
+                restored_count,
+                deleted_count,
+                ..
+            } => zeph_tui::AgentEvent::Status(format!(
+                "Rolled back {restored_count} file(s), deleted {deleted_count} new file(s)"
+            )),
         };
         if tx.send(agent_event).await.is_err() {
             break;

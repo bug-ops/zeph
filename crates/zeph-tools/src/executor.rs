@@ -168,6 +168,12 @@ pub enum ToolEvent {
         filter_stats: Option<FilterStats>,
         diff: Option<DiffData>,
     },
+    Rollback {
+        tool_name: String,
+        command: String,
+        restored_count: usize,
+        deleted_count: usize,
+    },
 }
 
 pub type ToolEventTx = tokio::sync::mpsc::UnboundedSender<ToolEvent>;
@@ -233,6 +239,9 @@ pub enum ToolError {
         category: crate::error_taxonomy::ToolErrorCategory,
         message: String,
     },
+
+    #[error("snapshot failed: {reason}")]
+    SnapshotFailed { reason: String },
 }
 
 impl ToolError {
@@ -254,6 +263,7 @@ impl ToolError {
             Self::Http { status, .. } => classify_http_status(*status),
             Self::Execution(io_err) => classify_io_error(io_err),
             Self::Shell { category, .. } => *category,
+            Self::SnapshotFailed { .. } => ToolErrorCategory::PermanentFailure,
         }
     }
 

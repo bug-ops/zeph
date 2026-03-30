@@ -20,6 +20,9 @@ use crate::executor::{
 use crate::filter::{OutputFilterRegistry, sanitize_output};
 use crate::permissions::{PermissionAction, PermissionPolicy};
 
+mod transaction;
+use transaction::{TransactionSnapshot, affected_paths, build_scope_matchers, is_write_command};
+
 const DEFAULT_BLOCKED: &[&str] = &[
     "rm -rf /", "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown",
     "reboot", "halt",
@@ -105,6 +108,11 @@ pub struct ShellExecutor {
     output_filter_registry: Option<OutputFilterRegistry>,
     cancel_token: Option<CancellationToken>,
     skill_env: std::sync::RwLock<Option<std::collections::HashMap<String, String>>>,
+    transactional: bool,
+    auto_rollback: bool,
+    auto_rollback_exit_codes: Vec<i32>,
+    snapshot_required: bool,
+    transaction_scope_matchers: Vec<globset::GlobMatcher>,
 }
 
 impl ShellExecutor {
@@ -153,6 +161,11 @@ impl ShellExecutor {
             output_filter_registry: None,
             cancel_token: None,
             skill_env: std::sync::RwLock::new(None),
+            transactional: config.transactional,
+            auto_rollback: config.auto_rollback,
+            auto_rollback_exit_codes: config.auto_rollback_exit_codes.clone(),
+            snapshot_required: config.snapshot_required,
+            transaction_scope_matchers: build_scope_matchers(&config.transaction_scope),
         }
     }
 
@@ -256,6 +269,7 @@ impl ShellExecutor {
         }))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn execute_block(
         &self,
         block: &str,
@@ -263,6 +277,39 @@ impl ShellExecutor {
     ) -> Result<(String, Option<FilterStats>), ToolError> {
         self.check_permissions(block, skip_confirm).await?;
         self.validate_sandbox(block)?;
+
+        // Take a transactional snapshot before executing write commands.
+        let mut snapshot_warning: Option<String> = None;
+        let snapshot = if self.transactional && is_write_command(block) {
+            let paths = affected_paths(block, &self.transaction_scope_matchers);
+            if paths.is_empty() {
+                None
+            } else {
+                match TransactionSnapshot::capture(&paths) {
+                    Ok(snap) => {
+                        tracing::debug!(
+                            files = snap.file_count(),
+                            bytes = snap.total_bytes(),
+                            "transaction snapshot captured"
+                        );
+                        Some(snap)
+                    }
+                    Err(e) if self.snapshot_required => {
+                        return Err(ToolError::SnapshotFailed {
+                            reason: e.to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(err = %e, "transaction snapshot failed, proceeding without rollback");
+                        snapshot_warning =
+                            Some(format!("[warn] snapshot failed: {e}; rollback unavailable"));
+                        None
+                    }
+                }
+            }
+        } else {
+            None
+        };
 
         if let Some(ref tx) = self.tool_event_tx {
             let _ = tx.send(ToolEvent::Started {
@@ -293,6 +340,49 @@ impl ShellExecutor {
         }
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as u64;
+
+        // Perform auto-rollback if configured and the exit code qualifies.
+        if let Some(snap) = snapshot {
+            let should_rollback = self.auto_rollback
+                && if self.auto_rollback_exit_codes.is_empty() {
+                    exit_code >= 2
+                } else {
+                    self.auto_rollback_exit_codes.contains(&exit_code)
+                };
+            if should_rollback {
+                match snap.rollback() {
+                    Ok(report) => {
+                        tracing::info!(
+                            restored = report.restored_count,
+                            deleted = report.deleted_count,
+                            "transaction rollback completed"
+                        );
+                        self.log_audit(
+                            block,
+                            AuditResult::Rollback {
+                                restored: report.restored_count,
+                                deleted: report.deleted_count,
+                            },
+                            duration_ms,
+                            None,
+                        )
+                        .await;
+                        if let Some(ref tx) = self.tool_event_tx {
+                            let _ = tx.send(ToolEvent::Rollback {
+                                tool_name: "bash".to_owned(),
+                                command: block.to_owned(),
+                                restored_count: report.restored_count,
+                                deleted_count: report.deleted_count,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(err = %e, "transaction rollback failed");
+                    }
+                }
+            }
+            // On success (no rollback): snapshot dropped here; TempDir auto-cleans.
+        }
 
         let is_timeout = out.contains("[error] command timed out");
         let audit_result = if is_timeout {
@@ -358,7 +448,12 @@ impl ShellExecutor {
             per_block_stats.clone(),
         );
 
-        Ok((format!("$ {block}\n{filtered}"), per_block_stats))
+        let output_line = if let Some(warn) = snapshot_warning {
+            format!("{warn}\n$ {block}\n{filtered}")
+        } else {
+            format!("$ {block}\n{filtered}")
+        };
+        Ok((output_line, per_block_stats))
     }
 
     fn emit_completed(

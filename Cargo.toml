@@ -78,6 +78,7 @@ serde = "1.0"
 serde_json = "1.0"
 serde_norway = "0.9.42"
 serial_test = "3.4"
+globset = "0.4"
 similar = "2.7"
 sqlx = { version = "0.8", default-features = false }
 subtle = "2.6"
