@@ -1207,10 +1207,6 @@ mod tests {
 
     // ── route_with_confidence tests ───────────────────────────────────────────
 
-    fn confidence(q: &str) -> f32 {
-        HeuristicRouter.route_with_confidence(q).confidence
-    }
-
     #[test]
     fn confidence_multiple_matches_is_less_than_one() {
         // Structural code pattern + snake_case + short query fire 3 signals →
