@@ -61,16 +61,23 @@ pub struct PolicyValidator {
     policies: Vec<String>,
     timeout: Duration,
     fail_open: bool,
+    exempt_tools: Vec<String>,
 }
 
 impl PolicyValidator {
     /// Create a new validator with pre-parsed policy lines.
     #[must_use]
-    pub fn new(policies: Vec<String>, timeout: Duration, fail_open: bool) -> Self {
+    pub fn new(
+        policies: Vec<String>,
+        timeout: Duration,
+        fail_open: bool,
+        exempt_tools: Vec<String>,
+    ) -> Self {
         Self {
             policies,
             timeout,
             fail_open,
+            exempt_tools,
         }
     }
 
@@ -84,6 +91,10 @@ impl PolicyValidator {
         params: &serde_json::Map<String, serde_json::Value>,
         llm: &dyn PolicyLlmClient,
     ) -> PolicyDecision {
+        if self.exempt_tools.iter().any(|e| e == tool_name) {
+            tracing::debug!(tool = %tool_name, "adversarial policy: exempt (internal op)");
+            return PolicyDecision::Allow;
+        }
         let messages = self.build_messages(tool_name, params);
         let fut = tokio::time::timeout(self.timeout, llm.chat(&messages));
 
@@ -291,6 +302,7 @@ mod tests {
             vec!["Never delete system files".to_owned()],
             Duration::from_millis(500),
             fail_open,
+            Vec::new(),
         )
     }
 
@@ -349,6 +361,7 @@ mod tests {
             vec!["test policy".to_owned()],
             Duration::from_millis(50),
             false,
+            Vec::new(),
         );
         let client = TimeoutLlmClient { delay_ms: 200 };
         let params = serde_json::Map::new();

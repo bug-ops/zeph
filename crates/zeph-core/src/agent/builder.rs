@@ -42,6 +42,17 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Store adversarial policy gate info for `/status` display.
+    #[cfg(feature = "policy-enforcer")]
+    #[must_use]
+    pub fn with_adversarial_policy_info(
+        mut self,
+        info: crate::agent::state::AdversarialPolicyInfo,
+    ) -> Self {
+        self.runtime.adversarial_policy_info = Some(info);
+        self
+    }
+
     #[must_use]
     pub fn with_structured_summaries(mut self, enabled: bool) -> Self {
         self.memory_state.structured_summaries = enabled;

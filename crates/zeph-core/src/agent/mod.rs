@@ -382,6 +382,8 @@ impl<C: Channel> Agent<C> {
                 semantic_cache_threshold: 0.95,
                 semantic_cache_max_candidates: 10,
                 dependency_config: zeph_tools::DependencyConfig::default(),
+                #[cfg(feature = "policy-enforcer")]
+                adversarial_policy_info: None,
             },
             mcp: McpState {
                 tools: Vec::new(),
@@ -3982,6 +3984,19 @@ impl<C: Channel> Agent<C> {
                 tf.top_k(),
                 tf.always_on_count(),
                 tf.embedding_count(),
+            );
+        }
+        #[cfg(feature = "policy-enforcer")]
+        if let Some(ref adv) = self.runtime.adversarial_policy_info {
+            let provider_display = if adv.provider.is_empty() {
+                "default"
+            } else {
+                adv.provider.as_str()
+            };
+            let _ = writeln!(
+                out,
+                "Adv gate:  enabled (provider={}, policies={}, fail_open={})",
+                provider_display, adv.policy_count, adv.fail_open
             );
         }
         if cost_cents > 0.0 {

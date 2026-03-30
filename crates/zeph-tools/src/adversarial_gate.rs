@@ -294,6 +294,7 @@ mod tests {
             vec!["test policy".to_owned()],
             Duration::from_millis(500),
             fail_open,
+            Vec::new(),
         ))
     }
 

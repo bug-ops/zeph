@@ -87,6 +87,8 @@ fn make_runtime_config() -> RuntimeConfig {
         semantic_cache_threshold: 0.95,
         semantic_cache_max_candidates: 10,
         dependency_config: zeph_tools::DependencyConfig::default(),
+        #[cfg(feature = "policy-enforcer")]
+        adversarial_policy_info: None,
     }
 }
 

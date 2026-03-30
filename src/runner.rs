@@ -908,6 +908,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Declarative policy (PolicyGate) is outermost — fast, deterministic, zero LLM cost.
     // Adversarial policy gate fires only for calls that pass declarative policy (CRIT-04).
     #[cfg(feature = "policy-enforcer")]
+    let mut adv_policy_info: Option<zeph_core::AdversarialPolicyInfo> = None;
+    #[cfg(feature = "policy-enforcer")]
     let (tool_executor, mcp_ids_handle) = {
         let trust_gated =
             zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
@@ -953,10 +955,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 );
             }
 
+            adv_policy_info = Some(zeph_core::AdversarialPolicyInfo {
+                provider: adv_cfg.policy_provider.clone(),
+                policy_count: policies.len(),
+                fail_open: adv_cfg.fail_open,
+            });
+
             let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
                 policies,
                 std::time::Duration::from_millis(adv_cfg.timeout_ms),
                 adv_cfg.fail_open,
+                adv_cfg.exempt_tools.clone(),
             ));
 
             let provider_name = adv_cfg.policy_provider.clone();
@@ -1154,6 +1163,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "policy-enforcer")]
     let agent = if config.tools.policy.enabled {
         agent.with_policy_config(config.tools.policy.clone())
+    } else {
+        agent
+    };
+    #[cfg(feature = "policy-enforcer")]
+    let agent = if let Some(info) = adv_policy_info {
+        agent.with_adversarial_policy_info(info)
     } else {
         agent
     };

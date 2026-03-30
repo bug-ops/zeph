@@ -66,6 +66,8 @@ pub mod testing;
 pub use agent::Agent;
 pub use agent::error::AgentError;
 pub use agent::session_config::{AgentSessionConfig, CONTEXT_BUDGET_RESERVE_RATIO};
+#[cfg(feature = "policy-enforcer")]
+pub use agent::state::AdversarialPolicyInfo;
 pub use agent::state::ProviderConfigSnapshot;
 pub use channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, LoopbackChannel,

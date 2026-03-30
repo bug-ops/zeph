@@ -153,6 +153,15 @@ pub(crate) struct IndexState {
     pub(crate) repo_map_ttl: std::time::Duration,
 }
 
+/// Snapshot of adversarial policy gate configuration for status display.
+#[cfg(feature = "policy-enforcer")]
+#[derive(Debug, Clone)]
+pub struct AdversarialPolicyInfo {
+    pub provider: String,
+    pub policy_count: usize,
+    pub fail_open: bool,
+}
+
 pub(crate) struct RuntimeConfig {
     pub(crate) security: SecurityConfig,
     pub(crate) timeouts: TimeoutConfig,
@@ -168,6 +177,9 @@ pub(crate) struct RuntimeConfig {
     pub(crate) semantic_cache_max_candidates: u32,
     /// Dependency config snapshot stored for per-turn boost parameters.
     pub(crate) dependency_config: zeph_tools::DependencyConfig,
+    /// Adversarial policy gate runtime info for /status display.
+    #[cfg(feature = "policy-enforcer")]
+    pub(crate) adversarial_policy_info: Option<AdversarialPolicyInfo>,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.

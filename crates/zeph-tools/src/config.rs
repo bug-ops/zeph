@@ -364,7 +364,7 @@ impl Default for RetryConfig {
 
 /// Configuration for the LLM-based adversarial policy agent.
 #[cfg(feature = "policy-enforcer")]
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdversarialPolicyConfig {
     /// Enable the adversarial policy agent. Default: `false`.
     #[serde(default)]
@@ -386,6 +386,38 @@ pub struct AdversarialPolicyConfig {
     /// Timeout in milliseconds for a single policy LLM call. Default: 3000.
     #[serde(default = "default_adversarial_timeout_ms")]
     pub timeout_ms: u64,
+    /// Tool names that are always allowed through the adversarial policy gate,
+    /// regardless of policy content. Covers internal agent operations that are
+    /// not externally visible side effects.
+    #[serde(default = "AdversarialPolicyConfig::default_exempt_tools")]
+    pub exempt_tools: Vec<String>,
+}
+
+#[cfg(feature = "policy-enforcer")]
+impl Default for AdversarialPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            policy_provider: String::new(),
+            policy_file: None,
+            fail_open: false,
+            timeout_ms: default_adversarial_timeout_ms(),
+            exempt_tools: Self::default_exempt_tools(),
+        }
+    }
+}
+
+#[cfg(feature = "policy-enforcer")]
+impl AdversarialPolicyConfig {
+    fn default_exempt_tools() -> Vec<String> {
+        vec![
+            "memory_save".into(),
+            "memory_search".into(),
+            "read_overflow".into(),
+            "load_skill".into(),
+            "schedule_deferred".into(),
+        ]
+    }
 }
 
 /// Top-level configuration for tool execution.
