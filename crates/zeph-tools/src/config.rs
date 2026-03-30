@@ -520,6 +520,9 @@ pub struct ShellConfig {
     /// When false (default), snapshot failure emits a warning and execution proceeds.
     #[serde(default)]
     pub snapshot_required: bool,
+    /// Maximum cumulative bytes for transaction snapshots. 0 = unlimited.
+    #[serde(default)]
+    pub max_snapshot_bytes: u64,
 }
 
 impl ShellConfig {
@@ -588,6 +591,7 @@ impl Default for ShellConfig {
             auto_rollback: false,
             auto_rollback_exit_codes: Vec::new(),
             snapshot_required: false,
+            max_snapshot_bytes: 0,
         }
     }
 }

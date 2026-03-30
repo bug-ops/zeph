@@ -51,13 +51,17 @@ impl TransactionSnapshot {
     /// Capture files at `paths`.
     ///
     /// Non-existent paths are recorded as "new" (rollback will delete them if created).
+    /// If `max_bytes > 0` and the cumulative size of copied files exceeds `max_bytes`,
+    /// an error is returned immediately.
     ///
     /// # Errors
     ///
-    /// Returns `std::io::Error` if the temp directory or any file copy fails.
-    pub(crate) fn capture(paths: &[PathBuf]) -> Result<Self, std::io::Error> {
+    /// Returns `std::io::Error` if the temp directory, any file copy fails, or the
+    /// snapshot size limit is exceeded.
+    pub(crate) fn capture(paths: &[PathBuf], max_bytes: u64) -> Result<Self, std::io::Error> {
         let backup_dir = tempfile::TempDir::new()?;
         let mut entries = Vec::with_capacity(paths.len());
+        let mut cumulative_bytes: u64 = 0;
 
         for (i, original) in paths.iter().enumerate() {
             // Use symlink_metadata to avoid following symlinks — snapshot only regular files.
@@ -90,6 +94,13 @@ impl TransactionSnapshot {
             // Preserve permissions
             let meta = std::fs::metadata(original)?;
             std::fs::set_permissions(&backup_path, meta.permissions())?;
+
+            cumulative_bytes += meta.len();
+            if max_bytes > 0 && cumulative_bytes > max_bytes {
+                return Err(std::io::Error::other(format!(
+                    "snapshot size {cumulative_bytes} exceeds limit {max_bytes}"
+                )));
+            }
 
             entries.push(SnapshotEntry {
                 original: original.clone(),

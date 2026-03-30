@@ -17,6 +17,7 @@ fn default_config() -> ShellConfig {
         auto_rollback: false,
         auto_rollback_exit_codes: Vec::new(),
         snapshot_required: false,
+        max_snapshot_bytes: 0,
     }
 }
 
@@ -1710,7 +1711,7 @@ fn transaction_snapshot_capture_and_rollback() {
     std::fs::write(&file, b"original").unwrap();
 
     let snap =
-        super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
+        super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file), 0).unwrap();
     assert_eq!(snap.file_count(), 1);
 
     std::fs::write(&file, b"modified").unwrap();
@@ -1726,7 +1727,7 @@ fn transaction_snapshot_new_file_rollback() {
     let file = dir.path().join("new.txt");
 
     let snap =
-        super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
+        super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file), 0).unwrap();
     assert_eq!(snap.file_count(), 1);
 
     std::fs::write(&file, b"created").unwrap();
@@ -1738,7 +1739,7 @@ fn transaction_snapshot_new_file_rollback() {
 
 #[test]
 fn transaction_snapshot_empty_paths() {
-    let snap = super::transaction::TransactionSnapshot::capture(&[]).unwrap();
+    let snap = super::transaction::TransactionSnapshot::capture(&[], 0).unwrap();
     assert_eq!(snap.file_count(), 0);
     assert_eq!(snap.total_bytes(), 0);
     let report = snap.rollback().unwrap();
@@ -2186,4 +2187,43 @@ async fn custom_rollback_exit_codes() {
     let _ = executor.execute(&cmd2).await;
     let content2 = std::fs::read(&file).unwrap();
     assert_eq!(content2, b"original", "exit 42 should trigger rollback");
+}
+
+// --- snapshot size limit tests ---
+
+#[test]
+fn transaction_snapshot_size_limit_exceeded() {
+    use crate::shell::transaction::TransactionSnapshot;
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("big.txt");
+    // Write 100 bytes
+    std::fs::write(&file, vec![b'x'; 100]).unwrap();
+
+    let result = TransactionSnapshot::capture(&[file], 50);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("exceeds limit"), "unexpected error: {msg}");
+}
+
+#[test]
+fn transaction_snapshot_size_limit_zero_unlimited() {
+    use crate::shell::transaction::TransactionSnapshot;
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("big.txt");
+    std::fs::write(&file, vec![b'x'; 1_000_000]).unwrap();
+
+    // max_bytes = 0 means unlimited — must succeed
+    let result = TransactionSnapshot::capture(&[file], 0);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn transaction_snapshot_size_limit_within_budget() {
+    use crate::shell::transaction::TransactionSnapshot;
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("small.txt");
+    std::fs::write(&file, b"hello").unwrap();
+
+    let result = TransactionSnapshot::capture(&[file], 1024);
+    assert!(result.is_ok());
 }

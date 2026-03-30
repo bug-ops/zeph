@@ -112,6 +112,7 @@ pub struct ShellExecutor {
     auto_rollback: bool,
     auto_rollback_exit_codes: Vec<i32>,
     snapshot_required: bool,
+    max_snapshot_bytes: u64,
     transaction_scope_matchers: Vec<globset::GlobMatcher>,
 }
 
@@ -165,6 +166,7 @@ impl ShellExecutor {
             auto_rollback: config.auto_rollback,
             auto_rollback_exit_codes: config.auto_rollback_exit_codes.clone(),
             snapshot_required: config.snapshot_required,
+            max_snapshot_bytes: config.max_snapshot_bytes,
             transaction_scope_matchers: build_scope_matchers(&config.transaction_scope),
         }
     }
@@ -285,7 +287,7 @@ impl ShellExecutor {
             if paths.is_empty() {
                 None
             } else {
-                match TransactionSnapshot::capture(&paths) {
+                match TransactionSnapshot::capture(&paths, self.max_snapshot_bytes) {
                     Ok(snap) => {
                         tracing::debug!(
                             files = snap.file_count(),
