@@ -672,6 +672,7 @@ impl McpManager {
                     if let Some(ref instructions) = client.server_instructions() {
                         let truncated = crate::sanitize::truncate_instructions(
                             instructions,
+                            &server_id,
                             limits.instructions_bytes,
                         );
                         self.server_instructions
@@ -847,8 +848,11 @@ impl McpManager {
 
         // Capture server instructions from handshake and apply cap.
         if let Some(ref instructions) = client.server_instructions() {
-            let truncated =
-                crate::sanitize::truncate_instructions(instructions, self.max_instructions_bytes);
+            let truncated = crate::sanitize::truncate_instructions(
+                instructions,
+                &entry.id,
+                self.max_instructions_bytes,
+            );
             self.server_instructions
                 .write()
                 .await
@@ -1207,26 +1211,32 @@ async fn connect_entry(
 fn validate_roots(roots: &[rmcp::model::Root], server_id: &str) -> Vec<rmcp::model::Root> {
     roots
         .iter()
-        .filter(|r| {
+        .filter_map(|r| {
             if !r.uri.starts_with("file://") {
                 tracing::warn!(
                     server_id,
                     uri = r.uri,
                     "MCP root URI does not use file:// scheme — skipping"
                 );
-                return false;
+                return None;
             }
-            let path = r.uri.trim_start_matches("file://");
-            if !std::path::Path::new(path).exists() {
+            let raw_path = r.uri.trim_start_matches("file://");
+            if let Ok(canonical) = std::fs::canonicalize(raw_path) {
+                let canonical_uri = format!("file://{}", canonical.display());
+                let mut root = rmcp::model::Root::new(canonical_uri);
+                if let Some(ref name) = r.name {
+                    root = root.with_name(name.clone());
+                }
+                Some(root)
+            } else {
                 tracing::warn!(
                     server_id,
                     uri = r.uri,
                     "MCP root path does not exist on filesystem"
                 );
+                Some(r.clone())
             }
-            true
         })
-        .cloned()
         .collect()
 }
 
@@ -1803,7 +1813,10 @@ mod tests {
         let root = Root::new("file:///tmp");
         let result = validate_roots(&[root], "srv");
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].uri, "file:///tmp");
+        // URI is canonicalized — on macOS /tmp resolves to /private/tmp.
+        assert!(result[0].uri.starts_with("file://"));
+        let canonical_path = result[0].uri.trim_start_matches("file://");
+        assert!(std::path::Path::new(canonical_path).exists());
     }
 
     #[test]
@@ -1858,6 +1871,20 @@ mod tests {
         assert!(
             result.is_empty(),
             "non-file:// URI must be filtered regardless of path content"
+        );
+    }
+
+    #[test]
+    fn validate_roots_file_uri_traversal_is_canonicalized() {
+        use rmcp::model::Root;
+        // file:///etc/../tmp exists but has traversal — canonicalize resolves it.
+        let root = Root::new("file:///etc/../tmp");
+        let result = validate_roots(&[root], "srv");
+        assert_eq!(result.len(), 1);
+        // After canonicalize, the traversal component must be gone.
+        assert!(
+            !result[0].uri.contains(".."),
+            "traversal must be resolved by canonicalize"
         );
     }
 

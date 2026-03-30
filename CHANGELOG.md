@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(security): env var sanitization for MCP stdio child processes — `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `DYLD_FALLBACK_LIBRARY_PATH` are stripped from ACP-provided env vars (#2417)
 - feat(mcp): MCP Roots protocol support — `McpRootEntry` struct and `roots` field on `McpServerConfig`; `ToolListChangedHandler` advertises `roots` capability (`list_changed: false`) in `get_info()` and responds to `roots/list` requests with configured roots; roots are validated at connection time (non-`file://` URIs rejected, missing paths warned) (#2445)
 - feat(mcp): configurable tool description and server instructions length caps — `[mcp] max_description_bytes` (default 2048) and `max_instructions_bytes` (default 2048); `truncate_instructions()` helper applied after handshake; server instructions stored and accessible via `McpManager::server_instructions()` (#2450)
+- fix(security): canonicalize `file://` root paths in MCP `validate_roots()` — `std::fs::canonicalize()` is applied to existing paths so traversal payloads like `file:///etc/../secret` are resolved and symlinks are expanded before roots are passed to MCP servers; non-resolvable paths fall through unchanged with a warning (closes #2455)
+- fix(security): sanitize MCP server instructions before storing — `truncate_instructions()` now applies injection-pattern sanitization (same rules as tool descriptions) before truncation; injection payloads in server instructions are replaced with `[sanitized]` (closes #2456)
 
 ### Changed
 
