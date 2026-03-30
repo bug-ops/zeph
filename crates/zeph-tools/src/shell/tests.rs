@@ -1709,7 +1709,8 @@ fn transaction_snapshot_capture_and_rollback() {
     let file = dir.path().join("data.txt");
     std::fs::write(&file, b"original").unwrap();
 
-    let snap = super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
+    let snap =
+        super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
     assert_eq!(snap.file_count(), 1);
 
     std::fs::write(&file, b"modified").unwrap();
@@ -1724,7 +1725,8 @@ fn transaction_snapshot_new_file_rollback() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("new.txt");
 
-    let snap = super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
+    let snap =
+        super::transaction::TransactionSnapshot::capture(std::slice::from_ref(&file)).unwrap();
     assert_eq!(snap.file_count(), 1);
 
     std::fs::write(&file, b"created").unwrap();
