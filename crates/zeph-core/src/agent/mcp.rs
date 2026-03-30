@@ -86,6 +86,7 @@ impl<C: Channel> Agent<C> {
             trust_level: zeph_mcp::McpTrustLevel::Untrusted,
             tool_allowlist: None,
             expected_tools: Vec::new(),
+            roots: Vec::new(),
         };
 
         let _ = self.channel.send_status("connecting to mcp...").await;

@@ -32,6 +32,17 @@ pub fn create_mcp_manager_with_vault(
         .iter()
         .map(|s| {
             let transport = build_transport(s, vault);
+            let roots: Vec<rmcp::model::Root> = s
+                .roots
+                .iter()
+                .map(|r| {
+                    let root = rmcp::model::Root::new(&r.uri);
+                    match &r.name {
+                        Some(n) => root.with_name(n),
+                        None => root,
+                    }
+                })
+                .collect();
             zeph_mcp::ServerEntry {
                 id: s.id.clone(),
                 transport,
@@ -39,6 +50,7 @@ pub fn create_mcp_manager_with_vault(
                 trust_level: s.trust_level,
                 tool_allowlist: s.tool_allowlist.clone(),
                 expected_tools: s.expected_tools.clone(),
+                roots,
             }
         })
         .collect();
@@ -52,7 +64,11 @@ pub fn create_mcp_manager_with_vault(
     let enforcer = zeph_mcp::PolicyEnforcer::new(policy_entries);
     let mut manager =
         zeph_mcp::McpManager::new(entries, config.mcp.allowed_commands.clone(), enforcer)
-            .with_suppress_stderr(suppress_stderr);
+            .with_suppress_stderr(suppress_stderr)
+            .with_description_limits(
+                config.mcp.max_description_bytes,
+                config.mcp.max_instructions_bytes,
+            );
 
     // Register OAuth credential stores
     for s in &config.mcp.servers {

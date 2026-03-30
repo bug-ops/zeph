@@ -331,7 +331,15 @@ impl Default for TrustCalibrationConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+fn default_max_description_bytes() -> usize {
+    2048
+}
+
+fn default_max_instructions_bytes() -> usize {
+    2048
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]
     pub servers: Vec<McpServerConfig>,
@@ -348,6 +356,27 @@ pub struct McpConfig {
     /// Embedding-based tool discovery (#2321).
     #[serde(default)]
     pub tool_discovery: ToolDiscoveryConfig,
+    /// Maximum byte length for MCP tool descriptions. Truncated with "..." if exceeded. Default: 2048.
+    #[serde(default = "default_max_description_bytes")]
+    pub max_description_bytes: usize,
+    /// Maximum byte length for MCP server instructions. Truncated with "..." if exceeded. Default: 2048.
+    #[serde(default = "default_max_instructions_bytes")]
+    pub max_instructions_bytes: usize,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            servers: Vec::new(),
+            allowed_commands: Vec::new(),
+            max_dynamic_servers: default_max_dynamic_servers(),
+            pruning: ToolPruningConfig::default(),
+            trust_calibration: TrustCalibrationConfig::default(),
+            tool_discovery: ToolDiscoveryConfig::default(),
+            max_description_bytes: default_max_description_bytes(),
+            max_instructions_bytes: default_max_instructions_bytes(),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -388,6 +417,21 @@ pub struct McpServerConfig {
     /// between connections.
     #[serde(default)]
     pub expected_tools: Vec<String>,
+    /// Filesystem roots exposed to this MCP server via `roots/list`.
+    /// Each entry is a `{uri, name?}` pair. URI must use `file://` scheme.
+    /// When empty, the server receives an empty roots list.
+    #[serde(default)]
+    pub roots: Vec<McpRootEntry>,
+}
+
+/// A filesystem root exposed to an MCP server via `roots/list`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpRootEntry {
+    /// URI of the root directory. Must use `file://` scheme.
+    pub uri: String,
+    /// Optional human-readable name for this root.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// OAuth 2.1 configuration for an MCP server.
@@ -459,6 +503,7 @@ impl std::fmt::Debug for McpServerConfig {
             .field("trust_level", &self.trust_level)
             .field("tool_allowlist", &self.tool_allowlist)
             .field("expected_tools", &self.expected_tools)
+            .field("roots", &self.roots)
             .finish()
     }
 }

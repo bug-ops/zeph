@@ -85,6 +85,9 @@ pub struct ServerEntry {
     /// list are filtered (Untrusted/Sandboxed) or warned (Trusted).
     #[serde(default)]
     pub expected_tools: Vec<String>,
+    /// Filesystem roots to advertise to the server via `roots/list`.
+    #[serde(default)]
+    pub roots: Vec<rmcp::model::Root>,
 }
 
 /// Per-server connection outcome from `connect_all()`.
@@ -133,6 +136,12 @@ pub struct McpManager {
     trust_store: Option<Arc<TrustScoreStore>>,
     /// Optional embedding anomaly guard. When set, called after every successful tool call.
     embedding_guard: Option<EmbeddingAnomalyGuard>,
+    /// Configurable cap for tool description length (bytes). Default: 2048.
+    max_description_bytes: usize,
+    /// Configurable cap for server instructions length (bytes). Default: 2048.
+    max_instructions_bytes: usize,
+    /// Server instructions collected after handshake, keyed by server ID.
+    server_instructions: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl std::fmt::Debug for McpManager {
@@ -183,7 +192,32 @@ impl McpManager {
             prober: None,
             trust_store: None,
             embedding_guard: None,
+            max_description_bytes: crate::sanitize::DEFAULT_MAX_TOOL_DESCRIPTION_BYTES,
+            max_instructions_bytes: 2048,
+            server_instructions: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Configure the maximum byte lengths for tool descriptions and server instructions.
+    ///
+    /// Both default to 2048. Pass values from `[mcp]` config section.
+    #[must_use]
+    pub fn with_description_limits(mut self, desc: usize, instr: usize) -> Self {
+        self.max_description_bytes = desc;
+        self.max_instructions_bytes = instr;
+        self
+    }
+
+    /// Return the stored instructions for a connected server, if any.
+    ///
+    /// Instructions are captured from `ServerInfo.instructions` after the MCP handshake
+    /// and truncated to `max_instructions_bytes`.
+    pub async fn server_instructions(&self, server_id: &str) -> Option<String> {
+        self.server_instructions
+            .read()
+            .await
+            .get(server_id)
+            .cloned()
     }
 
     /// Attach a pre-connect prober. Called on every new server connection.
@@ -276,6 +310,7 @@ impl McpManager {
         let tools_watch_tx = self.tools_watch_tx.clone();
         let server_trust = Arc::clone(&self.server_trust);
         let status_tx = self.status_tx.clone();
+        let max_description_bytes = self.max_description_bytes;
 
         tokio::spawn(async move {
             let mut rx = rx;
@@ -294,6 +329,7 @@ impl McpManager {
                         allowlist.as_deref(),
                         &expected_tools,
                         status_tx.as_ref(),
+                        max_description_bytes,
                     )
                 };
                 let all_tools = {
@@ -356,8 +392,10 @@ impl McpManager {
             let Some(tx) = self.clone_refresh_tx() else {
                 continue;
             };
+            let max_desc = self.max_description_bytes;
             join_set.spawn(async move {
-                let result = connect_entry(&config, &allowed, suppress, tx, last_refresh).await;
+                let result =
+                    connect_entry(&config, &allowed, suppress, tx, last_refresh, max_desc).await;
                 (config.id, result)
             });
         }
@@ -381,6 +419,8 @@ impl McpManager {
                     &mut clients,
                     &mut server_tools,
                     &mut outcomes,
+                    self.max_description_bytes,
+                    self.max_instructions_bytes,
                 )
                 .await;
             }
@@ -444,6 +484,7 @@ impl McpManager {
                 continue;
             };
 
+            let roots = Arc::new(validate_roots(&config.roots, &config.id));
             let connect_result = McpClient::connect_url_oauth(
                 &config.id,
                 url,
@@ -455,6 +496,8 @@ impl McpManager {
                 tx,
                 Arc::clone(&last_refresh),
                 config.timeout,
+                roots,
+                self.max_description_bytes,
             )
             .await;
 
@@ -470,6 +513,8 @@ impl McpManager {
                         &mut clients,
                         &mut server_tools,
                         &mut outcomes,
+                        self.max_description_bytes,
+                        self.max_instructions_bytes,
                     )
                     .await;
                     let updated: Vec<McpTool> = server_tools.values().flatten().cloned().collect();
@@ -521,6 +566,8 @@ impl McpManager {
                                         &mut clients,
                                         &mut server_tools,
                                         &mut outcomes,
+                                        self.max_description_bytes,
+                                        self.max_instructions_bytes,
                                     )
                                     .await;
                                     let updated: Vec<McpTool> =
@@ -578,6 +625,8 @@ impl McpManager {
         clients: &mut HashMap<String, McpClient>,
         server_tools: &mut HashMap<String, Vec<McpTool>>,
         outcomes: &mut Vec<ServerConnectOutcome>,
+        max_description_bytes: usize,
+        max_instructions_bytes: usize,
     ) {
         match connect_result {
             Ok(client) => match client.list_tools().await {
@@ -619,6 +668,18 @@ impl McpManager {
                         }
                     }
 
+                    // Capture server instructions from handshake and apply cap.
+                    if let Some(ref instructions) = client.server_instructions() {
+                        let truncated = crate::sanitize::truncate_instructions(
+                            instructions,
+                            max_instructions_bytes,
+                        );
+                        self.server_instructions
+                            .write()
+                            .await
+                            .insert(server_id.clone(), truncated);
+                    }
+
                     let (trust_level, allowlist, expected_tools) =
                         self.server_trust.read().await.get(&server_id).map_or(
                             (McpTrustLevel::Untrusted, None, Vec::new()),
@@ -631,6 +692,7 @@ impl McpManager {
                         allowlist.as_deref(),
                         &expected_tools,
                         self.status_tx.as_ref(),
+                        max_description_bytes,
                     );
                     tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
                     let tool_count = tools.len();
@@ -737,6 +799,7 @@ impl McpManager {
             self.suppress_stderr,
             tx,
             Arc::clone(&self.last_refresh),
+            self.max_description_bytes,
         )
         .await?;
         let raw_tools = match client.list_tools().await {
@@ -770,6 +833,16 @@ impl McpManager {
             }
         }
 
+        // Capture server instructions from handshake and apply cap.
+        if let Some(ref instructions) = client.server_instructions() {
+            let truncated =
+                crate::sanitize::truncate_instructions(instructions, self.max_instructions_bytes);
+            self.server_instructions
+                .write()
+                .await
+                .insert(entry.id.clone(), truncated);
+        }
+
         let tools = ingest_tools(
             raw_tools,
             &entry.id,
@@ -777,6 +850,7 @@ impl McpManager {
             entry.tool_allowlist.as_deref(),
             &entry.expected_tools,
             self.status_tx.as_ref(),
+            self.max_description_bytes,
         );
 
         // Re-check under write lock to prevent TOCTOU race
@@ -940,11 +1014,12 @@ fn ingest_tools(
     allowlist: Option<&[String]>,
     expected_tools: &[String],
     status_tx: Option<&StatusTx>,
+    max_description_bytes: usize,
 ) -> Vec<McpTool> {
     use crate::attestation::{AttestationResult, attest_tools};
 
     // SECURITY INVARIANT: sanitize BEFORE any filtering or storage.
-    sanitize_tools(&mut tools, server_id);
+    sanitize_tools(&mut tools, server_id, max_description_bytes);
 
     // Attestation: compare tools against operator-declared expectations.
     let attestation =
@@ -1052,7 +1127,9 @@ async fn connect_entry(
     suppress_stderr: bool,
     tx: mpsc::UnboundedSender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
+    max_description_bytes: usize,
 ) -> Result<McpClient, McpError> {
+    let roots = Arc::new(validate_roots(&entry.roots, &entry.id));
     match &entry.transport {
         McpTransport::Stdio { command, args, env } => {
             McpClient::connect(
@@ -1065,14 +1142,25 @@ async fn connect_entry(
                 suppress_stderr,
                 tx,
                 last_refresh,
+                roots,
+                max_description_bytes,
             )
             .await
         }
         McpTransport::Http { url, headers } => {
             let trusted = matches!(entry.trust_level, McpTrustLevel::Trusted);
             if headers.is_empty() {
-                McpClient::connect_url(&entry.id, url, entry.timeout, trusted, tx, last_refresh)
-                    .await
+                McpClient::connect_url(
+                    &entry.id,
+                    url,
+                    entry.timeout,
+                    trusted,
+                    tx,
+                    last_refresh,
+                    roots,
+                    max_description_bytes,
+                )
+                .await
             } else {
                 McpClient::connect_url_with_headers(
                     &entry.id,
@@ -1082,6 +1170,8 @@ async fn connect_entry(
                     trusted,
                     tx,
                     last_refresh,
+                    roots,
+                    max_description_bytes,
                 )
                 .await
             }
@@ -1094,6 +1184,37 @@ async fn connect_entry(
             })
         }
     }
+}
+
+/// Validate root URIs at connection time.
+///
+/// - Warns if a URI does not use `file://` scheme.
+/// - Warns if the path does not exist on the filesystem.
+/// - Filters out roots with non-`file://` URIs (MCP spec requires filesystem roots).
+fn validate_roots(roots: &[rmcp::model::Root], server_id: &str) -> Vec<rmcp::model::Root> {
+    roots
+        .iter()
+        .filter(|r| {
+            if !r.uri.starts_with("file://") {
+                tracing::warn!(
+                    server_id,
+                    uri = r.uri,
+                    "MCP root URI does not use file:// scheme — skipping"
+                );
+                return false;
+            }
+            let path = r.uri.trim_start_matches("file://");
+            if !std::path::Path::new(path).exists() {
+                tracing::warn!(
+                    server_id,
+                    uri = r.uri,
+                    "MCP root path does not exist on filesystem"
+                );
+            }
+            true
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -1112,6 +1233,7 @@ mod tests {
             trust_level: McpTrustLevel::Untrusted,
             tool_allowlist: None,
             expected_tools: Vec::new(),
+            roots: Vec::new(),
         }
     }
 
@@ -1310,6 +1432,7 @@ mod tests {
             trust_level: McpTrustLevel::Untrusted,
             tool_allowlist: None,
             expected_tools: Vec::new(),
+            roots: Vec::new(),
         }
     }
 
@@ -1532,7 +1655,7 @@ mod tests {
     #[test]
     fn ingest_tools_trusted_returns_all_tools_unsanitized_by_trust() {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
-        let result = ingest_tools(tools, "srv", McpTrustLevel::Trusted, None, &[], None);
+        let result = ingest_tools(tools, "srv", McpTrustLevel::Trusted, None, &[], None, 2048);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "tool_a");
         assert_eq!(result[1].name, "tool_b");
@@ -1541,7 +1664,15 @@ mod tests {
     #[test]
     fn ingest_tools_untrusted_none_allowlist_returns_all_with_warning() {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
-        let result = ingest_tools(tools, "srv", McpTrustLevel::Untrusted, None, &[], None);
+        let result = ingest_tools(
+            tools,
+            "srv",
+            McpTrustLevel::Untrusted,
+            None,
+            &[],
+            None,
+            2048,
+        );
         // None allowlist on Untrusted = no override → all tools pass through (warn-only)
         assert_eq!(result.len(), 2);
     }
@@ -1549,7 +1680,15 @@ mod tests {
     #[test]
     fn ingest_tools_untrusted_explicit_empty_allowlist_denies_all() {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
-        let result = ingest_tools(tools, "srv", McpTrustLevel::Untrusted, Some(&[]), &[], None);
+        let result = ingest_tools(
+            tools,
+            "srv",
+            McpTrustLevel::Untrusted,
+            Some(&[]),
+            &[],
+            None,
+            2048,
+        );
         // Some(empty) on Untrusted = explicit deny-all (fail-closed)
         assert!(result.is_empty());
     }
@@ -1569,6 +1708,7 @@ mod tests {
             Some(&allowlist),
             &[],
             None,
+            2048,
         );
         assert_eq!(result.len(), 2);
         let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
@@ -1580,7 +1720,15 @@ mod tests {
     #[test]
     fn ingest_tools_sandboxed_empty_allowlist_returns_no_tools() {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
-        let result = ingest_tools(tools, "srv", McpTrustLevel::Sandboxed, Some(&[]), &[], None);
+        let result = ingest_tools(
+            tools,
+            "srv",
+            McpTrustLevel::Sandboxed,
+            Some(&[]),
+            &[],
+            None,
+            2048,
+        );
         // Sandboxed + empty allowlist = fail-closed: no tools exposed
         assert!(result.is_empty());
     }
@@ -1596,6 +1744,7 @@ mod tests {
             Some(&allowlist),
             &[],
             None,
+            2048,
         );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "tool_b");
@@ -1616,6 +1765,7 @@ mod tests {
             Some(&allowlist),
             &[],
             None,
+            2048,
         );
         assert_eq!(result.len(), 1);
         // sanitize_tools replaces injected descriptions with a placeholder — not the original text

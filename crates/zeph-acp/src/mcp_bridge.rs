@@ -36,6 +36,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     trust_level: McpTrustLevel::Untrusted,
                     tool_allowlist: None,
                     expected_tools: Vec::new(),
+                    roots: Vec::new(),
                 })
             }
             acp::McpServer::Http(http) => Some(ServerEntry {
@@ -48,6 +49,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                 trust_level: McpTrustLevel::Untrusted,
                 tool_allowlist: None,
                 expected_tools: Vec::new(),
+                roots: Vec::new(),
             }),
             acp::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
@@ -62,6 +64,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     trust_level: McpTrustLevel::Untrusted,
                     tool_allowlist: None,
                     expected_tools: Vec::new(),
+                    roots: Vec::new(),
                 })
             }
             _ => {
