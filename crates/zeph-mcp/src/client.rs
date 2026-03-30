@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use http::{HeaderName, HeaderValue};
-use rmcp::ClientHandler;
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
@@ -57,6 +56,13 @@ const MAX_TOOLS_PER_SERVER: usize = 100;
 pub struct ToolRefreshEvent {
     pub server_id: String,
     pub tools: Vec<McpTool>,
+}
+
+/// Handler configuration: roots and description-length cap passed to `ToolListChangedHandler`.
+#[derive(Clone)]
+pub struct HandlerConfig {
+    pub roots: Arc<Vec<rmcp::model::Root>>,
+    pub max_description_bytes: usize,
 }
 
 /// Implements `rmcp::ClientHandler` to receive `tools/list_changed` notifications.
@@ -261,8 +267,7 @@ impl McpClient {
         suppress_stderr: bool,
         tx: UnboundedSender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
-        roots: Arc<Vec<rmcp::model::Root>>,
-        max_description_bytes: usize,
+        handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
         crate::security::validate_command(command, allowed_commands)?;
         crate::security::validate_env(env)?;
@@ -289,8 +294,13 @@ impl McpClient {
             })?
         };
 
-        let handler =
-            ToolListChangedHandler::new(server_id, tx, last_refresh, roots, max_description_bytes);
+        let handler = ToolListChangedHandler::new(
+            server_id,
+            tx,
+            last_refresh,
+            handler_cfg.roots,
+            handler_cfg.max_description_bytes,
+        );
         let service = handler
             .serve(transport)
             .await
@@ -325,8 +335,7 @@ impl McpClient {
         trusted: bool,
         tx: UnboundedSender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
-        roots: Arc<Vec<rmcp::model::Root>>,
-        max_description_bytes: usize,
+        handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
         if !trusted {
             validate_url_ssrf(url).await?;
@@ -334,8 +343,13 @@ impl McpClient {
 
         let transport = StreamableHttpClientTransport::from_uri(url.to_owned());
 
-        let handler =
-            ToolListChangedHandler::new(server_id, tx, last_refresh, roots, max_description_bytes);
+        let handler = ToolListChangedHandler::new(
+            server_id,
+            tx,
+            last_refresh,
+            handler_cfg.roots,
+            handler_cfg.max_description_bytes,
+        );
         let service = handler
             .serve(transport)
             .await
@@ -369,8 +383,7 @@ impl McpClient {
         trusted: bool,
         tx: UnboundedSender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
-        roots: Arc<Vec<rmcp::model::Root>>,
-        max_description_bytes: usize,
+        handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
         if !trusted {
             validate_url_ssrf(url).await?;
@@ -404,8 +417,13 @@ impl McpClient {
         let transport =
             StreamableHttpClientTransport::with_client(reqwest::Client::default(), config);
 
-        let handler =
-            ToolListChangedHandler::new(server_id, tx, last_refresh, roots, max_description_bytes);
+        let handler = ToolListChangedHandler::new(
+            server_id,
+            tx,
+            last_refresh,
+            handler_cfg.roots,
+            handler_cfg.max_description_bytes,
+        );
         let service = handler
             .serve(transport)
             .await
@@ -433,7 +451,7 @@ impl McpClient {
     /// # Errors
     ///
     /// Returns `McpError::OAuthError` on metadata discovery, SSRF, or authorization failures.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn connect_url_oauth(
         server_id: &str,
         url: &str,
@@ -445,8 +463,7 @@ impl McpClient {
         tx: UnboundedSender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         timeout: Duration,
-        roots: Arc<Vec<rmcp::model::Root>>,
-        max_description_bytes: usize,
+        handler_cfg: HandlerConfig,
     ) -> Result<OAuthConnectResult, McpError> {
         if !trusted {
             validate_url_ssrf(url).await?;
@@ -491,8 +508,8 @@ impl McpClient {
                 server_id,
                 tx,
                 last_refresh,
-                roots,
-                max_description_bytes,
+                handler_cfg.roots,
+                handler_cfg.max_description_bytes,
             );
             let service = handler
                 .serve(transport)
@@ -567,8 +584,8 @@ impl McpClient {
                 timeout,
                 tx,
                 last_refresh,
-                roots,
-                max_description_bytes,
+                roots: handler_cfg.roots,
+                max_description_bytes: handler_cfg.max_description_bytes,
             },
         )))
     }
@@ -810,6 +827,7 @@ pub(crate) async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::ClientHandler as _;
 
     #[tokio::test]
     async fn ssrf_blocks_localhost() {
@@ -1039,7 +1057,10 @@ mod tests {
     fn get_info_advertises_roots_capability() {
         let (handler, _, _) = make_handler();
         let info = handler.get_info();
-        let roots_cap = info.capabilities.roots.expect("roots capability must be set");
+        let roots_cap = info
+            .capabilities
+            .roots
+            .expect("roots capability must be set");
         assert_eq!(
             roots_cap.list_changed,
             Some(false),
@@ -1086,13 +1107,8 @@ mod tests {
     fn handler_stores_max_description_bytes() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let last_refresh = Arc::new(DashMap::new());
-        let handler = ToolListChangedHandler::new(
-            "srv",
-            tx,
-            last_refresh,
-            Arc::new(Vec::new()),
-            512,
-        );
+        let handler =
+            ToolListChangedHandler::new("srv", tx, last_refresh, Arc::new(Vec::new()), 512);
         assert_eq!(handler.max_description_bytes, 512);
     }
 }

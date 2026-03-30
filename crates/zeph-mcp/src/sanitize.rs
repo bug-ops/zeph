@@ -13,7 +13,7 @@
 //! - On any injection pattern match in a string field: replace the **entire** field with a
 //!   safe placeholder (`[sanitized]`) rather than surgical span removal. This eliminates
 //!   surrounding-text attacks.
-//! - Cap description lengths: 1024 bytes for top-level tool descriptions, 512 bytes for all
+//! - Cap description lengths: 2048 bytes for top-level tool descriptions, 512 bytes for all
 //!   other string values in `input_schema`.
 //! - Sanitize `tool.name` to `[a-zA-Z0-9_-]` (max 64 chars) — it is interpolated into XML
 //!   attributes in `prompt.rs` with no escaping.
@@ -325,11 +325,12 @@ pub fn sanitize_tools(tools: &mut [McpTool], server_id: &str, max_description_by
 /// Truncate server instructions to `max_bytes`, appending "..." if truncation occurs.
 ///
 /// Safe for UTF-8: truncation never splits a multi-byte character.
+#[must_use]
 pub fn truncate_instructions(instructions: &str, max_bytes: usize) -> String {
     if instructions.len() <= max_bytes {
         return instructions.to_owned();
     }
-    let mut truncated = truncate_to_bytes(instructions, max_bytes.saturating_sub(3)).to_owned();
+    let mut truncated = truncate_to_bytes(instructions, max_bytes.saturating_sub(3));
     truncated.push_str("...");
     truncated
 }
