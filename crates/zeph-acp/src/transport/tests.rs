@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use agent_client_protocol;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt as _;
@@ -557,6 +558,11 @@ async fn discovery_returns_expected_json_fields() {
     );
     assert_eq!(json["readiness"]["stdio_notification"], "zeph/ready");
     assert_eq!(json["readiness"]["http_health_endpoint"], "/health");
+    // protocol_version must be the integer value of ProtocolVersion::LATEST (1).
+    assert_eq!(
+        json["protocol_version"],
+        serde_json::json!(agent_client_protocol::ProtocolVersion::LATEST)
+    );
 }
 
 #[tokio::test]

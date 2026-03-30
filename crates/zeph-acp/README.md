@@ -360,12 +360,13 @@ The `initialize` response includes an `auth_hint` key in its metadata map. For s
 | Feature | Status | Description |
 |---------|--------|-------------|
 | `acp-http` | stable | Enables the HTTP+SSE and WebSocket transports (axum-based). Required for `post_handler`, `get_handler`, `ws_upgrade_handler`, and `router`. |
-| `unstable-session-list` | unstable | Enables the `list_sessions` ACP method. See below. |
 | `unstable-session-fork` | unstable | Enables the `fork_session` ACP method. See below. |
 | `unstable-session-resume` | unstable | Enables the `resume_session` ACP method. See below. |
 | `unstable-session-usage` | unstable | Enables `UsageUpdate` events — token counts (input, output, cache) sent to the IDE after each turn. See below. |
 | `unstable-session-model` | unstable | Enables `SetSessionModel` — IDE-driven model switching via a native picker without `session/configure`. See below. |
 | `unstable-session-info-update` | unstable | Enables `SessionInfoUpdate` — agent-generated session title emitted to the IDE after the first turn. See below. |
+| `unstable-elicitation` | unstable | Exposes elicitation schema types (`ElicitationRequest`, etc.) for future agent-loop integration. SDK methods not yet available in 0.10.3. |
+| `unstable-logout` | unstable | Enables the `logout` ACP method and advertises `auth.logout` capability. Zeph logout is a no-op (vault-based auth). |
 
 > [!WARNING]
 > All `unstable-*` features have wire protocol that is not yet finalized. Expect breaking changes before these features graduate to stable.
@@ -375,22 +376,23 @@ To opt in, add the desired features in your `Cargo.toml`:
 ```toml
 [dependencies]
 zeph-acp = { version = "*", features = [
-    "unstable-session-list",
     "unstable-session-fork",
     "unstable-session-resume",
     "unstable-session-usage",
     "unstable-session-model",
     "unstable-session-info-update",
+    "unstable-elicitation",
+    "unstable-logout",
 ] }
 ```
 
 All flags are independent and can be combined freely.
 
-### `unstable-session-list`
+### `session/list` (stable)
 
-Enables the `list_sessions` method on `ZephAcpAgent`. Returns a snapshot of all active in-memory sessions as `SessionInfo` records (session ID, working directory, last-updated timestamp). Supports an optional `cwd` filter — when provided, only sessions whose working directory matches the given path are returned.
+The `list_sessions` method on `ZephAcpAgent` is stable as of `agent-client-protocol` 0.10.3 — no feature flag required. Returns a snapshot of all active in-memory sessions as `SessionInfo` records (session ID, working directory, last-updated timestamp). Supports an optional `cwd` filter — when provided, only sessions whose working directory matches the given path are returned.
 
-When this feature is active, `initialize` advertises `SessionListCapabilities` in the `session` capabilities block, signalling to the IDE that the server supports session enumeration.
+The `initialize` response always advertises `SessionListCapabilities` in the `session` capabilities block, signalling to the IDE that the server supports session enumeration.
 
 ### `unstable-session-fork`
 

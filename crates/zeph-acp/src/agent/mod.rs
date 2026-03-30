@@ -743,6 +743,10 @@ impl acp::Agent for ZephAcpAgent {
             caps.session_capabilities(session_caps)
         };
 
+        #[cfg(feature = "unstable-logout")]
+        let caps = caps
+            .auth(acp::AgentAuthCapabilities::default().logout(acp::LogoutCapabilities::default()));
+
         Ok(acp::InitializeResponse::new(acp::ProtocolVersion::LATEST)
             .agent_info(
                 acp::Implementation::new(&self.agent_name, &self.agent_version).title(title),
@@ -780,6 +784,14 @@ impl acp::Agent for ZephAcpAgent {
     ) -> acp::Result<acp::AuthenticateResponse> {
         // stdio transport: authentication is a no-op, IDE client is trusted.
         Ok(acp::AuthenticateResponse::default())
+    }
+
+    #[cfg(feature = "unstable-logout")]
+    async fn logout(&self, _args: acp::LogoutRequest) -> acp::Result<acp::LogoutResponse> {
+        // Zeph uses vault-based authentication, not session-based auth.
+        // Logout is a no-op but we advertise the capability for protocol compliance.
+        tracing::debug!("ACP logout (no-op: vault-based auth)");
+        Ok(acp::LogoutResponse::default())
     }
 
     async fn new_session(

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(acp): bump `agent-client-protocol` 0.10.2→0.10.3, `agent-client-protocol-schema` 0.11.2→0.11.3; add `unstable-logout` feature with no-op logout handler and `auth.logout` capability advertisement; add `unstable-elicitation` feature gate (exposes schema types; SDK methods not yet available upstream); fix discovery endpoint `protocol_version` to use `ProtocolVersion::LATEST`; fix double-feature-activation antipattern in `zeph-acp` feature flags (#2411)
 - feat(skills): add `category` field to SKILL.md frontmatter — optional grouping for skill library organisation; all 26 bundled skills annotated with categories (`web`, `data`, `dev`, `system`) (#2268)
 - feat(skills): `/skills` command now groups output by category when skills have `category` set; uncategorised skills appear under `[other]` (#2268)
 - feat(skills): `/skills confusability` — new command showing all skill pairs whose cosine similarity exceeds `[skills] confusability_threshold`; identifies disambiguation risk before library phase transition (#2268)

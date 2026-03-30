@@ -613,3 +613,63 @@ async fn e2e_set_session_mode_rejects_unknown_session() {
     })
     .await;
 }
+
+#[cfg(feature = "unstable-logout")]
+#[tokio::test]
+async fn initialize_advertises_logout_capability() {
+    let (client_stream, server_stream) = duplex(65536);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+
+    let server_fut = serve_connection(
+        make_echo_spawner(),
+        make_server_config(),
+        server_write.compat_write(),
+        server_read.compat(),
+    );
+
+    let client_fut = async {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_conn, io_fut) = acp::ClientSideConnection::new(
+                    NoopClient,
+                    client_write.compat_write(),
+                    client_read.compat(),
+                    |fut| {
+                        tokio::task::spawn_local(fut);
+                    },
+                );
+                tokio::task::spawn_local(async move {
+                    let _ = io_fut.await;
+                });
+
+                let resp = client_conn
+                    .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                    .await
+                    .expect("initialize failed");
+
+                assert!(
+                    resp.agent_capabilities.auth.logout.is_some(),
+                    "logout capability must be advertised"
+                );
+            })
+            .await;
+    };
+
+    tokio::select! {
+        res = server_fut => { let _ = res; }
+        () = client_fut => {}
+    }
+}
+
+#[cfg(feature = "unstable-logout")]
+#[tokio::test]
+async fn logout_returns_ok() {
+    with_initialized_client(|conn| async move {
+        conn.logout(acp::LogoutRequest::default())
+            .await
+            .expect("logout must return Ok");
+    })
+    .await;
+}
