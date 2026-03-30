@@ -1669,14 +1669,14 @@ mod tests {
         );
 
         let agent = make_agent().with_confusability_threshold(1.5);
-        assert_eq!(
-            agent.skill_state.confusability_threshold, 1.0,
+        assert!(
+            (agent.skill_state.confusability_threshold - 1.0).abs() < f32::EPSILON,
             "with_confusability_threshold must clamp values above 1.0"
         );
 
         let agent = make_agent().with_confusability_threshold(-0.1);
-        assert_eq!(
-            agent.skill_state.confusability_threshold, 0.0,
+        assert!(
+            agent.skill_state.confusability_threshold.abs() < f32::EPSILON,
             "with_confusability_threshold must clamp values below 0.0"
         );
     }

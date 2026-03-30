@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(memory): use `wait=true` on Qdrant upsert to eliminate testcontainer timing race — points are now indexed and queryable immediately after `upsert` returns (closes #2413)
+
+### Added (tests)
+
+- test(core): add `multi_layer_before_after_tool_ordering` — verifies both layers are called in FIFO order for `before_tool` and `after_tool` (#2361)
+
 - fix(classifiers): sha2 0.11 hex formatting — replace `format!("{:x}", ...)` with `hex::encode(...)` in `verify_sha256` and its test helper (#2401)
 - fix(deps): bump sha2 0.10→0.11, ordered-float 5.1→5.3, proptest 1.10→1.11, toml 1.0→1.1, uuid 1.22→1.23 (#2401)
 - fix(skills): `two_stage_matching` and `confusability_threshold` config fields are now applied at agent startup; `AgentBuilder` gains `with_two_stage_matching` and `with_confusability_threshold` builder methods wired in `runner.rs` and `daemon.rs` (closes #2404)

@@ -143,10 +143,8 @@ impl QdrantOps {
     ///
     /// Returns an error if the upsert fails.
     pub async fn upsert(&self, collection: &str, points: Vec<PointStruct>) -> QdrantResult<()> {
-        // wait(false): fire-and-forget on the hot path — saves 3-15ms per embedding store call.
-        // Qdrant guarantees eventual consistency; read-your-writes is not required here.
         self.client
-            .upsert_points(UpsertPointsBuilder::new(collection, points).wait(false))
+            .upsert_points(UpsertPointsBuilder::new(collection, points).wait(true))
             .await
             .map_err(Box::new)?;
         Ok(())

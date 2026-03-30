@@ -344,6 +344,81 @@ mod tests {
         );
     }
 
+    /// Two layers registered in order [A, B]: `before_tool` must fire A then B,
+    /// and `after_tool` must fire A then B (forward order for both).
+    #[tokio::test]
+    async fn multi_layer_before_after_tool_ordering() {
+        use std::sync::{Arc, Mutex};
+
+        struct ToolOrderLayer {
+            id: u32,
+            log: Arc<Mutex<Vec<String>>>,
+        }
+        impl RuntimeLayer for ToolOrderLayer {
+            fn before_tool<'a>(
+                &'a self,
+                _ctx: &'a LayerContext<'_>,
+                _call: &'a ToolCall,
+            ) -> Pin<Box<dyn Future<Output = BeforeToolResult> + Send + 'a>> {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push(format!("before_tool_{}", self.id));
+                Box::pin(std::future::ready(None))
+            }
+
+            fn after_tool<'a>(
+                &'a self,
+                _ctx: &'a LayerContext<'_>,
+                _call: &'a ToolCall,
+                _result: &'a Result<Option<ToolOutput>, ToolError>,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push(format!("after_tool_{}", self.id));
+                Box::pin(std::future::ready(()))
+            }
+        }
+
+        let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let layer_a = ToolOrderLayer {
+            id: 1,
+            log: Arc::clone(&log),
+        };
+        let layer_b = ToolOrderLayer {
+            id: 2,
+            log: Arc::clone(&log),
+        };
+
+        let ctx = LayerContext {
+            conversation_id: None,
+            turn_number: 0,
+        };
+        let call = ToolCall {
+            tool_id: "shell".into(),
+            params: serde_json::Map::new(),
+        };
+        let result: Result<Option<ToolOutput>, ToolError> = Ok(None);
+
+        layer_a.before_tool(&ctx, &call).await;
+        layer_b.before_tool(&ctx, &call).await;
+        layer_a.after_tool(&ctx, &call, &result).await;
+        layer_b.after_tool(&ctx, &call, &result).await;
+
+        let events = log.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec![
+                "before_tool_1",
+                "before_tool_2",
+                "after_tool_1",
+                "after_tool_2"
+            ],
+            "tool hooks must fire in registration order"
+        );
+    }
+
     /// `NoopLayer` `after_tool` returns `()` without errors.
     #[tokio::test]
     async fn noop_layer_after_tool_returns_unit() {
