@@ -728,10 +728,18 @@ impl acp::Agent for ZephAcpAgent {
         if self.mcp_manager.is_some() {
             caps = caps.mcp_capabilities(acp::McpCapabilities::new().http(true).sse(false));
         }
-        #[cfg(any(feature = "unstable-session-fork", feature = "unstable-session-resume",))]
+        #[cfg(any(
+            feature = "unstable-session-close",
+            feature = "unstable-session-fork",
+            feature = "unstable-session-resume",
+        ))]
         let caps = {
             let mut session_caps = acp::SessionCapabilities::new();
             session_caps = session_caps.list(acp::SessionListCapabilities::default());
+            #[cfg(feature = "unstable-session-close")]
+            {
+                session_caps = session_caps.close(acp::SessionCloseCapabilities::default());
+            }
             #[cfg(feature = "unstable-session-fork")]
             {
                 session_caps = session_caps.fork(acp::SessionForkCapabilities::default());
@@ -1000,6 +1008,20 @@ impl acp::Agent for ZephAcpAgent {
             entry.cancel_signal.notify_one();
         }
         Ok(())
+    }
+
+    #[cfg(feature = "unstable-session-close")]
+    async fn close_session(
+        &self,
+        args: acp::CloseSessionRequest,
+    ) -> acp::Result<acp::CloseSessionResponse> {
+        tracing::debug!(session_id = %args.session_id, "ACP session closed");
+        // Remove entry first; Arc<Notify> keeps cancel_signal alive so notify_one()
+        // is still sound. The agent loop observes the signal and exits gracefully.
+        if let Some(entry) = self.sessions.borrow_mut().remove(&args.session_id) {
+            entry.cancel_signal.notify_one();
+        }
+        Ok(acp::CloseSessionResponse::default())
     }
 
     async fn load_session(

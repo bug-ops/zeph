@@ -1415,6 +1415,11 @@ async fn initialize_advertises_session_capabilities() {
                 session_caps.resume.is_some(),
                 "resume capability must be advertised"
             );
+            #[cfg(feature = "unstable-session-close")]
+            assert!(
+                session_caps.close.is_some(),
+                "close capability must be advertised"
+            );
         })
         .await;
 }
@@ -3716,6 +3721,85 @@ async fn non_llm_slash_commands_all_complete_without_hanging() {
                     result.0
                 );
             }
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable-session-close")]
+#[tokio::test]
+async fn close_session_removes_entry() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (agent, mut notify_rx) = make_agent();
+            tokio::task::spawn_local(async move {
+                while let Some((_, ack)) = notify_rx.recv().await {
+                    ack.send(()).ok();
+                }
+            });
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+            let sid = resp.session_id.clone();
+            assert!(agent.sessions.borrow().contains_key(&sid));
+            let result = agent
+                .close_session(acp::CloseSessionRequest::new(sid.clone()))
+                .await;
+            assert!(result.is_ok());
+            assert!(
+                !agent.sessions.borrow().contains_key(&sid),
+                "session entry must be removed after close"
+            );
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable-session-close")]
+#[tokio::test]
+async fn close_session_unknown_id_is_ok() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (agent, _rx) = make_agent();
+            let unknown_id = acp::SessionId::new(uuid::Uuid::new_v4().to_string());
+            let result = agent
+                .close_session(acp::CloseSessionRequest::new(unknown_id))
+                .await;
+            assert!(result.is_ok(), "closing unknown session must be idempotent");
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable-session-close")]
+#[tokio::test]
+async fn close_session_signals_cancel() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (agent, mut notify_rx) = make_agent();
+            tokio::task::spawn_local(async move {
+                while let Some((_, ack)) = notify_rx.recv().await {
+                    ack.send(()).ok();
+                }
+            });
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+            let sid = resp.session_id.clone();
+            let cancel_signal =
+                std::sync::Arc::clone(&agent.sessions.borrow().get(&sid).unwrap().cancel_signal);
+            // Register a notified future before closing so we can observe the signal.
+            let notified = cancel_signal.notified();
+            agent
+                .close_session(acp::CloseSessionRequest::new(sid))
+                .await
+                .unwrap();
+            // notify_one was called — the future must resolve immediately.
+            tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+                .await
+                .expect("cancel signal must fire on close_session");
         })
         .await;
 }

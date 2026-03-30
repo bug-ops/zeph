@@ -15,6 +15,7 @@ readme = "README.md"
 
 [features]
 default = [
+    "unstable-session-close",
     "unstable-session-fork",
     "unstable-session-resume",
     "unstable-session-usage",
@@ -23,6 +24,7 @@ default = [
     "unstable-logout",
 ]
 acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
+unstable-session-close = ["agent-client-protocol/unstable_session_close"]
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
 unstable-session-resume = ["agent-client-protocol/unstable_session_resume"]
 unstable-session-usage = ["agent-client-protocol/unstable_session_usage"]
