@@ -3804,6 +3804,119 @@ async fn close_session_unknown_id_is_ok() {
         .await;
 }
 
+#[tokio::test]
+async fn list_sessions_includes_model_meta() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let models = shared_models(vec!["ollama:llama3".to_owned()]);
+            let factory: ProviderFactory = Arc::new(|_key| None);
+            let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                .with_provider_factory(factory, Arc::clone(&models));
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+            let sid = resp.session_id.clone();
+
+            let list_resp = agent
+                .list_sessions(acp::ListSessionsRequest::new())
+                .await
+                .unwrap();
+
+            let info = list_resp
+                .sessions
+                .iter()
+                .find(|s| s.session_id == sid)
+                .expect("session must appear in list");
+
+            let meta = info.meta.as_ref().expect("meta must be present");
+            assert!(
+                meta.contains_key("currentModel"),
+                "meta must contain 'currentModel'"
+            );
+            assert_eq!(
+                meta["currentModel"],
+                serde_json::Value::String("ollama:llama3".to_owned())
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn set_config_option_model_emits_session_info_update() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, mut notify_rx) = mpsc::unbounded_channel();
+            let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let models = shared_models(vec!["ollama:llama3".to_owned()]);
+            let factory: ProviderFactory = Arc::new(|key: &str| {
+                if key == "ollama:llama3" {
+                    Some(zeph_llm::any::AnyProvider::Ollama(
+                        zeph_llm::ollama::OllamaProvider::new(
+                            "http://localhost:11434",
+                            "llama3".into(),
+                            "nomic-embed-text".into(),
+                        ),
+                    ))
+                } else {
+                    None
+                }
+            });
+            let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
+                .with_provider_factory(factory, Arc::clone(&models));
+            let resp = agent
+                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
+                .await
+                .unwrap();
+            let sid = resp.session_id.clone();
+
+            // Drain any notifications from new_session.
+            while notify_rx.try_recv().is_ok() {}
+
+            agent
+                .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
+                    sid.clone(),
+                    "model",
+                    "ollama:llama3",
+                ))
+                .await
+                .unwrap();
+
+            // Collect all notifications sent.
+            let mut updates = vec![];
+            while let Ok((notif, _ack)) = notify_rx.try_recv() {
+                updates.push(notif.update);
+            }
+
+            let has_config_update = updates
+                .iter()
+                .any(|u| matches!(u, acp::SessionUpdate::ConfigOptionUpdate(_)));
+            assert!(has_config_update, "ConfigOptionUpdate must be sent");
+
+            let session_info_update = updates.iter().find_map(|u| {
+                if let acp::SessionUpdate::SessionInfoUpdate(siu) = u {
+                    Some(siu)
+                } else {
+                    None
+                }
+            });
+            let siu = session_info_update.expect("SessionInfoUpdate must be sent on model change");
+            let meta = siu
+                .meta
+                .as_ref()
+                .expect("SessionInfoUpdate must carry meta");
+            assert_eq!(
+                meta["currentModel"],
+                serde_json::Value::String("ollama:llama3".to_owned())
+            );
+        })
+        .await;
+}
+
 #[cfg(feature = "unstable-session-close")]
 #[tokio::test]
 async fn close_session_signals_cancel() {

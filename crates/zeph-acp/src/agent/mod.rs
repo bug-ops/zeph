@@ -1129,8 +1129,10 @@ impl acp::Agent for ZephAcpAgent {
                     {
                         return None;
                     }
+                    let meta = model_meta(&entry.current_model.borrow());
                     let mut info = acp::SessionInfo::new(session_id.clone(), working_dir)
-                        .updated_at(entry.created_at.to_rfc3339());
+                        .updated_at(entry.created_at.to_rfc3339())
+                        .meta(meta);
                     if let Some(ref t) = *entry.title.borrow() {
                         info = info.title(t.clone());
                     }
@@ -1403,10 +1405,23 @@ impl acp::Agent for ZephAcpAgent {
             // deadlocks in callers that do not drain notifications.
             let update =
                 acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(vec![option]));
-            let notification = acp::SessionNotification::new(args.session_id, update);
+            let notification = acp::SessionNotification::new(args.session_id.clone(), update);
             let (tx, _rx) = oneshot::channel();
             if self.notify_tx.send((notification, tx)).is_err() {
                 tracing::warn!("failed to send ConfigOptionUpdate notification: channel closed");
+            }
+
+            // When the model config changes, also emit a SessionInfoUpdate so IDE clients
+            // that track session metadata learn about the new model immediately.
+            if config_id.as_ref() == "model" {
+                let info_update = acp::SessionUpdate::SessionInfoUpdate(
+                    acp::SessionInfoUpdate::new().meta(model_meta(&current_model)),
+                );
+                let info_notification = acp::SessionNotification::new(args.session_id, info_update);
+                let (tx2, _rx2) = oneshot::channel();
+                if self.notify_tx.send((info_notification, tx2)).is_err() {
+                    tracing::warn!("failed to send SessionInfoUpdate notification: channel closed");
+                }
             }
         }
 
@@ -1486,6 +1501,16 @@ impl acp::Agent for ZephAcpAgent {
             model = %model_id,
             "ACP session model switched via set_session_model"
         );
+
+        // Notify IDE clients about the new model via SessionInfoUpdate.
+        let info_update = acp::SessionUpdate::SessionInfoUpdate(
+            acp::SessionInfoUpdate::new().meta(model_meta(model_id)),
+        );
+        let notification = acp::SessionNotification::new(args.session_id, info_update);
+        let (tx, _rx) = oneshot::channel();
+        if self.notify_tx.send((notification, tx)).is_err() {
+            tracing::warn!("failed to send SessionInfoUpdate notification: channel closed");
+        }
 
         Ok(acp::SetSessionModelResponse::new())
     }
@@ -2208,7 +2233,7 @@ impl ZephAcpAgent {
 pub(super) mod helpers;
 use helpers::{
     DEFAULT_MODE_ID, DIAGNOSTICS_MIME_TYPE, build_available_commands, build_config_options,
-    build_mode_state, format_diagnostics_block, loopback_event_to_updates, mime_to_ext,
+    build_mode_state, format_diagnostics_block, loopback_event_to_updates, mime_to_ext, model_meta,
     session_update_to_event, xml_escape,
 };
 

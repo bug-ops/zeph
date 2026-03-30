@@ -75,6 +75,16 @@ pub(super) fn tool_kind_from_name(name: &str) -> acp::ToolKind {
     }
 }
 
+/// Build a `Meta` map carrying the current model name under the `"currentModel"` key.
+pub(super) fn model_meta(model: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "currentModel".to_owned(),
+        serde_json::Value::String(model.to_owned()),
+    );
+    map
+}
+
 pub(super) const DEFAULT_MODE_ID: &str = "code";
 
 /// MIME type used by Zed IDE to deliver LSP diagnostics as embedded resource blocks.
