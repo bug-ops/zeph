@@ -42,9 +42,50 @@ use crate::commands::vault::handle_vault_command;
 use crate::daemon::run_daemon;
 #[cfg(all(feature = "tui", feature = "a2a"))]
 use crate::tui_remote::run_tui_remote;
+#[cfg(feature = "policy-enforcer")]
+use zeph_llm::any::AnyProvider as LlmAnyProvider;
 use zeph_llm::provider::LlmProvider;
 
 use zeph_core::config::Config;
+
+/// Adapter that bridges `PolicyLlmClient` to `AnyProvider::chat_with_named_provider`.
+///
+/// Defined in `runner.rs` to keep `zeph-tools` decoupled from `zeph-llm`.
+#[cfg(feature = "policy-enforcer")]
+struct AdversarialPolicyLlmAdapter {
+    provider: LlmAnyProvider,
+    provider_name: String,
+}
+
+#[cfg(feature = "policy-enforcer")]
+impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
+    fn chat<'a>(
+        &'a self,
+        messages: &'a [zeph_tools::PolicyMessage],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let llm_messages: Vec<zeph_llm::provider::Message> = messages
+                .iter()
+                .map(|m| {
+                    zeph_llm::provider::Message::from_legacy(
+                        match m.role {
+                            zeph_tools::PolicyRole::System => zeph_llm::provider::Role::System,
+                            zeph_tools::PolicyRole::User => zeph_llm::provider::Role::User,
+                        },
+                        m.content.clone(),
+                    )
+                })
+                .collect();
+
+            let result: Result<String, zeph_llm::LlmError> = self
+                .provider
+                .chat_with_named_provider(&self.provider_name, &llm_messages)
+                .await;
+            result.map_err(|e| e.to_string())
+        })
+    }
+}
 
 /// Warn at startup if legacy artifact paths exist but new `.zeph/`-based paths do not.
 ///
@@ -861,13 +902,82 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 ),
             ),
         )));
-    // HIGH-04: PolicyGate is the outermost executor; TrustGate wraps the inner chain.
-    // Order: PolicyGateExecutor → TrustGateExecutor → CompositeExecutor → ...
+    // Executor chain order (outermost first):
+    //   PolicyGateExecutor → AdversarialPolicyGateExecutor → TrustGateExecutor → Composite → ...
+    //
+    // Declarative policy (PolicyGate) is outermost — fast, deterministic, zero LLM cost.
+    // Adversarial policy gate fires only for calls that pass declarative policy (CRIT-04).
     #[cfg(feature = "policy-enforcer")]
     let (tool_executor, mcp_ids_handle) = {
         let trust_gated =
             zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
         let handle = trust_gated.mcp_tool_ids_handle();
+
+        // Layer 1 (innermost of the policy stack): adversarial policy gate (LLM-based).
+        let adversarial_gated: zeph_tools::DynExecutor = if config.tools.adversarial_policy.enabled
+        {
+            let adv_cfg = &config.tools.adversarial_policy;
+            let policies: Vec<String> = if let Some(ref path) = adv_cfg.policy_file {
+                // SEC-01: canonicalize + boundary check matching load_policy_file() in policy.rs.
+                // Prevents symlink attacks that could exfiltrate arbitrary files via the policy LLM.
+                let load_result = (|| -> Result<Vec<String>, std::io::Error> {
+                    let p = std::path::Path::new(path);
+                    let canonical = std::fs::canonicalize(p)?;
+                    let canonical_base = std::env::current_dir().and_then(std::fs::canonicalize)?;
+                    if !canonical.starts_with(&canonical_base) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "adversarial policy file escapes project root",
+                        ));
+                    }
+                    let content = std::fs::read_to_string(&canonical)?;
+                    Ok(zeph_tools::parse_policy_lines(&content))
+                })();
+                match load_result {
+                    Ok(lines) => lines,
+                    Err(e) => {
+                        tracing::error!(
+                            path = %path,
+                            "adversarial policy: failed to load policy file: {e}"
+                        );
+                        vec![]
+                    }
+                }
+            } else {
+                vec![]
+            };
+
+            if policies.is_empty() {
+                tracing::warn!(
+                    "adversarial policy enabled but no policies loaded; gate is a no-op"
+                );
+            }
+
+            let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+                policies,
+                std::time::Duration::from_millis(adv_cfg.timeout_ms),
+                adv_cfg.fail_open,
+            ));
+
+            let provider_name = adv_cfg.policy_provider.clone();
+            let llm_provider = provider.clone();
+            let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
+                std::sync::Arc::new(AdversarialPolicyLlmAdapter {
+                    provider: llm_provider,
+                    provider_name,
+                });
+
+            let mut gate =
+                zeph_tools::AdversarialPolicyGateExecutor::new(trust_gated, validator, llm_client);
+            if let Some(ref audit) = tool_setup.audit_logger {
+                gate = gate.with_audit(std::sync::Arc::clone(audit));
+            }
+            zeph_tools::DynExecutor(std::sync::Arc::new(gate))
+        } else {
+            zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated))
+        };
+
+        // Layer 2 (outermost): declarative policy gate.
         let executor = if config.tools.policy.enabled {
             match zeph_tools::PolicyEnforcer::compile(&config.tools.policy) {
                 Ok(enforcer) => {
@@ -877,7 +987,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                             env: std::env::vars().collect(),
                         }));
                     let gate = zeph_tools::PolicyGateExecutor::new(
-                        trust_gated,
+                        adversarial_gated,
                         std::sync::Arc::new(enforcer),
                         policy_context,
                     );
@@ -887,11 +997,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                     tracing::error!(
                         "failed to compile policy rules, policy enforcement disabled: {e}"
                     );
-                    zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated))
+                    adversarial_gated
                 }
             }
         } else {
-            zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated))
+            adversarial_gated
         };
         (executor, handle)
     };

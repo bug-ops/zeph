@@ -3,6 +3,10 @@
 
 //! Tool execution abstraction and shell backend.
 
+#[cfg(feature = "policy-enforcer")]
+pub mod adversarial_gate;
+#[cfg(feature = "policy-enforcer")]
+pub mod adversarial_policy;
 pub mod anomaly;
 pub mod audit;
 pub mod cache;
@@ -30,10 +34,19 @@ pub mod trust_gate;
 pub mod trust_level;
 pub mod verifier;
 
+#[cfg(feature = "policy-enforcer")]
+pub use adversarial_gate::AdversarialPolicyGateExecutor;
+#[cfg(feature = "policy-enforcer")]
+pub use adversarial_policy::{
+    PolicyDecision as AdversarialPolicyDecision, PolicyLlmClient, PolicyMessage, PolicyRole,
+    PolicyValidator, parse_policy_lines,
+};
 pub use anomaly::{AnomalyDetector, AnomalySeverity, is_reasoning_model};
 pub use audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
+#[cfg(feature = "policy-enforcer")]
+pub use config::AdversarialPolicyConfig;
 pub use config::{
     AnomalyConfig, AuditConfig, DependencyConfig, OverflowConfig, ResultCacheConfig, RetryConfig,
     ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,

@@ -11,6 +11,11 @@ fn default_true() -> bool {
     true
 }
 
+#[cfg(feature = "policy-enforcer")]
+fn default_adversarial_timeout_ms() -> u64 {
+    3_000
+}
+
 fn default_timeout() -> u64 {
     30
 }
@@ -271,6 +276,32 @@ impl Default for RetryConfig {
     }
 }
 
+/// Configuration for the LLM-based adversarial policy agent.
+#[cfg(feature = "policy-enforcer")]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AdversarialPolicyConfig {
+    /// Enable the adversarial policy agent. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for the policy validation LLM.
+    /// Should reference a fast, cheap model (e.g. `gpt-4o-mini`).
+    /// Empty string = fall back to the default provider.
+    #[serde(default)]
+    pub policy_provider: String,
+    /// Path to a plain-text policy file. Each non-empty, non-comment line is one policy.
+    pub policy_file: Option<String>,
+    /// Whether to allow tool calls when the policy LLM fails (timeout/error).
+    /// Default: `false` (fail-closed / deny on error).
+    ///
+    /// Setting this to `true` trades security for availability. Use only in
+    /// deployments where the declarative `PolicyEnforcer` already covers hard rules.
+    #[serde(default)]
+    pub fail_open: bool,
+    /// Timeout in milliseconds for a single policy LLM call. Default: 3000.
+    #[serde(default = "default_adversarial_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -304,6 +335,10 @@ pub struct ToolsConfig {
     #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
     pub policy: PolicyConfig,
+    /// LLM-based adversarial policy agent for natural-language policy enforcement.
+    #[cfg(feature = "policy-enforcer")]
+    #[serde(default)]
+    pub adversarial_policy: AdversarialPolicyConfig,
 }
 
 impl ToolsConfig {
@@ -388,6 +423,8 @@ impl Default for ToolsConfig {
             retry: RetryConfig::default(),
             #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
+            #[cfg(feature = "policy-enforcer")]
+            adversarial_policy: AdversarialPolicyConfig::default(),
         }
     }
 }

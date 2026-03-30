@@ -306,6 +306,7 @@ impl WebScrapeExecutor {
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
+                adversarial_policy_decision: None,
             };
             logger.log(&entry).await;
         }

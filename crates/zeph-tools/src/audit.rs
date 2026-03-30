@@ -49,6 +49,12 @@ pub struct AuditEntry {
     /// Tool result crossed the MCP-to-ACP trust boundary (MCP tool result served to an ACP client).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cross_boundary_mcp_to_acp: bool,
+    /// Decision recorded by the adversarial policy agent before execution.
+    ///
+    /// Values: `"allow"`, `"deny:<reason>"`, `"error:<message>"`.
+    /// `None` when adversarial policy is disabled or not applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adversarial_policy_decision: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -142,6 +148,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -167,6 +174,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -191,6 +199,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -212,6 +221,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -238,6 +248,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         logger.log(&entry).await;
     }
@@ -265,6 +276,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         logger.log(&entry).await;
 
@@ -319,6 +331,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -344,6 +357,7 @@ mod tests {
             injection_flagged: false,
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -377,6 +391,7 @@ mod tests {
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
+                adversarial_policy_decision: None,
             };
             logger.log(&entry).await;
         }

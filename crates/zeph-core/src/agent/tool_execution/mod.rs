@@ -434,6 +434,7 @@ impl<C: Channel> Agent<C> {
                     injection_flagged: has_injection_flags,
                     embedding_anomalous: false,
                     cross_boundary_mcp_to_acp: true,
+                    adversarial_policy_decision: None,
                 };
                 let logger = std::sync::Arc::clone(logger);
                 tokio::spawn(async move { logger.log(&entry).await });
