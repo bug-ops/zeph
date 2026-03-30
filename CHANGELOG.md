@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-03-31
+
 ### Fixed
 
 - fix(tools): agent now prefers `memory_search` over `search_code` when recalling user-provided facts — updated `search_code` description to exclude user facts/preferences; updated `memory_search` description to emphasise user-provided context recall; session-level hint injected into the volatile system prompt block when `memory_save` was called in the current session (closes #2475)
@@ -3106,7 +3108,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/bug-ops/zeph/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/bug-ops/zeph/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/bug-ops/zeph/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/bug-ops/zeph/compare/v0.16.1...v0.17.0

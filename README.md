@@ -8,7 +8,7 @@
   [![Crates.io](https://img.shields.io/crates/v/zeph)](https://crates.io/crates/zeph)
   [![docs](https://img.shields.io/badge/docs-book-blue)](https://bug-ops.github.io/zeph/)
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
-  [![Tests](https://img.shields.io/badge/tests-7201-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-6969-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![Crates](https://img.shields.io/badge/crates-20-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
   [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
@@ -59,7 +59,7 @@ zeph
 > **v0.17.0 breaking change**: the `[llm.cloud]`, `[llm.openai]`, `[llm.orchestrator]`, and `[llm.router]` config sections are replaced by `[[llm.providers]]`. Run `zeph migrate-config --in-place` to upgrade automatically.
 
 > [!NOTE]
-> **v0.18.0**: PILOT LinUCB contextual bandit routing (`LlmRoutingStrategy::Bandit`) and PostgreSQL memory backend are now available.
+> **v0.18.1**: PILOT LinUCB contextual bandit routing (`LlmRoutingStrategy::Bandit`) and PostgreSQL memory backend are now available.
 
 > [!TIP]
 > Copy-paste configs for all common setups — local, cloud, hybrid, coding assistant, Telegram bot — are in the **[Configuration Recipes](https://bug-ops.github.io/zeph/guides/config-recipes.html)** guide.

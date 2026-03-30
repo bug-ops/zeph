@@ -42,7 +42,7 @@ Keybindings: `c` — create, `e` — edit, `d` — delete, Enter — detail view
 
 ## SubAgents sidebar and transcript viewer
 
-The `SubAgents` side panel (`a` keybinding) was extended in v0.18.0 with live status tracking for running sub-agents and an inline transcript viewer.
+The `SubAgents` side panel (`a` keybinding) was extended in v0.18.1 with live status tracking for running sub-agents and an inline transcript viewer.
 
 When a sub-agent is active, the panel shows a spinner alongside the agent name and its current tool/status line. Completed agents display their final turn count.
 
