@@ -4652,3 +4652,171 @@ async fn infrastructure_error_does_not_trigger_self_reflection() {
         last.content
     );
 }
+
+// --- MCP-to-ACP cross-boundary enforcement tests ---
+
+#[tokio::test]
+async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use crate::metrics::SecurityEventCategory;
+    use tokio::sync::watch;
+    use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::with_responses(vec![
+        "Extracted: safe summary".to_owned(),
+    ]));
+    let qcfg = QuarantineConfig {
+        enabled: true,
+        sources: vec![],
+        model: "mock".to_owned(),
+    };
+    let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_metrics(tx)
+        .with_acp_session(true)
+        .with_quarantine_summarizer(qs);
+    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        mcp_to_acp_boundary: true,
+        ..Default::default()
+    });
+
+    // "mcp_server:tool_name" triggers McpResponse kind
+    let (result, _) = agent
+        .sanitize_tool_output("malicious MCP payload", "evil_server:tool_x")
+        .await;
+
+    assert!(
+        result.contains("Extracted: safe summary"),
+        "cross-boundary MCP result must be quarantined: {result}"
+    );
+    let snap = rx.borrow().clone();
+    assert_eq!(snap.quarantine_invocations, 1);
+    assert!(
+        snap.security_events
+            .iter()
+            .any(|e| e.category == SecurityEventCategory::CrossBoundaryMcpToAcp),
+        "must emit CrossBoundaryMcpToAcp security event"
+    );
+}
+
+#[tokio::test]
+async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use crate::metrics::SecurityEventCategory;
+    use tokio::sync::watch;
+    use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::with_responses(vec![
+        "should not appear".to_owned(),
+    ]));
+    let qcfg = QuarantineConfig {
+        enabled: true,
+        sources: vec![],
+        model: "mock".to_owned(),
+    };
+    let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+    let iso_cfg = ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        mcp_to_acp_boundary: false,
+        ..Default::default()
+    };
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_metrics(tx)
+        .with_acp_session(true)
+        .with_quarantine_summarizer(qs);
+    agent.security.sanitizer = ContentSanitizer::new(&iso_cfg);
+    agent.runtime.security.content_isolation = iso_cfg;
+
+    let (result, _) = agent
+        .sanitize_tool_output("MCP content", "some_server:tool_y")
+        .await;
+
+    // With boundary disabled, no cross-boundary quarantine — content passes through spotlight
+    assert!(
+        !result.contains("should not appear"),
+        "boundary disabled must not trigger cross-boundary quarantine: {result}"
+    );
+    let snap = rx.borrow().clone();
+    assert_eq!(snap.quarantine_invocations, 0);
+    assert!(
+        !snap
+            .security_events
+            .iter()
+            .any(|e| e.category == SecurityEventCategory::CrossBoundaryMcpToAcp),
+        "must NOT emit CrossBoundaryMcpToAcp when boundary disabled"
+    );
+}
+
+#[tokio::test]
+async fn sanitize_tool_output_non_acp_session_normal_path() {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use crate::metrics::SecurityEventCategory;
+    use tokio::sync::watch;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    // is_acp_session defaults to false (no with_acp_session call)
+    let mut agent =
+        super::super::Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        mcp_to_acp_boundary: true,
+        ..Default::default()
+    });
+
+    let (result, _) = agent
+        .sanitize_tool_output("normal MCP data", "server:tool_z")
+        .await;
+
+    // Non-ACP session: no cross-boundary enforcement, just normal spotlight
+    assert!(
+        result.contains("normal MCP data"),
+        "non-ACP session must not quarantine MCP results: {result}"
+    );
+    let snap = rx.borrow().clone();
+    assert!(
+        !snap
+            .security_events
+            .iter()
+            .any(|e| e.category == SecurityEventCategory::CrossBoundaryMcpToAcp),
+        "non-ACP session must NOT emit CrossBoundaryMcpToAcp"
+    );
+}

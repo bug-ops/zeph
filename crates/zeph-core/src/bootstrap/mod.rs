@@ -559,8 +559,17 @@ impl AppBuilder {
     pub fn build_quarantine_provider(
         &self,
     ) -> Option<(AnyProvider, zeph_sanitizer::QuarantineConfig)> {
-        let qc = &self.config.security.content_isolation.quarantine;
+        let ci = &self.config.security.content_isolation;
+        let qc = &ci.quarantine;
         if !qc.enabled {
+            if ci.mcp_to_acp_boundary {
+                tracing::warn!(
+                    "mcp_to_acp_boundary is enabled but quarantine is disabled — \
+                     cross-boundary MCP tool results in ACP sessions will be \
+                     spotlighted but NOT quarantine-summarized; enable \
+                     [security.content_isolation.quarantine] for full protection"
+                );
+            }
             return None;
         }
         match create_named_provider(&qc.model, &self.config) {

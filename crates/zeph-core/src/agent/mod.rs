@@ -423,6 +423,7 @@ impl<C: Channel> Agent<C> {
             security: SecurityState {
                 sanitizer: ContentSanitizer::new(&zeph_sanitizer::ContentIsolationConfig::default()),
                 quarantine_summarizer: None,
+                is_acp_session: false,
                 exfiltration_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
                     zeph_sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
                 ),

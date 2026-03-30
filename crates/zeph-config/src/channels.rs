@@ -376,12 +376,11 @@ pub struct McpServerConfig {
     /// Trust level for this server. Default: Untrusted.
     #[serde(default)]
     pub trust_level: McpTrustLevel,
-    /// Tool allowlist. Behavior depends on `trust_level`:
-    /// - Trusted: ignored (all tools exposed)
-    /// - Untrusted: empty = all tools (with warning), non-empty = only listed tools
-    /// - Sandboxed: empty = NO tools (fail-closed), non-empty = only listed tools
+    /// Tool allowlist. `None` means no override (inherit defaults).
+    /// `Some(vec![])` is an explicit empty list (deny all for Untrusted/Sandboxed).
+    /// `Some(vec!["a", "b"])` allows only listed tools.
     #[serde(default)]
-    pub tool_allowlist: Vec<String>,
+    pub tool_allowlist: Option<Vec<String>>,
     /// Expected tool names for attestation. Supplements `tool_allowlist`.
     ///
     /// When non-empty: tools not in this list are filtered out (Untrusted/Sandboxed)

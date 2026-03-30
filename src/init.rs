@@ -1456,7 +1456,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             timeout: 60,
             policy: zeph_mcp::McpPolicy::default(),
             trust_level: McpTrustLevel::Trusted,
-            tool_allowlist: Vec::new(),
+            tool_allowlist: None,
             expected_tools: Vec::new(),
         });
     }
@@ -1887,7 +1887,7 @@ fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             headers,
             oauth,
             trust_level,
-            tool_allowlist: Vec::new(),
+            tool_allowlist: None,
             expected_tools: Vec::new(),
         });
 

@@ -403,8 +403,72 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // MCP-to-ACP boundary enforcement: unconditionally quarantine MCP tool results
+        // in ACP sessions, bypassing `should_quarantine()` source config (#2427, S10).
+        let is_cross_boundary = self.security.is_acp_session
+            && self.runtime.security.content_isolation.mcp_to_acp_boundary
+            && kind == ContentSourceKind::McpResponse;
+        if is_cross_boundary {
+            tracing::warn!(
+                tool = %tool_name,
+                mcp_server_id = tool_name.split(':').next().unwrap_or("unknown"),
+                "MCP tool result crossing ACP trust boundary"
+            );
+            self.push_security_event(
+                crate::metrics::SecurityEventCategory::CrossBoundaryMcpToAcp,
+                tool_name,
+                "MCP result force-quarantined for ACP session",
+            );
+            if let Some(ref logger) = self.tool_orchestrator.audit_logger {
+                let entry = zeph_tools::AuditEntry {
+                    timestamp: zeph_tools::chrono_now(),
+                    tool: tool_name.to_owned(),
+                    command: String::new(),
+                    result: zeph_tools::AuditResult::Success,
+                    duration_ms: 0,
+                    error_category: None,
+                    error_domain: Some("security".to_owned()),
+                    error_phase: None,
+                    claim_source: None,
+                    mcp_server_id: tool_name.split(':').next().map(ToOwned::to_owned),
+                    injection_flagged: has_injection_flags,
+                    embedding_anomalous: false,
+                    cross_boundary_mcp_to_acp: true,
+                };
+                let logger = std::sync::Arc::clone(logger);
+                tokio::spawn(async move { logger.log(&entry).await });
+            }
+            if let Some(ref qs) = self.security.quarantine_summarizer {
+                match qs.extract_facts(&sanitized, &self.security.sanitizer).await {
+                    Ok((facts, flags)) => {
+                        self.update_metrics(|m| m.quarantine_invocations += 1);
+                        let escaped =
+                            zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                        return (
+                            zeph_sanitizer::ContentSanitizer::apply_spotlight(
+                                &escaped,
+                                &sanitized.source,
+                                &flags,
+                            ),
+                            has_injection_flags,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            error = %e,
+                            "cross-boundary quarantine failed, using spotlighted output"
+                        );
+                        self.update_metrics(|m| m.quarantine_failures += 1);
+                    }
+                }
+            }
+            // Quarantine summarizer unavailable or failed — fall through to spotlighted output.
+        }
+
         // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
-        if self.security.sanitizer.is_enabled()
+        if !is_cross_boundary
+            && self.security.sanitizer.is_enabled()
             && let Some(ref qs) = self.security.quarantine_summarizer
             && qs.should_quarantine(kind)
         {

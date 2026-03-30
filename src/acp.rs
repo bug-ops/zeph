@@ -707,6 +707,8 @@ async fn spawn_acp_agent(
     )
     .await;
 
+    agent = agent.with_acp_session(true);
+
     if let Some(ref logger) = d.audit_logger {
         agent = agent.with_audit_logger(std::sync::Arc::clone(logger));
     }

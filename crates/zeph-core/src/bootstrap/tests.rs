@@ -322,7 +322,7 @@ fn create_mcp_manager_with_http_transport() {
         timeout: 30,
         policy: Default::default(),
         trust_level: Default::default(),
-        tool_allowlist: vec![],
+        tool_allowlist: None,
         expected_tools: vec![],
     }];
 
@@ -347,7 +347,7 @@ fn create_mcp_manager_with_stdio_transport() {
         timeout: 30,
         policy: Default::default(),
         trust_level: Default::default(),
-        tool_allowlist: vec![],
+        tool_allowlist: None,
         expected_tools: vec![],
     }];
 

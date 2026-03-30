@@ -24,6 +24,8 @@ pub enum SecurityEventCategory {
     ResponseVerification,
     /// `TurnCausalAnalyzer` flagged behavioral deviation at tool-return boundary.
     CausalIpiFlag,
+    /// MCP tool result crossing into an ACP-serving session boundary.
+    CrossBoundaryMcpToAcp,
 }
 
 impl SecurityEventCategory {
@@ -41,6 +43,7 @@ impl SecurityEventCategory {
             Self::PreExecutionWarn => "pre_exec_warn",
             Self::ResponseVerification => "response_verify",
             Self::CausalIpiFlag => "causal_ipi",
+            Self::CrossBoundaryMcpToAcp => "cross_boundary_mcp_to_acp",
         }
     }
 }
@@ -622,6 +625,10 @@ mod tests {
         assert_eq!(SecurityEventCategory::ExfiltrationBlock.as_str(), "exfil");
         assert_eq!(SecurityEventCategory::Quarantine.as_str(), "quarantine");
         assert_eq!(SecurityEventCategory::Truncation.as_str(), "truncation");
+        assert_eq!(
+            SecurityEventCategory::CrossBoundaryMcpToAcp.as_str(),
+            "cross_boundary_mcp_to_acp"
+        );
     }
 
     #[test]

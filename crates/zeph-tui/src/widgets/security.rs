@@ -174,6 +174,9 @@ fn append_event_items<'a>(
             SecurityEventCategory::PreExecutionWarn => ("[pexw] ", flag_style),
             SecurityEventCategory::ResponseVerification => ("[rver] ", flag_style),
             SecurityEventCategory::CausalIpiFlag => ("[cipi] ", flag_style),
+            SecurityEventCategory::CrossBoundaryMcpToAcp => {
+                ("[xbnd] ", Style::default().fg(Color::Red))
+            }
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![

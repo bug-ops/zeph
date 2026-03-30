@@ -1969,6 +1969,7 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
             SecurityEventCategory::PreExecutionWarn => "PRE_EXEC_WARN  ",
             SecurityEventCategory::ResponseVerification => "RESP_VERIFY    ",
             SecurityEventCategory::CausalIpiFlag => "CAUSAL_IPI     ",
+            SecurityEventCategory::CrossBoundaryMcpToAcp => "CROSS_BOUNDARY ",
         };
         lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
     }

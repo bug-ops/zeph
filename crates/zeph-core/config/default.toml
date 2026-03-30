@@ -507,6 +507,9 @@ max_content_size = 65536
 flag_injection_patterns = true
 # Wrap untrusted content in spotlighting XML delimiters (default: true)
 spotlight_untrusted = true
+# Enforce strict MCP→ACP trust boundary when agent serves ACP clients (default: true)
+# When enabled, MCP tool results in ACP sessions are unconditionally quarantined
+mcp_to_acp_boundary = true
 
 [security.content_isolation.quarantine]
 # Route high-risk content through an isolated LLM for fact extraction (default: false)

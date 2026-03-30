@@ -100,6 +100,7 @@ impl Default for EmbeddingGuardConfig {
 /// Configuration for the content isolation pipeline, nested under
 /// `[security.content_isolation]` in the agent config file.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ContentIsolationConfig {
     /// When `false`, the sanitizer is a no-op: content passes through unchanged.
     #[serde(default = "default_true")]
@@ -126,6 +127,13 @@ pub struct ContentIsolationConfig {
     /// Embedding anomaly guard configuration.
     #[serde(default)]
     pub embedding_guard: EmbeddingGuardConfig,
+
+    /// When `true`, MCP tool results flowing through ACP-serving sessions receive
+    /// unconditional quarantine summarization and cross-boundary audit log entries.
+    /// This prevents confused-deputy attacks where untrusted MCP output influences
+    /// responses served to ACP clients (e.g. IDE integrations).
+    #[serde(default = "default_true")]
+    pub mcp_to_acp_boundary: bool,
 }
 
 impl Default for ContentIsolationConfig {
@@ -137,6 +145,7 @@ impl Default for ContentIsolationConfig {
             spotlight_untrusted: true,
             quarantine: QuarantineConfig::default(),
             embedding_guard: EmbeddingGuardConfig::default(),
+            mcp_to_acp_boundary: true,
         }
     }
 }
@@ -473,6 +482,27 @@ impl Default for ResponseVerificationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_isolation_default_mcp_to_acp_boundary_true() {
+        let cfg = ContentIsolationConfig::default();
+        assert!(cfg.mcp_to_acp_boundary);
+    }
+
+    #[test]
+    fn content_isolation_deserialize_mcp_to_acp_boundary_false() {
+        let toml = r"
+            mcp_to_acp_boundary = false
+        ";
+        let cfg: ContentIsolationConfig = toml::from_str(toml).unwrap();
+        assert!(!cfg.mcp_to_acp_boundary);
+    }
+
+    #[test]
+    fn content_isolation_deserialize_absent_defaults_true() {
+        let cfg: ContentIsolationConfig = toml::from_str("").unwrap();
+        assert!(cfg.mcp_to_acp_boundary);
+    }
 
     fn de_guard(toml: &str) -> Result<EmbeddingGuardConfig, toml::de::Error> {
         toml::from_str(toml)

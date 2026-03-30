@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch};
 type StatusTx = mpsc::UnboundedSender<String>;
 /// Per-server trust config: (`trust_level`, `tool_allowlist`, `expected_tools`).
 type ServerTrust =
-    Arc<tokio::sync::RwLock<HashMap<String, (McpTrustLevel, Vec<String>, Vec<String>)>>>;
+    Arc<tokio::sync::RwLock<HashMap<String, (McpTrustLevel, Option<Vec<String>>, Vec<String>)>>>;
 use tokio::task::JoinSet;
 
 use rmcp::transport::auth::CredentialStore;
@@ -77,9 +77,10 @@ pub struct ServerEntry {
     /// `Trusted` skips SSRF checks (for operator-controlled static config).
     #[serde(default)]
     pub trust_level: McpTrustLevel,
-    /// Tool allowlist. See `McpTrustLevel` for per-level semantics.
+    /// Tool allowlist. `None` means no override (inherit from config or deny by default).
+    /// `Some(vec![])` is an explicit empty list. See `McpTrustLevel` for per-level semantics.
     #[serde(default)]
-    pub tool_allowlist: Vec<String>,
+    pub tool_allowlist: Option<Vec<String>>,
     /// Expected tool names for attestation. When non-empty, tools outside this
     /// list are filtered (Untrusted/Sandboxed) or warned (Trusted).
     #[serde(default)]
@@ -151,7 +152,7 @@ impl McpManager {
     ) -> Self {
         let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
         let (tools_watch_tx, _) = watch::channel(Vec::new());
-        let server_trust: HashMap<String, (McpTrustLevel, Vec<String>, Vec<String>)> = configs
+        let server_trust: HashMap<String, _> = configs
             .iter()
             .map(|c| {
                 (
@@ -283,14 +284,14 @@ impl McpManager {
                     let trust_guard = server_trust.read().await;
                     let (trust_level, allowlist, expected_tools) =
                         trust_guard.get(&event.server_id).map_or(
-                            (McpTrustLevel::Untrusted, Vec::new(), Vec::new()),
+                            (McpTrustLevel::Untrusted, None, Vec::new()),
                             |(tl, al, et)| (*tl, al.clone(), et.clone()),
                         );
                     ingest_tools(
                         event.tools,
                         &event.server_id,
                         trust_level,
-                        &allowlist,
+                        allowlist.as_deref(),
                         &expected_tools,
                         status_tx.as_ref(),
                     )
@@ -620,14 +621,14 @@ impl McpManager {
 
                     let (trust_level, allowlist, expected_tools) =
                         self.server_trust.read().await.get(&server_id).map_or(
-                            (McpTrustLevel::Untrusted, Vec::new(), Vec::new()),
+                            (McpTrustLevel::Untrusted, None, Vec::new()),
                             |(tl, al, et)| (*tl, al.clone(), et.clone()),
                         );
                     let tools = ingest_tools(
                         raw_tools,
                         &server_id,
                         trust_level,
-                        &allowlist,
+                        allowlist.as_deref(),
                         &expected_tools,
                         self.status_tx.as_ref(),
                     );
@@ -773,7 +774,7 @@ impl McpManager {
             raw_tools,
             &entry.id,
             entry.trust_level,
-            &entry.tool_allowlist,
+            entry.tool_allowlist.as_deref(),
             &entry.expected_tools,
             self.status_tx.as_ref(),
         );
@@ -936,7 +937,7 @@ fn ingest_tools(
     mut tools: Vec<McpTool>,
     server_id: &str,
     trust_level: McpTrustLevel,
-    allowlist: &[String],
+    allowlist: Option<&[String]>,
     expected_tools: &[String],
     status_tx: Option<&StatusTx>,
 ) -> Vec<McpTool> {
@@ -985,8 +986,8 @@ fn ingest_tools(
 
     match trust_level {
         McpTrustLevel::Trusted => tools,
-        McpTrustLevel::Untrusted => {
-            if allowlist.is_empty() {
+        McpTrustLevel::Untrusted => match allowlist {
+            None => {
                 let msg = format!(
                     "MCP server '{}' is untrusted with no tool_allowlist — all {} tools exposed; \
                      consider adding an explicit allowlist",
@@ -998,10 +999,19 @@ fn ingest_tools(
                     let _ = tx.send(msg);
                 }
                 tools
-            } else {
+            }
+            Some([]) => {
+                tracing::warn!(
+                    server_id,
+                    "untrusted MCP server has empty tool_allowlist — \
+                     no tools exposed (fail-closed)"
+                );
+                Vec::new()
+            }
+            Some(list) => {
                 let filtered: Vec<McpTool> = tools
                     .into_iter()
-                    .filter(|t| allowlist.iter().any(|a| a == &t.name))
+                    .filter(|t| list.iter().any(|a| a == &t.name))
                     .collect();
                 tracing::info!(
                     server_id,
@@ -1010,18 +1020,20 @@ fn ingest_tools(
                 );
                 filtered
             }
-        }
+        },
         McpTrustLevel::Sandboxed => {
-            if allowlist.is_empty() {
+            let list = allowlist.unwrap_or(&[]);
+            if list.is_empty() {
                 tracing::warn!(
                     server_id,
-                    "sandboxed MCP server has empty tool_allowlist — no tools exposed (fail-closed)"
+                    "sandboxed MCP server has empty tool_allowlist — \
+                     no tools exposed (fail-closed)"
                 );
                 Vec::new()
             } else {
                 let filtered: Vec<McpTool> = tools
                     .into_iter()
-                    .filter(|t| allowlist.iter().any(|a| a == &t.name))
+                    .filter(|t| list.iter().any(|a| a == &t.name))
                     .collect();
                 tracing::info!(
                     server_id,
@@ -1098,7 +1110,7 @@ mod tests {
             },
             timeout: Duration::from_secs(5),
             trust_level: McpTrustLevel::Untrusted,
-            tool_allowlist: Vec::new(),
+            tool_allowlist: None,
             expected_tools: Vec::new(),
         }
     }
@@ -1296,7 +1308,7 @@ mod tests {
             },
             timeout: Duration::from_secs(1),
             trust_level: McpTrustLevel::Untrusted,
-            tool_allowlist: Vec::new(),
+            tool_allowlist: None,
             expected_tools: Vec::new(),
         }
     }
@@ -1512,7 +1524,7 @@ mod tests {
     fn server_entry_default_trust_is_untrusted_and_allowlist_empty() {
         let entry = make_entry("srv");
         assert_eq!(entry.trust_level, McpTrustLevel::Untrusted);
-        assert!(entry.tool_allowlist.is_empty());
+        assert!(entry.tool_allowlist.is_none());
     }
 
     // --- ingest_tools ---
@@ -1520,18 +1532,26 @@ mod tests {
     #[test]
     fn ingest_tools_trusted_returns_all_tools_unsanitized_by_trust() {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
-        let result = ingest_tools(tools, "srv", McpTrustLevel::Trusted, &[], &[], None);
+        let result = ingest_tools(tools, "srv", McpTrustLevel::Trusted, None, &[], None);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "tool_a");
         assert_eq!(result[1].name, "tool_b");
     }
 
     #[test]
-    fn ingest_tools_untrusted_empty_allowlist_returns_all_with_warning() {
+    fn ingest_tools_untrusted_none_allowlist_returns_all_with_warning() {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
-        let result = ingest_tools(tools, "srv", McpTrustLevel::Untrusted, &[], &[], None);
-        // Empty allowlist on Untrusted → all tools pass through (warn-only, not fail-closed)
+        let result = ingest_tools(tools, "srv", McpTrustLevel::Untrusted, None, &[], None);
+        // None allowlist on Untrusted = no override → all tools pass through (warn-only)
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn ingest_tools_untrusted_explicit_empty_allowlist_denies_all() {
+        let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
+        let result = ingest_tools(tools, "srv", McpTrustLevel::Untrusted, Some(&[]), &[], None);
+        // Some(empty) on Untrusted = explicit deny-all (fail-closed)
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -1546,7 +1566,7 @@ mod tests {
             tools,
             "srv",
             McpTrustLevel::Untrusted,
-            &allowlist,
+            Some(&allowlist),
             &[],
             None,
         );
@@ -1560,7 +1580,7 @@ mod tests {
     #[test]
     fn ingest_tools_sandboxed_empty_allowlist_returns_no_tools() {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
-        let result = ingest_tools(tools, "srv", McpTrustLevel::Sandboxed, &[], &[], None);
+        let result = ingest_tools(tools, "srv", McpTrustLevel::Sandboxed, Some(&[]), &[], None);
         // Sandboxed + empty allowlist = fail-closed: no tools exposed
         assert!(result.is_empty());
     }
@@ -1573,7 +1593,7 @@ mod tests {
             tools,
             "srv",
             McpTrustLevel::Sandboxed,
-            &allowlist,
+            Some(&allowlist),
             &[],
             None,
         );
@@ -1593,7 +1613,7 @@ mod tests {
             tools,
             "srv",
             McpTrustLevel::Untrusted,
-            &allowlist,
+            Some(&allowlist),
             &[],
             None,
         );

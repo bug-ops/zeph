@@ -176,6 +176,10 @@ pub(crate) struct FeedbackState {
 pub(crate) struct SecurityState {
     pub(crate) sanitizer: ContentSanitizer,
     pub(crate) quarantine_summarizer: Option<QuarantinedSummarizer>,
+    /// Whether this agent session is serving an ACP client.
+    /// When `true` and `mcp_to_acp_boundary` is enabled, MCP tool results
+    /// receive unconditional quarantine and cross-boundary audit logging.
+    pub(crate) is_acp_session: bool,
     pub(crate) exfiltration_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard,
     pub(crate) flagged_urls: HashSet<String>,
     /// URLs explicitly provided by the user across all turns in this session.

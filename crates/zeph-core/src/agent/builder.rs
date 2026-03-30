@@ -697,6 +697,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Mark this agent session as serving an ACP client.
+    /// When `true` and `mcp_to_acp_boundary` is enabled, MCP tool results
+    /// receive unconditional quarantine and cross-boundary audit logging.
+    #[must_use]
+    pub fn with_acp_session(mut self, is_acp: bool) -> Self {
+        self.security.is_acp_session = is_acp;
+        self
+    }
+
     /// Attach an ML classifier backend to the sanitizer for injection detection.
     ///
     /// When attached, `classify_injection()` is called on each incoming user message when

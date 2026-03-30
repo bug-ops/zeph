@@ -46,6 +46,9 @@ pub struct AuditEntry {
     /// Raw cosine distance is NOT stored (prevents threshold reverse-engineering).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub embedding_anomalous: bool,
+    /// Tool result crossed the MCP-to-ACP trust boundary (MCP tool result served to an ACP client).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cross_boundary_mcp_to_acp: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -134,6 +137,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -158,6 +162,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -181,6 +186,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -201,6 +207,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -226,6 +233,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         logger.log(&entry).await;
     }
@@ -252,6 +260,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         logger.log(&entry).await;
 
@@ -305,6 +314,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -329,6 +339,7 @@ mod tests {
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -361,6 +372,7 @@ mod tests {
                 mcp_server_id: None,
                 injection_flagged: false,
                 embedding_anomalous: false,
+                cross_boundary_mcp_to_acp: false,
             };
             logger.log(&entry).await;
         }

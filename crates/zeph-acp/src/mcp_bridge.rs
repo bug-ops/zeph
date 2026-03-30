@@ -19,11 +19,10 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
         .iter()
         .filter_map(|s| match s {
             acp::McpServer::Stdio(stdio) => {
-                // IDE is the trusted client in the stdio transport model; env vars are passed
-                // as-is to the MCP server child process without further sanitization.
                 let env: HashMap<String, String> = stdio
                     .env
                     .iter()
+                    .filter(|e| !is_dangerous_env_var(&e.name))
                     .map(|e| (e.name.clone(), e.value.clone()))
                     .collect();
                 Some(ServerEntry {
@@ -35,7 +34,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     },
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                     trust_level: McpTrustLevel::Untrusted,
-                    tool_allowlist: Vec::new(),
+                    tool_allowlist: None,
                     expected_tools: Vec::new(),
                 })
             }
@@ -47,7 +46,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                 },
                 timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                 trust_level: McpTrustLevel::Untrusted,
-                tool_allowlist: Vec::new(),
+                tool_allowlist: None,
                 expected_tools: Vec::new(),
             }),
             acp::McpServer::Sse(sse) => {
@@ -61,7 +60,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     },
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                     trust_level: McpTrustLevel::Untrusted,
-                    tool_allowlist: Vec::new(),
+                    tool_allowlist: None,
                     expected_tools: Vec::new(),
                 })
             }
@@ -71,6 +70,21 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
             }
         })
         .collect()
+}
+
+/// Env vars that must never be passed from ACP clients to MCP child processes.
+/// These enable library injection, path hijacking, and other privilege escalation vectors.
+fn is_dangerous_env_var(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "LD_PRELOAD"
+            | "LD_LIBRARY_PATH"
+            | "DYLD_INSERT_LIBRARIES"
+            | "DYLD_LIBRARY_PATH"
+            | "DYLD_FRAMEWORK_PATH"
+            | "DYLD_FALLBACK_LIBRARY_PATH"
+    )
 }
 
 #[cfg(test)]
@@ -175,5 +189,54 @@ mod tests {
         assert_eq!(entries[1].id, "http-1");
         assert_eq!(entries[2].id, "stdio-2");
         assert_eq!(entries[3].id, "sse-1");
+    }
+
+    #[test]
+    fn dangerous_env_vars_stripped() {
+        let stdio = acp::McpServerStdio::new("env-mcp", "/bin/mcp").env(vec![
+            acp::EnvVariable::new("SAFE_VAR", "ok"),
+            acp::EnvVariable::new("LD_PRELOAD", "/tmp/evil.so"),
+            acp::EnvVariable::new("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
+            acp::EnvVariable::new("LD_LIBRARY_PATH", "/tmp"),
+        ]);
+        let entries = acp_mcp_servers_to_entries(&[acp::McpServer::Stdio(stdio)]);
+        if let McpTransport::Stdio { env, .. } = &entries[0].transport {
+            assert_eq!(env.get("SAFE_VAR"), Some(&"ok".to_owned()));
+            assert!(env.get("LD_PRELOAD").is_none());
+            assert!(env.get("DYLD_INSERT_LIBRARIES").is_none());
+            assert!(env.get("LD_LIBRARY_PATH").is_none());
+        } else {
+            panic!("expected Stdio transport");
+        }
+    }
+
+    #[test]
+    fn acp_servers_have_none_allowlist() {
+        let servers = vec![
+            acp::McpServer::Stdio(acp::McpServerStdio::new("s", "/bin/s")),
+            acp::McpServer::Http(acp::McpServerHttp::new("h", "http://localhost")),
+            acp::McpServer::Sse(acp::McpServerSse::new("e", "http://localhost/sse")),
+        ];
+        let entries = acp_mcp_servers_to_entries(&servers);
+        for entry in &entries {
+            assert!(
+                entry.tool_allowlist.is_none(),
+                "ACP-requested server '{}' must have tool_allowlist=None",
+                entry.id
+            );
+        }
+    }
+
+    #[test]
+    fn is_dangerous_env_var_cases() {
+        assert!(super::is_dangerous_env_var("LD_PRELOAD"));
+        assert!(super::is_dangerous_env_var("ld_preload"));
+        assert!(super::is_dangerous_env_var("DYLD_INSERT_LIBRARIES"));
+        assert!(super::is_dangerous_env_var("DYLD_LIBRARY_PATH"));
+        assert!(super::is_dangerous_env_var("DYLD_FRAMEWORK_PATH"));
+        assert!(super::is_dangerous_env_var("DYLD_FALLBACK_LIBRARY_PATH"));
+        assert!(!super::is_dangerous_env_var("PATH"));
+        assert!(!super::is_dangerous_env_var("HOME"));
+        assert!(!super::is_dangerous_env_var("MY_VAR"));
     }
 }

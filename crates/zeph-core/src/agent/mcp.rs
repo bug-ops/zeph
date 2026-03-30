@@ -84,7 +84,7 @@ impl<C: Channel> Agent<C> {
             transport,
             timeout: std::time::Duration::from_secs(30),
             trust_level: zeph_mcp::McpTrustLevel::Untrusted,
-            tool_allowlist: Vec::new(),
+            tool_allowlist: None,
             expected_tools: Vec::new(),
         };
 
