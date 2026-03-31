@@ -380,17 +380,14 @@ impl Channel for CliChannel {
             match result {
                 ReadLineResult::Line(line) => {
                     let trimmed = line.trim().to_owned();
-                    match coerce_field_value(&trimmed, &field.field_type) {
-                        Some(value) => {
-                            values.insert(field_name, value);
-                        }
-                        None => {
-                            println!(
-                                "Invalid input for '{}' (expected {:?}), declining.",
-                                field_name, field.field_type
-                            );
-                            return Ok(ElicitationResponse::Declined);
-                        }
+                    if let Some(value) = coerce_field_value(&trimmed, &field.field_type) {
+                        values.insert(field_name, value);
+                    } else {
+                        println!(
+                            "Invalid input for '{}' (expected {:?}), declining.",
+                            field_name, field.field_type
+                        );
+                        return Ok(ElicitationResponse::Declined);
                     }
                 }
                 ReadLineResult::Interrupted | ReadLineResult::Eof => {
@@ -417,7 +414,7 @@ fn build_field_prompt(field: &ElicitationField) -> String {
                 field
                     .description
                     .as_deref()
-                    .map(|d| format!(" ({})", d))
+                    .map(|d| format!(" ({d})"))
                     .unwrap_or_default()
             ) + &format!("[{}]: ", opts.join("/"));
         }
@@ -429,7 +426,7 @@ fn build_field_prompt(field: &ElicitationField) -> String {
         field
             .description
             .as_deref()
-            .map(|d| format!(" ({})", d))
+            .map(|d| format!(" ({d})"))
             .unwrap_or_default(),
         if type_hint.is_empty() {
             ": ".to_owned()

@@ -406,6 +406,16 @@ impl McpManager {
         std::time::Duration::from_secs(secs)
     }
 
+    fn handler_cfg_for(&self, entry: &ServerEntry) -> crate::client::HandlerConfig {
+        let roots = Arc::new(validate_roots(&entry.roots, &entry.id));
+        crate::client::HandlerConfig {
+            roots,
+            max_description_bytes: self.max_description_bytes,
+            elicitation_tx: self.clone_elicitation_tx_for(&entry.id, entry.trust_level),
+            elicitation_timeout: self.elicitation_timeout_for(&entry.id),
+        }
+    }
+
     /// Subscribe to tool list change notifications.
     ///
     /// Returns a `watch::Receiver` that receives the full flattened tool list
@@ -536,21 +546,10 @@ impl McpManager {
             let Some(tx) = self.clone_refresh_tx() else {
                 continue;
             };
-            let max_desc = self.max_description_bytes;
-            let elix_tx = self.clone_elicitation_tx_for(&config.id, config.trust_level);
-            let elix_timeout = self.elicitation_timeout_for(&config.id);
+            let handler_cfg = self.handler_cfg_for(&config);
             join_set.spawn(async move {
-                let result = connect_entry(
-                    &config,
-                    &allowed,
-                    suppress,
-                    tx,
-                    last_refresh,
-                    max_desc,
-                    elix_tx,
-                    elix_timeout,
-                )
-                .await;
+                let result =
+                    connect_entry(&config, &allowed, suppress, tx, last_refresh, handler_cfg).await;
                 (config.id, result)
             });
         }
@@ -982,9 +981,7 @@ impl McpManager {
             self.suppress_stderr,
             tx,
             Arc::clone(&self.last_refresh),
-            self.max_description_bytes,
-            self.clone_elicitation_tx_for(&entry.id, entry.trust_level),
-            self.elicitation_timeout_for(&entry.id),
+            self.handler_cfg_for(entry),
         )
         .await?;
         let raw_tools = match client.list_tools().await {
@@ -1394,17 +1391,8 @@ async fn connect_entry(
     suppress_stderr: bool,
     tx: mpsc::UnboundedSender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
-    max_description_bytes: usize,
-    elicitation_tx: Option<mpsc::UnboundedSender<ElicitationEvent>>,
-    elicitation_timeout: std::time::Duration,
+    handler_cfg: crate::client::HandlerConfig,
 ) -> Result<McpClient, McpError> {
-    let roots = Arc::new(validate_roots(&entry.roots, &entry.id));
-    let handler_cfg = crate::client::HandlerConfig {
-        roots,
-        max_description_bytes,
-        elicitation_tx,
-        elicitation_timeout,
-    };
     match &entry.transport {
         McpTransport::Stdio { command, args, env } => {
             McpClient::connect(

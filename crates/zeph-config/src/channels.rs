@@ -531,6 +531,7 @@ impl std::fmt::Debug for McpServerConfig {
                 "tool_metadata_keys",
                 &self.tool_metadata.keys().collect::<Vec<_>>(),
             )
+            .field("elicitation_enabled", &self.elicitation_enabled)
             .finish()
     }
 }
