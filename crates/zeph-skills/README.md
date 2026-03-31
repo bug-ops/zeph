@@ -66,9 +66,6 @@ min_injection_score      = 0.20  # minimum match score for skill injection into 
 > [!NOTE]
 > When `hybrid_search = true`, BM25 keyword scores are computed locally and fused with Qdrant cosine scores using Reciprocal Rank Fusion. This improves recall for exact-match queries while preserving semantic ranking quality for paraphrase queries.
 
-> [!NOTE]
-> `disambiguation_threshold` default changed from 0.05 to 0.20 in v0.18.2 — this reduces false-positive skill injections for low-confidence queries. `min_injection_score` is a new field that gates injection independently of disambiguation.
-
 ## Installation
 
 ```bash
