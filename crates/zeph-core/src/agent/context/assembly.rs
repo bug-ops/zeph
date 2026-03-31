@@ -83,6 +83,18 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::System || !m.content.starts_with(LSP_NOTE_PREFIX));
     }
 
+    fn effective_recall_timeout_ms(configured: u64) -> u64 {
+        if configured == 0 {
+            tracing::warn!(
+                "recall_timeout_ms is 0, which would disable spreading activation recall; \
+                 clamping to 100ms"
+            );
+            100
+        } else {
+            configured
+        }
+    }
+
     pub(super) async fn fetch_graph_facts(
         memory_state: &MemoryState,
         query: &str,
@@ -115,22 +127,26 @@ impl<C: Channel> Agent<C> {
                 seed_structural_weight: sa_config.seed_structural_weight,
                 seed_community_cap: sa_config.seed_community_cap,
             };
-            // Spreading activation path: wrap in a 500ms timeout to bound latency.
+            // Spreading activation path: wrap in a configurable timeout to bound latency.
+            let timeout_ms = Self::effective_recall_timeout_ms(sa_config.recall_timeout_ms);
             let recall_fut =
                 memory.recall_graph_activated(query, recall_limit, sa_params, &edge_types);
-            let activated_facts =
-                match tokio::time::timeout(std::time::Duration::from_millis(500), recall_fut).await
-                {
-                    Ok(Ok(facts)) => facts,
-                    Ok(Err(e)) => {
-                        tracing::warn!("spreading activation recall failed: {e:#}");
-                        Vec::new()
-                    }
-                    Err(_) => {
-                        tracing::warn!("spreading activation recall timed out (500ms)");
-                        Vec::new()
-                    }
-                };
+            let activated_facts = match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                recall_fut,
+            )
+            .await
+            {
+                Ok(Ok(facts)) => facts,
+                Ok(Err(e)) => {
+                    tracing::warn!("spreading activation recall failed: {e:#}");
+                    Vec::new()
+                }
+                Err(_) => {
+                    tracing::warn!("spreading activation recall timed out ({timeout_ms}ms)");
+                    Vec::new()
+                }
+            };
 
             if activated_facts.is_empty() {
                 return Ok(None);
@@ -1803,6 +1819,44 @@ fn memory_first_keep_tail(messages: &[Message], history_start: usize) -> usize {
 mod tests {
     use super::*;
     use zeph_llm::provider::{Message, MessagePart, Role};
+
+    use crate::agent::agent_tests::MockChannel;
+
+    // ── effective_recall_timeout_ms tests (#2514) ────────────────────────────
+
+    #[test]
+    fn effective_recall_timeout_ms_nonzero_returns_unchanged() {
+        let result = Agent::<MockChannel>::effective_recall_timeout_ms(500);
+        assert_eq!(result, 500, "non-zero value must pass through unchanged");
+    }
+
+    #[test]
+    fn effective_recall_timeout_ms_nonzero_large_returns_unchanged() {
+        let result = Agent::<MockChannel>::effective_recall_timeout_ms(5000);
+        assert_eq!(result, 5000);
+    }
+
+    #[test]
+    fn effective_recall_timeout_ms_zero_clamps_to_100() {
+        let result = Agent::<MockChannel>::effective_recall_timeout_ms(0);
+        assert_eq!(
+            result, 100,
+            "zero recall_timeout_ms must be clamped to 100ms"
+        );
+    }
+
+    #[test]
+    fn spreading_activation_default_timeout_is_nonzero() {
+        // Ensures the default used in production is not accidentally set to zero —
+        // which would always trigger the zero-clamp warn path in effective_recall_timeout_ms.
+        let result = Agent::<MockChannel>::effective_recall_timeout_ms(
+            zeph_config::memory::SpreadingActivationConfig::default().recall_timeout_ms,
+        );
+        assert!(
+            result > 0,
+            "default recall_timeout_ms must produce a non-zero effective value"
+        );
+    }
 
     fn sys() -> Message {
         Message::from_legacy(Role::System, "system prompt")

@@ -24,8 +24,9 @@ use super::Agent;
 ///    are stripped; if no content remains the message is removed.
 ///
 /// Boundary cases are resolved in a loop before the mid-history scan runs.
-fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
+fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
     let mut removed = 0;
+    let mut db_ids: Vec<i64> = Vec::new();
 
     loop {
         // Remove trailing orphaned tool_use (assistant message with ToolUse, no following tool_result).
@@ -51,6 +52,9 @@ fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
                 tool_ids = ?ids,
                 "removing orphaned trailing tool_use message from restored history"
             );
+            if let Some(db_id) = messages.last().and_then(|m| m.metadata.db_id) {
+                db_ids.push(db_id);
+            }
             messages.pop();
             removed += 1;
             continue;
@@ -79,6 +83,9 @@ fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
                 tool_use_ids = ?ids,
                 "removing orphaned leading tool_result message from restored history"
             );
+            if let Some(db_id) = messages.first().and_then(|m| m.metadata.db_id) {
+                db_ids.push(db_id);
+            }
             messages.remove(0);
             removed += 1;
             continue;
@@ -89,22 +96,13 @@ fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> usize {
 
     // Mid-history scan: strip ToolUse parts from any assistant message whose tool IDs are not
     // matched by ToolResult parts in the immediately following user message.
-    removed += strip_mid_history_orphans(messages);
+    let (mid_removed, mid_db_ids) = strip_mid_history_orphans(messages);
+    removed += mid_removed;
+    db_ids.extend(mid_db_ids);
 
-    removed
+    (removed, db_ids)
 }
 
-/// Scan all messages and strip orphaned `ToolUse`/`ToolResult` parts from mid-history messages.
-///
-/// Two directions are checked:
-/// - Forward: assistant message has `ToolUse` parts not matched by `ToolResult` in the next user
-///   message — strip those `ToolUse` parts.
-/// - Reverse: user message has `ToolResult` parts whose `tool_use_id` is not present as a
-///   `ToolUse` in the preceding assistant message — strip those `ToolResult` parts.
-///
-/// Text parts are preserved; messages with no remaining content are removed entirely.
-///
-/// Returns the number of messages removed (stripped-to-empty messages count as 1 each).
 /// Collect `tool_use` IDs from `msg` that have no matching `ToolResult` in `next_msg`.
 fn orphaned_tool_use_ids(msg: &Message, next_msg: Option<&Message>) -> HashSet<String> {
     let matched: HashSet<String> = next_msg
@@ -162,8 +160,21 @@ fn orphaned_tool_result_ids(msg: &Message, prev_msg: Option<&Message>) -> HashSe
         .collect()
 }
 
-fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
+/// Scan all messages and strip orphaned `ToolUse`/`ToolResult` parts from mid-history messages.
+///
+/// Two directions are checked:
+/// - Forward: assistant message has `ToolUse` parts not matched by `ToolResult` in the next user
+///   message — strip those `ToolUse` parts.
+/// - Reverse: user message has `ToolResult` parts whose `tool_use_id` is not present as a
+///   `ToolUse` in the preceding assistant message — strip those `ToolResult` parts.
+///
+/// Text parts are preserved; messages with no remaining content are removed entirely.
+///
+/// Returns `(count, db_ids)` where `count` is the number of messages removed entirely and
+/// `db_ids` contains the `metadata.db_id` values of those removed messages (for DB cleanup).
+fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
     let mut removed = 0;
+    let mut db_ids: Vec<i64> = Vec::new();
     let mut i = 0;
     while i < messages.len() {
         // Forward pass: strip ToolUse parts from assistant messages that lack a matching
@@ -188,6 +199,9 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
                 let is_empty =
                     messages[i].content.trim().is_empty() && messages[i].parts.is_empty();
                 if is_empty {
+                    if let Some(db_id) = messages[i].metadata.db_id {
+                        db_ids.push(db_id);
+                    }
                     messages.remove(i);
                     removed += 1;
                     continue; // Do not advance i — the next message is now at position i.
@@ -219,6 +233,9 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
                 let is_empty =
                     messages[i].content.trim().is_empty() && messages[i].parts.is_empty();
                 if is_empty {
+                    if let Some(db_id) = messages[i].metadata.db_id {
+                        db_ids.push(db_id);
+                    }
                     messages.remove(i);
                     removed += 1;
                     // Do not advance i — the next message is now at position i.
@@ -229,7 +246,7 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> usize {
 
         i += 1;
     }
-    removed
+    (removed, db_ids)
 }
 
 impl<C: Channel> Agent<C> {
@@ -270,10 +287,29 @@ impl<C: Channel> Agent<C> {
             // Determine the start index of just-loaded messages (system prompt is at index 0).
             let history_start = self.msg.messages.len() - loaded;
             let mut restored_slice = self.msg.messages.split_off(history_start);
-            let orphans = sanitize_tool_pairs(&mut restored_slice);
+            let (orphans, orphan_db_ids) = sanitize_tool_pairs(&mut restored_slice);
             skipped += orphans;
             loaded = loaded.saturating_sub(orphans);
             self.msg.messages.append(&mut restored_slice);
+
+            if !orphan_db_ids.is_empty() {
+                let ids: Vec<zeph_memory::types::MessageId> = orphan_db_ids
+                    .iter()
+                    .map(|&id| zeph_memory::types::MessageId(id))
+                    .collect();
+                if let Err(e) = memory.sqlite().soft_delete_messages(&ids).await {
+                    tracing::warn!(
+                        count = ids.len(),
+                        error = %e,
+                        "failed to soft-delete orphaned tool-pair messages from DB"
+                    );
+                } else {
+                    tracing::debug!(
+                        count = ids.len(),
+                        "soft-deleted orphaned tool-pair messages from DB"
+                    );
+                }
+            }
 
             tracing::info!("restored {loaded} message(s) from conversation {cid}");
             if skipped > 0 {

@@ -4,7 +4,7 @@
 use zeph_db::ActiveDialect;
 use zeph_db::fts::sanitize_fts_query;
 #[allow(unused_imports)]
-use zeph_db::sql;
+use zeph_db::{begin_write, sql};
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use super::SqliteStore;
@@ -1028,7 +1028,9 @@ impl SqliteStore {
             ));
         }
 
-        let mut tx = self.pool.begin().await?;
+        // Acquire the write lock immediately (BEGIN IMMEDIATE) to avoid the DEFERRED read->write
+        // upgrade race that causes SQLITE_BUSY when a concurrent writer holds the lock.
+        let mut tx = begin_write(&self.pool).await?;
 
         // Insert the new semantic fact.
         let epoch_now = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;

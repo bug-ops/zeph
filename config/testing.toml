@@ -137,6 +137,7 @@ max_hops = 3
 activation_threshold = 0.1
 inhibition_threshold = 0.8
 max_activated_nodes = 50
+recall_timeout_ms = 1000
 
 [index]
 enabled = false

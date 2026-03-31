@@ -282,10 +282,38 @@ async fn merge_cluster_and_promote(
         }
     }
 
-    store
-        .promote_to_semantic(conversation_id, &merged, &original_ids)
-        .await?;
-
+    // Retry the DB write up to 3 times with exponential backoff on SQLITE_BUSY.
+    // The LLM merge above is not retried — only the cheap DB write is.
+    let delays_ms = [50u64, 100, 200];
+    for (attempt, &delay_ms) in delays_ms.iter().enumerate() {
+        match store
+            .promote_to_semantic(conversation_id, &merged, &original_ids)
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                // Detect SQLITE_BUSY via the sqlx::Error::Database error code ("5") when
+                // available; fall back to string matching. String matching is safe here because
+                // the error originates from SQLite internals, not user input. The fallback
+                // handles wrapping layers where downcasting would add disproportionate complexity.
+                let is_busy = if let MemoryError::Sqlx(sqlx::Error::Database(ref db_err)) = e {
+                    db_err.code().as_deref() == Some("5")
+                } else {
+                    e.to_string().contains("database is locked")
+                };
+                if is_busy && attempt < delays_ms.len() - 1 {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        delay_ms,
+                        "tier promotion: SQLite busy, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
     tracing::debug!(
         cluster_size = cluster.len(),
         merged_len = merged.len(),

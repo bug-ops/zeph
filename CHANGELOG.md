@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - skills: fix `rust-agent-handoff` SKILL.md — remove noisy Keywords line, tighten description to exclude generic update/memory prompts (#2512)
 - security: reclassify `search_code` as `ToolResult` to prevent false-positive injection detection on local index output (#2515)
 - security: truncate PII NER input to `pii_ner_max_chars` (default 8192) to prevent timeout on large `search_code` outputs (#2516)
+- fix(memory): spreading activation recall timeout is now configurable via `[memory.graph.spreading_activation] recall_timeout_ms` (default `1000`, increased from the previous hardcoded `500ms`); a value of `0` is clamped to `100ms` at runtime with a warning to prevent silently disabling recall (closes #2514)
+- fix(memory): tier promotion `promote_to_semantic` now uses `BEGIN IMMEDIATE` (via `zeph_db::begin_write`) instead of `DEFERRED`, eliminating the read-to-write lock upgrade race that caused `SQLITE_BUSY` under concurrent agent writes; `merge_cluster_and_promote` additionally retries the DB write up to 3 times with 50/100/200ms exponential backoff on `SQLITE_BUSY` — retry is scoped to the cheap DB write only, not the expensive LLM merge (closes #2511)
+- fix(memory): orphaned tool-pair messages removed by `sanitize_tool_pairs` are now soft-deleted from SQLite after each `load_history` call, preventing the same orphan warnings from reappearing on every restart; deletion is non-fatal (warning on error, debug on success) (closes #2507)
 
 ### Added
 

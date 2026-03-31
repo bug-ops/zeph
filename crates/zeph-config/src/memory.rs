@@ -189,6 +189,10 @@ fn default_spreading_activation_max_activated_nodes() -> usize {
     50
 }
 
+fn default_spreading_activation_recall_timeout_ms() -> u64 {
+    1000
+}
+
 fn default_note_linking_similarity_threshold() -> f32 {
     0.85
 }
@@ -453,6 +457,7 @@ fn default_importance_weight() -> f64 {
 /// - `0.0 < decay_lambda <= 1.0`
 /// - `max_hops >= 1`
 /// - `activation_threshold < inhibition_threshold`
+/// - `recall_timeout_ms >= 1` (clamped to 100 with a warning if set to 0)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SpreadingActivationConfig {
@@ -476,6 +481,11 @@ pub struct SpreadingActivationConfig {
     /// Maximum seeds per community. `0` = unlimited. Default: `3`.
     #[serde(default = "default_seed_community_cap")]
     pub seed_community_cap: usize,
+    /// Timeout in milliseconds for a single spreading activation recall call. Default: `1000`.
+    /// Values below 1 are clamped to 100ms at runtime. Benchmark data shows FTS5 + graph
+    /// traversal completes within 200–400ms; 1000ms provides headroom for cold caches.
+    #[serde(default = "default_spreading_activation_recall_timeout_ms")]
+    pub recall_timeout_ms: u64,
 }
 
 fn validate_decay_lambda<'de, D>(deserializer: D) -> Result<f32, D::Error>
@@ -543,6 +553,7 @@ impl Default for SpreadingActivationConfig {
             max_activated_nodes: default_spreading_activation_max_activated_nodes(),
             seed_structural_weight: default_seed_structural_weight(),
             seed_community_cap: default_seed_community_cap(),
+            recall_timeout_ms: default_spreading_activation_recall_timeout_ms(),
         }
     }
 }
@@ -1797,5 +1808,39 @@ mod tests {
         assert!((cfg.threshold - 0.40).abs() < 0.001);
         assert!((cfg.fast_path_margin - 0.15).abs() < 0.001);
         assert!(cfg.admission_provider.is_empty());
+    }
+
+    // ── SpreadingActivationConfig tests (#2514) ──────────────────────────────
+
+    #[test]
+    fn spreading_activation_default_recall_timeout_ms_is_1000() {
+        let cfg = SpreadingActivationConfig::default();
+        assert_eq!(
+            cfg.recall_timeout_ms, 1000,
+            "default recall_timeout_ms must be 1000ms"
+        );
+    }
+
+    #[test]
+    fn spreading_activation_toml_recall_timeout_ms_round_trip() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            recall_timeout_ms: u64,
+        }
+        let toml = "recall_timeout_ms = 500";
+        let w: Wrapper = toml::from_str(toml).unwrap();
+        assert_eq!(w.recall_timeout_ms, 500);
+    }
+
+    #[test]
+    fn spreading_activation_validate_cross_field_constraints() {
+        let mut cfg = SpreadingActivationConfig::default();
+        // Default activation_threshold (0.1) < inhibition_threshold (0.8) → must be Ok.
+        assert!(cfg.validate().is_ok());
+
+        // Equal thresholds must be rejected.
+        cfg.activation_threshold = 0.5;
+        cfg.inhibition_threshold = 0.5;
+        assert!(cfg.validate().is_err());
     }
 }
