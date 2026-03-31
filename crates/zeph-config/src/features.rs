@@ -8,7 +8,11 @@ use crate::learning::LearningConfig;
 use crate::security::TrustConfig;
 
 fn default_disambiguation_threshold() -> f32 {
-    0.05
+    0.20
+}
+
+fn default_min_injection_score() -> f32 {
+    0.20
 }
 
 fn default_cosine_weight() -> f32 {
@@ -117,6 +121,8 @@ pub struct SkillsConfig {
     pub max_active_skills: usize,
     #[serde(default = "default_disambiguation_threshold")]
     pub disambiguation_threshold: f32,
+    #[serde(default = "default_min_injection_score")]
+    pub min_injection_score: f32,
     #[serde(default = "default_cosine_weight")]
     pub cosine_weight: f32,
     #[serde(default = "default_hybrid_search")]

@@ -156,7 +156,8 @@ impl Default for Config {
             skills: SkillsConfig {
                 paths: default_skill_paths(),
                 max_active_skills: 5,
-                disambiguation_threshold: 0.05,
+                disambiguation_threshold: 0.20,
+                min_injection_score: 0.20,
                 cosine_weight: 0.7,
                 hybrid_search: true,
                 learning: LearningConfig::default(),

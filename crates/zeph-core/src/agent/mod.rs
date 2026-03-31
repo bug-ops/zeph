@@ -334,7 +334,8 @@ impl<C: Channel> Agent<C> {
                 trust_config: crate::config::TrustConfig::default(),
                 matcher,
                 max_active_skills,
-                disambiguation_threshold: 0.05,
+                disambiguation_threshold: 0.20,
+                min_injection_score: 0.20,
                 embedding_model: String::new(),
                 skill_reload_rx: None,
                 active_skill_names: Vec::new(),
@@ -4807,6 +4808,7 @@ impl<C: Channel> Agent<C> {
         self.memory_state.summarization_threshold = config.memory.summarization_threshold;
         self.skill_state.max_active_skills = config.skills.max_active_skills;
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
+        self.skill_state.min_injection_score = config.skills.min_injection_score;
         self.skill_state.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
         self.skill_state.hybrid_search = config.skills.hybrid_search;
         self.skill_state.two_stage_matching = config.skills.two_stage_matching;

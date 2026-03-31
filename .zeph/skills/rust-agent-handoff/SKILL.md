@@ -2,11 +2,11 @@
 name: rust-agent-handoff
 category: dev
 description: >
-  Handoff protocol for Rust multi-agent development system with structured YAML communication.
-  Use when working as rust-architect, rust-developer, rust-testing-engineer,
-  rust-performance-engineer, rust-security-maintenance, rust-code-reviewer,
-  rust-cicd-devops, rust-debugger, or rust-critic. ALWAYS read on agent startup.
-  Keywords: handoff, agent, subagent, workflow, orchestration, yaml, protocol, team.
+  Handoff protocol for the Rust multi-agent development team (rust-architect, rust-developer,
+  rust-testing-engineer, rust-performance-engineer, rust-security-maintenance,
+  rust-code-reviewer, rust-cicd-devops, rust-debugger, rust-critic). Use only when
+  orchestrating subagents via structured YAML files in .local/handoff/. Not for general
+  agent interactions or memory updates.
 metadata:
   author: zeph
   version: "1.0"

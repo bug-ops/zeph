@@ -1327,6 +1327,10 @@ impl<C: Channel> Agent<C> {
                 tracing::warn!("skill matcher returned no results, falling back to all skills");
                 (0..all_meta.len()).collect()
             } else {
+                // Drop skills whose score falls below the minimum injection floor.
+                let min_score = self.skill_state.min_injection_score;
+                scored.retain(|s| s.score >= min_score);
+
                 // Capture the names of skills that had real embedding scores for
                 // usage stats — before disambiguation may reorder indices.
                 skills_to_record = scored

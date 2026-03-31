@@ -772,14 +772,14 @@ mod tests {
     fn cosine_similarity_zero_vector_returns_zero() {
         let z = vec![0.0f32, 0.0, 0.0];
         let v = vec![1.0f32, 2.0, 3.0];
-        assert_eq!(cosine_similarity(&z, &v), 0.0);
+        assert!(cosine_similarity(&z, &v).abs() < f32::EPSILON);
     }
 
     #[test]
     fn cosine_similarity_length_mismatch_returns_zero() {
         let a = vec![1.0f32, 0.0];
         let b = vec![1.0f32, 0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() < f32::EPSILON);
     }
 
     // ── with_goal_gate tests ──────────────────────────────────────────────────
@@ -836,6 +836,6 @@ mod tests {
             provider: None,
         };
         let ctrl = ctrl.with_goal_gate(config);
-        assert_eq!(ctrl.weights.goal_utility, 0.0);
+        assert!(ctrl.weights.goal_utility.abs() < f32::EPSILON);
     }
 }

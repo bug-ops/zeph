@@ -8,7 +8,8 @@ description: >
   create scheduled tasks and cron jobs, and manage display brightness.
   Use when the user asks to send a notification, copy to clipboard, take a
   screenshot, open a file or URL, launch an app, adjust volume, check WiFi,
-  schedule a task, or automate any OS-level action on macOS, Windows, or Linux.
+  schedule a task, or control OS UI and system settings on macOS, Windows, or Linux.
+  Do not use for running arbitrary shell commands or scripts — use the shell tool instead.
 license: MIT
 compatibility: Uses built-in OS utilities; some features require specific tools (see per-platform references)
 metadata:

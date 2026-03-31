@@ -5,8 +5,8 @@ description: >
   Monitor, manage, and control system processes. Use when the user asks to list
   running processes, find a process by name or PID, kill or terminate processes,
   manage background jobs, check resource usage, set resource limits, manage
-  system services with systemctl or launchctl, or troubleshoot CPU and memory
-  consumption with ps, top, htop, kill, pgrep, and related tools.
+  system services with systemctl or launchctl, or troubleshoot CPU and RAM usage
+  with ps, top, htop, kill, pgrep, and related tools.
 license: MIT
 metadata:
   author: zeph

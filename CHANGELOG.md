@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- skills: raise `disambiguation_threshold` default from 0.05 to 0.20 to prevent low-confidence skill injection (#2512)
+- skills: add `min_injection_score` config field (default 0.20) — skills scoring below threshold are no longer injected (#2512)
+- skills: fix `process-management` SKILL.md false positive on user queries containing "memory" by replacing with "RAM" (#2513)
+- skills: fix `os-automation` SKILL.md over-triggering on generic shell commands — add explicit negative scope sentence (#2501)
+- skills: fix `rust-agent-handoff` SKILL.md — remove noisy Keywords line, tighten description to exclude generic update/memory prompts (#2512)
+
 ## [0.18.1] - 2026-03-31
 
 ### Fixed

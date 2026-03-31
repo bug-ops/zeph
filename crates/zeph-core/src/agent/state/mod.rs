@@ -80,6 +80,7 @@ pub(crate) struct SkillState {
     pub(crate) matcher: Option<SkillMatcherBackend>,
     pub(crate) max_active_skills: usize,
     pub(crate) disambiguation_threshold: f32,
+    pub(crate) min_injection_score: f32,
     pub(crate) embedding_model: String,
     pub(crate) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
     pub(crate) active_skill_names: Vec<String>,

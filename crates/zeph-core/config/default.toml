@@ -167,7 +167,9 @@ max_active_skills = 5
 # Prompt mode: "full" (inject full SKILL.md), "compact" (name+description only), "auto" (compact if budget < 8192)
 # prompt_mode = "auto"
 # Minimum score delta for skill disambiguation (0.0-1.0)
-# disambiguation_threshold = 0.05
+# disambiguation_threshold = 0.20
+# Minimum absolute score a skill must reach to be injected into context (0.0-1.0)
+# min_injection_score = 0.20
 
 [skills.learning]
 # Enable self-learning skill improvement (feature enabled by default, runtime toggle)
