@@ -29,8 +29,7 @@ pub(crate) struct ToolSetup {
     /// Watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     pub(crate) mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
     /// Receiver for elicitation requests from MCP server handlers.
-    pub(crate) mcp_elicitation_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::ElicitationEvent>>,
+    pub(crate) mcp_elicitation_rx: Option<tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>>,
     /// Audit logger to pass to the agent for pre-execution block recording. `None` when audit is disabled.
     pub(crate) audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
 }

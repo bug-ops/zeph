@@ -343,6 +343,10 @@ fn default_elicitation_timeout() -> u64 {
     120
 }
 
+fn default_elicitation_queue_capacity() -> usize {
+    16
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]
@@ -374,6 +378,15 @@ pub struct McpConfig {
     /// Timeout for user to respond to an elicitation request (seconds). Default: 120.
     #[serde(default = "default_elicitation_timeout")]
     pub elicitation_timeout: u64,
+    /// Bounded channel capacity for elicitation events. Requests beyond this limit are
+    /// auto-declined with a warning to prevent memory exhaustion from misbehaving servers.
+    /// Default: 16.
+    #[serde(default = "default_elicitation_queue_capacity")]
+    pub elicitation_queue_capacity: usize,
+    /// When true, warn the user before prompting for fields whose names match sensitive
+    /// patterns (password, token, secret, key, credential, etc.). Default: true.
+    #[serde(default = "default_true")]
+    pub elicitation_warn_sensitive_fields: bool,
 }
 
 impl Default for McpConfig {
@@ -389,6 +402,8 @@ impl Default for McpConfig {
             max_instructions_bytes: default_max_instructions_bytes(),
             elicitation_enabled: false,
             elicitation_timeout: default_elicitation_timeout(),
+            elicitation_queue_capacity: default_elicitation_queue_capacity(),
+            elicitation_warn_sensitive_fields: true,
         }
     }
 }

@@ -542,6 +542,29 @@ impl<C: Channel> Agent<C> {
             }
         };
 
+        if self.mcp.elicitation_warn_sensitive_fields {
+            let sensitive: Vec<&str> = channel_request
+                .fields
+                .iter()
+                .filter(|f| is_sensitive_field(&f.name))
+                .map(|f| f.name.as_str())
+                .collect();
+            if !sensitive.is_empty() {
+                let fields_list = sensitive.join(", ");
+                let warning = format!(
+                    "Warning: [{}] is requesting sensitive information (field: {}). \
+                     Only proceed if you trust this server.",
+                    channel_request.server_name, fields_list,
+                );
+                tracing::warn!(
+                    server_id = event.server_id,
+                    fields = %fields_list,
+                    "elicitation requests sensitive fields"
+                );
+                let _ = self.channel.send(&warning).await;
+            }
+        }
+
         let _ = self
             .channel
             .send_status("MCP server requesting input…")
@@ -680,6 +703,31 @@ fn build_elicitation_fields(
             }
         })
         .collect()
+}
+
+/// Sensitive field name patterns (case-insensitive substring match).
+const SENSITIVE_FIELD_PATTERNS: &[&str] = &[
+    "password",
+    "passwd",
+    "token",
+    "secret",
+    "key",
+    "credential",
+    "apikey",
+    "api_key",
+    "auth",
+    "authorization",
+    "private",
+    "passphrase",
+    "pin",
+];
+
+/// Returns `true` when `field_name` matches any sensitive pattern (case-insensitive).
+fn is_sensitive_field(field_name: &str) -> bool {
+    let lower = field_name.to_lowercase();
+    SENSITIVE_FIELD_PATTERNS
+        .iter()
+        .any(|pattern| lower.contains(pattern))
 }
 
 /// Sanitize an elicitation message: cap length (in chars, not bytes) and strip control chars.
@@ -942,7 +990,7 @@ mod tests {
         let input: String = "é".repeat(300); // 300 chars = 600 bytes
         let output = sanitize_elicitation_message(&input);
         // Should truncate to exactly 500 chars without panic.
-        assert_eq!(output.chars().count(), 300.min(500));
+        assert_eq!(output.chars().count(), 300);
     }
 
     #[test]
@@ -1017,5 +1065,25 @@ mod tests {
         let opt = fields.iter().find(|f| f.name == "opt").unwrap();
         assert!(req.required);
         assert!(!opt.required);
+    }
+
+    #[test]
+    fn is_sensitive_field_detects_common_patterns() {
+        assert!(is_sensitive_field("password"));
+        assert!(is_sensitive_field("PASSWORD"));
+        assert!(is_sensitive_field("user_password"));
+        assert!(is_sensitive_field("api_token"));
+        assert!(is_sensitive_field("SECRET_KEY"));
+        assert!(is_sensitive_field("auth_header"));
+        assert!(is_sensitive_field("private_key"));
+    }
+
+    #[test]
+    fn is_sensitive_field_allows_non_sensitive_names() {
+        assert!(!is_sensitive_field("username"));
+        assert!(!is_sensitive_field("email"));
+        assert!(!is_sensitive_field("message"));
+        assert!(!is_sensitive_field("description"));
+        assert!(!is_sensitive_field("subject"));
     }
 }

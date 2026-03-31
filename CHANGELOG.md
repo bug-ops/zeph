@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(mcp): replace unbounded elicitation mpsc channel with a bounded channel (default capacity 16) to prevent memory exhaustion from misbehaving MCP servers; requests that arrive when the queue is full are auto-declined with a warning log instead of accumulating indefinitely; capacity is configurable via `[mcp] elicitation_queue_capacity` (closes #2524)
+- fix(mcp): pre-existing `clippy::non_exhaustive_omitted_patterns`, `match_single_binding`, and `uninlined_format_args` warnings in elicitation CLI prompt builder and test code (caught while adding bounded-channel support)
+
+### Added
+
+- security(mcp): warn user before prompting for elicitation fields whose names match sensitive patterns (password, token, secret, key, credential, auth, private, passphrase, pin, etc.); warning shows the server name and field name so the user can make an informed decision; configurable via `[mcp] elicitation_warn_sensitive_fields` (default `true`) (closes #2523)
+
 - skills: raise `disambiguation_threshold` default from 0.05 to 0.20 to prevent low-confidence skill injection (#2512)
 - skills: add `min_injection_score` config field (default 0.20) — skills scoring below threshold are no longer injected (#2512)
 - skills: fix `process-management` SKILL.md false positive on user queries containing "memory" by replacing with "RAM" (#2513)

@@ -197,11 +197,11 @@ pub struct McpManager {
     max_instructions_bytes: usize,
     /// Server instructions collected after handshake, keyed by server ID.
     server_instructions: Arc<RwLock<HashMap<String, String>>>,
-    /// Sender half of the elicitation event channel; cloned into each `ToolListChangedHandler`
-    /// that has elicitation enabled.
-    elicitation_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<ElicitationEvent>>>,
+    /// Sender half of the bounded elicitation event channel; cloned into each
+    /// `ToolListChangedHandler` that has elicitation enabled.
+    elicitation_tx: std::sync::Mutex<Option<mpsc::Sender<ElicitationEvent>>>,
     /// Receiver half; taken once by `take_elicitation_rx()` and wired into the agent loop.
-    elicitation_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<ElicitationEvent>>>,
+    elicitation_rx: std::sync::Mutex<Option<mpsc::Receiver<ElicitationEvent>>>,
     /// Per-server elicitation enabled flags (populated from `ServerEntry`).
     server_elicitation: HashMap<String, bool>,
     /// Per-server elicitation timeout in seconds.
@@ -223,8 +223,21 @@ impl McpManager {
         allowed_commands: Vec<String>,
         enforcer: PolicyEnforcer,
     ) -> Self {
+        Self::with_elicitation_capacity(configs, allowed_commands, enforcer, 16)
+    }
+
+    /// Like [`McpManager::new`] but with a configurable elicitation channel capacity.
+    ///
+    /// Use this when you need to override the default bounded-channel size (16).
+    #[must_use]
+    pub fn with_elicitation_capacity(
+        configs: Vec<ServerEntry>,
+        allowed_commands: Vec<String>,
+        enforcer: PolicyEnforcer,
+        elicitation_queue_capacity: usize,
+    ) -> Self {
         let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
-        let (elicitation_tx, elicitation_rx) = mpsc::unbounded_channel();
+        let (elicitation_tx, elicitation_rx) = mpsc::channel(elicitation_queue_capacity.max(1));
         let (tools_watch_tx, _) = watch::channel(Vec::new());
         let server_trust: HashMap<String, _> = configs
             .iter()
@@ -284,7 +297,7 @@ impl McpManager {
     ///
     /// May only be called once. Returns `None` if already taken.
     #[must_use]
-    pub fn take_elicitation_rx(&self) -> Option<mpsc::UnboundedReceiver<ElicitationEvent>> {
+    pub fn take_elicitation_rx(&self) -> Option<mpsc::Receiver<ElicitationEvent>> {
         self.elicitation_rx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -376,7 +389,7 @@ impl McpManager {
         &self,
         server_id: &str,
         trust_level: McpTrustLevel,
-    ) -> Option<mpsc::UnboundedSender<ElicitationEvent>> {
+    ) -> Option<mpsc::Sender<ElicitationEvent>> {
         // Sandboxed servers may never elicit regardless of config.
         if trust_level == McpTrustLevel::Sandboxed {
             return None;
@@ -1385,6 +1398,7 @@ fn ingest_tools(
     (filtered, sanitize_result)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_entry(
     entry: &ServerEntry,
     allowed_commands: &[String],
@@ -2292,6 +2306,61 @@ mod tests {
         assert!(
             tx.is_none(),
             "Server with elicitation_enabled=false must not receive sender"
+        );
+    }
+
+    #[test]
+    fn elicitation_channel_is_bounded_by_capacity() {
+        let mut entry = make_entry("bounded-srv");
+        entry.elicitation_enabled = true;
+        let capacity = 2_usize;
+        let mgr = McpManager::with_elicitation_capacity(
+            vec![entry],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+            capacity,
+        );
+        let tx = mgr
+            .clone_elicitation_tx_for("bounded-srv", McpTrustLevel::Untrusted)
+            .expect("should have sender");
+        let _rx = mgr.take_elicitation_rx().expect("should have receiver");
+
+        // Fill the channel up to capacity.
+        for _ in 0..capacity {
+            let (response_tx, _) = tokio::sync::oneshot::channel();
+            let event = crate::elicitation::ElicitationEvent {
+                server_id: "bounded-srv".to_owned(),
+                request: rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+                    meta: None,
+                    message: "test".to_owned(),
+                    requested_schema: rmcp::model::ElicitationSchema::new(
+                        std::collections::BTreeMap::new(),
+                    ),
+                },
+                response_tx,
+            };
+            assert!(
+                tx.try_send(event).is_ok(),
+                "send within capacity must succeed"
+            );
+        }
+
+        // One more send must fail with Full (bounded behaviour).
+        let (response_tx, _) = tokio::sync::oneshot::channel();
+        let overflow = crate::elicitation::ElicitationEvent {
+            server_id: "bounded-srv".to_owned(),
+            request: rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+                meta: None,
+                message: "overflow".to_owned(),
+                requested_schema: rmcp::model::ElicitationSchema::new(
+                    std::collections::BTreeMap::new(),
+                ),
+            },
+            response_tx,
+        };
+        assert!(
+            tx.try_send(overflow).is_err(),
+            "send beyond capacity must fail (bounded channel)"
         );
     }
 

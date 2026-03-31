@@ -542,6 +542,7 @@ impl<C: Channel> Agent<C> {
             .allowed_commands
             .clone_from(&mcp_config.allowed_commands);
         self.mcp.max_dynamic = mcp_config.max_dynamic_servers;
+        self.mcp.elicitation_warn_sensitive_fields = mcp_config.elicitation_warn_sensitive_fields;
         self
     }
 
@@ -617,7 +618,7 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_mcp_elicitation_rx(
         mut self,
-        rx: tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::ElicitationEvent>,
+        rx: tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>,
     ) -> Self {
         self.mcp.elicitation_rx = Some(rx);
         self

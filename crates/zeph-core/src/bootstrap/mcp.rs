@@ -68,13 +68,17 @@ pub fn create_mcp_manager_with_vault(
         .map(|s| (s.id.clone(), s.policy.clone()))
         .collect();
     let enforcer = zeph_mcp::PolicyEnforcer::new(policy_entries);
-    let mut manager =
-        zeph_mcp::McpManager::new(entries, config.mcp.allowed_commands.clone(), enforcer)
-            .with_suppress_stderr(suppress_stderr)
-            .with_description_limits(
-                config.mcp.max_description_bytes,
-                config.mcp.max_instructions_bytes,
-            );
+    let mut manager = zeph_mcp::McpManager::with_elicitation_capacity(
+        entries,
+        config.mcp.allowed_commands.clone(),
+        enforcer,
+        config.mcp.elicitation_queue_capacity,
+    )
+    .with_suppress_stderr(suppress_stderr)
+    .with_description_limits(
+        config.mcp.max_description_bytes,
+        config.mcp.max_instructions_bytes,
+    );
 
     // Register OAuth credential stores
     for s in &config.mcp.servers {

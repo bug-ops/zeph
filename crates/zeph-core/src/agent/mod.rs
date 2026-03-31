@@ -405,6 +405,7 @@ impl<C: Channel> Agent<C> {
                 discovery_strategy: zeph_mcp::ToolDiscoveryStrategy::default(),
                 discovery_params: zeph_mcp::DiscoveryParams::default(),
                 discovery_provider: None,
+                elicitation_warn_sensitive_fields: true,
             },
             index: IndexState {
                 retriever: None,

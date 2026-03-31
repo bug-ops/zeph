@@ -19,7 +19,7 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
 use tokio::process::Command;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio::sync::oneshot;
 use url::Url;
 
@@ -67,7 +67,7 @@ pub struct HandlerConfig {
     pub max_description_bytes: usize,
     /// When `Some`, elicitation requests are forwarded to the agent loop.
     /// When `None`, all requests are auto-declined.
-    pub elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+    pub elicitation_tx: Option<Sender<ElicitationEvent>>,
     /// Elicitation response timeout.
     pub elicitation_timeout: Duration,
 }
@@ -91,7 +91,7 @@ pub struct ToolListChangedHandler {
     max_description_bytes: usize,
     /// When `Some`, elicitation requests are forwarded to the agent loop.
     /// When `None`, all elicitation requests are declined.
-    elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+    elicitation_tx: Option<Sender<ElicitationEvent>>,
     /// Timeout for the user to respond to an elicitation request.
     elicitation_timeout: Duration,
 }
@@ -103,7 +103,7 @@ impl ToolListChangedHandler {
         last_refresh: Arc<DashMap<String, Instant>>,
         roots: Arc<Vec<rmcp::model::Root>>,
         max_description_bytes: usize,
-        elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+        elicitation_tx: Option<Sender<ElicitationEvent>>,
         elicitation_timeout: Duration,
     ) -> Self {
         Self {
@@ -163,12 +163,22 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
                 response_tx,
             };
 
-            if tx.send(event).is_err() {
-                tracing::warn!(
-                    server_id = self.server_id,
-                    "elicitation channel closed — agent loop may have shut down"
-                );
-                return Ok(decline);
+            match tx.try_send(event) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        server_id = self.server_id,
+                        "elicitation queue full — auto-declining request from misbehaving server"
+                    );
+                    return Ok(decline);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::warn!(
+                        server_id = self.server_id,
+                        "elicitation channel closed — agent loop may have shut down"
+                    );
+                    return Ok(decline);
+                }
             }
 
             match tokio::time::timeout(self.elicitation_timeout, response_rx).await {
@@ -315,7 +325,7 @@ pub struct OAuthPending {
     pub last_refresh: Arc<DashMap<String, Instant>>,
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
-    pub elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+    pub elicitation_tx: Option<Sender<ElicitationEvent>>,
     pub elicitation_timeout: Duration,
 }
 

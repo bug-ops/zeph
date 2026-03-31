@@ -109,8 +109,7 @@ pub(crate) struct McpState {
     /// Receives elicitation requests from MCP server handlers during tool execution.
     /// When `Some`, the agent loop must process these concurrently with tool result awaiting
     /// to avoid deadlock (tool result waits for elicitation, elicitation waits for agent loop).
-    pub(crate) elicitation_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::ElicitationEvent>>,
+    pub(crate) elicitation_rx: Option<tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>>,
     /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
     ///
     /// Two methods write to this `RwLock` — ordering matters:
@@ -154,6 +153,9 @@ pub(crate) struct McpState {
     /// Dedicated embedding provider for tool discovery.  `None` = fall back to the
     /// agent's primary embedding provider.
     pub(crate) discovery_provider: Option<zeph_llm::any::AnyProvider>,
+    /// When `true`, show a security warning before prompting for fields whose names
+    /// match sensitive patterns (password, token, secret, key, credential, etc.).
+    pub(crate) elicitation_warn_sensitive_fields: bool,
 }
 
 pub(crate) struct IndexState {
