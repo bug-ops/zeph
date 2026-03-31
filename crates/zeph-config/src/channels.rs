@@ -387,6 +387,7 @@ fn default_elicitation_queue_capacity() -> usize {
     16
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]
