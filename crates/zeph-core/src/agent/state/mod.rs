@@ -72,8 +72,7 @@ pub(crate) struct MemoryState {
     pub(crate) rpe_router: Option<std::sync::Mutex<zeph_memory::RpeRouter>>,
     /// Goal text for the current user turn, derived from raw user input (#2483).
     /// Passed to A-MAC admission control to enable goal-conditioned write gating.
-    /// Reset at the start of each user turn. `None` when `goal_conditioned_write = false`
-    /// or before the first user message.
+    /// Reset at the start of each user turn. `None` only before the first user message.
     pub(crate) goal_text: Option<String>,
 }
 
