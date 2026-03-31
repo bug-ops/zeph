@@ -160,6 +160,76 @@ fn orphaned_tool_result_ids(msg: &Message, prev_msg: Option<&Message>) -> HashSe
         .collect()
 }
 
+/// Returns `true` if `content` contains human-readable text beyond legacy tool bracket markers.
+///
+/// Legacy markers produced by `Message::flatten_parts` are:
+/// - `[tool_use: name(id)]` — assistant `ToolUse`
+/// - `[tool_result: id]\nbody` — user `ToolResult` (tag + trailing body up to the next tag)
+/// - `[tool output: name] body` — `ToolOutput` (pruned or inline)
+/// - `[tool output: name]\n```\nbody\n``` ` — `ToolOutput` fenced block
+///
+/// A message whose content consists solely of such markers (and whitespace) has no
+/// user-visible text and is a candidate for soft-delete once its structured `parts` are gone.
+///
+/// Conservative rule: if a tag is malformed (no closing `]`), the content is treated as
+/// meaningful and the message is NOT deleted.
+///
+/// Note: `[image: mime, N bytes]` placeholders are intentionally treated as meaningful because
+/// they represent real media content and are not pure tool-execution artifacts.
+///
+/// Note: the Claude request-builder format `[tool_use: name] {json_input}` is used only for
+/// API payload construction and is never written to `SQLite` — it cannot appear in persisted
+/// message content, so no special handling is needed here.
+fn has_meaningful_content(content: &str) -> bool {
+    const PREFIXES: [&str; 3] = ["[tool_use: ", "[tool_result: ", "[tool output: "];
+
+    let mut remaining = content.trim();
+
+    loop {
+        // Find the earliest occurrence of any tool tag prefix.
+        let next = PREFIXES
+            .iter()
+            .filter_map(|prefix| remaining.find(prefix).map(|pos| (pos, *prefix)))
+            .min_by_key(|(pos, _)| *pos);
+
+        let Some((start, prefix)) = next else {
+            // No more tool tags — whatever remains decides the verdict.
+            break;
+        };
+
+        // Any non-whitespace text before this tag is meaningful.
+        if !remaining[..start].trim().is_empty() {
+            return true;
+        }
+
+        // Advance past the prefix to find the closing `]`.
+        let after_prefix = &remaining[start + prefix.len()..];
+        let Some(close) = after_prefix.find(']') else {
+            // Malformed tag (no closing bracket) — treat as meaningful, do not delete.
+            return true;
+        };
+
+        // Position after the `]`.
+        let tag_end = start + prefix.len() + close + 1;
+
+        if prefix == "[tool_result: " || prefix == "[tool output: " {
+            // Skip the body that immediately follows until the next tool tag prefix or end-of-string.
+            // The body is part of the tool artifact, not human-readable content.
+            let body = remaining[tag_end..].trim_start_matches('\n');
+            let next_tag = PREFIXES
+                .iter()
+                .filter_map(|p| body.find(p))
+                .min()
+                .unwrap_or(body.len());
+            remaining = &body[next_tag..];
+        } else {
+            remaining = &remaining[tag_end..];
+        }
+    }
+
+    !remaining.trim().is_empty()
+}
+
 /// Scan all messages and strip orphaned `ToolUse`/`ToolResult` parts from mid-history messages.
 ///
 /// Two directions are checked:
@@ -197,7 +267,7 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
                     |p| !matches!(p, MessagePart::ToolUse { id, .. } if orphaned_ids.contains(id)),
                 );
                 let is_empty =
-                    messages[i].content.trim().is_empty() && messages[i].parts.is_empty();
+                    !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
                 if is_empty {
                     if let Some(db_id) = messages[i].metadata.db_id {
                         db_ids.push(db_id);
@@ -231,7 +301,7 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
                 });
 
                 let is_empty =
-                    messages[i].content.trim().is_empty() && messages[i].parts.is_empty();
+                    !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
                 if is_empty {
                     if let Some(db_id) = messages[i].metadata.db_id {
                         db_ids.push(db_id);
@@ -275,7 +345,7 @@ impl<C: Channel> Agent<C> {
                 // Native tool calls produce user messages with empty `content` but non-empty
                 // `parts` (containing ToolResult). Skipping them here would orphan the
                 // preceding assistant ToolUse before sanitize_tool_pairs can clean it up.
-                if msg.content.trim().is_empty() && msg.parts.is_empty() {
+                if !has_meaningful_content(&msg.content) && msg.parts.is_empty() {
                     tracing::warn!("skipping empty message from history (role: {:?})", msg.role);
                     skipped += 1;
                     continue;
@@ -2541,5 +2611,429 @@ mod tests {
                 tc.id
             );
         }
+    }
+
+    // ---- has_meaningful_content unit tests ----
+
+    #[test]
+    fn meaningful_content_empty_string() {
+        assert!(!has_meaningful_content(""));
+    }
+
+    #[test]
+    fn meaningful_content_whitespace_only() {
+        assert!(!has_meaningful_content("   \n\t  "));
+    }
+
+    #[test]
+    fn meaningful_content_tool_use_only() {
+        assert!(!has_meaningful_content("[tool_use: shell(call_1)]"));
+    }
+
+    #[test]
+    fn meaningful_content_tool_use_no_parens() {
+        // Format produced when tool_use is stored without explicit id parens.
+        assert!(!has_meaningful_content("[tool_use: memory_save]"));
+    }
+
+    #[test]
+    fn meaningful_content_tool_result_with_body() {
+        assert!(!has_meaningful_content(
+            "[tool_result: call_1]\nsome output here"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_tool_result_empty_body() {
+        assert!(!has_meaningful_content("[tool_result: call_1]\n"));
+    }
+
+    #[test]
+    fn meaningful_content_tool_output_inline() {
+        assert!(!has_meaningful_content("[tool output: bash] some result"));
+    }
+
+    #[test]
+    fn meaningful_content_tool_output_pruned() {
+        assert!(!has_meaningful_content("[tool output: bash] (pruned)"));
+    }
+
+    #[test]
+    fn meaningful_content_tool_output_fenced() {
+        assert!(!has_meaningful_content(
+            "[tool output: bash]\n```\nls output\n```"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_multiple_tool_use_tags() {
+        assert!(!has_meaningful_content(
+            "[tool_use: bash(id1)][tool_use: read(id2)]"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_multiple_tool_use_tags_space_separator() {
+        // Space between tags is not meaningful content.
+        assert!(!has_meaningful_content(
+            "[tool_use: bash(id1)] [tool_use: read(id2)]"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_multiple_tool_use_tags_newline_separator() {
+        // Newline-only separator is also not meaningful.
+        assert!(!has_meaningful_content(
+            "[tool_use: bash(id1)]\n[tool_use: read(id2)]"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_tool_result_followed_by_tool_use() {
+        // Two tags in sequence — no real text between them.
+        assert!(!has_meaningful_content(
+            "[tool_result: call_1]\nresult\n[tool_use: bash(call_2)]"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_real_text_only() {
+        assert!(has_meaningful_content("Hello, how can I help you?"));
+    }
+
+    #[test]
+    fn meaningful_content_text_before_tool_tag() {
+        assert!(has_meaningful_content("Let me check. [tool_use: bash(id)]"));
+    }
+
+    #[test]
+    fn meaningful_content_text_after_tool_use_tag() {
+        // Text appearing after a [tool_use: name] tag (without parens) is a JSON body
+        // in the request-builder format — but since that format never reaches the DB,
+        // this test verifies conservative behavior: the helper returns true (do not delete).
+        assert!(has_meaningful_content("[tool_use: bash] I ran the command"));
+    }
+
+    #[test]
+    fn meaningful_content_text_between_tags() {
+        assert!(has_meaningful_content(
+            "[tool_use: bash(id1)]\nand then\n[tool_use: read(id2)]"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_malformed_tag_no_closing_bracket() {
+        // Conservative: malformed tag must not trigger delete.
+        assert!(has_meaningful_content("[tool_use: "));
+    }
+
+    #[test]
+    fn meaningful_content_tool_use_and_tool_result_only() {
+        // Typical persisted assistant+user pair content with no extra text.
+        assert!(!has_meaningful_content(
+            "[tool_use: memory_save(call_abc)]\n[tool_result: call_abc]\nsaved"
+        ));
+    }
+
+    #[test]
+    fn meaningful_content_tool_result_body_with_json_array() {
+        assert!(!has_meaningful_content(
+            "[tool_result: id1]\n[\"array\", \"value\"]"
+        ));
+    }
+
+    // ---- Integration tests for the #2529 fix: soft-delete of legacy-content orphans ----
+
+    /// #2529 regression: orphaned assistant `ToolUse` + user `ToolResult` pair where BOTH messages
+    /// have content consisting solely of legacy tool bracket strings (no human-readable text).
+    ///
+    /// Before the fix, `content.trim().is_empty()` returned false for these messages, so they
+    /// were never soft-deleted and the WARN log repeated on every session restart.
+    ///
+    /// After the fix, `has_meaningful_content` returns false for legacy-only content, so both
+    /// orphaned messages are soft-deleted (non-null `deleted_at`) in `SQLite`.
+    #[tokio::test]
+    async fn issue_2529_orphaned_legacy_content_pair_is_soft_deleted() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // A normal user message that anchors the conversation.
+        sqlite
+            .save_message(cid, "user", "save this for me")
+            .await
+            .unwrap();
+
+        // Orphaned assistant[ToolUse]: content is ONLY a legacy tool tag — no matching
+        // ToolResult follows. This is the exact pattern that triggered #2529.
+        let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_2529".to_string(),
+            name: "memory_save".to_string(),
+            input: serde_json::json!({"content": "save this"}),
+        }])
+        .unwrap();
+        let orphan_assistant_id = sqlite
+            .save_message_with_parts(
+                cid,
+                "assistant",
+                "[tool_use: memory_save(call_2529)]",
+                &use_parts,
+            )
+            .await
+            .unwrap();
+
+        // Orphaned user[ToolResult]: content is ONLY a legacy tool tag + body.
+        // Its tool_use_id ("call_2529") does not match any ToolUse in the preceding assistant
+        // message in this position (will be made orphaned by inserting a plain assistant message
+        // between them to break the pair).
+        sqlite
+            .save_message(cid, "assistant", "here is a plain reply")
+            .await
+            .unwrap();
+
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "call_2529".to_string(),
+            content: "saved".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        let orphan_user_id = sqlite
+            .save_message_with_parts(
+                cid,
+                "user",
+                "[tool_result: call_2529]\nsaved",
+                &result_parts,
+            )
+            .await
+            .unwrap();
+
+        // Final plain message so history doesn't end on the orphan.
+        sqlite.save_message(cid, "assistant", "done").await.unwrap();
+
+        let memory_arc = std::sync::Arc::new(memory);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory_arc.clone(),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        agent.load_history().await.unwrap();
+
+        // Verify that both orphaned messages now have `deleted_at IS NOT NULL` in SQLite.
+        // COUNT(*) WHERE deleted_at IS NOT NULL returns 1 if soft-deleted, 0 otherwise.
+        let assistant_deleted_count: Vec<i64> = zeph_db::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE id = ? AND deleted_at IS NOT NULL",
+        )
+        .bind(orphan_assistant_id)
+        .fetch_all(memory_arc.sqlite().pool())
+        .await
+        .unwrap();
+
+        let user_deleted_count: Vec<i64> = zeph_db::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE id = ? AND deleted_at IS NOT NULL",
+        )
+        .bind(orphan_user_id)
+        .fetch_all(memory_arc.sqlite().pool())
+        .await
+        .unwrap();
+
+        assert_eq!(
+            assistant_deleted_count.first().copied().unwrap_or(0),
+            1,
+            "orphaned assistant[ToolUse] with legacy-only content must be soft-deleted (deleted_at IS NOT NULL)"
+        );
+        assert_eq!(
+            user_deleted_count.first().copied().unwrap_or(0),
+            1,
+            "orphaned user[ToolResult] with legacy-only content must be soft-deleted (deleted_at IS NOT NULL)"
+        );
+    }
+
+    /// #2529 idempotency: after soft-delete on first `load_history`, a second call must not
+    /// re-load the soft-deleted orphans. This ensures the WARN log does not repeat on the
+    /// next session startup for the same orphaned messages.
+    #[tokio::test]
+    async fn issue_2529_soft_delete_is_idempotent_across_sessions() {
+        use zeph_llm::provider::MessagePart;
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Normal anchor message.
+        sqlite
+            .save_message(cid, "user", "do something")
+            .await
+            .unwrap();
+
+        // Orphaned assistant[ToolUse] with legacy-only content.
+        let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_idem".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "assistant", "[tool_use: shell(call_idem)]", &use_parts)
+            .await
+            .unwrap();
+
+        // Break the pair: insert a plain assistant message so the ToolUse is mid-history orphan.
+        sqlite
+            .save_message(cid, "assistant", "continuing")
+            .await
+            .unwrap();
+
+        // Orphaned user[ToolResult] with legacy-only content.
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "call_idem".to_string(),
+            content: "output".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(
+                cid,
+                "user",
+                "[tool_result: call_idem]\noutput",
+                &result_parts,
+            )
+            .await
+            .unwrap();
+
+        sqlite
+            .save_message(cid, "assistant", "final")
+            .await
+            .unwrap();
+
+        let memory_arc = std::sync::Arc::new(memory);
+
+        // First session: load_history performs soft-delete of the orphaned pair.
+        let mut agent1 = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(memory_arc.clone(), cid, 50, 5, 100);
+        agent1.load_history().await.unwrap();
+        let count_after_first = agent1.msg.messages.len();
+
+        // Second session: a fresh agent loading the same conversation must not see the
+        // soft-deleted orphans — the WARN log must not repeat.
+        let mut agent2 = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(memory_arc.clone(), cid, 50, 5, 100);
+        agent2.load_history().await.unwrap();
+        let count_after_second = agent2.msg.messages.len();
+
+        // Both sessions must load the same number of messages — soft-deleted orphans excluded.
+        assert_eq!(
+            count_after_first, count_after_second,
+            "second load_history must load the same message count as the first (soft-deleted orphans excluded)"
+        );
+    }
+
+    /// Edge case for #2529: an orphaned assistant message whose content has BOTH meaningful text
+    /// AND a `tool_use` tag must NOT be soft-deleted. The `ToolUse` parts are stripped but the
+    /// message is kept because it has human-readable content.
+    #[tokio::test]
+    async fn issue_2529_message_with_text_and_tool_tag_is_kept_after_part_strip() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Normal first exchange.
+        sqlite
+            .save_message(cid, "user", "check the files")
+            .await
+            .unwrap();
+
+        // Assistant message: has BOTH meaningful text AND a ToolUse part.
+        // Content contains real prose + legacy tag — has_meaningful_content must return true.
+        let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "call_mixed".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(
+                cid,
+                "assistant",
+                "Let me list the directory. [tool_use: shell(call_mixed)]",
+                &use_parts,
+            )
+            .await
+            .unwrap();
+
+        // No matching ToolResult follows — the ToolUse is orphaned.
+        sqlite.save_message(cid, "user", "thanks").await.unwrap();
+        sqlite
+            .save_message(cid, "assistant", "you are welcome")
+            .await
+            .unwrap();
+
+        let memory_arc = std::sync::Arc::new(memory);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory_arc.clone(),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let messages_before = agent.msg.messages.len();
+        agent.load_history().await.unwrap();
+
+        // All 4 messages must be present — the mixed-content assistant message is KEPT.
+        assert_eq!(
+            agent.msg.messages.len(),
+            messages_before + 4,
+            "assistant message with text + tool tag must not be removed after ToolUse strip"
+        );
+
+        // The mixed-content assistant message must have its ToolUse parts stripped.
+        let mixed_msg = agent
+            .msg
+            .messages
+            .iter()
+            .find(|m| m.content.contains("Let me list the directory"))
+            .expect("mixed-content assistant message must still be in history");
+        assert!(
+            !mixed_msg
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "orphaned ToolUse parts must be stripped even when message has meaningful text"
+        );
+        assert_eq!(
+            mixed_msg.content, "Let me list the directory. [tool_use: shell(call_mixed)]",
+            "content field must be unchanged — only parts are stripped"
+        );
     }
 }
