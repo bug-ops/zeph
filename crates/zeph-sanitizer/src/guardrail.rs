@@ -135,15 +135,12 @@ impl GuardrailFilter {
     /// `router`, which are composite providers incompatible with binary classification.
     pub fn new(provider: AnyProvider, config: &GuardrailConfig) -> Result<Self, String> {
         // MEDIUM-01: reject non-leaf providers at construction time.
-        match &provider {
-            AnyProvider::Orchestrator(_) | AnyProvider::Router(_) => {
-                return Err(format!(
-                    "guardrail provider must be a leaf provider \
-                     (ollama/claude/openai/compatible/gemini), got: {}",
-                    provider.name()
-                ));
-            }
-            _ => {}
+        if let AnyProvider::Router(_) = &provider {
+            return Err(format!(
+                "guardrail provider must be a leaf provider \
+                 (ollama/claude/openai/compatible/gemini), got: {}",
+                provider.name()
+            ));
         }
         Ok(Self {
             provider,

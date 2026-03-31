@@ -9,7 +9,6 @@ use crate::gemini::GeminiProvider;
 use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
-use crate::orchestrator::ModelOrchestrator;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
@@ -31,7 +30,6 @@ macro_rules! delegate_provider {
             #[cfg(feature = "candle")]
             AnyProvider::Candle($p) => $expr,
             AnyProvider::Compatible($p) => $expr,
-            AnyProvider::Orchestrator($p) => $expr,
             AnyProvider::Router($p) => $expr,
             AnyProvider::Triage($p) => $expr,
             AnyProvider::Mock($p) => $expr,
@@ -48,7 +46,6 @@ pub enum AnyProvider {
     #[cfg(feature = "candle")]
     Candle(CandleProvider),
     Compatible(CompatibleProvider),
-    Orchestrator(Box<ModelOrchestrator>),
     Router(Box<RouterProvider>),
     /// Complexity triage router: pre-classifies each request and delegates to the appropriate tier.
     Triage(Box<TriageRouter>),
@@ -103,7 +100,7 @@ impl AnyProvider {
             AnyProvider::OpenAi(p) => p.list_models_remote().await,
             AnyProvider::Compatible(p) => p.list_models_remote().await,
             AnyProvider::Gemini(p) => p.list_models_remote().await,
-            // Router and Orchestrator use synchronous list_models() to avoid recursive async cycles.
+            // Router uses synchronous list_models() to avoid recursive async cycles.
             // Results reflect config-time model lists (potentially stale vs. live remote data).
             AnyProvider::Router(p) => {
                 tracing::debug!(
@@ -119,7 +116,6 @@ impl AnyProvider {
                     })
                     .collect())
             }
-            AnyProvider::Orchestrator(p) => p.list_models_remote().await,
             // Triage delegates list_models to the first tier provider (best effort).
             AnyProvider::Triage(p) => Ok(p
                 .name()
@@ -177,7 +173,7 @@ impl AnyProvider {
     /// Clone and patch this provider with generation parameter overrides.
     ///
     /// Used by the experiment engine to evaluate each variation with its specific parameters.
-    /// `Orchestrator` and `Router` variants are returned unchanged (overrides not supported).
+    /// `Router` and `Triage` variants are returned unchanged (overrides not supported).
     #[must_use]
     pub fn with_generation_overrides(self, overrides: GenerationOverrides) -> Self {
         match self {
@@ -192,16 +188,17 @@ impl AnyProvider {
                 tracing::warn!("generation overrides not supported for Candle provider");
                 Self::Candle(p)
             }
-            Self::Orchestrator(_) | Self::Router(_) | Self::Triage(_) => {
+            Self::Router(_) | Self::Triage(_) => {
                 tracing::warn!("generation overrides not supported for this provider variant");
                 self
             }
         }
     }
 
-    /// Route to a specific named provider (for orchestrators), or fall through to default routing.
+    /// Route to a specific named provider, or fall through to default routing.
     ///
-    /// For non-orchestrator providers, the `name` is ignored and regular `chat` is used.
+    /// The `name` parameter is informational only (used for logging/tracing);
+    /// routing is always performed by the underlying provider's default strategy.
     ///
     /// # Errors
     ///
@@ -211,20 +208,14 @@ impl AnyProvider {
         name: &str,
         messages: &[Message],
     ) -> Result<String, crate::LlmError> {
-        if let Self::Orchestrator(orch) = self {
-            return orch.chat_for_named(name, messages).await;
-        }
-        tracing::debug!(
-            name,
-            "chat_with_named_provider: not an orchestrator, ignoring model name"
-        );
+        tracing::debug!(name, "chat_with_named_provider: delegating to provider");
         self.chat(messages).await
     }
 
-    /// Route a tool-aware request to a specific named provider (for orchestrators),
-    /// or fall through to `chat_with_tools` with default routing.
+    /// Route a tool-aware request to a specific named provider, or fall through to default routing.
     ///
-    /// For non-orchestrator providers, the `name` is ignored.
+    /// The `name` parameter is informational only (used for logging/tracing);
+    /// routing is always performed by the underlying provider's default strategy.
     ///
     /// # Errors
     ///
@@ -235,12 +226,9 @@ impl AnyProvider {
         messages: &[Message],
         tools: &[crate::provider::ToolDefinition],
     ) -> Result<crate::provider::ChatResponse, crate::LlmError> {
-        if let Self::Orchestrator(orch) = self {
-            return orch.chat_for_named_with_tools(name, messages, tools).await;
-        }
         tracing::debug!(
             name,
-            "chat_with_named_provider_and_tools: not an orchestrator, ignoring model name"
+            "chat_with_named_provider_and_tools: delegating to provider"
         );
         self.chat_with_tools(messages, tools).await
     }
@@ -255,9 +243,6 @@ impl AnyProvider {
                 p.status_tx = Some(tx);
             }
             Self::Compatible(p) => {
-                p.set_status_tx(tx);
-            }
-            Self::Orchestrator(p) => {
                 p.set_status_tx(tx);
             }
             Self::Router(p) => {

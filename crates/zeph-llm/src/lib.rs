@@ -22,7 +22,6 @@ pub mod mock;
 pub mod model_cache;
 pub mod ollama;
 pub mod openai;
-pub mod orchestrator;
 pub mod provider;
 pub(crate) mod retry;
 pub mod router;

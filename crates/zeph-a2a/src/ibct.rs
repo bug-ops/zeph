@@ -98,6 +98,7 @@ impl Ibct {
     /// # Errors
     ///
     /// Returns `IbctError::FeatureDisabled` when compiled without the `ibct` feature.
+    #[allow(clippy::needless_return)]
     pub fn issue(
         task_id: &str,
         endpoint: &str,
@@ -140,6 +141,7 @@ impl Ibct {
     /// # Errors
     ///
     /// Returns one of `IbctError::*` on any verification failure.
+    #[allow(clippy::needless_return)]
     pub fn verify(
         &self,
         keys: &[IbctKey],
@@ -308,6 +310,7 @@ mod base64_compat {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "ibct")]
     use super::*;
 
     #[cfg(feature = "ibct")]

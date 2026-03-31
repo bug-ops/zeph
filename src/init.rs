@@ -17,8 +17,6 @@ use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct WizardState {
     pub(crate) provider: Option<ProviderKind>,
-    /// True when the wizard configured multiple providers (primary + fallback pool).
-    pub(crate) pool_mode: bool,
     pub(crate) base_url: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) embedding_model: Option<String>,
@@ -38,17 +36,6 @@ pub(crate) struct WizardState {
     pub(crate) slack_bot_token: Option<String>,
     pub(crate) slack_signing_secret: Option<String>,
     pub(crate) vault_backend: String,
-    // Orchestrator sub-provider fields
-    pub(crate) orchestrator_primary_provider: Option<ProviderKind>,
-    pub(crate) orchestrator_primary_model: Option<String>,
-    pub(crate) orchestrator_primary_base_url: Option<String>,
-    pub(crate) orchestrator_primary_api_key: Option<String>,
-    pub(crate) orchestrator_primary_compatible_name: Option<String>,
-    pub(crate) orchestrator_fallback_provider: Option<ProviderKind>,
-    pub(crate) orchestrator_fallback_model: Option<String>,
-    pub(crate) orchestrator_fallback_base_url: Option<String>,
-    pub(crate) orchestrator_fallback_api_key: Option<String>,
-    pub(crate) orchestrator_fallback_compatible_name: Option<String>,
     pub(crate) auto_update_check: bool,
     pub(crate) scheduler_enabled: bool,
     pub(crate) scheduler_tick_interval_secs: u64,
@@ -197,7 +184,6 @@ impl Default for WizardState {
     fn default() -> Self {
         Self {
             provider: None,
-            pool_mode: false,
             base_url: None,
             model: None,
             embedding_model: None,
@@ -217,16 +203,6 @@ impl Default for WizardState {
             slack_bot_token: None,
             slack_signing_secret: None,
             vault_backend: String::new(),
-            orchestrator_primary_provider: None,
-            orchestrator_primary_model: None,
-            orchestrator_primary_base_url: None,
-            orchestrator_primary_api_key: None,
-            orchestrator_primary_compatible_name: None,
-            orchestrator_fallback_provider: None,
-            orchestrator_fallback_model: None,
-            orchestrator_fallback_base_url: None,
-            orchestrator_fallback_api_key: None,
-            orchestrator_fallback_compatible_name: None,
             auto_update_check: false,
             scheduler_enabled: false,
             scheduler_tick_interval_secs: 0,
@@ -404,87 +380,6 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `(kind, base_url, model, api_key, compatible_name)` returned by `prompt_provider_config`.
-type ProviderConfig = (
-    ProviderKind,
-    Option<String>,
-    String,
-    Option<String>,
-    Option<String>,
-);
-
-/// Prompts for a sub-provider configuration.
-/// `label` is shown to the user (e.g. "Primary" or "Fallback").
-/// Returns `(kind, base_url, model, api_key, compatible_name)`.
-fn prompt_provider_config(label: &str) -> anyhow::Result<ProviderConfig> {
-    let sub_providers = [
-        "Ollama (local)",
-        "Claude (API)",
-        "OpenAI (API)",
-        "Compatible (custom)",
-    ];
-    let sel = Select::new()
-        .with_prompt(format!("{label} provider"))
-        .items(sub_providers)
-        .default(0)
-        .interact()?;
-
-    match sel {
-        0 => {
-            let base_url = Input::new()
-                .with_prompt("Ollama base URL")
-                .default("http://localhost:11434".into())
-                .interact_text()?;
-            let model = Input::new()
-                .with_prompt("Model name")
-                .default("qwen3:8b".into())
-                .interact_text()?;
-            Ok((ProviderKind::Ollama, Some(base_url), model, None, None))
-        }
-        1 => {
-            let raw = Password::new().with_prompt("Claude API key").interact()?;
-            let api_key = if raw.is_empty() { None } else { Some(raw) };
-            let model = Input::new()
-                .with_prompt("Model name")
-                .default("claude-sonnet-4-5-20250929".into())
-                .interact_text()?;
-            Ok((ProviderKind::Claude, None, model, api_key, None))
-        }
-        2 => {
-            let raw = Password::new().with_prompt("OpenAI API key").interact()?;
-            let api_key = if raw.is_empty() { None } else { Some(raw) };
-            let base_url = Input::new()
-                .with_prompt("Base URL")
-                .default("https://api.openai.com/v1".into())
-                .interact_text()?;
-            let model = Input::new()
-                .with_prompt("Model name")
-                .default("gpt-4o".into())
-                .interact_text()?;
-            Ok((ProviderKind::OpenAi, Some(base_url), model, api_key, None))
-        }
-        3 => {
-            let compatible_name: String =
-                Input::new().with_prompt("Provider name").interact_text()?;
-            let base_url = Input::new().with_prompt("Base URL").interact_text()?;
-            let model = Input::new().with_prompt("Model name").interact_text()?;
-            let raw = Password::new()
-                .with_prompt("API key (leave empty if none)")
-                .allow_empty_password(true)
-                .interact()?;
-            let api_key = if raw.is_empty() { None } else { Some(raw) };
-            Ok((
-                ProviderKind::Compatible,
-                Some(base_url),
-                model,
-                api_key,
-                Some(compatible_name),
-            ))
-        }
-        _ => unreachable!(),
-    }
-}
-
 fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 2/10: LLM Provider ==\n");
 
@@ -524,7 +419,6 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
         "Claude (API)",
         "OpenAI (API)",
         "Gemini (API)",
-        "Orchestrator (multi-model)",
         "Compatible (custom)",
     ];
     let selection = Select::new()
@@ -650,29 +544,6 @@ fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
             };
         }
         4 => {
-            state.pool_mode = true;
-            println!("\nConfigure primary provider:");
-            let (pk, pb, pm, pa, pn) = prompt_provider_config("Primary")?;
-            state.orchestrator_primary_provider = Some(pk);
-            state.orchestrator_primary_base_url = pb;
-            state.orchestrator_primary_model = Some(pm);
-            state.orchestrator_primary_api_key = pa;
-            state.orchestrator_primary_compatible_name = pn;
-            state.provider = Some(pk);
-
-            println!("\nConfigure fallback provider:");
-            let (fk, fb, fm, fa, fn_) = prompt_provider_config("Fallback")?;
-            state.orchestrator_fallback_provider = Some(fk);
-            state.orchestrator_fallback_base_url = fb;
-            state.orchestrator_fallback_model = Some(fm);
-            state.orchestrator_fallback_api_key = fa;
-            state.orchestrator_fallback_compatible_name = fn_;
-
-            // Use primary model as the top-level model for display purposes
-            state.model = state.orchestrator_primary_model.clone();
-            state.base_url = state.orchestrator_primary_base_url.clone();
-        }
-        5 => {
             state.provider = Some(ProviderKind::Compatible);
             state.compatible_name =
                 Some(Input::new().with_prompt("Provider name").interact_text()?);
@@ -1134,46 +1005,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     let provider = state.provider.unwrap_or(ProviderKind::Ollama);
 
     // Build the providers pool.
-    let providers = if state.pool_mode {
-        // Multi-provider pool: primary + fallback entries.
-        let mut pool = Vec::new();
-        if let (Some(pk), Some(pm)) = (
-            state.orchestrator_primary_provider,
-            state.orchestrator_primary_model.clone(),
-        ) {
-            pool.push(ProviderEntry {
-                provider_type: pk,
-                name: state.orchestrator_primary_compatible_name.clone(),
-                model: Some(pm),
-                base_url: state.orchestrator_primary_base_url.clone(),
-                max_tokens: match pk {
-                    ProviderKind::Claude => Some(8096),
-                    ProviderKind::Gemini => Some(8192),
-                    _ => None,
-                },
-                default: true,
-                ..ProviderEntry::default()
-            });
-        }
-        if let (Some(fk), Some(fm)) = (
-            state.orchestrator_fallback_provider,
-            state.orchestrator_fallback_model.clone(),
-        ) {
-            pool.push(ProviderEntry {
-                provider_type: fk,
-                name: state.orchestrator_fallback_compatible_name.clone(),
-                model: Some(fm),
-                base_url: state.orchestrator_fallback_base_url.clone(),
-                max_tokens: match fk {
-                    ProviderKind::Claude => Some(8096),
-                    ProviderKind::Gemini => Some(8192),
-                    _ => None,
-                },
-                ..ProviderEntry::default()
-            });
-        }
-        pool
-    } else {
+    let providers = {
         // Single provider.
         vec![ProviderEntry {
             provider_type: provider,
@@ -2600,30 +2432,13 @@ fn print_secrets_instructions(state: &WizardState) {
     let use_age = state.vault_backend == "age";
     let mut secrets: Vec<String> = Vec::new();
 
-    if state.pool_mode {
-        collect_provider_secret(
-            &mut secrets,
-            state.orchestrator_primary_provider,
-            state.orchestrator_primary_api_key.as_ref(),
-            state.orchestrator_primary_compatible_name.as_deref(),
-            use_age,
-        );
-        collect_provider_secret(
-            &mut secrets,
-            state.orchestrator_fallback_provider,
-            state.orchestrator_fallback_api_key.as_ref(),
-            state.orchestrator_fallback_compatible_name.as_deref(),
-            use_age,
-        );
-    } else {
-        collect_provider_secret(
-            &mut secrets,
-            state.provider,
-            state.api_key.as_ref(),
-            state.compatible_name.as_deref(),
-            use_age,
-        );
-    }
+    collect_provider_secret(
+        &mut secrets,
+        state.provider,
+        state.api_key.as_ref(),
+        state.compatible_name.as_deref(),
+        use_age,
+    );
 
     let include_telegram = use_age && matches!(state.channel, ChannelChoice::Telegram)
         || state.telegram_token.is_some();
@@ -2690,18 +2505,12 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
 mod tests {
     use super::*;
 
-    fn pool_mode_state() -> WizardState {
+    fn single_provider_state() -> WizardState {
         WizardState {
-            pool_mode: true,
             provider: Some(ProviderKind::Claude),
             model: Some("claude-sonnet-4-5-20250929".into()),
             embedding_model: Some("qwen3-embedding".into()),
-            orchestrator_primary_provider: Some(ProviderKind::Claude),
-            orchestrator_primary_model: Some("claude-sonnet-4-5-20250929".into()),
-            orchestrator_primary_api_key: Some("key-abc".into()),
-            orchestrator_fallback_provider: Some(ProviderKind::Ollama),
-            orchestrator_fallback_model: Some("qwen3:8b".into()),
-            orchestrator_fallback_base_url: Some("http://localhost:11434".into()),
+            api_key: Some("key-abc".into()),
             vault_backend: "env".into(),
             semantic_enabled: true,
             ..WizardState::default()
@@ -2709,18 +2518,15 @@ mod tests {
     }
 
     #[test]
-    fn build_config_pool_mode_creates_provider_pool() {
-        let state = pool_mode_state();
+    fn build_config_single_provider_creates_one_entry() {
+        let state = single_provider_state();
         let config = build_config(&state);
-        assert_eq!(config.llm.providers.len(), 2);
-        assert!(config.llm.providers[0].default);
+        assert_eq!(config.llm.providers.len(), 1);
         assert_eq!(config.llm.providers[0].provider_type, ProviderKind::Claude);
         assert_eq!(
             config.llm.providers[0].model.as_deref(),
             Some("claude-sonnet-4-5-20250929")
         );
-        assert_eq!(config.llm.providers[1].provider_type, ProviderKind::Ollama);
-        assert_eq!(config.llm.providers[1].model.as_deref(), Some("qwen3:8b"));
     }
 
     #[test]
@@ -2794,22 +2600,6 @@ mod tests {
             "duplicate provider should appear only once"
         );
         assert_eq!(secrets[0], "ZEPH_CLAUDE_API_KEY");
-    }
-
-    #[test]
-    fn build_pool_mode_without_primary_yields_empty_pool() {
-        let state = WizardState {
-            pool_mode: true,
-            orchestrator_primary_provider: None,
-            orchestrator_fallback_provider: Some(ProviderKind::Ollama),
-            orchestrator_fallback_model: Some("qwen3:8b".into()),
-            vault_backend: "env".into(),
-            ..WizardState::default()
-        };
-        let config = build_config(&state);
-        // Without a primary provider, pool has only the fallback entry.
-        assert_eq!(config.llm.providers.len(), 1);
-        assert_eq!(config.llm.providers[0].provider_type, ProviderKind::Ollama);
     }
 
     #[test]
