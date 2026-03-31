@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(tools): structured shell output envelope (#2488) — `execute_bash` now captures stdout and stderr as separate streams at the process level using a tagged `(bool, String)` channel; `ShellOutputEnvelope { stdout, stderr, exit_code, truncated }` is built post-execution and serialized into `ToolOutput.raw_response` for ACP/audit consumers; LLM context continues using the interleaved combined output in `summary`; `AuditEntry` gains optional `exit_code: Option<i32>` and `truncated: bool` fields (`skip_serializing_if` for backward compat)
+- feat(tools): per-path read allow/deny sandbox for file tool (#2489) — new `[tools.file]` config section with `deny_read` and `allow_read` glob pattern lists; evaluation order: deny-then-allow; all patterns matched against canonicalized absolute paths (prevents symlink bypass); `FileExecutor::with_read_sandbox()` builder method applies the sandbox; `handle_read()` checks sandbox before `read_to_string`; `grep_recursive` skips denied files before reading content; `FileConfig` exported from `zeph-tools`
+
 ### Fixed
 
 - skills: raise `disambiguation_threshold` default from 0.05 to 0.20 to prevent low-confidence skill injection (#2512)

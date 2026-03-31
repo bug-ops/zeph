@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::config::FileConfig;
 use crate::executor::{
     ClaimSource, DiffData, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
@@ -96,6 +97,8 @@ struct CopyPathParams {
 #[derive(Debug)]
 pub struct FileExecutor {
     allowed_paths: Vec<PathBuf>,
+    read_deny_globs: Option<globset::GlobSet>,
+    read_allow_globs: Option<globset::GlobSet>,
 }
 
 fn expand_tilde(path: PathBuf) -> PathBuf {
@@ -108,6 +111,24 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
         return home.join(rest);
     }
     path
+}
+
+fn build_globset(patterns: &[String]) -> Option<globset::GlobSet> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        match globset::Glob::new(pattern) {
+            Ok(g) => {
+                builder.add(g);
+            }
+            Err(e) => {
+                tracing::warn!(pattern = %pattern, err = %e, "invalid file sandbox glob pattern, skipping");
+            }
+        }
+    }
+    builder.build().ok().filter(|s| !s.is_empty())
 }
 
 impl FileExecutor {
@@ -123,7 +144,37 @@ impl FileExecutor {
                 .into_iter()
                 .map(|p| p.canonicalize().unwrap_or(p))
                 .collect(),
+            read_deny_globs: None,
+            read_allow_globs: None,
         }
+    }
+
+    /// Apply per-path read allow/deny sandbox rules from config.
+    #[must_use]
+    pub fn with_read_sandbox(mut self, config: &FileConfig) -> Self {
+        self.read_deny_globs = build_globset(&config.deny_read);
+        self.read_allow_globs = build_globset(&config.allow_read);
+        self
+    }
+
+    /// Check if the canonical path is permitted by the deny/allow glob rules.
+    ///
+    /// Always matches against the canonicalized path to prevent symlink bypass (CR-02, MJ-01).
+    fn check_read_sandbox(&self, canonical: &Path) -> Result<(), ToolError> {
+        let Some(ref deny) = self.read_deny_globs else {
+            return Ok(());
+        };
+        if deny.is_match(canonical)
+            && !self
+                .read_allow_globs
+                .as_ref()
+                .is_some_and(|allow| allow.is_match(canonical))
+        {
+            return Err(ToolError::SandboxViolation {
+                path: canonical.display().to_string(),
+            });
+        }
+        Ok(())
     }
 
     fn validate_path(&self, path: &Path) -> Result<PathBuf, ToolError> {
@@ -201,6 +252,7 @@ impl FileExecutor {
 
     fn handle_read(&self, params: &ReadParams) -> Result<Option<ToolOutput>, ToolError> {
         let path = self.validate_path(Path::new(&params.path))?;
+        self.check_read_sandbox(&path)?;
         let content = std::fs::read_to_string(&path)?;
 
         let offset = params.offset.unwrap_or(0) as usize;
@@ -340,8 +392,9 @@ impl FileExecutor {
             ))
         })?;
 
+        let sandbox = |p: &Path| self.check_read_sandbox(p);
         let mut results = Vec::new();
-        grep_recursive(&path, &regex, &mut results, 100)?;
+        grep_recursive(&path, &regex, &mut results, 100, &sandbox)?;
 
         Ok(Some(ToolOutput {
             tool_name: "grep".to_owned(),
@@ -696,11 +749,17 @@ fn grep_recursive(
     regex: &regex::Regex,
     results: &mut Vec<String>,
     limit: usize,
+    sandbox: &impl Fn(&Path) -> Result<(), ToolError>,
 ) -> Result<(), ToolError> {
     if results.len() >= limit {
         return Ok(());
     }
     if path.is_file() {
+        // Canonicalize before sandbox check to prevent symlink bypass (SEC-01).
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if sandbox(&canonical).is_err() {
+            return Ok(());
+        }
         if let Ok(content) = std::fs::read_to_string(path) {
             for (i, line) in content.lines().enumerate() {
                 if regex.is_match(line) {
@@ -719,7 +778,7 @@ fn grep_recursive(
             if name.is_some_and(|n| n.starts_with('.') || IGNORED_DIRS.contains(&n)) {
                 continue;
             }
-            grep_recursive(&p, regex, results, limit)?;
+            grep_recursive(&p, regex, results, limit, sandbox)?;
         }
     }
     Ok(())
@@ -1543,5 +1602,89 @@ mod tests {
         let params = make_params(&[("path", serde_json::json!(dotpath))]);
         let result = exec.execute_file_tool("read", &params);
         assert!(result.is_ok());
+    }
+
+    // --- #2489: per-path read allow/deny sandbox tests ---
+
+    #[test]
+    fn read_sandbox_deny_blocks_file() {
+        let dir = temp_dir();
+        let secret = dir.path().join(".env");
+        fs::write(&secret, "SECRET=abc").unwrap();
+
+        let config = crate::config::FileConfig {
+            deny_read: vec!["**/.env".to_owned()],
+            allow_read: vec![],
+        };
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
+        let params = make_params(&[("path", serde_json::json!(secret.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("read", &params);
+        assert!(
+            matches!(result, Err(ToolError::SandboxViolation { .. })),
+            "expected SandboxViolation, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn read_sandbox_allow_overrides_deny() {
+        let dir = temp_dir();
+        let public = dir.path().join("public.env");
+        fs::write(&public, "VAR=ok").unwrap();
+
+        let config = crate::config::FileConfig {
+            deny_read: vec!["**/*.env".to_owned()],
+            allow_read: vec![format!("**/public.env")],
+        };
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
+        let params = make_params(&[("path", serde_json::json!(public.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("read", &params);
+        assert!(
+            result.is_ok(),
+            "allow override should permit read: {result:?}"
+        );
+    }
+
+    #[test]
+    fn read_sandbox_empty_deny_allows_all() {
+        let dir = temp_dir();
+        let file = dir.path().join("data.txt");
+        fs::write(&file, "data").unwrap();
+
+        let config = crate::config::FileConfig::default();
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
+        let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
+        let result = exec.execute_file_tool("read", &params);
+        assert!(result.is_ok(), "empty deny should allow all: {result:?}");
+    }
+
+    #[test]
+    fn read_sandbox_grep_skips_denied_files() {
+        let dir = temp_dir();
+        let allowed = dir.path().join("allowed.txt");
+        let denied = dir.path().join(".env");
+        fs::write(&allowed, "needle").unwrap();
+        fs::write(&denied, "needle").unwrap();
+
+        let config = crate::config::FileConfig {
+            deny_read: vec!["**/.env".to_owned()],
+            allow_read: vec![],
+        };
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
+        let params = make_params(&[
+            ("pattern", serde_json::json!("needle")),
+            ("path", serde_json::json!(dir.path().to_str().unwrap())),
+        ]);
+        let result = exec.execute_file_tool("grep", &params).unwrap().unwrap();
+        // Should find match in allowed.txt but not in .env
+        assert!(
+            result.summary.contains("allowed.txt"),
+            "expected match in allowed.txt: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains(".env"),
+            "should not match in denied .env: {}",
+            result.summary
+        );
     }
 }

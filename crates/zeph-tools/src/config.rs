@@ -420,6 +420,22 @@ impl AdversarialPolicyConfig {
     }
 }
 
+/// Per-path read allow/deny sandbox for the file tool.
+///
+/// Evaluation order: deny-then-allow. If a path matches `deny_read` and does NOT
+/// match `allow_read`, access is denied. Empty `deny_read` means no read restrictions.
+///
+/// All patterns are matched against the canonicalized (absolute, symlink-resolved) path.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct FileConfig {
+    /// Glob patterns for paths denied for reading. Evaluated first.
+    #[serde(default)]
+    pub deny_read: Vec<String>,
+    /// Glob patterns for paths allowed for reading. Evaluated second (overrides deny).
+    #[serde(default)]
+    pub allow_read: Vec<String>,
+}
+
 /// Top-level configuration for tool execution.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
@@ -460,6 +476,9 @@ pub struct ToolsConfig {
     /// Utility-guided tool dispatch gate.
     #[serde(default)]
     pub utility: UtilityScoringConfig,
+    /// Per-path read allow/deny sandbox for the file tool.
+    #[serde(default)]
+    pub file: FileConfig,
 }
 
 impl ToolsConfig {
@@ -572,6 +591,7 @@ impl Default for ToolsConfig {
             #[cfg(feature = "policy-enforcer")]
             adversarial_policy: AdversarialPolicyConfig::default(),
             utility: UtilityScoringConfig::default(),
+            file: FileConfig::default(),
         }
     }
 }

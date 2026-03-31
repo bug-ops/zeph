@@ -766,6 +766,8 @@ impl<C: Channel> Agent<C> {
                                     embedding_anomalous: false,
                                     cross_boundary_mcp_to_acp: false,
                                     adversarial_policy_decision: None,
+                                    exit_code: None,
+                                    truncated: false,
                                 };
                                 let logger = std::sync::Arc::clone(logger);
                                 tokio::spawn(async move { logger.log(&entry).await });

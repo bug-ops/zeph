@@ -17,6 +17,7 @@ enum AuditDestination {
 }
 
 #[derive(serde::Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AuditEntry {
     pub timestamp: String,
     pub tool: String,
@@ -55,6 +56,12 @@ pub struct AuditEntry {
     /// `None` when adversarial policy is disabled or not applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adversarial_policy_decision: Option<String>,
+    /// Process exit code for shell tool executions. `None` for non-shell tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Whether tool output was truncated before storage. Default false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -151,6 +158,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -177,6 +186,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -202,6 +213,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -224,6 +237,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -251,6 +266,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         logger.log(&entry).await;
     }
@@ -279,6 +296,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         logger.log(&entry).await;
 
@@ -334,6 +353,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -360,6 +381,8 @@ mod tests {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -394,11 +417,67 @@ mod tests {
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
                 adversarial_policy_decision: None,
+                exit_code: None,
+                truncated: false,
             };
             logger.log(&entry).await;
         }
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(content.lines().count(), 5);
+    }
+
+    #[test]
+    fn audit_entry_exit_code_serialized() {
+        let entry = AuditEntry {
+            timestamp: "0".into(),
+            tool: "shell".into(),
+            command: "echo hi".into(),
+            result: AuditResult::Success,
+            duration_ms: 5,
+            error_category: None,
+            error_domain: None,
+            error_phase: None,
+            claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
+            exit_code: Some(0),
+            truncated: false,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            json.contains("\"exit_code\":0"),
+            "exit_code must be serialized: {json}"
+        );
+    }
+
+    #[test]
+    fn audit_entry_exit_code_none_omitted() {
+        let entry = AuditEntry {
+            timestamp: "0".into(),
+            tool: "file".into(),
+            command: "read /tmp/x".into(),
+            result: AuditResult::Success,
+            duration_ms: 1,
+            error_category: None,
+            error_domain: None,
+            error_phase: None,
+            claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !json.contains("exit_code"),
+            "exit_code None must be omitted: {json}"
+        );
     }
 }

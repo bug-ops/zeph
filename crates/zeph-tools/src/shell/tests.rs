@@ -66,16 +66,16 @@ fn unclosed_block_ignored() {
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_simple_command() {
-    let (result, code) =
+    let (envelope, result) =
         execute_bash("echo hello", Duration::from_secs(30), None, None, None, &[]).await;
     assert!(result.contains("hello"));
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
 }
 
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_stderr_output() {
-    let (result, _) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo err >&2",
         Duration::from_secs(30),
         None,
@@ -86,12 +86,13 @@ async fn execute_stderr_output() {
     .await;
     assert!(result.contains("[stderr]"));
     assert!(result.contains("err"));
+    assert!(envelope.stderr.contains("err"));
 }
 
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_stdout_and_stderr_combined() {
-    let (result, _) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo out && echo err >&2",
         Duration::from_secs(30),
         None,
@@ -104,14 +105,17 @@ async fn execute_stdout_and_stderr_combined() {
     assert!(result.contains("[stderr]"));
     assert!(result.contains("err"));
     assert!(result.contains('\n'));
+    assert!(envelope.stdout.contains("out"));
+    assert!(envelope.stderr.contains("err"));
 }
 
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_empty_output() {
-    let (result, code) = execute_bash("true", Duration::from_secs(30), None, None, None, &[]).await;
+    let (envelope, result) =
+        execute_bash("true", Duration::from_secs(30), None, None, None, &[]).await;
     assert_eq!(result, "(no output)");
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
 }
 
 #[tokio::test]
@@ -909,7 +913,7 @@ async fn execute_bash_injects_extra_env() {
         "ZEPH_TEST_INJECTED_VAR".to_owned(),
         "hello-from-env".to_owned(),
     );
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo $ZEPH_TEST_INJECTED_VAR",
         Duration::from_secs(5),
         None,
@@ -918,7 +922,7 @@ async fn execute_bash_injects_extra_env() {
         &[],
     )
     .await;
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
     assert!(result.contains("hello-from-env"));
 }
 
@@ -949,15 +953,16 @@ async fn shell_executor_set_skill_env_injects_vars() {
 #[cfg(unix)]
 #[tokio::test]
 async fn execute_bash_error_handling() {
-    let (result, code) = execute_bash("false", Duration::from_secs(5), None, None, None, &[]).await;
+    let (envelope, result) =
+        execute_bash("false", Duration::from_secs(5), None, None, None, &[]).await;
     assert_eq!(result, "(no output)");
-    assert_eq!(code, 1);
+    assert_eq!(envelope.exit_code, 1);
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn execute_bash_command_not_found() {
-    let (result, _) = execute_bash(
+    let (_, result) = execute_bash(
         "nonexistent-command-xyz",
         Duration::from_secs(5),
         None,
@@ -1065,7 +1070,7 @@ async fn cancel_token_kills_child_process() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         token_clone.cancel();
     });
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         "sleep 60",
         Duration::from_secs(30),
         None,
@@ -1074,16 +1079,16 @@ async fn cancel_token_kills_child_process() {
         &[],
     )
     .await;
-    assert_eq!(code, 130);
+    assert_eq!(envelope.exit_code, 130);
     assert!(result.contains("[cancelled]"));
 }
 
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn cancel_token_none_does_not_cancel() {
-    let (result, code) =
+    let (envelope, result) =
         execute_bash("echo ok", Duration::from_secs(5), None, None, None, &[]).await;
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
     assert!(result.contains("ok"));
 }
 
@@ -1099,7 +1104,7 @@ async fn cancel_kills_child_process_group() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         token_clone.cancel();
     });
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         &script,
         Duration::from_secs(30),
         None,
@@ -1108,7 +1113,7 @@ async fn cancel_kills_child_process_group() {
         &[],
     )
     .await;
-    assert_eq!(code, 130);
+    assert_eq!(envelope.exit_code, 130);
     assert!(result.contains("[cancelled]"));
     // Wait briefly, then verify the subprocess did NOT create the marker file
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1584,7 +1589,7 @@ async fn env_blocklist_strips_sensitive_vars() {
     // Set a fake sensitive env var in the current process
     unsafe { std::env::set_var("ZEPH_SECRET_TEST_VAR", "should-not-leak") };
     let blocklist = vec!["ZEPH_".to_owned()];
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo ${ZEPH_SECRET_TEST_VAR:-absent}",
         Duration::from_secs(5),
         None,
@@ -1594,7 +1599,7 @@ async fn env_blocklist_strips_sensitive_vars() {
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_SECRET_TEST_VAR") };
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
     assert!(
         result.contains("absent"),
         "ZEPH_ var should have been stripped, got: {result}"
@@ -1606,7 +1611,7 @@ async fn env_blocklist_strips_sensitive_vars() {
 async fn env_blocklist_preserves_safe_vars() {
     let blocklist = vec!["ZEPH_".to_owned()];
     // PATH and HOME are always set in the test environment; verify they are inherited.
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo ${PATH:+present}",
         Duration::from_secs(5),
         None,
@@ -1615,7 +1620,7 @@ async fn env_blocklist_preserves_safe_vars() {
         &blocklist,
     )
     .await;
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
     assert!(
         result.contains("present"),
         "PATH should be preserved, got: {result}"
@@ -1629,7 +1634,7 @@ async fn env_blocklist_extra_env_still_injected() {
     let blocklist = vec!["ZEPH_".to_owned()];
     let mut extra = std::collections::HashMap::new();
     extra.insert("SKILL_TEST_VAR".to_owned(), "skill-value".to_owned());
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo $SKILL_TEST_VAR",
         Duration::from_secs(5),
         None,
@@ -1638,7 +1643,7 @@ async fn env_blocklist_extra_env_still_injected() {
         &blocklist,
     )
     .await;
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
     assert!(
         result.contains("skill-value"),
         "skill extra_env should be injected, got: {result}"
@@ -1654,7 +1659,7 @@ async fn env_blocklist_multiple_prefixes() {
         std::env::set_var("OPENAI_API_KEY", "openai-secret");
     }
     let blocklist = vec!["AWS_".to_owned(), "OPENAI_".to_owned()];
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo ${AWS_SECRET_ACCESS_KEY:-absent1} ${OPENAI_API_KEY:-absent2}",
         Duration::from_secs(5),
         None,
@@ -1667,7 +1672,7 @@ async fn env_blocklist_multiple_prefixes() {
         std::env::remove_var("AWS_SECRET_ACCESS_KEY");
         std::env::remove_var("OPENAI_API_KEY");
     }
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
     assert!(
         result.contains("absent1"),
         "AWS_ var should be stripped, got: {result}"
@@ -1683,7 +1688,7 @@ async fn env_blocklist_multiple_prefixes() {
 #[tokio::test]
 async fn empty_env_blocklist_passes_all_vars() {
     unsafe { std::env::set_var("ZEPH_EMPTY_BLOCKLIST_TEST", "visible") };
-    let (result, code) = execute_bash(
+    let (envelope, result) = execute_bash(
         "echo ${ZEPH_EMPTY_BLOCKLIST_TEST:-absent}",
         Duration::from_secs(5),
         None,
@@ -1693,7 +1698,7 @@ async fn empty_env_blocklist_passes_all_vars() {
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_EMPTY_BLOCKLIST_TEST") };
-    assert_eq!(code, 0);
+    assert_eq!(envelope.exit_code, 0);
     assert!(
         result.contains("visible"),
         "empty blocklist should pass all vars, got: {result}"
@@ -2226,4 +2231,125 @@ fn transaction_snapshot_size_limit_within_budget() {
 
     let result = TransactionSnapshot::capture(&[file], 1024);
     assert!(result.is_ok());
+}
+
+// --- #2488: ShellOutputEnvelope tests ---
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_output_envelope_separates_streams() {
+    let (envelope, combined) = execute_bash(
+        "echo stdout-line && echo stderr-line >&2",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await;
+    assert!(
+        envelope.stdout.contains("stdout-line"),
+        "stdout should contain stdout-line: {:?}",
+        envelope.stdout
+    );
+    assert!(
+        envelope.stderr.contains("stderr-line"),
+        "stderr should contain stderr-line: {:?}",
+        envelope.stderr
+    );
+    assert!(
+        !envelope.stdout.contains("stderr-line"),
+        "stdout must not bleed stderr: {:?}",
+        envelope.stdout
+    );
+    assert!(
+        !envelope.stderr.contains("stdout-line"),
+        "stderr must not bleed stdout: {:?}",
+        envelope.stderr
+    );
+    assert!(combined.contains("[stderr]"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_output_envelope_in_tool_output_raw_response() {
+    let executor = ShellExecutor::new(&default_config());
+    let response = "```bash\necho hello && echo err >&2\n```";
+    let output = executor.execute(response).await.unwrap().unwrap();
+    assert!(
+        output.raw_response.is_some(),
+        "raw_response should be set for shell output"
+    );
+    let val = output.raw_response.unwrap();
+    let stdout = val["stdout"].as_str().unwrap_or("");
+    let stderr = val["stderr"].as_str().unwrap_or("");
+    assert!(
+        stdout.contains("hello"),
+        "stdout in raw_response: {stdout:?}"
+    );
+    assert!(stderr.contains("err"), "stderr in raw_response: {stderr:?}");
+    assert!(
+        val["exit_code"].as_i64().is_some(),
+        "exit_code should be present"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_output_envelope_nonzero_exit_code() {
+    let (envelope, _combined) =
+        execute_bash("exit 42", Duration::from_secs(5), None, None, None, &[]).await;
+    assert_eq!(
+        envelope.exit_code, 42,
+        "exit_code should reflect the actual exit status"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_output_envelope_truncated_flag_set_when_filter_shortens_output() {
+    use crate::filter::{CommandMatcher, FilterConfidence, FilterResult, OutputFilter};
+    use std::sync::LazyLock;
+
+    struct TruncatingFilter;
+    static MATCH_ALL: LazyLock<CommandMatcher> =
+        LazyLock::new(|| CommandMatcher::Custom(Box::new(|_| true)));
+    impl OutputFilter for TruncatingFilter {
+        fn name(&self) -> &'static str {
+            "truncating"
+        }
+        fn matcher(&self) -> &CommandMatcher {
+            &MATCH_ALL
+        }
+        fn filter(&self, _command: &str, raw_output: &str, _exit_code: i32) -> FilterResult {
+            // Return a strictly shorter output to trigger truncated=true.
+            let shortened = if raw_output.len() > 5 {
+                raw_output[..5].to_owned()
+            } else {
+                raw_output.to_owned()
+            };
+            FilterResult {
+                raw_chars: raw_output.len(),
+                filtered_chars: shortened.len(),
+                raw_lines: 1,
+                filtered_lines: 1,
+                output: shortened,
+                confidence: FilterConfidence::Full,
+                kept_lines: Vec::new(),
+            }
+        }
+    }
+
+    let mut registry = OutputFilterRegistry::new(true);
+    registry.register(Box::new(TruncatingFilter));
+
+    let executor = ShellExecutor::new(&default_config()).with_output_filters(registry);
+    // Produce output longer than 5 bytes to ensure truncation occurs.
+    let response = "```bash\necho 'hello world this is long output'\n```";
+    let output = executor.execute(response).await.unwrap().unwrap();
+    let val = output.raw_response.unwrap();
+    assert!(
+        val["truncated"].as_bool().unwrap_or(false),
+        "truncated flag should be true when filter shortens output"
+    );
 }

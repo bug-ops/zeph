@@ -230,11 +230,13 @@ impl ShellExecutor {
 
         let mut outputs = Vec::with_capacity(blocks.len());
         let mut cumulative_filter_stats: Option<FilterStats> = None;
+        let mut last_envelope: Option<ShellOutputEnvelope> = None;
         #[allow(clippy::cast_possible_truncation)]
         let blocks_executed = blocks.len() as u32;
 
         for block in &blocks {
-            let (output_line, per_block_stats) = self.execute_block(block, skip_confirm).await?;
+            let (output_line, per_block_stats, envelope) =
+                self.execute_block(block, skip_confirm).await?;
             if let Some(fs) = per_block_stats {
                 let stats = cumulative_filter_stats.get_or_insert_with(FilterStats::default);
                 stats.raw_chars += fs.raw_chars;
@@ -254,8 +256,13 @@ impl ShellExecutor {
                     stats.kept_lines = fs.kept_lines;
                 }
             }
+            last_envelope = Some(envelope);
             outputs.push(output_line);
         }
+
+        let raw_response = last_envelope
+            .as_ref()
+            .and_then(|e| serde_json::to_value(e).ok());
 
         Ok(Some(ToolOutput {
             tool_name: "bash".to_owned(),
@@ -266,7 +273,7 @@ impl ShellExecutor {
             streamed: self.tool_event_tx.is_some(),
             terminal_id: None,
             locations: None,
-            raw_response: None,
+            raw_response,
             claim_source: Some(ClaimSource::Shell),
         }))
     }
@@ -276,7 +283,7 @@ impl ShellExecutor {
         &self,
         block: &str,
         skip_confirm: bool,
-    ) -> Result<(String, Option<FilterStats>), ToolError> {
+    ) -> Result<(String, Option<FilterStats>, ShellOutputEnvelope), ToolError> {
         self.check_permissions(block, skip_confirm).await?;
         self.validate_sandbox(block)?;
 
@@ -323,7 +330,7 @@ impl ShellExecutor {
         let start = Instant::now();
         let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
             self.skill_env.read().ok().and_then(|g| g.clone());
-        let (out, exit_code) = execute_bash(
+        let (mut envelope, out) = execute_bash(
             block,
             self.timeout,
             self.tool_event_tx.as_ref(),
@@ -332,6 +339,7 @@ impl ShellExecutor {
             &self.env_blocklist,
         )
         .await;
+        let exit_code = envelope.exit_code;
         if exit_code == 130
             && self
                 .cancel_token
@@ -367,6 +375,8 @@ impl ShellExecutor {
                             },
                             duration_ms,
                             None,
+                            Some(exit_code),
+                            false,
                         )
                         .await;
                         if let Some(ref tx) = self.tool_event_tx {
@@ -396,9 +406,16 @@ impl ShellExecutor {
         } else {
             AuditResult::Success
         };
-        self.log_audit(block, audit_result, duration_ms, None).await;
-
         if is_timeout {
+            self.log_audit(
+                block,
+                audit_result,
+                duration_ms,
+                None,
+                Some(exit_code),
+                false,
+            )
+            .await;
             self.emit_completed(block, &out, false, None);
             return Err(ToolError::Timeout {
                 timeout_secs: self.timeout.as_secs(),
@@ -450,12 +467,25 @@ impl ShellExecutor {
             per_block_stats.clone(),
         );
 
+        // Mark truncated if output was shortened during filtering.
+        envelope.truncated = filtered.len() < out.len();
+
+        self.log_audit(
+            block,
+            audit_result,
+            duration_ms,
+            None,
+            Some(exit_code),
+            envelope.truncated,
+        )
+        .await;
+
         let output_line = if let Some(warn) = snapshot_warning {
             format!("{warn}\n$ {block}\n{filtered}")
         } else {
             format!("$ {block}\n{filtered}")
         };
-        Ok((output_line, per_block_stats))
+        Ok((output_line, per_block_stats, envelope))
     }
 
     fn emit_completed(
@@ -492,6 +522,8 @@ impl ShellExecutor {
                 },
                 0,
                 Some(&err),
+                None,
+                false,
             )
             .await;
             return Err(err);
@@ -510,6 +542,8 @@ impl ShellExecutor {
                         },
                         0,
                         Some(&err),
+                        None,
+                        false,
                     )
                     .await;
                     return Err(err);
@@ -634,6 +668,8 @@ impl ShellExecutor {
         result: AuditResult,
         duration_ms: u64,
         error: Option<&ToolError>,
+        exit_code: Option<i32>,
+        truncated: bool,
     ) {
         if let Some(ref logger) = self.audit_logger {
             let (error_category, error_domain, error_phase) =
@@ -660,6 +696,8 @@ impl ShellExecutor {
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
                 adversarial_policy_decision: None,
+                exit_code,
+                truncated,
             };
             logger.log(&entry).await;
         }
@@ -1027,6 +1065,16 @@ async fn kill_process_tree(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }
 
+/// Structured output from a shell command execution.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ShellOutputEnvelope {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub truncated: bool,
+}
+
+#[allow(clippy::too_many_lines)]
 async fn execute_bash(
     code: &str,
     timeout: Duration,
@@ -1034,7 +1082,7 @@ async fn execute_bash(
     cancel_token: Option<&CancellationToken>,
     extra_env: Option<&std::collections::HashMap<String, String>>,
     env_blocklist: &[String],
-) -> (String, i32) {
+) -> (ShellOutputEnvelope, String) {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -1062,20 +1110,33 @@ async fn execute_bash(
 
     let mut child = match child_result {
         Ok(c) => c,
-        Err(e) => return (format!("[error] {e}"), 1),
+        Err(e) => {
+            let msg = format!("[error] {e}");
+            return (
+                ShellOutputEnvelope {
+                    stdout: String::new(),
+                    stderr: msg.clone(),
+                    exit_code: 1,
+                    truncated: false,
+                },
+                msg,
+            );
+        }
     };
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
 
-    let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(64);
+    // Channel carries (is_stderr, line) so we can accumulate separate buffers
+    // while still building a combined interleaved string for streaming and LLM context.
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<(bool, String)>(64);
 
     let stdout_tx = line_tx.clone();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
         let mut buf = String::new();
         while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
-            let _ = stdout_tx.send(buf.clone()).await;
+            let _ = stdout_tx.send((false, buf.clone())).await;
             buf.clear();
         }
     });
@@ -1084,34 +1145,55 @@ async fn execute_bash(
         let mut reader = BufReader::new(stderr);
         let mut buf = String::new();
         while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
-            let _ = line_tx.send(format!("[stderr] {buf}")).await;
+            let _ = line_tx.send((true, buf.clone())).await;
             buf.clear();
         }
     });
 
     let mut combined = String::new();
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
         tokio::select! {
             line = line_rx.recv() => {
                 match line {
-                    Some(chunk) => {
+                    Some((is_stderr, chunk)) => {
+                        let interleaved = if is_stderr {
+                            format!("[stderr] {chunk}")
+                        } else {
+                            chunk.clone()
+                        };
                         if let Some(tx) = event_tx {
                             let _ = tx.send(ToolEvent::OutputChunk {
                                 tool_name: "bash".to_owned(),
                                 command: code.to_owned(),
-                                chunk: chunk.clone(),
+                                chunk: interleaved.clone(),
                             });
                         }
-                        combined.push_str(&chunk);
+                        combined.push_str(&interleaved);
+                        if is_stderr {
+                            stderr_buf.push_str(&chunk);
+                        } else {
+                            stdout_buf.push_str(&chunk);
+                        }
                     }
                     None => break,
                 }
             }
             () = tokio::time::sleep_until(deadline) => {
                 kill_process_tree(&mut child).await;
-                return (format!("[error] command timed out after {timeout_secs}s"), 1);
+                let msg = format!("[error] command timed out after {timeout_secs}s");
+                return (
+                    ShellOutputEnvelope {
+                        stdout: stdout_buf,
+                        stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
+                        exit_code: 1,
+                        truncated: false,
+                    },
+                    msg,
+                );
             }
             () = async {
                 match cancel_token {
@@ -1120,7 +1202,15 @@ async fn execute_bash(
                 }
             } => {
                 kill_process_tree(&mut child).await;
-                return ("[cancelled] operation aborted".to_string(), 130);
+                return (
+                    ShellOutputEnvelope {
+                        stdout: stdout_buf,
+                        stderr: format!("{stderr_buf}operation aborted"),
+                        exit_code: 130,
+                        truncated: false,
+                    },
+                    "[cancelled] operation aborted".to_string(),
+                );
             }
         }
     }
@@ -1128,11 +1218,28 @@ async fn execute_bash(
     let status = child.wait().await;
     let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(1);
 
-    if combined.is_empty() {
-        ("(no output)".to_string(), exit_code)
+    let (envelope, combined) = if combined.is_empty() {
+        (
+            ShellOutputEnvelope {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code,
+                truncated: false,
+            },
+            "(no output)".to_string(),
+        )
     } else {
-        (combined, exit_code)
-    }
+        (
+            ShellOutputEnvelope {
+                stdout: stdout_buf.trim_end().to_owned(),
+                stderr: stderr_buf.trim_end().to_owned(),
+                exit_code,
+                truncated: false,
+            },
+            combined,
+        )
+    };
+    (envelope, combined)
 }
 
 #[cfg(test)]

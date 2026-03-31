@@ -142,6 +142,8 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
             embedding_anomalous: false,
             cross_boundary_mcp_to_acp: false,
             adversarial_policy_decision: Some(decision.to_owned()),
+            exit_code: None,
+            truncated: false,
         };
         audit.log(&entry).await;
     }

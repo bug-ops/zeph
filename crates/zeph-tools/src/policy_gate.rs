@@ -109,6 +109,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         embedding_anomalous: false,
                         cross_boundary_mcp_to_acp: false,
                         adversarial_policy_decision: None,
+                        exit_code: None,
+                        truncated: false,
                     };
                     audit.log(&entry).await;
                 }
@@ -134,6 +136,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         embedding_anomalous: false,
                         cross_boundary_mcp_to_acp: false,
                         adversarial_policy_decision: None,
+                        exit_code: None,
+                        truncated: false,
                     };
                     audit.log(&entry).await;
                 }
@@ -185,6 +189,8 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
                     embedding_anomalous: false,
                     cross_boundary_mcp_to_acp: false,
                     adversarial_policy_decision: None,
+                    exit_code: None,
+                    truncated: false,
                 };
                 audit.log(&entry).await;
             }

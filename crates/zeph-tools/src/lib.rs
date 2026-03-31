@@ -49,8 +49,9 @@ pub use composite::CompositeExecutor;
 #[cfg(feature = "policy-enforcer")]
 pub use config::AdversarialPolicyConfig;
 pub use config::{
-    AnomalyConfig, AuditConfig, DependencyConfig, OverflowConfig, ResultCacheConfig, RetryConfig,
-    ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig, UtilityScoringConfig,
+    AnomalyConfig, AuditConfig, DependencyConfig, FileConfig, OverflowConfig, ResultCacheConfig,
+    RetryConfig, ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
+    UtilityScoringConfig,
 };
 pub use diagnostics::DiagnosticsExecutor;
 pub use error_taxonomy::{
@@ -88,8 +89,8 @@ pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
 };
 pub use shell::{
-    DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, check_blocklist,
-    effective_shell_command,
+    DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, ShellOutputEnvelope,
+    check_blocklist, effective_shell_command,
 };
 pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;
