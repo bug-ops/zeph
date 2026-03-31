@@ -21,9 +21,11 @@ use crate::config::{ProviderEntry, SecurityConfig, SkillPromptMode, TimeoutConfi
 use crate::config_watcher::ConfigEvent;
 use crate::context::EnvironmentContext;
 use crate::cost::CostTracker;
+use crate::file_watcher::FileChangedEvent;
 use crate::instructions::{InstructionBlock, InstructionEvent, InstructionReloadState};
 use crate::metrics::MetricsSnapshot;
 use crate::vault::Secret;
+use zeph_config;
 use zeph_memory::TokenCounter;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_sanitizer::ContentSanitizer;
@@ -277,6 +279,12 @@ pub(crate) struct LifecycleState {
     pub(crate) warmup_ready: Option<watch::Receiver<bool>>,
     pub(crate) update_notify_rx: Option<mpsc::Receiver<String>>,
     pub(crate) custom_task_rx: Option<mpsc::Receiver<String>>,
+    /// Last known process cwd. Compared after each tool call to detect changes.
+    pub(crate) last_known_cwd: PathBuf,
+    /// Receiver for file-change events from `FileChangeWatcher`. `None` when no paths configured.
+    pub(crate) file_changed_rx: Option<mpsc::Receiver<FileChangedEvent>>,
+    /// Keeps the `FileChangeWatcher` alive for the agent's lifetime. Dropping it aborts the watcher task.
+    pub(crate) file_watcher: Option<crate::file_watcher::FileChangeWatcher>,
 }
 
 /// Minimal config snapshot needed to reconstruct a provider at runtime via `/provider <name>`.
@@ -437,6 +445,17 @@ pub(crate) struct SessionState {
     /// Snapshot of the policy config for `/policy` command inspection.
     #[cfg(feature = "policy-enforcer")]
     pub(crate) policy_config: Option<zeph_tools::PolicyConfig>,
+    /// `CwdChanged` hook definitions extracted from `[hooks]` config.
+    pub(crate) hooks_config: HooksConfigSnapshot,
+}
+
+/// Extracted hook lists from `[hooks]` config, stored in `SessionState`.
+#[derive(Default)]
+pub(crate) struct HooksConfigSnapshot {
+    /// Hooks fired when working directory changes.
+    pub(crate) cwd_changed: Vec<zeph_config::HookDef>,
+    /// Hooks fired when a watched file changes.
+    pub(crate) file_changed_hooks: Vec<zeph_config::HookDef>,
 }
 
 // Groups message buffering and image staging state.

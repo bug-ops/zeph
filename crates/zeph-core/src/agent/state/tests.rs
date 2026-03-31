@@ -13,7 +13,8 @@ use std::collections::VecDeque;
 use crate::agent::feedback_detector::FeedbackDetector;
 use crate::agent::rate_limiter::{RateLimitConfig, ToolRateLimiter};
 use crate::agent::state::{
-    ExperimentState, FeedbackState, InstructionState, MessageState, RuntimeConfig, SessionState,
+    ExperimentState, FeedbackState, HooksConfigSnapshot, InstructionState, MessageState,
+    RuntimeConfig, SessionState,
 };
 use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::context::EnvironmentContext;
@@ -71,6 +72,7 @@ fn make_session_state() -> SessionState {
         lsp_hooks: None,
         #[cfg(feature = "policy-enforcer")]
         policy_config: None,
+        hooks_config: HooksConfigSnapshot::default(),
     }
 }
 

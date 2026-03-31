@@ -311,9 +311,13 @@ pub(crate) async fn run_daemon(
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let cwd_executor = zeph_tools::SetCwdExecutor;
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
-        zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
+        zeph_tools::CompositeExecutor::new(
+            shell_executor,
+            zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
+        ),
     );
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         std::sync::Arc::clone(&memory),
@@ -485,7 +489,8 @@ pub(crate) async fn run_daemon(
 
     let mut agent = agent
         .with_document_config(config.memory.documents.clone())
-        .with_graph_config(config.memory.graph.clone());
+        .with_graph_config(config.memory.graph.clone())
+        .with_hooks_config(&config.hooks);
 
     agent.load_history().await?;
     agent

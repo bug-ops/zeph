@@ -422,6 +422,7 @@ impl<C: Channel> Agent<C> {
                 lsp_hooks: None,
                 #[cfg(feature = "policy-enforcer")]
                 policy_config: None,
+                hooks_config: state::HooksConfigSnapshot::default(),
             },
             instructions: InstructionState {
                 blocks: Vec::new(),
@@ -491,6 +492,9 @@ impl<C: Channel> Agent<C> {
                 warmup_ready: None,
                 update_notify_rx: None,
                 custom_task_rx: None,
+                last_known_cwd: std::env::current_dir().unwrap_or_default(),
+                file_changed_rx: None,
+                file_watcher: None,
             },
             providers: ProviderState {
                 summary_provider: None,
@@ -2628,6 +2632,10 @@ impl<C: Channel> Agent<C> {
                         tracing::info!("scheduler: injecting custom task as agent turn");
                         let text = format!("{SCHEDULED_TASK_PREFIX}{prompt}");
                         Some(crate::channel::ChannelMessage { text, attachments: Vec::new() })
+                    }
+                    Some(event) = recv_optional(&mut self.lifecycle.file_changed_rx) => {
+                        self.handle_file_changed(event).await;
+                        continue;
                     }
                 };
                 let Some(msg) = incoming else { break };
@@ -5093,6 +5101,76 @@ impl<C: Channel> Agent<C> {
         if let Some(ref tx) = self.session.status_tx {
             let _ = tx.send("SideQuest: scoring tool outputs...".into());
         }
+    }
+
+    /// Check if the process cwd has changed since last call and fire `CwdChanged` hooks.
+    ///
+    /// Called after each tool batch completes. The check is a single syscall and has
+    /// negligible cost. Only fires when cwd actually changed (defense-in-depth: normally
+    /// only `set_working_directory` changes cwd; shell child processes cannot affect it).
+    pub(crate) async fn check_cwd_changed(&mut self) {
+        let current = match std::env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("check_cwd_changed: failed to get cwd: {e}");
+                return;
+            }
+        };
+        if current == self.lifecycle.last_known_cwd {
+            return;
+        }
+        let old_cwd = std::mem::replace(&mut self.lifecycle.last_known_cwd, current.clone());
+        self.session.env_context.working_dir = current.display().to_string();
+
+        tracing::info!(
+            old = %old_cwd.display(),
+            new = %current.display(),
+            "working directory changed"
+        );
+
+        let _ = self
+            .channel
+            .send_status("Working directory changed\u{2026}")
+            .await;
+
+        let hooks = self.session.hooks_config.cwd_changed.clone();
+        if !hooks.is_empty() {
+            let mut env = std::collections::HashMap::new();
+            env.insert("ZEPH_OLD_CWD".to_owned(), old_cwd.display().to_string());
+            env.insert("ZEPH_NEW_CWD".to_owned(), current.display().to_string());
+            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env).await {
+                tracing::warn!(error = %e, "CwdChanged hook failed");
+            }
+        }
+
+        let _ = self.channel.send_status("").await;
+    }
+
+    /// Handle a `FileChangedEvent` from the file watcher.
+    pub(crate) async fn handle_file_changed(
+        &mut self,
+        event: crate::file_watcher::FileChangedEvent,
+    ) {
+        tracing::info!(path = %event.path.display(), "file changed");
+
+        let _ = self
+            .channel
+            .send_status("Running file-change hook\u{2026}")
+            .await;
+
+        let hooks = self.session.hooks_config.file_changed_hooks.clone();
+        if !hooks.is_empty() {
+            let mut env = std::collections::HashMap::new();
+            env.insert(
+                "ZEPH_CHANGED_PATH".to_owned(),
+                event.path.display().to_string(),
+            );
+            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env).await {
+                tracing::warn!(error = %e, "FileChanged hook failed");
+            }
+        }
+
+        let _ = self.channel.send_status("").await;
     }
 }
 pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {

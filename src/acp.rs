@@ -144,6 +144,8 @@ struct SharedAgentDeps {
     sidequest_config: zeph_core::config::SidequestConfig,
     tool_filter_config: zeph_core::config::ToolFilterConfig,
 
+    hooks_config: zeph_core::config::HooksConfig,
+
     // ACP-specific fields (transport-level; not agent-level)
     acp_agent_name: String,
     acp_agent_version: String,
@@ -315,9 +317,13 @@ async fn build_acp_deps(
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let cwd_executor = zeph_tools::SetCwdExecutor;
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
-        zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
+        zeph_tools::CompositeExecutor::new(
+            shell_executor,
+            zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
+        ),
     );
     let tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
@@ -472,6 +478,7 @@ async fn build_acp_deps(
         #[cfg(feature = "guardrail")]
         guardrail_provider: app.build_guardrail_provider(),
         audit_logger: acp_audit_logger,
+        hooks_config: config.hooks.clone(),
         session_config,
         focus_config: config.agent.focus.clone(),
         sidequest_config: config.memory.sidequest.clone(),
@@ -575,6 +582,8 @@ async fn spawn_acp_agent(
     let scheduler_update_tx = d.scheduler_update_tx.clone();
     #[cfg(feature = "scheduler")]
     let scheduler_custom_tx = d.scheduler_custom_tx.clone();
+
+    let hooks_config = d.hooks_config.clone();
 
     // Per-session receivers: each session gets its own mpsc::Receiver forwarded from the
     // shared broadcast senders. The CancellationToken is derived from the AcpContext cancel
@@ -806,6 +815,8 @@ async fn spawn_acp_agent(
             Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
         }
     }
+
+    agent = agent.with_hooks_config(&hooks_config);
 
     drop(d);
 

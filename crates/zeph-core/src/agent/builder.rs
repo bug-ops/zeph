@@ -1024,6 +1024,56 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure reactive hook events from the `[hooks]` config section.
+    ///
+    /// Stores hook definitions in `SessionState` and starts a `FileChangeWatcher`
+    /// when `file_changed.watch_paths` is non-empty. Initializes `last_known_cwd`
+    /// from the current process cwd at call time (the project root).
+    #[must_use]
+    pub fn with_hooks_config(mut self, config: &zeph_config::HooksConfig) -> Self {
+        self.session
+            .hooks_config
+            .cwd_changed
+            .clone_from(&config.cwd_changed);
+
+        if let Some(ref fc) = config.file_changed {
+            self.session
+                .hooks_config
+                .file_changed_hooks
+                .clone_from(&fc.hooks);
+
+            if !fc.watch_paths.is_empty() {
+                let (tx, rx) = tokio::sync::mpsc::channel(64);
+                match crate::file_watcher::FileChangeWatcher::start(
+                    &fc.watch_paths,
+                    fc.debounce_ms,
+                    tx,
+                ) {
+                    Ok(watcher) => {
+                        self.lifecycle.file_watcher = Some(watcher);
+                        self.lifecycle.file_changed_rx = Some(rx);
+                        tracing::info!(
+                            paths = ?fc.watch_paths,
+                            debounce_ms = fc.debounce_ms,
+                            "file change watcher started"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to start file change watcher");
+                    }
+                }
+            }
+        }
+
+        // Sync last_known_cwd with env_context.working_dir if already set.
+        let cwd_str = &self.session.env_context.working_dir;
+        if !cwd_str.is_empty() {
+            self.lifecycle.last_known_cwd = std::path::PathBuf::from(cwd_str);
+        }
+
+        self
+    }
+
     #[must_use]
     pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
         self.lifecycle.warmup_ready = Some(rx);

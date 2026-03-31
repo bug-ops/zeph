@@ -16,6 +16,7 @@ use crate::features::{
     CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
     SchedulerConfig, SkillPromptMode, SkillsConfig, VaultConfig,
 };
+use crate::hooks::HooksConfig;
 use crate::learning::LearningConfig;
 use crate::logging::LoggingConfig;
 use crate::memory::{
@@ -90,6 +91,8 @@ pub struct Config {
     pub debug: DebugConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub hooks: HooksConfig,
     #[cfg(feature = "lsp-context")]
     #[serde(default)]
     pub lsp: LspConfig,
@@ -233,6 +236,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             #[cfg(feature = "lsp-context")]
             lsp: LspConfig::default(),
+            hooks: HooksConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

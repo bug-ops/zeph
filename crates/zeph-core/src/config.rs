@@ -39,6 +39,7 @@ pub use zeph_config::{
 pub use zeph_config::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 
 pub use zeph_config::A2aServerConfig;
+pub use zeph_config::{FileChangedConfig, HooksConfig};
 
 pub use zeph_config::{
     DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,

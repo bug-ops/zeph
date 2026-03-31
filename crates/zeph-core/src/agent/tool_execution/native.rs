@@ -1913,6 +1913,11 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Defense-in-depth: check if process cwd changed during this tool batch.
+        // Normally only changes via set_working_directory; this also catches any
+        // future code path that calls set_current_dir.
+        self.check_cwd_changed().await;
+
         Ok(())
     }
 

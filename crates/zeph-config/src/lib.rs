@@ -16,6 +16,7 @@ mod env;
 pub mod error;
 pub mod experiment;
 pub mod features;
+pub mod hooks;
 pub mod learning;
 mod loader;
 pub mod logging;
@@ -50,6 +51,7 @@ pub use features::{
     ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SkillPromptMode, SkillsConfig,
     TraceConfig, VaultConfig,
 };
+pub use hooks::{FileChangedConfig, HooksConfig};
 pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{

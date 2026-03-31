@@ -44,6 +44,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(memory): `AsyncMemoryRouter` trait now implemented for `HeuristicRouter` and `HybridRouter`; `SemanticMemory::recall_routed_async()` added to dispatch routing via the async path; `parse_route_str` is now public
 - feat(mcp): MCP Elicitation support — MCP servers can now request structured user input mid-task via the `elicitation/create` protocol method; requests are routed to the active channel (CLI prompts interactively, non-interactive channels auto-decline); CLI channel renders a phishing-prevention header showing the requesting server name before prompting; `ElicitationSchema` properties are mapped to typed `ElicitationField` entries (string, integer, number, boolean, enum); URL elicitation variant deferred to a future phase — auto-declined with a log message (closes #2486)
 - feat(config): `[mcp] elicitation_enabled` (default `false`) and `elicitation_timeout` (default 120 s) global config options; per-server `elicitation_enabled` override (`Option<bool>`) in `[[mcp.servers]]` entries — `null`/absent inherits the global flag; `Sandboxed` trust-level servers are never allowed to elicit regardless of config
+- hooks: reactive `CwdChanged` and `FileChanged` hook events (#2487)
+  - new `[hooks]` config section with `[[hooks.cwd_changed]]` and `[hooks.file_changed]` subsections
+  - new `set_working_directory` tool — explicit, persistent cwd change detected post-tool and fires `CwdChanged` hooks with `ZEPH_OLD_CWD`/`ZEPH_NEW_CWD` env vars
+  - `FileChangeWatcher` monitors configured `watch_paths` via `notify-debouncer-mini` (debounced 500ms by default) and fires hooks with `ZEPH_CHANGED_PATH`
+  - TUI spinner status emitted on both event types
 
 ### Removed
 

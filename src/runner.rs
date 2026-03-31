@@ -1360,6 +1360,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    let agent = agent.with_hooks_config(&config.hooks);
     let agent = agent.with_learning(config.skills.learning.clone());
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {

@@ -13,6 +13,7 @@ pub mod context;
 pub mod cost;
 pub mod daemon;
 pub mod debug_dump;
+pub mod file_watcher;
 pub mod instructions;
 pub mod metrics;
 pub mod pipeline;

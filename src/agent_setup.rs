@@ -14,7 +14,13 @@ use zeph_tools::{
 type ToolExecutor = zeph_tools::CompositeExecutor<
     zeph_tools::CompositeExecutor<
         zeph_tools::FileExecutor,
-        zeph_tools::CompositeExecutor<zeph_tools::ShellExecutor, zeph_tools::WebScrapeExecutor>,
+        zeph_tools::CompositeExecutor<
+            zeph_tools::ShellExecutor,
+            zeph_tools::CompositeExecutor<
+                zeph_tools::WebScrapeExecutor,
+                zeph_tools::SetCwdExecutor,
+            >,
+        >,
     >,
     zeph_mcp::McpToolExecutor,
 >;
@@ -409,9 +415,13 @@ pub(crate) async fn build_tool_setup(
     let mcp_shared_tools = Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let cwd_executor = zeph_tools::SetCwdExecutor;
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
-        zeph_tools::CompositeExecutor::new(shell_executor, scrape_executor),
+        zeph_tools::CompositeExecutor::new(
+            shell_executor,
+            zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
+        ),
     );
     let executor = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
 

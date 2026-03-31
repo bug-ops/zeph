@@ -12,6 +12,7 @@ pub mod audit;
 pub mod cache;
 pub mod composite;
 pub mod config;
+pub mod cwd;
 pub mod diagnostics;
 pub mod error_taxonomy;
 pub mod executor;
@@ -53,6 +54,7 @@ pub use config::{
     RetryConfig, ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
     UtilityScoringConfig,
 };
+pub use cwd::SetCwdExecutor;
 pub use diagnostics::DiagnosticsExecutor;
 pub use error_taxonomy::{
     ErrorDomain, ToolErrorCategory, ToolErrorFeedback, ToolInvocationPhase, classify_http_status,
