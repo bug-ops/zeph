@@ -186,7 +186,7 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
                 call,
                 "allow:executed",
                 AuditResult::Success,
-                out.claim_source.clone(),
+                out.claim_source,
             )
             .await;
         }
@@ -205,7 +205,7 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
                 call,
                 "allow:executed",
                 AuditResult::Success,
-                out.claim_source.clone(),
+                out.claim_source,
             )
             .await;
         }
