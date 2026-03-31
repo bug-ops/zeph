@@ -553,7 +553,7 @@ impl Channel for TelegramChannel {
                     .await;
                 return Ok(ElicitationResponse::Declined);
             };
-            values.insert(field.name.clone(), value);
+            values.insert(sanitize_field_key(&field.name), value);
         }
 
         Ok(ElicitationResponse::Accepted(serde_json::Value::Object(
@@ -566,6 +566,17 @@ impl Channel for TelegramChannel {
 fn sanitize_markdown(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '*' | '_' | '[' | ']' | '`' | '\x1b'))
+        .collect()
+}
+
+/// Sanitize a field name for use as a JSON key.
+///
+/// Keeps only alphanumeric characters and underscores to prevent injection via
+/// malicious MCP server field names (e.g. keys with special chars that could
+/// confuse downstream consumers).
+fn sanitize_field_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
         .collect()
 }
 
@@ -975,5 +986,94 @@ mod tests {
             "expected edit + at least 1 overflow send, got {}",
             requests.len()
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // elicit() — happy path, timeout, /cancel, field-key sanitization
+    // All tests that exercise elicit() need the mock server because elicit()
+    // calls self.send() (which calls the Telegram Bot API) before reading rx.
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn elicit_happy_path_string_field_returns_accepted() {
+        let server = MockServer::start().await;
+        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+
+        let request = ElicitationRequest {
+            server_name: "test-server".to_owned(),
+            message: "Please provide your name".to_owned(),
+            fields: vec![ElicitationField {
+                name: "username".to_owned(),
+                description: None,
+                field_type: ElicitationFieldType::String,
+                required: true,
+            }],
+        };
+
+        // Send the answer before calling elicit() so it is buffered in the channel.
+        tx.send(plain_message("alice")).await.unwrap();
+
+        let response = channel.elicit(request).await.unwrap();
+
+        match response {
+            ElicitationResponse::Accepted(val) => {
+                assert_eq!(val["username"], "alice");
+            }
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn elicit_cancel_command_returns_cancelled() {
+        let server = MockServer::start().await;
+        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+
+        let request = ElicitationRequest {
+            server_name: "test-server".to_owned(),
+            message: "Provide a value".to_owned(),
+            fields: vec![ElicitationField {
+                name: "token".to_owned(),
+                description: None,
+                field_type: ElicitationFieldType::String,
+                required: true,
+            }],
+        };
+
+        tx.send(plain_message("/cancel")).await.unwrap();
+
+        let response = channel.elicit(request).await.unwrap();
+        assert!(
+            matches!(response, ElicitationResponse::Cancelled),
+            "expected Cancelled, got {response:?}"
+        );
+    }
+
+    /// Verify the timeout branch of elicit() at the rx level, matching the
+    /// same pattern used in confirm_timeout_logic_denies_on_timeout.
+    #[tokio::test]
+    async fn elicit_timeout_logic_cancels_on_timeout() {
+        tokio::time::pause();
+        let (_tx, mut rx) = mpsc::channel::<IncomingMessage>(1);
+        let timeout_fut = tokio::time::timeout(crate::ELICITATION_TIMEOUT, rx.recv());
+        tokio::time::advance(crate::ELICITATION_TIMEOUT + Duration::from_millis(1)).await;
+        let result = timeout_fut.await;
+        assert!(
+            result.is_err(),
+            "expected Err(Elapsed) for elicitation timeout, got recv result"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // sanitize_field_key — pure unit test (no network)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn sanitize_field_key_strips_special_chars() {
+        assert_eq!(sanitize_field_key("hello world"), "helloworld");
+        assert_eq!(sanitize_field_key("field-name"), "fieldname");
+        assert_eq!(sanitize_field_key("__ok__"), "__ok__");
+        assert_eq!(sanitize_field_key("a.b.c"), "abc");
+        // Alphanumeric chars and underscores are kept; everything else stripped.
+        assert_eq!(sanitize_field_key("key!@#val"), "keyval");
     }
 }
