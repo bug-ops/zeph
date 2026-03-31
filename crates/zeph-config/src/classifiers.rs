@@ -35,6 +35,16 @@ fn default_pii_ner_max_chars() -> usize {
     8192
 }
 
+fn default_pii_ner_allowlist() -> Vec<String> {
+    vec![
+        "Zeph".into(),
+        "Rust".into(),
+        "OpenAI".into(),
+        "Ollama".into(),
+        "Claude".into(),
+    ]
+}
+
 fn default_three_class_threshold() -> f32 {
     0.7
 }
@@ -203,6 +213,18 @@ pub struct ClassifiersConfig {
     /// timeout on large tool outputs (e.g. `search_code`). Default `8192`.
     #[serde(default = "default_pii_ner_max_chars")]
     pub pii_ner_max_chars: usize,
+
+    /// Allowlist of tokens that are never redacted by the NER PII classifier, regardless
+    /// of model confidence.
+    ///
+    /// Matching is case-insensitive and exact (whole span text must equal an allowlist entry).
+    /// This suppresses common false positives from the piiranha model — for example,
+    /// "Zeph" is misclassified as a city (PII:CITY) by the base model.
+    ///
+    /// Default entries: `["Zeph", "Rust", "OpenAI", "Ollama", "Claude"]`.
+    /// Set to `[]` to disable the allowlist entirely.
+    #[serde(default = "default_pii_ner_allowlist")]
+    pub pii_ner_allowlist: Vec<String>,
 }
 
 impl Default for ClassifiersConfig {
@@ -225,6 +247,7 @@ impl Default for ClassifiersConfig {
             pii_threshold: default_pii_threshold(),
             pii_model_sha256: None,
             pii_ner_max_chars: default_pii_ner_max_chars(),
+            pii_ner_allowlist: default_pii_ner_allowlist(),
         }
     }
 }
@@ -258,6 +281,10 @@ mod tests {
         );
         assert!((cfg.pii_threshold - 0.75).abs() < 1e-6);
         assert!(cfg.pii_model_sha256.is_none());
+        assert_eq!(
+            cfg.pii_ner_allowlist,
+            vec!["Zeph", "Rust", "OpenAI", "Ollama", "Claude"]
+        );
     }
 
     #[test]
@@ -337,6 +364,7 @@ mod tests {
             pii_threshold: 0.80,
             pii_model_sha256: None,
             pii_ner_max_chars: 4096,
+            pii_ner_allowlist: vec!["MyProject".into(), "Rust".into()],
         };
         let serialized = toml::to_string(&original).unwrap();
         let deserialized: ClassifiersConfig = toml::from_str(&serialized).unwrap();
@@ -427,6 +455,30 @@ mod tests {
         assert_eq!(cfg.three_class_model.as_deref(), Some("org/align-sentinel"));
         assert!((cfg.three_class_threshold - 0.65).abs() < 1e-6);
         assert_eq!(cfg.three_class_model_sha256.as_deref(), Some("aabbcc"));
+    }
+
+    #[test]
+    fn pii_ner_allowlist_default_entries() {
+        let cfg = ClassifiersConfig::default();
+        assert!(cfg.pii_ner_allowlist.contains(&"Zeph".to_owned()));
+        assert!(cfg.pii_ner_allowlist.contains(&"Rust".to_owned()));
+        assert!(cfg.pii_ner_allowlist.contains(&"OpenAI".to_owned()));
+        assert!(cfg.pii_ner_allowlist.contains(&"Ollama".to_owned()));
+        assert!(cfg.pii_ner_allowlist.contains(&"Claude".to_owned()));
+    }
+
+    #[test]
+    fn pii_ner_allowlist_configurable() {
+        let toml = r#"pii_ner_allowlist = ["MyProject", "AcmeCorp"]"#;
+        let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.pii_ner_allowlist, vec!["MyProject", "AcmeCorp"]);
+    }
+
+    #[test]
+    fn pii_ner_allowlist_empty_disables() {
+        let toml = "pii_ner_allowlist = []";
+        let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.pii_ner_allowlist.is_empty());
     }
 
     #[test]

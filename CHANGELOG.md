@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(classifiers): add configurable `pii_ner_allowlist` to `ClassifiersConfig` — tokens matching an allowlist entry (case-insensitive) are never redacted by the piiranha NER model, suppressing false positives such as "Zeph" → `[PII:CITY]`; default entries: `["Zeph", "Rust", "OpenAI", "Ollama", "Claude"]`; list is empty-able via config to disable the feature (closes #2537)
+- fix(classifiers): document that macOS Apple Silicon requires `--features full,metal` for piiranha NER GPU acceleration; without `metal`, the 1.1 GB model exceeds the 30s timeout on CPU and falls back to regex-only PII detection (closes #2538)
+
 - fix(tools): propagate `claim_source` from `ToolOutput` into the post-execution audit entry in `AdversarialPolicyGateExecutor`; `write_audit` now accepts an explicit `claim_source` parameter so the field is no longer hardcoded to `None` for successful executions (closes #2535)
 - fix(tools): `extract_paths` now detects relative path tokens that contain `/` but do not start with `/` or `./` (e.g. `src/main.rs`, `.local/foo/bar`); URL schemes (`://`) and shell variable assignments (`KEY=value`) are excluded from matching (closes #2536)
 

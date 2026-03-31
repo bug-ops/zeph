@@ -328,6 +328,10 @@ pub struct ContentSanitizer {
     pii_detector: Option<std::sync::Arc<dyn zeph_llm::classifier::PiiDetector>>,
     #[cfg(feature = "classifiers")]
     pii_threshold: f32,
+    /// Case-folded allowlist — spans whose text (case-insensitive) matches an entry are
+    /// suppressed before the result is returned from `detect_pii()`.
+    #[cfg(feature = "classifiers")]
+    pii_ner_allowlist: Vec<String>,
     #[cfg(feature = "classifiers")]
     classifier_metrics: Option<std::sync::Arc<zeph_llm::ClassifierMetrics>>,
 }
@@ -363,6 +367,8 @@ impl ContentSanitizer {
             pii_detector: None,
             #[cfg(feature = "classifiers")]
             pii_threshold: 0.75,
+            #[cfg(feature = "classifiers")]
+            pii_ner_allowlist: Vec::new(),
             #[cfg(feature = "classifiers")]
             classifier_metrics: None,
         }
@@ -468,6 +474,20 @@ impl ContentSanitizer {
         self
     }
 
+    /// Set the NER PII allowlist.
+    ///
+    /// Span texts that match any entry (case-insensitive, exact match) are suppressed
+    /// from the `detect_pii()` result. Use this to suppress known false positives such
+    /// as project names misclassified by the base NER model.
+    ///
+    /// Entries are stored case-folded at construction time for fast lookup.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_pii_ner_allowlist(mut self, entries: Vec<String>) -> Self {
+        self.pii_ner_allowlist = entries.into_iter().map(|s| s.to_lowercase()).collect();
+        self
+    }
+
     /// Attach a [`ClassifierMetrics`] instance to record injection and PII latencies.
     #[cfg(feature = "classifiers")]
     #[must_use]
@@ -483,6 +503,10 @@ impl ContentSanitizer {
     ///
     /// Returns an empty result when no `pii_detector` is attached.
     ///
+    /// Spans whose extracted text matches an allowlist entry (case-insensitive, exact match)
+    /// are removed before returning. This suppresses common false positives from the
+    /// piiranha model (e.g. "Zeph" being misclassified as a city).
+    ///
     /// # Errors
     ///
     /// Returns `LlmError` if the underlying model fails.
@@ -494,9 +518,20 @@ impl ContentSanitizer {
         match &self.pii_detector {
             Some(detector) => {
                 let t0 = std::time::Instant::now();
-                let result = detector.detect_pii(text).await?;
+                let mut result = detector.detect_pii(text).await?;
                 if let Some(ref m) = self.classifier_metrics {
                     m.record(zeph_llm::classifier::ClassifierTask::Pii, t0.elapsed());
+                }
+                if !self.pii_ner_allowlist.is_empty() {
+                    result.spans.retain(|span| {
+                        let span_text = text
+                            .get(span.start..span.end)
+                            .unwrap_or("")
+                            .trim()
+                            .to_lowercase();
+                        !self.pii_ner_allowlist.contains(&span_text)
+                    });
+                    result.has_pii = !result.spans.is_empty();
                 }
                 Ok(result)
             }
@@ -2213,6 +2248,144 @@ mod tests {
                     .await,
                 InjectionVerdict::Blocked,
             );
+        }
+    }
+
+    // --- pii_ner_allowlist filtering ---
+
+    #[cfg(feature = "classifiers")]
+    mod pii_allowlist {
+        use super::*;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::Arc;
+        use zeph_llm::classifier::{PiiDetector, PiiResult, PiiSpan};
+
+        struct MockPiiDetector {
+            result: PiiResult,
+        }
+
+        impl MockPiiDetector {
+            fn new(spans: Vec<PiiSpan>) -> Self {
+                let has_pii = !spans.is_empty();
+                Self {
+                    result: PiiResult { spans, has_pii },
+                }
+            }
+        }
+
+        impl PiiDetector for MockPiiDetector {
+            fn detect_pii<'a>(
+                &'a self,
+                _text: &'a str,
+            ) -> Pin<Box<dyn Future<Output = Result<PiiResult, zeph_llm::LlmError>> + Send + 'a>>
+            {
+                let result = self.result.clone();
+                Box::pin(async move { Ok(result) })
+            }
+
+            fn backend_name(&self) -> &'static str {
+                "mock"
+            }
+        }
+
+        fn span(start: usize, end: usize) -> PiiSpan {
+            PiiSpan {
+                entity_type: "CITY".to_owned(),
+                start,
+                end,
+                score: 0.99,
+            }
+        }
+
+        // T-A1: allowlist entry filtered from detect_pii result.
+        #[tokio::test]
+        async fn allowlist_entry_is_filtered() {
+            // "Zeph" occupies bytes 6..10 in "Hello Zeph"
+            let text = "Hello Zeph";
+            let mock = Arc::new(MockPiiDetector::new(vec![span(6, 10)]));
+            let s = ContentSanitizer::new(&ContentIsolationConfig::default())
+                .with_pii_detector(mock, 0.5)
+                .with_pii_ner_allowlist(vec!["Zeph".to_owned()]);
+            let result = s.detect_pii(text).await.expect("detect_pii failed");
+            assert!(result.spans.is_empty());
+            assert!(!result.has_pii);
+        }
+
+        // T-A2: matching is case-insensitive ("zeph" in allowlist filters span "Zeph").
+        #[tokio::test]
+        async fn allowlist_is_case_insensitive() {
+            let text = "Hello Zeph";
+            let mock = Arc::new(MockPiiDetector::new(vec![span(6, 10)]));
+            let s = ContentSanitizer::new(&ContentIsolationConfig::default())
+                .with_pii_detector(mock, 0.5)
+                .with_pii_ner_allowlist(vec!["zeph".to_owned()]);
+            let result = s.detect_pii(text).await.expect("detect_pii failed");
+            assert!(result.spans.is_empty());
+            assert!(!result.has_pii);
+        }
+
+        // T-A3: non-allowlist span preserved when another span is filtered.
+        #[tokio::test]
+        async fn non_allowlist_span_preserved() {
+            // text: "Zeph john.doe@example.com"
+            //        0123456789...
+            let text = "Zeph john.doe@example.com";
+            let city_span = span(0, 4);
+            let email_span = PiiSpan {
+                entity_type: "EMAIL".to_owned(),
+                start: 5,
+                end: 25,
+                score: 0.99,
+            };
+            let mock = Arc::new(MockPiiDetector::new(vec![city_span, email_span]));
+            let s = ContentSanitizer::new(&ContentIsolationConfig::default())
+                .with_pii_detector(mock, 0.5)
+                .with_pii_ner_allowlist(vec!["Zeph".to_owned()]);
+            let result = s.detect_pii(text).await.expect("detect_pii failed");
+            assert_eq!(result.spans.len(), 1);
+            assert_eq!(result.spans[0].entity_type, "EMAIL");
+            assert!(result.has_pii);
+        }
+
+        // T-A4: empty allowlist passes all spans through (is_empty() guard is respected).
+        #[tokio::test]
+        async fn empty_allowlist_passes_all_spans() {
+            let text = "Hello Zeph";
+            let mock = Arc::new(MockPiiDetector::new(vec![span(6, 10)]));
+            let s = ContentSanitizer::new(&ContentIsolationConfig::default())
+                .with_pii_detector(mock, 0.5)
+                .with_pii_ner_allowlist(vec![]);
+            let result = s.detect_pii(text).await.expect("detect_pii failed");
+            assert_eq!(result.spans.len(), 1);
+            assert!(result.has_pii);
+        }
+
+        // T-A5: no pii_detector attached returns empty PiiResult.
+        #[tokio::test]
+        async fn no_pii_detector_returns_empty() {
+            let s = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let result = s
+                .detect_pii("sensitive text")
+                .await
+                .expect("detect_pii failed");
+            assert!(result.spans.is_empty());
+            assert!(!result.has_pii);
+        }
+
+        // T-A6: has_pii recalculated to false when all spans are filtered.
+        #[tokio::test]
+        async fn has_pii_recalculated_after_all_spans_filtered() {
+            let text = "Zeph Rust";
+            // Two spans, both matching allowlist entries.
+            let spans = vec![span(0, 4), span(5, 9)];
+            let mock = Arc::new(MockPiiDetector::new(spans));
+            let s = ContentSanitizer::new(&ContentIsolationConfig::default())
+                .with_pii_detector(mock, 0.5)
+                .with_pii_ner_allowlist(vec!["Zeph".to_owned(), "Rust".to_owned()]);
+            let result = s.detect_pii(text).await.expect("detect_pii failed");
+            assert!(result.spans.is_empty());
+            assert!(!result.has_pii);
         }
     }
 }

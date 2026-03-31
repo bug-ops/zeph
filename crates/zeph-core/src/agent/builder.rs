@@ -850,6 +850,23 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the NER PII allowlist on the sanitizer.
+    ///
+    /// Span texts matching any allowlist entry (case-insensitive, exact) are suppressed
+    /// from `detect_pii()` results. Must be called after `with_pii_detector`.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn with_pii_ner_allowlist(mut self, entries: Vec<String>) -> Self {
+        let old = std::mem::replace(
+            &mut self.security.sanitizer,
+            zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+        );
+        self.security.sanitizer = old.with_pii_ner_allowlist(entries);
+        self
+    }
+
     /// Attach a NER classifier backend for PII detection in the union merge pipeline.
     ///
     /// When attached, `sanitize_tool_output()` runs both regex and NER, merges spans, and

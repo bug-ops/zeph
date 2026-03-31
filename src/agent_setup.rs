@@ -642,9 +642,15 @@ pub(crate) fn apply_pii_classifier_with_cfg<C: Channel>(
     tracing::info!(
         repo_id = %classifiers.pii_model,
         threshold = classifiers.pii_threshold,
+        allowlist_len = classifiers.pii_ner_allowlist.len(),
         "PII classifier attached (model loads lazily on first use)"
     );
-    agent.with_pii_detector(backend_arc, classifiers.pii_threshold)
+    let agent = agent.with_pii_detector(backend_arc, classifiers.pii_threshold);
+    if classifiers.pii_ner_allowlist.is_empty() {
+        agent
+    } else {
+        agent.with_pii_ner_allowlist(classifiers.pii_ner_allowlist.clone())
+    }
 }
 
 /// Wire the `CandleNerClassifier` into the PII union merge pipeline.
