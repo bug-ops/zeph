@@ -17,11 +17,12 @@ pub use zeph_config::{
     McpConfig, McpOAuthConfig, McpServerConfig, McpTrustLevel, MemoryConfig, MemoryScope,
     NoteLinkingConfig, OAuthTokenStorage, ObservabilityConfig, OrchestrationConfig, PermissionMode,
     ProviderEntry, ProviderKind, PruningStrategy, RateLimitConfig, ResolvedSecrets, RouterConfig,
-    RouterStrategyConfig, RoutingConfig, RoutingStrategy, ScheduledTaskConfig, ScheduledTaskKind,
-    SchedulerConfig, SecurityConfig, SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter,
-    SkillPromptMode, SkillsConfig, SlackConfig, SttConfig, SubAgentConfig, SubAgentLifecycleHooks,
-    SubagentHooks, TelegramConfig, TimeoutConfig, ToolDiscoveryConfig, ToolDiscoveryStrategyConfig,
-    ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig, VaultConfig, VectorBackend,
+    RouterStrategyConfig, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SecurityConfig,
+    SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig,
+    SlackConfig, StoreRoutingConfig, StoreRoutingStrategy, SttConfig, SubAgentConfig,
+    SubAgentLifecycleHooks, SubagentHooks, TelegramConfig, TimeoutConfig, ToolDiscoveryConfig,
+    ToolDiscoveryStrategyConfig, ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig,
+    VaultConfig, VectorBackend,
 };
 
 pub use zeph_config::{ContextStrategy, DigestConfig};

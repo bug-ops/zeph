@@ -72,7 +72,8 @@ pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
 pub use router::{
     AsyncMemoryRouter, HeuristicRouter, HybridRouter, LlmRouter, MemoryRoute, MemoryRouter,
-    RoutingDecision, TemporalRange, classify_graph_subgraph, strip_temporal_keywords,
+    RoutingDecision, TemporalRange, classify_graph_subgraph, parse_route_str,
+    strip_temporal_keywords,
 };
 pub use scenes::{
     MemScene, SceneConfig, consolidate_scenes, list_scenes, start_scene_consolidation_loop,

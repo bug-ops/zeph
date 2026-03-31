@@ -68,7 +68,7 @@ async fn remember_saves_to_sqlite() {
 
     let cid = memory.sqlite.create_conversation().await.unwrap();
     let msg_id = memory
-        .remember(cid, "user", "hello")
+        .remember(cid, "user", "hello", None)
         .await
         .unwrap()
         .unwrap();
@@ -89,7 +89,7 @@ async fn remember_with_parts_saves_parts_json() {
     let parts_json =
         r#"[{"kind":"ToolOutput","tool_name":"shell","body":"hello","compacted_at":null}]"#;
     let (msg_id_opt, _embedding_stored) = memory
-        .remember_with_parts(cid, "assistant", "tool output", parts_json)
+        .remember_with_parts(cid, "assistant", "tool output", parts_json, None)
         .await
         .unwrap();
     let msg_id = msg_id_opt.unwrap();
@@ -174,9 +174,13 @@ async fn message_count_after_saves() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    memory.remember(cid, "user", "msg1").await.unwrap().unwrap();
     memory
-        .remember(cid, "assistant", "msg2")
+        .remember(cid, "user", "msg1", None)
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .remember(cid, "assistant", "msg2", None)
         .await
         .unwrap()
         .unwrap();
@@ -191,17 +195,17 @@ async fn remember_multiple_messages_increments_ids() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     let id1 = memory
-        .remember(cid, "user", "first")
+        .remember(cid, "user", "first", None)
         .await
         .unwrap()
         .unwrap();
     let id2 = memory
-        .remember(cid, "assistant", "second")
+        .remember(cid, "assistant", "second", None)
         .await
         .unwrap()
         .unwrap();
     let id3 = memory
-        .remember(cid, "user", "third")
+        .remember(cid, "user", "third", None)
         .await
         .unwrap()
         .unwrap();
@@ -217,17 +221,17 @@ async fn message_count_across_conversations() {
     let cid2 = memory.sqlite().create_conversation().await.unwrap();
 
     memory
-        .remember(cid1, "user", "msg1")
+        .remember(cid1, "user", "msg1", None)
         .await
         .unwrap()
         .unwrap();
     memory
-        .remember(cid1, "user", "msg2")
+        .remember(cid1, "user", "msg2", None)
         .await
         .unwrap()
         .unwrap();
     memory
-        .remember(cid2, "user", "msg3")
+        .remember(cid2, "user", "msg3", None)
         .await
         .unwrap()
         .unwrap();
@@ -244,10 +248,18 @@ async fn message_count_multiple_conversations_isolated() {
     let cid3 = memory.sqlite().create_conversation().await.unwrap();
 
     for _ in 0..5 {
-        memory.remember(cid1, "user", "msg").await.unwrap().unwrap();
+        memory
+            .remember(cid1, "user", "msg", None)
+            .await
+            .unwrap()
+            .unwrap();
     }
     for _ in 0..3 {
-        memory.remember(cid2, "user", "msg").await.unwrap().unwrap();
+        memory
+            .remember(cid2, "user", "msg", None)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     assert_eq!(memory.message_count(cid1).await.unwrap(), 5);
@@ -261,7 +273,7 @@ async fn remember_with_embeddings_supported_but_no_qdrant() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     let msg_id = memory
-        .remember(cid, "user", "hello embed")
+        .remember(cid, "user", "hello embed", None)
         .await
         .unwrap()
         .unwrap();
@@ -278,17 +290,17 @@ async fn remember_verifies_content_via_load_history() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "alpha")
+        .remember(cid, "user", "alpha", None)
         .await
         .unwrap()
         .unwrap();
     memory
-        .remember(cid, "assistant", "beta")
+        .remember(cid, "assistant", "beta", None)
         .await
         .unwrap()
         .unwrap();
     memory
-        .remember(cid, "user", "gamma")
+        .remember(cid, "user", "gamma", None)
         .await
         .unwrap()
         .unwrap();
@@ -305,13 +317,21 @@ async fn remember_preserves_role_mapping() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
-    memory.remember(cid, "user", "u").await.unwrap().unwrap();
     memory
-        .remember(cid, "assistant", "a")
+        .remember(cid, "user", "u", None)
         .await
         .unwrap()
         .unwrap();
-    memory.remember(cid, "system", "s").await.unwrap().unwrap();
+    memory
+        .remember(cid, "assistant", "a", None)
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .remember(cid, "system", "s", None)
+        .await
+        .unwrap()
+        .unwrap();
 
     let history = memory.sqlite.load_history(cid, 50).await.unwrap();
     assert_eq!(history.len(), 3);
@@ -334,7 +354,11 @@ async fn new_with_invalid_qdrant_url_graceful() {
 async fn has_embedding_returns_false_when_no_qdrant() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
-    let msg_id = memory.remember(cid, "user", "test").await.unwrap().unwrap();
+    let msg_id = memory
+        .remember(cid, "user", "test", None)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!memory.has_embedding(msg_id).await.unwrap());
 }
 

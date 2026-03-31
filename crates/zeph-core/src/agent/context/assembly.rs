@@ -275,7 +275,7 @@ impl<C: Channel> Agent<C> {
         query: &str,
         token_budget: usize,
         tc: &TokenCounter,
-        router: Option<&dyn zeph_memory::MemoryRouter>,
+        router: Option<&dyn zeph_memory::AsyncMemoryRouter>,
     ) -> Result<(Option<Message>, Option<f32>), super::super::error::AgentError> {
         let Some(memory) = &memory_state.memory else {
             return Ok((None, None));
@@ -286,7 +286,7 @@ impl<C: Channel> Agent<C> {
 
         let recalled = if let Some(r) = router {
             memory
-                .recall_routed(query, memory_state.recall_limit, None, r)
+                .recall_routed_async(query, memory_state.recall_limit, None, r)
                 .await?
         } else {
             memory
@@ -891,6 +891,7 @@ impl<C: Channel> Agent<C> {
 
             let tc = self.metrics.token_counter.clone();
             let router = self.context_manager.build_router();
+            let router_ref: &dyn zeph_memory::AsyncMemoryRouter = router.as_ref();
             let memory_state = &self.memory_state;
             let index = &self.index;
 
@@ -914,7 +915,7 @@ impl<C: Channel> Agent<C> {
                     &query,
                     alloc.semantic_recall,
                     &tc,
-                    Some(&router),
+                    Some(router_ref),
                 )
                 .await
                 .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))

@@ -412,9 +412,17 @@ impl<C: Channel> Agent<C> {
             }
         };
 
+        let goal_text = self.memory_state.goal_text.clone();
+
         let (embedding_stored, was_persisted) = if should_embed {
             match memory
-                .remember_with_parts(cid, role_str(role), content, &parts_json)
+                .remember_with_parts(
+                    cid,
+                    role_str(role),
+                    content,
+                    &parts_json,
+                    goal_text.as_deref(),
+                )
                 .await
             {
                 Ok((Some(message_id), stored)) => {

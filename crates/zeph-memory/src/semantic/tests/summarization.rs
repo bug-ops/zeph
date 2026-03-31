@@ -21,7 +21,7 @@ async fn unsummarized_count_decreases_after_summary() {
 
     for i in 0..10 {
         memory
-            .remember(cid, "user", &format!("msg{i}"))
+            .remember(cid, "user", &format!("msg{i}"), None)
             .await
             .unwrap();
     }
@@ -47,13 +47,21 @@ async fn load_summaries_ordered() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
-    let msg_id1 = memory.remember(cid, "user", "m1").await.unwrap().unwrap();
-    let msg_id2 = memory
-        .remember(cid, "assistant", "m2")
+    let msg_id1 = memory
+        .remember(cid, "user", "m1", None)
         .await
         .unwrap()
         .unwrap();
-    let msg_id3 = memory.remember(cid, "user", "m3").await.unwrap().unwrap();
+    let msg_id2 = memory
+        .remember(cid, "assistant", "m2", None)
+        .await
+        .unwrap()
+        .unwrap();
+    let msg_id3 = memory
+        .remember(cid, "user", "m3", None)
+        .await
+        .unwrap()
+        .unwrap();
 
     let s1 = memory
         .sqlite()
@@ -80,7 +88,7 @@ async fn summarize_below_threshold() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "hello")
+        .remember(cid, "user", "hello", None)
         .await
         .unwrap()
         .unwrap();
@@ -96,7 +104,7 @@ async fn summarize_stores_summary() {
 
     for i in 0..5 {
         memory
-            .remember(cid, "user", &format!("message {i}"))
+            .remember(cid, "user", &format!("message {i}"), None)
             .await
             .unwrap();
     }
@@ -117,7 +125,7 @@ async fn summarize_respects_previous_summaries() {
 
     for i in 0..10 {
         memory
-            .remember(cid, "user", &format!("message {i}"))
+            .remember(cid, "user", &format!("message {i}"), None)
             .await
             .unwrap();
     }
@@ -140,7 +148,7 @@ async fn summarize_exact_threshold_returns_none() {
 
     for i in 0..3 {
         memory
-            .remember(cid, "user", &format!("msg {i}"))
+            .remember(cid, "user", &format!("msg {i}"), None)
             .await
             .unwrap();
     }
@@ -156,7 +164,7 @@ async fn summarize_one_above_threshold_produces_summary() {
 
     for i in 0..4 {
         memory
-            .remember(cid, "user", &format!("msg {i}"))
+            .remember(cid, "user", &format!("msg {i}"), None)
             .await
             .unwrap();
     }
@@ -172,7 +180,7 @@ async fn summary_fields_populated() {
 
     for i in 0..5 {
         memory
-            .remember(cid, "user", &format!("msg {i}"))
+            .remember(cid, "user", &format!("msg {i}"), None)
             .await
             .unwrap();
     }
@@ -195,7 +203,7 @@ async fn summarize_empty_messages_range_returns_none() {
 
     for i in 0..6 {
         memory
-            .remember(cid, "user", &format!("msg {i}"))
+            .remember(cid, "user", &format!("msg {i}"), None)
             .await
             .unwrap();
     }
@@ -214,7 +222,7 @@ async fn summarize_token_estimate_populated() {
 
     for i in 0..5 {
         memory
-            .remember(cid, "user", &format!("message {i}"))
+            .remember(cid, "user", &format!("message {i}"), None)
             .await
             .unwrap();
     }
@@ -258,7 +266,7 @@ async fn summarize_fails_when_provider_chat_fails() {
 
     for i in 0..5 {
         memory
-            .remember(cid, "user", &format!("msg {i}"))
+            .remember(cid, "user", &format!("msg {i}"), None)
             .await
             .unwrap();
     }
@@ -274,7 +282,7 @@ async fn summarize_message_range_bounds() {
 
     for i in 0..8 {
         memory
-            .remember(cid, "user", &format!("msg {i}"))
+            .remember(cid, "user", &format!("msg {i}"), None)
             .await
             .unwrap();
     }
@@ -319,7 +327,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
     for i in 0..5 {
         memory
-            .remember(cid, "user", &format!("msg {i}"))
+            .remember(cid, "user", &format!("msg {i}"), None)
             .await
             .unwrap();
     }

@@ -23,6 +23,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - metrics: add `sanitizer_injection_fp_local` counter for injection flags on local (`ToolResult`) sources (#2515)
 - metrics: add `pii_ner_timeouts` counter for NER classifier timeout events (#2516)
+- feat(memory): `StoreRoutingConfig` (`[memory.store_routing]`) is now wired into `build_router()` — strategy `heuristic`/`llm`/`hybrid` and `routing_classifier_provider` are resolved at config-apply time; the router is constructed each turn and uses the async `route_async()` path so LLM-based classification actually fires (closes #2484)
+- feat(memory): `goal_text` from raw user input is now propagated to A-MAC admission control — `MemoryState.goal_text` is set at the start of each user turn and passed to `remember()` and `remember_with_parts()` enabling goal-conditioned write gating when `goal_conditioned_write = true` (closes #2483)
+- feat(memory): `AsyncMemoryRouter` trait now implemented for `HeuristicRouter` and `HybridRouter`; `SemanticMemory::recall_routed_async()` added to dispatch routing via the async path; `parse_route_str` is now public
+
+### Removed
+
+- **BREAKING**: `RoutingConfig` and `RoutingStrategy` removed from `zeph-config` — superseded by `StoreRoutingConfig` / `StoreRoutingStrategy`; the `[memory.routing]` TOML section is no longer recognised (use `[memory.store_routing]` instead)
 
 ## [0.18.1] - 2026-03-31
 

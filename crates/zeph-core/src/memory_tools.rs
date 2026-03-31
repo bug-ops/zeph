@@ -188,9 +188,10 @@ impl ToolExecutor for MemoryToolExecutor {
 
                 let role = params.role.as_str();
 
+                // Explicit user-directed saves bypass goal-conditioned scoring (goal_text = None).
                 let message_id_opt = self
                     .memory
-                    .remember(self.conversation_id, role, &params.content)
+                    .remember(self.conversation_id, role, &params.content, None)
                     .await
                     .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 

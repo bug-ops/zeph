@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::config::{CompressionConfig, RoutingConfig};
+use std::sync::Arc;
+
+use crate::config::{CompressionConfig, StoreRoutingConfig};
 use crate::context::ContextBudget;
 
 /// Lifecycle state of the compaction subsystem within a single session.
@@ -119,8 +121,11 @@ pub(crate) struct ContextManager {
     pub(super) prune_protect_tokens: usize,
     /// Compression configuration for proactive compression (#1161).
     pub(super) compression: CompressionConfig,
-    /// Routing configuration for query-aware memory routing (#1162).
-    pub(super) routing: RoutingConfig,
+    /// Routing configuration for query-aware memory routing (#1162, #2484).
+    pub(super) routing: StoreRoutingConfig,
+    /// Resolved provider for LLM/hybrid routing. `None` when strategy is `Heuristic`
+    /// or when the named provider could not be resolved from the pool.
+    pub(super) store_routing_provider: Option<Arc<zeph_llm::any::AnyProvider>>,
     /// Compaction lifecycle state. Replaces four independent boolean/u8 fields to make
     /// invalid states unrepresentable. See [`CompactionState`] for the full transition map.
     pub(super) compaction: CompactionState,
@@ -144,7 +149,8 @@ impl ContextManager {
             compaction_preserve_tail: 6,
             prune_protect_tokens: 40_000,
             compression: CompressionConfig::default(),
-            routing: RoutingConfig::default(),
+            routing: StoreRoutingConfig::default(),
+            store_routing_provider: None,
             compaction: CompactionState::Ready,
             compaction_cooldown_turns: 2,
             turns_since_last_hard_compaction: None,
@@ -204,11 +210,44 @@ impl ContextManager {
 
     /// Build a memory router from the current routing configuration.
     ///
-    /// The router is stateless and cheap to construct per turn.
-    pub(super) fn build_router(&self) -> zeph_memory::HeuristicRouter {
-        use crate::config::RoutingStrategy;
+    /// Returns a `Box<dyn AsyncMemoryRouter>` so callers can use `route_async()` for LLM-based
+    /// classification. `HeuristicRouter` implements `AsyncMemoryRouter` via a blanket impl that
+    /// delegates to the sync `route_with_confidence`.
+    pub(super) fn build_router(&self) -> Box<dyn zeph_memory::AsyncMemoryRouter + Send + Sync> {
+        use crate::config::StoreRoutingStrategy;
+        if !self.routing.enabled {
+            return Box::new(zeph_memory::HeuristicRouter);
+        }
+        let fallback = zeph_memory::router::parse_route_str(
+            &self.routing.fallback_route,
+            zeph_memory::MemoryRoute::Hybrid,
+        );
         match self.routing.strategy {
-            RoutingStrategy::Heuristic => zeph_memory::HeuristicRouter,
+            StoreRoutingStrategy::Heuristic => Box::new(zeph_memory::HeuristicRouter),
+            StoreRoutingStrategy::Llm => {
+                let Some(provider) = self.store_routing_provider.clone() else {
+                    tracing::warn!(
+                        "store_routing: strategy=llm but no provider resolved; \
+                         falling back to heuristic"
+                    );
+                    return Box::new(zeph_memory::HeuristicRouter);
+                };
+                Box::new(zeph_memory::LlmRouter::new(provider, fallback))
+            }
+            StoreRoutingStrategy::Hybrid => {
+                let Some(provider) = self.store_routing_provider.clone() else {
+                    tracing::warn!(
+                        "store_routing: strategy=hybrid but no provider resolved; \
+                         falling back to heuristic"
+                    );
+                    return Box::new(zeph_memory::HeuristicRouter);
+                };
+                Box::new(zeph_memory::HybridRouter::new(
+                    provider,
+                    fallback,
+                    self.routing.confidence_threshold,
+                ))
+            }
         }
     }
 

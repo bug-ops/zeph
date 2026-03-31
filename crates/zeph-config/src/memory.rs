@@ -722,8 +722,6 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub sidequest: SidequestConfig,
     #[serde(default)]
-    pub routing: RoutingConfig,
-    #[serde(default)]
     pub graph: GraphConfig,
     /// Store a lightweight session summary to the vector store on shutdown when no session
     /// summary exists yet for this conversation. Enables cross-session recall for short or
@@ -932,23 +930,6 @@ impl Default for SemanticConfig {
             importance_weight: default_importance_weight(),
         }
     }
-}
-
-/// Routing strategy for memory backend selection.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RoutingStrategy {
-    /// Heuristic-based routing using query characteristics.
-    #[default]
-    Heuristic,
-}
-
-/// Configuration for query-aware memory routing (#1162).
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct RoutingConfig {
-    /// Routing strategy. Currently only `heuristic` is supported.
-    pub strategy: RoutingStrategy,
 }
 
 /// Compression strategy for active context compression (#1161).

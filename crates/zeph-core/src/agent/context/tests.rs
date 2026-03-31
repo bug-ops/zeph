@@ -3185,6 +3185,7 @@ fn make_mem_state(
         context_strategy: crate::config::ContextStrategy::default(),
         crossover_turn_threshold: 20,
         rpe_router: None,
+        goal_text: None,
     }
 }
 

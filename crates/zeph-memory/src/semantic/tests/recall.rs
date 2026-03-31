@@ -71,11 +71,11 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let id1 = memory
-        .remember(cid, "user", "rust async programming")
+        .remember(cid, "user", "rust async programming", None)
         .await
         .unwrap();
     let id2 = memory
-        .remember(cid, "assistant", "use tokio for async")
+        .remember(cid, "assistant", "use tokio for async", None)
         .await
         .unwrap();
     assert!(id1 < id2);
@@ -122,15 +122,15 @@ async fn recall_fts5_fallback_without_qdrant() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "rust programming guide")
+        .remember(cid, "user", "rust programming guide", None)
         .await
         .unwrap();
     memory
-        .remember(cid, "assistant", "python tutorial")
+        .remember(cid, "assistant", "python tutorial", None)
         .await
         .unwrap();
     memory
-        .remember(cid, "user", "advanced rust patterns")
+        .remember(cid, "user", "advanced rust patterns", None)
         .await
         .unwrap();
 
@@ -146,12 +146,12 @@ async fn recall_fts5_fallback_with_filter() {
     let cid2 = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid1, "user", "hello world")
+        .remember(cid1, "user", "hello world", None)
         .await
         .unwrap()
         .unwrap();
     memory
-        .remember(cid2, "user", "hello universe")
+        .remember(cid2, "user", "hello universe", None)
         .await
         .unwrap();
 
@@ -169,7 +169,7 @@ async fn recall_fts5_no_matches_returns_empty() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "hello world")
+        .remember(cid, "user", "hello world", None)
         .await
         .unwrap()
         .unwrap();
@@ -185,7 +185,7 @@ async fn recall_fts5_respects_limit() {
 
     for i in 0..10 {
         memory
-            .remember(cid, "user", &format!("test message number {i}"))
+            .remember(cid, "user", &format!("test message number {i}"), None)
             .await
             .unwrap();
     }
@@ -202,11 +202,11 @@ async fn recall_routed_keyword_route_returns_fts5_results() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "rust programming guide")
+        .remember(cid, "user", "rust programming guide", None)
         .await
         .unwrap();
     memory
-        .remember(cid, "assistant", "python tutorial")
+        .remember(cid, "assistant", "python tutorial", None)
         .await
         .unwrap();
 
@@ -228,7 +228,7 @@ async fn recall_routed_semantic_route_without_qdrant_returns_empty_vectors() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "how does the agent loop work")
+        .remember(cid, "user", "how does the agent loop work", None)
         .await
         .unwrap();
 
@@ -253,7 +253,7 @@ async fn recall_routed_hybrid_route_falls_back_to_fts5_on_no_qdrant() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "context window token budget")
+        .remember(cid, "user", "context window token budget", None)
         .await
         .unwrap();
 
@@ -281,11 +281,11 @@ async fn recall_routed_episodic_route_no_time_range() {
     // so the dispatch uses plain FTS5 without a time filter — allowing recently stored messages
     // to be found in tests without time-zone or exact-timestamp dependencies.
     memory
-        .remember(cid, "user", "we should discuss rust ownership")
+        .remember(cid, "user", "we should discuss rust ownership", None)
         .await
         .unwrap();
     memory
-        .remember(cid, "assistant", "python tutorial instead")
+        .remember(cid, "assistant", "python tutorial instead", None)
         .await
         .unwrap();
 
@@ -335,7 +335,12 @@ async fn recall_routed_episodic_all_temporal_stripped_falls_back_to_original() {
     // resolve_temporal_range("last time") returns None so no time filter is applied,
     // allowing the recently stored message to be found.
     memory
-        .remember(cid, "user", "last time we deployed the service it broke")
+        .remember(
+            cid,
+            "user",
+            "last time we deployed the service it broke",
+            None,
+        )
         .await
         .unwrap();
 
@@ -378,11 +383,11 @@ async fn recall_importance_enabled_blends_score() {
     let cid = memory.sqlite.create_conversation().await.unwrap();
 
     memory
-        .remember(cid, "user", "remember: the API key rotates weekly")
+        .remember(cid, "user", "remember: the API key rotates weekly", None)
         .await
         .unwrap();
     memory
-        .remember(cid, "user", "API key info")
+        .remember(cid, "user", "API key info", None)
         .await
         .unwrap()
         .unwrap();
@@ -413,11 +418,11 @@ async fn recall_importance_disabled_no_blending() {
 
     let cid = memory.sqlite.create_conversation().await.unwrap();
     memory
-        .remember(cid, "user", "remember: the API key rotates weekly")
+        .remember(cid, "user", "remember: the API key rotates weekly", None)
         .await
         .unwrap();
     memory
-        .remember(cid, "user", "API key info")
+        .remember(cid, "user", "API key info", None)
         .await
         .unwrap()
         .unwrap();
@@ -441,7 +446,7 @@ async fn recall_access_count_incremented_after_recall() {
     let memory = test_semantic_memory(false).await;
     let cid = memory.sqlite.create_conversation().await.unwrap();
     let id = memory
-        .remember(cid, "user", "rust async patterns")
+        .remember(cid, "user", "rust async patterns", None)
         .await
         .unwrap();
 
@@ -516,7 +521,7 @@ async fn remember_returns_none_when_admission_rejects() {
 
     let cid = memory.sqlite.create_conversation().await.unwrap();
     let result = memory
-        .remember(cid, "user", "this message will be rejected")
+        .remember(cid, "user", "this message will be rejected", None)
         .await
         .unwrap();
     assert!(
@@ -540,7 +545,7 @@ async fn remember_returns_some_when_admission_admits() {
 
     let cid = memory.sqlite.create_conversation().await.unwrap();
     let result = memory
-        .remember(cid, "user", "important factual content")
+        .remember(cid, "user", "important factual content", None)
         .await
         .unwrap();
     assert!(
@@ -560,7 +565,7 @@ async fn remember_with_parts_returns_none_when_admission_rejects() {
 
     let cid = memory.sqlite.create_conversation().await.unwrap();
     let (opt_id, stored) = memory
-        .remember_with_parts(cid, "assistant", "rejected content", "[]")
+        .remember_with_parts(cid, "assistant", "rejected content", "[]", None)
         .await
         .unwrap();
     assert!(
@@ -578,7 +583,7 @@ async fn remember_with_parts_returns_some_when_admission_admits() {
 
     let cid = memory.sqlite.create_conversation().await.unwrap();
     let (opt_id, _stored) = memory
-        .remember_with_parts(cid, "user", "admitted content", "[]")
+        .remember_with_parts(cid, "user", "admitted content", "[]", None)
         .await
         .unwrap();
     assert!(

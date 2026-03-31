@@ -708,7 +708,8 @@ impl LlmRouter {
     }
 }
 
-fn parse_route_str(s: &str, fallback: MemoryRoute) -> MemoryRoute {
+#[must_use]
+pub fn parse_route_str(s: &str, fallback: MemoryRoute) -> MemoryRoute {
     match s {
         "keyword" => MemoryRoute::Keyword,
         "semantic" => MemoryRoute::Semantic,
@@ -773,7 +774,7 @@ impl HybridRouter {
         }
     }
 
-    pub async fn route_async(&self, query: &str) -> RoutingDecision {
+    pub async fn classify_async(&self, query: &str) -> RoutingDecision {
         let heuristic = HeuristicRouter.route_with_confidence(query);
         if heuristic.confidence >= self.confidence_threshold {
             tracing::debug!(
@@ -813,6 +814,24 @@ impl MemoryRouter for HybridRouter {
     fn route_with_confidence(&self, query: &str) -> RoutingDecision {
         // Synchronous path: can't call async LLM, use heuristic only.
         HeuristicRouter.route_with_confidence(query)
+    }
+}
+
+impl AsyncMemoryRouter for HeuristicRouter {
+    fn route_async<'a>(
+        &'a self,
+        query: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RoutingDecision> + Send + 'a>> {
+        Box::pin(std::future::ready(self.route_with_confidence(query)))
+    }
+}
+
+impl AsyncMemoryRouter for HybridRouter {
+    fn route_async<'a>(
+        &'a self,
+        query: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RoutingDecision> + Send + 'a>> {
+        Box::pin(self.classify_async(query))
     }
 }
 

@@ -14,7 +14,8 @@ use super::session_config::{AgentSessionConfig, CONTEXT_BUDGET_RESERVE_RATIO};
 use crate::agent::state::ProviderConfigSnapshot;
 use crate::channel::Channel;
 use crate::config::{
-    CompressionConfig, LearningConfig, ProviderEntry, RoutingConfig, SecurityConfig, TimeoutConfig,
+    CompressionConfig, LearningConfig, ProviderEntry, SecurityConfig, StoreRoutingConfig,
+    TimeoutConfig,
 };
 use crate::config_watcher::ConfigEvent;
 use crate::context::ContextBudget;
@@ -980,7 +981,7 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_routing(mut self, routing: RoutingConfig) -> Self {
+    pub fn with_routing(mut self, routing: StoreRoutingConfig) -> Self {
         self.context_manager.routing = routing;
         self
     }
@@ -1407,7 +1408,7 @@ mod tests {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use super::*;
-    use crate::config::{CompressionStrategy, RoutingStrategy};
+    use crate::config::{CompressionStrategy, StoreRoutingConfig, StoreRoutingStrategy};
 
     fn make_agent() -> Agent<MockChannel> {
         Agent::new(
@@ -1448,13 +1449,14 @@ mod tests {
 
     #[test]
     fn with_routing_sets_routing_config() {
-        let routing = RoutingConfig {
-            strategy: RoutingStrategy::Heuristic,
+        let routing = StoreRoutingConfig {
+            strategy: StoreRoutingStrategy::Heuristic,
+            ..StoreRoutingConfig::default()
         };
         let agent = make_agent().with_routing(routing);
         assert_eq!(
             agent.context_manager.routing.strategy,
-            RoutingStrategy::Heuristic,
+            StoreRoutingStrategy::Heuristic,
             "routing strategy must be set by with_routing"
         );
     }
@@ -1474,7 +1476,7 @@ mod tests {
         let agent = make_agent();
         assert_eq!(
             agent.context_manager.routing.strategy,
-            RoutingStrategy::Heuristic,
+            StoreRoutingStrategy::Heuristic,
             "default routing strategy must be Heuristic"
         );
     }

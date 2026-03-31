@@ -1108,7 +1108,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.summarization_threshold,
     )
     .with_compression(config.memory.compression.clone())
-    .with_routing(config.memory.routing.clone())
+    .with_routing(config.memory.store_routing.clone())
     .with_shutdown(shutdown_rx.clone())
     .with_config_reload(config_path, config_reload_rx)
     .with_logging_config(logging_config.clone())

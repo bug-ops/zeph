@@ -326,6 +326,7 @@ impl<C: Channel> Agent<C> {
                 context_strategy: crate::config::ContextStrategy::default(),
                 crossover_turn_threshold: 20,
                 rpe_router: None,
+                goal_text: None,
             },
             skill_state: SkillState {
                 registry,
@@ -3813,6 +3814,10 @@ impl<C: Channel> Agent<C> {
             set.extend(urls);
         }
 
+        // Capture raw user input as goal text for A-MAC goal-conditioned write gating (#2483).
+        // Derived from the raw input text before context assembly to avoid timing dependencies.
+        self.memory_state.goal_text = Some(text.clone());
+
         // Image parts intentionally excluded — base64 payloads too large for message history.
         self.persist_message(Role::User, &text, &[], false).await;
         self.push_message(user_msg);
@@ -4848,7 +4853,21 @@ impl<C: Channel> Agent<C> {
         self.context_manager.compaction_cooldown_turns = config.memory.compaction_cooldown_turns;
         self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
         self.context_manager.compression = config.memory.compression.clone();
-        self.context_manager.routing = config.memory.routing.clone();
+        self.context_manager.routing = config.memory.store_routing.clone();
+        // Resolve routing_classifier_provider from the provider pool (#2484).
+        self.context_manager.store_routing_provider = if config
+            .memory
+            .store_routing
+            .routing_classifier_provider
+            .is_empty()
+        {
+            None
+        } else {
+            let resolved = self.resolve_background_provider(
+                &config.memory.store_routing.routing_classifier_provider,
+            );
+            Some(std::sync::Arc::new(resolved))
+        };
         self.memory_state.cross_session_score_threshold =
             config.memory.cross_session_score_threshold;
 

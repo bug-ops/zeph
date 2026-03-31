@@ -1017,7 +1017,10 @@ impl<C: Channel> Agent<C> {
 
     /// Resolve a named provider from the pool, falling back to the primary provider.
     /// Returns a clone of the primary provider if the name is empty, unknown, or resolution fails.
-    fn resolve_background_provider(&self, provider_name: &str) -> zeph_llm::any::AnyProvider {
+    pub(super) fn resolve_background_provider(
+        &self,
+        provider_name: &str,
+    ) -> zeph_llm::any::AnyProvider {
         if provider_name.is_empty() {
             return self.provider.clone();
         }

@@ -19,8 +19,8 @@ use crate::features::{
 use crate::learning::LearningConfig;
 use crate::logging::LoggingConfig;
 use crate::memory::{
-    CompressionConfig, DocumentConfig, GraphConfig, MemoryConfig, RoutingConfig, SemanticConfig,
-    SessionsConfig, SidequestConfig, TierConfig, VectorBackend,
+    CompressionConfig, DocumentConfig, GraphConfig, MemoryConfig, SemanticConfig, SessionsConfig,
+    SidequestConfig, TierConfig, VectorBackend,
 };
 use crate::providers::{
     LlmConfig, get_default_embedding_model, get_default_response_cache_ttl_secs,
@@ -192,7 +192,6 @@ impl Default for Config {
                 eviction: zeph_memory::EvictionConfig::default(),
                 compression: CompressionConfig::default(),
                 sidequest: SidequestConfig::default(),
-                routing: RoutingConfig::default(),
                 graph: GraphConfig::default(),
                 compression_guidelines: zeph_memory::CompressionGuidelinesConfig::default(),
                 shutdown_summary: true,

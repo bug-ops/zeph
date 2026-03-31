@@ -32,11 +32,18 @@ impl SemanticMemory {
         conversation_id: ConversationId,
         role: &str,
         content: &str,
+        goal_text: Option<&str>,
     ) -> Result<Option<MessageId>, MemoryError> {
         // A-MAC admission gate.
         if let Some(ref admission) = self.admission_control {
             let decision = admission
-                .evaluate(content, role, &self.provider, self.qdrant.as_ref(), None)
+                .evaluate(
+                    content,
+                    role,
+                    &self.provider,
+                    self.qdrant.as_ref(),
+                    goal_text,
+                )
                 .await;
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
@@ -95,11 +102,18 @@ impl SemanticMemory {
         role: &str,
         content: &str,
         parts_json: &str,
+        goal_text: Option<&str>,
     ) -> Result<(Option<MessageId>, bool), MemoryError> {
         // A-MAC admission gate.
         if let Some(ref admission) = self.admission_control {
             let decision = admission
-                .evaluate(content, role, &self.provider, self.qdrant.as_ref(), None)
+                .evaluate(
+                    content,
+                    role,
+                    &self.provider,
+                    self.qdrant.as_ref(),
+                    goal_text,
+                )
                 .await;
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
@@ -553,6 +567,102 @@ impl SemanticMemory {
             keyword_count = keyword_results.len(),
             vector_count = vector_results.len(),
             "recall: routed search results"
+        );
+
+        self.recall_merge_and_rank(keyword_results, vector_results, limit)
+            .await
+    }
+
+    /// Async variant of [`recall_routed`](Self::recall_routed) that uses
+    /// [`AsyncMemoryRouter::route_async`](crate::router::AsyncMemoryRouter::route_async) when
+    /// available, enabling LLM-based routing for `LlmRouter` and `HybridRouter`.
+    ///
+    /// Falls back to [`recall_routed`](Self::recall_routed) for routers that only implement
+    /// the sync `MemoryRouter` trait (e.g. `HeuristicRouter`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any underlying search or database operation fails.
+    pub async fn recall_routed_async(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<crate::embedding_store::SearchFilter>,
+        router: &dyn crate::router::AsyncMemoryRouter,
+    ) -> Result<Vec<RecalledMessage>, MemoryError> {
+        use crate::router::MemoryRoute;
+
+        let decision = router.route_async(query).await;
+        let route = decision.route;
+        tracing::debug!(
+            ?route,
+            confidence = decision.confidence,
+            query_len = query.len(),
+            "memory routing decision (async)"
+        );
+
+        let conversation_id = filter.as_ref().and_then(|f| f.conversation_id);
+
+        let (keyword_results, vector_results): (
+            Vec<(crate::types::MessageId, f64)>,
+            Vec<crate::embedding_store::SearchResult>,
+        ) = match route {
+            MemoryRoute::Keyword => {
+                let kw = self.recall_fts5_raw(query, limit, conversation_id).await?;
+                (kw, Vec::new())
+            }
+            MemoryRoute::Semantic => {
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (Vec::new(), vr)
+            }
+            MemoryRoute::Hybrid => {
+                let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("FTS5 keyword search failed: {e:#}");
+                        Vec::new()
+                    }
+                };
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (kw, vr)
+            }
+            MemoryRoute::Episodic => {
+                let range = crate::router::resolve_temporal_range(query, chrono::Utc::now());
+                let cleaned = crate::router::strip_temporal_keywords(query);
+                let search_query = if cleaned.is_empty() { query } else { &cleaned };
+                let kw = if let Some(ref r) = range {
+                    self.sqlite
+                        .keyword_search_with_time_range(
+                            search_query,
+                            limit,
+                            conversation_id,
+                            r.after.as_deref(),
+                            r.before.as_deref(),
+                        )
+                        .await?
+                } else {
+                    self.recall_fts5_raw(search_query, limit, conversation_id)
+                        .await?
+                };
+                (kw, Vec::new())
+            }
+            MemoryRoute::Graph => {
+                let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("FTS5 keyword search failed (graph→hybrid fallback): {e:#}");
+                        Vec::new()
+                    }
+                };
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (kw, vr)
+            }
+        };
+
+        tracing::debug!(
+            keyword_count = keyword_results.len(),
+            vector_count = vector_results.len(),
+            "recall: routed search results (async)"
         );
 
         self.recall_merge_and_rank(keyword_results, vector_results, limit)
