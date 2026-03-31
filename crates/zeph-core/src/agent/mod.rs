@@ -1683,7 +1683,7 @@ impl<C: Channel> Agent<C> {
     /// learning engine, sanitizer, metrics). Inline tasks are short-lived orchestration
     /// sub-tasks that run synchronously inside the scheduler tick loop.
     async fn run_inline_tool_loop(
-        &self,
+        &mut self,
         prompt: &str,
         max_iterations: usize,
     ) -> Result<String, zeph_llm::LlmError> {
@@ -1749,6 +1749,9 @@ impl<C: Channel> Agent<C> {
                     messages.push(Message::from_parts(Role::Assistant, parts));
 
                     // Execute each tool call and collect results.
+                    // Drain elicitation_rx concurrently to avoid deadlock: MCP tool may
+                    // send an elicitation request and block waiting for a response while
+                    // execute_tool_call_erased is blocked waiting for the tool to finish.
                     let mut result_parts: Vec<MessagePart> = Vec::new();
                     for tc in &tool_calls {
                         let call = ToolCall {
@@ -1758,11 +1761,24 @@ impl<C: Channel> Agent<C> {
                                 _ => serde_json::Map::new(),
                             },
                         };
-                        let output = match self.tool_executor.execute_tool_call_erased(&call).await
-                        {
-                            Ok(Some(out)) => out.summary,
-                            Ok(None) => "(no output)".to_owned(),
-                            Err(e) => format!("[error] {e}"),
+                        let output = loop {
+                            tokio::select! {
+                                result = self.tool_executor.execute_tool_call_erased(&call) => {
+                                    break match result {
+                                        Ok(Some(out)) => out.summary,
+                                        Ok(None) => "(no output)".to_owned(),
+                                        Err(e) => format!("[error] {e}"),
+                                    };
+                                }
+                                Some(event) = async {
+                                    match self.mcp.elicitation_rx.as_mut() {
+                                        Some(rx) => rx.recv().await,
+                                        None => std::future::pending().await,
+                                    }
+                                } => {
+                                    self.handle_elicitation_event(event).await;
+                                }
+                            }
                         };
                         let is_error = output.starts_with("[error]");
                         result_parts.push(MessagePart::ToolResult {
