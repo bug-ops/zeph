@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use tokio::sync::mpsc;
-use zeph_core::channel::{Channel, ChannelError, ChannelMessage, ToolOutputEvent, ToolStartEvent};
+use zeph_core::channel::{
+    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
+    ToolOutputEvent, ToolStartEvent,
+};
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
@@ -174,6 +177,21 @@ impl Channel for TuiChannel {
             .await
             .map_err(|_| ChannelError::ChannelClosed)?;
         rx.await.map_err(|_| ChannelError::ConfirmCancelled)
+    }
+
+    async fn elicit(
+        &mut self,
+        request: ElicitationRequest,
+    ) -> Result<ElicitationResponse, ChannelError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.agent_event_tx
+            .send(AgentEvent::ElicitationRequest {
+                request,
+                response_tx: tx,
+            })
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)?;
+        rx.await.map_err(|_| ChannelError::ChannelClosed)
     }
 }
 

@@ -1246,18 +1246,40 @@ impl<C: Channel> Agent<C> {
             // runtime. For CPU-bound tool work, the semaphore limits oversubscription.
             let (indices, futs): (Vec<usize>, Vec<ToolExecFut>) = tier_futs.into_iter().unzip();
 
-            let tier_results = tokio::select! {
-                results = futures::future::join_all(futs) => results,
-                () = cancel.cancelled() => {
-                    self.tool_executor.set_skill_env(None);
-                    tracing::info!("tool execution cancelled by user");
-                    self.update_metrics(|m| m.cancellations += 1);
-                    self.channel.send("[Cancelled]").await?;
-                    // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
-                    // persisted above is always paired in the DB (prevents cross-session orphan).
-                    self.persist_cancelled_tool_results(tool_calls).await;
-                    return Ok(());
-                }
+            // Poll tier futures, cancellation, and MCP elicitation requests concurrently.
+            // Elicitation events arrive from MCP server handlers that are blocked waiting on a
+            // oneshot response. Without draining them here the tier join never completes (deadlock).
+            let tier_results = {
+                let mut join_fut = std::pin::pin!(futures::future::join_all(futs));
+                // Take elicitation_rx out of self so we can hold &mut self for handling.
+                let mut elicitation_rx = self.mcp.elicitation_rx.take();
+                let result = loop {
+                    tokio::select! {
+                        results = &mut join_fut => break results,
+                        () = cancel.cancelled() => {
+                            self.mcp.elicitation_rx = elicitation_rx;
+                            self.tool_executor.set_skill_env(None);
+                            tracing::info!("tool execution cancelled by user");
+                            self.update_metrics(|m| m.cancellations += 1);
+                            self.channel.send("[Cancelled]").await?;
+                            // Persist tombstone ToolResult for all tool_calls so the assistant ToolUse
+                            // persisted above is always paired in the DB (prevents cross-session orphan).
+                            self.persist_cancelled_tool_results(tool_calls).await;
+                            return Ok(());
+                        }
+                        event = recv_elicitation(&mut elicitation_rx) => {
+                            if let Some(ev) = event {
+                                self.handle_elicitation_event(ev).await;
+                            } else {
+                                // Channel closed — stop polling it
+                                tracing::debug!("elicitation channel closed during tier exec");
+                                elicitation_rx = None;
+                            }
+                        }
+                    }
+                };
+                self.mcp.elicitation_rx = elicitation_rx;
+                result
             };
 
             // Store results and collect failed tool_use_ids for dependency propagation.
@@ -2249,6 +2271,19 @@ impl<C: Channel> Agent<C> {
         self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
             .await;
         self.push_message(user_msg);
+    }
+}
+
+/// Receive the next elicitation event from an optional channel without blocking.
+///
+/// Returns `None` when the receiver is absent (no MCP elicitation configured) or the channel
+/// is closed, causing the `select!` branch to be disabled rather than polling indefinitely.
+async fn recv_elicitation(
+    rx: &mut Option<tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>>,
+) -> Option<zeph_mcp::ElicitationEvent> {
+    match rx {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
     }
 }
 

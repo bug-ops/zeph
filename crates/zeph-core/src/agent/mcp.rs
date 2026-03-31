@@ -511,7 +511,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Handle a single elicitation event by routing it to the active channel.
-    async fn handle_elicitation_event(&mut self, event: zeph_mcp::ElicitationEvent) {
+    pub(super) async fn handle_elicitation_event(&mut self, event: zeph_mcp::ElicitationEvent) {
         use crate::channel::{ElicitationRequest, ElicitationResponse};
 
         let decline = CreateElicitationResult {

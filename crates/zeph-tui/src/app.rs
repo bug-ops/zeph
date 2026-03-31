@@ -281,6 +281,11 @@ pub struct ConfirmState {
     pub response_tx: Option<oneshot::Sender<bool>>,
 }
 
+pub struct ElicitationState {
+    pub dialog: crate::widgets::elicitation::ElicitationDialogState,
+    pub response_tx: Option<oneshot::Sender<zeph_core::channel::ElicitationResponse>>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     input: String,
@@ -300,6 +305,7 @@ pub struct App {
     status_label: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
+    elicitation_state: Option<ElicitationState>,
     command_palette: Option<CommandPaletteState>,
     command_tx: Option<mpsc::Sender<TuiCommand>>,
     file_picker_state: Option<FilePickerState>,
@@ -355,6 +361,7 @@ impl App {
             status_label: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
+            elicitation_state: None,
             command_palette: None,
             command_tx: None,
             file_picker_state: None,
@@ -756,6 +763,7 @@ impl App {
         self.agent_event_rx.try_recv()
     }
 
+    #[allow(clippy::too_many_lines)] // large match over all agent event variants
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
@@ -834,6 +842,16 @@ impl App {
             } => {
                 self.confirm_state = Some(ConfirmState {
                     prompt,
+                    response_tx: Some(response_tx),
+                });
+            }
+            AgentEvent::ElicitationRequest {
+                request,
+                response_tx,
+            } => {
+                let dialog = crate::widgets::elicitation::ElicitationDialogState::new(request);
+                self.elicitation_state = Some(ElicitationState {
+                    dialog,
                     response_tx: Some(response_tx),
                 });
             }
@@ -945,6 +963,10 @@ impl App {
             widgets::confirm::render(&state.prompt, frame, frame.area());
         }
 
+        if let Some(state) = &self.elicitation_state {
+            widgets::elicitation::render(&state.dialog, frame, frame.area());
+        }
+
         if let Some(palette) = &self.command_palette {
             widgets::command_palette::render(palette, frame, frame.area());
         }
@@ -1036,6 +1058,11 @@ impl App {
             return;
         }
 
+        if self.elicitation_state.is_some() {
+            self.handle_elicitation_key(key);
+            return;
+        }
+
         if self.command_palette.is_some() {
             self.handle_palette_key(key);
             return;
@@ -1063,6 +1090,61 @@ impl App {
             && let Some(tx) = state.response_tx.take()
         {
             let _ = tx.send(answer);
+        }
+    }
+
+    fn handle_elicitation_key(&mut self, key: KeyEvent) {
+        use crossterm::event::KeyModifiers;
+        use zeph_core::channel::ElicitationResponse;
+
+        let Some(state) = self.elicitation_state.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel — always dismisses regardless of vi-mode
+                if let Some(mut st) = self.elicitation_state.take()
+                    && let Some(tx) = st.response_tx.take()
+                {
+                    let _ = tx.send(ElicitationResponse::Cancelled);
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(value) = state.dialog.build_submission()
+                    && let Some(mut st) = self.elicitation_state.take()
+                    && let Some(tx) = st.response_tx.take()
+                {
+                    let _ = tx.send(ElicitationResponse::Accepted(value));
+                }
+                // If build_submission returns None (required field empty), stay open
+            }
+            KeyCode::Tab => {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    state.dialog.prev_field();
+                } else {
+                    state.dialog.next_field();
+                }
+            }
+            KeyCode::BackTab => {
+                state.dialog.prev_field();
+            }
+            KeyCode::Up => {
+                state.dialog.enum_prev();
+            }
+            KeyCode::Down => {
+                state.dialog.enum_next();
+            }
+            KeyCode::Char(' ') => {
+                state.dialog.toggle_bool();
+            }
+            KeyCode::Char(c) => {
+                state.dialog.push_char(c);
+            }
+            KeyCode::Backspace => {
+                state.dialog.pop_char();
+            }
+            _ => {}
         }
     }
 

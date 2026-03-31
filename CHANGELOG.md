@@ -12,6 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(mcp): elicitation during tool execution — phase 2 (#2522)
+  - **Core deadlock fix**: agent loop now drains MCP elicitation events concurrently with tool tier futures via `tokio::select!` in `execute_native_tool_calls`; without this, MCP servers that send an elicitation mid-tool-call would deadlock (tool awaits elicitation response, agent loop awaits tool result)
+  - **TUI interactive dialog**: modal overlay (`ElicitationDialogState` + `widgets::elicitation`) renders elicitation fields (string/integer/number/boolean/enum) with keyboard navigation: `Tab`/`Shift+Tab` to move between fields, `Space` to toggle booleans, `Up`/`Down` for enum selection, `Enter` to submit, `Esc` to cancel; overrides vi-mode while active
+  - **Telegram sequential prompts**: `TelegramChannel::elicit()` sends one prompt per field with 120 s per-field timeout; boolean uses yes/no reply; enum accepts 1-based index or exact match; `/cancel` command dismisses at any point; `ELICITATION_TIMEOUT` constant added to `zeph-channels`
+  - **Security**: all MCP-supplied strings (server name, message, field names, enum values) are sanitized to strip ANSI escape sequences and control characters before rendering in TUI or Telegram; Telegram field prompts use 1-based numeric indexes to avoid the 64-byte callback_data limit
+
+
+
 - feat(tools): structured shell output envelope (#2488) — `execute_bash` now captures stdout and stderr as separate streams at the process level using a tagged `(bool, String)` channel; `ShellOutputEnvelope { stdout, stderr, exit_code, truncated }` is built post-execution and serialized into `ToolOutput.raw_response` for ACP/audit consumers; LLM context continues using the interleaved combined output in `summary`; `AuditEntry` gains optional `exit_code: Option<i32>` and `truncated: bool` fields (`skip_serializing_if` for backward compat)
 - feat(tools): per-path read allow/deny sandbox for file tool (#2489) — new `[tools.file]` config section with `deny_read` and `allow_read` glob pattern lists; evaluation order: deny-then-allow; all patterns matched against canonicalized absolute paths (prevents symlink bypass); `FileExecutor::with_read_sandbox()` builder method applies the sandbox; `handle_read()` checks sandbox before `read_to_string`; `grep_recursive` skips denied files before reading content; `FileConfig` exported from `zeph-tools`
 

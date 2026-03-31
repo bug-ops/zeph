@@ -78,6 +78,10 @@ pub enum AgentEvent {
         prompt: String,
         response_tx: oneshot::Sender<bool>,
     },
+    ElicitationRequest {
+        request: zeph_core::channel::ElicitationRequest,
+        response_tx: oneshot::Sender<zeph_core::channel::ElicitationResponse>,
+    },
     QueueCount(usize),
     DiffReady(zeph_core::DiffData),
     CommandResult {

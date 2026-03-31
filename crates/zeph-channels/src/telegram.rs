@@ -7,7 +7,10 @@ use crate::markdown::markdown_to_telegram;
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
-use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{
+    Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
+    ElicitationFieldType, ElicitationRequest, ElicitationResponse,
+};
 
 const MAX_MESSAGE_LEN: usize = 4096;
 const MAX_IMAGE_BYTES: u32 = 20 * 1024 * 1024;
@@ -499,6 +502,133 @@ impl Channel for TelegramChannel {
                 tracing::warn!("confirm timed out after 30s — denied");
                 Ok(false)
             }
+        }
+    }
+
+    async fn elicit(
+        &mut self,
+        request: ElicitationRequest,
+    ) -> Result<ElicitationResponse, ChannelError> {
+        let timeout = crate::ELICITATION_TIMEOUT;
+
+        self.send(&format!(
+            "*[MCP server '{}' is requesting input]*\n{}\n\n_Reply /cancel to cancel. \
+             Timeout: {}s._",
+            sanitize_markdown(&request.server_name),
+            sanitize_markdown(&request.message),
+            timeout.as_secs(),
+        ))
+        .await?;
+
+        let mut values = serde_json::Map::new();
+        for field in &request.fields {
+            let prompt = build_telegram_field_prompt(field);
+            self.send(&prompt).await?;
+
+            let incoming = match tokio::time::timeout(timeout, self.rx.recv()).await {
+                Ok(Some(msg)) => msg,
+                Ok(None) => {
+                    tracing::warn!(server = request.server_name, "elicitation channel closed");
+                    return Ok(ElicitationResponse::Declined);
+                }
+                Err(_) => {
+                    tracing::warn!(server = request.server_name, "elicitation timed out");
+                    let _ = self
+                        .send("Elicitation timed out — request cancelled.")
+                        .await;
+                    return Ok(ElicitationResponse::Cancelled);
+                }
+            };
+
+            let text = incoming.text.trim().to_owned();
+
+            if text.eq_ignore_ascii_case("/cancel") {
+                let _ = self.send("Elicitation cancelled.").await;
+                return Ok(ElicitationResponse::Cancelled);
+            }
+
+            let Some(value) = coerce_telegram_field(&text, &field.field_type) else {
+                let _ = self
+                    .send(&format!("Invalid value for '{}'. Declining.", field.name))
+                    .await;
+                return Ok(ElicitationResponse::Declined);
+            };
+            values.insert(field.name.clone(), value);
+        }
+
+        Ok(ElicitationResponse::Accepted(serde_json::Value::Object(
+            values,
+        )))
+    }
+}
+
+/// Strip Markdown special characters to prevent injection in Telegram messages.
+fn sanitize_markdown(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '*' | '_' | '[' | ']' | '`' | '\x1b'))
+        .collect()
+}
+
+fn build_telegram_field_prompt(field: &ElicitationField) -> String {
+    let req = if field.required { " (required)" } else { "" };
+    match &field.field_type {
+        ElicitationFieldType::Boolean => {
+            format!("*{}*{}: Reply *yes* or *no*", field.name, req)
+        }
+        ElicitationFieldType::Enum(opts) => {
+            // Use short numeric indexes to avoid Telegram 64-byte callback_data limit
+            let list: String = opts
+                .iter()
+                .enumerate()
+                .map(|(i, o)| format!("{}: {}", i + 1, sanitize_markdown(o)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("*{}*{}: Reply with the number:\n{}", field.name, req, list)
+        }
+        ElicitationFieldType::Integer => {
+            format!("*{}*{}: Reply with an integer", field.name, req)
+        }
+        ElicitationFieldType::Number => {
+            format!("*{}*{}: Reply with a number", field.name, req)
+        }
+        ElicitationFieldType::String => {
+            format!("*{}*{}: Reply with text", field.name, req)
+        }
+    }
+}
+
+fn coerce_telegram_field(text: &str, kind: &ElicitationFieldType) -> Option<serde_json::Value> {
+    match kind {
+        ElicitationFieldType::String => Some(serde_json::Value::String(text.to_owned())),
+        ElicitationFieldType::Boolean => {
+            if text.eq_ignore_ascii_case("yes") || text == "1" {
+                Some(serde_json::Value::Bool(true))
+            } else if text.eq_ignore_ascii_case("no") || text == "0" {
+                Some(serde_json::Value::Bool(false))
+            } else {
+                None
+            }
+        }
+        ElicitationFieldType::Integer => text
+            .parse::<i64>()
+            .ok()
+            .map(|n| serde_json::Value::Number(n.into())),
+        ElicitationFieldType::Number => text
+            .parse::<f64>()
+            .ok()
+            .and_then(|n| serde_json::Number::from_f64(n).map(serde_json::Value::Number)),
+        ElicitationFieldType::Enum(opts) => {
+            // Accept numeric index (1-based) or exact match
+            if let Ok(idx) = text.parse::<usize>()
+                && idx >= 1
+                && idx <= opts.len()
+            {
+                return Some(serde_json::Value::String(opts[idx - 1].clone()));
+            }
+            // Exact match (case-insensitive)
+            opts.iter()
+                .find(|o| o.eq_ignore_ascii_case(text))
+                .map(|o| serde_json::Value::String(o.clone()))
         }
     }
 }
