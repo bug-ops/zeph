@@ -126,6 +126,12 @@ pub struct ServerEntry {
     /// Timeout in seconds for the user to respond to an elicitation request.
     #[serde(default = "default_elicitation_timeout")]
     pub elicitation_timeout_secs: u64,
+    /// When `true`, spawn this Stdio server with an isolated environment: only the minimal
+    /// base env vars (`PATH`, `HOME`, etc.) plus this server's declared `env` map are passed.
+    ///
+    /// Default: `false` (backward compatible).
+    #[serde(default)]
+    pub env_isolation: bool,
 }
 
 /// Configurable byte caps applied during tool ingestion and server-instructions storage.
@@ -206,6 +212,15 @@ pub struct McpManager {
     server_elicitation: HashMap<String, bool>,
     /// Per-server elicitation timeout in seconds.
     server_elicitation_timeout: HashMap<String, u64>,
+    /// When `true`, `tools/list_changed` refresh events are rejected for servers whose
+    /// initial tool list has been committed (i.e. their ID is in `tool_list_locked`).
+    ///
+    /// This prevents a server from smuggling new tools mid-session after attestation.
+    lock_tool_list: bool,
+    /// Set of server IDs whose tool lists are locked. A server is added here atomically
+    /// before `connect_entry` is called so the lock is in place before the server can
+    /// send a `tools/list_changed` notification (MF-2: no TOCTOU window).
+    tool_list_locked: Arc<DashMap<String, ()>>,
 }
 
 impl std::fmt::Debug for McpManager {
@@ -290,6 +305,8 @@ impl McpManager {
             elicitation_rx: std::sync::Mutex::new(Some(elicitation_rx)),
             server_elicitation,
             server_elicitation_timeout,
+            lock_tool_list: false,
+            tool_list_locked: Arc::new(DashMap::new()),
         }
     }
 
@@ -302,6 +319,16 @@ impl McpManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+    }
+
+    /// Enable tool-list locking after initial connect.
+    ///
+    /// When enabled, `tools/list_changed` refresh events are rejected for all servers
+    /// that have completed their initial connection, preventing mid-session tool injection.
+    #[must_use]
+    pub fn with_lock_tool_list(mut self, lock: bool) -> Self {
+        self.lock_tool_list = lock;
+        self
     }
 
     /// Configure the maximum byte lengths for tool descriptions and server instructions.
@@ -467,10 +494,20 @@ impl McpManager {
         let max_description_bytes = self.max_description_bytes;
         let trust_store = self.trust_store.clone();
         let server_tool_metadata = Arc::clone(&self.server_tool_metadata);
+        let lock_tool_list = self.lock_tool_list;
+        let tool_list_locked = Arc::clone(&self.tool_list_locked);
 
         tokio::spawn(async move {
             let mut rx = rx;
             while let Some(event) = rx.recv().await {
+                // MF-2: reject refresh for locked servers before any processing.
+                if lock_tool_list && tool_list_locked.contains_key(&event.server_id) {
+                    tracing::warn!(
+                        server_id = event.server_id,
+                        "tools/list_changed rejected: tool list is locked after initial connect"
+                    );
+                    continue;
+                }
                 let (filtered, sanitize_result) = {
                     let trust_guard = server_trust.read().await;
                     let (trust_level, allowlist, expected_tools) =
@@ -560,6 +597,12 @@ impl McpManager {
                 continue;
             };
             let handler_cfg = self.handler_cfg_for(&config);
+            // MF-2: register the lock BEFORE spawning the connection task so there is no
+            // window between connect handshake completion and lock insertion.
+            // The lock entry is removed inside handle_connect_result if connection fails.
+            if self.lock_tool_list {
+                self.tool_list_locked.insert(config.id.clone(), ());
+            }
             join_set.spawn(async move {
                 let result =
                     connect_entry(&config, &allowed, suppress, tx, last_refresh, handler_cfg).await;
@@ -596,6 +639,9 @@ impl McpManager {
                 .await;
             }
         }
+
+        // Detect sanitized_id collisions across the aggregated tool list (SF-6/MF-1).
+        self.log_tool_collisions(&all_tools).await;
 
         (all_tools, outcomes)
     }
@@ -800,6 +846,37 @@ impl McpManager {
         drop(outcomes);
     }
 
+    /// Log warnings for all `sanitized_id` collisions in `tools`.
+    ///
+    /// When trust levels differ, the lower-trust tool is shadowed — its `sanitized_id` is
+    /// claimed by a higher-trust tool. When trust levels are equal, the first-registered
+    /// tool wins dispatch. Either way the collision is a misconfiguration and must be logged
+    /// so the operator can disambiguate (MF-1 / SF-6 fix).
+    async fn log_tool_collisions(&self, tools: &[McpTool]) {
+        use crate::tool::detect_collisions;
+
+        let trust_guard = self.server_trust.read().await;
+        let trust_map: std::collections::HashMap<String, McpTrustLevel> = trust_guard
+            .iter()
+            .map(|(id, (tl, _, _))| (id.clone(), *tl))
+            .collect();
+        drop(trust_guard);
+
+        for col in detect_collisions(tools, &trust_map) {
+            tracing::warn!(
+                sanitized_id = %col.sanitized_id,
+                server_a = %col.server_a,
+                qualified_a = %col.qualified_a,
+                trust_a = ?col.trust_a,
+                server_b = %col.server_b,
+                qualified_b = %col.qualified_b,
+                trust_b = ?col.trust_b,
+                "MCP tool sanitized_id collision: '{}' shadows '{}' — executor will always dispatch to the first-registered tool",
+                col.qualified_a, col.qualified_b,
+            );
+        }
+    }
+
     async fn handle_connect_result(
         &self,
         server_id: String,
@@ -877,6 +954,8 @@ impl McpManager {
                 }
                 Err(e) => {
                     tracing::warn!(server_id, "failed to list tools: {e:#}");
+                    // Connection failed — remove lock so the server is not left permanently locked.
+                    self.tool_list_locked.remove(&server_id);
                     state.outcomes.push(ServerConnectOutcome {
                         id: server_id,
                         connected: false,
@@ -887,6 +966,8 @@ impl McpManager {
             },
             Err(e) => {
                 tracing::warn!(server_id, "MCP server connection failed: {e:#}");
+                // Connection failed — remove lock so the server is not left permanently locked.
+                self.tool_list_locked.remove(&server_id);
                 state.outcomes.push(ServerConnectOutcome {
                     id: server_id,
                     connected: false,
@@ -971,6 +1052,7 @@ impl McpManager {
     /// # Panics
     ///
     /// Panics if the internal `connected_server_ids` lock is poisoned.
+    #[allow(clippy::too_many_lines)]
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         // Early check under read lock (fast path for duplicates)
         {
@@ -988,7 +1070,11 @@ impl McpManager {
                 server_id: entry.id.clone(),
                 message: "manager is shutting down".into(),
             })?;
-        let client = connect_entry(
+        // MF-2: insert lock BEFORE connecting so no refresh can slip through before the lock is set.
+        if self.lock_tool_list {
+            self.tool_list_locked.insert(entry.id.clone(), ());
+        }
+        let client = match connect_entry(
             entry,
             &self.allowed_commands,
             self.suppress_stderr,
@@ -996,7 +1082,15 @@ impl McpManager {
             Arc::clone(&self.last_refresh),
             self.handler_cfg_for(entry),
         )
-        .await?;
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                // Remove pre-inserted lock on failure so the server can be retried.
+                self.tool_list_locked.remove(&entry.id);
+                return Err(e);
+            }
+        };
         let raw_tools = match client.list_tools().await {
             Ok(tools) => tools,
             Err(e) => {
@@ -1070,6 +1164,17 @@ impl McpManager {
             .write()
             .await
             .insert(entry.id.clone(), tools.clone());
+
+        // Detect collisions against the full current tool list (SF-1: add_server path).
+        let all_tools: Vec<McpTool> = self
+            .server_tools
+            .read()
+            .await
+            .values()
+            .flatten()
+            .cloned()
+            .collect();
+        self.log_tool_collisions(&all_tools).await;
 
         tracing::info!(
             server_id = entry.id,
@@ -1417,6 +1522,7 @@ async fn connect_entry(
                 allowed_commands,
                 entry.timeout,
                 suppress_stderr,
+                entry.env_isolation,
                 tx,
                 last_refresh,
                 handler_cfg,
@@ -1517,6 +1623,7 @@ mod tests {
             tool_metadata: HashMap::new(),
             elicitation_enabled: false,
             elicitation_timeout_secs: 120,
+            env_isolation: false,
         }
     }
 
@@ -1719,6 +1826,7 @@ mod tests {
             tool_metadata: HashMap::new(),
             elicitation_enabled: false,
             elicitation_timeout_secs: 120,
+            env_isolation: false,
         }
     }
 

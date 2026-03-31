@@ -92,6 +92,7 @@ impl<C: Channel> Agent<C> {
             tool_metadata: std::collections::HashMap::new(),
             elicitation_enabled: false,
             elicitation_timeout_secs: 120,
+            env_isolation: false,
         };
 
         let _ = self.channel.send_status("connecting to mcp...").await;

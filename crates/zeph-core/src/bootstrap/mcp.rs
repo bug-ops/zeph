@@ -57,6 +57,7 @@ pub fn create_mcp_manager_with_vault(
                 tool_metadata: s.tool_metadata.clone(),
                 elicitation_enabled,
                 elicitation_timeout_secs: config.mcp.elicitation_timeout,
+                env_isolation: s.env_isolation.unwrap_or(config.mcp.default_env_isolation),
             }
         })
         .collect();
@@ -78,7 +79,8 @@ pub fn create_mcp_manager_with_vault(
     .with_description_limits(
         config.mcp.max_description_bytes,
         config.mcp.max_instructions_bytes,
-    );
+    )
+    .with_lock_tool_list(config.mcp.lock_tool_list);
 
     // Register OAuth credential stores
     for s in &config.mcp.servers {

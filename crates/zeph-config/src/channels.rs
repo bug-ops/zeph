@@ -123,6 +123,21 @@ impl std::fmt::Debug for SlackConfig {
     }
 }
 
+/// An IBCT signing key entry in the A2A server configuration.
+///
+/// Multiple entries allow key rotation: keep old keys until all tokens signed with them expire.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IbctKeyConfig {
+    /// Unique key identifier. Must match the `key_id` field in issued IBCT tokens.
+    pub key_id: String,
+    /// Hex-encoded HMAC-SHA256 signing key.
+    pub key_hex: String,
+}
+
+fn default_ibct_ttl() -> u64 {
+    300
+}
+
 #[derive(Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic here
 pub struct A2aServerConfig {
@@ -151,6 +166,22 @@ pub struct A2aServerConfig {
     /// continue to operate. Set to `true` in production when authentication is mandatory.
     #[serde(default)]
     pub require_auth: bool,
+    /// IBCT signing keys for per-task delegation scoping.
+    ///
+    /// When non-empty, all A2A task requests must include a valid `X-Zeph-IBCT` header
+    /// signed with one of these keys. Multiple keys allow key rotation without downtime.
+    #[serde(default)]
+    pub ibct_keys: Vec<IbctKeyConfig>,
+    /// Vault key name to resolve the primary IBCT signing key at startup (MF-3 fix).
+    ///
+    /// When set, the vault key is resolved at startup and used to construct an
+    /// `IbctKey` with `key_id = "primary"`. Takes precedence over `ibct_keys[0]` if both
+    /// are set.  Example: `"ZEPH_A2A_IBCT_KEY"`.
+    #[serde(default)]
+    pub ibct_signing_key_vault_ref: Option<String>,
+    /// TTL (seconds) for issued IBCT tokens. Default: 300 (5 minutes).
+    #[serde(default = "default_ibct_ttl")]
+    pub ibct_ttl_secs: u64,
 }
 
 impl std::fmt::Debug for A2aServerConfig {
@@ -170,6 +201,12 @@ impl std::fmt::Debug for A2aServerConfig {
             .field("max_body_size", &self.max_body_size)
             .field("drain_timeout_ms", &self.drain_timeout_ms)
             .field("require_auth", &self.require_auth)
+            .field("ibct_keys_count", &self.ibct_keys.len())
+            .field(
+                "ibct_signing_key_vault_ref",
+                &self.ibct_signing_key_vault_ref,
+            )
+            .field("ibct_ttl_secs", &self.ibct_ttl_secs)
             .finish()
     }
 }
@@ -188,6 +225,9 @@ impl Default for A2aServerConfig {
             max_body_size: default_a2a_max_body(),
             drain_timeout_ms: default_drain_timeout_ms(),
             require_auth: false,
+            ibct_keys: Vec::new(),
+            ibct_signing_key_vault_ref: None,
+            ibct_ttl_secs: default_ibct_ttl(),
         }
     }
 }
@@ -387,6 +427,19 @@ pub struct McpConfig {
     /// patterns (password, token, secret, key, credential, etc.). Default: true.
     #[serde(default = "default_true")]
     pub elicitation_warn_sensitive_fields: bool,
+    /// Lock tool lists after initial connection for all servers.
+    ///
+    /// When `true`, `tools/list_changed` refresh events are rejected for servers that have
+    /// completed their initial connection, preventing mid-session tool injection.
+    /// Default: `false` (opt-in, backward compatible).
+    #[serde(default)]
+    pub lock_tool_list: bool,
+    /// Default env isolation for all Stdio servers. Per-server `env_isolation` overrides this.
+    ///
+    /// When `true`, spawned processes only receive a minimal base env + their declared `env` map.
+    /// Default: `false` (backward compatible).
+    #[serde(default)]
+    pub default_env_isolation: bool,
 }
 
 impl Default for McpConfig {
@@ -404,6 +457,8 @@ impl Default for McpConfig {
             elicitation_timeout: default_elicitation_timeout(),
             elicitation_queue_capacity: default_elicitation_queue_capacity(),
             elicitation_warn_sensitive_fields: true,
+            lock_tool_list: false,
+            default_env_isolation: false,
         }
     }
 }
@@ -460,6 +515,14 @@ pub struct McpServerConfig {
     /// `Some(false)` = always decline for this server.
     #[serde(default)]
     pub elicitation_enabled: Option<bool>,
+    /// Isolate the environment for this Stdio server.
+    ///
+    /// When `true` (or when `[mcp].default_env_isolation = true`), the spawned process
+    /// only sees a minimal base env (`PATH`, `HOME`, etc.) plus this server's `env` map.
+    /// Overrides `[mcp].default_env_isolation` when set explicitly.
+    /// Default: `false` (backward compatible).
+    #[serde(default)]
+    pub env_isolation: Option<bool>,
 }
 
 /// A filesystem root exposed to an MCP server via `roots/list`.
@@ -547,6 +610,7 @@ impl std::fmt::Debug for McpServerConfig {
                 &self.tool_metadata.keys().collect::<Vec<_>>(),
             )
             .field("elicitation_enabled", &self.elicitation_enabled)
+            .field("env_isolation", &self.env_isolation)
             .finish()
     }
 }

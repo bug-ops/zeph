@@ -130,6 +130,66 @@ pub fn infer_security_meta(tool_name: &str) -> ToolSecurityMeta {
     }
 }
 
+/// Describes a `sanitized_id` collision between two registered tools.
+///
+/// Even when trust levels differ, the executor dispatches on `sanitized_id`, so a collision
+/// means one tool silently shadows the other regardless of trust.
+#[derive(Debug, Clone)]
+pub struct ToolCollision {
+    pub sanitized_id: String,
+    pub server_a: String,
+    pub qualified_a: String,
+    pub trust_a: crate::manager::McpTrustLevel,
+    pub server_b: String,
+    pub qualified_b: String,
+    pub trust_b: crate::manager::McpTrustLevel,
+}
+
+/// Detect `sanitized_id` collisions across a flat tool list.
+///
+/// Groups tools by `sanitized_id`. Returns one `ToolCollision` per pair of tools that share a
+/// `sanitized_id`. The first-registered tool wins dispatch; all subsequent tools are shadowed.
+///
+/// The `trust_map` maps `server_id` → trust level.
+#[must_use]
+pub fn detect_collisions<S: std::hash::BuildHasher>(
+    tools: &[McpTool],
+    trust_map: &std::collections::HashMap<String, crate::manager::McpTrustLevel, S>,
+) -> Vec<ToolCollision> {
+    use std::collections::HashMap;
+
+    // Map sanitized_id → first tool that claimed it.
+    let mut seen: HashMap<String, &McpTool> = HashMap::new();
+    let mut collisions = Vec::new();
+
+    for tool in tools {
+        let sid = tool.sanitized_id();
+        if let Some(first) = seen.get(&sid) {
+            let trust_a = trust_map
+                .get(&first.server_id)
+                .copied()
+                .unwrap_or(crate::manager::McpTrustLevel::Untrusted);
+            let trust_b = trust_map
+                .get(&tool.server_id)
+                .copied()
+                .unwrap_or(crate::manager::McpTrustLevel::Untrusted);
+            collisions.push(ToolCollision {
+                sanitized_id: sid,
+                server_a: first.server_id.clone(),
+                qualified_a: first.qualified_name(),
+                trust_a,
+                server_b: tool.server_id.clone(),
+                qualified_b: tool.qualified_name(),
+                trust_b,
+            });
+        } else {
+            seen.insert(sid, tool);
+        }
+    }
+
+    collisions
+}
+
 impl McpTool {
     #[must_use]
     pub fn qualified_name(&self) -> String {

@@ -93,6 +93,42 @@ pub fn validate_command(command: &str, extra_allowed: &[String]) -> Result<(), M
     Ok(())
 }
 
+/// Minimal base environment variables passed to isolated stdio MCP server processes.
+///
+/// When `env_isolation = true`, the spawned process receives only these variables from the
+/// parent environment, plus any server-specific `env` entries from config. This prevents
+/// the child from reading secrets or credentials the parent may have inherited.
+pub const BASE_ENV_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "SHELL",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+];
+
+/// Build the environment map for an isolated stdio child process.
+///
+/// Starts with the minimal `BASE_ENV_VARS` from the current process, then merges
+/// the server-specific `env` overrides. Variables present in `server_env` that are
+/// also in `BLOCKED_ENV_VARS` are blocked by the subsequent `validate_env` call in
+/// the caller.
+#[must_use]
+pub fn build_isolated_env<S: std::hash::BuildHasher>(
+    server_env: &HashMap<String, String, S>,
+) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = BASE_ENV_VARS
+        .iter()
+        .filter_map(|&k| std::env::var(k).ok().map(|v| (k.to_owned(), v)))
+        .collect();
+    env.extend(server_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    env
+}
+
 /// Validate that no blocked env vars are present.
 ///
 /// # Errors

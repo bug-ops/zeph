@@ -67,6 +67,9 @@ pub enum McpError {
         server_id: String,
         timeout_secs: u64,
     },
+
+    #[error("tool list refresh rejected for '{server_id}': list is locked after initial connect")]
+    ToolListLocked { server_id: String },
 }
 
 #[cfg(test)]

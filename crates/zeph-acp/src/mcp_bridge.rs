@@ -40,6 +40,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     tool_metadata: HashMap::new(),
                     elicitation_enabled: false,
                     elicitation_timeout_secs: 120,
+                    env_isolation: false,
                 })
             }
             acp::McpServer::Http(http) => Some(ServerEntry {
@@ -56,6 +57,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                 tool_metadata: HashMap::new(),
                 elicitation_enabled: false,
                 elicitation_timeout_secs: 120,
+                env_isolation: false,
             }),
             acp::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
@@ -74,6 +76,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry
                     tool_metadata: HashMap::new(),
                     elicitation_enabled: false,
                     elicitation_timeout_secs: 120,
+                    env_isolation: false,
                 })
             }
             _ => {

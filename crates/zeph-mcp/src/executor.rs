@@ -90,7 +90,7 @@ impl ToolExecutor for McpToolExecutor {
             .await
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
-        let text = result
+        let raw_text = result
             .content
             .iter()
             .filter_map(|c| {
@@ -102,6 +102,8 @@ impl ToolExecutor for McpToolExecutor {
             })
             .collect::<Vec<_>>()
             .join("\n");
+
+        let text = crate::sanitize::intent_anchor_wrap(&tool.server_id, &tool.name, &raw_text);
 
         Ok(Some(ToolOutput {
             tool_name: tool.qualified_name(),

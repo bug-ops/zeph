@@ -391,6 +391,39 @@ pub fn truncate_instructions(instructions: &str, server_id: &str, max_bytes: usi
 }
 
 // ---------------------------------------------------------------------------
+// Intent-anchor wrapper
+// ---------------------------------------------------------------------------
+
+/// The prefix that marks the start of an intent-anchor boundary.
+/// Used to detect and escape injected boundaries in tool content.
+const ANCHOR_TAG_PREFIX: &str = "[TOOL_OUTPUT::";
+
+/// Wrap MCP tool output in a per-invocation intent-anchor boundary.
+///
+/// The boundary uses a randomly generated nonce so an attacker cannot predict the closing tag
+/// and cannot escape the boundary by embedding it in tool output (MF-5 fix).
+///
+/// Any occurrence of `[TOOL_OUTPUT::` in `content` is escaped to `[TOOL_OUTPUT\u003a\u003a`
+/// (angle-bracket-encoded colons) so the attacker cannot prematurely close the boundary.
+///
+/// # Format
+///
+/// ```text
+/// [TOOL_OUTPUT::{nonce}::BEGIN server={server_id} tool={tool_name} trust=untrusted]
+/// {content}
+/// [TOOL_OUTPUT::{nonce}::END]
+/// ```
+#[must_use]
+pub fn intent_anchor_wrap(server_id: &str, tool_name: &str, content: &str) -> String {
+    let nonce = uuid::Uuid::new_v4().as_simple().to_string();
+    // Escape any occurrence of the anchor tag prefix in content to prevent boundary injection.
+    let safe_content = content.replace(ANCHOR_TAG_PREFIX, "[TOOL_OUTPUT\\u003a\\u003a");
+    format!(
+        "[TOOL_OUTPUT::{nonce}::BEGIN server={server_id} tool={tool_name} trust=untrusted]\n{safe_content}\n[TOOL_OUTPUT::{nonce}::END]"
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

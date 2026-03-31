@@ -34,8 +34,8 @@ pub use agent::{
     AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks, ToolFilterConfig,
 };
 pub use channels::{
-    A2aServerConfig, DiscordConfig, McpConfig, McpOAuthConfig, McpServerConfig, McpTrustLevel,
-    OAuthTokenStorage, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
+    A2aServerConfig, DiscordConfig, IbctKeyConfig, McpConfig, McpOAuthConfig, McpServerConfig,
+    McpTrustLevel, OAuthTokenStorage, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
     ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig,
 };
 pub use defaults::{

@@ -71,6 +71,7 @@ rmcp = "1.3"
 audioadapter-buffers = "2.0"
 rubato = "1.0"
 schemars = "1.2"
+hmac = "0.13"
 sha2 = "0.11"
 scrape-core = "0.2"
 semver = "1.0.27"
@@ -176,7 +177,7 @@ full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "ex
 bundled-skills = ["zeph-skills/bundled-skills", "zeph-core/bundled-skills"]
 
 # === Individual feature flags ===
-a2a = ["dep:zeph-a2a", "zeph-a2a?/server"]
+a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct"]
 compression-guidelines = ["zeph-core/compression-guidelines", "zeph-memory/compression-guidelines"]
 acp = ["dep:zeph-acp"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]

@@ -361,6 +361,7 @@ impl McpClient {
         allowed_commands: &[String],
         timeout: Duration,
         suppress_stderr: bool,
+        env_isolation: bool,
         tx: UnboundedSender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
@@ -368,9 +369,18 @@ impl McpClient {
         crate::security::validate_command(command, allowed_commands)?;
         crate::security::validate_env(env)?;
 
+        let effective_env = if env_isolation {
+            crate::security::build_isolated_env(env)
+        } else {
+            env.clone()
+        };
+
         let mut cmd = Command::new(command);
         cmd.args(args);
-        for (k, v) in env {
+        if env_isolation {
+            cmd.env_clear();
+        }
+        for (k, v) in &effective_env {
             cmd.env(k, v);
         }
 

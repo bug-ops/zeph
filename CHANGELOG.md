@@ -49,6 +49,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - new `set_working_directory` tool — explicit, persistent cwd change detected post-tool and fires `CwdChanged` hooks with `ZEPH_OLD_CWD`/`ZEPH_NEW_CWD` env vars
   - `FileChangeWatcher` monitors configured `watch_paths` via `notify-debouncer-mini` (debounced 500ms by default) and fires hooks with `ZEPH_CHANGED_PATH`
   - TUI spinner status emitted on both event types
+- security(mcp): cross-server `sanitized_id` collision detection in `McpManager` — logged as warnings on connect and `add_server`; first-registered tool wins dispatch (#2496)
+- security(mcp): tool-list snapshot locking (`[mcp] lock_tool_list = true`) — `tools/list_changed` refresh events are rejected for connected servers, preventing mid-session tool injection; lock flag set atomically before connection to eliminate TOCTOU race (#2497)
+- security(mcp): per-server Stdio environment isolation (`env_isolation = true` per server or `[mcp] default_env_isolation = true`) — spawned processes only receive a minimal base env plus server-specific `env` map; XDG dirs included for Linux compatibility (#2497)
+- security(mcp): intent-anchor wrapper for MCP tool output — each result is wrapped with a per-invocation nonce boundary `[TOOL_OUTPUT::{uuid}::BEGIN/END]`; boundary injection prevented by escaping `[TOOL_OUTPUT::` in tool output (#2497)
+- security(a2a): Invocation-Bound Capability Tokens (IBCT) — `crates/zeph-a2a/src/ibct.rs`; HMAC-SHA256 signing, `key_id` field for key rotation, base64-JSON `X-Zeph-IBCT` header; gated on `ibct` feature (#2504)
+- config: `[mcp] lock_tool_list`, `[mcp] default_env_isolation`, `[[mcp.servers]] env_isolation` fields
+- config: `[a2a] ibct_keys`, `[a2a] ibct_signing_key_vault_ref`, `[a2a] ibct_ttl_secs` fields
 
 ### Removed
 
