@@ -109,6 +109,77 @@ MCP server child processes inherit a sanitized environment. The following 21 env
 
 This prevents accidental secret leakage to untrusted MCP servers.
 
+## Tool Collision Detection
+
+When two connected MCP servers expose tools whose `sanitized_id` (server-prefix + normalized name) collide, Zeph logs a warning and the first-registered server's tool wins dispatch. This prevents a later server from silently shadowing an established tool.
+
+Collision warnings appear at connection time and when a dynamic server is added via `/mcp add`. Check the log for `[WARN] mcp: tool id collision` lines if you suspect shadowing.
+
+## Tool-List Snapshot Locking
+
+By default, Zeph accepts `notifications/tools/list_changed` from connected servers and fetches an updated tool list. This creates a window for mid-session tool injection: a compromised or misbehaving server could swap in tools after the operator has reviewed the initial list.
+
+Enable snapshot locking to prevent this:
+
+```toml
+[mcp]
+lock_tool_list = true
+```
+
+When `lock_tool_list = true`, `tools/list_changed` notifications are rejected for all servers after the initial connection handshake. The tool set is frozen at connect time. The lock flag is applied atomically before the connection handshake to eliminate TOCTOU races.
+
+## Per-Server Stdio Environment Isolation
+
+By default, spawned MCP server processes inherit the full (already-sanitized) environment. For additional containment, enable per-server environment isolation:
+
+```toml
+# Apply to all stdio servers by default
+[mcp]
+default_env_isolation = true
+
+# Override per server
+[[mcp.servers]]
+id = "sensitive-tools"
+command = "npx"
+args = ["-y", "@acme/sensitive"]
+env_isolation = true
+env = { TOOL_API_KEY = "vault:tool_key" }
+```
+
+With `env_isolation = true`, the child process receives only a minimal base environment (PATH, HOME, USER, TERM, TMPDIR, LANG, plus XDG dirs on Linux) plus the server-specific `env` map. All other inherited variables — including remaining secrets not caught by the blocklist — are stripped.
+
+| Setting | Scope | Effect |
+|---------|-------|--------|
+| `default_env_isolation` | All stdio servers | Opt-in baseline for all servers |
+| `env_isolation` per server | Single server | Override (can enable or disable the default) |
+
+## Intent-Anchor Nonce Boundaries
+
+Every MCP tool response is wrapped with a per-invocation nonce boundary:
+
+```
+[TOOL_OUTPUT::550e8400-e29b-41d4-a716-446655440000::BEGIN]
+<tool output>
+[TOOL_OUTPUT::550e8400-e29b-41d4-a716-446655440000::END]
+```
+
+The UUID is unique per call and generated inside Zeph, not from the server response. If tool output itself contains the string `[TOOL_OUTPUT::`, that prefix is escaped before wrapping, preventing injection attempts that mimic the boundary marker. This gives the injection-detection layer a reliable delimiter to trust.
+
+## Elicitation Security
+
+When a connected server uses the `elicitation/create` method to request user input, Zeph applies two safeguards:
+
+1. **Phishing-prevention header** — the CLI always displays the requesting server's ID before showing any fields, so the user knows which server is asking.
+
+2. **Sensitive field warning** — field names matching common secret patterns (password, token, secret, key, credential, auth, private, passphrase, pin) trigger an additional warning before the user is prompted. Configure with:
+
+```toml
+[mcp]
+elicitation_warn_sensitive_fields = true   # default: true
+```
+
+`Sandboxed` trust-level servers are never allowed to elicit regardless of `elicitation_enabled`. This is enforced unconditionally.
+
 ## Environment Variables
 
 MCP servers inherit environment variables from their configuration. Never store secrets directly in `config.toml` — use the [Vault](../security.md#age-vault) integration instead:

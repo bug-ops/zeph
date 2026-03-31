@@ -252,6 +252,42 @@ action = "ask"
 
 When `[tools.permissions]` is absent, legacy `blocked_commands` and `confirm_patterns` from `[tools.shell]` are automatically converted to equivalent permission rules (`deny` and `ask` respectively).
 
+## Structured Shell Output Envelope
+
+When `execute_bash` completes, stdout and stderr are captured as separate streams using a tagged channel. The result is stored as a `ShellOutputEnvelope` in `ToolOutput.raw_response`:
+
+```json
+{
+  "stdout": "...",
+  "stderr": "...",
+  "exit_code": 0,
+  "truncated": false
+}
+```
+
+The LLM context continues to receive the interleaved combined output (in `summary`) — behavior for the agent is unchanged. ACP and audit consumers, however, can access the envelope directly via `raw_response` to distinguish stdout from stderr and inspect the exact exit code.
+
+`AuditEntry` gains two optional fields populated from the envelope:
+
+| Field | Description |
+|-------|-------------|
+| `exit_code` | Process exit code (`null` when the process was killed by a signal) |
+| `truncated` | `true` when output was cut to the overflow threshold |
+
+## File Read Sandbox
+
+`FileExecutor` supports a per-path read sandbox via `[tools.file]`:
+
+```toml
+[tools.file]
+deny_read  = ["/etc/shadow", "/root/*", "/home/*/.ssh/*"]
+allow_read = ["/etc/hostname"]
+```
+
+Evaluation order: deny-then-allow. Patterns are matched against canonicalized absolute paths, so symlinks pointing into a denied directory are still blocked after resolution.
+
+See the [File Read Sandbox](../reference/security/file-sandbox.md) reference for the full configuration and glob syntax.
+
 ## Output Overflow
 
 When tool output exceeds a configurable character threshold, the full response is stored in the SQLite memory database (table `tool_overflow`) and the LLM receives a truncated version (head + tail split) with an opaque reference (`overflow:<uuid>`). This prevents large outputs from consuming the entire context window while preserving access to the complete data.

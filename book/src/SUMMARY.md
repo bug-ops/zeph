@@ -22,6 +22,7 @@
 - [LSP Context Injection](concepts/lsp-context-injection.md)
 - [Code Intelligence](concepts/code-intelligence.md)
 - [Task Orchestration](concepts/task-orchestration.md)
+- [Reactive Hooks](concepts/hooks.md)
 - [Logging](concepts/logging.md)
 - [Experiments](concepts/experiments.md)
 

@@ -31,9 +31,34 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `cache` | `ToolResultCache` — in-memory LRU cache for deterministic tool results with TTL expiry; `CacheKey` hashes tool name + args; `is_cacheable()` whitelist for safe-to-cache tools |
 | `tool_filter` | `ToolFilter<E>` — executor wrapper that suppresses specified tools from the LLM tool set |
 | `overflow` | (removed — overflow storage migrated to SQLite in `zeph-memory`) |
-| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block); `TafcConfig` for `[tools.tafc]` section; `ResultCacheConfig` for `[tools.result_cache]`; `DependencyConfig` + `ToolDependency` for `[tools.dependencies]` |
+| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block); `TafcConfig` for `[tools.tafc]` section; `ResultCacheConfig` for `[tools.result_cache]`; `DependencyConfig` + `ToolDependency` for `[tools.dependencies]`; `FileConfig` for `[tools.file]` section (deny_read/allow_read glob lists) |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`, `ToolResultCache`, `CacheKey`, `ToolSchemaFilter`, `ToolDependencyGraph`, `ToolFilter`
+
+## Structured shell output
+
+`execute_bash` captures stdout and stderr as separate streams. Results are returned in a `ShellOutputEnvelope { stdout, stderr, exit_code, truncated }` stored in `ToolOutput.raw_response`. `AuditEntry` gains two new fields: `exit_code: Option<i32>` and `truncated: bool`, so audit logs record whether the process succeeded and whether its output was cut off.
+
+## Per-path file read sandbox
+
+`[tools.file]` in `config.toml` configures a glob-based read sandbox for the file executor. Paths are canonicalized and symlink-safe before matching.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `deny_read` | `Vec<String>` | `[]` | Glob patterns that always deny reads, evaluated first |
+| `allow_read` | `Vec<String>` | `[]` | Glob patterns that allow reads after deny check (empty = allow all) |
+
+Deny takes precedence over allow (deny-then-allow evaluation). A path matching a deny glob is blocked even if it also matches an allow glob.
+
+```toml
+[tools.file]
+deny_read  = ["**/.env", "**/secrets/**"]
+allow_read = ["/home/user/projects/**"]
+```
+
+## Security
+
+`claim_source` is now propagated into `AdversarialPolicyGateExecutor` audit entries, so audit logs record which claim triggered the gate decision. `extract_paths` detects relative path tokens (e.g. `src/main.rs`) in addition to absolute paths.
 
 ## Security
 

@@ -51,6 +51,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `subagent::memory` | Persistent memory scopes for sub-agents: `MemoryScope` enum (`User`, `Project`, `Local`), `resolve_memory_dir()` / `ensure_memory_dir()` for directory lifecycle, `load_memory_content()` reads MEMORY.md (first 200 lines, 256 KiB cap, symlink boundary check, null byte guard), `escape_memory_content()` prevents prompt injection via `<agent-memory>` tag escaping. Memory is auto-injected into the sub-agent system prompt and Read/Write/Edit tools are auto-enabled |
 | `experiments` | Autonomous self-experimentation engine (feature-gated: `experiments`): `Variation` config mutations (temperature, top-p, top-k, frequency/presence penalty, system prompt), `ExperimentResult` with LLM-as-judge scoring, `ExperimentStatus` lifecycle; `ExperimentConfig` under `[experiments]` with `max_experiments`, `max_wall_time_secs`, `eval_budget_tokens`, `min_improvement`, optional `eval_model` and `benchmark_file`; `ExperimentSchedule` for cron-based periodic runs (`cron`, `max_experiments_per_run`, `max_wall_time_secs`); the scheduler registers a `TaskKind::Experiment` handler when both `scheduler` and `experiments` features are active; `BenchmarkSet` / `BenchmarkCase` loaded from TOML files via `from_file()` with path traversal protection and file size limit; `Evaluator` with parallel judge scoring via `FuturesUnordered`, per-invocation token budget enforcement via `AtomicU64`, XML boundary tags for prompt injection defense; `EvalReport` with mean score, p50/p95 latency, partial-run detection, error count; **Parameter variation engine**: `SearchSpace` with `ParameterRange` (min/max/step/default per parameter kind), `ConfigSnapshot` for baseline capture and rollback, `VariationGenerator` trait with three strategies — `GridStep` (exhaustive sweep), `Random` (uniform sampling), `Neighborhood` (local search around current best); one-at-a-time constraint isolates each parameter change, `OrderedFloat`-based `HashSet<Variation>` deduplication prevents retesting; **`experiment_cmd`** sub-module dispatches `/experiment` slash commands (`start`, `stop`, `status`, `report`, `best`) with `CancellationToken`-based concurrent session guard |
 | `orchestration` | DAG-based task orchestration: `TaskGraph` with `TaskNode` dependency tracking, `GraphId`/`TaskId` typed identifiers, `FailureStrategy` (abort/retry/skip/ask), `GraphStatus`/`TaskStatus` lifecycle enums, `GraphPersistence<S>` typed wrapper over `RawGraphStore`, DAG validation (cycle detection, structural invariants via topological sort), `OrchestrationConfig` under `[orchestration]`; `Planner` trait for goal decomposition with `LlmPlanner<P>` implementation — uses `chat_typed` for structured JSON output, maps string task IDs to `TaskId`, validates agent hints against available `SubAgentDef` set; tick-based `DagScheduler` execution engine with command pattern (`SchedulerAction`), `AgentRouter` trait + `RuleBasedRouter` for task-to-agent routing, `spawn_for_task()` on `SubAgentManager` for orchestrated task spawning, cross-task context injection with `ContentSanitizer` integration, stale event guard preventing timed-out agent completions from corrupting retry state; `Aggregator` trait + `LlmAggregator<P>` — synthesizes completed task outputs into a coherent response via a single LLM call; per-task character budget derived from `aggregator_max_tokens` (default 4096), task results spotlighted via `ContentSanitizer` before inclusion, raw-concatenation fallback on LLM failure; `PlanCommand` enum with `/plan` CLI commands (goal, status, list, cancel, confirm, resume, retry) integrated into the agent loop; `OrchestrationMetrics` (plans_total, tasks_total/completed/failed/skipped) always present in `MetricsSnapshot`; pending-plan confirmation flow with `confirm_before_execute` config |
+| `hooks` | `[hooks]` config with `[[hooks.cwd_changed]]` and `[[hooks.file_changed]]` event hooks; `set_working_directory` tool allows the LLM to change the agent's working directory, emitting a `CwdChanged` event; `FileChangeWatcher` via `notify-debouncer-mini` emits `FileChanged` events for watched paths; hook shell commands receive `ZEPH_OLD_CWD` / `ZEPH_NEW_CWD` (cwd hooks) and `ZEPH_CHANGED_PATH` (file hooks) environment variables |
 | `lsp_hooks` | LSP context injection hooks (feature-gated: `lsp-context`): `LspHookRunner` integrates with the agent tool loop to automatically inject LSP-derived context before each LLM call; `LspNote` type carries formatted content with estimated token counts; `DiagnosticsOnSave` hook fetches compiler diagnostics from mcpls after `write_file` completes; `HoverOnRead` hook pre-fetches hover info for key symbols (function/struct/enum/trait definitions) after `read_file` completes using concurrent `join_all` MCP calls; `ReferencesOnRename` hook fetches all reference sites before `rename_symbol` executes so the model sees the full impact; notes are injected as `Role::User` messages with `[lsp ...]` prefix, following the established pattern of `[semantic recall]`, `[known facts]`, and `[code context]`; per-turn token budget enforced in `drain_notes()` — notes exceeding the budget are dropped with a debug log; graceful degradation when mcpls is unavailable: `is_available()` checks the `McpManager` client list, individual MCP call failures are swallowed at `debug` level, and the agent loop continues normally |
 
 **Re-exports:** `Agent`, `content_hash`, `DiffData`
@@ -322,6 +323,28 @@ In-session commands for autonomous self-experimentation (requires `experiments` 
 
 > [!TIP]
 > The same CRUD operations are available interactively in the TUI agents panel — press `a` in the TUI to open the panel, then `c` (create), `e` (edit), `d` (delete), Enter (detail view).
+
+## Reactive hooks
+
+`[hooks]` in `config.toml` defines shell commands that fire on working-directory or file-change events.
+
+```toml
+[[hooks.cwd_changed]]
+command = "echo changed from $ZEPH_OLD_CWD to $ZEPH_NEW_CWD"
+timeout_secs = 5
+
+[[hooks.file_changed]]
+command = "cargo check"
+timeout_secs = 30
+```
+
+The `set_working_directory` tool is exposed to the LLM and updates the agent's cwd at runtime, triggering any registered `cwd_changed` hooks. `FileChangeWatcher` monitors paths declared in `[hooks.file_changed]` entries (500 ms debounce) and triggers `file_changed` hooks on modification. Hook commands run in an env-cleared sandbox and receive:
+
+| Variable | Scope | Description |
+|---|---|---|
+| `ZEPH_OLD_CWD` | `cwd_changed` | Previous working directory |
+| `ZEPH_NEW_CWD` | `cwd_changed` | New working directory |
+| `ZEPH_CHANGED_PATH` | `file_changed` | Absolute path of the changed file |
 
 ## Features
 

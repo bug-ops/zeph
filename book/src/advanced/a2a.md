@@ -54,6 +54,50 @@ pub enum ProcessorEvent {
 
 The processor sends events through an `mpsc::Sender<ProcessorEvent>`, enabling per-token SSE streaming to connected clients. In daemon mode, `AgentTaskProcessor` bridges A2A requests to the full agent loop (LLM, tools, memory, MCP) via `LoopbackChannel`, providing complete agent capabilities over the A2A protocol.
 
+## Invocation-Bound Capability Tokens (IBCT)
+
+IBCT are per-call security tokens that bind each A2A request to a specific task and endpoint. They prevent replayed or forwarded A2A requests from being accepted by other tasks or endpoints.
+
+### Enabling IBCT
+
+Gated on the `ibct` feature flag (enabled in the `full` feature set):
+
+```toml
+[a2a]
+ibct_ttl_secs = 300          # Token validity window (default: 300 s)
+
+# Option A: inline key (dev/test only — prefer vault ref in production)
+[[a2a.ibct_keys]]
+key_id = "k1"
+key_bytes_hex = "73757065722d73656372657400000000000000000000000000000000000000"
+
+# Option B: vault reference (recommended for production)
+ibct_signing_key_vault_ref = "ZEPH_A2A_IBCT_KEY"
+```
+
+When `ibct_keys` or `ibct_signing_key_vault_ref` is set, outgoing A2A client calls include an `X-Zeph-IBCT` header containing a base64-encoded JSON token.
+
+### Token Structure
+
+Each token is HMAC-SHA256 signed and contains:
+
+| Field | Description |
+|-------|-------------|
+| `key_id` | Key identifier (for rotation without downtime) |
+| `task_id` | A2A task the token is scoped to |
+| `endpoint` | Target endpoint URL |
+| `issued_at` | Unix timestamp of issuance |
+| `expires_at` | Expiry timestamp (`issued_at + ibct_ttl_secs`) |
+| `signature` | HMAC-SHA256 over key_id + task_id + endpoint + timestamps |
+
+### Key Rotation
+
+Multiple keys can be listed in `[[a2a.ibct_keys]]`. The first key is used for signing; all keys are tried during verification. To rotate:
+
+1. Add the new key as the first entry (it will be used for new tokens).
+2. Keep the old key in the list temporarily (it will still verify existing tokens).
+3. After `ibct_ttl_secs` has elapsed, remove the old key.
+
 ## A2A Client
 
 Zeph can also connect to other A2A agents as a client:

@@ -117,6 +117,44 @@ min_tools_to_filter = 5         # Only apply filtering when the server exposes a
 
 `min_tools_to_filter` prevents aggressive filtering on small servers. When a server exposes fewer tools than this value, all tools from that server are included unconditionally.
 
+## MCP Elicitation
+
+MCP servers can request structured user input mid-task via the `elicitation/create` protocol method. This allows a server to prompt for missing parameters, confirmations, or credentials without requiring a separate out-of-band channel.
+
+### Enabling Elicitation
+
+Elicitation is disabled by default. Enable it globally or per server:
+
+```toml
+[mcp]
+elicitation_enabled = true       # global default (default: false)
+elicitation_timeout = 120        # seconds to wait for user input (default: 120)
+elicitation_queue_capacity = 16  # max queued requests (default: 16)
+elicitation_warn_sensitive_fields = true  # warn before sensitive field prompts
+
+[[mcp.servers]]
+id = "my-server"
+command = "npx"
+args = ["-y", "@acme/mcp-server"]
+elicitation_enabled = true       # per-server override (overrides global default)
+```
+
+`Sandboxed` trust-level servers are never permitted to elicit regardless of config.
+
+### How It Works
+
+When a server sends `elicitation/create`:
+
+- **CLI:** the user sees a phishing-prevention header showing the server name, followed by field prompts. Fields are typed (string, integer, number, boolean, enum).
+- **Non-interactive channels** (Telegram, ACP without a connected client): the request is automatically declined.
+- If the request queue is full (exceeds `elicitation_queue_capacity`), the request is auto-declined with a warning log instead of blocking or accumulating indefinitely.
+
+### Security Notes
+
+- Always review which servers have `elicitation_enabled = true`. A compromised server with elicitation access can prompt for arbitrary user input.
+- `elicitation_warn_sensitive_fields = true` (default) logs a warning when field names match secret patterns before prompting.
+- See [Elicitation Security](../reference/security/mcp.md#elicitation-security) for the full security model.
+
 ## How Matching Works
 
 MCP tools are embedded in Qdrant (`zeph_mcp_tools` collection) with BLAKE3 content-hash delta sync. Unified matching injects both skills and MCP tools into the system prompt by relevance score — keeping prompt size O(K) instead of O(N) where N is total tools across all servers.
