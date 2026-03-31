@@ -28,6 +28,9 @@ pub(crate) struct ToolSetup {
     pub(crate) tool_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
     /// Watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     pub(crate) mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+    /// Receiver for elicitation requests from MCP server handlers.
+    pub(crate) mcp_elicitation_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::ElicitationEvent>>,
     /// Audit logger to pass to the agent for pre-execution block recording. `None` when audit is disabled.
     pub(crate) audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
 }
@@ -399,6 +402,8 @@ pub(crate) async fn build_tool_setup(
 
     // Subscribe before spawning the refresh task so no events are missed.
     let mcp_tool_rx = mcp_manager.subscribe_tool_changes();
+    // Take the elicitation receiver before Arc-wrapping the manager.
+    let mcp_elicitation_rx = mcp_manager.take_elicitation_rx();
     // Spawn the background task that processes tools/list_changed events.
     mcp_manager.spawn_refresh_task();
 
@@ -419,6 +424,7 @@ pub(crate) async fn build_tool_setup(
         mcp_shared_tools,
         tool_event_rx,
         mcp_tool_rx,
+        mcp_elicitation_rx,
         audit_logger,
     }
 }

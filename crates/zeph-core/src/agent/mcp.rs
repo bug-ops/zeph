@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use rmcp::model::{CreateElicitationResult, ElicitationAction};
+
 use super::{Agent, Channel, LlmProvider};
 
 impl<C: Channel> Agent<C> {
@@ -88,6 +90,8 @@ impl<C: Channel> Agent<C> {
             expected_tools: Vec::new(),
             roots: Vec::new(),
             tool_metadata: std::collections::HashMap::new(),
+            elicitation_enabled: false,
+            elicitation_timeout_secs: 120,
         };
 
         let _ = self.channel.send_status("connecting to mcp...").await;
@@ -483,6 +487,102 @@ impl<C: Channel> Agent<C> {
         self.rebuild_semantic_index().await;
     }
 
+    /// Drain and process all pending elicitation requests without blocking.
+    ///
+    /// Call this at the start of each turn and between tool calls to prevent
+    /// elicitation events from accumulating while the agent loop is busy.
+    pub(super) async fn process_pending_elicitations(&mut self) {
+        loop {
+            let Some(ref mut rx) = self.mcp.elicitation_rx else {
+                return;
+            };
+            match rx.try_recv() {
+                Ok(event) => {
+                    self.handle_elicitation_event(event).await;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.mcp.elicitation_rx = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Handle a single elicitation event by routing it to the active channel.
+    async fn handle_elicitation_event(&mut self, event: zeph_mcp::ElicitationEvent) {
+        use crate::channel::{ElicitationRequest, ElicitationResponse};
+
+        let decline = CreateElicitationResult {
+            action: ElicitationAction::Decline,
+            content: None,
+        };
+
+        let channel_request = match &event.request {
+            rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+                message,
+                requested_schema,
+                ..
+            } => {
+                let fields = build_elicitation_fields(requested_schema);
+                ElicitationRequest {
+                    server_name: event.server_id.clone(),
+                    message: sanitize_elicitation_message(message),
+                    fields,
+                }
+            }
+            rmcp::model::CreateElicitationRequestParams::UrlElicitationParams { .. } => {
+                // URL elicitation not supported in phase 1 — decline.
+                tracing::debug!(
+                    server_id = event.server_id,
+                    "URL elicitation not supported, declining"
+                );
+                let _ = event.response_tx.send(decline);
+                return;
+            }
+        };
+
+        let _ = self
+            .channel
+            .send_status("MCP server requesting input…")
+            .await;
+        let response = match self.channel.elicit(channel_request).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    server_id = event.server_id,
+                    "elicitation channel error: {e:#}"
+                );
+                let _ = self.channel.send_status("").await;
+                let _ = event.response_tx.send(decline);
+                return;
+            }
+        };
+        let _ = self.channel.send_status("").await;
+
+        let result = match response {
+            ElicitationResponse::Accepted(value) => CreateElicitationResult {
+                action: ElicitationAction::Accept,
+                content: Some(value),
+            },
+            ElicitationResponse::Declined => CreateElicitationResult {
+                action: ElicitationAction::Decline,
+                content: None,
+            },
+            ElicitationResponse::Cancelled => CreateElicitationResult {
+                action: ElicitationAction::Cancel,
+                content: None,
+            },
+        };
+
+        if event.response_tx.send(result).is_err() {
+            tracing::warn!(
+                server_id = event.server_id,
+                "elicitation response dropped — handler disconnected"
+            );
+        }
+    }
+
     /// Rebuild the in-memory semantic tool index.
     ///
     /// Only runs when `discovery_strategy == Embedding`.  On failure (all embeddings fail),
@@ -528,6 +628,69 @@ impl<C: Channel> Agent<C> {
             }
         }
     }
+}
+
+/// Convert an rmcp `ElicitationSchema` into channel-agnostic `ElicitationField` list.
+fn build_elicitation_fields(
+    schema: &rmcp::model::ElicitationSchema,
+) -> Vec<crate::channel::ElicitationField> {
+    use crate::channel::{ElicitationField, ElicitationFieldType};
+    use rmcp::model::PrimitiveSchema;
+
+    schema
+        .properties
+        .iter()
+        .map(|(name, prop)| {
+            // Extract field type and description by serializing the PrimitiveSchema to JSON
+            // and reading the discriminator field.  This avoids deep-matching the nested
+            // EnumSchema / StringSchema / … variants of rmcp's type-safe schema hierarchy.
+            let json = serde_json::to_value(prop).unwrap_or_default();
+            let description = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+
+            let field_type = match prop {
+                PrimitiveSchema::Boolean(_) => ElicitationFieldType::Boolean,
+                PrimitiveSchema::Integer(_) => ElicitationFieldType::Integer,
+                PrimitiveSchema::Number(_) => ElicitationFieldType::Number,
+                PrimitiveSchema::String(_) => ElicitationFieldType::String,
+                PrimitiveSchema::Enum(_) => {
+                    // Extract enum values from the serialized form.  All EnumSchema variants
+                    // serialise their allowed values under "enum" or inside "items.enum".
+                    let vals = json
+                        .get("enum")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    ElicitationFieldType::Enum(vals)
+                }
+            };
+            let required = schema.required.as_deref().is_some_and(|r| r.contains(name));
+            ElicitationField {
+                name: name.clone(),
+                description,
+                field_type,
+                required,
+            }
+        })
+        .collect()
+}
+
+/// Sanitize an elicitation message: cap length (in chars, not bytes) and strip control chars.
+fn sanitize_elicitation_message(message: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    // Collect up to MAX_CHARS chars, filtering control characters that could manipulate terminals.
+    message
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .take(MAX_CHARS)
+        .collect()
 }
 
 #[cfg(test)]
@@ -746,5 +909,113 @@ mod tests {
         agent.check_tool_refresh().await;
         assert_eq!(agent.mcp_tool_count(), 1);
         assert_eq!(agent.mcp.tools[0].name, "refreshed_tool");
+    }
+
+    #[test]
+    fn sanitize_elicitation_message_strips_control_chars() {
+        let input = "hello\x01world\x1b[31mred\x1b[0m";
+        let output = sanitize_elicitation_message(input);
+        assert!(!output.contains('\x01'));
+        assert!(!output.contains('\x1b'));
+        assert!(output.contains("hello"));
+        assert!(output.contains("world"));
+    }
+
+    #[test]
+    fn sanitize_elicitation_message_preserves_newline_and_tab() {
+        let input = "line1\nline2\ttabbed";
+        let output = sanitize_elicitation_message(input);
+        assert_eq!(output, "line1\nline2\ttabbed");
+    }
+
+    #[test]
+    fn sanitize_elicitation_message_caps_at_500_chars() {
+        // Build a 600-char ASCII string — no multi-byte boundary issue.
+        let input: String = "a".repeat(600);
+        let output = sanitize_elicitation_message(&input);
+        assert_eq!(output.chars().count(), 500);
+    }
+
+    #[test]
+    fn sanitize_elicitation_message_handles_multibyte_boundary() {
+        // "é" is 2 bytes.  Build a string where a naive &str[..500] would panic.
+        let input: String = "é".repeat(300); // 300 chars = 600 bytes
+        let output = sanitize_elicitation_message(&input);
+        // Should truncate to exactly 500 chars without panic.
+        assert_eq!(output.chars().count(), 300.min(500));
+    }
+
+    #[test]
+    fn build_elicitation_fields_maps_primitive_types() {
+        use crate::channel::ElicitationFieldType;
+        use rmcp::model::{
+            BooleanSchema, ElicitationSchema, IntegerSchema, NumberSchema, PrimitiveSchema,
+            StringSchema,
+        };
+        use std::collections::BTreeMap;
+
+        let mut props = BTreeMap::new();
+        props.insert(
+            "flag".to_owned(),
+            PrimitiveSchema::Boolean(BooleanSchema::new()),
+        );
+        props.insert(
+            "count".to_owned(),
+            PrimitiveSchema::Integer(IntegerSchema::new()),
+        );
+        props.insert(
+            "ratio".to_owned(),
+            PrimitiveSchema::Number(NumberSchema::new()),
+        );
+        props.insert(
+            "name".to_owned(),
+            PrimitiveSchema::String(StringSchema::new()),
+        );
+
+        let schema = ElicitationSchema::new(props);
+        let fields = build_elicitation_fields(&schema);
+
+        let get = |n: &str| fields.iter().find(|f| f.name == n).unwrap();
+        assert!(matches!(
+            get("flag").field_type,
+            ElicitationFieldType::Boolean
+        ));
+        assert!(matches!(
+            get("count").field_type,
+            ElicitationFieldType::Integer
+        ));
+        assert!(matches!(
+            get("ratio").field_type,
+            ElicitationFieldType::Number
+        ));
+        assert!(matches!(
+            get("name").field_type,
+            ElicitationFieldType::String
+        ));
+    }
+
+    #[test]
+    fn build_elicitation_fields_required_flag() {
+        use rmcp::model::{ElicitationSchema, PrimitiveSchema, StringSchema};
+        use std::collections::BTreeMap;
+
+        let mut props = BTreeMap::new();
+        props.insert(
+            "req".to_owned(),
+            PrimitiveSchema::String(StringSchema::new()),
+        );
+        props.insert(
+            "opt".to_owned(),
+            PrimitiveSchema::String(StringSchema::new()),
+        );
+
+        let mut schema = ElicitationSchema::new(props);
+        schema.required = Some(vec!["req".to_owned()]);
+
+        let fields = build_elicitation_fields(&schema);
+        let req = fields.iter().find(|f| f.name == "req").unwrap();
+        let opt = fields.iter().find(|f| f.name == "opt").unwrap();
+        assert!(req.required);
+        assert!(!opt.required);
     }
 }

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_core::channel::{
-    Channel, ChannelError, ChannelMessage, StopHint, ToolOutputEvent, ToolStartEvent,
+    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StopHint,
+    ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::cli::CliChannel;
@@ -59,6 +60,13 @@ impl Channel for AnyChannel {
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         dispatch_channel!(self, confirm, prompt)
+    }
+
+    async fn elicit(
+        &mut self,
+        request: ElicitationRequest,
+    ) -> Result<ElicitationResponse, ChannelError> {
+        dispatch_channel!(self, elicit, request)
     }
 
     fn try_recv(&mut self) -> Option<ChannelMessage> {

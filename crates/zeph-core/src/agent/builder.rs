@@ -610,6 +610,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the elicitation receiver for MCP elicitation requests from server handlers.
+    ///
+    /// When set, the agent loop processes elicitation events concurrently with tool result
+    /// awaiting to prevent deadlock.
+    #[must_use]
+    pub fn with_mcp_elicitation_rx(
+        mut self,
+        rx: tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::ElicitationEvent>,
+    ) -> Self {
+        self.mcp.elicitation_rx = Some(rx);
+        self
+    }
+
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
         self.security.sanitizer =

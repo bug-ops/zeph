@@ -5,7 +5,10 @@ use std::collections::VecDeque;
 use std::io::{BufReader, IsTerminal};
 
 use tokio::sync::mpsc;
-use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{
+    Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
+    ElicitationFieldType, ElicitationRequest, ElicitationResponse,
+};
 
 use crate::line_editor::{self, ReadLineResult};
 
@@ -344,6 +347,123 @@ impl Channel for CliChannel {
         match result {
             ReadLineResult::Line(line) => Ok(line.trim().eq_ignore_ascii_case("y")),
             ReadLineResult::Interrupted | ReadLineResult::Eof => Ok(false),
+        }
+    }
+
+    async fn elicit(
+        &mut self,
+        request: ElicitationRequest,
+    ) -> Result<ElicitationResponse, ChannelError> {
+        if !std::io::stdin().is_terminal() {
+            tracing::warn!(
+                server = request.server_name,
+                "non-interactive stdin, auto-declining elicitation"
+            );
+            return Ok(ElicitationResponse::Declined);
+        }
+
+        println!(
+            "\n[MCP server '{}' is requesting input]",
+            request.server_name
+        );
+        println!("{}", request.message);
+
+        let mut values = serde_json::Map::new();
+        for field in &request.fields {
+            let prompt = build_field_prompt(field);
+            let field_name = field.name.clone();
+            let result = tokio::task::spawn_blocking(move || line_editor::read_line(&prompt, &[]))
+                .await
+                .map_err(ChannelError::other)?
+                .map_err(ChannelError::Io)?;
+
+            match result {
+                ReadLineResult::Line(line) => {
+                    let trimmed = line.trim().to_owned();
+                    match coerce_field_value(&trimmed, &field.field_type) {
+                        Some(value) => {
+                            values.insert(field_name, value);
+                        }
+                        None => {
+                            println!(
+                                "Invalid input for '{}' (expected {:?}), declining.",
+                                field_name, field.field_type
+                            );
+                            return Ok(ElicitationResponse::Declined);
+                        }
+                    }
+                }
+                ReadLineResult::Interrupted | ReadLineResult::Eof => {
+                    return Ok(ElicitationResponse::Cancelled);
+                }
+            }
+        }
+
+        Ok(ElicitationResponse::Accepted(serde_json::Value::Object(
+            values,
+        )))
+    }
+}
+
+fn build_field_prompt(field: &ElicitationField) -> String {
+    let type_hint = match &field.field_type {
+        ElicitationFieldType::Boolean => " [true/false]",
+        ElicitationFieldType::Integer | ElicitationFieldType::Number => " [number]",
+        ElicitationFieldType::Enum(opts) if !opts.is_empty() => {
+            // Build hint dynamically below
+            return format!(
+                "{}{}: ",
+                field.name,
+                field
+                    .description
+                    .as_deref()
+                    .map(|d| format!(" ({})", d))
+                    .unwrap_or_default()
+            ) + &format!("[{}]: ", opts.join("/"));
+        }
+        _ => "",
+    };
+    format!(
+        "{}{}{}",
+        field.name,
+        field
+            .description
+            .as_deref()
+            .map(|d| format!(" ({})", d))
+            .unwrap_or_default(),
+        if type_hint.is_empty() {
+            ": ".to_owned()
+        } else {
+            format!("{type_hint}: ")
+        }
+    )
+}
+
+/// Coerce a raw user-input string into the JSON type required by the field.
+/// Returns `None` if the input cannot be converted to the declared type.
+fn coerce_field_value(raw: &str, field_type: &ElicitationFieldType) -> Option<serde_json::Value> {
+    match field_type {
+        ElicitationFieldType::String => Some(serde_json::Value::String(raw.to_owned())),
+        ElicitationFieldType::Boolean => match raw.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "1" => Some(serde_json::Value::Bool(true)),
+            "false" | "no" | "0" => Some(serde_json::Value::Bool(false)),
+            _ => None,
+        },
+        ElicitationFieldType::Integer => raw
+            .parse::<i64>()
+            .ok()
+            .map(|n| serde_json::Value::Number(n.into())),
+        ElicitationFieldType::Number => raw
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number),
+        ElicitationFieldType::Enum(opts) => {
+            if opts.iter().any(|o| o == raw) {
+                Some(serde_json::Value::String(raw.to_owned()))
+            } else {
+                None
+            }
         }
     }
 }

@@ -106,6 +106,11 @@ pub(crate) struct McpState {
     pub(crate) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     pub(crate) allowed_commands: Vec<String>,
     pub(crate) max_dynamic: usize,
+    /// Receives elicitation requests from MCP server handlers during tool execution.
+    /// When `Some`, the agent loop must process these concurrently with tool result awaiting
+    /// to avoid deadlock (tool result waits for elicitation, elicitation waits for agent loop).
+    pub(crate) elicitation_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::ElicitationEvent>>,
     /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
     ///
     /// Two methods write to this `RwLock` — ordering matters:

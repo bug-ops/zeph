@@ -43,6 +43,9 @@ pub fn create_mcp_manager_with_vault(
                     }
                 })
                 .collect();
+            let elicitation_enabled = s
+                .elicitation_enabled
+                .unwrap_or(config.mcp.elicitation_enabled);
             zeph_mcp::ServerEntry {
                 id: s.id.clone(),
                 transport,
@@ -52,6 +55,8 @@ pub fn create_mcp_manager_with_vault(
                 expected_tools: s.expected_tools.clone(),
                 roots,
                 tool_metadata: s.tool_metadata.clone(),
+                elicitation_enabled,
+                elicitation_timeout_secs: config.mcp.elicitation_timeout,
             }
         })
         .collect();

@@ -20,10 +20,12 @@ use rmcp::transport::streamable_http_client::{
 };
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot;
 use url::Url;
 
 use zeph_tools::is_private_ip;
 
+use crate::elicitation::ElicitationEvent;
 use crate::error::McpError;
 use crate::tool::McpTool;
 
@@ -63,6 +65,11 @@ pub struct ToolRefreshEvent {
 pub struct HandlerConfig {
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
+    /// When `Some`, elicitation requests are forwarded to the agent loop.
+    /// When `None`, all requests are auto-declined.
+    pub elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+    /// Elicitation response timeout.
+    pub elicitation_timeout: Duration,
 }
 
 /// Implements `rmcp::ClientHandler` to receive `tools/list_changed` notifications.
@@ -82,6 +89,11 @@ pub struct ToolListChangedHandler {
     roots: Arc<Vec<rmcp::model::Root>>,
     /// Configurable cap for tool description length (bytes).
     max_description_bytes: usize,
+    /// When `Some`, elicitation requests are forwarded to the agent loop.
+    /// When `None`, all elicitation requests are declined.
+    elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+    /// Timeout for the user to respond to an elicitation request.
+    elicitation_timeout: Duration,
 }
 
 impl ToolListChangedHandler {
@@ -91,6 +103,8 @@ impl ToolListChangedHandler {
         last_refresh: Arc<DashMap<String, Instant>>,
         roots: Arc<Vec<rmcp::model::Root>>,
         max_description_bytes: usize,
+        elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+        elicitation_timeout: Duration,
     ) -> Self {
         Self {
             server_id: server_id.into(),
@@ -98,6 +112,8 @@ impl ToolListChangedHandler {
             last_refresh,
             roots,
             max_description_bytes,
+            elicitation_tx,
+            elicitation_timeout,
         }
     }
 }
@@ -108,9 +124,73 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
         caps.roots = Some(rmcp::model::RootsCapabilities {
             list_changed: Some(false),
         });
+        if self.elicitation_tx.is_some() {
+            caps.elicitation = Some(rmcp::model::ElicitationCapability {
+                form: Some(rmcp::model::FormElicitationCapability {
+                    schema_validation: Some(true),
+                }),
+                url: None, // URL elicitation deferred to phase 2
+            });
+        }
         let mut info = rmcp::model::ClientInfo::default();
         info.capabilities = caps;
         info
+    }
+
+    fn create_elicitation(
+        &self,
+        request: rmcp::model::CreateElicitationRequestParams,
+        _context: rmcp::service::RequestContext<RoleClient>,
+    ) -> impl std::future::Future<
+        Output = Result<rmcp::model::CreateElicitationResult, rmcp::model::ErrorData>,
+    > + rmcp::service::MaybeSendFuture
+    + '_ {
+        let decline = rmcp::model::CreateElicitationResult {
+            action: rmcp::model::ElicitationAction::Decline,
+            content: None,
+        };
+
+        async move {
+            let Some(ref tx) = self.elicitation_tx else {
+                // Elicitation disabled for this server — decline silently.
+                return Ok(decline);
+            };
+
+            let (response_tx, response_rx) = oneshot::channel();
+            let event = ElicitationEvent {
+                server_id: self.server_id.clone(),
+                request,
+                response_tx,
+            };
+
+            if tx.send(event).is_err() {
+                tracing::warn!(
+                    server_id = self.server_id,
+                    "elicitation channel closed — agent loop may have shut down"
+                );
+                return Ok(decline);
+            }
+
+            match tokio::time::timeout(self.elicitation_timeout, response_rx).await {
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err(_)) => {
+                    // oneshot sender dropped — agent loop cancelled the request
+                    tracing::warn!(
+                        server_id = self.server_id,
+                        "elicitation response channel dropped"
+                    );
+                    Ok(decline)
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        server_id = self.server_id,
+                        timeout_secs = self.elicitation_timeout.as_secs(),
+                        "elicitation timed out — declining"
+                    );
+                    Ok(decline)
+                }
+            }
+        }
     }
 
     fn list_roots(
@@ -235,6 +315,8 @@ pub struct OAuthPending {
     pub last_refresh: Arc<DashMap<String, Instant>>,
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
+    pub elicitation_tx: Option<UnboundedSender<ElicitationEvent>>,
+    pub elicitation_timeout: Duration,
 }
 
 type ClientService = RunningService<rmcp::RoleClient, ToolListChangedHandler>;
@@ -304,6 +386,8 @@ impl McpClient {
             last_refresh,
             handler_cfg.roots,
             handler_cfg.max_description_bytes,
+            handler_cfg.elicitation_tx,
+            handler_cfg.elicitation_timeout,
         );
         let service = handler
             .serve(transport)
@@ -353,6 +437,8 @@ impl McpClient {
             last_refresh,
             handler_cfg.roots,
             handler_cfg.max_description_bytes,
+            handler_cfg.elicitation_tx,
+            handler_cfg.elicitation_timeout,
         );
         let service = handler
             .serve(transport)
@@ -427,6 +513,8 @@ impl McpClient {
             last_refresh,
             handler_cfg.roots,
             handler_cfg.max_description_bytes,
+            handler_cfg.elicitation_tx,
+            handler_cfg.elicitation_timeout,
         );
         let service = handler
             .serve(transport)
@@ -514,6 +602,8 @@ impl McpClient {
                 last_refresh,
                 handler_cfg.roots,
                 handler_cfg.max_description_bytes,
+                handler_cfg.elicitation_tx,
+                handler_cfg.elicitation_timeout,
             );
             let service = handler
                 .serve(transport)
@@ -590,6 +680,8 @@ impl McpClient {
                 last_refresh,
                 roots: handler_cfg.roots,
                 max_description_bytes: handler_cfg.max_description_bytes,
+                elicitation_tx: handler_cfg.elicitation_tx,
+                elicitation_timeout: handler_cfg.elicitation_timeout,
             },
         )))
     }
@@ -633,6 +725,8 @@ impl McpClient {
             pending.last_refresh,
             pending.roots,
             pending.max_description_bytes,
+            pending.elicitation_tx,
+            pending.elicitation_timeout,
         );
         let service = handler
             .serve(transport)
@@ -945,6 +1039,8 @@ mod tests {
             Arc::clone(&last_refresh),
             Arc::new(Vec::new()),
             crate::sanitize::DEFAULT_MAX_TOOL_DESCRIPTION_BYTES,
+            None,
+            Duration::from_secs(120),
         );
         (handler, rx, last_refresh)
     }
@@ -1097,6 +1193,8 @@ mod tests {
             last_refresh,
             roots,
             crate::sanitize::DEFAULT_MAX_TOOL_DESCRIPTION_BYTES,
+            None,
+            Duration::from_secs(120),
         );
         // list_roots requires a RequestContext — call the future directly via a dummy context
         // by inspecting the Arc contents instead of driving the full MCP handshake.
@@ -1115,8 +1213,15 @@ mod tests {
     fn handler_stores_max_description_bytes() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let last_refresh = Arc::new(DashMap::new());
-        let handler =
-            ToolListChangedHandler::new("srv", tx, last_refresh, Arc::new(Vec::new()), 512);
+        let handler = ToolListChangedHandler::new(
+            "srv",
+            tx,
+            last_refresh,
+            Arc::new(Vec::new()),
+            512,
+            None,
+            Duration::from_secs(120),
+        );
         assert_eq!(handler.max_description_bytes, 512);
     }
 }

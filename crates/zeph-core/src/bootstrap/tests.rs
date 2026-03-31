@@ -326,6 +326,7 @@ fn create_mcp_manager_with_http_transport() {
         expected_tools: vec![],
         roots: vec![],
         tool_metadata: HashMap::new(),
+        elicitation_enabled: None,
     }];
 
     let manager = create_mcp_manager(&config, false);
@@ -353,6 +354,7 @@ fn create_mcp_manager_with_stdio_transport() {
         expected_tools: vec![],
         roots: vec![],
         tool_metadata: HashMap::new(),
+        elicitation_enabled: None,
     }];
 
     let manager = create_mcp_manager(&config, false);

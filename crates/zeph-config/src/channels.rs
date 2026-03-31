@@ -339,6 +339,10 @@ fn default_max_instructions_bytes() -> usize {
     2048
 }
 
+fn default_elicitation_timeout() -> u64 {
+    120
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]
@@ -362,6 +366,14 @@ pub struct McpConfig {
     /// Maximum byte length for MCP server instructions. Truncated with "..." if exceeded. Default: 2048.
     #[serde(default = "default_max_instructions_bytes")]
     pub max_instructions_bytes: usize,
+    /// Enable MCP elicitation (servers can request user input mid-task).
+    /// Default: false — all elicitation requests are auto-declined.
+    /// Opt-in because it interrupts agent flow and could be abused by malicious servers.
+    #[serde(default)]
+    pub elicitation_enabled: bool,
+    /// Timeout for user to respond to an elicitation request (seconds). Default: 120.
+    #[serde(default = "default_elicitation_timeout")]
+    pub elicitation_timeout: u64,
 }
 
 impl Default for McpConfig {
@@ -375,6 +387,8 @@ impl Default for McpConfig {
             tool_discovery: ToolDiscoveryConfig::default(),
             max_description_bytes: default_max_description_bytes(),
             max_instructions_bytes: default_max_instructions_bytes(),
+            elicitation_enabled: false,
+            elicitation_timeout: default_elicitation_timeout(),
         }
     }
 }
@@ -426,6 +440,11 @@ pub struct McpServerConfig {
     /// When absent for a tool, metadata is inferred from the tool name via heuristics.
     #[serde(default)]
     pub tool_metadata: HashMap<String, ToolSecurityMeta>,
+    /// Per-server elicitation override. `None` = inherit global `elicitation_enabled`.
+    /// `Some(true)` = allow this server to elicit regardless of global setting.
+    /// `Some(false)` = always decline for this server.
+    #[serde(default)]
+    pub elicitation_enabled: Option<bool>,
 }
 
 /// A filesystem root exposed to an MCP server via `roots/list`.

@@ -1,6 +1,48 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+/// A single field in an elicitation form request.
+#[derive(Debug, Clone)]
+pub struct ElicitationField {
+    pub name: String,
+    pub description: Option<String>,
+    pub field_type: ElicitationFieldType,
+    pub required: bool,
+}
+
+/// Type of an elicitation form field.
+#[derive(Debug, Clone)]
+pub enum ElicitationFieldType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    /// Enum with allowed values.
+    Enum(Vec<String>),
+}
+
+/// An elicitation request from an MCP server.
+#[derive(Debug, Clone)]
+pub struct ElicitationRequest {
+    /// Name of the MCP server making the request (shown for phishing prevention).
+    pub server_name: String,
+    /// Human-readable message from the server.
+    pub message: String,
+    /// Form fields to collect from the user.
+    pub fields: Vec<ElicitationField>,
+}
+
+/// User's response to an elicitation request.
+#[derive(Debug, Clone)]
+pub enum ElicitationResponse {
+    /// User filled in the form and submitted.
+    Accepted(serde_json::Value),
+    /// User actively declined to provide input.
+    Declined,
+    /// User cancelled (e.g. Escape, timeout).
+    Cancelled,
+}
+
 /// Typed error for channel operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
@@ -236,6 +278,21 @@ pub trait Channel: Send {
         _prompt: &str,
     ) -> impl Future<Output = Result<bool, ChannelError>> + Send {
         async { Ok(true) }
+    }
+
+    /// Request structured input from the user for an MCP elicitation.
+    ///
+    /// Always displays `request.server_name` to prevent phishing by malicious servers.
+    /// Default: auto-decline (for headless/daemon/non-interactive scenarios).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn elicit(
+        &mut self,
+        _request: ElicitationRequest,
+    ) -> impl Future<Output = Result<ElicitationResponse, ChannelError>> + Send {
+        async { Ok(ElicitationResponse::Declined) }
     }
 
     /// Signal the non-default stop reason to the consumer before flushing.

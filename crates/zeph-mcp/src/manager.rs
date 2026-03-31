@@ -19,6 +19,7 @@ use tokio::task::JoinSet;
 use rmcp::transport::auth::CredentialStore;
 
 use crate::client::{McpClient, OAuthConnectResult, ToolRefreshEvent};
+use crate::elicitation::ElicitationEvent;
 use crate::embedding_guard::EmbeddingAnomalyGuard;
 use crate::error::McpError;
 use crate::policy::{PolicyEnforcer, check_data_flow};
@@ -26,6 +27,10 @@ use crate::prober::DefaultMcpProber;
 use crate::sanitize::{SanitizeResult, sanitize_tools};
 use crate::tool::{McpTool, ToolSecurityMeta, infer_security_meta};
 use crate::trust_score::TrustScoreStore;
+
+fn default_elicitation_timeout() -> u64 {
+    120
+}
 
 /// Trust level for an MCP server connection.
 ///
@@ -113,6 +118,14 @@ pub struct ServerEntry {
     /// When absent for a tool, metadata is inferred from the tool name via heuristics.
     #[serde(default)]
     pub tool_metadata: HashMap<String, ToolSecurityMeta>,
+    /// Whether this server is allowed to send elicitation requests.
+    /// Overrides the global `elicitation_enabled` config.
+    /// Sandboxed servers always have elicitation disabled regardless of this flag.
+    #[serde(default)]
+    pub elicitation_enabled: bool,
+    /// Timeout in seconds for the user to respond to an elicitation request.
+    #[serde(default = "default_elicitation_timeout")]
+    pub elicitation_timeout_secs: u64,
 }
 
 /// Configurable byte caps applied during tool ingestion and server-instructions storage.
@@ -184,6 +197,15 @@ pub struct McpManager {
     max_instructions_bytes: usize,
     /// Server instructions collected after handshake, keyed by server ID.
     server_instructions: Arc<RwLock<HashMap<String, String>>>,
+    /// Sender half of the elicitation event channel; cloned into each `ToolListChangedHandler`
+    /// that has elicitation enabled.
+    elicitation_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<ElicitationEvent>>>,
+    /// Receiver half; taken once by `take_elicitation_rx()` and wired into the agent loop.
+    elicitation_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<ElicitationEvent>>>,
+    /// Per-server elicitation enabled flags (populated from `ServerEntry`).
+    server_elicitation: HashMap<String, bool>,
+    /// Per-server elicitation timeout in seconds.
+    server_elicitation_timeout: HashMap<String, u64>,
 }
 
 impl std::fmt::Debug for McpManager {
@@ -202,6 +224,7 @@ impl McpManager {
         enforcer: PolicyEnforcer,
     ) -> Self {
         let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let (elicitation_tx, elicitation_rx) = mpsc::unbounded_channel();
         let (tools_watch_tx, _) = watch::channel(Vec::new());
         let server_trust: HashMap<String, _> = configs
             .iter()
@@ -219,6 +242,14 @@ impl McpManager {
         let server_tool_metadata: HashMap<String, HashMap<String, ToolSecurityMeta>> = configs
             .iter()
             .map(|c| (c.id.clone(), c.tool_metadata.clone()))
+            .collect();
+        let server_elicitation: HashMap<String, bool> = configs
+            .iter()
+            .map(|c| (c.id.clone(), c.elicitation_enabled))
+            .collect();
+        let server_elicitation_timeout: HashMap<String, u64> = configs
+            .iter()
+            .map(|c| (c.id.clone(), c.elicitation_timeout_secs))
             .collect();
         Self {
             configs,
@@ -242,7 +273,22 @@ impl McpManager {
             max_description_bytes: crate::sanitize::DEFAULT_MAX_TOOL_DESCRIPTION_BYTES,
             max_instructions_bytes: 2048,
             server_instructions: Arc::new(RwLock::new(HashMap::new())),
+            elicitation_tx: std::sync::Mutex::new(Some(elicitation_tx)),
+            elicitation_rx: std::sync::Mutex::new(Some(elicitation_rx)),
+            server_elicitation,
+            server_elicitation_timeout,
         }
+    }
+
+    /// Take the elicitation receiver to wire into the agent loop.
+    ///
+    /// May only be called once. Returns `None` if already taken.
+    #[must_use]
+    pub fn take_elicitation_rx(&self) -> Option<mpsc::UnboundedReceiver<ElicitationEvent>> {
+        self.elicitation_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Configure the maximum byte lengths for tool descriptions and server instructions.
@@ -320,6 +366,44 @@ impl McpManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .cloned()
+    }
+
+    /// Clone the elicitation sender for a specific server, if elicitation is enabled for it.
+    ///
+    /// Returns `None` if elicitation is disabled for this server, the server is Sandboxed
+    /// (never allowed to elicit), or the manager has shut down.
+    fn clone_elicitation_tx_for(
+        &self,
+        server_id: &str,
+        trust_level: McpTrustLevel,
+    ) -> Option<mpsc::UnboundedSender<ElicitationEvent>> {
+        // Sandboxed servers may never elicit regardless of config.
+        if trust_level == McpTrustLevel::Sandboxed {
+            return None;
+        }
+        let enabled = self
+            .server_elicitation
+            .get(server_id)
+            .copied()
+            .unwrap_or(false);
+        if !enabled {
+            return None;
+        }
+        self.elicitation_tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+    }
+
+    /// Elicitation timeout for a specific server.
+    fn elicitation_timeout_for(&self, server_id: &str) -> std::time::Duration {
+        let secs = self
+            .server_elicitation_timeout
+            .get(server_id)
+            .copied()
+            .unwrap_or(120);
+        std::time::Duration::from_secs(secs)
     }
 
     /// Subscribe to tool list change notifications.
@@ -453,9 +537,20 @@ impl McpManager {
                 continue;
             };
             let max_desc = self.max_description_bytes;
+            let elix_tx = self.clone_elicitation_tx_for(&config.id, config.trust_level);
+            let elix_timeout = self.elicitation_timeout_for(&config.id);
             join_set.spawn(async move {
-                let result =
-                    connect_entry(&config, &allowed, suppress, tx, last_refresh, max_desc).await;
+                let result = connect_entry(
+                    &config,
+                    &allowed,
+                    suppress,
+                    tx,
+                    last_refresh,
+                    max_desc,
+                    elix_tx,
+                    elix_timeout,
+                )
+                .await;
                 (config.id, result)
             });
         }
@@ -563,6 +658,8 @@ impl McpManager {
                 crate::client::HandlerConfig {
                     roots,
                     max_description_bytes: self.max_description_bytes,
+                    elicitation_tx: self.clone_elicitation_tx_for(&config.id, config.trust_level),
+                    elicitation_timeout: self.elicitation_timeout_for(&config.id),
                 },
             )
             .await;
@@ -886,6 +983,8 @@ impl McpManager {
             tx,
             Arc::clone(&self.last_refresh),
             self.max_description_bytes,
+            self.clone_elicitation_tx_for(&entry.id, entry.trust_level),
+            self.elicitation_timeout_for(&entry.id),
         )
         .await?;
         let raw_tools = match client.list_tools().await {
@@ -1296,11 +1395,15 @@ async fn connect_entry(
     tx: mpsc::UnboundedSender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
     max_description_bytes: usize,
+    elicitation_tx: Option<mpsc::UnboundedSender<ElicitationEvent>>,
+    elicitation_timeout: std::time::Duration,
 ) -> Result<McpClient, McpError> {
     let roots = Arc::new(validate_roots(&entry.roots, &entry.id));
     let handler_cfg = crate::client::HandlerConfig {
         roots,
         max_description_bytes,
+        elicitation_tx,
+        elicitation_timeout,
     };
     match &entry.transport {
         McpTransport::Stdio { command, args, env } => {
@@ -1410,6 +1513,8 @@ mod tests {
             expected_tools: Vec::new(),
             roots: Vec::new(),
             tool_metadata: HashMap::new(),
+            elicitation_enabled: false,
+            elicitation_timeout_secs: 120,
         }
     }
 
@@ -1610,6 +1715,8 @@ mod tests {
             expected_tools: Vec::new(),
             roots: Vec::new(),
             tool_metadata: HashMap::new(),
+            elicitation_enabled: false,
+            elicitation_timeout_secs: 120,
         }
     }
 
@@ -2157,6 +2264,46 @@ mod tests {
         assert!(
             !result[0].uri.contains(".."),
             "traversal must be resolved by canonicalize"
+        );
+    }
+
+    // --- elicitation ---
+
+    #[test]
+    fn sandboxed_server_cannot_elicit_regardless_of_config() {
+        let mut entry = make_entry("sandboxed-srv");
+        entry.trust_level = McpTrustLevel::Sandboxed;
+        entry.elicitation_enabled = true; // even when explicitly enabled
+        let mgr = McpManager::new(vec![entry], vec![], PolicyEnforcer::new(vec![]));
+        let tx = mgr.clone_elicitation_tx_for("sandboxed-srv", McpTrustLevel::Sandboxed);
+        assert!(
+            tx.is_none(),
+            "Sandboxed server must not receive an elicitation sender"
+        );
+    }
+
+    #[test]
+    fn untrusted_server_with_elicitation_enabled_receives_sender() {
+        let mut entry = make_entry("trusted-srv");
+        entry.trust_level = McpTrustLevel::Untrusted;
+        entry.elicitation_enabled = true;
+        let mgr = McpManager::new(vec![entry], vec![], PolicyEnforcer::new(vec![]));
+        let tx = mgr.clone_elicitation_tx_for("trusted-srv", McpTrustLevel::Untrusted);
+        assert!(
+            tx.is_some(),
+            "Untrusted server with elicitation_enabled=true should receive sender"
+        );
+    }
+
+    #[test]
+    fn server_with_elicitation_disabled_gets_no_sender() {
+        let mut entry = make_entry("quiet-srv");
+        entry.elicitation_enabled = false;
+        let mgr = McpManager::new(vec![entry], vec![], PolicyEnforcer::new(vec![]));
+        let tx = mgr.clone_elicitation_tx_for("quiet-srv", McpTrustLevel::Untrusted);
+        assert!(
+            tx.is_none(),
+            "Server with elicitation_enabled=false must not receive sender"
         );
     }
 

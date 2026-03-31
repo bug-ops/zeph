@@ -393,6 +393,7 @@ impl<C: Channel> Agent<C> {
                 manager: None,
                 allowed_commands: Vec::new(),
                 max_dynamic: 10,
+                elicitation_rx: None,
                 shared_tools: None,
                 tool_rx: None,
                 server_outcomes: Vec::new(),
@@ -2564,6 +2565,9 @@ impl<C: Channel> Agent<C> {
 
             // Poll for MCP tool list updates from tools/list_changed notifications.
             self.check_tool_refresh().await;
+
+            // Process any pending MCP elicitation requests from MCP servers.
+            self.process_pending_elicitations().await;
 
             // Refresh sub-agent status in metrics before polling.
             self.refresh_subagent_metrics();
