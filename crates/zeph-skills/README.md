@@ -54,12 +54,17 @@ Feedback signals are detected by `FeedbackDetector` in `zeph-core`, which now su
 
 ```toml
 [skills]
-cosine_weight  = 0.7   # weight of cosine similarity in RRF fusion (default: 0.7)
-hybrid_search  = true  # enable BM25 + cosine hybrid search (default: true)
+cosine_weight            = 0.7   # weight of cosine similarity in RRF fusion (default: 0.7)
+hybrid_search            = true  # enable BM25 + cosine hybrid search (default: true)
+disambiguation_threshold = 0.20  # minimum score gap for skill disambiguation (default: 0.20, was 0.05 before v0.18.2)
+min_injection_score      = 0.20  # minimum match score for skill injection into the prompt (default: 0.20)
 ```
 
 > [!NOTE]
 > When `hybrid_search = true`, BM25 keyword scores are computed locally and fused with Qdrant cosine scores using Reciprocal Rank Fusion. This improves recall for exact-match queries while preserving semantic ranking quality for paraphrase queries.
+
+> [!NOTE]
+> `disambiguation_threshold` default changed from 0.05 to 0.20 in v0.18.2 — this reduces false-positive skill injections for low-confidence queries. `min_injection_score` is a new field that gates injection independently of disambiguation.
 
 ## Installation
 

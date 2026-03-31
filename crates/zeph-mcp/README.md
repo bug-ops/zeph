@@ -58,6 +58,44 @@ expected_tools = ["read_file", "write_file", "list_directory"]
 > [!IMPORTANT]
 > Leave `expected_tools` empty (or omit it) to allow all tools from a server. Setting it to an empty list `[]` blocks all tools from that server.
 
+## Elicitation
+
+MCP servers can request structured user input via the `elicitation/create` method. When enabled, Zeph presents a phishing-prevention header before displaying the server's form and routes the response back over a bounded channel.
+
+| Config field | Type | Default | Description |
+|---|---|---|---|
+| `elicitation_enabled` | bool | `false` | Enable elicitation globally (opt-in) |
+| `elicitation_timeout` | u64 (secs) | `120` | Seconds to wait for user input before timing out |
+| `elicitation_queue_capacity` | usize | `16` | Bounded channel capacity for pending elicitation requests |
+| `elicitation_warn_sensitive_fields` | bool | `true` | Warn when field names suggest sensitive input (password, token, key, etc.) |
+
+A per-server `elicitation_enabled` override takes precedence over the global setting. Sandboxed servers (trust level `Sandboxed`) can never use elicitation regardless of config.
+
+```toml
+[mcp]
+elicitation_enabled = true
+elicitation_timeout = 120
+```
+
+## Security hardening
+
+- **Tool collision detection** — when two servers expose tools with the same `sanitized_id`, a warning is emitted at registration time. The first-registered tool wins.
+- **Tool-list snapshot locking** — set `lock_tool_list = true` on a server entry to reject any `tools/list_changed` refresh after the initial snapshot. Prevents malicious servers from injecting new tools mid-session.
+- **Per-server stdio env isolation** — `env_isolation = true` (or `default_env_isolation = true` globally) strips the inherited process environment before spawning stdio MCP servers, preventing accidental secret leakage via `PATH`, `HOME`, and similar variables. Explicitly declared `env` keys are still passed through.
+- **Intent-anchor nonce boundaries** — tool output from MCP servers is wrapped with per-call nonce delimiters before entering the LLM context, reducing prompt injection surface.
+
+```toml
+[mcp]
+default_env_isolation = true   # strip env for all stdio servers by default
+
+[[mcp.servers]]
+id              = "untrusted"
+command         = "npx"
+args            = ["-y", "some-mcp-server"]
+lock_tool_list  = true         # reject tool list changes after startup
+env_isolation   = true         # explicit per-server override
+```
+
 ## MCPShield trust calibration
 
 `MCPShield` assigns a per-server trust score that starts at 1.0 and degrades on anomalous events: tool definition mutations between `tools/list_changed` cycles, sanitization hits, unexpected tool names, and tool execution errors. When the trust score drops below `shield.quarantine_threshold`, the server is quarantined and its tools are excluded from the registry until the score recovers (exponential half-life decay).

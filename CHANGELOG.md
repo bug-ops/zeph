@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Remove dead `ModelOrchestrator` and related `LlmRoutingStrategy::Task` code superseded by `RouterProvider` (#2540)
 
+## [0.18.2] - 2026-03-31
+
 ### Added
 
 - feat(mcp): elicitation during tool execution — phase 2 (#2522)
@@ -3182,7 +3184,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/bug-ops/zeph/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/bug-ops/zeph/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/bug-ops/zeph/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/bug-ops/zeph/compare/v0.17.0...v0.17.1

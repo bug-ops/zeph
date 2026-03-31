@@ -13,7 +13,7 @@ Provides durable conversation storage via SQLite and semantic retrieval through 
 
 Recall quality is enhanced by MMR (Maximal Marginal Relevance) re-ranking for result diversity, temporal decay scoring for recency bias, and write-time importance scoring for content-aware ranking. All are configurable via `SemanticConfig`.
 
-Query-aware memory routing (`MemoryRouter` trait, `HeuristicRouter` default) classifies each query as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid and dispatches accordingly. Configure via `[memory.routing]`.
+Query-aware memory routing (`MemoryRouter` trait, `HeuristicRouter` default) classifies each query as Keyword (SQLite FTS5), Semantic (Qdrant), or Hybrid and dispatches accordingly. Configure via `[memory.store_routing]` (note: `[memory.routing]` was removed in v0.18.2 — use `[memory.store_routing]` going forward).
 
 Includes a document ingestion subsystem for loading, chunking, and storing user documents (text, Markdown, PDF) into Qdrant for RAG workflows.
 
