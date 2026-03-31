@@ -979,6 +979,42 @@ fn extract_paths_empty() {
     assert!(extract_paths("").is_empty());
 }
 
+#[test]
+fn extract_paths_relative_without_prefix() {
+    let paths = extract_paths("cargo build src/main.rs");
+    assert!(
+        paths.contains(&"src/main.rs".to_owned()),
+        "src/main.rs must be detected"
+    );
+}
+
+#[test]
+fn extract_paths_relative_nested() {
+    let paths = extract_paths("cat .local/foo/bar");
+    assert!(
+        paths.contains(&".local/foo/bar".to_owned()),
+        ".local/foo/bar must be detected"
+    );
+}
+
+#[test]
+fn extract_paths_does_not_match_urls() {
+    let paths = extract_paths("curl https://example.com/file");
+    assert!(
+        !paths.contains(&"https://example.com/file".to_owned()),
+        "URLs must not be matched as paths"
+    );
+}
+
+#[test]
+fn extract_paths_does_not_match_env_assignments() {
+    let paths = extract_paths("KEY=some/value cargo build");
+    assert!(
+        !paths.contains(&"KEY=some/value".to_owned()),
+        "env assignments must not be matched as paths"
+    );
+}
+
 #[tokio::test]
 async fn policy_deny_blocks_command() {
     let policy = PermissionPolicy::from_legacy(&["forbidden".to_owned()], &[]);

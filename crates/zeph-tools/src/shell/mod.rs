@@ -1008,11 +1008,42 @@ fn extract_paths(code: &str) -> Vec<String> {
             || trimmed.starts_with("./")
             || trimmed.starts_with("../")
             || trimmed == ".."
+            || (trimmed.starts_with('.') && trimmed.contains('/'))
+            || is_relative_path_token(&trimmed)
         {
             result.push(trimmed);
         }
     }
     result
+}
+
+/// Returns `true` if `token` looks like a relative path of the form `word/more`
+/// (contains `/` but does not start with `/` or `.`).
+///
+/// Excluded:
+/// - URL schemes (`scheme://`)
+/// - Shell variable assignments (`KEY=value`)
+fn is_relative_path_token(token: &str) -> bool {
+    // Must contain a slash but not start with `/` (absolute) or `.` (handled above).
+    if !token.contains('/') || token.starts_with('/') || token.starts_with('.') {
+        return false;
+    }
+    // Reject URLs: anything with `://`
+    if token.contains("://") {
+        return false;
+    }
+    // Reject shell variable assignments: `IDENTIFIER=...`
+    if let Some(eq_pos) = token.find('=') {
+        let key = &token[..eq_pos];
+        if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return false;
+        }
+    }
+    // First character must be an identifier-start (letter, digit, or `_`).
+    token
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Classify shell exit codes and stderr patterns into `ToolErrorCategory`.

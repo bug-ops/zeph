@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tools): propagate `claim_source` from `ToolOutput` into the post-execution audit entry in `AdversarialPolicyGateExecutor`; `write_audit` now accepts an explicit `claim_source` parameter so the field is no longer hardcoded to `None` for successful executions (closes #2535)
+- fix(tools): `extract_paths` now detects relative path tokens that contain `/` but do not start with `/` or `./` (e.g. `src/main.rs`, `.local/foo/bar`); URL schemes (`://`) and shell variable assignments (`KEY=value`) are excluded from matching (closes #2536)
+
 - fix(mcp): replace unbounded elicitation mpsc channel with a bounded channel (default capacity 16) to prevent memory exhaustion from misbehaving MCP servers; requests that arrive when the queue is full are auto-declined with a warning log instead of accumulating indefinitely; capacity is configurable via `[mcp] elicitation_queue_capacity` (closes #2524)
 - fix(mcp): pre-existing `clippy::non_exhaustive_omitted_patterns`, `match_single_binding`, and `uninlined_format_args` warnings in elicitation CLI prompt builder and test code (caught while adding bounded-channel support)
 

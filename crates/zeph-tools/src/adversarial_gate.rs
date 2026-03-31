@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::adversarial_policy::{PolicyDecision, PolicyLlmClient, PolicyValidator};
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
-use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use crate::executor::{ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::registry::ToolDef;
 
 /// Wraps an inner `ToolExecutor`, running an LLM-based adversarial policy check
@@ -75,7 +75,8 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
         match decision {
             PolicyDecision::Allow => {
                 tracing::debug!(tool = %call.tool_id, "adversarial policy: allow");
-                self.write_audit(call, "allow", AuditResult::Success).await;
+                self.write_audit(call, "allow", AuditResult::Success, None)
+                    .await;
                 Ok(())
             }
             PolicyDecision::Deny { reason } => {
@@ -90,6 +91,7 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
                     AuditResult::Blocked {
                         reason: reason.clone(),
                     },
+                    None,
                 )
                 .await;
                 // MED-03: do NOT surface the LLM reason to the main LLM.
@@ -105,8 +107,13 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
                     "adversarial policy: LLM error"
                 );
                 if self.validator.fail_open() {
-                    self.write_audit(call, &format!("error:{message}"), AuditResult::Success)
-                        .await;
+                    self.write_audit(
+                        call,
+                        &format!("error:{message}"),
+                        AuditResult::Success,
+                        None,
+                    )
+                    .await;
                     Ok(())
                 } else {
                     self.write_audit(
@@ -115,6 +122,7 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
                         AuditResult::Blocked {
                             reason: "adversarial policy LLM error (fail-closed)".to_owned(),
                         },
+                        None,
                     )
                     .await;
                     Err(ToolError::Blocked {
@@ -125,7 +133,13 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
         }
     }
 
-    async fn write_audit(&self, call: &ToolCall, decision: &str, result: AuditResult) {
+    async fn write_audit(
+        &self,
+        call: &ToolCall,
+        decision: &str,
+        result: AuditResult,
+        claim_source: Option<ClaimSource>,
+    ) {
         let Some(audit) = &self.audit else { return };
         let entry = AuditEntry {
             timestamp: chrono_now(),
@@ -136,7 +150,7 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
             error_category: None,
             error_domain: None,
             error_phase: None,
-            claim_source: None,
+            claim_source,
             mcp_server_id: None,
             injection_flagged: false,
             embedding_anomalous: false,
@@ -166,7 +180,17 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         self.check_policy(call).await?;
-        self.inner.execute_tool_call(call).await
+        let output = self.inner.execute_tool_call(call).await?;
+        if let Some(ref out) = output {
+            self.write_audit(
+                call,
+                "allow:executed",
+                AuditResult::Success,
+                out.claim_source.clone(),
+            )
+            .await;
+        }
+        Ok(output)
     }
 
     // MED-04: policy also enforced on confirmed calls.
@@ -175,7 +199,17 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
         call: &ToolCall,
     ) -> Result<Option<ToolOutput>, ToolError> {
         self.check_policy(call).await?;
-        self.inner.execute_tool_call_confirmed(call).await
+        let output = self.inner.execute_tool_call_confirmed(call).await?;
+        if let Some(ref out) = output {
+            self.write_audit(
+                call,
+                "allow:executed",
+                AuditResult::Success,
+                out.claim_source.clone(),
+            )
+            .await;
+        }
+        Ok(output)
     }
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
@@ -528,6 +562,66 @@ mod tests {
         assert!(
             content.contains("deny:"),
             "deny decision must be recorded in audit"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_entry_propagates_claim_source() {
+        use tempfile::TempDir;
+
+        #[derive(Debug)]
+        struct InnerWithClaimSource;
+
+        impl ToolExecutor for InnerWithClaimSource {
+            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+
+            async fn execute_tool_call(
+                &self,
+                call: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(Some(ToolOutput {
+                    tool_name: call.tool_id.clone(),
+                    summary: "ok".into(),
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: Some(crate::executor::ClaimSource::Shell),
+                }))
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("audit.log");
+        let audit_config = crate::config::AuditConfig {
+            enabled: true,
+            destination: log_path.display().to_string(),
+        };
+        let audit_logger = Arc::new(
+            crate::audit::AuditLogger::from_config(&audit_config)
+                .await
+                .unwrap(),
+        );
+
+        let (_, llm) = MockLlm::new("ALLOW");
+        let gate = AdversarialPolicyGateExecutor::new(
+            InnerWithClaimSource,
+            make_validator(false),
+            Arc::new(llm),
+        )
+        .with_audit(Arc::clone(&audit_logger));
+
+        gate.execute_tool_call(&make_call("shell")).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"shell\""),
+            "claim_source must be propagated into the post-execution audit entry"
         );
     }
 }
