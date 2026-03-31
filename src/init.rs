@@ -187,6 +187,9 @@ pub(crate) struct WizardState {
     // Transactional shell (#2414)
     pub(crate) shell_transactional: bool,
     pub(crate) shell_auto_rollback: bool,
+    // File read sandbox (#2525)
+    pub(crate) file_deny_read: Vec<String>,
+    pub(crate) file_allow_read: Vec<String>,
 }
 
 impl Default for WizardState {
@@ -331,6 +334,8 @@ impl Default for WizardState {
             database_url: None,
             shell_transactional: false,
             shell_auto_rollback: false,
+            file_deny_read: Vec::new(),
+            file_allow_read: Vec::new(),
         }
     }
 }
@@ -1399,6 +1404,16 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
     config.tools.shell.transactional = state.shell_transactional;
     config.tools.shell.auto_rollback = state.shell_auto_rollback;
+    config
+        .tools
+        .file
+        .deny_read
+        .clone_from(&state.file_deny_read);
+    config
+        .tools
+        .file
+        .allow_read
+        .clone_from(&state.file_allow_read);
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
     config.skills.trust.scanner.capability_escalation_check =
         state.skill_capability_escalation_check;
@@ -2255,6 +2270,31 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             )
             .default(false)
             .interact()?;
+    }
+
+    let deny_raw: String = dialoguer::Input::new()
+        .with_prompt(
+            "File read deny patterns (comma-separated globs, e.g. /etc/shadow,/root/*, empty = no restrictions)",
+        )
+        .allow_empty(true)
+        .interact_text()?;
+    state.file_deny_read = deny_raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if !state.file_deny_read.is_empty() {
+        let allow_raw: String = dialoguer::Input::new()
+            .with_prompt("File read allow overrides (comma-separated globs, empty = none)")
+            .allow_empty(true)
+            .interact_text()?;
+        state.file_allow_read = allow_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
     }
 
     #[cfg(feature = "guardrail")]
@@ -3290,5 +3330,29 @@ mod tests {
             config.memory.sqlite_path,
             zeph_core::config::default_sqlite_path(),
         );
+    }
+
+    #[test]
+    fn build_config_file_deny_allow_mapped() {
+        let state = WizardState {
+            file_deny_read: vec!["/etc/shadow".into(), "/root/*".into()],
+            file_allow_read: vec!["/etc/hostname".into()],
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.tools.file.deny_read, vec!["/etc/shadow", "/root/*"]);
+        assert_eq!(config.tools.file.allow_read, vec!["/etc/hostname"]);
+    }
+
+    #[test]
+    fn build_config_file_empty_by_default() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.tools.file.deny_read.is_empty());
+        assert!(config.tools.file.allow_read.is_empty());
     }
 }

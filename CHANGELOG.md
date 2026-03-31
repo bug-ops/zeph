@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(tools): structured shell output envelope (#2488) — `execute_bash` now captures stdout and stderr as separate streams at the process level using a tagged `(bool, String)` channel; `ShellOutputEnvelope { stdout, stderr, exit_code, truncated }` is built post-execution and serialized into `ToolOutput.raw_response` for ACP/audit consumers; LLM context continues using the interleaved combined output in `summary`; `AuditEntry` gains optional `exit_code: Option<i32>` and `truncated: bool` fields (`skip_serializing_if` for backward compat)
 - feat(tools): per-path read allow/deny sandbox for file tool (#2489) — new `[tools.file]` config section with `deny_read` and `allow_read` glob pattern lists; evaluation order: deny-then-allow; all patterns matched against canonicalized absolute paths (prevents symlink bypass); `FileExecutor::with_read_sandbox()` builder method applies the sandbox; `handle_read()` checks sandbox before `read_to_string`; `grep_recursive` skips denied files before reading content; `FileConfig` exported from `zeph-tools`
 
+- feat(config): add commented `[tools.file]` section to `config/default.toml` with `deny_read` and `allow_read` glob examples (#2526)
+- feat(init): add `[tools.file]` wizard step to `--init` interactive config wizard — two prompts for `deny_read` and conditional `allow_read` comma-separated glob lists, wired into `build_config()` (#2525)
+- docs: add File Read Sandbox page to mdBook under Reference / Security (`book/src/reference/security/file-sandbox.md`), linked in `SUMMARY.md` (#2527)
+
 ### Fixed
 
 - fix(mcp): replace unbounded elicitation mpsc channel with a bounded channel (default capacity 16) to prevent memory exhaustion from misbehaving MCP servers; requests that arrive when the queue is full are auto-declined with a warning log instead of accumulating indefinitely; capacity is configurable via `[mcp] elicitation_queue_capacity` (closes #2524)

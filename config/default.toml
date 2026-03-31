@@ -476,6 +476,12 @@ allow_network = true
 # Commands that require user confirmation before execution
 confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
 
+# [tools.file]
+# Per-path read sandbox using glob patterns. Evaluation: deny first, then allow overrides.
+# All patterns are matched against canonicalized (absolute, symlink-resolved) paths.
+# deny_read = ["/etc/shadow", "/root/*", "/home/*/.ssh/*"]
+# allow_read = ["/etc/hostname"]
+
 [tools.scrape]
 # HTTP request timeout in seconds
 timeout = 15

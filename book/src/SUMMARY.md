@@ -91,6 +91,7 @@
 - [Security](reference/security.md)
   - [MCP Security](reference/security/mcp.md)
   - [Untrusted Content Isolation](reference/security/untrusted-content-isolation.md)
+  - [File Read Sandbox](reference/security/file-sandbox.md)
 
 # Development
 
