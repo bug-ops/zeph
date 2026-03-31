@@ -943,7 +943,7 @@ impl McpManager {
                     state.clients.insert(server_id.clone(), client);
                     self.connected_server_ids
                         .write()
-                        .expect("connected_server_ids lock poisoned")
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(server_id.clone());
                     state.outcomes.push(ServerConnectOutcome {
                         id: server_id,
@@ -1094,12 +1094,14 @@ impl McpManager {
         let raw_tools = match client.list_tools().await {
             Ok(tools) => tools,
             Err(e) => {
+                self.tool_list_locked.remove(&entry.id);
                 client.shutdown().await;
                 return Err(e);
             }
         };
         // Phase 1: run pre-connect probe if configured.
         if let Err(e) = self.run_probe(&entry.id, &client).await {
+            self.tool_list_locked.remove(&entry.id);
             client.shutdown().await;
             return Err(e);
         }
@@ -1147,7 +1149,7 @@ impl McpManager {
         clients.insert(entry.id.clone(), client);
         self.connected_server_ids
             .write()
-            .expect("connected_server_ids lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(entry.id.clone());
 
         // Register trust config for the refresh task.
@@ -1206,7 +1208,7 @@ impl McpManager {
         tracing::info!(server_id, "shutting down dynamically removed MCP server");
         self.connected_server_ids
             .write()
-            .expect("connected_server_ids lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(server_id);
         // Clean up per-server state.
         self.server_tools.write().await.remove(server_id);
@@ -1235,7 +1237,7 @@ impl McpManager {
     pub fn is_server_connected(&self, server_id: &str) -> bool {
         self.connected_server_ids
             .read()
-            .expect("connected_server_ids lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(server_id)
     }
 
@@ -1265,7 +1267,7 @@ impl McpManager {
         let drained: Vec<(String, McpClient)> = clients.drain().collect();
         self.connected_server_ids
             .write()
-            .expect("connected_server_ids lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.server_tools.write().await.clear();
         self.last_refresh.clear();
@@ -1884,7 +1886,7 @@ mod tests {
         fn mark_server_connected_for_test(&self, server_id: &str) {
             self.connected_server_ids
                 .write()
-                .expect("connected_server_ids lock poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(server_id.to_owned());
         }
     }

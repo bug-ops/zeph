@@ -160,20 +160,19 @@ impl Ibct {
                     key_id: self.key_id.clone(),
                 })?;
 
-            let expected_sig = sign(
+            // Constant-time HMAC verification: reconstruct the MAC and call verify_slice()
+            // instead of comparing hex strings, which would be vulnerable to timing attacks.
+            if verify_signature(
                 &key.key_bytes,
                 &self.key_id,
                 &self.task_id,
                 &self.endpoint,
                 self.issued_at,
                 self.expires_at,
-            );
-            // Constant-time comparison via subtle::ConstantTimeEq is ideal, but for hex
-            // strings of known equal length a direct == comparison does not leak timing
-            // information about the length. The HMAC mac tag itself is compared inside the
-            // `sign` function via hmac's constant-time verify. We compare the hex result
-            // to avoid pulling in another dependency here.
-            if expected_sig != self.signature {
+                &self.signature,
+            )
+            .is_err()
+            {
                 return Err(IbctError::InvalidSignature);
             }
 
@@ -238,8 +237,33 @@ fn sign(
     let msg = format!("{key_id}|{task_id}|{endpoint}|{issued_at}|{expires_at}");
     let mut mac = HmacSha256::new_from_slice(key_bytes).expect("HMAC accepts any key length");
     mac.update(msg.as_bytes());
-    let result = mac.finalize();
-    hex::encode(result.into_bytes())
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Verify an HMAC-SHA256 signature in constant time using `Mac::verify_slice`.
+///
+/// Decodes the hex `signature`, recomputes the MAC over the canonical message,
+/// and calls `verify_slice` — which uses a constant-time comparison internally.
+///
+/// # Errors
+///
+/// Returns an error if the hex is malformed or if the signature does not match.
+#[cfg(feature = "ibct")]
+fn verify_signature(
+    key_bytes: &[u8],
+    key_id: &str,
+    task_id: &str,
+    endpoint: &str,
+    issued_at: u64,
+    expires_at: u64,
+    signature_hex: &str,
+) -> Result<(), ()> {
+    type HmacSha256 = Hmac<Sha256>;
+    let decoded = hex::decode(signature_hex).map_err(|_| ())?;
+    let msg = format!("{key_id}|{task_id}|{endpoint}|{issued_at}|{expires_at}");
+    let mut mac = HmacSha256::new_from_slice(key_bytes).expect("HMAC accepts any key length");
+    mac.update(msg.as_bytes());
+    mac.verify_slice(&decoded).map_err(|_| ())
 }
 
 #[cfg(feature = "ibct")]
@@ -286,6 +310,7 @@ mod base64_compat {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "ibct")]
     fn test_key() -> IbctKey {
         IbctKey {
             key_id: "k1".into(),
@@ -399,6 +424,50 @@ mod tests {
         let decoded = Ibct::decode(&encoded).unwrap();
         assert_eq!(decoded.task_id, "task-abc");
         assert_eq!(decoded.key_id, "k1");
+    }
+
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn verify_rejects_expired_token() {
+        let key = test_key();
+        // Manually construct a token with expires_at in the past (beyond grace window).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Set expires_at to 120 seconds ago (well beyond CLOCK_SKEW_GRACE_SECS=30).
+        let expired_at = now.saturating_sub(120);
+        let issued_at = expired_at.saturating_sub(300);
+        // Build the signature manually so it matches the token fields.
+        #[cfg(feature = "ibct")]
+        let signature = {
+            use hmac::{Hmac, KeyInit, Mac};
+            use sha2::Sha256;
+            type HmacSha256 = Hmac<Sha256>;
+            let msg = format!(
+                "{}|{}|{}|{}|{}",
+                key.key_id, "task-expired", "https://agent.example.com", issued_at, expired_at
+            );
+            let mut mac =
+                HmacSha256::new_from_slice(&key.key_bytes).expect("HMAC accepts any key length");
+            mac.update(msg.as_bytes());
+            hex::encode(mac.finalize().into_bytes())
+        };
+        let token = Ibct {
+            key_id: key.key_id.clone(),
+            task_id: "task-expired".into(),
+            endpoint: "https://agent.example.com".into(),
+            issued_at,
+            expires_at: expired_at,
+            signature,
+        };
+        let err = token
+            .verify(&[key], "https://agent.example.com", "task-expired")
+            .unwrap_err();
+        assert!(
+            matches!(err, IbctError::Expired { .. }),
+            "expected Expired, got {err:?}"
+        );
     }
 
     #[cfg(feature = "ibct")]
