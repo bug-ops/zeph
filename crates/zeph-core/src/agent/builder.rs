@@ -845,9 +845,11 @@ impl<C: Channel> Agent<C> {
         mut self,
         backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
         timeout_ms: u64,
+        max_chars: usize,
     ) -> Self {
         self.security.pii_ner_backend = Some(backend);
         self.security.pii_ner_timeout_ms = timeout_ms;
+        self.security.pii_ner_max_chars = max_chars;
         self
     }
 

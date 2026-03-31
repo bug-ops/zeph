@@ -654,7 +654,11 @@ pub(crate) fn apply_pii_ner_classifier<C: Channel>(
         repo_id = %config.classifiers.pii_model,
         "NER PII classifier attached for union merge pipeline (model loads lazily on first use)"
     );
-    agent.with_pii_ner_classifier(backend, config.classifiers.timeout_ms)
+    agent.with_pii_ner_classifier(
+        backend,
+        config.classifiers.timeout_ms,
+        config.classifiers.pii_ner_max_chars,
+    )
 }
 
 /// Wire `enforcement_mode` from config into the agent's injection classifier.

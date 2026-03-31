@@ -31,6 +31,10 @@ fn default_pii_threshold() -> f32 {
     0.75
 }
 
+fn default_pii_ner_max_chars() -> usize {
+    8192
+}
+
 fn default_three_class_threshold() -> f32 {
     0.7
 }
@@ -192,6 +196,13 @@ pub struct ClassifiersConfig {
     /// Optional SHA-256 hex digest of the PII model safetensors file.
     #[serde(default)]
     pub pii_model_sha256: Option<String>,
+
+    /// Maximum number of bytes passed to the NER PII classifier per call.
+    ///
+    /// Input is truncated at a valid UTF-8 boundary before classification to prevent
+    /// timeout on large tool outputs (e.g. `search_code`). Default `8192`.
+    #[serde(default = "default_pii_ner_max_chars")]
+    pub pii_ner_max_chars: usize,
 }
 
 impl Default for ClassifiersConfig {
@@ -213,6 +224,7 @@ impl Default for ClassifiersConfig {
             pii_model: default_pii_model(),
             pii_threshold: default_pii_threshold(),
             pii_model_sha256: None,
+            pii_ner_max_chars: default_pii_ner_max_chars(),
         }
     }
 }
@@ -324,6 +336,7 @@ mod tests {
             pii_model: "org/pii-model".into(),
             pii_threshold: 0.80,
             pii_model_sha256: None,
+            pii_ner_max_chars: 4096,
         };
         let serialized = toml::to_string(&original).unwrap();
         let deserialized: ClassifiersConfig = toml::from_str(&serialized).unwrap();

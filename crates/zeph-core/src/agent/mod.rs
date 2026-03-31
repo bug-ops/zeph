@@ -443,6 +443,8 @@ impl<C: Channel> Agent<C> {
                 pii_ner_backend: None,
                 #[cfg(feature = "classifiers")]
                 pii_ner_timeout_ms: 5000,
+                #[cfg(feature = "classifiers")]
+                pii_ner_max_chars: 8192,
                 memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
                     zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
                 ),

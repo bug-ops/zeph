@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - skills: fix `process-management` SKILL.md false positive on user queries containing "memory" by replacing with "RAM" (#2513)
 - skills: fix `os-automation` SKILL.md over-triggering on generic shell commands — add explicit negative scope sentence (#2501)
 - skills: fix `rust-agent-handoff` SKILL.md — remove noisy Keywords line, tighten description to exclude generic update/memory prompts (#2512)
+- security: reclassify `search_code` as `ToolResult` to prevent false-positive injection detection on local index output (#2515)
+- security: truncate PII NER input to `pii_ner_max_chars` (default 8192) to prevent timeout on large `search_code` outputs (#2516)
+
+### Added
+
+- metrics: add `sanitizer_injection_fp_local` counter for injection flags on local (`ToolResult`) sources (#2515)
+- metrics: add `pii_ner_timeouts` counter for NER classifier timeout events (#2516)
 
 ## [0.18.1] - 2026-03-31
 

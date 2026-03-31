@@ -301,8 +301,7 @@ impl<C: Channel> Agent<C> {
         // MCP tools use "server:tool" format (contains ':') or legacy "mcp" name.
         // Web scrape tools use "web-scrape" (hyphenated) or "fetch".
         // Everything else is local shell/file output.
-        let source = if tool_name.contains(':') || tool_name == "mcp" || tool_name == "search_code"
-        {
+        let source = if tool_name.contains(':') || tool_name == "mcp" {
             ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
         } else if tool_name == "web-scrape" || tool_name == "web_scrape" || tool_name == "fetch" {
             ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
@@ -331,7 +330,11 @@ impl<C: Channel> Agent<C> {
                 "injection patterns detected in tool output"
             );
             self.update_metrics(|m| {
-                m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
+                let flag_count = sanitized.injection_flags.len() as u64;
+                m.sanitizer_injection_flags += flag_count;
+                if sanitized.source.kind == zeph_sanitizer::ContentSourceKind::ToolResult {
+                    m.sanitizer_injection_fp_local += flag_count;
+                }
             });
             let detail = sanitized
                 .injection_flags
@@ -540,24 +543,31 @@ impl<C: Channel> Agent<C> {
         if let Some(ref backend) = self.security.pii_ner_backend {
             use zeph_sanitizer::pii::build_char_to_byte_map;
             let timeout_ms = self.security.pii_ner_timeout_ms;
+            let ner_input = if text.len() > self.security.pii_ner_max_chars {
+                let boundary = text.floor_char_boundary(self.security.pii_ner_max_chars);
+                &text[..boundary]
+            } else {
+                text
+            };
             match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
-                backend.classify(text),
+                backend.classify(ner_input),
             )
             .await
             {
                 Ok(Ok(result)) if result.is_positive => {
                     // Precompute char→byte map once for all NER spans (C2).
-                    let char_to_byte = build_char_to_byte_map(text);
+                    // Use ner_input: NER offsets are relative to the (possibly truncated) input.
+                    let char_to_byte = build_char_to_byte_map(ner_input);
                     for ner_span in &result.spans {
                         let byte_start = char_to_byte
                             .get(ner_span.start)
                             .copied()
-                            .unwrap_or(text.len());
+                            .unwrap_or(ner_input.len());
                         let byte_end = char_to_byte
                             .get(ner_span.end)
                             .copied()
-                            .unwrap_or(text.len());
+                            .unwrap_or(ner_input.len());
                         if byte_end > byte_start {
                             spans.push(zeph_sanitizer::pii::PiiSpan {
                                 label: ner_span.label.clone(),
@@ -577,6 +587,7 @@ impl<C: Channel> Agent<C> {
                         tool = %tool_name,
                         "PII NER timed out, regex only"
                     );
+                    self.update_metrics(|m| m.pii_ner_timeouts += 1);
                 }
             }
         }

@@ -215,6 +215,12 @@ pub(crate) struct SecurityState {
     /// Per-call timeout for the NER PII classifier in milliseconds.
     #[cfg(feature = "classifiers")]
     pub(crate) pii_ner_timeout_ms: u64,
+    /// Maximum number of bytes passed to the NER PII classifier per call.
+    ///
+    /// Large tool outputs (e.g. `search_code`) can produce 150+ `DeBERTa` chunks and exceed
+    /// the per-call timeout. Input is truncated at a valid UTF-8 boundary before classification.
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_ner_max_chars: usize,
     pub(crate) memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator,
     /// LLM-based prompt injection pre-screener (opt-in).
     #[cfg(feature = "guardrail")]

@@ -263,6 +263,12 @@ pub struct MetricsSnapshot {
     pub server_compaction_events: u64,
     pub sanitizer_runs: u64,
     pub sanitizer_injection_flags: u64,
+    /// Injection pattern hits on `ToolResult` (local) sources — likely false positives.
+    ///
+    /// Counts regex hits that fired on content from `shell`, `read_file`, `search_code`, etc.
+    /// These sources are user-owned and not adversarial; a non-zero value indicates a pattern
+    /// that needs tightening or a source reclassification.
+    pub sanitizer_injection_fp_local: u64,
     pub sanitizer_truncations: u64,
     pub quarantine_invocations: u64,
     pub quarantine_failures: u64,
@@ -276,6 +282,8 @@ pub struct MetricsSnapshot {
     pub exfiltration_tool_urls_flagged: u64,
     pub exfiltration_memory_guards: u64,
     pub pii_scrub_count: u64,
+    /// Number of times the PII NER classifier timed out; input fell back to regex-only.
+    pub pii_ner_timeouts: u64,
     pub memory_validation_failures: u64,
     pub rate_limit_trips: u64,
     pub pre_execution_blocks: u64,
