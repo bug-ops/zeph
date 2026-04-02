@@ -174,6 +174,7 @@ impl SemanticMemory {
                             vector,
                             MessageKind::Summary,
                             &self.embedding_model,
+                            0,
                         )
                         .await
                     {

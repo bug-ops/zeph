@@ -3,6 +3,62 @@
 
 use zeph_llm::provider::{LlmProvider as _, Message};
 
+/// Approximate characters per token (conservative estimate for mixed content).
+const CHARS_PER_TOKEN: usize = 4;
+
+/// Target chunk size in characters (~400 tokens).
+const CHUNK_CHARS: usize = 400 * CHARS_PER_TOKEN;
+
+/// Overlap between adjacent chunks in characters (~80 tokens).
+const CHUNK_OVERLAP_CHARS: usize = 80 * CHARS_PER_TOKEN;
+
+/// Split `text` into overlapping chunks suitable for embedding.
+///
+/// For text shorter than `CHUNK_CHARS`, returns a single chunk.
+/// Splits at UTF-8 character boundaries on paragraph (`\n\n`), line (`\n`),
+/// space (` `), or raw character boundaries as a last resort.
+fn chunk_text(text: &str) -> Vec<&str> {
+    if text.len() <= CHUNK_CHARS {
+        return vec![text];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < text.len() {
+        let end = if start + CHUNK_CHARS >= text.len() {
+            text.len()
+        } else {
+            // Find a clean UTF-8 char boundary at or before start + CHUNK_CHARS.
+            let boundary = text.floor_char_boundary(start + CHUNK_CHARS);
+            // Prefer to split at a paragraph or line break for cleaner chunks.
+            let slice = &text[start..boundary];
+            if let Some(pos) = slice.rfind("\n\n") {
+                start + pos + 2
+            } else if let Some(pos) = slice.rfind('\n') {
+                start + pos + 1
+            } else if let Some(pos) = slice.rfind(' ') {
+                start + pos + 1
+            } else {
+                boundary
+            }
+        };
+
+        chunks.push(&text[start..end]);
+        if end >= text.len() {
+            break;
+        }
+        // Next chunk starts with overlap.
+        let next = end.saturating_sub(CHUNK_OVERLAP_CHARS);
+        start = text.ceil_char_boundary(next);
+        if start >= end {
+            start = end; // safeguard against infinite loop
+        }
+    }
+
+    chunks
+}
+
 use crate::admission::log_admission_decision;
 use crate::embedding_store::{MessageKind, SearchFilter};
 use crate::error::MemoryError;
@@ -73,6 +129,7 @@ impl SemanticMemory {
                             vector,
                             MessageKind::Regular,
                             &self.embedding_model,
+                            0,
                         )
                         .await
                     {
@@ -145,6 +202,7 @@ impl SemanticMemory {
                             vector,
                             MessageKind::Regular,
                             &self.embedding_model,
+                            0,
                         )
                         .await
                     {
@@ -822,27 +880,45 @@ impl SemanticMemory {
 
         let mut count = 0;
         for (msg_id, conversation_id, role, content) in &unembedded {
-            match self.provider.embed(content).await {
-                Ok(vector) => {
-                    if let Err(e) = qdrant
-                        .store(
-                            *msg_id,
-                            *conversation_id,
-                            role,
-                            vector,
-                            MessageKind::Regular,
-                            &self.embedding_model,
-                        )
-                        .await
-                    {
-                        tracing::warn!("Failed to store embedding for msg {msg_id}: {e:#}");
-                        continue;
+            let chunks = chunk_text(content);
+            let chunk_count = chunks.len();
+            let mut stored = 0usize;
+
+            for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+                let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+                match self.provider.embed(chunk).await {
+                    Ok(vector) => {
+                        if let Err(e) = qdrant
+                            .store(
+                                *msg_id,
+                                *conversation_id,
+                                role,
+                                vector,
+                                MessageKind::Regular,
+                                &self.embedding_model,
+                                chunk_index_u32,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to store chunk {chunk_index}/{chunk_count} \
+                                 for msg {msg_id}: {e:#}"
+                            );
+                        } else {
+                            stored += 1;
+                        }
                     }
-                    count += 1;
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to embed chunk {chunk_index}/{chunk_count} \
+                             for msg {msg_id}: {e:#}"
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to embed msg {msg_id}: {e:#}");
-                }
+            }
+
+            if stored > 0 {
+                count += 1;
             }
         }
 

@@ -131,11 +131,15 @@ impl EmbeddingStore {
 
     /// Store a vector in Qdrant and persist metadata to `SQLite`.
     ///
+    /// `chunk_index` is 0 for single-vector messages and increases for each chunk
+    /// when a long message is split into multiple embeddings.
+    ///
     /// Returns the UUID of the newly created Qdrant point.
     ///
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
+    #[allow(clippy::too_many_arguments)]
     pub async fn store(
         &self,
         message_id: MessageId,
@@ -144,6 +148,7 @@ impl EmbeddingStore {
         vector: Vec<f32>,
         kind: MessageKind,
         model: &str,
+        chunk_index: u32,
     ) -> Result<String, MemoryError> {
         let point_id = uuid::Uuid::new_v4().to_string();
         let dimensions = i64::try_from(vector.len())?;
@@ -169,13 +174,16 @@ impl EmbeddingStore {
 
         self.ops.upsert(&self.collection, vec![point]).await?;
 
+        let chunk_index_i64 = i64::from(chunk_index);
         zeph_db::query(sql!(
-            "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?) \
-             ON CONFLICT(message_id, model) DO UPDATE SET \
+            "INSERT INTO embeddings_metadata \
+             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(message_id, chunk_index, model) DO UPDATE SET \
              qdrant_point_id = excluded.qdrant_point_id, dimensions = excluded.dimensions"
         ))
         .bind(message_id)
+        .bind(chunk_index_i64)
         .bind(&point_id)
         .bind(dimensions)
         .bind(model)
@@ -232,19 +240,43 @@ impl EmbeddingStore {
             )
             .await?;
 
-        let search_results = results
-            .into_iter()
-            .filter_map(|point| {
-                let message_id = MessageId(point.payload.get("message_id")?.as_i64()?);
-                let conversation_id =
-                    ConversationId(point.payload.get("conversation_id")?.as_i64()?);
-                Some(SearchResult {
-                    message_id,
-                    conversation_id,
-                    score: point.score,
-                })
-            })
-            .collect();
+        // Deduplicate by message_id, keeping the chunk with the highest score.
+        // A single message may produce multiple Qdrant points (one per chunk).
+        let mut best: std::collections::HashMap<MessageId, SearchResult> =
+            std::collections::HashMap::new();
+        for point in results {
+            let Some(message_id) = point
+                .payload
+                .get("message_id")
+                .and_then(serde_json::Value::as_i64)
+            else {
+                continue;
+            };
+            let Some(conversation_id) = point
+                .payload
+                .get("conversation_id")
+                .and_then(serde_json::Value::as_i64)
+            else {
+                continue;
+            };
+            let message_id = MessageId(message_id);
+            let entry = best.entry(message_id).or_insert(SearchResult {
+                message_id,
+                conversation_id: ConversationId(conversation_id),
+                score: f32::NEG_INFINITY,
+            });
+            if point.score > entry.score {
+                entry.score = point.score;
+            }
+        }
+
+        let mut search_results: Vec<SearchResult> = best.into_values().collect();
+        search_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        search_results.truncate(limit);
 
         Ok(search_results)
     }
@@ -362,7 +394,7 @@ impl EmbeddingStore {
             "SELECT em.message_id, vp.vector \
              FROM embeddings_metadata em \
              JOIN vector_points vp ON vp.id = em.qdrant_point_id \
-             WHERE em.message_id IN ({placeholders})"
+             WHERE em.message_id IN ({placeholders}) AND em.chunk_index = 0"
         );
         let mut q = zeph_db::query_as::<_, (MessageId, Vec<u8>)>(&query);
         for &id in ids {
@@ -450,10 +482,12 @@ mod tests {
 
         let point_id = uuid::Uuid::new_v4().to_string();
         zeph_db::query(sql!(
-            "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?)"
+            "INSERT INTO embeddings_metadata \
+             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
+             VALUES (?, ?, ?, ?, ?)"
         ))
         .bind(msg_id)
+        .bind(0_i64)
         .bind(&point_id)
         .bind(768_i64)
         .bind("qwen3-embedding")
@@ -495,6 +529,7 @@ mod tests {
                 vec![1.0, 0.0, 0.0, 0.0],
                 MessageKind::Regular,
                 "test-model",
+                0,
             )
             .await
             .unwrap();
@@ -528,6 +563,7 @@ mod tests {
                 vec![0.0, 1.0, 0.0, 0.0],
                 MessageKind::Regular,
                 "test-model",
+                0,
             )
             .await
             .unwrap();
@@ -551,6 +587,7 @@ mod tests {
                 vec![1.0, 0.0, 0.0, 0.0],
                 MessageKind::Regular,
                 "m",
+                0,
             )
             .await
             .unwrap();
@@ -562,6 +599,7 @@ mod tests {
                 vec![1.0, 0.0, 0.0, 0.0],
                 MessageKind::Regular,
                 "m",
+                0,
             )
             .await
             .unwrap();
@@ -582,17 +620,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unique_constraint_on_message_and_model() {
+    async fn unique_constraint_on_message_chunk_and_model() {
         let (sqlite, pool) = setup().await;
         let cid = sqlite.create_conversation().await.unwrap();
         let msg_id = sqlite.save_message(cid, "user", "test").await.unwrap();
 
         let point_id1 = uuid::Uuid::new_v4().to_string();
         zeph_db::query(sql!(
-            "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?)"
+            "INSERT INTO embeddings_metadata \
+             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
+             VALUES (?, ?, ?, ?, ?)"
         ))
         .bind(msg_id)
+        .bind(0_i64)
         .bind(&point_id1)
         .bind(768_i64)
         .bind("qwen3-embedding")
@@ -600,18 +640,36 @@ mod tests {
         .await
         .unwrap();
 
+        // Same (message_id, chunk_index, model) — must fail.
         let point_id2 = uuid::Uuid::new_v4().to_string();
         let result = zeph_db::query(sql!(
-            "INSERT INTO embeddings_metadata (message_id, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?)"
+            "INSERT INTO embeddings_metadata \
+             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
+             VALUES (?, ?, ?, ?, ?)"
         ))
         .bind(msg_id)
+        .bind(0_i64)
         .bind(&point_id2)
         .bind(768_i64)
         .bind("qwen3-embedding")
         .execute(&pool)
         .await;
-
         assert!(result.is_err());
+
+        // Different chunk_index — must succeed.
+        let point_id3 = uuid::Uuid::new_v4().to_string();
+        zeph_db::query(sql!(
+            "INSERT INTO embeddings_metadata \
+             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
+             VALUES (?, ?, ?, ?, ?)"
+        ))
+        .bind(msg_id)
+        .bind(1_i64)
+        .bind(&point_id3)
+        .bind(768_i64)
+        .bind("qwen3-embedding")
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 }

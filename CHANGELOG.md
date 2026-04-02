@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- fix(llm): truncate embed input to 32 000 chars with head+tail strategy before sending to OpenAI, Gemini, and Ollama providers — prevents HTTP 400 errors caused by oversized tool outputs exceeding the 8 191-token embedding limit (#2551)
+- fix(memory): chunk large messages into overlapping ~400-token segments in `embed_missing()` — each chunk is stored as a separate Qdrant vector, so the full content of long tool outputs is indexed rather than truncated; search deduplicates results by `message_id` keeping the highest-scoring chunk (#2551, #2552)
 - fix(llm): classify HTTP 400 embed responses as non-retryable `LlmError::InvalidInput`; the router fallback loop now breaks immediately on `InvalidInput` without penalizing provider reputation (#2551)
 - Add backticks to doc comments in telegram.rs elicitation tests to fix clippy `doc_markdown` warnings (#2549)
 
