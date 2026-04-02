@@ -573,6 +573,14 @@ pub struct BanditConfig {
     /// Set to 1.0 to disable MAR. Default: 0.9.
     #[serde(default = "default_bandit_memory_confidence_threshold")]
     pub memory_confidence_threshold: f32,
+
+    /// Minimum number of queries before `LinUCB` takes over from Thompson warmup.
+    ///
+    /// When unset or `0`, defaults to `10 × number of providers` (computed at startup).
+    /// Set explicitly to control how long the bandit explores uniformly before
+    /// switching to context-aware routing. Setting `0` preserves the computed default.
+    #[serde(default)]
+    pub warmup_queries: Option<u64>,
 }
 
 fn default_bandit_memory_confidence_threshold() -> f32 {
@@ -591,6 +599,7 @@ impl Default for BanditConfig {
             cache_size: default_bandit_cache_size(),
             state_path: None,
             memory_confidence_threshold: default_bandit_memory_confidence_threshold(),
+            warmup_queries: None,
         }
     }
 }
@@ -1645,6 +1654,86 @@ provider = "quality"
         assert!(
             cfg.stt_provider_entry().is_none(),
             "stt_provider_entry must be None when provider has no stt_model"
+        );
+    }
+
+    // ─── BanditConfig::warmup_queries deserialization ─────────────────────────
+
+    #[test]
+    fn bandit_warmup_queries_explicit_value_is_deserialized() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[llm.router]
+strategy = "bandit"
+
+[llm.router.bandit]
+warmup_queries = 50
+"#,
+        );
+        let bandit = cfg
+            .router
+            .expect("router section must be present")
+            .bandit
+            .expect("bandit section must be present");
+        assert_eq!(
+            bandit.warmup_queries,
+            Some(50),
+            "warmup_queries = 50 must deserialize to Some(50)"
+        );
+    }
+
+    #[test]
+    fn bandit_warmup_queries_explicit_null_is_none() {
+        // Explicitly writing the field as absent: field simply not present is
+        // equivalent due to #[serde(default)]. Test that an explicit 0 is Some(0).
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[llm.router]
+strategy = "bandit"
+
+[llm.router.bandit]
+warmup_queries = 0
+"#,
+        );
+        let bandit = cfg
+            .router
+            .expect("router section must be present")
+            .bandit
+            .expect("bandit section must be present");
+        // 0 is a valid explicit value — it means "preserve computed default".
+        assert_eq!(
+            bandit.warmup_queries,
+            Some(0),
+            "warmup_queries = 0 must deserialize to Some(0)"
+        );
+    }
+
+    #[test]
+    fn bandit_warmup_queries_missing_field_defaults_to_none() {
+        // When warmup_queries is omitted entirely, #[serde(default)] must produce None.
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[llm.router]
+strategy = "bandit"
+
+[llm.router.bandit]
+alpha = 1.5
+"#,
+        );
+        let bandit = cfg
+            .router
+            .expect("router section must be present")
+            .bandit
+            .expect("bandit section must be present");
+        assert_eq!(
+            bandit.warmup_queries, None,
+            "omitted warmup_queries must default to None"
         );
     }
 }

@@ -6,8 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(config): expose `warmup_queries` as TOML config field in `[llm.router.bandit]` — accepts `Option<u64>`; when unset or `0`, the default of `10 × number of providers` is used; allows operators to control how long the PILOT bandit explores uniformly before switching to `LinUCB` context-aware routing (#2543)
+
 ### Fixed
 
+- fix(llm): truncate embed input to 32 000 chars with head+tail strategy before sending to OpenAI, Gemini, and Ollama providers — prevents HTTP 400 errors caused by oversized tool outputs exceeding the 8 191-token embedding limit (#2551)
+- fix(llm): classify HTTP 400 embed responses as non-retryable `LlmError::InvalidInput`; the router fallback loop now breaks immediately on `InvalidInput` without penalizing provider reputation (#2551)
 - Add backticks to doc comments in telegram.rs elicitation tests to fix clippy `doc_markdown` warnings (#2549)
 
 ### Removed

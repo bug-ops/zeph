@@ -405,6 +405,8 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        use crate::embed::truncate_for_embed;
+
         let model = self
             .embedding_model
             .as_deref()
@@ -412,7 +414,11 @@ impl LlmProvider for OpenAiProvider {
                 provider: "openai".into(),
             })?;
 
-        let body = EmbeddingRequest { input: text, model };
+        let text = truncate_for_embed(text);
+        let body = EmbeddingRequest {
+            input: &text,
+            model,
+        };
 
         let response = self
             .client
@@ -424,16 +430,22 @@ impl LlmProvider for OpenAiProvider {
             .await?;
 
         let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+        let body_text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            tracing::error!("OpenAI embedding API error {status}: {text}");
+            tracing::error!("OpenAI embedding API error {status}: {body_text}");
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                return Err(LlmError::InvalidInput {
+                    provider: "openai".into(),
+                    message: body_text,
+                });
+            }
             return Err(LlmError::Other(format!(
                 "OpenAI embedding request failed (status {status})"
             )));
         }
 
-        let resp: EmbeddingResponse = serde_json::from_str(&text)?;
+        let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
 
         resp.data
             .first()

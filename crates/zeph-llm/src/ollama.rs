@@ -375,9 +375,12 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        use crate::embed::truncate_for_embed;
+
+        let text = truncate_for_embed(text);
         let request = GenerateEmbeddingsRequest::new(
             self.embedding_model.clone(),
-            EmbeddingsInput::from(text),
+            EmbeddingsInput::from(text.as_ref()),
         );
 
         let response = self

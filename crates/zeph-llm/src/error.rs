@@ -58,6 +58,11 @@ pub enum LlmError {
     #[error("beta header rejected by API: {header}")]
     BetaHeaderRejected { header: String },
 
+    /// The input itself is invalid (HTTP 400). Retrying with the same input on another
+    /// provider will not help — the router should break the fallback loop immediately.
+    #[error("invalid input for {provider}: {message}")]
+    InvalidInput { provider: String, message: String },
+
     #[error("{0}")]
     Other(String),
 }
@@ -77,6 +82,15 @@ impl LlmError {
     #[must_use]
     pub fn is_beta_header_rejected(&self) -> bool {
         matches!(self, Self::BetaHeaderRejected { .. })
+    }
+
+    /// Returns true if this error indicates that the input itself is invalid (HTTP 400).
+    ///
+    /// Callers (e.g. the router fallback loop) should not retry with a different provider
+    /// when this is true — the same input will fail there too.
+    #[must_use]
+    pub fn is_invalid_input(&self) -> bool {
+        matches!(self, Self::InvalidInput { .. })
     }
 }
 
@@ -157,5 +171,32 @@ mod tests {
             header: "compact-2026-01-12".into(),
         };
         assert!(e.to_string().contains("compact-2026-01-12"));
+    }
+
+    #[test]
+    fn invalid_input_is_detected() {
+        let e = LlmError::InvalidInput {
+            provider: "openai".into(),
+            message: "maximum sequence length exceeded".into(),
+        };
+        assert!(e.is_invalid_input());
+    }
+
+    #[test]
+    fn other_errors_are_not_invalid_input() {
+        assert!(!LlmError::Unavailable.is_invalid_input());
+        assert!(!LlmError::RateLimited.is_invalid_input());
+        assert!(!LlmError::Other("400 bad request".into()).is_invalid_input());
+    }
+
+    #[test]
+    fn invalid_input_display_includes_provider_and_message() {
+        let e = LlmError::InvalidInput {
+            provider: "openai".into(),
+            message: "input too long".into(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("openai"));
+        assert!(s.contains("input too long"));
     }
 }

@@ -14,6 +14,7 @@ pub mod compatible;
 #[cfg(feature = "candle")]
 pub(crate) mod device;
 pub mod ema;
+pub(crate) mod embed;
 pub mod error;
 pub mod extractor;
 pub mod gemini;

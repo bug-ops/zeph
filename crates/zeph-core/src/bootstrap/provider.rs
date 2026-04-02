@@ -537,7 +537,7 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 dim: bandit_cfg.dim,
                 cost_weight: bandit_cfg.cost_weight.clamp(0.0, 1.0),
                 decay_factor: bandit_cfg.decay_factor,
-                warmup_queries: 0, // computed by with_bandit() from provider count
+                warmup_queries: bandit_cfg.warmup_queries.unwrap_or(0),
                 embedding_timeout_ms: bandit_cfg.embedding_timeout_ms,
                 cache_size: bandit_cfg.cache_size,
                 memory_confidence_threshold: bandit_cfg.memory_confidence_threshold.clamp(0.0, 1.0),

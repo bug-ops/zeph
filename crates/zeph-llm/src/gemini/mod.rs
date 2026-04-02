@@ -1230,6 +1230,8 @@ impl LlmProvider for GeminiProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        use crate::embed::truncate_for_embed;
+
         let model = self
             .embedding_model
             .as_deref()
@@ -1239,10 +1241,11 @@ impl LlmProvider for GeminiProvider {
 
         let url = format!("{}/v1beta/models/{}:embedContent", self.base_url, model);
 
+        let text = truncate_for_embed(text);
         let body = EmbedContentRequest {
             model: format!("models/{model}"),
             content: EmbedContent {
-                parts: vec![EmbedPart { text }],
+                parts: vec![EmbedPart { text: &text }],
             },
             // TODO(#1597): use RETRIEVAL_DOCUMENT for storage paths once
             // LlmProvider::embed() supports taskType parameter.
@@ -1266,6 +1269,15 @@ impl LlmProvider for GeminiProvider {
         let body_text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
+            // Check for 400 before delegating to parse_gemini_error, which maps all
+            // non-rate-limited errors to LlmError::Other. A 400 means the input itself
+            // is invalid; retrying on another provider would fail identically.
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                return Err(LlmError::InvalidInput {
+                    provider: "gemini".into(),
+                    message: body_text,
+                });
+            }
             return Err(parse_gemini_error(&body_text, status));
         }
 

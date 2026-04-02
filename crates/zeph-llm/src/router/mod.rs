@@ -1138,6 +1138,16 @@ impl LlmProvider for RouterProvider {
                         );
                         return Ok(r);
                     }
+                    Err(e) if e.is_invalid_input() => {
+                        // The input itself is invalid — retrying on another provider
+                        // would fail identically. Do not penalize provider reputation.
+                        tracing::warn!(
+                            provider = p.name(),
+                            error = %e,
+                            "embed: invalid input, not retrying on other providers"
+                        );
+                        return Err(e);
+                    }
                     Err(e) => {
                         router.record_availability(
                             p.name(),
@@ -2525,5 +2535,103 @@ mod tests {
         // Both providers fail → NoProviders, not a cascade-specific error.
         let err = r.chat_with_tools(&msgs, &[]).await.unwrap_err();
         assert!(matches!(err, LlmError::NoProviders));
+    }
+
+    // ── InvalidInput embed break tests ────────────────────────────────────────
+
+    /// When a provider returns InvalidInput from embed(), the router must break
+    /// the fallback loop immediately and return InvalidInput — not NoProviders.
+    #[tokio::test]
+    async fn embed_invalid_input_breaks_loop_and_returns_invalid_input() {
+        use crate::mock::MockProvider;
+
+        let p = AnyProvider::Mock(MockProvider::default().with_embed_invalid_input());
+        let r = RouterProvider::new(vec![p]).with_thompson(None);
+        let err = r.embed("some text").await.unwrap_err();
+        assert!(
+            matches!(err, LlmError::InvalidInput { .. }),
+            "expected InvalidInput, got {err:?}"
+        );
+    }
+
+    /// When a provider returns InvalidInput, the router must NOT fall through to
+    /// the next provider — a second embed-capable provider must never be called.
+    #[tokio::test]
+    async fn embed_invalid_input_does_not_fall_through_to_second_provider() {
+        use crate::mock::MockProvider;
+
+        // p1 returns InvalidInput; p2 is a functioning embed provider.
+        // If the loop falls through, p2 returns Ok — which would mean the error was
+        // swallowed instead of breaking immediately.
+        let p1 = AnyProvider::Mock(
+            MockProvider::default()
+                .with_embed_invalid_input()
+                .with_name("p1"),
+        );
+        let p2 = AnyProvider::Mock({
+            let mut m = MockProvider::default();
+            m.supports_embeddings = true;
+            m.name_override = Some("p2".into());
+            m
+        });
+
+        let r = RouterProvider::new(vec![p1, p2]);
+        let err = r.embed("test").await.unwrap_err();
+
+        // The error must carry p1's name, proving p2 was never reached.
+        assert!(
+            matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1"),
+            "expected InvalidInput from p1, got {err:?}"
+        );
+    }
+
+    /// The router skips providers that do not support embeddings and continues to
+    /// the next one, returning a successful result from the first capable provider.
+    #[tokio::test]
+    async fn embed_skips_non_embedding_providers_and_falls_through() {
+        use crate::mock::MockProvider;
+
+        // p1 does not support embeddings — skipped by the loop guard.
+        // p2 supports embeddings and returns successfully.
+        let p1 = AnyProvider::Mock({
+            let mut m = MockProvider::default().with_name("p1");
+            m.supports_embeddings = false;
+            m
+        });
+        let p2 = AnyProvider::Mock({
+            let mut m = MockProvider::default().with_name("p2");
+            m.supports_embeddings = true;
+            m.embedding = vec![1.0, 2.0, 3.0];
+            m
+        });
+
+        let r = RouterProvider::new(vec![p1, p2]);
+        let result = r.embed("hello").await.unwrap();
+        assert_eq!(result, vec![1.0, 2.0, 3.0]);
+    }
+
+    /// InvalidInput from embed does not call record_availability (no reputation penalty).
+    /// We verify this indirectly: thompson_stats must show no entry for the provider
+    /// after an InvalidInput embed, whereas a normal embed failure increments it.
+    #[tokio::test]
+    async fn embed_invalid_input_does_not_record_availability() {
+        use crate::mock::MockProvider;
+
+        let p = AnyProvider::Mock(
+            MockProvider::default()
+                .with_embed_invalid_input()
+                .with_name("test-provider"),
+        );
+        let r = RouterProvider::new(vec![p]).with_thompson(None);
+        let _ = r.embed("text").await;
+
+        // record_availability is only called on success or generic error,
+        // not on InvalidInput. So thompson_stats must have no entry for "test-provider".
+        let stats = r.thompson_stats();
+        let provider_in_stats = stats.iter().any(|(name, ..)| name == "test-provider");
+        assert!(
+            !provider_in_stats,
+            "InvalidInput must not update provider reputation; stats: {stats:?}"
+        );
     }
 }

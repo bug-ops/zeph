@@ -38,6 +38,8 @@ pub struct MockProvider {
     pub models: Vec<RemoteModelInfo>,
     /// Optional name override for tests that require distinct provider names.
     pub name_override: Option<String>,
+    /// When true, `embed()` returns `LlmError::InvalidInput` regardless of `supports_embeddings`.
+    pub embed_invalid_input: bool,
 }
 
 impl Default for MockProvider {
@@ -57,6 +59,7 @@ impl Default for MockProvider {
             tool_call_count: Arc::new(Mutex::new(0)),
             models: vec![],
             name_override: None,
+            embed_invalid_input: false,
         }
     }
 }
@@ -83,6 +86,17 @@ impl MockProvider {
     #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name_override = Some(name.into());
+        self
+    }
+
+    /// Make `embed()` return `LlmError::InvalidInput` (simulates HTTP 400 from a real provider).
+    ///
+    /// This enables testing the router's embed fallback loop, which must break immediately on
+    /// `InvalidInput` without penalizing provider reputation.
+    #[must_use]
+    pub fn with_embed_invalid_input(mut self) -> Self {
+        self.embed_invalid_input = true;
+        self.supports_embeddings = true;
         self
     }
 
@@ -187,6 +201,12 @@ impl LlmProvider for MockProvider {
     }
 
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, crate::LlmError> {
+        if self.embed_invalid_input {
+            return Err(crate::LlmError::InvalidInput {
+                provider: self.name().to_owned(),
+                message: "input exceeds maximum sequence length".into(),
+            });
+        }
         if self.supports_embeddings {
             Ok(self.embedding.clone())
         } else {
