@@ -25,6 +25,7 @@ treesitter = [
 ]
 
 [dependencies]
+blake3.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }

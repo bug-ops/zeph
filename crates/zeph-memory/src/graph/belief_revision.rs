@@ -21,34 +21,14 @@
 //! Reinforcing facts share a relation AND similar content → caught by exact-match dedup upstream.
 //! Contradictions share a relation but differ in content → caught here.
 
+use zeph_common::math::cosine_similarity;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
 use crate::graph::types::{Edge, EdgeType};
 
-/// Runtime config for Kumiho belief revision, passed into resolver methods.
-#[derive(Debug, Clone)]
-pub struct BeliefRevisionConfig {
-    pub similarity_threshold: f32,
-}
-
-/// Compute cosine similarity between two equal-length vectors.
-///
-/// Returns 0.0 if either vector has zero norm.
-#[must_use]
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a < f32::EPSILON || norm_b < f32::EPSILON {
-        return 0.0;
-    }
-    (dot / (norm_a * norm_b)).clamp(-1.0, 1.0)
-}
+pub use zeph_common::config::memory::BeliefRevisionConfig;
 
 /// Normalized edit-distance similarity between two strings.
 ///

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -81,9 +80,7 @@ impl RenderCache {
 
 #[must_use]
 pub fn content_hash(s: &str) -> u64 {
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
+    zeph_common::hash::fast_hash(s)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

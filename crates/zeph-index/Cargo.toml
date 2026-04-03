@@ -14,7 +14,6 @@ description = "AST-based code indexing and semantic retrieval for Zeph"
 readme = "README.md"
 
 [dependencies]
-blake3.workspace = true
 ignore.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true

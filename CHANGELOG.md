@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING**: Removed `acp-unstable` flag — unstable ACP session features are enabled automatically when the `acp` flag is set
 - Updated bundle definitions: `desktop` now only includes `tui` (compression and guardrail are always-on); `ide` now only includes `acp` and `acp-http` (lsp-context is always-on); `ml` no longer includes `stt` (always-on); `full` simplified
 - `default` features reduced to `["scheduler", "sqlite"]` — removed `bundled-skills` and `guardrail` (now always-on)
+- Consolidate `cosine_similarity` into `zeph-common::math` (removes duplicate in `zeph-memory`) (#2558)
+- Consolidate `truncate_chars` into `zeph-common::text` (removes duplicates in `zeph-llm`) (#2559)
+- Add `From<ToolStartEvent>` and `From<ToolOutputEvent>` conversions for owned `ToolData` types (#2561)
+- Move hash utilities (`blake3_hex`, `fast_hash`) to `zeph-common::hash` (removes duplicates across 3 crates) (#2557)
+- Move runtime config structs (`BeliefRevisionConfig`, `NoteLinkingConfig`, `ConsolidationConfig`) to `zeph-common::config::memory` (single source of truth) (#2556)
 
 ### Added
 

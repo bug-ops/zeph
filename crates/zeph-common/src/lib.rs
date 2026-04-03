@@ -8,6 +8,8 @@
 //! needed by multiple crates. It has no `zeph-*` dependencies. The optional `treesitter`
 //! feature adds tree-sitter query constants and helpers.
 
+pub mod config;
+pub mod hash;
 pub mod math;
 pub mod net;
 pub mod sanitize;

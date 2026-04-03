@@ -65,17 +65,7 @@ pub struct ConsolidationResult {
     pub skipped: u32,
 }
 
-/// Configuration for the consolidation sweep, passed from `zeph-config::ConsolidationConfig`.
-///
-/// Defined locally to avoid a dependency from `zeph-memory` on `zeph-config`.
-#[derive(Debug, Clone)]
-pub struct ConsolidationConfig {
-    pub enabled: bool,
-    pub confidence_threshold: f32,
-    pub sweep_interval_secs: u64,
-    pub sweep_batch_size: usize,
-    pub similarity_threshold: f32,
-}
+pub use zeph_common::config::memory::ConsolidationConfig;
 
 /// Start the background consolidation loop.
 ///

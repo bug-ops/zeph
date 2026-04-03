@@ -1,4 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-pub use zeph_common::hash::blake3_hex as content_hash;
+//! Shared runtime configuration structs used across multiple crates.
+
+pub mod memory;

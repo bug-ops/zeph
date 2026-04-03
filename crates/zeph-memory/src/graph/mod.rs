@@ -18,7 +18,7 @@ pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, Grap
 pub use activation::{
     ActivatedFact, ActivatedNode, SpreadingActivation, SpreadingActivationParams,
 };
-pub use belief_revision::{BeliefRevisionConfig, cosine_similarity, find_superseded_edges};
+pub use belief_revision::{BeliefRevisionConfig, find_superseded_edges};
 pub use community::{
     GraphEvictionStats, assign_to_community, cleanup_stale_entity_embeddings, detect_communities,
     run_graph_eviction,

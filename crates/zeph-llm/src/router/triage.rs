@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use zeph_common::text::truncate_chars;
 
 use crate::any::AnyProvider;
 use crate::error::LlmError;
@@ -338,7 +339,7 @@ fn build_triage_prompt(messages: &[Message]) -> String {
         .find(|m| m.role == Role::User)
         .map_or("", |m| m.content.as_str());
     // Truncate to keep triage cost minimal (~120 input tokens).
-    let truncated = truncate_to_chars(last_user, 400);
+    let truncated = truncate_chars(last_user, 400);
 
     format!(
         r#"Classify the complexity of the following user request. Consider:
@@ -357,20 +358,6 @@ User message:
 
 Respond ONLY with JSON: {{"tier":"simple|medium|complex|expert","reason":"...","large_context":false}}"#
     )
-}
-
-fn truncate_to_chars(s: &str, max_chars: usize) -> &str {
-    if s.chars().count() <= max_chars {
-        return s;
-    }
-    let mut idx = 0;
-    for (count, c) in s.chars().enumerate() {
-        if count >= max_chars {
-            break;
-        }
-        idx += c.len_utf8();
-    }
-    &s[..idx]
 }
 
 fn parse_tier_from_response(raw: &str) -> Option<ComplexityTier> {
@@ -694,18 +681,6 @@ mod tests {
         let prompt = build_triage_prompt(&messages);
         assert!(prompt.contains("explain quantum entanglement"));
         assert!(prompt.contains("simple|medium|complex|expert"));
-    }
-
-    #[test]
-    fn truncate_to_chars_short_string_unchanged() {
-        let s = "hello";
-        assert_eq!(truncate_to_chars(s, 100), s);
-    }
-
-    #[test]
-    fn truncate_to_chars_long_string_truncated() {
-        let s = "abcdefghij";
-        assert_eq!(truncate_to_chars(s, 5), "abcde");
     }
 
     #[test]

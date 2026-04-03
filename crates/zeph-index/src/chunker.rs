@@ -4,6 +4,7 @@
 //! AST-based chunking via tree-sitter with greedy sibling merge.
 
 use tree_sitter::{Node, Parser};
+use zeph_common::hash::blake3_hex_str as blake3_hex;
 
 use crate::error::{IndexError, Result};
 use crate::languages::Lang;
@@ -276,10 +277,6 @@ fn merge_small_chunks(chunks: &mut Vec<CodeChunk>, config: &ChunkerConfig) {
     }
 }
 
-fn blake3_hex(input: &str) -> String {
-    blake3::hash(input.as_bytes()).to_hex().to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,13 +451,5 @@ class Greeter:
 "#;
         let chunks = chunk_file(source, "app.py", Lang::Python, &default_config()).unwrap();
         assert!(!chunks.is_empty());
-    }
-
-    #[test]
-    fn blake3_hex_consistent() {
-        let h1 = blake3_hex("test input");
-        let h2 = blake3_hex("test input");
-        assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 64);
     }
 }

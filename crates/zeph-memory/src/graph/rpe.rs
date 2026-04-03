@@ -26,7 +26,7 @@
 
 use std::collections::VecDeque;
 
-use crate::graph::belief_revision::cosine_similarity;
+use zeph_common::math::cosine_similarity;
 
 /// Maximum number of recent turn embeddings to keep for context similarity computation.
 pub const RPE_EMBEDDING_BUFFER_SIZE: usize = 10;

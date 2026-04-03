@@ -8,6 +8,7 @@ use zeph_db::sql;
 use std::sync::atomic::Ordering;
 use zeph_db::DbPool;
 
+pub use zeph_common::config::memory::NoteLinkingConfig;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
@@ -68,26 +69,6 @@ impl Default for GraphExtractionConfig {
             link_weight_decay_interval_secs: 86400,
             belief_revision_enabled: false,
             belief_revision_similarity_threshold: 0.85,
-        }
-    }
-}
-
-/// Config for A-MEM dynamic note linking, owned by the spawned extraction task.
-#[derive(Debug, Clone)]
-pub struct NoteLinkingConfig {
-    pub enabled: bool,
-    pub similarity_threshold: f32,
-    pub top_k: usize,
-    pub timeout_secs: u64,
-}
-
-impl Default for NoteLinkingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            similarity_threshold: 0.85,
-            top_k: 10,
-            timeout_secs: 5,
         }
     }
 }

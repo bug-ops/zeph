@@ -358,6 +358,37 @@ pub struct ToolOutputData {
     pub started_at: Option<std::time::Instant>,
 }
 
+impl From<ToolStartEvent<'_>> for ToolStartData {
+    fn from(e: ToolStartEvent<'_>) -> Self {
+        Self {
+            tool_name: e.tool_name.to_owned(),
+            tool_call_id: e.tool_call_id.to_owned(),
+            params: e.params,
+            parent_tool_use_id: e.parent_tool_use_id,
+            started_at: std::time::Instant::now(),
+        }
+    }
+}
+
+impl From<ToolOutputEvent<'_>> for ToolOutputData {
+    fn from(e: ToolOutputEvent<'_>) -> Self {
+        Self {
+            tool_name: e.tool_name.to_owned(),
+            display: e.body.to_owned(),
+            diff: e.diff,
+            filter_stats: e.filter_stats,
+            kept_lines: e.kept_lines,
+            locations: e.locations,
+            tool_call_id: e.tool_call_id.to_owned(),
+            is_error: e.is_error,
+            terminal_id: None,
+            parent_tool_use_id: e.parent_tool_use_id,
+            raw_response: e.raw_response,
+            started_at: e.started_at,
+        }
+    }
+}
+
 /// Events emitted by the agent side toward the A2A caller.
 #[derive(Debug, Clone)]
 pub enum LoopbackEvent {
@@ -475,33 +506,14 @@ impl Channel for LoopbackChannel {
 
     async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
         self.output_tx
-            .send(LoopbackEvent::ToolStart(Box::new(ToolStartData {
-                tool_name: event.tool_name.to_owned(),
-                tool_call_id: event.tool_call_id.to_owned(),
-                params: event.params,
-                parent_tool_use_id: event.parent_tool_use_id,
-                started_at: std::time::Instant::now(),
-            })))
+            .send(LoopbackEvent::ToolStart(Box::new(event.into())))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
     async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
         self.output_tx
-            .send(LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-                tool_name: event.tool_name.to_owned(),
-                display: event.body.to_owned(),
-                diff: event.diff,
-                filter_stats: event.filter_stats,
-                kept_lines: event.kept_lines,
-                locations: event.locations,
-                tool_call_id: event.tool_call_id.to_owned(),
-                is_error: event.is_error,
-                terminal_id: None,
-                parent_tool_use_id: event.parent_tool_use_id,
-                raw_response: event.raw_response,
-                started_at: event.started_at,
-            })))
+            .send(LoopbackEvent::ToolOutput(Box::new(event.into())))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }

@@ -36,6 +36,7 @@ tree-sitter-rust.workspace = true
 tree-sitter-toml-ng.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
+zeph-common.workspace = true
 zeph-core.workspace = true
 
 [dev-dependencies]

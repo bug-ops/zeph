@@ -9563,6 +9563,7 @@ dependencies = [
 name = "zeph-common"
 version = "0.18.2"
 dependencies = [
+ "blake3",
  "serde",
  "thiserror 2.0.18",
  "tracing",
@@ -9707,7 +9708,6 @@ dependencies = [
 name = "zeph-index"
 version = "0.18.2"
 dependencies = [
- "blake3",
  "ignore",
  "notify",
  "notify-debouncer-mini",
@@ -9772,6 +9772,7 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+ "zeph-common",
 ]
 
 [[package]]
@@ -10018,6 +10019,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-toml-ng",
  "unicode-width",
+ "zeph-common",
  "zeph-core",
 ]
 
