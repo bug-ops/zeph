@@ -457,6 +457,35 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure the `SkillOrchestra` RL routing head.
+    ///
+    /// When `enabled = false`, the head is not loaded and re-ranking is skipped.
+    #[must_use]
+    pub fn with_rl_routing(
+        mut self,
+        enabled: bool,
+        learning_rate: f32,
+        rl_weight: f32,
+        persist_interval: u32,
+        warmup_updates: u32,
+    ) -> Self {
+        self.learning_engine.rl_routing = Some(crate::agent::learning_engine::RlRoutingConfig {
+            enabled,
+            learning_rate,
+            persist_interval,
+        });
+        self.skill_state.rl_weight = rl_weight;
+        self.skill_state.rl_warmup_updates = warmup_updates;
+        self
+    }
+
+    /// Attach a pre-loaded RL routing head (loaded from DB weights at startup).
+    #[must_use]
+    pub fn with_rl_head(mut self, head: zeph_skills::rl_head::RoutingHead) -> Self {
+        self.skill_state.rl_head = Some(head);
+        self
+    }
+
     /// Attach an `LlmClassifier` for `detector_mode = "model"` feedback detection.
     ///
     /// When attached, the model-based path is used instead of `JudgeDetector`.

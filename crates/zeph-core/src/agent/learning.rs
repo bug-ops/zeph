@@ -62,6 +62,9 @@ impl<C: Channel> Agent<C> {
         }
         self.update_skill_confidence_metrics().await;
 
+        // SkillOrchestra RL routing head update (fire-and-forget).
+        self.spawn_rl_head_update(outcome);
+
         // ARISE + STEM + ERL background tasks (fire-and-forget, never block response).
         self.spawn_stem_detection(outcome);
         if outcome == "success" {
@@ -235,12 +238,28 @@ impl<C: Channel> Agent<C> {
             return Ok(false);
         };
 
-        let prompt = zeph_skills::evolution::build_reflection_prompt(
+        let mut prompt = zeph_skills::evolution::build_reflection_prompt(
             skill.name(),
             &skill.body,
             error_context,
             tool_output,
         );
+
+        // D2Skill: inject matching step corrections before reflection.
+        // Pass empty tool_name — the call site has error text but not a specific tool name.
+        // The SQL query uses `AND (tool_name = '' OR tool_name = ?)` so this matches
+        // corrections that apply to any tool.
+        let correction_hints = self
+            .build_step_correction_hints(&name, error_context, "")
+            .await;
+        if !correction_hints.is_empty() {
+            prompt.push_str("\n\nKnown corrections:\n");
+            for (_, hint) in &correction_hints {
+                prompt.push_str("- ");
+                prompt.push_str(hint);
+                prompt.push('\n');
+            }
+        }
 
         self.push_message(Message {
             role: Role::User,
@@ -259,6 +278,12 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
         let retry_succeeded = self.msg.messages.len() > messages_before;
 
+        // D2Skill: record whether injected corrections led to success.
+        if !correction_hints.is_empty() {
+            let ids: Vec<i64> = correction_hints.iter().map(|(id, _)| *id).collect();
+            self.record_correction_usages(&ids, retry_succeeded).await;
+        }
+
         if retry_succeeded {
             let successful_response = self
                 .msg
@@ -268,6 +293,14 @@ impl<C: Channel> Agent<C> {
                 .find(|m| m.role == Role::Assistant)
                 .map(|m| m.content.clone())
                 .unwrap_or_default();
+
+            // D2Skill: extract correction from this failure→success pair.
+            self.spawn_d2skill_correction_extraction(
+                &name,
+                error_context,
+                tool_output,
+                &successful_response,
+            );
 
             self.generate_improved_skill(&name, error_context, &successful_response, None)
                 .await
@@ -1125,6 +1158,76 @@ impl<C: Channel> Agent<C> {
         tokio::spawn(arise_trace_task(args));
     }
 
+    // --- D2Skill: correction extraction from failure→success trace ---
+
+    /// Fire-and-forget `D2Skill` correction extraction.
+    ///
+    /// Called when a skill succeeds after a prior reflection (failure + success pair).
+    /// Extracts a `StepCorrection` via LLM and stores it in `step_corrections`.
+    pub(super) fn spawn_d2skill_correction_extraction(
+        &self,
+        skill_name: &str,
+        failure_error: &str,
+        failure_tool: &str,
+        successful_response: &str,
+    ) {
+        let Some(config) = self.learning_engine.config.as_ref() else {
+            return;
+        };
+        if !config.d2skill_enabled {
+            return;
+        }
+        let Some(memory) = self.memory_state.memory.clone() else {
+            return;
+        };
+        let provider = self.resolve_background_provider(config.d2skill_provider.as_str());
+        let skill_name = skill_name.to_string();
+        let failure_error = failure_error.to_string();
+        let failure_tool = failure_tool.to_string();
+        let successful_response = successful_response.to_string();
+
+        tokio::spawn(async move {
+            let prompt = zeph_skills::evolution::build_correction_extraction_prompt(
+                &skill_name,
+                &failure_error,
+                &failure_tool,
+                &successful_response,
+            );
+            let messages = vec![Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+            let result = match provider
+                .chat_typed_erased::<zeph_skills::evolution::CorrectionExtractionResult>(&messages)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(skill = %skill_name, "d2skill: LLM extraction failed: {e:#}");
+                    return;
+                }
+            };
+            if result.hint.is_empty() {
+                return;
+            }
+            if let Err(e) = memory
+                .sqlite()
+                .insert_step_correction(
+                    &skill_name,
+                    &result.failure_kind,
+                    &result.error_substring,
+                    &failure_tool,
+                    &result.hint,
+                )
+                .await
+            {
+                tracing::debug!(skill = %skill_name, "d2skill: failed to store correction: {e:#}");
+            }
+        });
+    }
+
     // --- STEM: tool pattern detection ---
 
     /// Fire-and-forget STEM tool usage log insert + pattern check.
@@ -1791,6 +1894,122 @@ impl<C: Channel> Agent<C> {
             prompt.push_str(&sanitized_value);
             prompt.push('\n');
         }
+    }
+
+    // --- D2Skill: step-level error correction ---
+
+    /// Retrieve matching step corrections for the current tool failure.
+    ///
+    /// Returns `(correction_id, hint)` pairs for the first active skill.
+    /// No-op when `d2skill_enabled = false` or memory is unavailable.
+    pub(super) async fn build_step_correction_hints(
+        &self,
+        skill_name: &str,
+        error_context: &str,
+        tool_name: &str,
+    ) -> Vec<(i64, String)> {
+        let Some(config) = self.learning_engine.config.as_ref() else {
+            return vec![];
+        };
+        if !config.d2skill_enabled {
+            return vec![];
+        }
+        let Some(memory) = &self.memory_state.memory else {
+            return vec![];
+        };
+        let failure_kind = zeph_skills::evolution::FailureKind::from_error(error_context).as_str();
+        match memory
+            .sqlite()
+            .find_step_corrections(
+                skill_name,
+                failure_kind,
+                error_context,
+                tool_name,
+                config.d2skill_max_corrections,
+            )
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::debug!("d2skill: failed to load corrections: {e:#}");
+                vec![]
+            }
+        }
+    }
+
+    /// Record correction usage outcomes after a reflection attempt.
+    ///
+    /// `correction_ids`: IDs of corrections that were injected.
+    /// `was_successful`: whether the subsequent reflection attempt succeeded.
+    pub(super) async fn record_correction_usages(
+        &self,
+        correction_ids: &[i64],
+        was_successful: bool,
+    ) {
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+        for &id in correction_ids {
+            if let Err(e) = memory
+                .sqlite()
+                .record_correction_usage(id, was_successful)
+                .await
+            {
+                tracing::debug!("d2skill: failed to record correction usage {id}: {e:#}");
+            }
+        }
+    }
+
+    // --- SkillOrchestra: RL routing head training signal ---
+
+    /// Fire-and-forget RL routing head update for the selected skill.
+    ///
+    /// No-op when `rl_routing_enabled = false` or no RL head is loaded.
+    /// Only updates for the first active skill name (the one that was selected).
+    pub(super) fn spawn_rl_head_update(&self, outcome: &str) {
+        let Some(cfg) = self.learning_engine.rl_routing else {
+            return;
+        };
+        if !cfg.enabled {
+            return;
+        }
+        let Some(selected_skill) = self.skill_state.active_skill_names.first().cloned() else {
+            return;
+        };
+        let Some(rl_head) = self.skill_state.rl_head.clone() else {
+            return;
+        };
+        let reward = if outcome == "success" {
+            1.0f32
+        } else {
+            -1.0f32
+        };
+        let lr = cfg.learning_rate;
+        let persist_interval = cfg.persist_interval;
+        let memory = self.memory_state.memory.clone();
+
+        tokio::spawn(async move {
+            rl_head.update(reward, lr);
+            let update_count = rl_head.update_count();
+            if (persist_interval == 0 || update_count % persist_interval == 0)
+                && let Some(mem) = memory
+            {
+                let bytes = rl_head.to_bytes();
+                let embed_dim = i64::try_from(rl_head.embed_dim()).unwrap_or(i64::MAX);
+                let baseline = f64::from(rl_head.baseline());
+                let count = i64::from(update_count);
+                if let Err(e) = mem
+                    .sqlite()
+                    .save_routing_head_weights(embed_dim, &bytes, baseline, count)
+                    .await
+                {
+                    tracing::debug!(
+                        skill = selected_skill,
+                        "rl_head: failed to persist weights: {e:#}"
+                    );
+                }
+            }
+        });
     }
 }
 

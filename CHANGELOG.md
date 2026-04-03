@@ -50,6 +50,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(config): postgres migration 059 (`embeddings_metadata` chunk index) sync — was previously only applied for sqlite
 - feat(config): expose `warmup_queries` as TOML config field in `[llm.router.bandit]` — accepts `Option<u64>`; when unset or `0`, the default of `10 × number of providers` is used; allows operators to control how long the PILOT bandit explores uniformly before switching to `LinUCB` context-aware routing (#2543)
 
+### Added
+
+- feat(skills): D2Skill step-level error correction (#2502) — `step_corrections` SQLite table stores per-skill correction hints extracted from ARISE failure→success traces; on tool failure, matching hints are injected into the reflection prompt; controlled by `[skills.learning] d2skill_enabled = false` (opt-in)
+- feat(skills): SkillOrchestra RL routing head (#2499) — 2-layer MLP in pure Rust re-ranks embedding-matched skill candidates using REINFORCE learning from skill outcome signals; blended score `(1-rl_weight)*cosine + rl_weight*rl_score`; weights persisted as SQLite blob; cold-start warmup period (first `rl_warmup_updates` outcomes use pure cosine); controlled by `[skills] rl_routing_enabled = false` (opt-in)
+
 ### Fixed
 
 - fix(sanitizer): skip ML injection classification for `policy_blocked` tool error outputs — sandbox/policy denial messages produced by `ToolErrorFeedback::format_for_llm` reliably triggered the DeBERTa classifier as false positives; add `is_policy_blocked_output` guard before `classify_injection` call in tool execution (#2574)

@@ -1099,6 +1099,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_structured_summaries(config.memory.structured_summaries)
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)
+    .with_rl_routing(
+        config.skills.rl_routing_enabled,
+        config.skills.rl_learning_rate,
+        config.skills.rl_weight,
+        config.skills.rl_persist_interval,
+        config.skills.rl_warmup_updates,
+    )
     .with_compression_guidelines_config(config.memory.compression_guidelines.clone())
     .with_digest_config(config.memory.digest.clone())
     .with_context_strategy(
@@ -1113,6 +1120,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let agent = if let Some(logger) = tool_setup.audit_logger {
         agent.with_audit_logger(logger)
+    } else {
+        agent
+    };
+
+    // SkillOrchestra: load persisted RL routing head weights if enabled.
+    let agent = if config.skills.rl_routing_enabled {
+        if let Some(head) = load_rl_head(&memory).await {
+            agent.with_rl_head(head)
+        } else {
+            agent
+        }
     } else {
         agent
     };
@@ -1701,6 +1719,39 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
 /// Print experiment results from `SQLite` and exit. Does not require an LLM provider.
 ///
+/// Load persisted RL routing head weights from memory store.
+///
+/// Returns `None` when no weights are stored yet (cold start) or on any DB error.
+pub(crate) async fn load_rl_head(
+    memory: &zeph_memory::semantic::SemanticMemory,
+) -> Option<zeph_skills::rl_head::RoutingHead> {
+    match memory.sqlite().load_routing_head_weights().await {
+        Ok(Some((embed_dim, weights, _baseline, _count))) => {
+            zeph_skills::rl_head::RoutingHead::from_bytes(&weights).or_else(|| {
+                // Stored embed_dim doesn't match bytes — initialize fresh.
+                tracing::warn!(
+                    embed_dim,
+                    "rl_head: stored weights corrupt or incompatible, initializing fresh"
+                );
+                let dim = usize::try_from(embed_dim).unwrap_or(0);
+                if dim == 0 {
+                    None
+                } else {
+                    Some(zeph_skills::rl_head::RoutingHead::new(dim))
+                }
+            })
+        }
+        Ok(None) => {
+            // No weights stored yet — will be initialized lazily when embed_dim is known.
+            None
+        }
+        Err(e) => {
+            tracing::debug!("rl_head: failed to load weights: {e:#}");
+            None
+        }
+    }
+}
+
 /// # Errors
 ///
 /// Returns an error if the database cannot be opened or the query fails.

@@ -708,33 +708,154 @@ impl SqliteStore {
         Ok(rows)
     }
 
-    // --- D2Skill: step corrections ---
+    // --- D2Skill: step-level error corrections ---
 
-    /// Insert a step correction hint for a skill.
+    /// Find matching step corrections for a tool failure.
     ///
-    /// The `hint` is truncated to 500 chars at a UTF-8 character boundary to prevent
-    /// prompt injection via arbitrarily long tool outputs (#2596).
+    /// Returns `(id, hint)` pairs ordered by `success_count DESC, use_count DESC`.
+    /// Uses `INSTR` instead of LIKE to avoid wildcard injection from `error_context`.
     ///
     /// # Errors
     ///
-    /// Returns [`MemoryError`] on insert failure.
+    /// Returns [`MemoryError`] on query failure.
+    pub async fn find_step_corrections(
+        &self,
+        skill_name: &str,
+        failure_kind: &str,
+        error_context: &str,
+        tool_name: &str,
+        limit: u32,
+    ) -> Result<Vec<(i64, String)>, MemoryError> {
+        let rows: Vec<(i64, String)> = zeph_db::query_as(sql!(
+            "SELECT id, hint FROM step_corrections \
+             WHERE skill_name = ? \
+               AND (failure_kind = '' OR failure_kind = ?) \
+               AND (error_substring = '' OR INSTR(?, error_substring) > 0) \
+               AND (tool_name = '' OR tool_name = ?) \
+             ORDER BY success_count DESC, use_count DESC \
+             LIMIT ?"
+        ))
+        .bind(skill_name)
+        .bind(failure_kind)
+        .bind(error_context)
+        .bind(tool_name)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Insert a new step correction (from ARISE trace analysis).
+    ///
+    /// Duplicate `(skill_name, failure_kind, error_substring, tool_name)` tuples are silently
+    /// ignored (handled by `ON CONFLICT IGNORE` in the schema).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] on query failure.
     pub async fn insert_step_correction(
         &self,
         skill_name: &str,
-        step: u32,
+        failure_kind: &str,
+        error_substring: &str,
+        tool_name: &str,
         hint: &str,
-    ) -> Result<i64, MemoryError> {
-        let hint = &hint[..hint.floor_char_boundary(500)];
-        let row: (i64,) = zeph_db::query_as(sql!(
-            "INSERT INTO skill_step_corrections (skill_name, step, hint) \
-             VALUES (?, ?, ?) RETURNING id"
+    ) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "INSERT OR IGNORE INTO step_corrections \
+             (skill_name, failure_kind, error_substring, tool_name, hint) \
+             VALUES (?, ?, ?, ?, ?)"
         ))
         .bind(skill_name)
-        .bind(i64::from(step))
+        .bind(failure_kind)
+        .bind(error_substring)
+        .bind(tool_name)
         .bind(hint)
-        .fetch_one(&self.pool)
+        .execute(&self.pool)
         .await?;
-        Ok(row.0)
+        Ok(())
+    }
+
+    /// Increment `use_count` and optionally `success_count` for a step correction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] on query failure.
+    pub async fn record_correction_usage(
+        &self,
+        correction_id: i64,
+        was_successful: bool,
+    ) -> Result<(), MemoryError> {
+        if was_successful {
+            zeph_db::query(sql!(
+                "UPDATE step_corrections \
+                 SET use_count = use_count + 1, success_count = success_count + 1 \
+                 WHERE id = ?"
+            ))
+            .bind(correction_id)
+            .execute(&self.pool)
+            .await?;
+        } else {
+            zeph_db::query(sql!(
+                "UPDATE step_corrections SET use_count = use_count + 1 WHERE id = ?"
+            ))
+            .bind(correction_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    // --- SkillOrchestra: RL routing head weight persistence ---
+
+    /// Load routing head weights blob from the singleton row.
+    ///
+    /// Returns `(embed_dim, weights_bytes, baseline, update_count)` or `None` if not yet trained.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] on query failure.
+    pub async fn load_routing_head_weights(
+        &self,
+    ) -> Result<Option<(i64, Vec<u8>, f64, i64)>, MemoryError> {
+        let row: Option<(i64, Vec<u8>, f64, i64)> = zeph_db::query_as(sql!(
+            "SELECT embed_dim, weights, baseline, update_count \
+             FROM routing_head_weights WHERE id = 1"
+        ))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Persist routing head weights (upsert singleton row).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] on query failure.
+    pub async fn save_routing_head_weights(
+        &self,
+        embed_dim: i64,
+        weights: &[u8],
+        baseline: f64,
+        update_count: i64,
+    ) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "INSERT INTO routing_head_weights (id, embed_dim, weights, baseline, update_count, updated_at) \
+             VALUES (1, ?, ?, ?, ?, datetime('now')) \
+             ON CONFLICT(id) DO UPDATE SET \
+               embed_dim = excluded.embed_dim, \
+               weights = excluded.weights, \
+               baseline = excluded.baseline, \
+               update_count = excluded.update_count, \
+               updated_at = datetime('now')"
+        ))
+        .bind(embed_dim)
+        .bind(weights)
+        .bind(baseline)
+        .bind(update_count)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }
 

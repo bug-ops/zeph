@@ -254,6 +254,15 @@ impl SkillMatcher {
         })
     }
 
+    /// Return the embedding vector for skill at the given index, if available.
+    #[must_use]
+    pub fn skill_embedding(&self, skill_index: usize) -> Option<&[f32]> {
+        self.embeddings
+            .iter()
+            .find(|(idx, _)| *idx == skill_index)
+            .map(|(_, v)| v.as_slice())
+    }
+
     /// Match a user query against stored skill embeddings, returning the top-K scored matches
     /// ranked by cosine similarity.
     ///
@@ -376,6 +385,16 @@ pub enum SkillMatcherBackend {
 }
 
 impl SkillMatcherBackend {
+    /// Return the embedding vector for a skill at the given index, if available.
+    /// Only works for in-memory backends; returns `None` for Qdrant.
+    #[must_use]
+    pub fn skill_embedding(&self, skill_index: usize) -> Option<&[f32]> {
+        match self {
+            Self::InMemory(m) => m.skill_embedding(skill_index),
+            Self::Qdrant(_) => None,
+        }
+    }
+
     #[must_use]
     pub fn is_qdrant(&self) -> bool {
         match self {

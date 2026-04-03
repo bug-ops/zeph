@@ -112,6 +112,10 @@ fn default_erl_min_confidence() -> f64 {
     0.5
 }
 
+fn default_d2skill_max_corrections() -> u32 {
+    3
+}
+
 /// Strategy for detecting implicit user corrections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -269,6 +273,22 @@ pub struct LearningConfig {
     /// Minimum confidence to include a heuristic at match time.
     #[serde(default = "default_erl_min_confidence")]
     pub erl_min_confidence: f64,
+
+    // --- D2Skill: step-level error correction ---
+    /// Enable `D2Skill` step-level error correction (disabled by default).
+    ///
+    /// Requires `arise_enabled = true` to populate corrections from ARISE traces.
+    /// If `d2skill_enabled = true` and `arise_enabled = false`, existing corrections
+    /// are still applied but no new ones are generated via ARISE.
+    #[serde(default)]
+    pub d2skill_enabled: bool,
+    /// Maximum corrections to inject per failure event.
+    #[serde(default = "default_d2skill_max_corrections")]
+    pub d2skill_max_corrections: u32,
+    /// Provider name from `[[llm.providers]]` for correction extraction from ARISE traces.
+    /// Empty = fall back to primary provider.
+    #[serde(default)]
+    pub d2skill_provider: ProviderName,
 }
 
 impl Default for LearningConfig {
@@ -314,6 +334,9 @@ impl Default for LearningConfig {
             erl_max_heuristics_per_skill: default_erl_max_heuristics_per_skill(),
             erl_dedup_threshold: default_erl_dedup_threshold(),
             erl_min_confidence: default_erl_min_confidence(),
+            d2skill_enabled: false,
+            d2skill_max_corrections: default_d2skill_max_corrections(),
+            d2skill_provider: ProviderName::default(),
         }
     }
 }

@@ -1332,6 +1332,54 @@ impl<C: Channel> Agent<C> {
                             .unwrap_or((0, 0))
                     },
                 );
+
+                // SkillOrchestra: RL routing head re-rank (past warmup only).
+                if let Some(rl_head) = &self.skill_state.rl_head
+                    && let Ok(query_embed) = self.embedding_provider.embed(query).await
+                {
+                    let rl_weight = self.skill_state.rl_weight;
+                    let warmup = self.skill_state.rl_warmup_updates;
+                    // Build candidates: (skill_index, skill_embed, cosine_score).
+                    // Skills without a stored embedding are skipped (Qdrant backend).
+                    let candidates: Vec<(usize, &[f32], f32)> = scored
+                        .iter()
+                        .filter_map(|s| {
+                            matcher
+                                .skill_embedding(s.index)
+                                .map(|emb| (s.index, emb, s.score))
+                        })
+                        .collect();
+                    if candidates.len() == scored.len() {
+                        let stats: Vec<(f32, u32)> = candidates
+                            .iter()
+                            .map(|&(idx, _, _)| {
+                                let (succ, fail) = all_meta
+                                    .get(idx)
+                                    .and_then(|m| metrics_map.get(&m.name))
+                                    .copied()
+                                    .unwrap_or((0, 0));
+                                let total = succ + fail;
+                                let rate = if total == 0 {
+                                    0.5
+                                } else {
+                                    #[allow(clippy::cast_precision_loss)]
+                                    {
+                                        succ as f32 / total as f32
+                                    }
+                                };
+                                (rate, total)
+                            })
+                            .collect();
+                        let reranked =
+                            rl_head.rerank(&query_embed, &candidates, &stats, rl_weight, warmup);
+                        // Apply new order to scored.
+                        scored.sort_by(|a, b| {
+                            let pos_a = reranked.iter().position(|(i, _)| *i == a.index);
+                            let pos_b = reranked.iter().position(|(i, _)| *i == b.index);
+                            pos_a.cmp(&pos_b)
+                        });
+                    }
+                }
             }
 
             let indices: Vec<usize> = if scored.is_empty() {

@@ -394,6 +394,13 @@ pub(crate) async fn run_daemon(
         .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
         .with_mcp_shared_tools(mcp_shared_tools)
         .with_hybrid_search(config.skills.hybrid_search)
+        .with_rl_routing(
+            config.skills.rl_routing_enabled,
+            config.skills.rl_learning_rate,
+            config.skills.rl_weight,
+            config.skills.rl_persist_interval,
+            config.skills.rl_warmup_updates,
+        )
         .with_focus_config(config.agent.focus.clone())
         .with_sidequest_config(config.memory.sidequest.clone())
         .with_embedding_provider(embedding_provider)
@@ -403,6 +410,17 @@ pub(crate) async fn run_daemon(
 
     let agent = if let Some(logger) = daemon_audit_logger {
         agent.with_audit_logger(logger)
+    } else {
+        agent
+    };
+
+    // SkillOrchestra: load persisted RL routing head weights if enabled.
+    let agent = if config.skills.rl_routing_enabled {
+        if let Some(head) = crate::runner::load_rl_head(&memory).await {
+            agent.with_rl_head(head)
+        } else {
+            agent
+        }
     } else {
         agent
     };

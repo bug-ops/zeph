@@ -11,6 +11,22 @@ fn default_disambiguation_threshold() -> f32 {
     0.20
 }
 
+fn default_rl_learning_rate() -> f32 {
+    0.01
+}
+
+fn default_rl_weight() -> f32 {
+    0.3
+}
+
+fn default_rl_persist_interval() -> u32 {
+    10
+}
+
+fn default_rl_warmup_updates() -> u32 {
+    50
+}
+
 fn default_min_injection_score() -> f32 {
     0.20
 }
@@ -141,6 +157,23 @@ pub struct SkillsConfig {
     /// Set to 0.0 (default) to disable the confusability check entirely.
     #[serde(default)]
     pub confusability_threshold: f32,
+
+    // --- SkillOrchestra: RL routing head ---
+    /// Enable RL routing head for skill re-ranking (disabled by default).
+    #[serde(default)]
+    pub rl_routing_enabled: bool,
+    /// Learning rate for REINFORCE weight updates.
+    #[serde(default = "default_rl_learning_rate")]
+    pub rl_learning_rate: f32,
+    /// Blend weight: `final_score = (1-rl_weight)*cosine + rl_weight*rl_score`.
+    #[serde(default = "default_rl_weight")]
+    pub rl_weight: f32,
+    /// Persist weights every N updates (0 = persist every update).
+    #[serde(default = "default_rl_persist_interval")]
+    pub rl_persist_interval: u32,
+    /// Skip RL blending for the first N updates (cold-start warmup).
+    #[serde(default = "default_rl_warmup_updates")]
+    pub rl_warmup_updates: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

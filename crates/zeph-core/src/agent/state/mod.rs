@@ -100,6 +100,13 @@ pub(crate) struct SkillState {
     pub(crate) two_stage_matching: bool,
     /// Threshold for confusability warnings (0.0 = disabled).
     pub(crate) confusability_threshold: f32,
+    /// `SkillOrchestra` RL routing head. `Some` when `rl_routing_enabled = true` and
+    /// weights are loaded or initialized. `None` when RL routing is disabled.
+    pub(crate) rl_head: Option<zeph_skills::rl_head::RoutingHead>,
+    /// Blend weight for RL routing: `final = (1-rl_weight)*cosine + rl_weight*rl_score`.
+    pub(crate) rl_weight: f32,
+    /// Skip RL blending for the first N updates (cold-start warmup).
+    pub(crate) rl_warmup_updates: u32,
 }
 
 pub(crate) struct McpState {

@@ -123,6 +123,8 @@ pub(crate) struct WizardState {
     pub(crate) arise_enabled: bool,
     pub(crate) stem_enabled: bool,
     pub(crate) erl_enabled: bool,
+    pub(crate) d2skill_enabled: bool,
+    pub(crate) rl_routing_enabled: bool,
     pub(crate) pre_execution_verify_enabled: bool,
     pub(crate) pre_execution_verify_allowed_paths: Vec<String>,
     pub(crate) guardrail_enabled: bool,
@@ -266,6 +268,8 @@ impl Default for WizardState {
             arise_enabled: false,
             stem_enabled: false,
             erl_enabled: false,
+            d2skill_enabled: false,
+            rl_routing_enabled: false,
             pre_execution_verify_enabled: true,
             pre_execution_verify_allowed_paths: Vec::new(),
             guardrail_enabled: false,
@@ -1245,6 +1249,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.skills.learning.arise_enabled = state.arise_enabled;
     config.skills.learning.stem_enabled = state.stem_enabled;
     config.skills.learning.erl_enabled = state.erl_enabled;
+    config.skills.learning.d2skill_enabled = state.d2skill_enabled;
+    config.skills.rl_routing_enabled = state.rl_routing_enabled;
     if state.guardrail_enabled {
         config.security.guardrail.enabled = true;
         config.security.guardrail.provider = Some(state.guardrail_provider.clone());
@@ -2012,6 +2018,21 @@ fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
     state.erl_enabled = Confirm::new()
         .with_prompt(
             "Enable ERL? (experiential reflective learning — extracts and injects heuristics from successful tasks)",
+        )
+        .default(false)
+        .interact()?;
+
+    state.d2skill_enabled = Confirm::new()
+        .with_prompt(
+            "Enable D2Skill? (step-level error correction hints injected into reflection prompts from past ARISE traces)",
+        )
+        .default(false)
+        .interact()?;
+
+    println!("\n-- SkillOrchestra: RL Routing Head --\n");
+    state.rl_routing_enabled = Confirm::new()
+        .with_prompt(
+            "Enable RL routing head? (REINFORCE-trained MLP re-ranks skill candidates; starts blending after 50 updates)",
         )
         .default(false)
         .interact()?;

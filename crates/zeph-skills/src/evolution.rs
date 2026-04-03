@@ -64,6 +64,25 @@ impl From<zeph_tools::error_taxonomy::ToolErrorCategory> for FailureKind {
     }
 }
 
+/// Pattern that matches a tool failure for step-correction lookup.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FailurePattern {
+    /// Which `FailureKind` this pattern matches (empty string = match any).
+    pub failure_kind: String,
+    /// Substring match against `error_context` (empty = match any error text).
+    pub error_substring: String,
+    /// Optional tool name filter (empty = match any tool).
+    pub tool_name: String,
+}
+
+/// A step-level correction hint: when a tool failure matches `trigger`,
+/// inject `hint` into the next turn's context.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StepCorrection {
+    pub trigger: FailurePattern,
+    pub hint: String,
+}
+
 /// Outcome classification for skill-attributed events.
 #[derive(Debug, Clone)]
 pub enum SkillOutcome {
@@ -312,50 +331,45 @@ pub fn build_trace_improvement_prompt(name: &str, original_body: &str, tool_trac
         .replace("{tool_trace}", tool_trace)
 }
 
-// --- D2Skill: step correction and failure pattern types ---
+/// Prompt template for extracting step corrections from a failure+success trace pair.
+///
+/// Placeholders: `{name}`, `{failure_error}`, `{failure_tool}`, `{successful_approach}`.
+pub const CORRECTION_EXTRACTION_PROMPT_TEMPLATE: &str = "\
+A skill named \"{name}\" encountered a tool failure, then succeeded on retry.
 
-/// A single step correction hint extracted from a failed tool execution trace.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct StepCorrection {
-    pub step: u32,
+Tool that failed: {failure_tool}
+Failure error: {failure_error}
+Successful approach: {successful_approach}
+
+Extract a concise correction hint that could help avoid this failure in the future.
+Respond in JSON with fields:
+  failure_kind: one of \"exit_nonzero\", \"timeout\", \"permission_denied\", \"wrong_approach\", \"syntax_error\", \"unknown\"
+  error_substring: a short distinctive substring from the error (empty string if none)
+  hint: a 1-2 sentence actionable correction hint
+Example: {\"failure_kind\": \"exit_nonzero\", \"error_substring\": \"not a git repo\", \"hint\": \"Run git init before any git commands.\"}";
+
+/// Response from the ARISE correction extraction LLM call.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct CorrectionExtractionResult {
+    pub failure_kind: String,
+    #[serde(default)]
+    pub error_substring: String,
     pub hint: String,
 }
 
-/// A recurring failure pattern identified across multiple traces.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct FailurePattern {
-    pub pattern: String,
-    pub frequency: u32,
-}
-
-/// LLM response struct for correction extraction.
-#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
-pub struct CorrectionExtractionResult {
-    pub corrections: Vec<StepCorrection>,
-    pub patterns: Vec<FailurePattern>,
-}
-
-/// Prompt template for `D2Skill` correction extraction.
-///
-/// Placeholders: `{skill_name}`, `{trace}` — substituted via
-/// [`build_correction_extraction_prompt`] using `str::replace`.
-pub const CORRECTION_EXTRACTION_PROMPT_TEMPLATE: &str = "\
-Analyze the following failed tool execution trace for skill '{skill_name}' and extract \
-step-level correction hints and recurring failure patterns.
-
-Trace:
-{trace}
-
-Respond in JSON with fields:
-- corrections: list of {{\"step\": number, \"hint\": string}}
-- patterns: list of {{\"pattern\": string, \"frequency\": number}}";
-
-/// Build a correction extraction prompt by substituting template placeholders.
+/// Build a correction extraction prompt.
 #[must_use]
-pub fn build_correction_extraction_prompt(skill_name: &str, trace: &str) -> String {
+pub fn build_correction_extraction_prompt(
+    name: &str,
+    failure_error: &str,
+    failure_tool: &str,
+    successful_approach: &str,
+) -> String {
     CORRECTION_EXTRACTION_PROMPT_TEMPLATE
-        .replace("{skill_name}", skill_name)
-        .replace("{trace}", trace)
+        .replace("{name}", name)
+        .replace("{failure_error}", failure_error)
+        .replace("{failure_tool}", failure_tool)
+        .replace("{successful_approach}", successful_approach)
 }
 
 /// Absolute maximum body size to prevent exponential growth across generations.
@@ -774,8 +788,12 @@ mod tests {
     #[test]
     fn step_correction_serde_roundtrip() {
         let original = StepCorrection {
-            step: 3,
-            hint: "use --force flag".to_string(),
+            trigger: FailurePattern {
+                failure_kind: "exit_nonzero".to_string(),
+                error_substring: "not a git repo".to_string(),
+                tool_name: String::new(),
+            },
+            hint: "Run git init before any git commands.".to_string(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: StepCorrection = serde_json::from_str(&json).unwrap();
@@ -785,8 +803,9 @@ mod tests {
     #[test]
     fn failure_pattern_serde_roundtrip() {
         let original = FailurePattern {
-            pattern: "missing env var".to_string(),
-            frequency: 5,
+            failure_kind: "timeout".to_string(),
+            error_substring: "timed out".to_string(),
+            tool_name: "shell".to_string(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: FailurePattern = serde_json::from_str(&json).unwrap();
@@ -796,33 +815,48 @@ mod tests {
     #[test]
     fn correction_extraction_result_deserialize_valid() {
         let json = r#"{
-            "corrections": [{"step": 1, "hint": "add --verbose"}],
-            "patterns": [{"pattern": "auth error", "frequency": 3}]
+            "failure_kind": "exit_nonzero",
+            "error_substring": "not a git repo",
+            "hint": "Run git init before any git commands."
         }"#;
         let result: CorrectionExtractionResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.corrections.len(), 1);
-        assert_eq!(result.corrections[0].step, 1);
-        assert_eq!(result.corrections[0].hint, "add --verbose");
-        assert_eq!(result.patterns[0].frequency, 3);
+        assert_eq!(result.failure_kind, "exit_nonzero");
+        assert_eq!(result.error_substring, "not a git repo");
+        assert_eq!(result.hint, "Run git init before any git commands.");
+    }
+
+    #[test]
+    fn correction_extraction_result_missing_optional_field() {
+        // error_substring has #[serde(default)] so it may be absent
+        let json = r#"{"failure_kind": "unknown", "hint": "retry with sudo"}"#;
+        let result: CorrectionExtractionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.failure_kind, "unknown");
+        assert!(result.error_substring.is_empty());
     }
 
     #[test]
     fn correction_extraction_result_deserialize_invalid() {
-        let json = r#"{"corrections": "not an array", "patterns": []}"#;
+        let json = r#"{"failure_kind": 42, "hint": "bad"}"#;
         let result: Result<CorrectionExtractionResult, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
-            "expected error for invalid corrections field"
+            "expected error for invalid failure_kind type"
         );
     }
 
     #[test]
     fn build_correction_extraction_prompt_substitutes() {
-        let result = build_correction_extraction_prompt("git-helper", "step 1: clone failed");
+        let result = build_correction_extraction_prompt(
+            "git-helper",
+            "command not found",
+            "shell",
+            "installed git first",
+        );
         assert!(result.contains("git-helper"));
-        assert!(result.contains("step 1: clone failed"));
-        assert!(!result.contains("{skill_name}"));
-        assert!(!result.contains("{trace}"));
+        assert!(result.contains("command not found"));
+        assert!(result.contains("shell"));
+        assert!(!result.contains("{name}"));
+        assert!(!result.contains("{failure_error}"));
     }
 
     proptest! {

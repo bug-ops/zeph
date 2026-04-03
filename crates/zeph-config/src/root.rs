@@ -165,6 +165,11 @@ impl Default for Config {
                 prompt_mode: SkillPromptMode::Auto,
                 two_stage_matching: false,
                 confusability_threshold: 0.0,
+                rl_routing_enabled: false,
+                rl_learning_rate: 0.01,
+                rl_weight: 0.3,
+                rl_persist_interval: 10,
+                rl_warmup_updates: 50,
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),

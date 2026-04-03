@@ -6,8 +6,18 @@ use crate::config::LearningConfig;
 /// Default number of user turns between preference analysis runs.
 const DEFAULT_ANALYSIS_INTERVAL: u64 = 5;
 
+/// RL routing configuration snapshot (from `SkillsConfig`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RlRoutingConfig {
+    pub(super) enabled: bool,
+    pub(super) learning_rate: f32,
+    pub(super) persist_interval: u32,
+}
+
 pub(crate) struct LearningEngine {
     pub(super) config: Option<LearningConfig>,
+    /// RL routing configuration, populated via `with_rl_routing()`.
+    pub(super) rl_routing: Option<RlRoutingConfig>,
     pub(super) reflection_used: bool,
     /// Monotonically increasing counter incremented on each user turn.
     turn_counter: u64,
@@ -25,6 +35,7 @@ impl LearningEngine {
     pub(crate) fn new() -> Self {
         Self {
             config: None,
+            rl_routing: None,
             reflection_used: false,
             turn_counter: 0,
             last_analysis_turn: 0,
