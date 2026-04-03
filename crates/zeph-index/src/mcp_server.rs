@@ -402,3 +402,154 @@ impl ToolExecutor for IndexMcpServer {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    /// Write a minimal Rust source file to a temp dir and return the dir + server.
+    fn setup_with_rust_file() -> (tempfile::TempDir, IndexMcpServer) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("lib.rs");
+        std::fs::write(
+            &src,
+            r"pub fn hello() {}
+pub fn world() {}
+pub struct Foo { pub x: i32 }
+impl Foo {
+    pub fn bar(&self) {}
+}
+",
+        )
+        .unwrap();
+        let server = IndexMcpServer::new(dir.path());
+        (dir, server)
+    }
+
+    #[test]
+    fn tool_definitions_returns_four_tools() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let server = IndexMcpServer::new(dir.path());
+        let defs = server.tool_definitions();
+        assert_eq!(defs.len(), 4);
+        let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
+        assert!(ids.contains(&"symbol_definition"));
+        assert!(ids.contains(&"find_text_references"));
+        assert!(ids.contains(&"call_graph"));
+        assert!(ids.contains(&"module_summary"));
+    }
+
+    #[test]
+    fn is_tool_retryable_all_tools() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let server = IndexMcpServer::new(dir.path());
+        assert!(server.is_tool_retryable("symbol_definition"));
+        assert!(server.is_tool_retryable("find_text_references"));
+        assert!(server.is_tool_retryable("call_graph"));
+        assert!(server.is_tool_retryable("module_summary"));
+        assert!(!server.is_tool_retryable("shell"));
+    }
+
+    #[test]
+    fn symbol_definition_finds_known_symbol() {
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = SymbolDefinitionParams {
+            name: "hello".to_string(),
+        };
+        let result = run_symbol_definition(&index, &params);
+        assert!(!result.is_null(), "should find 'hello' symbol");
+        // Result should contain file and line fields.
+        assert!(result.get("file").is_some() || result.is_array());
+    }
+
+    #[test]
+    fn symbol_definition_returns_null_for_unknown() {
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = SymbolDefinitionParams {
+            name: "nonexistent_xyz".to_string(),
+        };
+        let result = run_symbol_definition(&index, &params);
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn find_text_references_finds_occurrences() {
+        let (dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = FindTextReferencesParams {
+            name: "hello".to_string(),
+            max_results: 10,
+        };
+        let result = run_find_text_references(dir.path(), &index, &params);
+        let arr = result.as_array().unwrap();
+        assert!(
+            !arr.is_empty(),
+            "should find at least one reference to 'hello'"
+        );
+    }
+
+    #[test]
+    fn find_text_references_empty_for_unknown() {
+        let (dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = FindTextReferencesParams {
+            name: "zzz_not_present_zzz".to_string(),
+            max_results: 10,
+        };
+        let result = run_find_text_references(dir.path(), &index, &params);
+        assert!(result.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn call_graph_returns_nodes_and_edges() {
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = CallGraphParams {
+            fn_name: "Foo".to_string(),
+            depth: 2,
+        };
+        let result = run_call_graph(&index, params);
+        assert!(result.get("nodes").is_some());
+        assert!(result.get("edges").is_some());
+        assert_eq!(result["truncated"], serde_json::Value::Bool(false));
+        let nodes = result["nodes"].as_array().unwrap();
+        // Root node must always be present.
+        assert!(nodes.iter().any(|n| n.as_str() == Some("Foo")));
+    }
+
+    #[test]
+    fn module_summary_returns_symbols() {
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = ModuleSummaryParams {
+            path: "lib.rs".to_string(),
+        };
+        let result = run_module_summary(&index, &params);
+        assert!(
+            !result.is_null(),
+            "module_summary for lib.rs should not be null"
+        );
+        let entities = result["entities"].as_array().unwrap();
+        assert!(!entities.is_empty());
+        // At least one of hello/world/Foo should be listed.
+        let names: Vec<&str> = entities.iter().filter_map(|e| e["name"].as_str()).collect();
+        assert!(
+            names.contains(&"hello") || names.contains(&"world") || names.contains(&"Foo"),
+            "expected at least one known symbol, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn module_summary_returns_null_for_unknown_path() {
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = ModuleSummaryParams {
+            path: "does_not_exist.rs".to_string(),
+        };
+        let result = run_module_summary(&index, &params);
+        assert!(result.is_null());
+    }
+}
