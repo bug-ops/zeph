@@ -568,7 +568,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an empty string when the feature is disabled, memory is not initialized,
     /// or the database query fails (non-fatal).
-    #[cfg(feature = "compression-guidelines")]
     async fn load_compression_guidelines_if_enabled(&self) -> String {
         let config = &self.memory_state.compression_guidelines_config;
         if !config.enabled {
@@ -678,7 +677,6 @@ impl<C: Channel> Agent<C> {
         // S2 fix (#2022): extract active-subgoal messages before draining so they survive
         // compaction. Mirrors the focus_pinned pattern exactly. Only applies when a subgoal
         // strategy is active and the registry has tagged active messages.
-        #[cfg(feature = "context-compression")]
         let active_subgoal_messages: Vec<Message> = if self
             .context_manager
             .compression
@@ -703,46 +701,30 @@ impl<C: Channel> Agent<C> {
         } else {
             vec![]
         };
-        #[cfg(not(feature = "context-compression"))]
-        let active_subgoal_messages: Vec<Message> = vec![];
 
         // Summarize only the non-pinned, non-active-subgoal messages in the compaction range.
         let to_compact: Vec<Message> = {
-            #[cfg(feature = "context-compression")]
             let is_subgoal = self
                 .context_manager
                 .compression
                 .pruning_strategy
                 .is_subgoal();
-            #[cfg(not(feature = "context-compression"))]
-            let is_subgoal = false;
 
             if is_subgoal {
-                #[cfg(feature = "context-compression")]
-                {
-                    use crate::agent::compaction_strategy::SubgoalState;
-                    self.msg.messages[1..compact_end]
-                        .iter()
-                        .enumerate()
-                        .filter(|(slice_i, m)| {
-                            let actual_i = slice_i + 1;
-                            !m.metadata.focus_pinned
-                                && !matches!(
-                                    self.compression.subgoal_registry.subgoal_state(actual_i),
-                                    Some(SubgoalState::Active)
-                                )
-                        })
-                        .map(|(_, m)| m.clone())
-                        .collect()
-                }
-                #[cfg(not(feature = "context-compression"))]
-                {
-                    self.msg.messages[1..compact_end]
-                        .iter()
-                        .filter(|m| !m.metadata.focus_pinned)
-                        .cloned()
-                        .collect()
-                }
+                use crate::agent::compaction_strategy::SubgoalState;
+                self.msg.messages[1..compact_end]
+                    .iter()
+                    .enumerate()
+                    .filter(|(slice_i, m)| {
+                        let actual_i = slice_i + 1;
+                        !m.metadata.focus_pinned
+                            && !matches!(
+                                self.compression.subgoal_registry.subgoal_state(actual_i),
+                                Some(SubgoalState::Active)
+                            )
+                    })
+                    .map(|(_, m)| m.clone())
+                    .collect()
             } else {
                 self.msg.messages[1..compact_end]
                     .iter()
@@ -755,11 +737,8 @@ impl<C: Channel> Agent<C> {
             return Ok(CompactionOutcome::NoChange);
         }
 
-        // Load compression guidelines if the feature is enabled and configured.
-        #[cfg(feature = "compression-guidelines")]
+        // Load compression guidelines if configured.
         let guidelines = self.load_compression_guidelines_if_enabled().await;
-        #[cfg(not(feature = "compression-guidelines"))]
-        let guidelines = String::new();
 
         // Memex: archive tool output bodies before compaction (#2432).
         //
@@ -901,7 +880,6 @@ impl<C: Channel> Agent<C> {
         // S1 fix (#2022): rebuild subgoal index map from scratch after drain + reinsert.
         // Arithmetic offset is fragile because the final positions depend on pinned_count
         // and active_subgoal_count. Rebuild is O(subgoals * avg_span) — negligible.
-        #[cfg(feature = "context-compression")]
         if self
             .context_manager
             .compression
@@ -978,7 +956,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns the number of tokens freed.
     pub(in crate::agent) fn prune_tool_outputs(&mut self, min_to_free: usize) -> usize {
-        #[cfg(feature = "context-compression")]
         {
             use crate::config::PruningStrategy;
             match &self.context_manager.compression.pruning_strategy {
@@ -1075,7 +1052,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Messages at or after the returned index must not be evicted. This mirrors the logic in
     /// `prune_tool_outputs_oldest_first` so all pruning paths enforce the same tail protection.
-    #[cfg(feature = "context-compression")]
     fn prune_protection_boundary(&self) -> usize {
         let protect = self.context_manager.prune_protect_tokens;
         if protect == 0 {
@@ -1108,7 +1084,6 @@ impl<C: Channel> Agent<C> {
     /// This is the "Option A" documented in the critic review: the two systems do not share state
     /// at the pruning level. `SideQuest` uses the same `focus_pinned` protection to avoid evicting
     /// Knowledge block content.
-    #[cfg(feature = "context-compression")]
     pub(in crate::agent) fn prune_tool_outputs_scored(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_task_aware;
         use crate::config::PruningStrategy;
@@ -1201,7 +1176,6 @@ impl<C: Channel> Agent<C> {
 
     /// MIG-scored pruning. Uses relevance − redundancy scoring to identify the best eviction
     /// candidates. Requires `context-compression` feature.
-    #[cfg(feature = "context-compression")]
     pub(in crate::agent) fn prune_tool_outputs_mig(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_mig;
 
@@ -1285,7 +1259,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Active-subgoal tool outputs receive relevance 1.0 and are effectively protected
     /// from eviction as long as lower-tier outputs can satisfy `min_to_free`.
-    #[cfg(feature = "context-compression")]
     pub(in crate::agent) fn prune_tool_outputs_subgoal(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_subgoal;
 
@@ -1316,7 +1289,6 @@ impl<C: Channel> Agent<C> {
 
     /// Subgoal + MIG hybrid pruning: combines subgoal tier relevance with pairwise
     /// redundancy scoring (MIG = relevance − redundancy).
-    #[cfg(feature = "context-compression")]
     pub(in crate::agent) fn prune_tool_outputs_subgoal_mig(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_subgoal_mig;
 
@@ -1350,7 +1322,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Extracted to eliminate duplicate code between `prune_tool_outputs_scored`,
     /// `prune_tool_outputs_mig`, and the new subgoal pruning variants.
-    #[cfg(feature = "context-compression")]
     fn evict_sorted_blocks(
         &mut self,
         sorted_scores: &[crate::agent::compaction_strategy::BlockScore],
@@ -1892,7 +1863,6 @@ impl<C: Channel> Agent<C> {
 
                 // Step 0 (context-compression): apply any completed background goal extraction
                 // and schedule a new one if the user message has changed (#1909, #2022).
-                #[cfg(feature = "context-compression")]
                 {
                     use crate::config::PruningStrategy;
                     match &self.context_manager.compression.pruning_strategy {
@@ -1904,14 +1874,11 @@ impl<C: Channel> Agent<C> {
                 }
 
                 // Step 1: apply deferred tool summaries (free tokens without LLM).
-                #[cfg(feature = "context-compression")]
                 let applied = self.apply_deferred_summaries();
-                #[cfg(not(feature = "context-compression"))]
                 let _ = self.apply_deferred_summaries();
 
                 // Step 1b (S5 fix): rebuild subgoal index map if deferred summaries were applied.
                 // Deferred summaries insert messages (shifting indices), invalidating msg_to_subgoal.
-                #[cfg(feature = "context-compression")]
                 if applied > 0
                     && self
                         .context_manager
@@ -2307,11 +2274,7 @@ impl<C: Channel> Agent<C> {
         // Try direct summarization first
         let chunk_token_budget = chunk_budget.unwrap_or(4096);
         let oversized_threshold = chunk_token_budget / 2;
-
-        #[cfg(feature = "compression-guidelines")]
         let guidelines = self.load_compression_guidelines_if_enabled().await;
-        #[cfg(not(feature = "compression-guidelines"))]
-        let guidelines = String::new();
 
         let chunks = super::chunk_messages(
             messages,
@@ -2404,7 +2367,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// This eliminates the 5-second latency spike on every Soft tier compaction that made
     /// `task_aware`/`mig` strategies non-functional for cloud LLM providers.
-    #[cfg(feature = "context-compression")]
     #[allow(clippy::too_many_lines)]
     pub(in crate::agent) fn maybe_refresh_task_goal(&mut self) {
         use std::hash::Hash as _;
@@ -2588,7 +2550,6 @@ impl<C: Channel> Agent<C> {
     /// Transition detection: the LLM's `COMPLETED:` signal drives transitions (S3 fix).
     /// When `COMPLETED: NONE`, the same subgoal continues (`extend_active`).
     /// When `COMPLETED:` is non-NONE, a new subgoal is created (`complete_active` + `push_active`).
-    #[cfg(feature = "context-compression")]
     #[allow(clippy::too_many_lines)]
     pub(in crate::agent) fn maybe_refresh_subgoal(&mut self) {
         use std::hash::Hash as _;
@@ -2815,7 +2776,6 @@ impl<C: Channel> Agent<C> {
 /// ```
 ///
 /// Falls back to treating the entire response as the current subgoal on malformed input.
-#[cfg(feature = "context-compression")]
 fn parse_subgoal_extraction_response(
     response: &str,
 ) -> crate::agent::state::SubgoalExtractionResult {
@@ -3405,7 +3365,6 @@ mod tests {
     }
 
     // T-CRIT-03: prune_tool_outputs_scored basic — lowest-relevance block evicted first.
-    #[cfg(feature = "context-compression")]
     #[test]
     fn prune_tool_outputs_scored_evicts_lowest_relevance_first() {
         use crate::agent::tests::agent_tests::{
@@ -3474,7 +3433,6 @@ mod tests {
     }
 
     // T-CRIT-04: prune_tool_outputs_mig evicts blocks with lowest MIG score first.
-    #[cfg(feature = "context-compression")]
     #[test]
     fn prune_tool_outputs_mig_evicts_lowest_mig_first() {
         use crate::agent::tests::agent_tests::{
@@ -3550,7 +3508,6 @@ mod tests {
     }
 
     // T-CRIT-05: scored pruning respects prune_protect_tokens.
-    #[cfg(feature = "context-compression")]
     #[test]
     fn prune_tool_outputs_scored_respects_protect_tokens() {
         use crate::agent::tests::agent_tests::{
@@ -3603,7 +3560,6 @@ mod tests {
     }
 
     // T-CRIT-06: MIG pruning respects prune_protect_tokens.
-    #[cfg(feature = "context-compression")]
     #[test]
     fn prune_tool_outputs_mig_respects_protect_tokens() {
         use crate::agent::tests::agent_tests::{
@@ -3657,7 +3613,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[cfg(feature = "context-compression")]
 mod subgoal_extraction_tests {
     use super::*;
 

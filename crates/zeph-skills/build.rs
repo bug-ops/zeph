@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 fn main() {
-    #[cfg(feature = "bundled-skills")]
     {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let skills_path = std::path::Path::new(&manifest_dir).join("skills");

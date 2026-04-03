@@ -1303,7 +1303,6 @@ impl App {
             TuiCommand::ExperimentBest => {
                 let _ = self.user_input_tx.try_send("/experiment best".to_owned());
             }
-            #[cfg(feature = "lsp-context")]
             TuiCommand::LspStatus => {
                 self.push_system_message("Checking LSP context injection status...".to_owned());
                 let _ = self.user_input_tx.try_send("/lsp".to_owned());

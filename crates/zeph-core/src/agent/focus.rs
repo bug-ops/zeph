@@ -7,14 +7,9 @@
 //! exploration phases. On `complete_focus`, messages since the checkpoint are summarised,
 //! the summary is appended to the pinned Knowledge block, and the bracketed messages are
 //! removed from the conversation history.
-
-#[cfg(feature = "context-compression")]
 use std::sync::Arc;
-#[cfg(feature = "context-compression")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "context-compression")]
 use uuid::Uuid;
-#[cfg(feature = "context-compression")]
 use zeph_llm::provider::{Message, MessageMetadata, Role, ToolDefinition};
 
 use crate::config::FocusConfig;
@@ -22,7 +17,6 @@ use crate::config::FocusConfig;
 /// Build tool definitions for `start_focus` and `complete_focus` (#1850).
 ///
 /// These are injected into the tool list when `focus.enabled = true`.
-#[cfg(feature = "context-compression")]
 pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -74,7 +68,6 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
 ///
 /// Always available when `context-compression` feature is enabled, regardless of compression
 /// strategy. The strategy controls automatic compression; this tool provides explicit control.
-#[cfg(feature = "context-compression")]
 pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "compress_context".into(),
@@ -94,19 +87,16 @@ pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
 }
 
 // Used by build_knowledge_message (context-compression feature).
-#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) const KNOWLEDGE_BLOCK_PREFIX: &str = "[knowledge]\n";
 
 /// Tracks the state of the active focus session.
 // Fields and methods below are consumed by context-compression feature paths.
-#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 pub(crate) struct FocusState {
     pub(crate) config: FocusConfig,
     /// Accumulated knowledge entries from all completed focus sessions.
     pub(crate) knowledge_blocks: Vec<String>,
     /// Marker UUID written into the checkpoint message's `focus_marker_id` field.
     /// `None` = no active focus session.
-    #[cfg(feature = "context-compression")]
     pub(crate) active_marker: Option<Uuid>,
     /// Human-readable scope label provided by the LLM via `start_focus`.
     pub(crate) active_scope: Option<String>,
@@ -116,22 +106,17 @@ pub(crate) struct FocusState {
     pub(crate) turns_since_reminder: usize,
     /// Concurrency guard: `true` while `compress_context` is executing.
     /// Prevents double compression and races with reactive compaction.
-    #[cfg(feature = "context-compression")]
     pub(crate) compressing: Arc<AtomicBool>,
 }
-
-#[cfg_attr(not(feature = "context-compression"), allow(dead_code))]
 impl FocusState {
     pub(crate) fn new(config: FocusConfig) -> Self {
         Self {
             config,
             knowledge_blocks: Vec::new(),
-            #[cfg(feature = "context-compression")]
             active_marker: None,
             active_scope: None,
             turns_since_focus: 0,
             turns_since_reminder: 0,
-            #[cfg(feature = "context-compression")]
             compressing: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -140,7 +125,6 @@ impl FocusState {
     ///
     /// Returns `true` if acquired (caller must call `release_compression()` when done).
     /// Returns `false` if another compression is already in progress.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn try_acquire_compression(&self) -> bool {
         self.compressing
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -148,22 +132,13 @@ impl FocusState {
     }
 
     /// Release the compression lock.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn release_compression(&self) {
         self.compressing.store(false, Ordering::Release);
     }
 
     /// Returns `true` if a focus session is currently active.
-    #[cfg_attr(not(feature = "context-compression"), allow(clippy::unused_self))]
     pub(crate) fn is_active(&self) -> bool {
-        #[cfg(feature = "context-compression")]
-        {
-            self.active_marker.is_some()
-        }
-        #[cfg(not(feature = "context-compression"))]
-        {
-            false
-        }
+        self.active_marker.is_some()
     }
 
     /// Reset focus state for a new conversation.
@@ -172,12 +147,9 @@ impl FocusState {
     /// starts without stale focus context.
     pub(crate) fn reset(&mut self) {
         self.knowledge_blocks.clear();
-        #[cfg(feature = "context-compression")]
-        {
-            self.active_marker = None;
-            self.compressing
-                .store(false, std::sync::atomic::Ordering::Release);
-        }
+        self.active_marker = None;
+        self.compressing
+            .store(false, std::sync::atomic::Ordering::Release);
         self.active_scope = None;
         self.turns_since_focus = 0;
         self.turns_since_reminder = 0;
@@ -215,7 +187,6 @@ impl FocusState {
     }
 
     /// Build the pinned Knowledge block message, or `None` if there is no knowledge yet.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn build_knowledge_message(&self) -> Option<Message> {
         if self.knowledge_blocks.is_empty() {
             return None;
@@ -241,7 +212,6 @@ impl FocusState {
     }
 
     /// Start a new focus session. Returns the marker UUID embedded in the checkpoint message.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn start(&mut self, scope: String) -> Uuid {
         let marker = Uuid::new_v4();
         self.active_marker = Some(marker);
@@ -251,7 +221,6 @@ impl FocusState {
 
     /// Complete the active session. Clears active marker and scope; resets reminder counters.
     /// The caller is responsible for appending the summary to `knowledge_blocks`.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn complete(&mut self) {
         self.active_marker = None;
         self.active_scope = None;
@@ -290,8 +259,6 @@ mod tests {
         assert!(!state.append_knowledge(String::new()));
         assert!(state.knowledge_blocks.is_empty());
     }
-
-    #[cfg(feature = "context-compression")]
     #[test]
     fn start_sets_marker_and_scope() {
         let mut state = FocusState::new(FocusConfig::default());
@@ -300,8 +267,6 @@ mod tests {
         assert_eq!(state.active_marker, Some(marker));
         assert_eq!(state.active_scope.as_deref(), Some("test scope"));
     }
-
-    #[cfg(feature = "context-compression")]
     #[test]
     fn complete_clears_state() {
         let mut state = FocusState::new(FocusConfig::default());
@@ -310,15 +275,11 @@ mod tests {
         assert!(!state.is_active());
         assert_eq!(state.turns_since_focus, 0);
     }
-
-    #[cfg(feature = "context-compression")]
     #[test]
     fn build_knowledge_message_none_when_empty() {
         let state = FocusState::new(FocusConfig::default());
         assert!(state.build_knowledge_message().is_none());
     }
-
-    #[cfg(feature = "context-compression")]
     #[test]
     fn build_knowledge_message_contains_prefix() {
         let mut state = FocusState::new(FocusConfig::default());
@@ -375,22 +336,17 @@ mod tests {
     }
 
     // T-HIGH-01: focus is_active correctly reflects session state.
-    #[cfg(feature = "context-compression")]
     #[test]
     fn is_active_returns_false_before_start() {
         let state = FocusState::new(FocusConfig::default());
         assert!(!state.is_active());
     }
-
-    #[cfg(feature = "context-compression")]
     #[test]
     fn is_active_returns_true_during_session() {
         let mut state = FocusState::new(FocusConfig::default());
         state.start("scope".to_string());
         assert!(state.is_active());
     }
-
-    #[cfg(feature = "context-compression")]
     #[test]
     fn is_active_returns_false_after_complete() {
         let mut state = FocusState::new(FocusConfig::default());
@@ -409,7 +365,6 @@ mod tests {
     }
 
     // Test: concurrency guard prevents double-compression (#2218).
-    #[cfg(feature = "context-compression")]
     #[test]
     fn try_acquire_compression_prevents_double_call() {
         let state = FocusState::new(FocusConfig::default());
@@ -455,7 +410,6 @@ mod tests {
     }
 
     // Test: Knowledge block message contains all summaries after multiple compressions.
-    #[cfg(feature = "context-compression")]
     #[test]
     fn knowledge_message_contains_all_summaries() {
         let mut state = FocusState::new(FocusConfig::default());

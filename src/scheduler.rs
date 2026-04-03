@@ -4,14 +4,14 @@
 #[cfg(feature = "scheduler")]
 use std::sync::Arc;
 
-#[cfg(all(feature = "scheduler", feature = "experiments"))]
+#[cfg(feature = "scheduler")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "scheduler")]
 use tokio::sync::{mpsc, watch};
 #[cfg(feature = "scheduler")]
 use zeph_core::config::Config;
-#[cfg(all(feature = "scheduler", feature = "experiments"))]
+#[cfg(feature = "scheduler")]
 use zeph_core::experiments::{
     BenchmarkSet, ConfigSnapshot, Evaluator, ExperimentEngine, ExperimentSource, GridStep,
     SearchSpace,
@@ -34,7 +34,7 @@ use crate::scheduler_executor::SchedulerExecutor;
 /// Spawns the experiment engine on a separate Tokio task (S1 fix — does not block tick loop).
 /// Holds a clone of the scheduler's `shutdown_rx` so it can wire shutdown to the engine (S2 fix).
 /// Uses an [`AtomicBool`] guard to prevent overlapping runs.
-#[cfg(all(feature = "scheduler", feature = "experiments"))]
+#[cfg(feature = "scheduler")]
 struct ExperimentTaskHandler {
     config: zeph_core::config::ExperimentConfig,
     provider: Arc<AnyProvider>,
@@ -45,7 +45,7 @@ struct ExperimentTaskHandler {
     running: Arc<AtomicBool>,
 }
 
-#[cfg(all(feature = "scheduler", feature = "experiments"))]
+#[cfg(feature = "scheduler")]
 impl TaskHandler for ExperimentTaskHandler {
     fn execute(
         &self,
@@ -296,7 +296,6 @@ pub(crate) async fn init_scheduler(
     };
 
     // Clone before moving into Scheduler so the experiment handler can watch shutdown (S2 fix).
-    #[cfg(feature = "experiments")]
     let shutdown_rx_for_experiments = shutdown_rx.clone();
 
     let (scheduler, task_tx) =
@@ -307,7 +306,6 @@ pub(crate) async fn init_scheduler(
     load_config_tasks(&config.scheduler.tasks, &task_tx);
 
     // Register experiment handler when both features are enabled and schedule is configured.
-    #[cfg(feature = "experiments")]
     if config.experiments.enabled
         && config.experiments.schedule.enabled
         && let Some((exp_provider, exp_memory)) = experiment_deps
@@ -337,8 +335,6 @@ pub(crate) async fn init_scheduler(
             Err(e) => tracing::warn!("scheduler: invalid experiment cron: {e}"),
         }
     }
-    #[cfg(not(feature = "experiments"))]
-    let _ = experiment_deps;
 
     let update_rx = if config.agent.auto_update_check {
         let (update_tx, update_rx) = tokio::sync::mpsc::channel(4);

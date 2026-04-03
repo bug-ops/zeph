@@ -291,10 +291,8 @@ pub struct MetricsSnapshot {
     pub pre_execution_blocks: u64,
     pub pre_execution_warnings: u64,
     /// `true` when a guardrail filter is active for this session.
-    #[cfg(feature = "guardrail")]
     pub guardrail_enabled: bool,
     /// `true` when guardrail is in warn-only mode (action = warn).
-    #[cfg(feature = "guardrail")]
     pub guardrail_warn_mode: bool,
     pub sub_agents: Vec<SubAgentMetrics>,
     pub skill_confidence: Vec<SkillConfidence>,

@@ -56,28 +56,18 @@ fn default_acp_lsp_max_workspace_symbols() -> usize {
 fn default_acp_lsp_request_timeout_secs() -> u64 {
     10
 }
-
-#[cfg(feature = "lsp-context")]
 fn default_lsp_mcp_server_id() -> String {
     "mcpls".into()
 }
-
-#[cfg(feature = "lsp-context")]
 fn default_lsp_token_budget() -> usize {
     2000
 }
-
-#[cfg(feature = "lsp-context")]
 fn default_lsp_max_per_file() -> usize {
     20
 }
-
-#[cfg(feature = "lsp-context")]
 fn default_lsp_max_symbols() -> usize {
     10
 }
-
-#[cfg(feature = "lsp-context")]
 fn default_lsp_call_timeout_secs() -> u64 {
     5
 }
@@ -231,7 +221,6 @@ impl Default for AcpLspConfig {
 // ── LSP context injection ─────────────────────────────────────────────────────
 
 /// Minimum diagnostic severity to include in LSP context injection.
-#[cfg(feature = "lsp-context")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagnosticSeverity {
@@ -245,7 +234,6 @@ pub enum DiagnosticSeverity {
 /// Configuration for the diagnostics-on-save hook (`[agent.lsp.diagnostics]`).
 ///
 /// Flood control relies on `token_budget` in [`LspConfig`], not a per-file count.
-#[cfg(feature = "lsp-context")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DiagnosticsConfig {
@@ -258,8 +246,6 @@ pub struct DiagnosticsConfig {
     #[serde(default)]
     pub min_severity: DiagnosticSeverity,
 }
-
-#[cfg(feature = "lsp-context")]
 impl Default for DiagnosticsConfig {
     fn default() -> Self {
         Self {
@@ -271,7 +257,6 @@ impl Default for DiagnosticsConfig {
 }
 
 /// Configuration for the hover-on-read hook (`[agent.lsp.hover]`).
-#[cfg(feature = "lsp-context")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HoverConfig {
@@ -281,8 +266,6 @@ pub struct HoverConfig {
     #[serde(default = "default_lsp_max_symbols")]
     pub max_symbols: usize,
 }
-
-#[cfg(feature = "lsp-context")]
 impl Default for HoverConfig {
     fn default() -> Self {
         Self {
@@ -293,7 +276,6 @@ impl Default for HoverConfig {
 }
 
 /// Top-level LSP context injection configuration (`[agent.lsp]` TOML section).
-#[cfg(feature = "lsp-context")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LspConfig {
@@ -315,8 +297,6 @@ pub struct LspConfig {
     #[serde(default)]
     pub hover: HoverConfig,
 }
-
-#[cfg(feature = "lsp-context")]
 impl Default for LspConfig {
     fn default() -> Self {
         Self {

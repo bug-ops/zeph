@@ -517,7 +517,6 @@ impl<C: Channel> Agent<C> {
         let body = self.scrub_pii_union(&sanitized.body, tool_name).await;
 
         // Guardrail: opt-in tool output scanning for indirect prompt injection (scan_tool_output=true).
-        #[cfg(feature = "guardrail")]
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
         (body, has_injection_flags)
@@ -631,8 +630,6 @@ impl<C: Channel> Agent<C> {
         tracing::debug!(tool = %tool_name, span_count = merged.len(), "PII scrubbed from tool output");
         redact_spans(text, &merged)
     }
-
-    #[cfg(feature = "guardrail")]
     async fn apply_guardrail_to_tool_output(&self, mut body: String, tool_name: &str) -> String {
         use zeph_sanitizer::guardrail::GuardrailVerdict;
         let Some(ref guardrail) = self.security.guardrail else {

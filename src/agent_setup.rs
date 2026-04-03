@@ -544,8 +544,6 @@ pub(crate) fn apply_quarantine_provider<C: Channel>(
         agent
     }
 }
-
-#[cfg(feature = "guardrail")]
 pub(crate) fn apply_guardrail<C: Channel>(
     agent: Agent<C>,
     guardrail: Option<(
@@ -973,8 +971,6 @@ pub(crate) fn apply_candle_stt<C: Channel>(
         }
     }
 }
-
-#[cfg(feature = "stt")]
 pub(crate) fn apply_whisper_stt<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     entry: &zeph_core::config::ProviderEntry,

@@ -34,7 +34,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = []
-guardrail = ["zeph-config/guardrail"]
 classifiers = ["zeph-llm/classifiers"]
 
 [lints]

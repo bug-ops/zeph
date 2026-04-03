@@ -3586,8 +3586,6 @@ async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
     let msg = result.unwrap();
     assert!(msg.content.starts_with(super::super::GRAPH_FACTS_PREFIX));
 }
-
-#[cfg(feature = "lsp-context")]
 #[test]
 fn remove_lsp_messages_removes_lsp_system_keeps_others() {
     use crate::agent::LSP_NOTE_PREFIX;

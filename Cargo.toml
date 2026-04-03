@@ -165,23 +165,20 @@ description = "Lightweight AI agent with hybrid inference, skills-first architec
 readme = "README.md"
 
 [features]
-default = ["bundled-skills", "scheduler", "guardrail", "sqlite"]
+default = ["scheduler", "sqlite"]
 
 # === Use-case bundles ===
-desktop = ["tui", "compression-guidelines", "context-compression"]
-ide     = ["acp", "acp-http", "lsp-context"]
+desktop = ["tui"]
+ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel"]
 chat    = ["discord", "slack"]
-ml      = ["candle", "pdf", "stt"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "stt", "acp-unstable", "experiments", "guardrail", "policy-enforcer", "context-compression", "bundled-skills", "scheduler", "classifiers"]
-bundled-skills = ["zeph-skills/bundled-skills", "zeph-core/bundled-skills"]
+ml      = ["candle", "pdf"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers"]
 
 # === Individual feature flags ===
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct"]
-compression-guidelines = ["zeph-core/compression-guidelines", "zeph-memory/compression-guidelines"]
-acp = ["dep:zeph-acp"]
+acp = ["dep:zeph-acp", "zeph-acp/unstable-session-close", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-logout"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
-acp-unstable = ["acp", "zeph-acp/unstable-session-close", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-logout"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]
 classifiers = ["candle", "zeph-llm/classifiers", "zeph-sanitizer/classifiers", "zeph-core/classifiers"]
 metal = ["candle", "zeph-llm/metal", "zeph-core/metal"]
@@ -189,16 +186,10 @@ cuda = ["candle", "zeph-llm/cuda", "zeph-core/cuda"]
 tui = ["dep:zeph-tui"]
 discord = ["zeph-channels/discord"]
 slack = ["zeph-channels/slack"]
-guardrail = ["zeph-core/guardrail", "zeph-tui?/guardrail"]
 gateway = ["dep:zeph-gateway"]
 scheduler = ["dep:zeph-scheduler", "dep:cron", "dep:schemars", "dep:chrono", "zeph-core/scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
-experiments = ["zeph-core/experiments", "zeph-memory/experiments", "zeph-tui?/experiments"]
-lsp-context = ["zeph-core/lsp-context", "zeph-tui?/lsp-context"]
-stt = ["zeph-llm/stt", "dep:reqwest"]
-policy-enforcer = ["zeph-tools/policy-enforcer", "zeph-core/policy-enforcer"]
-context-compression = ["zeph-core/context-compression"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.
@@ -218,7 +209,7 @@ glob.workspace = true
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }
+reqwest.workspace = true
 rmcp.workspace = true
 schemars = { workspace = true, optional = true }
 serde.workspace = true

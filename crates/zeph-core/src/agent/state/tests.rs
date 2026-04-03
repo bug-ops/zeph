@@ -28,22 +28,15 @@ fn make_instruction_state() -> InstructionState {
 }
 
 fn make_experiment_state() -> ExperimentState {
-    #[cfg(feature = "experiments")]
     let (notify_tx, notify_rx) = tokio::sync::mpsc::channel::<String>(4);
-    #[cfg(not(feature = "experiments"))]
     let (_tx, notify_rx) = tokio::sync::mpsc::channel::<String>(4);
 
     ExperimentState {
-        #[cfg(feature = "experiments")]
         config: crate::config::ExperimentConfig::default(),
-        #[cfg(feature = "experiments")]
         cancel: None,
-        #[cfg(feature = "experiments")]
         baseline: crate::experiments::ConfigSnapshot::default(),
-        #[cfg(feature = "experiments")]
         eval_provider: None,
         notify_rx: Some(notify_rx),
-        #[cfg(feature = "experiments")]
         notify_tx,
     }
 }
@@ -68,9 +61,7 @@ fn make_session_state() -> SessionState {
         response_cache: None,
         parent_tool_use_id: None,
         status_tx: None,
-        #[cfg(feature = "lsp-context")]
         lsp_hooks: None,
-        #[cfg(feature = "policy-enforcer")]
         policy_config: None,
         hooks_config: HooksConfigSnapshot::default(),
     }
@@ -89,7 +80,6 @@ fn make_runtime_config() -> RuntimeConfig {
         semantic_cache_threshold: 0.95,
         semantic_cache_max_candidates: 10,
         dependency_config: zeph_tools::DependencyConfig::default(),
-        #[cfg(feature = "policy-enforcer")]
         adversarial_policy_info: None,
     }
 }
@@ -124,8 +114,6 @@ fn experiment_state_notify_rx_always_present() {
     let state = make_experiment_state();
     assert!(state.notify_rx.is_some());
 }
-
-#[cfg(feature = "experiments")]
 #[test]
 fn experiment_state_cfg_fields_present_with_feature() {
     let state = make_experiment_state();
@@ -204,8 +192,6 @@ fn feedback_state_detector_returns_none_for_neutral_input() {
 // ------------------------------------------------------------------
 // CompressionState (context-compression feature gate)
 // ------------------------------------------------------------------
-
-#[cfg(feature = "context-compression")]
 #[test]
 fn compression_state_construction() {
     use crate::agent::state::CompressionState;

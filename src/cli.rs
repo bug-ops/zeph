@@ -81,7 +81,6 @@ pub(crate) struct Cli {
 
     /// Enable LLM-based guardrail (prompt injection pre-screening).
     /// Overrides `security.guardrail.enabled` from config.
-    #[cfg(feature = "guardrail")]
     #[arg(long)]
     pub(crate) guardrail: bool,
 
@@ -135,7 +134,6 @@ pub(crate) struct Cli {
 
     /// Enable automatic LSP context injection (diagnostics after writes, hover on reads).
     /// Requires mcpls MCP server configured under [mcp.servers].
-    #[cfg(feature = "lsp-context")]
     #[arg(long)]
     pub(crate) lsp_context: bool,
 
@@ -151,7 +149,6 @@ pub(crate) struct Cli {
     pub(crate) debug_dump: Option<PathBuf>,
 
     /// Path to external policy rules file (TOML). Overrides `tools.policy.policy_file` from config.
-    #[cfg(feature = "policy-enforcer")]
     #[arg(long, value_name = "PATH")]
     pub(crate) policy_file: Option<PathBuf>,
 
@@ -170,12 +167,10 @@ pub(crate) struct Cli {
     pub(crate) scheduler_disable: bool,
 
     /// Run a single experiment session and exit (requires experiments feature)
-    #[cfg(feature = "experiments")]
     #[arg(long)]
     pub(crate) experiment_run: bool,
 
     /// Print experiment results summary and exit (requires experiments feature)
-    #[cfg(feature = "experiments")]
     #[arg(long)]
     pub(crate) experiment_report: bool,
 
@@ -482,22 +477,16 @@ mod tests {
         let cli = Cli::try_parse_from(["zeph"]).unwrap();
         assert!(!cli.scan_skills_on_load);
     }
-
-    #[cfg(feature = "experiments")]
     #[test]
     fn cli_parses_experiment_run_flag() {
         let cli = Cli::try_parse_from(["zeph", "--experiment-run"]).unwrap();
         assert!(cli.experiment_run);
     }
-
-    #[cfg(feature = "experiments")]
     #[test]
     fn cli_parses_experiment_report_flag() {
         let cli = Cli::try_parse_from(["zeph", "--experiment-report"]).unwrap();
         assert!(cli.experiment_report);
     }
-
-    #[cfg(feature = "experiments")]
     #[test]
     fn cli_experiment_flags_default_to_false() {
         let cli = Cli::try_parse_from(["zeph"]).unwrap();

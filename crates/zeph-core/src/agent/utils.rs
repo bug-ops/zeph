@@ -68,7 +68,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Only fetches version and `created_at`; does not load the full guidelines text.
     /// Feature-gated: compiled only when `compression-guidelines` is enabled.
-    #[cfg(feature = "compression-guidelines")]
     pub async fn sync_guidelines_status(&self) {
         let Some(memory) = self.memory_state.memory.as_ref() else {
             return;

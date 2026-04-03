@@ -80,7 +80,6 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Info,
         feature_gate: None,
     },
-    #[cfg(feature = "guardrail")]
     SlashCommandInfo {
         name: "/guardrail",
         args: "",
@@ -175,7 +174,6 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Memory,
         feature_gate: None,
     },
-    #[cfg(feature = "compression-guidelines")]
     SlashCommandInfo {
         name: "/guidelines",
         args: "",
@@ -244,7 +242,6 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Tools,
         feature_gate: Some("scheduler"),
     },
-    #[cfg(feature = "experiments")]
     SlashCommandInfo {
         name: "/experiment",
         args: "[subcommand]",
@@ -252,7 +249,6 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Advanced,
         feature_gate: Some("experiments"),
     },
-    #[cfg(feature = "lsp-context")]
     SlashCommandInfo {
         name: "/lsp",
         args: "",
@@ -260,7 +256,6 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Advanced,
         feature_gate: Some("lsp-context"),
     },
-    #[cfg(feature = "policy-enforcer")]
     SlashCommandInfo {
         name: "/policy",
         args: "[status|check <tool> [args_json]]",
@@ -268,7 +263,6 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Tools,
         feature_gate: Some("policy-enforcer"),
     },
-    #[cfg(feature = "context-compression")]
     SlashCommandInfo {
         name: "/focus",
         args: "",
@@ -276,7 +270,6 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         category: SlashCategory::Advanced,
         feature_gate: Some("context-compression"),
     },
-    #[cfg(feature = "context-compression")]
     SlashCommandInfo {
         name: "/sidequest",
         args: "",

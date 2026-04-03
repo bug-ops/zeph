@@ -37,13 +37,11 @@ impl Default for ScannerConfig {
     }
 }
 use crate::rate_limit::RateLimitConfig;
+use crate::sanitizer::GuardrailConfig;
 use crate::sanitizer::{
     CausalIpiConfig, ContentIsolationConfig, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
     PiiFilterConfig, ResponseVerificationConfig,
 };
-
-#[cfg(feature = "guardrail")]
-use crate::sanitizer::GuardrailConfig;
 
 fn default_trust_default_level() -> TrustLevel {
     TrustLevel::Quarantined
@@ -134,7 +132,6 @@ pub struct SecurityConfig {
     #[serde(default)]
     pub pre_execution_verify: PreExecutionVerifierConfig,
     /// LLM-based prompt injection pre-screener (opt-in, disabled by default).
-    #[cfg(feature = "guardrail")]
     #[serde(default)]
     pub guardrail: GuardrailConfig,
     /// Post-LLM response verification layer (enabled by default).
@@ -156,7 +153,6 @@ impl Default for SecurityConfig {
             pii_filter: PiiFilterConfig::default(),
             rate_limit: RateLimitConfig::default(),
             pre_execution_verify: PreExecutionVerifierConfig::default(),
-            #[cfg(feature = "guardrail")]
             guardrail: GuardrailConfig::default(),
             response_verification: ResponseVerificationConfig::default(),
             causal_ipi: CausalIpiConfig::default(),

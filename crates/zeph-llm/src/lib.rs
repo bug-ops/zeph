@@ -32,7 +32,6 @@ pub mod stt;
 #[cfg(test)]
 pub mod testing;
 pub(crate) mod usage;
-#[cfg(feature = "stt")]
 pub mod whisper;
 
 pub use classifier::metrics::{ClassifierMetrics, ClassifierMetricsSnapshot, TaskMetricsSnapshot};

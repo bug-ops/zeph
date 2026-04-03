@@ -73,7 +73,6 @@ pub use sanitizer::{
     ExfiltrationGuardConfig, MemoryWriteValidationConfig, PiiFilterConfig, QuarantineConfig,
     ResponseVerificationConfig,
 };
-#[cfg(feature = "guardrail")]
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 pub use security::{ScannerConfig, SecurityConfig, TimeoutConfig, TrustConfig};
 pub use subagent::{
@@ -81,8 +80,6 @@ pub use subagent::{
     ToolPolicy,
 };
 pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
-
-#[cfg(feature = "lsp-context")]
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 
 // Top-level config struct, error type, and resolved secrets — moved from zeph-core.

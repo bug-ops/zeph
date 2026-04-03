@@ -29,10 +29,8 @@ use crate::providers::{
 };
 use crate::security::TrustConfig;
 use crate::security::{SecurityConfig, TimeoutConfig};
-use crate::ui::{AcpConfig, TuiConfig};
-
-#[cfg(feature = "lsp-context")]
 use crate::ui::LspConfig;
+use crate::ui::{AcpConfig, TuiConfig};
 
 /// Top-level agent configuration.
 ///
@@ -93,7 +91,6 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub hooks: HooksConfig,
-    #[cfg(feature = "lsp-context")]
     #[serde(default)]
     pub lsp: LspConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
@@ -234,7 +231,6 @@ impl Default for Config {
             experiments: ExperimentConfig::default(),
             debug: DebugConfig::default(),
             logging: LoggingConfig::default(),
-            #[cfg(feature = "lsp-context")]
             lsp: LspConfig::default(),
             hooks: HooksConfig::default(),
             secrets: ResolvedSecrets::default(),

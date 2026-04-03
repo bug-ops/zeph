@@ -104,7 +104,6 @@ impl<C: Channel> Agent<C> {
             metadata: MessageMetadata::default(),
         });
         // Detect context loss after compaction and log failure pair if found.
-        #[cfg(feature = "compression-guidelines")]
         self.maybe_log_compression_failure(&response).await;
 
         self.inject_active_skill_env();

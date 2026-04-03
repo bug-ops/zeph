@@ -4,14 +4,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::permissions::{AutonomyLevel, PermissionPolicy, PermissionsConfig};
-#[cfg(feature = "policy-enforcer")]
 use crate::policy::PolicyConfig;
 
 fn default_true() -> bool {
     true
 }
-
-#[cfg(feature = "policy-enforcer")]
 fn default_adversarial_timeout_ms() -> u64 {
     3_000
 }
@@ -363,7 +360,6 @@ impl Default for RetryConfig {
 }
 
 /// Configuration for the LLM-based adversarial policy agent.
-#[cfg(feature = "policy-enforcer")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdversarialPolicyConfig {
     /// Enable the adversarial policy agent. Default: `false`.
@@ -392,8 +388,6 @@ pub struct AdversarialPolicyConfig {
     #[serde(default = "AdversarialPolicyConfig::default_exempt_tools")]
     pub exempt_tools: Vec<String>,
 }
-
-#[cfg(feature = "policy-enforcer")]
 impl Default for AdversarialPolicyConfig {
     fn default() -> Self {
         Self {
@@ -406,8 +400,6 @@ impl Default for AdversarialPolicyConfig {
         }
     }
 }
-
-#[cfg(feature = "policy-enforcer")]
 impl AdversarialPolicyConfig {
     fn default_exempt_tools() -> Vec<String> {
         vec![
@@ -466,11 +458,9 @@ pub struct ToolsConfig {
     #[serde(default)]
     pub retry: RetryConfig,
     /// Declarative policy compiler for tool call authorization.
-    #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
     pub policy: PolicyConfig,
     /// LLM-based adversarial policy agent for natural-language policy enforcement.
-    #[cfg(feature = "policy-enforcer")]
     #[serde(default)]
     pub adversarial_policy: AdversarialPolicyConfig,
     /// Utility-guided tool dispatch gate.
@@ -586,9 +576,7 @@ impl Default for ToolsConfig {
             tafc: TafcConfig::default(),
             dependencies: DependencyConfig::default(),
             retry: RetryConfig::default(),
-            #[cfg(feature = "policy-enforcer")]
             policy: PolicyConfig::default(),
-            #[cfg(feature = "policy-enforcer")]
             adversarial_policy: AdversarialPolicyConfig::default(),
             utility: UtilityScoringConfig::default(),
             file: FileConfig::default(),

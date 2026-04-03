@@ -11,7 +11,6 @@
 
 pub mod causal_ipi;
 pub mod exfiltration;
-#[cfg(feature = "guardrail")]
 pub mod guardrail;
 pub mod memory_validation;
 pub mod pii;

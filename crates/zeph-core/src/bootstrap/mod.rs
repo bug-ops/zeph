@@ -439,7 +439,6 @@ impl AppBuilder {
     }
 
     pub fn build_registry(&self) -> SkillRegistry {
-        #[cfg(feature = "bundled-skills")]
         {
             let managed = managed_skills_dir();
             match zeph_skills::bundled::provision_bundled_skills(&managed) {
@@ -635,7 +634,6 @@ impl AppBuilder {
     ///
     /// Returns `None` when guardrail is disabled or provider resolution fails.
     /// Emits a `tracing::warn` on resolution failure (guardrail silently disabled).
-    #[cfg(feature = "guardrail")]
     pub fn build_guardrail_filter(&self) -> Option<zeph_sanitizer::guardrail::GuardrailFilter> {
         let (provider, config) = self.build_guardrail_provider()?;
         match zeph_sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
@@ -650,7 +648,6 @@ impl AppBuilder {
     /// Build the guardrail provider and config pair for use in multi-session contexts.
     ///
     /// Returns `None` when guardrail is disabled or provider resolution fails.
-    #[cfg(feature = "guardrail")]
     pub fn build_guardrail_provider(
         &self,
     ) -> Option<(AnyProvider, zeph_sanitizer::guardrail::GuardrailConfig)> {
@@ -787,7 +784,6 @@ impl AppBuilder {
     ///
     /// Returns `None` when `compress_provider` is empty (falls back to primary provider at call site).
     /// Emits a `tracing::warn` on resolution failure (primary provider used as fallback).
-    #[cfg(feature = "context-compression")]
     pub fn build_compress_provider(&self) -> Option<AnyProvider> {
         let name = &self.config.memory.compression.compress_provider;
         if name.is_empty() {
@@ -816,7 +812,6 @@ impl AppBuilder {
     /// # Errors (logged, not propagated)
     ///
     /// Emits a `tracing::warn` on resolution failure; primary provider is used as fallback.
-    #[cfg(feature = "compression-guidelines")]
     pub fn build_guidelines_provider(&self) -> Option<AnyProvider> {
         let name = &self
             .config
@@ -919,8 +914,6 @@ impl AppBuilder {
             }
         }
     }
-
-    #[cfg(feature = "experiments")]
     pub fn build_eval_provider(&self) -> Option<AnyProvider> {
         let model_spec = self.config.experiments.eval_model.as_deref()?;
         match create_summary_provider(model_spec, &self.config) {

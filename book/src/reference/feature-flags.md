@@ -8,12 +8,12 @@ Bundles are named Cargo features that group individual flags by deployment scena
 
 | Bundle | Included Features | Description |
 |--------|-------------------|-------------|
-| `desktop` | `tui`, `scheduler`, `compression-guidelines` | Interactive desktop agent with TUI dashboard, cron scheduler, and failure-driven compression |
-| `ide` | `acp`, `acp-http`, `lsp-context` | IDE integration via ACP (Zed, Helix, VS Code) with LSP context injection |
-| `server` | `gateway`, `a2a`, `scheduler`, `otel` | Headless server deployment: HTTP webhook gateway, A2A agent protocol, cron scheduler, OpenTelemetry tracing |
+| `desktop` | `tui` | Interactive desktop agent with TUI dashboard |
+| `ide` | `acp`, `acp-http` | IDE integration via ACP (Zed, Helix, VS Code) |
+| `server` | `gateway`, `a2a`, `otel` | Headless server deployment: HTTP webhook gateway, A2A agent protocol, OpenTelemetry tracing |
 | `chat` | `discord`, `slack` | Chat platform adapters |
-| `ml` | `candle`, `pdf`, `stt` | Local ML inference (HuggingFace GGUF), PDF document loading, and Whisper speech-to-text |
-| `full` | `desktop` + `ide` + `server` + `chat` + `pdf` + `stt` + `acp-unstable` + `experiments` | All optional features except `candle`, `metal`, and `cuda` (hardware-specific) |
+| `ml` | `candle`, `pdf` | Local ML inference (HuggingFace GGUF) and PDF document loading |
+| `full` | `desktop` + `ide` + `server` + `chat` + `pdf` + `scheduler` + `classifiers` | All optional features except `candle`, `metal`, and `cuda` (hardware-specific) |
 
 ### Bundle build examples
 
@@ -51,6 +51,14 @@ The following capabilities compile unconditionally into every build. They are **
 | Daemon supervisor | Daemon supervisor with component lifecycle, PID file, and health monitoring |
 | Task orchestration | DAG-based execution with failure strategies and SQLite persistence |
 | Graph memory | SQLite-based knowledge graph with entity-relationship tracking and BFS traversal |
+| Guardrail | Content sanitization, PII filtering, exfiltration guard, and quarantine |
+| Context compression | Reactive and focus-driven context compaction with summarization |
+| Compression guidelines | Failure-driven guideline generation to improve future compaction quality |
+| Policy enforcer | Declarative tool policy enforcement with LLM-based adversarial gate |
+| LSP context injection | Automatic LSP diagnostics, hover, and reference injection into tool calls |
+| Experiments | Autonomous self-experimentation engine with LLM-as-judge evaluation |
+| Bundled skills | SKILL.md files compiled into the binary via `include_dir` |
+| Speech-to-text | OpenAI Whisper API transcription for audio input |
 
 ## Optional Features
 
@@ -63,13 +71,11 @@ The following capabilities compile unconditionally into every build. They are **
 | `discord` | Discord channel adapter with Gateway v10 WebSocket and slash commands ([guide](../advanced/channels.md#discord-channel)) |
 | `slack` | Slack channel adapter with Events API webhook and HMAC-SHA256 verification ([guide](../advanced/channels.md#slack-channel)) |
 | `a2a` | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
-| `lsp-context` | Automatic LSP context injection: diagnostics after `write_file`, optional hover on `read_file`, references before `rename_symbol`. Hooks into the tool execution pipeline and call mcpls via the existing MCP client. Requires mcpls configured under `[[mcp.servers]]`. Enable with `--lsp-context` or `agent.lsp.enabled = true` ([guide](../guides/lsp.md#lsp-context-injection)). Note: the ACP LSP extension (IDE-proxied LSP via `ext_method`) is part of the `acp` feature, not `lsp-context` |
 | `gateway` | HTTP gateway for webhook ingestion with bearer auth and rate limiting ([guide](../advanced/gateway.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence, including the `update_check` handler for automatic version notifications ([guide](../advanced/daemon.md#cron-scheduler)) |
-| `stt` | Speech-to-text transcription via OpenAI Whisper API ([guide](../advanced/multimodal.md#audio-input)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](../advanced/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
-| `experiments` | Autonomous self-experimentation engine with benchmark datasets, LLM-as-judge evaluation, and cron-based scheduled runs when combined with the `scheduler` feature ([guide](../concepts/experiments.md)) |
+| `classifiers` | ML-based content classifiers via local candle inference (implies `candle`) |
 
 ## Crate-Level Features
 
@@ -89,13 +95,9 @@ Some workspace crates expose their own feature flags for fine-grained control:
 
 The `unstable-session-*` flags gate ACP session lifecycle handlers and IDE integration features that depend on draft ACP spec additions. They are enabled by default but the API surface may change before the spec stabilises. Each flag also enables the corresponding feature in `agent-client-protocol` so the SDK advertises the capability during `initialize`.
 
-The root crate provides a composite flag to enable all six at once:
+The `acp` feature in the root crate automatically enables all `unstable-session-*` flags in `zeph-acp`. There is no separate `acp-unstable` flag.
 
-| Feature | Description |
-|---------|-------------|
-| `acp-unstable` | Enables all `unstable-session-*` flags in `zeph-acp` (list, fork, resume, usage, model, info-update) |
-
-Disable all six to build a minimal ACP server without session management or IDE integration features:
+Disable all session management flags to build a minimal ACP server without them:
 
 ```bash
 cargo build -p zeph-acp --no-default-features
@@ -110,10 +112,10 @@ cargo build -p zeph-llm --no-default-features
 ## Build Examples
 
 ```bash
-cargo build --release                                      # default build (always-on features only)
-cargo build --release --features desktop                   # TUI + scheduler + compression-guidelines
-cargo build --release --features ide                       # ACP + LSP context injection
-cargo build --release --features server                    # gateway + a2a + scheduler + otel
+cargo build --release                                      # default build (scheduler + sqlite + always-on features)
+cargo build --release --features desktop                   # TUI dashboard
+cargo build --release --features ide                       # ACP (includes all unstable-session-* flags)
+cargo build --release --features server                    # gateway + a2a + otel
 cargo build --release --features desktop,server            # combined desktop and server
 cargo build --release --features ml,metal                  # local inference with Metal GPU (macOS)
 cargo build --release --features ml,cuda                   # local inference with CUDA GPU (Linux)

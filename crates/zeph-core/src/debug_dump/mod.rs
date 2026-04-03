@@ -110,7 +110,6 @@ impl DebugDumper {
 
     /// Dump pruning scores computed by task-aware or MIG scoring.
     /// When `format = Trace`, this is a no-op.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn dump_pruning_scores(
         &self,
         scores: &[crate::agent::compaction_strategy::BlockScore],
@@ -252,7 +251,6 @@ impl DebugDumper {
 
     /// Dump `SideQuest` eviction state: cursor list with eviction flags and freed token count.
     /// When `format = Trace`, this is a no-op.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn dump_sidequest_eviction(
         &self,
         cursors: &[crate::agent::sidequest::ToolOutputCursor],
@@ -292,7 +290,6 @@ impl DebugDumper {
     ///
     /// Writes a human-readable text file listing each subgoal with its state and message span.
     /// When `format = Trace`, this is a no-op.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn dump_subgoal_registry(
         &self,
         registry: &crate::agent::compaction_strategy::SubgoalRegistry,

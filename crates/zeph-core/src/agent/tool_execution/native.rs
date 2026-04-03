@@ -79,7 +79,6 @@ impl<C: Channel> Agent<C> {
         self.tool_orchestrator.clear_utility_state();
 
         // `mut` required when context-compression is enabled to inject focus tool definitions.
-        #[cfg_attr(not(feature = "context-compression"), allow(unused_mut))]
         let tafc = &self.tool_orchestrator.tafc;
         let mut tool_defs: Vec<ToolDefinition> = self
             .tool_executor
@@ -89,13 +88,11 @@ impl<C: Channel> Agent<C> {
             .collect();
 
         // Inject focus tool definitions when the feature is enabled and configured (#1850).
-        #[cfg(feature = "context-compression")]
         if self.focus.config.enabled {
             tool_defs.extend(super::super::focus::focus_tool_definitions());
         }
 
         // Inject compress_context tool — always available when context-compression is enabled (#2218).
-        #[cfg(feature = "context-compression")]
         tool_defs.push(super::super::focus::compress_context_tool_definition());
 
         // Pre-compute the full tool set for iterations 1+ before filtering.
@@ -219,7 +216,6 @@ impl<C: Channel> Agent<C> {
         // the LLM. Stale notes are cleared unconditionally each iteration so they
         // never accumulate when no new notes were produced.
         // Role::System ensures they are skipped by tool-pair summarization.
-        #[cfg(feature = "lsp-context")]
         if self.session.lsp_hooks.is_some() {
             self.remove_lsp_messages();
             let tc = std::sync::Arc::clone(&self.metrics.token_counter);
@@ -290,7 +286,6 @@ impl<C: Channel> Agent<C> {
                 .messages
                 .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
             // Detect context loss after compaction and log failure pair if found.
-            #[cfg(feature = "compression-guidelines")]
             self.maybe_log_compression_failure(&cleaned).await;
             if cleaned.contains(MAX_TOKENS_TRUNCATION_MARKER) {
                 let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
@@ -942,7 +937,6 @@ impl<C: Channel> Agent<C> {
         // Pre-process focus tool calls (#1850) and compress_context (#2218).
         // These need &mut self and cannot run inside the parallel tier futures.
         // Pre-populate their results so the tier loop skips them.
-        #[cfg(feature = "context-compression")]
         {
             for (idx, tc) in tool_calls.iter().enumerate() {
                 let is_focus_tool = self.focus.config.enabled
@@ -1036,7 +1030,6 @@ impl<C: Channel> Agent<C> {
                 let call = &calls[idx];
 
                 // Skip focus tools and compress_context pre-handled above (they already have results).
-                #[cfg(feature = "context-compression")]
                 if tc.name == "compress_context"
                     || (self.focus.config.enabled
                         && (tc.name == "start_focus" || tc.name == "complete_focus"))
@@ -1589,7 +1582,6 @@ impl<C: Channel> Agent<C> {
         }
 
         // Collect (name, params, output) for LSP hooks. Built during the results loop below.
-        #[cfg(feature = "lsp-context")]
         let mut lsp_tool_calls: Vec<(String, serde_json::Value, String)> = Vec::new();
 
         // Process results sequentially (metrics, channel sends, message parts).
@@ -1810,7 +1802,6 @@ impl<C: Channel> Agent<C> {
             has_any_injection_flags |= tool_had_injection_flags;
 
             // Capture tool call details for LSP hooks before building result part.
-            #[cfg(feature = "lsp-context")]
             if !is_error {
                 lsp_tool_calls.push((tc.name.clone(), tc.input.clone(), llm_content.clone()));
             }
@@ -1923,7 +1914,6 @@ impl<C: Channel> Agent<C> {
         // `lsp_tool_calls` collects (name, params, output) tuples built during the
         // results loop above. They are captured into a separate Vec so we can call
         // `&mut self.session.lsp_hooks` without conflicting borrows.
-        #[cfg(feature = "lsp-context")]
         if self.session.lsp_hooks.is_some() {
             let tc_arc = std::sync::Arc::clone(&self.metrics.token_counter);
             let sanitizer = self.security.sanitizer.clone();
@@ -1952,7 +1942,6 @@ impl<C: Channel> Agent<C> {
     /// If `complete_focus` is called without an active focus session, or the checkpoint marker
     /// is not found in the message history, an `[error]` result is returned to the LLM so it
     /// knows the state is invalid rather than silently succeeding.
-    #[cfg(feature = "context-compression")]
     pub(crate) fn handle_focus_tool(
         &mut self,
         tool_name: &str,
@@ -2092,7 +2081,6 @@ impl<C: Channel> Agent<C> {
     /// Guards:
     /// - Returns error if a focus session is active (would interfere with focus boundaries).
     /// - Returns error if a compression is already in progress (concurrency guard).
-    #[cfg(feature = "context-compression")]
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn handle_compress_context(&mut self) -> String {
         use zeph_llm::provider::LlmProvider as _;
@@ -2288,7 +2276,7 @@ async fn recv_elicitation(
 }
 
 // T-CRIT-02: handle_focus_tool tests — happy path, error paths, checkpoint pinning (S5 fix).
-#[cfg(all(test, feature = "context-compression"))]
+#[cfg(test)]
 mod tests {
     use crate::agent::Agent;
     use crate::agent::tests::agent_tests::{

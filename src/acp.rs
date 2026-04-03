@@ -129,7 +129,6 @@ struct SharedAgentDeps {
     planner_provider: Option<zeph_llm::any::AnyProvider>,
     verify_provider: Option<zeph_llm::any::AnyProvider>,
     quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
-    #[cfg(feature = "guardrail")]
     guardrail_provider: Option<(
         zeph_llm::any::AnyProvider,
         zeph_sanitizer::guardrail::GuardrailConfig,
@@ -395,7 +394,6 @@ async fn build_acp_deps(
 
     #[cfg(feature = "scheduler")]
     let (scheduler_executor, scheduler_update_tx, scheduler_custom_tx) = {
-        #[cfg(feature = "experiments")]
         let exp_deps = {
             use std::sync::Arc;
             if config.experiments.enabled && config.experiments.schedule.enabled {
@@ -405,11 +403,6 @@ async fn build_acp_deps(
                 None
             }
         };
-        #[cfg(not(feature = "experiments"))]
-        let exp_deps: Option<(
-            std::sync::Arc<zeph_llm::any::AnyProvider>,
-            Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
-        )> = None;
 
         match crate::scheduler::init_scheduler(config, shutdown_rx.clone(), exp_deps).await {
             Some(result) => {
@@ -475,7 +468,6 @@ async fn build_acp_deps(
         planner_provider: app.build_planner_provider(),
         verify_provider: app.build_verify_provider(),
         quarantine_provider: app.build_quarantine_provider(),
-        #[cfg(feature = "guardrail")]
         guardrail_provider: app.build_guardrail_provider(),
         audit_logger: acp_audit_logger,
         hooks_config: config.hooks.clone(),
@@ -570,7 +562,6 @@ async fn spawn_acp_agent(
     let planner_provider = d.planner_provider.clone();
     let verify_provider = d.verify_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
-    #[cfg(feature = "guardrail")]
     let guardrail_provider = d.guardrail_provider.clone();
     let session_config = d.session_config.clone();
     let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
@@ -785,7 +776,6 @@ async fn spawn_acp_agent(
     }
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);
-    #[cfg(feature = "guardrail")]
     {
         agent = agent_setup::apply_guardrail(agent, guardrail_provider);
     }

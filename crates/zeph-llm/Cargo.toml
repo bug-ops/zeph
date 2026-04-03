@@ -14,7 +14,6 @@ description = "LLM provider abstraction with Ollama, Claude, OpenAI, and Candle 
 readme = "README.md"
 
 [features]
-stt = ["reqwest/multipart"]
 candle = ["dep:audioadapter-buffers", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers", "dep:symphonia", "dep:rubato"]
 classifiers = ["candle", "dep:hex", "dep:sha2"]
 cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
@@ -35,7 +34,7 @@ hf-hub = { workspace = true, optional = true, features = ["tokio", "rustls-tls",
 ollama-rs = { workspace = true, features = ["rustls", "stream"] }
 rand.workspace = true
 rand_distr.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "rustls", "stream"] }
 rubato = { workspace = true, optional = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

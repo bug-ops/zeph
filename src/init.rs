@@ -125,15 +125,10 @@ pub(crate) struct WizardState {
     pub(crate) erl_enabled: bool,
     pub(crate) pre_execution_verify_enabled: bool,
     pub(crate) pre_execution_verify_allowed_paths: Vec<String>,
-    #[cfg(feature = "guardrail")]
     pub(crate) guardrail_enabled: bool,
-    #[cfg(feature = "guardrail")]
     pub(crate) guardrail_provider: String,
-    #[cfg(feature = "guardrail")]
     pub(crate) guardrail_model: String,
-    #[cfg(feature = "guardrail")]
     pub(crate) guardrail_action: String,
-    #[cfg(feature = "guardrail")]
     pub(crate) guardrail_timeout_ms: u64,
     #[cfg(feature = "classifiers")]
     pub(crate) classifiers_enabled: bool,
@@ -273,15 +268,10 @@ impl Default for WizardState {
             erl_enabled: false,
             pre_execution_verify_enabled: true,
             pre_execution_verify_allowed_paths: Vec::new(),
-            #[cfg(feature = "guardrail")]
             guardrail_enabled: false,
-            #[cfg(feature = "guardrail")]
             guardrail_provider: "ollama".to_owned(),
-            #[cfg(feature = "guardrail")]
             guardrail_model: "llama-guard-3:1b".to_owned(),
-            #[cfg(feature = "guardrail")]
             guardrail_action: "block".to_owned(),
-            #[cfg(feature = "guardrail")]
             guardrail_timeout_ms: 500,
             #[cfg(feature = "classifiers")]
             classifiers_enabled: false,
@@ -1257,8 +1247,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.skills.learning.arise_enabled = state.arise_enabled;
     config.skills.learning.stem_enabled = state.stem_enabled;
     config.skills.learning.erl_enabled = state.erl_enabled;
-
-    #[cfg(feature = "guardrail")]
     if state.guardrail_enabled {
         config.security.guardrail.enabled = true;
         config.security.guardrail.provider = Some(state.guardrail_provider.clone());
@@ -1271,8 +1259,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         };
         config.security.guardrail.timeout_ms = state.guardrail_timeout_ms;
     }
-
-    #[cfg(feature = "policy-enforcer")]
     {
         config.tools.policy.enabled = state.policy_enforcer_enabled;
     }
@@ -1298,8 +1284,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         _ => zeph_core::config::LogRotation::Daily,
     };
     config.logging.max_files = state.log_max_files;
-
-    #[cfg(feature = "lsp-context")]
     if state.lsp_context_enabled {
         config.lsp.enabled = true;
     }
@@ -2130,8 +2114,6 @@ fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             .map(str::to_owned)
             .collect();
     }
-
-    #[cfg(feature = "guardrail")]
     {
         state.guardrail_enabled = Confirm::new()
             .with_prompt(

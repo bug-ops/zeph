@@ -43,7 +43,6 @@ pub use compaction_probe::{
     validate_compaction,
 };
 pub use compression_guidelines::CompressionGuidelinesConfig;
-#[cfg(feature = "compression-guidelines")]
 pub use compression_guidelines::{
     build_guidelines_update_prompt, sanitize_guidelines, start_guidelines_updater,
     truncate_to_token_budget, update_guidelines_once,
@@ -83,10 +82,8 @@ pub use semantic::{
     StructuredSummary, build_summarization_prompt, extract_and_store, link_memory_notes,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
-#[cfg(feature = "compression-guidelines")]
 pub use store::compression_guidelines::CompressionFailurePair;
 pub use store::corrections::UserCorrectionRow;
-#[cfg(feature = "experiments")]
 pub use store::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
 pub use store::session_digest::SessionDigest;
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};

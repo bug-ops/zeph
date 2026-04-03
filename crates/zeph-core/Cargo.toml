@@ -16,18 +16,11 @@ readme = "README.md"
 [features]
 default = []
 candle = ["zeph-llm/candle"]
-compression-guidelines = ["zeph-memory/compression-guidelines", "zeph-config/compression-guidelines"]
-cuda = ["zeph-llm/cuda"]
-experiments = ["dep:ordered-float", "zeph-memory/experiments", "zeph-config/experiments", "zeph-experiments/experiments"]
 classifiers = ["zeph-llm/classifiers", "zeph-sanitizer/classifiers"]
-guardrail = ["zeph-config/guardrail", "zeph-sanitizer/guardrail"]
-lsp-context = ["zeph-config/lsp-context"]
+cuda = ["zeph-llm/cuda"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
-policy-enforcer = ["zeph-tools/policy-enforcer", "zeph-config/policy-enforcer"]
 scheduler = []
-context-compression = []
-bundled-skills = ["zeph-skills/bundled-skills"]
 
 [dependencies]
 async-trait.workspace = true
@@ -38,7 +31,7 @@ dirs.workspace = true
 futures.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
-ordered-float = { workspace = true, optional = true, features = ["serde"] }
+ordered-float = { workspace = true, features = ["serde"] }
 rand.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }

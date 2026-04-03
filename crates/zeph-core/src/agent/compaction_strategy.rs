@@ -22,17 +22,11 @@
 //! Keyword overlap is a noisy proxy for semantic relevance in code-heavy contexts.
 //! A future improvement should use cosine similarity over Qdrant embeddings. The
 //! TF weighting mitigates the worst cases by down-weighting common tokens.
-
-#[cfg(feature = "context-compression")]
 use std::collections::{HashMap, HashSet};
-
-#[cfg(feature = "context-compression")]
 use zeph_llm::provider::{Message, MessagePart};
-#[cfg(feature = "context-compression")]
 use zeph_memory::TokenCounter;
 
 /// Per-message relevance score used by task-aware and MIG pruning.
-#[cfg(feature = "context-compression")]
 #[derive(Debug, Clone)]
 pub(crate) struct BlockScore {
     /// Index in the messages vec.
@@ -47,7 +41,6 @@ pub(crate) struct BlockScore {
 
 /// Common Rust/shell stop-words that dominate token overlap but carry no task signal.
 /// Filtering these reduces noise in keyword scoring.
-#[cfg(feature = "context-compression")]
 static STOP_WORDS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyLock::new(|| {
     [
         "fn", "pub", "let", "use", "mod", "impl", "struct", "enum", "trait", "type", "for", "if",
@@ -64,7 +57,6 @@ static STOP_WORDS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyL
 
 /// Tokenize text for keyword overlap: lowercase, split on non-alphanumeric,
 /// filter stop-words and short tokens.
-#[cfg(feature = "context-compression")]
 fn tokenize(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|t| t.len() >= 3)
@@ -74,7 +66,6 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 /// Build a TF map (term → frequency / `total_terms`) for a slice of tokens.
-#[cfg(feature = "context-compression")]
 #[allow(clippy::cast_precision_loss)]
 fn term_frequencies(tokens: &[String]) -> HashMap<String, f32> {
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -90,7 +81,6 @@ fn term_frequencies(tokens: &[String]) -> HashMap<String, f32> {
 
 /// TF-weighted Jaccard similarity between two token sets with term frequencies.
 /// Returns a value in [0.0, 1.0].
-#[cfg(feature = "context-compression")]
 fn tf_weighted_similarity(tf_a: &HashMap<String, f32>, tf_b: &HashMap<String, f32>) -> f32 {
     let mut intersection = 0.0_f32;
     let mut union = 0.0_f32;
@@ -115,7 +105,6 @@ fn tf_weighted_similarity(tf_a: &HashMap<String, f32>, tf_b: &HashMap<String, f3
 }
 
 /// Extract text content from a message suitable for scoring.
-#[cfg(feature = "context-compression")]
 pub(crate) fn extract_scorable_text(msg: &Message) -> String {
     let mut parts_text = String::new();
     for part in &msg.parts {
@@ -146,7 +135,6 @@ pub(crate) fn extract_scorable_text(msg: &Message) -> String {
 ///
 /// Messages that are not tool outputs receive a score of 0.0 (never evicted).
 /// Pinned messages are excluded entirely.
-#[cfg(feature = "context-compression")]
 pub(crate) fn score_blocks_task_aware(
     messages: &[Message],
     task_goal: &str,
@@ -191,7 +179,6 @@ pub(crate) fn score_blocks_task_aware(
 /// Coarse step: partition messages into temporal windows (recent vs. old).
 /// Fine step: within each window, compute pairwise redundancy between blocks.
 /// Final MIG = relevance − `max_redundancy_with_any_higher_scored_block`.
-#[cfg(feature = "context-compression")]
 pub(crate) fn score_blocks_mig(
     messages: &[Message],
     task_goal: Option<&str>,
@@ -268,7 +255,6 @@ pub(crate) fn score_blocks_mig(
 ///
 /// Within each tier, recency is used as a tiebreaker (newer = slightly higher relevance)
 /// by adding a small `position_fraction` term that does not change tier ordering.
-#[cfg(feature = "context-compression")]
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn score_blocks_subgoal(
     messages: &[Message],
@@ -320,7 +306,6 @@ pub(crate) fn score_blocks_subgoal(
 /// Redundancy is only counted against blocks with strictly higher relevance,
 /// so Active subgoal messages (tier 1.0) never have their MIG reduced below
 /// their tier baseline.
-#[cfg(feature = "context-compression")]
 pub(crate) fn score_blocks_subgoal_mig(
     messages: &[Message],
     registry: &SubgoalRegistry,
@@ -361,12 +346,10 @@ pub(crate) fn score_blocks_subgoal_mig(
 ///
 /// Monotonically increasing, wraps on overflow (extremely unlikely in practice —
 /// a session would need 4 billion subgoal transitions).
-#[cfg(feature = "context-compression")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SubgoalId(pub(crate) u32);
 
 /// Lifecycle state of a subgoal.
-#[cfg(feature = "context-compression")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubgoalState {
     /// Currently being worked on. Messages tagged with this subgoal are protected.
@@ -376,7 +359,6 @@ pub(crate) enum SubgoalState {
 }
 
 /// A tracked subgoal with message span.
-#[cfg(feature = "context-compression")]
 #[derive(Debug, Clone)]
 pub(crate) struct Subgoal {
     pub(crate) id: SubgoalId,
@@ -392,7 +374,6 @@ pub(crate) struct Subgoal {
 ///
 /// Lives in `CompressionState` (gated behind `context-compression`).
 /// Not persisted across restarts — subgoal state is transient session data.
-#[cfg(feature = "context-compression")]
 #[derive(Debug, Default)]
 pub(crate) struct SubgoalRegistry {
     pub(crate) subgoals: Vec<Subgoal>,
@@ -403,8 +384,6 @@ pub(crate) struct SubgoalRegistry {
     /// Used by `extend_active()` to avoid re-inserting existing entries.
     last_tagged_index: usize,
 }
-
-#[cfg(feature = "context-compression")]
 impl SubgoalRegistry {
     /// Register a new active subgoal starting at the given message index.
     ///
@@ -604,7 +583,7 @@ impl SubgoalRegistry {
     }
 }
 
-#[cfg(all(test, feature = "context-compression"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;

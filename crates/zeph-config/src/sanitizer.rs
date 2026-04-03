@@ -354,7 +354,6 @@ impl Default for PiiFilterConfig {
 // ---------------------------------------------------------------------------
 
 /// What happens when the guardrail flags input.
-#[cfg(feature = "guardrail")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardrailAction {
@@ -366,7 +365,6 @@ pub enum GuardrailAction {
 }
 
 /// Behavior on timeout or LLM error.
-#[cfg(feature = "guardrail")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardrailFailStrategy {
@@ -378,7 +376,6 @@ pub enum GuardrailFailStrategy {
 }
 
 /// Configuration for the LLM-based guardrail, nested under `[security.guardrail]`.
-#[cfg(feature = "guardrail")]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GuardrailConfig {
     /// Enable the guardrail (default: false).
@@ -406,23 +403,15 @@ pub struct GuardrailConfig {
     #[serde(default = "default_max_input_chars")]
     pub max_input_chars: usize,
 }
-
-#[cfg(feature = "guardrail")]
 fn default_guardrail_timeout_ms() -> u64 {
     500
 }
-
-#[cfg(feature = "guardrail")]
 fn default_max_input_chars() -> usize {
     4096
 }
-
-#[cfg(feature = "guardrail")]
 fn default_fail_strategy() -> GuardrailFailStrategy {
     GuardrailFailStrategy::Closed
 }
-
-#[cfg(feature = "guardrail")]
 impl Default for GuardrailConfig {
     fn default() -> Self {
         Self {

@@ -10,8 +10,6 @@
 //! access or sequence the borrows explicitly.
 //!
 //! Migration pattern: `self.memory_state.field` → `self.memory_state().field`
-
-#[cfg(feature = "context-compression")]
 use super::state::CompressionState;
 use super::{
     Agent,
@@ -230,14 +228,10 @@ impl<C: Channel> Agent<C> {
     pub(super) fn learning_engine_mut(&mut self) -> &mut LearningEngine {
         &mut self.learning_engine
     }
-
-    #[cfg(feature = "context-compression")]
     #[must_use]
     pub(super) fn compression(&self) -> &CompressionState {
         &self.compression
     }
-
-    #[cfg(feature = "context-compression")]
     #[must_use]
     pub(super) fn compression_mut(&mut self) -> &mut CompressionState {
         &mut self.compression

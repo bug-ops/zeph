@@ -64,7 +64,6 @@ pub enum TuiCommand {
     ExperimentReport,
     ExperimentBest,
     // LSP context injection
-    #[cfg(feature = "lsp-context")]
     LspStatus,
     // Log file
     ViewLog,
@@ -472,7 +471,6 @@ fn build_extra_commands() -> Vec<CommandEntry> {
     let mut cmds = build_infra_commands();
     cmds.extend(build_agent_plan_commands());
     cmds.extend(build_graph_experiment_commands());
-    #[cfg(feature = "lsp-context")]
     cmds.push(CommandEntry {
         id: "lsp:status",
         label: "Show LSP context injection status (/lsp)",
@@ -556,12 +554,8 @@ mod tests {
     #[test]
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
-        // + 1 compaction:status + 1 guidelines:view + 1 tafc:status = 34
-        // + 1 lsp:status command (when lsp-context feature enabled)
-        #[cfg(feature = "lsp-context")]
+        // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status = 35
         assert_eq!(extra_command_registry().len(), 35);
-        #[cfg(not(feature = "lsp-context"))]
-        assert_eq!(extra_command_registry().len(), 34);
     }
 
     #[test]

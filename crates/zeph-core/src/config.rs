@@ -26,16 +26,12 @@ pub use zeph_config::{
 };
 
 pub use zeph_config::{ContextStrategy, DigestConfig};
-
-#[cfg(feature = "lsp-context")]
 pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 
 pub use zeph_config::{
     ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,
     PiiFilterConfig, QuarantineConfig,
 };
-
-#[cfg(feature = "guardrail")]
 pub use zeph_config::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 
 pub use zeph_config::A2aServerConfig;

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Removed feature flags `guardrail`, `context-compression`, `compression-guidelines`, `policy-enforcer`, `lsp-context`, `experiments` — these features are now always compiled in and cannot be disabled (#2565)
+- **BREAKING**: Removed `bundled-skills` flag — SKILL.md files are always compiled into the binary via `include_dir`
+- **BREAKING**: Removed `stt` flag — speech-to-text (Whisper API) is always compiled in; `reqwest/multipart` is now an unconditional dependency of `zeph-llm`
+- **BREAKING**: Removed `acp-unstable` flag — unstable ACP session features are enabled automatically when the `acp` flag is set
+- Updated bundle definitions: `desktop` now only includes `tui` (compression and guardrail are always-on); `ide` now only includes `acp` and `acp-http` (lsp-context is always-on); `ml` no longer includes `stt` (always-on); `full` simplified
+- `default` features reduced to `["scheduler", "sqlite"]` — removed `bundled-skills` and `guardrail` (now always-on)
+
 ### Added
 
 - feat(config): expose `warmup_queries` as TOML config field in `[llm.router.bandit]` — accepts `Option<u64>`; when unset or `0`, the default of `10 × number of providers` is used; allows operators to control how long the PILOT bandit explores uniformly before switching to `LinUCB` context-aware routing (#2543)

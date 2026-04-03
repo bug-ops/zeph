@@ -52,7 +52,7 @@ toml.workspace = true
 wiremock.workspace = true
 
 [features]
-policy-enforcer = []
+default = []
 
 [lints]
 workspace = true

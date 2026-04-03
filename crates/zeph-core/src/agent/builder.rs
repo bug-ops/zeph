@@ -36,7 +36,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Store a snapshot of the policy config for `/policy` command inspection.
-    #[cfg(feature = "policy-enforcer")]
     #[must_use]
     pub fn with_policy_config(mut self, config: zeph_tools::PolicyConfig) -> Self {
         self.session.policy_config = Some(config);
@@ -44,7 +43,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Store adversarial policy gate info for `/status` display.
-    #[cfg(feature = "policy-enforcer")]
     #[must_use]
     pub fn with_adversarial_policy_info(
         mut self,
@@ -167,7 +165,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
-    #[cfg(feature = "lsp-context")]
     #[must_use]
     pub fn with_lsp_hooks(mut self, runner: crate::lsp_hooks::LspHookRunner) -> Self {
         self.session.lsp_hooks = Some(runner);
@@ -497,7 +494,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// When not set, `handle_compress_context` falls back to the primary provider.
     #[must_use]
-    #[cfg(feature = "context-compression")]
     pub fn with_compress_provider(mut self, provider: AnyProvider) -> Self {
         self.providers.compress_provider = Some(provider);
         self
@@ -910,8 +906,6 @@ impl<C: Channel> Agent<C> {
         self.metrics.classifier_metrics = Some(metrics);
         self
     }
-
-    #[cfg(feature = "guardrail")]
     #[must_use]
     pub fn with_guardrail(mut self, filter: zeph_sanitizer::guardrail::GuardrailFilter) -> Self {
         use zeph_sanitizer::guardrail::GuardrailAction;
@@ -1243,7 +1237,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Set the experiment configuration for the `/experiment` slash command.
-    #[cfg(feature = "experiments")]
     #[must_use]
     pub fn with_experiment_config(mut self, config: crate::config::ExperimentConfig) -> Self {
         self.experiments.config = config;
@@ -1255,7 +1248,6 @@ impl<C: Channel> Agent<C> {
     /// Call this alongside `with_experiment_config()` so the experiment engine uses
     /// actual runtime config values (temperature, memory params, etc.) rather than
     /// hardcoded defaults. Typically built via `ConfigSnapshot::from_config(&config)`.
-    #[cfg(feature = "experiments")]
     #[must_use]
     pub fn with_experiment_baseline(
         mut self,
@@ -1269,7 +1261,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// When set, the evaluator uses this provider instead of the agent's primary provider,
     /// eliminating self-judge bias. Corresponds to `experiments.eval_model` in config.
-    #[cfg(feature = "experiments")]
     #[must_use]
     pub fn with_eval_provider(mut self, provider: AnyProvider) -> Self {
         self.experiments.eval_provider = Some(provider);

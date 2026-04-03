@@ -15,10 +15,9 @@ readme = "README.md"
 
 [features]
 default = []
-bundled-skills = ["dep:include_dir"]
 
 [dependencies]
-include_dir = { workspace = true, optional = true }
+include_dir.workspace = true
 blake3.workspace = true
 futures.workspace = true
 notify.workspace = true

@@ -168,7 +168,6 @@ pub(crate) struct IndexState {
 }
 
 /// Snapshot of adversarial policy gate configuration for status display.
-#[cfg(feature = "policy-enforcer")]
 #[derive(Debug, Clone)]
 pub struct AdversarialPolicyInfo {
     pub provider: String,
@@ -192,7 +191,6 @@ pub(crate) struct RuntimeConfig {
     /// Dependency config snapshot stored for per-turn boost parameters.
     pub(crate) dependency_config: zeph_tools::DependencyConfig,
     /// Adversarial policy gate runtime info for /status display.
-    #[cfg(feature = "policy-enforcer")]
     pub(crate) adversarial_policy_info: Option<AdversarialPolicyInfo>,
 }
 
@@ -246,7 +244,6 @@ pub(crate) struct SecurityState {
     pub(crate) pii_ner_tripped: bool,
     pub(crate) memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator,
     /// LLM-based prompt injection pre-screener (opt-in).
-    #[cfg(feature = "guardrail")]
     pub(crate) guardrail: Option<zeph_sanitizer::guardrail::GuardrailFilter>,
     /// Post-LLM response verification layer.
     pub(crate) response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier,
@@ -321,7 +318,6 @@ pub(crate) struct ProviderState {
     pub(crate) probe_provider: Option<AnyProvider>,
     /// Dedicated provider for `compress_context` LLM calls (#2356).
     /// Falls back to the primary provider when `None`.
-    #[cfg(feature = "context-compression")]
     pub(crate) compress_provider: Option<AnyProvider>,
     pub(crate) cached_prompt_tokens: u64,
     /// Whether the active provider has server-side compaction enabled (Claude compact-2026-01-12).
@@ -387,28 +383,22 @@ pub(crate) struct InstructionState {
 
 /// Groups experiment feature state (gated behind `experiments` feature flag).
 pub(crate) struct ExperimentState {
-    #[cfg(feature = "experiments")]
     pub(crate) config: crate::config::ExperimentConfig,
     /// Cancellation token for a running experiment session. `Some` means an experiment is active.
-    #[cfg(feature = "experiments")]
     pub(crate) cancel: Option<tokio_util::sync::CancellationToken>,
     /// Pre-built config snapshot used as the experiment baseline (agent path).
-    #[cfg(feature = "experiments")]
     pub(crate) baseline: crate::experiments::ConfigSnapshot,
     /// Dedicated judge provider for evaluation. When `Some`, the evaluator uses this provider
     /// instead of the agent's primary provider, eliminating self-judge bias.
-    #[cfg(feature = "experiments")]
     pub(crate) eval_provider: Option<AnyProvider>,
     /// Receives completion/error messages from the background experiment engine task.
     /// Always present so the select! branch compiles unconditionally.
     pub(crate) notify_rx: Option<tokio::sync::mpsc::Receiver<String>>,
     /// Sender end paired with `experiment_notify_rx`. Cloned into the background task.
-    #[cfg(feature = "experiments")]
     pub(crate) notify_tx: tokio::sync::mpsc::Sender<String>,
 }
 
 /// Output of a background subgoal extraction LLM call.
-#[cfg(feature = "context-compression")]
 pub(crate) struct SubgoalExtractionResult {
     /// Current subgoal the agent is working toward.
     pub(crate) current: String,
@@ -417,7 +407,6 @@ pub(crate) struct SubgoalExtractionResult {
 }
 
 /// Groups context-compression feature state (gated behind `context-compression` feature flag).
-#[cfg(feature = "context-compression")]
 pub(crate) struct CompressionState {
     /// Cached task goal for TaskAware/MIG pruning. Set by `maybe_compact()`,
     /// invalidated when the last user message hash changes.
@@ -450,10 +439,8 @@ pub(crate) struct SessionState {
     pub(crate) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// LSP context injection hooks. Fires after native tool execution, injects
     /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
-    #[cfg(feature = "lsp-context")]
     pub(crate) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
     /// Snapshot of the policy config for `/policy` command inspection.
-    #[cfg(feature = "policy-enforcer")]
     pub(crate) policy_config: Option<zeph_tools::PolicyConfig>,
     /// `CwdChanged` hook definitions extracted from `[hooks]` config.
     pub(crate) hooks_config: HooksConfigSnapshot,

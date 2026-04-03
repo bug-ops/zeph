@@ -4,29 +4,24 @@
 mod accessors;
 mod builder;
 pub(crate) mod compaction_strategy;
-#[cfg(feature = "compression-guidelines")]
 pub(super) mod compression_feedback;
 mod context;
 pub(crate) mod context_manager;
 pub mod error;
-#[cfg(feature = "experiments")]
 mod experiment_cmd;
 pub(super) mod feedback_detector;
 pub(crate) mod focus;
 mod graph_commands;
-#[cfg(feature = "compression-guidelines")]
 mod guidelines_commands;
 mod index;
 mod learning;
 pub(crate) mod learning_engine;
 mod log_commands;
-#[cfg(feature = "lsp-context")]
 mod lsp_commands;
 mod mcp;
 mod memory_commands;
 mod message_queue;
 mod persistence;
-#[cfg(feature = "policy-enforcer")]
 mod policy_commands;
 mod provider_cmd;
 pub(crate) mod rate_limiter;
@@ -68,7 +63,6 @@ use crate::context::{
 use zeph_sanitizer::ContentSanitizer;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
-#[cfg(feature = "context-compression")]
 use state::CompressionState;
 use state::{
     DebugState, ExperimentState, FeedbackState, IndexState, InstructionState, LifecycleState,
@@ -90,7 +84,6 @@ pub(crate) const SESSION_DIGEST_PREFIX: &str = "[Session digest from previous in
 /// The tool-pair summarizer targets User/Assistant pairs and skips System messages,
 /// so these notes are never accidentally summarized. `remove_lsp_messages` uses this
 /// prefix to clear stale notes before each fresh injection.
-#[cfg(feature = "lsp-context")]
 pub(crate) const LSP_NOTE_PREFIX: &str = "[lsp ";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 
@@ -186,7 +179,6 @@ pub struct Agent<C: Channel> {
     pub(super) instructions: InstructionState,
     pub(super) security: SecurityState,
     pub(super) experiments: ExperimentState,
-    #[cfg(feature = "context-compression")]
     pub(super) compression: CompressionState,
     pub(super) lifecycle: LifecycleState,
     pub(super) providers: ProviderState,
@@ -281,10 +273,7 @@ impl<C: Channel> Agent<C> {
         // Always create the receiver side of the experiment notification channel so the
         // select! branch in the agent loop compiles unconditionally. The sender is only
         // stored when the experiments feature is enabled (it is only used in experiment_cmd.rs).
-        #[cfg(feature = "experiments")]
         let (exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
-        #[cfg(not(feature = "experiments"))]
-        let (_exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
         let embedding_provider = provider.clone();
         Self {
             provider,
@@ -384,7 +373,6 @@ impl<C: Channel> Agent<C> {
                 semantic_cache_threshold: 0.95,
                 semantic_cache_max_candidates: 10,
                 dependency_config: zeph_tools::DependencyConfig::default(),
-                #[cfg(feature = "policy-enforcer")]
                 adversarial_policy_info: None,
             },
             mcp: McpState {
@@ -418,9 +406,7 @@ impl<C: Channel> Agent<C> {
                 response_cache: None,
                 parent_tool_use_id: None,
                 status_tx: None,
-                #[cfg(feature = "lsp-context")]
                 lsp_hooks: None,
-                #[cfg(feature = "policy-enforcer")]
                 policy_config: None,
                 hooks_config: state::HooksConfigSnapshot::default(),
             },
@@ -458,7 +444,6 @@ impl<C: Channel> Agent<C> {
                 memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
                     zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
                 ),
-                #[cfg(feature = "guardrail")]
                 guardrail: None,
                 response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier::new(
                     zeph_config::ResponseVerificationConfig::default(),
@@ -466,19 +451,13 @@ impl<C: Channel> Agent<C> {
                 causal_analyzer: None,
             },
             experiments: ExperimentState {
-                #[cfg(feature = "experiments")]
                 config: crate::config::ExperimentConfig::default(),
-                #[cfg(feature = "experiments")]
                 cancel: None,
-                #[cfg(feature = "experiments")]
                 baseline: crate::experiments::ConfigSnapshot::default(),
-                #[cfg(feature = "experiments")]
                 eval_provider: None,
                 notify_rx: Some(exp_notify_rx),
-                #[cfg(feature = "experiments")]
                 notify_tx: exp_notify_tx,
             },
-            #[cfg(feature = "context-compression")]
             compression: CompressionState {
                 current_task_goal: None,
                 task_goal_user_msg_hash: None,
@@ -507,7 +486,6 @@ impl<C: Channel> Agent<C> {
                 provider_override: None,
                 judge_provider: None,
                 probe_provider: None,
-                #[cfg(feature = "context-compression")]
                 compress_provider: None,
                 cached_prompt_tokens: initial_prompt_tokens,
                 server_compaction_active: false,
@@ -2643,7 +2621,6 @@ impl<C: Channel> Agent<C> {
                     Some(msg) = recv_optional(&mut self.experiments.notify_rx) => {
                         // Experiment engine completed (ok or err). Clear the cancel token so
                         // status reports idle and new experiments can be started.
-                        #[cfg(feature = "experiments")]
                         { self.experiments.cancel = None; }
                         if let Err(e) = self.channel.send(&msg).await {
                             tracing::warn!("failed to send experiment completion: {e}");
@@ -3196,8 +3173,6 @@ impl<C: Channel> Agent<C> {
         if trimmed == "/status" {
             handled!(self.handle_status_command().await);
         }
-
-        #[cfg(feature = "guardrail")]
         if trimmed == "/guardrail" {
             handled!(self.handle_guardrail_command().await);
         }
@@ -3258,8 +3233,6 @@ impl<C: Channel> Agent<C> {
         if trimmed == "/memory" || trimmed.starts_with("/memory ") {
             handled!(self.handle_memory_command(trimmed).await);
         }
-
-        #[cfg(feature = "compression-guidelines")]
         if trimmed == "/guidelines" {
             handled!(self.handle_guidelines_command().await);
         }
@@ -3268,18 +3241,12 @@ impl<C: Channel> Agent<C> {
         if trimmed == "/scheduler" || trimmed.starts_with("/scheduler ") {
             handled!(self.handle_scheduler_command(trimmed).await);
         }
-
-        #[cfg(feature = "experiments")]
         if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
             handled!(self.handle_experiment_command(trimmed).await);
         }
-
-        #[cfg(feature = "lsp-context")]
         if trimmed == "/lsp" {
             handled!(self.handle_lsp_status_command().await);
         }
-
-        #[cfg(feature = "policy-enforcer")]
         if trimmed == "/policy" || trimmed.starts_with("/policy ") {
             let args = trimmed
                 .strip_prefix("/policy")
@@ -3296,13 +3263,9 @@ impl<C: Channel> Agent<C> {
         if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
             return self.dispatch_agent_command(trimmed).await;
         }
-
-        #[cfg(feature = "context-compression")]
         if trimmed == "/focus" {
             handled!(self.handle_focus_status_command().await);
         }
-
-        #[cfg(feature = "context-compression")]
         if trimmed == "/sidequest" {
             handled!(self.handle_sidequest_status_command().await);
         }
@@ -3698,7 +3661,6 @@ impl<C: Channel> Agent<C> {
         self.check_pending_rollbacks().await;
 
         // Guardrail: LLM-based prompt injection pre-screening at the user input boundary.
-        #[cfg(feature = "guardrail")]
         if let Some(ref guardrail) = self.security.guardrail {
             use zeph_sanitizer::guardrail::GuardrailVerdict;
             let verdict = guardrail.check(trimmed).await;
@@ -3781,7 +3743,6 @@ impl<C: Channel> Agent<C> {
         self.context_manager.compaction = self.context_manager.compaction.advance_turn();
 
         // Tick Focus Agent and SideQuest turn counters (#1850, #1885).
-        #[cfg(feature = "context-compression")]
         {
             self.focus.tick();
 
@@ -4029,7 +3990,6 @@ impl<C: Channel> Agent<C> {
                 tf.embedding_count(),
             );
         }
-        #[cfg(feature = "policy-enforcer")]
         if let Some(ref adv) = self.runtime.adversarial_policy_info {
             let provider_display = if adv.provider.is_empty() {
                 "default"
@@ -4059,7 +4019,6 @@ impl<C: Channel> Agent<C> {
         }
 
         // Subgoal display (#2022): show active subgoal when a subgoal strategy is active.
-        #[cfg(feature = "context-compression")]
         {
             use crate::config::PruningStrategy;
             if matches!(
@@ -4103,8 +4062,6 @@ impl<C: Channel> Agent<C> {
         self.channel.send(out.trim_end()).await?;
         Ok(())
     }
-
-    #[cfg(feature = "guardrail")]
     async fn handle_guardrail_command(&mut self) -> Result<(), error::AgentError> {
         use std::fmt::Write;
 
@@ -4913,7 +4870,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// `/focus` slash command: display Focus Agent status.
-    #[cfg(feature = "context-compression")]
     async fn handle_focus_status_command(&mut self) -> Result<(), error::AgentError> {
         use std::fmt::Write;
         let mut out = String::from("Focus Agent status\n\n");
@@ -4933,7 +4889,6 @@ impl<C: Channel> Agent<C> {
     }
 
     /// `/sidequest` slash command: display `SideQuest` eviction stats.
-    #[cfg(feature = "context-compression")]
     async fn handle_sidequest_status_command(&mut self) -> Result<(), error::AgentError> {
         use std::fmt::Write;
         let mut out = String::from("SideQuest status\n\n");
@@ -4964,7 +4919,6 @@ impl<C: Channel> Agent<C> {
     /// Phase 2 (schedule, this turn): rebuild cursors and spawn a background `tokio::spawn`
     /// task for the LLM call. The result is stored in `pending_sidequest_result` and applied
     /// next turn, so the current agent turn is never blocked by the LLM call.
-    #[cfg(feature = "context-compression")]
     #[allow(clippy::too_many_lines)]
     fn maybe_sidequest_eviction(&mut self) {
         use zeph_llm::provider::{Message, MessageMetadata, Role};

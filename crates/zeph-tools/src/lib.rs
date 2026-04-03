@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Tool execution abstraction and shell backend.
-
-#[cfg(feature = "policy-enforcer")]
 pub mod adversarial_gate;
-#[cfg(feature = "policy-enforcer")]
 pub mod adversarial_policy;
 pub mod anomaly;
 pub mod audit;
@@ -21,9 +18,7 @@ pub mod filter;
 pub mod net;
 pub mod patterns;
 pub mod permissions;
-#[cfg(feature = "policy-enforcer")]
 pub mod policy;
-#[cfg(feature = "policy-enforcer")]
 pub mod policy_gate;
 pub mod registry;
 pub mod schema_filter;
@@ -35,10 +30,7 @@ pub mod trust_gate;
 pub mod trust_level;
 pub mod utility;
 pub mod verifier;
-
-#[cfg(feature = "policy-enforcer")]
 pub use adversarial_gate::AdversarialPolicyGateExecutor;
-#[cfg(feature = "policy-enforcer")]
 pub use adversarial_policy::{
     PolicyDecision as AdversarialPolicyDecision, PolicyLlmClient, PolicyMessage, PolicyRole,
     PolicyValidator, parse_policy_lines,
@@ -47,7 +39,6 @@ pub use anomaly::{AnomalyDetector, AnomalySeverity, is_reasoning_model};
 pub use audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
-#[cfg(feature = "policy-enforcer")]
 pub use config::AdversarialPolicyConfig;
 pub use config::{
     AnomalyConfig, AuditConfig, DependencyConfig, FileConfig, OverflowConfig, ResultCacheConfig,
@@ -74,12 +65,10 @@ pub use net::is_private_ip;
 pub use permissions::{
     AutonomyLevel, PermissionAction, PermissionPolicy, PermissionRule, PermissionsConfig,
 };
-#[cfg(feature = "policy-enforcer")]
 pub use policy::{
     DefaultEffect, PolicyCompileError, PolicyConfig, PolicyContext, PolicyDecision, PolicyEffect,
     PolicyEnforcer, PolicyRuleConfig,
 };
-#[cfg(feature = "policy-enforcer")]
 pub use policy_gate::PolicyGateExecutor;
 pub use registry::ToolRegistry;
 pub use schema_filter::{

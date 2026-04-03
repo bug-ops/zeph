@@ -17,10 +17,6 @@ use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 
-use crate::redact::scrub_content;
-use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
-
-#[cfg(feature = "lsp-context")]
 use super::super::LSP_NOTE_PREFIX;
 use super::super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, DOCUMENT_RAG_PREFIX,
@@ -29,6 +25,8 @@ use super::super::{
 };
 use super::ContextSlot;
 use crate::channel::Channel;
+use crate::redact::scrub_content;
+use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 
 impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn clear_history(&mut self) {
@@ -76,7 +74,6 @@ impl<C: Channel> Agent<C> {
     /// data from the previous tool call do not accumulate across iterations.
     /// LSP notes use `Role::System` (consistent with graph facts and recall),
     /// so they are skipped by tool-pair summarization automatically.
-    #[cfg(feature = "lsp-context")]
     pub(in crate::agent) fn remove_lsp_messages(&mut self) {
         self.msg
             .messages
@@ -481,7 +478,6 @@ impl<C: Channel> Agent<C> {
         }
 
         // --- Step 4: abort background compression tasks (context-compression) ---
-        #[cfg(feature = "context-compression")]
         {
             if let Some(h) = self.compression.pending_task_goal.take() {
                 h.abort();

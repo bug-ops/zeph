@@ -42,7 +42,6 @@ use crate::commands::vault::handle_vault_command;
 use crate::daemon::run_daemon;
 #[cfg(all(feature = "tui", feature = "a2a"))]
 use crate::tui_remote::run_tui_remote;
-#[cfg(feature = "policy-enforcer")]
 use zeph_llm::any::AnyProvider as LlmAnyProvider;
 use zeph_llm::provider::LlmProvider;
 
@@ -51,13 +50,10 @@ use zeph_core::config::Config;
 /// Adapter that bridges `PolicyLlmClient` to `AnyProvider::chat_with_named_provider`.
 ///
 /// Defined in `runner.rs` to keep `zeph-tools` decoupled from `zeph-llm`.
-#[cfg(feature = "policy-enforcer")]
 struct AdversarialPolicyLlmAdapter {
     provider: LlmAnyProvider,
     provider_name: String,
 }
-
-#[cfg(feature = "policy-enforcer")]
 impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
     fn chat<'a>(
         &'a self,
@@ -275,7 +271,6 @@ fn warn_if_acp_enabled_but_unavailable(config: &Config) {
 ///
 /// `OpenAI` and Candle use the `OpenAI` key; Compatible providers use their own inline key or the
 /// compatible-provider key from the vault.
-#[cfg(feature = "stt")]
 fn resolve_stt_api_key(config: &Config, entry: &zeph_core::config::ProviderEntry) -> String {
     use zeph_core::config::ProviderKind;
     match entry.provider_type {
@@ -463,8 +458,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
              Tool calls will not be checked for destructive or injection patterns."
         );
     }
-
-    #[cfg(feature = "guardrail")]
     if cli.guardrail {
         app.config_mut().security.guardrail.enabled = true;
     }
@@ -528,14 +521,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
              Tokens above 200K use long-context pricing."
         );
     }
-
-    #[cfg(feature = "lsp-context")]
     if cli.lsp_context {
         app.config_mut().lsp.enabled = true;
     }
 
     // CLI --policy-file overrides [tools.policy.policy_file] from config.
-    #[cfg(feature = "policy-enforcer")]
     if let Some(ref path) = cli.policy_file {
         app.config_mut().tools.policy.policy_file = Some(path.display().to_string());
         app.config_mut().tools.policy.enabled = true;
@@ -551,13 +541,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     // Early-exit: print experiment results from SQLite without building a provider.
-    #[cfg(feature = "experiments")]
     if cli.experiment_report {
         return run_experiment_report(&app).await;
     }
 
     // Early-exit: run a single experiment session and exit.
-    #[cfg(feature = "experiments")]
     if cli.experiment_run {
         let (provider, _status_tx, _status_rx) = app.build_provider().await?;
         return run_experiment_session(app, provider).await;
@@ -850,8 +838,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             consolidation_cancel,
         )
     };
-
-    #[cfg(feature = "compression-guidelines")]
     let _guidelines_handle = if config.memory.compression_guidelines.enabled {
         let guidelines_cancel = zeph_memory::CancellationToken::new();
         let guidelines_cancel_clone = guidelines_cancel.clone();
@@ -907,9 +893,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     //
     // Declarative policy (PolicyGate) is outermost — fast, deterministic, zero LLM cost.
     // Adversarial policy gate fires only for calls that pass declarative policy (CRIT-04).
-    #[cfg(feature = "policy-enforcer")]
     let mut adv_policy_info: Option<zeph_core::AdversarialPolicyInfo> = None;
-    #[cfg(feature = "policy-enforcer")]
     let (tool_executor, mcp_ids_handle) = {
         let trust_gated =
             zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
@@ -1014,16 +998,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         };
         (executor, handle)
     };
-    #[cfg(not(feature = "policy-enforcer"))]
-    let (tool_executor, mcp_ids_handle) = {
-        let trust_gated =
-            zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
-        let handle = trust_gated.mcp_tool_ids_handle();
-        (
-            zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated)),
-            handle,
-        )
-    };
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_outcomes = tool_setup.mcp_outcomes;
     // Register MCP tool IDs so TrustGateExecutor can block ALL MCP tools for
@@ -1042,7 +1016,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let mcp_tool_rx = tool_setup.mcp_tool_rx;
     let mcp_elicitation_rx = tool_setup.mcp_elicitation_rx;
     // Clone the Arc before it is consumed by with_mcp so LSP hooks can share it.
-    #[cfg(feature = "lsp-context")]
     let lsp_mcp_manager = std::sync::Arc::clone(&mcp_manager);
     #[cfg(feature = "tui")]
     let shell_executor_for_tui = tool_setup.tool_event_rx;
@@ -1072,7 +1045,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     // Clone provider for the experiment scheduler only when the feature will actually be used.
     // The check must happen before `provider` moves into Agent::new_with_registry_arc.
-    #[cfg(all(feature = "scheduler", feature = "experiments"))]
+    #[cfg(feature = "scheduler")]
     let provider_for_experiments =
         if config.experiments.enabled && config.experiments.schedule.enabled {
             Some(std::sync::Arc::new(provider.clone()))
@@ -1160,14 +1133,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
-
-    #[cfg(feature = "policy-enforcer")]
     let agent = if config.tools.policy.enabled {
         agent.with_policy_config(config.tools.policy.clone())
     } else {
         agent
     };
-    #[cfg(feature = "policy-enforcer")]
     let agent = if let Some(info) = adv_policy_info {
         agent.with_adversarial_policy_info(info)
     } else {
@@ -1280,7 +1250,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
-    #[cfg(feature = "context-compression")]
     let agent = {
         let compress_provider = app.build_compress_provider();
         if let Some(cp) = compress_provider {
@@ -1302,7 +1271,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent
     };
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
-    #[cfg(feature = "guardrail")]
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_injection_classifier(agent, config);
@@ -1353,7 +1321,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_mcp_discovery(agent, config);
 
     // Wire LSP context injection hooks when the feature is enabled and configured.
-    #[cfg(feature = "lsp-context")]
     let agent = if config.lsp.enabled {
         let runner = zeph_core::lsp_hooks::LspHookRunner::new(lsp_mcp_manager, config.lsp.clone());
         agent.with_lsp_hooks(runner)
@@ -1422,8 +1389,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .with_subagent_manager(mgr)
             .with_subagent_config(config.agents.clone())
     };
-
-    #[cfg(feature = "experiments")]
     let agent = {
         let baseline = zeph_core::experiments::ConfigSnapshot::from_config(config);
         let agent = agent
@@ -1443,13 +1408,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "scheduler")]
     let agent = {
-        #[cfg(all(feature = "scheduler", feature = "experiments"))]
         let exp_deps = provider_for_experiments.map(|p| (p, Some(std::sync::Arc::clone(&memory))));
-        #[cfg(not(all(feature = "scheduler", feature = "experiments")))]
-        let exp_deps: Option<(
-            std::sync::Arc<zeph_llm::any::AnyProvider>,
-            Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
-        )> = None;
         let (agent, sched_executor) = Box::pin(bootstrap_scheduler(
             agent,
             config,
@@ -1561,19 +1520,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                     );
                     agent
                 }
-                #[cfg(feature = "stt")]
                 _ => {
                     let api_key = resolve_stt_api_key(config, stt_entry);
                     agent_setup::apply_whisper_stt(agent, stt_entry, language, api_key)
-                }
-                #[cfg(not(feature = "stt"))]
-                _ => {
-                    tracing::error!(
-                        provider = stt_entry.effective_name(),
-                        "STT provider configured but the `stt` feature is not enabled; \
-                         STT disabled"
-                    );
-                    agent
                 }
             }
         } else {
@@ -1755,7 +1704,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the database cannot be opened or the query fails.
-#[cfg(feature = "experiments")]
 async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow::Result<()> {
     use zeph_memory::store::SqliteStore;
 
@@ -1793,7 +1741,6 @@ async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow
 /// # Errors
 ///
 /// Returns an error if config is invalid, benchmark fails to load, or engine fails.
-#[cfg(feature = "experiments")]
 async fn run_experiment_session(
     app: zeph_core::bootstrap::AppBuilder,
     provider: zeph_llm::any::AnyProvider,

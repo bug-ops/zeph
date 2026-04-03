@@ -40,8 +40,6 @@ zeph-llm.workspace = true
 
 [features]
 default = ["sqlite"]
-compression-guidelines = []
-experiments = []
 pdf = ["dep:pdf-extract"]
 sqlite = ["zeph-db/sqlite"]
 postgres = ["zeph-db/postgres"]

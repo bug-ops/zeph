@@ -144,8 +144,6 @@ fn append_security_spans(spans: &mut Vec<Span<'_>>, metrics: &MetricsSnapshot, t
             ));
         }
     }
-
-    #[cfg(feature = "guardrail")]
     if metrics.guardrail_enabled {
         spans.push(Span::styled(" | ", theme.status_bar));
         let (label, color) = if metrics.guardrail_warn_mode {
