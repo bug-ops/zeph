@@ -47,4 +47,7 @@ pub enum SubAgentError {
 
     #[error("task panicked: {0}")]
     TaskPanic(String),
+
+    #[error("max spawn depth exceeded (depth: {depth}, max: {max})")]
+    MaxDepthExceeded { depth: u32, max: u32 },
 }

@@ -80,6 +80,7 @@ fn make_runtime_config() -> RuntimeConfig {
         semantic_cache_max_candidates: 10,
         dependency_config: zeph_tools::DependencyConfig::default(),
         adversarial_policy_info: None,
+        spawn_depth: 0,
     }
 }
 

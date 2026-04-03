@@ -374,6 +374,7 @@ impl<C: Channel> Agent<C> {
                 semantic_cache_max_candidates: 10,
                 dependency_config: zeph_tools::DependencyConfig::default(),
                 adversarial_policy_info: None,
+                spawn_depth: 0,
             },
             mcp: McpState {
                 tools: Vec::new(),
@@ -1146,6 +1147,9 @@ impl<C: Channel> Agent<C> {
         let cfg = self.orchestration.subagent_config.clone();
         let event_tx = scheduler.event_sender();
 
+        // Build SpawnContext before taking mutable borrow of mgr.
+        let spawn_ctx = self.build_spawn_context(&cfg);
+
         let mgr = self
             .orchestration
             .subagent_manager
@@ -1190,6 +1194,7 @@ impl<C: Channel> Agent<C> {
             tool_executor,
             skills,
             &cfg,
+            spawn_ctx,
             on_done,
         ) {
             Ok(handle_id) => {
@@ -4474,9 +4479,18 @@ impl<C: Channel> Agent<C> {
                 let provider = self.provider.clone();
                 let tool_executor = Arc::clone(&self.tool_executor);
                 let skills = self.filtered_skills_for(&name);
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
                 let cfg = self.orchestration.subagent_config.clone();
-                match mgr.spawn(&name, &prompt, provider, tool_executor, skills, &cfg) {
+                let spawn_ctx = self.build_spawn_context(&cfg);
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
+                match mgr.spawn(
+                    &name,
+                    &prompt,
+                    provider,
+                    tool_executor,
+                    skills,
+                    &cfg,
+                    spawn_ctx,
+                ) {
                     Ok(id) => Some(format!(
                         "Sub-agent '{name}' started in background (id: {short})",
                         short = &id[..8.min(id.len())]
@@ -4493,10 +4507,18 @@ impl<C: Channel> Agent<C> {
                 let provider = self.provider.clone();
                 let tool_executor = Arc::clone(&self.tool_executor);
                 let skills = self.filtered_skills_for(&name);
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
                 let cfg = self.orchestration.subagent_config.clone();
-                let task_id = match mgr.spawn(&name, &prompt, provider, tool_executor, skills, &cfg)
-                {
+                let spawn_ctx = self.build_spawn_context(&cfg);
+                let mgr = self.orchestration.subagent_manager.as_mut()?;
+                let task_id = match mgr.spawn(
+                    &name,
+                    &prompt,
+                    provider,
+                    tool_executor,
+                    skills,
+                    &cfg,
+                    spawn_ctx,
+                ) {
                     Ok(id) => id,
                     Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
                 };
@@ -4588,6 +4610,84 @@ impl<C: Channel> Agent<C> {
                 None
             }
         }
+    }
+
+    /// Build a `SpawnContext` from current agent state for sub-agent spawning.
+    fn build_spawn_context(
+        &self,
+        cfg: &zeph_config::SubAgentConfig,
+    ) -> crate::subagent::SpawnContext {
+        crate::subagent::SpawnContext {
+            parent_messages: self.extract_parent_messages(cfg),
+            parent_cancel: Some(self.lifecycle.cancel_token.clone()),
+            parent_provider_name: {
+                let name = &self.runtime.active_provider_name;
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name.clone())
+                }
+            },
+            spawn_depth: self.runtime.spawn_depth,
+            mcp_tool_names: self.extract_mcp_tool_names(),
+        }
+    }
+
+    /// Extract recent parent messages for history propagation (Section 5.7 in spec).
+    ///
+    /// Filters system messages, takes last `context_window_turns * 2` messages,
+    /// and applies a 25% context window cap using a 4-chars-per-token heuristic.
+    fn extract_parent_messages(
+        &self,
+        config: &zeph_config::SubAgentConfig,
+    ) -> Vec<zeph_llm::provider::Message> {
+        if config.context_window_turns == 0 {
+            return Vec::new();
+        }
+        use zeph_llm::provider::Role;
+        let non_system: Vec<_> = self
+            .msg
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .cloned()
+            .collect();
+        let take_count = config.context_window_turns * 2;
+        let start = non_system.len().saturating_sub(take_count);
+        let mut msgs = non_system[start..].to_vec();
+
+        // Cap at 25% of model context window (rough 4-chars-per-token heuristic).
+        let max_chars = 128_000usize / 4; // conservative default; 25% of 128K tokens
+        let mut total_chars: usize = 0;
+        let mut keep = msgs.len();
+        for (i, m) in msgs.iter().enumerate() {
+            total_chars += m.content.len();
+            if total_chars > max_chars {
+                keep = i;
+                break;
+            }
+        }
+        if keep < msgs.len() {
+            tracing::info!(
+                kept = keep,
+                requested = config.context_window_turns * 2,
+                "[subagent] truncated parent history from {} to {} turns due to token budget",
+                config.context_window_turns * 2,
+                keep
+            );
+            msgs.truncate(keep);
+        }
+        msgs
+    }
+
+    /// Extract MCP tool names from the tool executor for diagnostic annotation.
+    fn extract_mcp_tool_names(&self) -> Vec<String> {
+        self.tool_executor
+            .tool_definitions_erased()
+            .into_iter()
+            .filter(|t| t.id.starts_with("mcp_"))
+            .map(|t| t.id.to_string())
+            .collect()
     }
 
     /// Update trust DB records for all reloaded skills.

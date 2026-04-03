@@ -12,7 +12,7 @@ use tempfile::NamedTempFile;
 use super::error::SubAgentError;
 use super::hooks::SubagentHooks;
 
-pub use zeph_config::{MemoryScope, PermissionMode, SkillFilter, ToolPolicy};
+pub use zeph_config::{MemoryScope, ModelSpec, PermissionMode, SkillFilter, ToolPolicy};
 
 /// Validated agent name pattern: ASCII alphanumeric, hyphen, underscore.
 /// Must start with alphanumeric, max 64 chars. Rejects unicode homoglyphs.
@@ -41,7 +41,7 @@ const MAX_ENTRIES_PER_DIR: usize = 100;
 pub struct SubAgentDef {
     pub name: String,
     pub description: String,
-    pub model: Option<String>,
+    pub model: Option<ModelSpec>,
     pub tools: ToolPolicy,
     /// Additional denylist applied after the base `tools` policy.
     ///
@@ -114,7 +114,7 @@ impl Default for SubAgentPermissions {
 struct RawSubAgentDef {
     name: String,
     description: String,
-    model: Option<String>,
+    model: Option<ModelSpec>,
     #[serde(default)]
     tools: RawToolPolicy,
     #[serde(default)]
@@ -636,7 +636,7 @@ struct WritableRawDef<'a> {
     name: &'a str,
     description: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<&'a str>,
+    model: Option<&'a ModelSpec>,
     #[serde(skip_serializing_if = "WritableToolPolicy::is_inherit_all")]
     tools: WritableToolPolicy<'a>,
     #[serde(skip_serializing_if = "WritablePermissions::is_default")]
@@ -735,7 +735,7 @@ impl SubAgentDef {
         let writable = WritableRawDef {
             name: &self.name,
             description: &self.description,
-            model: self.model.as_deref(),
+            model: self.model.as_ref(),
             tools,
             permissions,
             skills: &self.skills,
@@ -920,7 +920,10 @@ mod tests {
             def.description,
             "Reviews code changes for correctness and style"
         );
-        assert_eq!(def.model.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(
+            def.model,
+            Some(ModelSpec::Named("claude-sonnet-4-20250514".to_owned()))
+        );
         assert!(matches!(def.tools, ToolPolicy::AllowList(ref v) if v == &["shell", "web_scrape"]));
         assert_eq!(def.permissions.max_turns, 10);
         assert_eq!(def.permissions.secrets, ["github-token"]);
@@ -1043,7 +1046,10 @@ mod tests {
             def.description,
             "Reviews code changes for correctness and style"
         );
-        assert_eq!(def.model.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(
+            def.model,
+            Some(ModelSpec::Named("claude-sonnet-4-20250514".to_owned()))
+        );
         assert!(matches!(def.tools, ToolPolicy::AllowList(ref v) if v == &["shell", "web_scrape"]));
         assert_eq!(def.permissions.max_turns, 10);
         assert_eq!(def.permissions.secrets, ["github-token"]);

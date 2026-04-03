@@ -209,7 +209,8 @@ impl AgentFormState {
         form.fields[0].value.clone_from(&def.name);
         form.fields[1].value.clone_from(&def.description);
         def.model
-            .as_deref()
+            .as_ref()
+            .map(|m| m.as_str())
             .unwrap_or("")
             .clone_into(&mut form.fields[2].value);
         form.fields[3].value = def.permissions.max_turns.to_string();
@@ -285,7 +286,7 @@ impl AgentFormState {
 
         let mut def = SubAgentDef::default_template(name, description);
         if !model.is_empty() {
-            def.model = Some(model.to_owned());
+            def.model = Some(zeph_core::subagent::ModelSpec::Named(model.to_owned()));
         }
         def.permissions.max_turns = max_turns;
         Ok(def)
@@ -452,7 +453,11 @@ fn handle_key_detail(
             )
         }
         KeyCode::Char('d') => {
-            let source = definitions[index].source.as_deref().unwrap_or("");
+            let source = definitions[index]
+                .source
+                .as_ref()
+                .map(|m| m.as_str())
+                .unwrap_or("");
             let non_project = !source.starts_with("project/");
             let defs = std::mem::take(definitions);
             (
@@ -711,8 +716,8 @@ fn render_list(
     let items: Vec<ListItem<'_>> = defs
         .iter()
         .map(|d| {
-            let scope = d.source.as_deref().unwrap_or("-");
-            let model = d.model.as_deref().unwrap_or("-");
+            let scope = d.source.as_ref().map(|m| m.as_str()).unwrap_or("-");
+            let model = d.model.as_ref().map(|m| m.as_str()).unwrap_or("-");
             let line = Line::from(vec![
                 Span::styled(
                     format!(" {:<24}", d.name),
@@ -781,14 +786,14 @@ fn render_detail(defs: &[SubAgentDef], index: usize, theme: &Theme, frame: &mut 
                 "Source:      ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(def.source.as_deref().unwrap_or("-")),
+            Span::raw(def.source.as_ref().map(|m| m.as_str()).unwrap_or("-")),
         ]),
         Line::from(vec![
             Span::styled(
                 "Model:       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(def.model.as_deref().unwrap_or("-")),
+            Span::raw(def.model.as_ref().map(|m| m.as_str()).unwrap_or("-")),
         ]),
         Line::from(vec![
             Span::styled(
@@ -1268,7 +1273,9 @@ mod tests {
     #[test]
     fn agent_manager_form_from_def_populates_fields() {
         let mut def = SubAgentDef::default_template("reviewer", "Reviews code");
-        def.model = Some("claude-sonnet-4-20250514".to_owned());
+        def.model = Some(zeph_core::subagent::ModelSpec::Named(
+            "claude-sonnet-4-20250514".to_owned(),
+        ));
         def.permissions.max_turns = 5;
         let form = AgentFormState::from_def(&def);
         assert_eq!(form.fields[0].value, "reviewer");

@@ -58,7 +58,7 @@ fn handle_list(config_path: Option<&Path>) -> anyhow::Result<()> {
     let name_w = defs.iter().map(|d| d.name.len()).max().unwrap_or(4).max(4);
     let scope_w = defs
         .iter()
-        .map(|d| d.source.as_deref().unwrap_or("-").len())
+        .map(|d| d.source.as_ref().map(|m| m.as_str()).unwrap_or("-").len())
         .max()
         .unwrap_or(5)
         .max(5);
@@ -71,9 +71,9 @@ fn handle_list(config_path: Option<&Path>) -> anyhow::Result<()> {
     println!("{}", "-".repeat(name_w + scope_w + desc_w + 20usize));
 
     for d in &defs {
-        let scope = d.source.as_deref().unwrap_or("-");
+        let scope = d.source.as_ref().map(|m| m.as_str()).unwrap_or("-");
         let desc = truncate(&d.description, desc_w);
-        let model = d.model.as_deref().unwrap_or("-");
+        let model = d.model.as_ref().map(|m| m.as_str()).unwrap_or("-");
         println!(
             "{:<name_w$}  {:<scope_w$}  {:<desc_w$}  {}",
             d.name, scope, desc, model
@@ -92,8 +92,14 @@ fn handle_show(name: &str, config_path: Option<&Path>) -> anyhow::Result<()> {
 
     println!("Name:        {}", def.name);
     println!("Description: {}", def.description);
-    println!("Source:      {}", def.source.as_deref().unwrap_or("-"));
-    println!("Model:       {}", def.model.as_deref().unwrap_or("-"));
+    println!(
+        "Source:      {}",
+        def.source.as_ref().map(|m| m.as_str()).unwrap_or("-")
+    );
+    println!(
+        "Model:       {}",
+        def.model.as_ref().map(|m| m.as_str()).unwrap_or("-")
+    );
     println!("Mode:        {:?}", def.permissions.permission_mode);
     println!("Max turns:   {}", def.permissions.max_turns);
     println!("Background:  {}", def.permissions.background);
@@ -141,7 +147,7 @@ fn handle_create(
     }
     let mut def = SubAgentDef::default_template(name, description);
     if let Some(m) = model {
-        def.model = Some(m.to_owned());
+        def.model = Some(zeph_core::subagent::ModelSpec::Named(m.to_owned()));
     }
 
     let target = def

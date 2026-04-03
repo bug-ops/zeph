@@ -17,8 +17,8 @@ pub mod transcript;
 
 pub use command::{AgentCommand, AgentsCommand};
 pub use def::{
-    MemoryScope, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions, ToolPolicy,
-    is_valid_agent_name,
+    MemoryScope, ModelSpec, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions,
+    ToolPolicy, is_valid_agent_name,
 };
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
@@ -26,7 +26,7 @@ pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
 pub use hooks::{
     HookDef, HookError, HookMatcher, HookType, SubagentHooks, fire_hooks, matching_hooks,
 };
-pub use manager::{SubAgentHandle, SubAgentManager, SubAgentStatus};
+pub use manager::{SpawnContext, SubAgentHandle, SubAgentManager, SubAgentStatus};
 pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;

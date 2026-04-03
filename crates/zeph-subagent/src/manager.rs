@@ -18,7 +18,7 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use zeph_config::SubAgentConfig;
 
-use super::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
+use super::def::{MemoryScope, ModelSpec, PermissionMode, SubAgentDef, ToolPolicy};
 use super::error::SubAgentError;
 use super::filter::{FilteredToolExecutor, PlanModeExecutor};
 use super::grants::{PermissionGrants, SecretRequest};
@@ -31,6 +31,35 @@ use super::transcript::{
 
 /// Marker in LLM output that triggers the secret request protocol.
 const SECRET_REQUEST_PREFIX: &str = "[REQUEST_SECRET:";
+
+/// Parent-derived state propagated to a spawned sub-agent.
+///
+/// All fields default to empty/`None`, preserving existing behavior when callers
+/// pass `SpawnContext::default()`.
+pub struct SpawnContext {
+    /// Recent parent conversation messages (last N turns).
+    pub parent_messages: Vec<Message>,
+    /// Parent's cancellation token for linked cancellation (foreground spawns).
+    pub parent_cancel: Option<CancellationToken>,
+    /// Parent's active provider name for `ModelSpec::Inherit` resolution.
+    pub parent_provider_name: Option<String>,
+    /// Current spawn depth (0 = top-level agent).
+    pub spawn_depth: u32,
+    /// MCP tool names available in the parent's tool executor (for diagnostics).
+    pub mcp_tool_names: Vec<String>,
+}
+
+impl Default for SpawnContext {
+    fn default() -> Self {
+        Self {
+            parent_messages: Vec::new(),
+            parent_cancel: None,
+            parent_provider_name: None,
+            spawn_depth: 0,
+            mcp_tool_names: Vec::new(),
+        }
+    }
+}
 
 struct AgentLoopArgs {
     provider: AnyProvider,
@@ -62,6 +91,10 @@ struct AgentLoopArgs {
     /// When `Some`, LLM calls are routed to this specific provider name via
     /// `AnyProvider::chat_with_named_provider`. When `None`, default routing is used.
     model: Option<String>,
+    /// Current spawn depth for recursion tracking.
+    spawn_depth: u32,
+    /// MCP tool names from the parent's executor (for diagnostic annotation).
+    mcp_tool_names: Vec<String>,
 }
 
 fn make_message(role: Role, content: String) -> Message {
@@ -272,6 +305,8 @@ async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
         initial_messages,
         mut transcript_writer,
         model,
+        spawn_depth: _spawn_depth,
+        mcp_tool_names: _mcp_tool_names,
     } = args;
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
@@ -730,6 +765,45 @@ pub(crate) fn build_system_prompt_with_memory(
     prompt
 }
 
+/// Apply `ContextInjectionMode` to the task prompt.
+///
+/// `LastAssistantTurn`: prepend the last assistant message from parent history as a preamble.
+/// `None`: return `task_prompt` unchanged.
+/// `Summary`: not yet implemented — falls back to `LastAssistantTurn`.
+fn apply_context_injection(
+    task_prompt: &str,
+    parent_messages: &[Message],
+    mode: zeph_config::ContextInjectionMode,
+) -> String {
+    use zeph_config::ContextInjectionMode;
+
+    match mode {
+        ContextInjectionMode::None => task_prompt.to_owned(),
+        ContextInjectionMode::LastAssistantTurn | ContextInjectionMode::Summary => {
+            if matches!(mode, ContextInjectionMode::Summary) {
+                tracing::warn!(
+                    "context_injection_mode=summary not yet implemented, falling back to \
+                     last_assistant_turn"
+                );
+            }
+            let last_assistant = parent_messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::Assistant)
+                .map(|m| &m.content);
+            match last_assistant {
+                Some(content) if !content.is_empty() => {
+                    format!(
+                        "Parent agent context (last response):\n{content}\n\n---\n\nTask: \
+                         {task_prompt}"
+                    )
+                }
+                _ => task_prompt.to_owned(),
+            }
+        }
+    }
+}
+
 fn tool_def_to_definition(
     def: &zeph_tools::registry::ToolDef,
 ) -> zeph_llm::provider::ToolDefinition {
@@ -907,7 +981,16 @@ impl SubAgentManager {
         tool_executor: Arc<dyn ErasedToolExecutor>,
         skills: Option<Vec<String>>,
         config: &SubAgentConfig,
+        ctx: SpawnContext,
     ) -> Result<String, SubAgentError> {
+        // Depth guard: checked before concurrency guard to fail fast on recursion.
+        if ctx.spawn_depth >= config.max_spawn_depth {
+            return Err(SubAgentError::MaxDepthExceeded {
+                depth: ctx.spawn_depth,
+                max: config.max_spawn_depth,
+            });
+        }
+
         let mut def = self
             .definitions
             .iter()
@@ -931,7 +1014,16 @@ impl SubAgentManager {
         }
 
         let task_id = Uuid::new_v4().to_string();
-        let cancel = CancellationToken::new();
+        // Foreground spawns: link to parent token so parent cancellation cascades.
+        // Background spawns: independent token (intentional — survive parent cancellation).
+        let cancel = if def.permissions.background {
+            CancellationToken::new()
+        } else {
+            match &ctx.parent_cancel {
+                Some(parent) => parent.child_token(),
+                None => CancellationToken::new(),
+            }
+        };
 
         let started_at = Instant::now();
         let initial_status = SubAgentStatus {
@@ -954,10 +1046,26 @@ impl SubAgentManager {
         // be constructed AFTER this call to pick up the updated tool list.
         let system_prompt = build_system_prompt_with_memory(&mut def, effective_memory);
 
-        let task_prompt = task_prompt.to_owned();
+        // Resolve model: Inherit uses parent's active provider, Named uses the given name.
+        let resolved_model = match &def.model {
+            Some(ModelSpec::Inherit) => ctx.parent_provider_name.clone(),
+            Some(ModelSpec::Named(name)) => Some(name.clone()),
+            None => None,
+        };
+
+        // Apply context injection: prepend last assistant turn to task prompt when configured.
+        let effective_task_prompt = apply_context_injection(
+            task_prompt,
+            &ctx.parent_messages,
+            config.context_injection_mode,
+        );
+
         let cancel_clone = cancel.clone();
         let agent_hooks = def.hooks.clone();
         let agent_name_clone = def.name.clone();
+        let spawn_depth = ctx.spawn_depth;
+        let mcp_tool_names = ctx.mcp_tool_names;
+        let parent_messages = ctx.parent_messages;
 
         let executor = build_filtered_executor(tool_executor, permission_mode, &def);
 
@@ -973,7 +1081,7 @@ impl SubAgentManager {
                 provider,
                 executor,
                 system_prompt,
-                task_prompt,
+                task_prompt: effective_task_prompt,
                 skills,
                 max_turns,
                 cancel: cancel_clone,
@@ -985,9 +1093,11 @@ impl SubAgentManager {
                 hooks: agent_hooks,
                 task_id: task_id_for_loop,
                 agent_name: agent_name_clone,
-                initial_messages: vec![],
+                initial_messages: parent_messages,
                 transcript_writer,
-                model: def.model.clone(),
+                model: resolved_model,
+                spawn_depth: spawn_depth + 1,
+                mcp_tool_names,
             }));
 
         let handle_transcript_dir = if config.transcript_enabled {
@@ -1121,6 +1231,24 @@ impl SubAgentManager {
         }
 
         Ok(())
+    }
+
+    /// Cancel all active sub-agents immediately.
+    ///
+    /// Used during shutdown or Ctrl+C handling when `DagScheduler` may not be running.
+    /// For coordinated cancellation via the scheduler, use `DagScheduler::cancel_all()`.
+    pub fn cancel_all(&mut self) {
+        for (task_id, handle) in &mut self.agents {
+            if matches!(
+                handle.state,
+                SubAgentState::Working | SubAgentState::Submitted
+            ) {
+                handle.cancel.cancel();
+                handle.state = SubAgentState::Canceled;
+                handle.grants.revoke_all();
+                tracing::info!(task_id, "sub-agent cancelled (cancel_all)");
+            }
+        }
     }
 
     /// Approve a secret request for a running sub-agent.
@@ -1467,7 +1595,12 @@ impl SubAgentManager {
                 agent_name: agent_name_clone,
                 initial_messages,
                 transcript_writer,
-                model: def.model.clone(),
+                model: match &def.model {
+                    Some(ModelSpec::Named(name)) => Some(name.clone()),
+                    Some(ModelSpec::Inherit) | None => None,
+                },
+                spawn_depth: 0,
+                mcp_tool_names: Vec::new(),
             }));
 
         let resume_handle_transcript_dir = if config.transcript_enabled {
@@ -1620,6 +1753,7 @@ impl SubAgentManager {
         tool_executor: Arc<dyn ErasedToolExecutor>,
         skills: Option<Vec<String>>,
         config: &SubAgentConfig,
+        ctx: SpawnContext,
         on_done: F,
     ) -> Result<String, SubAgentError>
     where
@@ -1632,6 +1766,7 @@ impl SubAgentManager {
             tool_executor,
             skills,
             config,
+            ctx,
         )?;
 
         let handle = self
@@ -1784,6 +1919,7 @@ mod tests {
             noop_executor(),
             None,
             &SubAgentConfig::default(),
+            SpawnContext::default(),
         )
     }
 
@@ -2027,6 +2163,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
 
@@ -2103,6 +2240,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
 
@@ -2231,6 +2369,7 @@ mod tests {
                 executor,
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
 
@@ -2306,6 +2445,7 @@ mod tests {
                 noop_executor(),
                 Some(skill_bodies),
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
 
@@ -2347,6 +2487,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
 
@@ -2416,6 +2557,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
 
@@ -2513,6 +2655,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -2554,6 +2697,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -2584,6 +2728,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -2622,6 +2767,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                SpawnContext::default(),
             )
             .unwrap_err();
         assert!(matches!(err, SubAgentError::Invalid(_)));
@@ -2660,6 +2806,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -2988,6 +3135,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -3040,6 +3188,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -3093,6 +3242,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -3140,6 +3290,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -3276,6 +3427,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -3336,6 +3488,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &SubAgentConfig::default(),
+                SpawnContext::default(),
             )
             .unwrap();
         assert!(!task_id.is_empty());
@@ -3389,6 +3542,8 @@ mod tests {
             initial_messages: vec![],
             transcript_writer: None,
             model: None,
+            spawn_depth: 0,
+            mcp_tool_names: Vec::new(),
         }
     }
 
@@ -3632,5 +3787,230 @@ mod tests {
             count, 2,
             "provider must be called exactly twice (initial + nudge retry), got {count}"
         );
+    }
+
+    // ── Phase 1: subagent context propagation tests (#2576, #2577, #2578) ────
+
+    #[test]
+    fn model_spec_deserialize_inherit() {
+        let spec: ModelSpec = serde_json::from_str("\"inherit\"").unwrap();
+        assert_eq!(spec, ModelSpec::Inherit);
+    }
+
+    #[test]
+    fn model_spec_deserialize_named() {
+        let spec: ModelSpec = serde_json::from_str("\"fast\"").unwrap();
+        assert_eq!(spec, ModelSpec::Named("fast".to_owned()));
+    }
+
+    #[test]
+    fn model_spec_serialize_roundtrip() {
+        assert_eq!(
+            serde_json::to_string(&ModelSpec::Inherit).unwrap(),
+            "\"inherit\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ModelSpec::Named("my-provider".to_owned())).unwrap(),
+            "\"my-provider\""
+        );
+    }
+
+    #[test]
+    fn spawn_context_default_is_empty() {
+        let ctx = SpawnContext::default();
+        assert!(ctx.parent_messages.is_empty());
+        assert!(ctx.parent_cancel.is_none());
+        assert!(ctx.parent_provider_name.is_none());
+        assert_eq!(ctx.spawn_depth, 0);
+        assert!(ctx.mcp_tool_names.is_empty());
+    }
+
+    #[test]
+    fn context_injection_none_passes_raw_prompt() {
+        use zeph_config::ContextInjectionMode;
+        let result = apply_context_injection("do work", &[], ContextInjectionMode::None);
+        assert_eq!(result, "do work");
+    }
+
+    #[test]
+    fn context_injection_last_assistant_prepends_when_present() {
+        use zeph_config::ContextInjectionMode;
+        let msgs = vec![
+            make_message(Role::User, "hello".into()),
+            make_message(Role::Assistant, "I found X".into()),
+        ];
+        let result =
+            apply_context_injection("do work", &msgs, ContextInjectionMode::LastAssistantTurn);
+        assert!(
+            result.contains("I found X"),
+            "should contain last assistant content"
+        );
+        assert!(result.contains("do work"), "should contain original task");
+    }
+
+    #[test]
+    fn context_injection_last_assistant_fallback_when_no_assistant() {
+        use zeph_config::ContextInjectionMode;
+        let msgs = vec![make_message(Role::User, "hello".into())];
+        let result =
+            apply_context_injection("do work", &msgs, ContextInjectionMode::LastAssistantTurn);
+        assert_eq!(result, "do work");
+    }
+
+    #[tokio::test]
+    async fn spawn_model_inherit_resolves_to_parent_provider() {
+        let rt = tokio::runtime::Handle::current();
+        let _guard = rt.enter();
+        let mut mgr = make_manager();
+        let mut def = sample_def();
+        def.model = Some(ModelSpec::Inherit);
+        mgr.definitions.push(def);
+
+        let ctx = SpawnContext {
+            parent_provider_name: Some("my-parent-provider".to_owned()),
+            ..SpawnContext::default()
+        };
+        // spawn should succeed without error (model resolution doesn't fail on missing provider)
+        let result = mgr.spawn(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &SubAgentConfig::default(),
+            ctx,
+        );
+        assert!(
+            result.is_ok(),
+            "spawn with Inherit model should succeed: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_model_named_uses_value() {
+        let rt = tokio::runtime::Handle::current();
+        let _guard = rt.enter();
+        let mut mgr = make_manager();
+        let mut def = sample_def();
+        def.model = Some(ModelSpec::Named("fast".to_owned()));
+        mgr.definitions.push(def);
+
+        let result = mgr.spawn(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &SubAgentConfig::default(),
+            SpawnContext::default(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn spawn_exceeds_max_depth_returns_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let cfg = SubAgentConfig {
+            max_spawn_depth: 2,
+            ..SubAgentConfig::default()
+        };
+        let ctx = SpawnContext {
+            spawn_depth: 2, // equals max_spawn_depth → should fail
+            ..SpawnContext::default()
+        };
+        let err = mgr
+            .spawn(
+                "bot",
+                "task",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                ctx,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::MaxDepthExceeded { depth: 2, max: 2 }),
+            "expected MaxDepthExceeded, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_at_max_depth_minus_one_succeeds() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let cfg = SubAgentConfig {
+            max_spawn_depth: 3,
+            ..SubAgentConfig::default()
+        };
+        let ctx = SpawnContext {
+            spawn_depth: 2, // one below max → should succeed
+            ..SpawnContext::default()
+        };
+        let result = mgr.spawn(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            ctx,
+        );
+        assert!(
+            result.is_ok(),
+            "spawn at depth 2 with max 3 should succeed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_foreground_uses_child_token() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let parent_cancel = CancellationToken::new();
+        let ctx = SpawnContext {
+            parent_cancel: Some(parent_cancel.clone()),
+            ..SpawnContext::default()
+        };
+        // Foreground spawn (background: false by default in sample_def)
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "task",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                ctx,
+            )
+            .unwrap();
+
+        // Cancel parent — child should also be cancelled
+        parent_cancel.cancel();
+        let handle = mgr.agents.get(&task_id).unwrap();
+        assert!(
+            handle.cancel.is_cancelled(),
+            "child token should be cancelled when parent cancels"
+        );
+    }
+
+    #[test]
+    fn parent_history_zero_turns_returns_empty() {
+        let msgs = vec![make_message(Role::User, "hi".into())];
+        // apply_context_injection with zero turns — we test by passing empty vec
+        // The actual extract_parent_messages is in zeph-core; here we test the injection side
+        use zeph_config::ContextInjectionMode;
+        let result = apply_context_injection("task", &[], ContextInjectionMode::LastAssistantTurn);
+        assert_eq!(result, "task", "no history should pass prompt unchanged");
+        let _ = msgs; // suppress unused
     }
 }

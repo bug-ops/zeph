@@ -192,6 +192,9 @@ pub(crate) struct RuntimeConfig {
     pub(crate) dependency_config: zeph_tools::DependencyConfig,
     /// Adversarial policy gate runtime info for /status display.
     pub(crate) adversarial_policy_info: Option<AdversarialPolicyInfo>,
+    /// Current spawn depth of this agent instance (0 = top-level, 1 = first sub-agent, etc.).
+    /// Used by `build_spawn_context()` to propagate depth to children.
+    pub(crate) spawn_depth: u32,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.

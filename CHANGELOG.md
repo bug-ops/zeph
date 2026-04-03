@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(subagent): propagate parent conversation history to spawned sub-agents — last `context_window_turns` (default 10) non-system messages are passed as `initial_messages`; a 25% context window cap is applied using a 4-chars-per-token heuristic (#2576)
+- feat(subagent): cascade cancellation from parent to foreground sub-agents via `CancellationToken::child_token()`; background sub-agents (`background: true`) retain independent tokens (#2577)
+- feat(subagent): add `model: inherit` keyword to `SubAgentDef` — sub-agent inherits the parent's active provider name at spawn time; named providers continue to work as before (#2578)
+- feat(subagent): add `context_injection_mode` config field (`none`, `last_assistant_turn`, `summary`) — controls how parent context is prepended to the sub-agent's task prompt; defaults to `last_assistant_turn` (#2576)
+- feat(subagent): add `max_spawn_depth` config field (default 3) with `MaxDepthExceeded` error to prevent unbounded recursive spawning (#2579)
+- feat(subagent): add `SpawnContext` struct bundling parent-derived state for spawning; all call sites updated; `SpawnContext::default()` preserves existing behavior (#2575)
+- feat(subagent): add `SubAgentManager::cancel_all()` for shutdown/Ctrl+C paths where `DagScheduler` is not running (#2577)
+
 - feat(config): expose `warmup_queries` as TOML config field in `[llm.router.bandit]` — accepts `Option<u64>`; when unset or `0`, the default of `10 × number of providers` is used; allows operators to control how long the PILOT bandit explores uniformly before switching to `LinUCB` context-aware routing (#2543)
 
 ### Fixed

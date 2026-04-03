@@ -31,7 +31,8 @@ pub mod subagent;
 pub mod ui;
 
 pub use agent::{
-    AgentConfig, FocusConfig, SubAgentConfig, SubAgentLifecycleHooks, ToolFilterConfig,
+    AgentConfig, ContextInjectionMode, FocusConfig, ModelSpec, SubAgentConfig,
+    SubAgentLifecycleHooks, ToolFilterConfig,
 };
 pub use channels::{
     A2aServerConfig, DiscordConfig, IbctKeyConfig, McpConfig, McpOAuthConfig, McpServerConfig,

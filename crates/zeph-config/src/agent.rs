@@ -3,9 +3,64 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::subagent::{HookDef, MemoryScope, PermissionMode};
+
+/// Specifies which LLM provider a sub-agent should use.
+///
+/// Used in `SubAgentDef.model` frontmatter field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelSpec {
+    /// Use the parent agent's active provider at spawn time.
+    Inherit,
+    /// Use a specific named provider from `[[llm.providers]]`.
+    Named(String),
+}
+
+impl ModelSpec {
+    /// Return the string representation: `"inherit"` or the provider name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            ModelSpec::Inherit => "inherit",
+            ModelSpec::Named(s) => s.as_str(),
+        }
+    }
+}
+
+impl Serialize for ModelSpec {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ModelSpec::Inherit => serializer.serialize_str("inherit"),
+            ModelSpec::Named(s) => serializer.serialize_str(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        if s == "inherit" {
+            Ok(ModelSpec::Inherit)
+        } else {
+            Ok(ModelSpec::Named(s))
+        }
+    }
+}
+
+/// Controls how parent agent context is injected into a spawned sub-agent's task prompt.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextInjectionMode {
+    /// No parent context injected.
+    None,
+    /// Prepend the last assistant turn from parent history as a preamble.
+    #[default]
+    LastAssistantTurn,
+    /// LLM-generated summary of parent context (not yet implemented in Phase 1).
+    Summary,
+}
 
 fn default_max_tool_iterations() -> usize {
     10
@@ -68,6 +123,14 @@ fn default_instruction_auto_detect() -> bool {
 
 fn default_max_concurrent() -> usize {
     5
+}
+
+fn default_context_window_turns() -> usize {
+    10
+}
+
+fn default_max_spawn_depth() -> u32 {
+    3
 }
 
 fn default_transcript_enabled() -> bool {
@@ -209,6 +272,16 @@ pub struct SubAgentConfig {
     /// Maximum number of `.jsonl` transcript files to keep.
     #[serde(default = "default_transcript_max_files")]
     pub transcript_max_files: usize,
+    /// Number of recent parent conversation turns to pass to spawned sub-agents.
+    /// Set to 0 to disable history propagation.
+    #[serde(default = "default_context_window_turns")]
+    pub context_window_turns: usize,
+    /// Maximum nesting depth for sub-agent spawns.
+    #[serde(default = "default_max_spawn_depth")]
+    pub max_spawn_depth: u32,
+    /// How parent context is injected into the sub-agent's task prompt.
+    #[serde(default)]
+    pub context_injection_mode: ContextInjectionMode,
 }
 
 impl Default for SubAgentConfig {
@@ -226,6 +299,9 @@ impl Default for SubAgentConfig {
             transcript_dir: None,
             transcript_enabled: default_transcript_enabled(),
             transcript_max_files: default_transcript_max_files(),
+            context_window_turns: default_context_window_turns(),
+            max_spawn_depth: default_max_spawn_depth(),
+            context_injection_mode: ContextInjectionMode::default(),
         }
     }
 }
@@ -238,4 +314,52 @@ pub struct SubAgentLifecycleHooks {
     pub start: Vec<HookDef>,
     /// Hooks run after a sub-agent finishes or is cancelled (fire-and-forget).
     pub stop: Vec<HookDef>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subagent_config_defaults() {
+        let cfg = SubAgentConfig::default();
+        assert_eq!(cfg.context_window_turns, 10);
+        assert_eq!(cfg.max_spawn_depth, 3);
+        assert_eq!(
+            cfg.context_injection_mode,
+            ContextInjectionMode::LastAssistantTurn
+        );
+    }
+
+    #[test]
+    fn subagent_config_deserialize_new_fields() {
+        let toml_str = r#"
+            enabled = true
+            context_window_turns = 5
+            max_spawn_depth = 2
+            context_injection_mode = "none"
+        "#;
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.context_window_turns, 5);
+        assert_eq!(cfg.max_spawn_depth, 2);
+        assert_eq!(cfg.context_injection_mode, ContextInjectionMode::None);
+    }
+
+    #[test]
+    fn model_spec_deserialize_inherit() {
+        let spec: ModelSpec = serde_json::from_str("\"inherit\"").unwrap();
+        assert_eq!(spec, ModelSpec::Inherit);
+    }
+
+    #[test]
+    fn model_spec_deserialize_named() {
+        let spec: ModelSpec = serde_json::from_str("\"fast\"").unwrap();
+        assert_eq!(spec, ModelSpec::Named("fast".to_owned()));
+    }
+
+    #[test]
+    fn model_spec_as_str() {
+        assert_eq!(ModelSpec::Inherit.as_str(), "inherit");
+        assert_eq!(ModelSpec::Named("x".to_owned()).as_str(), "x");
+    }
 }
