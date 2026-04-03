@@ -13,6 +13,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::embedding_store::EmbeddingStore;
+use crate::math::cosine_similarity;
 
 /// Per-factor scores for the admission decision.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -447,20 +448,6 @@ async fn compute_goal_utility(
     } else {
         final_similarity.max(0.1)
     }
-}
-
-/// Cosine similarity between two float vectors. Returns 0.0 for zero-length or mismatched vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a < f32::EPSILON || norm_b < f32::EPSILON {
-        return 0.0;
-    }
-    (dot / (norm_a * norm_b)).clamp(0.0, 1.0)
 }
 
 /// LLM-based goal utility refinement for borderline cases.

@@ -24,3 +24,40 @@ pub fn fast_hash(s: &str) -> u64 {
     s.hash(&mut h);
     h.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blake3_hex_is_64_chars() {
+        let h = blake3_hex(b"hello");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn blake3_hex_deterministic() {
+        assert_eq!(blake3_hex(b"foo"), blake3_hex(b"foo"));
+    }
+
+    #[test]
+    fn blake3_hex_str_matches_bytes() {
+        assert_eq!(blake3_hex_str("hello"), blake3_hex(b"hello"));
+    }
+
+    #[test]
+    fn fast_hash_deterministic() {
+        assert_eq!(fast_hash("abc"), fast_hash("abc"));
+    }
+
+    #[test]
+    fn fast_hash_different_inputs_differ() {
+        assert_ne!(fast_hash("abc"), fast_hash("def"));
+    }
+
+    #[test]
+    fn fast_hash_empty() {
+        let _ = fast_hash(""); // must not panic
+    }
+}
