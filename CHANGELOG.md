@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(subagent): inject working directory into sub-agent system prompt so the LLM knows where the project is; send a one-time nudge when the first turn returns text-only (no tool calls) to prevent the agent from announcing intent without acting (#2582)
 - fix(tools): add PII NER circuit breaker — after `pii_ner_circuit_breaker` consecutive timeouts (default 2), NER is disabled for the session and PII detection falls back to regex-only, preventing up to 6-minute blocking on paginated reads (12 chunks × 30 s timeout); set `pii_ner_circuit_breaker = 0` to disable (#2562)
 - fix(memory): chunk large messages into overlapping ~400-token segments in `embed_missing()` — each chunk is stored as a separate Qdrant vector, so the full content of long tool outputs is indexed rather than truncated; search deduplicates results by `message_id` keeping the highest-scoring chunk (#2551, #2552)
 - fix(llm): classify HTTP 400 embed responses as non-retryable `LlmError::InvalidInput`; the router fallback loop now breaks immediately on `InvalidInput` without penalizing provider reputation (#2551)

@@ -317,6 +317,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
 
     let mut turns: u32 = 0;
     let mut last_result = String::new();
+    let mut any_tool_called = false;
 
     loop {
         if cancel.is_cancelled() {
@@ -439,7 +440,7 @@ async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
         }
 
         let prev_len = messages.len();
-        if handle_tool_step(
+        let no_tool = handle_tool_step(
             &executor,
             response,
             &mut messages,
@@ -447,15 +448,30 @@ async fn run_agent_loop(args: AgentLoopArgs) -> Result<String, SubAgentError> {
             &loop_task_id,
             &agent_name,
         )
-        .await
-        {
-            // handle_tool_step returned true (no tool call) — loop will break.
-            // Write the last assistant message to transcript.
+        .await;
+
+        if no_tool {
+            // handle_tool_step returned true (no tool call).
             for msg in &messages[prev_len..] {
                 append_transcript(&mut transcript_writer, &mut seq, msg);
             }
+            // If this is the very first turn and no tool was ever called, the LLM
+            // announced intent without acting. Nudge it once to execute via tools.
+            if turns == 1 && !any_tool_called {
+                tracing::debug!("sub-agent text-only first turn — sending nudge to use tools");
+                let nudge = make_message(
+                    Role::User,
+                    "Please use the available tools to complete the task. \
+                     Do not announce intentions — execute them."
+                        .into(),
+                );
+                append_transcript(&mut transcript_writer, &mut seq, &nudge);
+                messages.push(nudge);
+                continue;
+            }
             break;
         }
+        any_tool_called = true;
         // Write any newly pushed messages to the transcript.
         for msg in &messages[prev_len..] {
             append_transcript(&mut transcript_writer, &mut seq, msg);
@@ -619,8 +635,17 @@ pub(crate) fn build_system_prompt_with_memory(
     def: &mut SubAgentDef,
     scope: Option<MemoryScope>,
 ) -> String {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let cwd_line = if cwd.is_empty() {
+        String::new()
+    } else {
+        format!("\nWorking directory: {cwd}")
+    };
+
     let Some(scope) = scope else {
-        return def.system_prompt.clone();
+        return format!("{}{cwd_line}", def.system_prompt);
     };
 
     // HIGH-04: if all three file tools are blocked (via disallowed_tools OR DenyList),
@@ -697,6 +722,7 @@ pub(crate) fn build_system_prompt_with_memory(
     });
 
     let mut prompt = def.system_prompt.clone();
+    prompt.push_str(&cwd_line);
     prompt.push_str(&memory_instruction);
     if let Some(block) = memory_block {
         prompt.push_str(&block);
@@ -3550,5 +3576,61 @@ mod tests {
             "execute_tool_call_erased must be called once"
         );
         assert_eq!(recorded[0], "shell");
+    }
+
+    // --- Fix #2582 tests ---
+
+    #[test]
+    fn build_system_prompt_injects_working_directory() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let mut def = SubAgentDef::parse(indoc! {"
+            ---
+            name: cwd-agent
+            description: test
+            ---
+            Base prompt.
+        "})
+        .unwrap();
+
+        let prompt = build_system_prompt_with_memory(&mut def, None);
+        std::env::set_current_dir(orig).unwrap();
+
+        assert!(
+            prompt.contains("Working directory:"),
+            "system prompt must contain 'Working directory:', got: {prompt}"
+        );
+        assert!(
+            prompt.contains(tmp.path().to_str().unwrap()),
+            "system prompt must contain the actual cwd path, got: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn text_only_first_turn_sends_nudge_and_retries() {
+        use zeph_llm::mock::MockProvider;
+
+        // First call returns text-only; second call also text (loop should stop after nudge retry).
+        let (mock, call_count) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::Text("I will now do the task...".into()),
+            ChatResponse::Text("Done.".into()),
+        ]);
+
+        let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+        let args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 10);
+        let result = run_agent_loop(args).await;
+        assert!(result.is_ok(), "loop should succeed: {result:?}");
+        assert_eq!(result.unwrap(), "Done.");
+
+        // Provider must have been called twice: initial turn + nudge retry.
+        let count = *call_count.lock().unwrap();
+        assert_eq!(
+            count, 2,
+            "provider must be called exactly twice (initial + nudge retry), got {count}"
+        );
     }
 }
