@@ -116,28 +116,46 @@ impl SemanticMemory {
         if let Some(qdrant) = &self.qdrant
             && self.provider.supports_embeddings()
         {
-            match self.provider.embed(content).await {
-                Ok(vector) => {
-                    let vector_size = u64::try_from(vector.len()).unwrap_or(896);
-                    if let Err(e) = qdrant.ensure_collection(vector_size).await {
-                        tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
-                    } else if let Err(e) = qdrant
-                        .store(
-                            message_id,
-                            conversation_id,
-                            role,
-                            vector,
-                            MessageKind::Regular,
-                            &self.embedding_model,
-                            0,
-                        )
-                        .await
-                    {
-                        tracing::warn!("Failed to store embedding: {e:#}");
+            let chunks = chunk_text(content);
+            let chunk_count = chunks.len();
+            let mut collection_ready = false;
+
+            for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+                let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+                match self.provider.embed(chunk).await {
+                    Ok(vector) => {
+                        if !collection_ready {
+                            let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+                            if let Err(e) = qdrant.ensure_collection(vector_size).await {
+                                tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
+                                break;
+                            }
+                            collection_ready = true;
+                        }
+                        if let Err(e) = qdrant
+                            .store(
+                                message_id,
+                                conversation_id,
+                                role,
+                                vector,
+                                MessageKind::Regular,
+                                &self.embedding_model,
+                                chunk_index_u32,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to store chunk {chunk_index}/{chunk_count} \
+                                 for msg {message_id}: {e:#}"
+                            );
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to generate embedding: {e:#}");
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to embed chunk {chunk_index}/{chunk_count} \
+                             for msg {message_id}: {e:#}"
+                        );
+                    }
                 }
             }
         }
@@ -189,30 +207,48 @@ impl SemanticMemory {
         if let Some(qdrant) = &self.qdrant
             && self.provider.supports_embeddings()
         {
-            match self.provider.embed(content).await {
-                Ok(vector) => {
-                    let vector_size = u64::try_from(vector.len()).unwrap_or(896);
-                    if let Err(e) = qdrant.ensure_collection(vector_size).await {
-                        tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
-                    } else if let Err(e) = qdrant
-                        .store(
-                            message_id,
-                            conversation_id,
-                            role,
-                            vector,
-                            MessageKind::Regular,
-                            &self.embedding_model,
-                            0,
-                        )
-                        .await
-                    {
-                        tracing::warn!("Failed to store embedding: {e:#}");
-                    } else {
-                        embedding_stored = true;
+            let chunks = chunk_text(content);
+            let chunk_count = chunks.len();
+            let mut collection_ready = false;
+
+            for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+                let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+                match self.provider.embed(chunk).await {
+                    Ok(vector) => {
+                        if !collection_ready {
+                            let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+                            if let Err(e) = qdrant.ensure_collection(vector_size).await {
+                                tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
+                                break;
+                            }
+                            collection_ready = true;
+                        }
+                        if let Err(e) = qdrant
+                            .store(
+                                message_id,
+                                conversation_id,
+                                role,
+                                vector,
+                                MessageKind::Regular,
+                                &self.embedding_model,
+                                chunk_index_u32,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to store chunk {chunk_index}/{chunk_count} \
+                                 for msg {message_id}: {e:#}"
+                            );
+                        } else {
+                            embedding_stored = true;
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to generate embedding: {e:#}");
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to embed chunk {chunk_index}/{chunk_count} \
+                             for msg {message_id}: {e:#}"
+                        );
+                    }
                 }
             }
         }
