@@ -28,6 +28,8 @@ uuid = { workspace = true, features = ["v4"] }
 zeph-common = { workspace = true, features = ["treesitter"] }
 zeph-llm.workspace = true
 zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-tools.workspace = true
+schemars.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 tree-sitter-bash.workspace = true

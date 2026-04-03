@@ -144,6 +144,7 @@ pub struct SkillsConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct IndexConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -161,6 +162,11 @@ pub struct IndexConfig {
     pub repo_map_tokens: usize,
     #[serde(default = "default_repo_map_ttl_secs")]
     pub repo_map_ttl_secs: u64,
+    /// Enable `IndexMcpServer` tools (`symbol_definition`, `find_text_references`, `call_graph`,
+    /// `module_summary`). When `true`, static repo-map injection is skipped and the LLM
+    /// uses on-demand tool calls instead.
+    #[serde(default)]
+    pub mcp_enabled: bool,
 }
 
 impl Default for IndexConfig {
@@ -174,6 +180,7 @@ impl Default for IndexConfig {
             budget_ratio: default_index_budget_ratio(),
             repo_map_tokens: default_index_repo_map_tokens(),
             repo_map_ttl_secs: default_repo_map_ttl_secs(),
+            mcp_enabled: false,
         }
     }
 }

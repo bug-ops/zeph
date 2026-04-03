@@ -874,18 +874,30 @@ pub(crate) fn apply_code_retrieval<C: Channel>(
     retriever: Option<Arc<CodeRetriever>>,
     provider_has_tools: bool,
 ) -> Agent<C> {
-    let agent = if config.enabled && config.repo_map_tokens > 0 {
+    if !config.enabled {
+        return agent;
+    }
+
+    // When mcp_enabled, skip static repo-map injection and register IndexMcpServer instead.
+    let agent = if config.mcp_enabled {
+        if config.repo_map_tokens > 0 {
+            tracing::warn!(
+                "index.repo_map_tokens is set but index.mcp_enabled=true — \
+                 static repo-map injection is disabled; use IndexMcpServer tools instead"
+            );
+        }
+        let cwd = std::env::current_dir().unwrap_or_default();
+        agent.with_index_mcp_server(cwd)
+    } else if config.repo_map_tokens > 0 {
         agent.with_repo_map(config.repo_map_tokens, config.repo_map_ttl_secs)
     } else {
         agent
     };
 
-    if !config.enabled {
-        return agent;
-    }
-
     if provider_has_tools {
-        tracing::info!("code retrieval skipped: provider supports native tool_use");
+        tracing::info!(
+            "code retrieval (semantic search) skipped: provider supports native tool_use"
+        );
         return agent;
     }
 

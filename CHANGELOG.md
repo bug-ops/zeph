@@ -36,7 +36,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(subagent): add `max_spawn_depth` config field (default 3) with `MaxDepthExceeded` error to prevent unbounded recursive spawning (#2579)
 - feat(subagent): add `SpawnContext` struct bundling parent-derived state for spawning; all call sites updated; `SpawnContext::default()` preserves existing behavior (#2575)
 - feat(subagent): add `SubAgentManager::cancel_all()` for shutdown/Ctrl+C paths where `DagScheduler` is not running (#2577)
-
+- feat(memory): GAAMA episode nodes — `graph_episodes` and `graph_episode_entities` schema (migration 060); entities extracted during each conversation are linked to their episode via `GraphStore::ensure_episode` and `link_entity_to_episode`; `conversation_id` threaded through `GraphExtractionConfig` and `extract_and_store` (#2503)
+- feat(memory): rename `graph_edges.episode_id` to `source_message_id` (migration 060) to eliminate semantic collision with the new conversation-level `graph_episodes` table
+- feat(index): `IndexMcpServer` — in-process MCP-style tool executor exposing AST symbol graph as four structured tools: `symbol_definition`, `find_text_references`, `call_graph`, `module_summary`; activated when `[index] mcp_enabled = true`, replacing static repo-map injection (#2508)
+- feat(config): `[index] mcp_enabled` (default `false`) — opt-in flag to enable `IndexMcpServer`; logs a warning when `repo_map_tokens` is also set
+- feat(config): postgres migration 059 (`embeddings_metadata` chunk index) sync — was previously only applied for sqlite
 - feat(config): expose `warmup_queries` as TOML config field in `[llm.router.bandit]` — accepts `Option<u64>`; when unset or `0`, the default of `10 × number of providers` is used; allows operators to control how long the PILOT bandit explores uniformly before switching to `LinUCB` context-aware routing (#2543)
 
 ### Fixed

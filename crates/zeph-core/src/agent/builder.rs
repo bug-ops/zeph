@@ -1121,6 +1121,18 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Add an in-process `IndexMcpServer` as a tool executor.
+    ///
+    /// When enabled, the LLM can call `symbol_definition`, `find_text_references`,
+    /// `call_graph`, and `module_summary` tools on demand. Static repo-map injection
+    /// should be disabled when this is active (set `repo_map_tokens = 0` or skip
+    /// `inject_code_context`).
+    #[must_use]
+    pub fn with_index_mcp_server(self, project_root: impl Into<std::path::PathBuf>) -> Self {
+        let server = zeph_index::IndexMcpServer::new(project_root);
+        self.add_tool_executor(server)
+    }
+
     /// # Panics
     ///
     /// Panics if the registry `RwLock` is poisoned.

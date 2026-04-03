@@ -15,6 +15,7 @@ pub(crate) mod context;
 pub mod error;
 pub mod indexer;
 pub mod languages;
+pub mod mcp_server;
 pub mod repo_map;
 pub mod retriever;
 pub mod store;
@@ -22,3 +23,4 @@ pub mod watcher;
 
 pub use error::{IndexError, Result};
 pub use indexer::IndexProgress;
+pub use mcp_server::IndexMcpServer;
