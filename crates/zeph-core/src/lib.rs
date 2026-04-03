@@ -42,7 +42,6 @@ pub mod orchestration {
     pub use crate::config::OrchestrationConfig;
 }
 
-pub mod hash;
 pub mod http;
 pub mod memory_tools;
 pub mod overflow_tools;
@@ -72,8 +71,8 @@ pub use channel::{
     ToolStartEvent,
 };
 pub use config::{Config, ConfigError};
-pub use hash::content_hash;
 pub use skill_loader::SkillLoaderExecutor;
+pub use zeph_common::hash::blake3_hex as content_hash;
 pub use zeph_sanitizer::exfiltration::{
     ExfiltrationEvent, ExfiltrationGuard, ExfiltrationGuardConfig, extract_flagged_urls,
 };
