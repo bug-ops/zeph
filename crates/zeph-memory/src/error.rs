@@ -38,4 +38,7 @@ pub enum MemoryError {
 
     #[error("{0}")]
     Other(String),
+
+    #[error("operation timed out: {0}")]
+    Timeout(String),
 }

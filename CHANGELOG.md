@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(memory): resolve SQLite pool starvation causing multi-turn session hangs (#2591)
+
 ### Changed
 
 - **BREAKING**: Removed feature flags `guardrail`, `context-compression`, `compression-guidelines`, `policy-enforcer`, `lsp-context`, `experiments` — these features are now always compiled in and cannot be disabled (#2565)

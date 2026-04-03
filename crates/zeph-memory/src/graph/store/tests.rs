@@ -3317,3 +3317,76 @@ async fn insert_edge_typed_rejects_self_loop() {
         "expected InvalidInput for self-loop, got: {err:?}"
     );
 }
+
+// ── Regression: #2591 pool isolation ─────────────────────────────────────────
+
+/// Regression test for #2591: two `GraphStore` instances backed by independent pools
+/// on the same file must not interfere — writes in one are visible in the other after
+/// WAL checkpoint, and pool exhaustion in one does not block the other.
+#[tokio::test]
+async fn pool_isolation_independent_pools_do_not_starve() {
+    let file = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = file.path().to_str().expect("valid path").to_string();
+
+    // Pool A — simulates the shared messages pool (pool_size=5).
+    let store_a = SqliteStore::with_pool_size(&path, 5).await.unwrap();
+    let gs_a = GraphStore::new(store_a.pool().clone());
+
+    // Pool B — simulates the dedicated graph pool (pool_size=3).
+    let store_b = SqliteStore::with_pool_size(&path, 3).await.unwrap();
+    let gs_b = GraphStore::new(store_b.pool().clone());
+
+    // Write via pool A and checkpoint so pool B can see the data.
+    let alice = gs_a
+        .upsert_entity("Alice", "alice", EntityType::Person, None)
+        .await
+        .unwrap();
+    let bob = gs_a
+        .upsert_entity("Bob", "bob", EntityType::Person, None)
+        .await
+        .unwrap();
+    gs_a.insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None)
+        .await
+        .unwrap();
+    gs_a.checkpoint_wal().await.unwrap();
+
+    // Pool B must be able to read independently without acquiring from pool A.
+    let edges = gs_b.edges_for_entity(alice).await.unwrap();
+    assert!(
+        !edges.is_empty(),
+        "#2591 regression: pool B must read edges written by pool A after checkpoint"
+    );
+
+    // Both pools are isolated — saturating pool A connections must not block pool B.
+    // Spawn 5 concurrent tasks all holding connections from pool A, then verify pool B
+    // still responds. (In-memory WAL mode: connections come from the same file but
+    // different pool semaphores are independent.)
+    let pool_a = store_a.pool().clone();
+    let handles: Vec<_> = (0..5)
+        .map(|_| {
+            let p = pool_a.clone();
+            tokio::spawn(async move {
+                // Acquire and hold the connection briefly.
+                let _conn = p.acquire().await.expect("pool A connection");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            })
+        })
+        .collect();
+
+    // Pool B query must complete while pool A is saturated.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        gs_b.edges_for_entity(alice),
+    )
+    .await;
+
+    for h in handles {
+        h.await.expect("task");
+    }
+
+    assert!(
+        result.is_ok(),
+        "#2591 regression: pool B must not block when pool A is saturated"
+    );
+    assert!(result.unwrap().is_ok(), "pool B query must succeed");
+}

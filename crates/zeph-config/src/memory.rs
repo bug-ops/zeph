@@ -1201,6 +1201,17 @@ pub struct GraphConfig {
     /// pipeline. A consecutive-skip safety valve ensures no turn is silently skipped indefinitely.
     #[serde(default)]
     pub rpe: RpeConfig,
+    /// `SQLite` connection pool size dedicated to graph operations.
+    ///
+    /// Graph tables share the same database file as messages/embeddings but use a
+    /// separate pool to prevent pool starvation when community detection or spreading
+    /// activation runs concurrently with regular memory operations. Default: `3`.
+    #[serde(default = "default_graph_pool_size")]
+    pub pool_size: u32,
+}
+
+fn default_graph_pool_size() -> u32 {
+    3
 }
 
 impl Default for GraphConfig {
@@ -1230,6 +1241,7 @@ impl Default for GraphConfig {
             link_weight_decay_interval_secs: default_link_weight_decay_interval_secs(),
             belief_revision: BeliefRevisionConfig::default(),
             rpe: RpeConfig::default(),
+            pool_size: default_graph_pool_size(),
         }
     }
 }

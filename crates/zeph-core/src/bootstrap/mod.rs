@@ -312,10 +312,23 @@ impl AppBuilder {
         }
 
         if self.config.memory.graph.enabled {
-            let pool = memory.sqlite().pool().clone();
-            let store = Arc::new(GraphStore::new(pool));
+            // Open a dedicated pool for graph operations to prevent pool starvation.
+            // Community detection and spreading activation can saturate the shared message pool
+            // (pool_size=5), causing pool.acquire() cancellation and semaphore drift in sqlx 0.8.
+            let graph_pool = zeph_db::DbConfig {
+                url: db_path.to_string(),
+                max_connections: self.config.memory.graph.pool_size,
+                pool_size: self.config.memory.graph.pool_size,
+            }
+            .connect()
+            .await
+            .map_err(|e| BootstrapError::Memory(e.to_string()))?;
+            let store = Arc::new(GraphStore::new(graph_pool));
             memory = memory.with_graph_store(store);
-            tracing::info!("graph memory enabled, GraphStore attached");
+            tracing::info!(
+                pool_size = self.config.memory.graph.pool_size,
+                "graph memory enabled, GraphStore attached with dedicated pool"
+            );
         }
 
         if self.config.memory.admission.enabled {

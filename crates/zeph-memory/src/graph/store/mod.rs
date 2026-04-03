@@ -597,7 +597,15 @@ impl GraphStore {
             query = query.bind(et.as_str());
         }
 
-        let rows: Vec<EdgeRow> = query.fetch_all(&self.pool).await?;
+        // Wrap pool.acquire() + query execution in a short timeout to prevent the outer
+        // tokio::time::timeout (in SemanticMemory recall) from cancelling a mid-acquire
+        // future, which causes sqlx 0.8 semaphore count drift and permanent pool starvation.
+        let rows: Vec<EdgeRow> = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            query.fetch_all(&self.pool),
+        )
+        .await
+        .map_err(|_| MemoryError::Timeout("graph pool acquire timed out after 500ms".into()))??;
         Ok(rows.into_iter().map(edge_from_row).collect())
     }
 
