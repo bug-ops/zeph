@@ -976,7 +976,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(enforcer) => {
                     let policy_context =
                         std::sync::Arc::new(std::sync::RwLock::new(zeph_tools::PolicyContext {
-                            trust_level: zeph_tools::TrustLevel::Trusted,
+                            trust_level: zeph_tools::SkillTrustLevel::Trusted,
                             env: std::env::vars().collect(),
                         }));
                     let gate = zeph_tools::PolicyGateExecutor::new(

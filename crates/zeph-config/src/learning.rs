@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
 fn default_min_failures() -> u32 {
@@ -170,7 +171,7 @@ pub struct LearningConfig {
     /// Empty = use the primary provider. Named but not found in registry = log warning,
     /// degrade to regex-only. Never fails startup.
     #[serde(default)]
-    pub feedback_provider: String,
+    pub feedback_provider: ProviderName,
     /// Regex confidence below this value is treated as "not a correction" — judge not invoked.
     #[serde(default = "default_judge_adaptive_low")]
     pub judge_adaptive_low: f32,
@@ -227,7 +228,7 @@ pub struct LearningConfig {
     /// Provider name from `[[llm.providers]]` for ARISE trace summarization.
     /// Empty = fall back to primary provider.
     #[serde(default)]
-    pub arise_trace_provider: String,
+    pub arise_trace_provider: ProviderName,
 
     // --- STEM: pattern-to-skill conversion ---
     /// Enable STEM automatic tool pattern detection and skill generation (disabled by default).
@@ -242,7 +243,7 @@ pub struct LearningConfig {
     /// Provider name from `[[llm.providers]]` for STEM skill generation.
     /// Empty = fall back to primary provider.
     #[serde(default)]
-    pub stem_provider: String,
+    pub stem_provider: ProviderName,
     /// Days to retain rows in `skill_usage_log` before pruning.
     #[serde(default = "default_stem_retention_days")]
     pub stem_retention_days: u32,
@@ -257,7 +258,7 @@ pub struct LearningConfig {
     /// Provider name from `[[llm.providers]]` for ERL heuristic extraction.
     /// Empty = fall back to primary provider.
     #[serde(default)]
-    pub erl_extract_provider: String,
+    pub erl_extract_provider: ProviderName,
     /// Maximum heuristics prepended per skill at match time.
     #[serde(default = "default_erl_max_heuristics_per_skill")]
     pub erl_max_heuristics_per_skill: u32,
@@ -285,7 +286,7 @@ impl Default for LearningConfig {
             correction_confidence_threshold: default_correction_confidence_threshold(),
             detector_mode: DetectorMode::default(),
             judge_model: String::new(),
-            feedback_provider: String::new(),
+            feedback_provider: ProviderName::default(),
             judge_adaptive_low: default_judge_adaptive_low(),
             judge_adaptive_high: default_judge_adaptive_high(),
             correction_recall_limit: default_correction_recall_limit(),
@@ -301,15 +302,15 @@ impl Default for LearningConfig {
             domain_success_gate: false,
             arise_enabled: false,
             arise_min_tool_calls: default_arise_min_tool_calls(),
-            arise_trace_provider: String::new(),
+            arise_trace_provider: ProviderName::default(),
             stem_enabled: false,
             stem_min_occurrences: default_stem_min_occurrences(),
             stem_min_success_rate: default_stem_min_success_rate(),
-            stem_provider: String::new(),
+            stem_provider: ProviderName::default(),
             stem_retention_days: default_stem_retention_days(),
             stem_pattern_window_days: default_stem_pattern_window_days(),
             erl_enabled: false,
-            erl_extract_provider: String::new(),
+            erl_extract_provider: ProviderName::default(),
             erl_max_heuristics_per_skill: default_erl_max_heuristics_per_skill(),
             erl_dedup_threshold: default_erl_dedup_threshold(),
             erl_min_confidence: default_erl_min_confidence(),

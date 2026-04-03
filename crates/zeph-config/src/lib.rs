@@ -63,8 +63,8 @@ pub use memory::{
 pub use providers::{
     BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
     ComplexityRoutingConfig, GenerationParams, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP,
-    ProviderEntry, ProviderKind, RouterConfig, RouterStrategyConfig, SttConfig, TierMapping,
-    validate_pool,
+    ProviderEntry, ProviderKind, ProviderName, RouterConfig, RouterStrategyConfig, SttConfig,
+    TierMapping, validate_pool,
 };
 pub use providers::{default_stt_language, default_stt_provider};
 pub use rate_limit::RateLimitConfig;

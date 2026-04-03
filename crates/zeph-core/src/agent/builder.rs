@@ -1505,7 +1505,7 @@ mod tests {
             model: String::new(),
             pruning_strategy: crate::config::PruningStrategy::default(),
             probe: zeph_memory::CompactionProbeConfig::default(),
-            compress_provider: String::new(),
+            compress_provider: Default::default(),
             archive_tool_outputs: false,
         };
         let agent = make_agent().with_compression(compression);

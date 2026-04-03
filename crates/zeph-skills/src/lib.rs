@@ -23,4 +23,4 @@ pub mod watcher;
 
 pub use error::SkillError;
 pub use matcher::{IntentClassification, ScoredMatch};
-pub use trust::{SkillSource, SkillTrust, TrustLevel, compute_skill_hash};
+pub use trust::{SkillSource, SkillTrust, SkillTrustLevel, compute_skill_hash};

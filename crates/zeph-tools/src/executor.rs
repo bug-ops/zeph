@@ -341,7 +341,7 @@ pub trait ToolExecutor: Send + Sync {
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
 
     /// Set the effective trust level for the currently active skill. No-op by default.
-    fn set_effective_trust(&self, _level: crate::TrustLevel) {}
+    fn set_effective_trust(&self, _level: crate::SkillTrustLevel) {}
 
     /// Whether the executor can safely retry this tool call on a transient error.
     ///
@@ -390,7 +390,7 @@ pub trait ErasedToolExecutor: Send + Sync {
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
 
     /// Set the effective trust level for the currently active skill. No-op by default.
-    fn set_effective_trust(&self, _level: crate::TrustLevel) {}
+    fn set_effective_trust(&self, _level: crate::SkillTrustLevel) {}
 
     /// Whether the executor can safely retry this tool call on a transient error.
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool;
@@ -437,7 +437,7 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
         ToolExecutor::set_skill_env(self, env);
     }
 
-    fn set_effective_trust(&self, level: crate::TrustLevel) {
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         ToolExecutor::set_effective_trust(self, level);
     }
 
@@ -497,7 +497,7 @@ impl ToolExecutor for DynExecutor {
         ErasedToolExecutor::set_skill_env(self.0.as_ref(), env);
     }
 
-    fn set_effective_trust(&self, level: crate::TrustLevel) {
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         ErasedToolExecutor::set_effective_trust(self.0.as_ref(), level);
     }
 
@@ -1000,13 +1000,13 @@ mod tests {
             async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
                 Ok(None)
             }
-            fn set_effective_trust(&self, level: crate::TrustLevel) {
+            fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
                 // encode: Trusted=0, Verified=1, Quarantined=2, Blocked=3
                 let v = match level {
-                    crate::TrustLevel::Trusted => 0u8,
-                    crate::TrustLevel::Verified => 1,
-                    crate::TrustLevel::Quarantined => 2,
-                    crate::TrustLevel::Blocked => 3,
+                    crate::SkillTrustLevel::Trusted => 0u8,
+                    crate::SkillTrustLevel::Verified => 1,
+                    crate::SkillTrustLevel::Quarantined => 2,
+                    crate::SkillTrustLevel::Blocked => 3,
                 };
                 self.0.store(v, Ordering::Relaxed);
             }
@@ -1015,10 +1015,10 @@ mod tests {
         let inner = std::sync::Arc::new(TrustCapture(AtomicU8::new(0)));
         let exec =
             DynExecutor(std::sync::Arc::clone(&inner) as std::sync::Arc<dyn ErasedToolExecutor>);
-        ToolExecutor::set_effective_trust(&exec, crate::TrustLevel::Quarantined);
+        ToolExecutor::set_effective_trust(&exec, crate::SkillTrustLevel::Quarantined);
         assert_eq!(inner.0.load(Ordering::Relaxed), 2);
 
-        ToolExecutor::set_effective_trust(&exec, crate::TrustLevel::Blocked);
+        ToolExecutor::set_effective_trust(&exec, crate::SkillTrustLevel::Blocked);
         assert_eq!(inner.0.load(Ordering::Relaxed), 3);
     }
 

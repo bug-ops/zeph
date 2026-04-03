@@ -7,8 +7,8 @@ use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
     AcpConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy, McpOAuthConfig,
     McpServerConfig, McpTrustLevel, MemoryConfig, OAuthTokenStorage, OrchestrationConfig,
-    ProviderEntry, ProviderKind, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig,
-    TelegramConfig, VaultConfig,
+    ProviderEntry, ProviderKind, ProviderName, PruningStrategy, SemanticConfig, SessionsConfig,
+    SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -1187,11 +1187,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         Some("model") => {
             config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Model;
             if let Some(ref provider) = state.feedback_provider {
-                config
-                    .skills
-                    .learning
-                    .feedback_provider
-                    .clone_from(provider);
+                config.skills.learning.feedback_provider = ProviderName::new(provider);
             }
         }
         _ => {}
@@ -1203,10 +1199,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         max_parallel: state.orchestration_max_parallel,
         confirm_before_execute: state.orchestration_confirm_before_execute,
         default_failure_strategy: state.orchestration_failure_strategy.clone(),
-        planner_provider: state
-            .orchestration_planner_provider
-            .clone()
-            .unwrap_or_default(),
+        planner_provider: ProviderName::new(
+            state
+                .orchestration_planner_provider
+                .clone()
+                .unwrap_or_default(),
+        ),
         ..OrchestrationConfig::default()
     };
 
@@ -1322,11 +1320,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     };
     if state.mcp_discovery_strategy == "embedding" {
         config.mcp.tool_discovery.top_k = state.mcp_discovery_top_k;
-        config
-            .mcp
-            .tool_discovery
-            .embedding_provider
-            .clone_from(&state.mcp_discovery_provider);
+        config.mcp.tool_discovery.embedding_provider =
+            ProviderName::new(&state.mcp_discovery_provider);
     }
 
     if state.experiments_enabled {

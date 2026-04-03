@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Trust tier controlling what a skill is allowed to do.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum TrustLevel {
+pub enum SkillTrustLevel {
     /// Built-in or user-audited skill: full tool access.
     Trusted,
     /// Signature or hash verified: default tool access.
@@ -23,7 +23,7 @@ pub enum TrustLevel {
     Blocked,
 }
 
-impl TrustLevel {
+impl SkillTrustLevel {
     /// Ordered severity: lower value = more trusted.
     #[must_use]
     pub fn severity(self) -> u8 {
@@ -51,7 +51,7 @@ impl TrustLevel {
     }
 }
 
-impl FromStr for TrustLevel {
+impl FromStr for SkillTrustLevel {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -67,7 +67,7 @@ impl FromStr for TrustLevel {
     }
 }
 
-impl fmt::Display for TrustLevel {
+impl fmt::Display for SkillTrustLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Trusted => f.write_str("trusted"),
@@ -84,65 +84,65 @@ mod tests {
 
     #[test]
     fn severity_ordering() {
-        assert!(TrustLevel::Trusted.severity() < TrustLevel::Verified.severity());
-        assert!(TrustLevel::Verified.severity() < TrustLevel::Quarantined.severity());
-        assert!(TrustLevel::Quarantined.severity() < TrustLevel::Blocked.severity());
+        assert!(SkillTrustLevel::Trusted.severity() < SkillTrustLevel::Verified.severity());
+        assert!(SkillTrustLevel::Verified.severity() < SkillTrustLevel::Quarantined.severity());
+        assert!(SkillTrustLevel::Quarantined.severity() < SkillTrustLevel::Blocked.severity());
     }
 
     #[test]
     fn min_trust_picks_least_trusted() {
         assert_eq!(
-            TrustLevel::Trusted.min_trust(TrustLevel::Quarantined),
-            TrustLevel::Quarantined
+            SkillTrustLevel::Trusted.min_trust(SkillTrustLevel::Quarantined),
+            SkillTrustLevel::Quarantined
         );
         assert_eq!(
-            TrustLevel::Blocked.min_trust(TrustLevel::Trusted),
-            TrustLevel::Blocked
+            SkillTrustLevel::Blocked.min_trust(SkillTrustLevel::Trusted),
+            SkillTrustLevel::Blocked
         );
     }
 
     #[test]
     fn is_active() {
-        assert!(TrustLevel::Trusted.is_active());
-        assert!(TrustLevel::Verified.is_active());
-        assert!(TrustLevel::Quarantined.is_active());
-        assert!(!TrustLevel::Blocked.is_active());
+        assert!(SkillTrustLevel::Trusted.is_active());
+        assert!(SkillTrustLevel::Verified.is_active());
+        assert!(SkillTrustLevel::Quarantined.is_active());
+        assert!(!SkillTrustLevel::Blocked.is_active());
     }
 
     #[test]
     fn default_is_quarantined() {
-        assert_eq!(TrustLevel::default(), TrustLevel::Quarantined);
+        assert_eq!(SkillTrustLevel::default(), SkillTrustLevel::Quarantined);
     }
 
     #[test]
     fn display() {
-        assert_eq!(TrustLevel::Trusted.to_string(), "trusted");
-        assert_eq!(TrustLevel::Blocked.to_string(), "blocked");
-        assert_eq!(TrustLevel::Quarantined.to_string(), "quarantined");
-        assert_eq!(TrustLevel::Verified.to_string(), "verified");
+        assert_eq!(SkillTrustLevel::Trusted.to_string(), "trusted");
+        assert_eq!(SkillTrustLevel::Blocked.to_string(), "blocked");
+        assert_eq!(SkillTrustLevel::Quarantined.to_string(), "quarantined");
+        assert_eq!(SkillTrustLevel::Verified.to_string(), "verified");
     }
 
     #[test]
     fn serde_roundtrip() {
-        let level = TrustLevel::Quarantined;
+        let level = SkillTrustLevel::Quarantined;
         let json = serde_json::to_string(&level).unwrap();
         assert_eq!(json, "\"quarantined\"");
-        let back: TrustLevel = serde_json::from_str(&json).unwrap();
+        let back: SkillTrustLevel = serde_json::from_str(&json).unwrap();
         assert_eq!(back, level);
     }
 
     #[test]
     fn serde_all_variants() {
         let cases = [
-            (TrustLevel::Trusted, "\"trusted\""),
-            (TrustLevel::Verified, "\"verified\""),
-            (TrustLevel::Quarantined, "\"quarantined\""),
-            (TrustLevel::Blocked, "\"blocked\""),
+            (SkillTrustLevel::Trusted, "\"trusted\""),
+            (SkillTrustLevel::Verified, "\"verified\""),
+            (SkillTrustLevel::Quarantined, "\"quarantined\""),
+            (SkillTrustLevel::Blocked, "\"blocked\""),
         ];
         for (level, expected_json) in cases {
             let json = serde_json::to_string(&level).unwrap();
             assert_eq!(json, expected_json);
-            let back: TrustLevel = serde_json::from_str(&json).unwrap();
+            let back: SkillTrustLevel = serde_json::from_str(&json).unwrap();
             assert_eq!(back, level);
         }
     }
@@ -150,12 +150,12 @@ mod tests {
     #[test]
     fn min_trust_same_level_returns_self() {
         assert_eq!(
-            TrustLevel::Verified.min_trust(TrustLevel::Verified),
-            TrustLevel::Verified
+            SkillTrustLevel::Verified.min_trust(SkillTrustLevel::Verified),
+            SkillTrustLevel::Verified
         );
         assert_eq!(
-            TrustLevel::Blocked.min_trust(TrustLevel::Blocked),
-            TrustLevel::Blocked
+            SkillTrustLevel::Blocked.min_trust(SkillTrustLevel::Blocked),
+            SkillTrustLevel::Blocked
         );
     }
 
@@ -163,13 +163,13 @@ mod tests {
     fn hash_consistent() {
         use std::collections::HashSet;
         let mut set = HashSet::new();
-        set.insert(TrustLevel::Trusted);
-        set.insert(TrustLevel::Verified);
-        set.insert(TrustLevel::Quarantined);
-        set.insert(TrustLevel::Blocked);
+        set.insert(SkillTrustLevel::Trusted);
+        set.insert(SkillTrustLevel::Verified);
+        set.insert(SkillTrustLevel::Quarantined);
+        set.insert(SkillTrustLevel::Blocked);
         assert_eq!(set.len(), 4);
         // Inserting same value again does not grow the set
-        set.insert(TrustLevel::Trusted);
+        set.insert(SkillTrustLevel::Trusted);
         assert_eq!(set.len(), 4);
     }
 }

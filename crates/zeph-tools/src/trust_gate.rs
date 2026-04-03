@@ -9,7 +9,7 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
-use crate::TrustLevel;
+use crate::SkillTrustLevel;
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::permissions::{AutonomyLevel, PermissionAction, PermissionPolicy};
@@ -51,21 +51,21 @@ fn is_quarantine_denied(tool_id: &str) -> bool {
         .any(|denied| tool_id == *denied || tool_id.ends_with(&format!("_{denied}")))
 }
 
-fn trust_to_u8(level: TrustLevel) -> u8 {
+fn trust_to_u8(level: SkillTrustLevel) -> u8 {
     match level {
-        TrustLevel::Trusted => 0,
-        TrustLevel::Verified => 1,
-        TrustLevel::Quarantined => 2,
-        TrustLevel::Blocked => 3,
+        SkillTrustLevel::Trusted => 0,
+        SkillTrustLevel::Verified => 1,
+        SkillTrustLevel::Quarantined => 2,
+        SkillTrustLevel::Blocked => 3,
     }
 }
 
-fn u8_to_trust(v: u8) -> TrustLevel {
+fn u8_to_trust(v: u8) -> SkillTrustLevel {
     match v {
-        0 => TrustLevel::Trusted,
-        1 => TrustLevel::Verified,
-        2 => TrustLevel::Quarantined,
-        _ => TrustLevel::Blocked,
+        0 => SkillTrustLevel::Trusted,
+        1 => SkillTrustLevel::Verified,
+        2 => SkillTrustLevel::Quarantined,
+        _ => SkillTrustLevel::Blocked,
     }
 }
 
@@ -98,7 +98,7 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         Self {
             inner,
             policy,
-            effective_trust: AtomicU8::new(trust_to_u8(TrustLevel::Trusted)),
+            effective_trust: AtomicU8::new(trust_to_u8(SkillTrustLevel::Trusted)),
             mcp_tool_ids: Arc::new(RwLock::new(HashSet::new())),
         }
     }
@@ -111,13 +111,13 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         Arc::clone(&self.mcp_tool_ids)
     }
 
-    pub fn set_effective_trust(&self, level: TrustLevel) {
+    pub fn set_effective_trust(&self, level: SkillTrustLevel) {
         self.effective_trust
             .store(trust_to_u8(level), Ordering::Relaxed);
     }
 
     #[must_use]
-    pub fn effective_trust(&self) -> TrustLevel {
+    pub fn effective_trust(&self) -> SkillTrustLevel {
         u8_to_trust(self.effective_trust.load(Ordering::Relaxed))
     }
 
@@ -130,19 +130,19 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
 
     fn check_trust(&self, tool_id: &str, input: &str) -> Result<(), ToolError> {
         match self.effective_trust() {
-            TrustLevel::Blocked => {
+            SkillTrustLevel::Blocked => {
                 return Err(ToolError::Blocked {
                     command: "all tools blocked (trust=blocked)".to_owned(),
                 });
             }
-            TrustLevel::Quarantined => {
+            SkillTrustLevel::Quarantined => {
                 if is_quarantine_denied(tool_id) || self.is_mcp_tool(tool_id) {
                     return Err(ToolError::Blocked {
                         command: format!("{tool_id} denied (trust=quarantined)"),
                     });
                 }
             }
-            TrustLevel::Trusted | TrustLevel::Verified => {}
+            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
         }
 
         // PermissionPolicy was designed for the bash tool. In Supervised mode, tools
@@ -173,7 +173,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         // cannot be applied selectively. Block entirely for Quarantined to match the
         // conservative posture: unknown tool identity = deny.
         match self.effective_trust() {
-            TrustLevel::Blocked | TrustLevel::Quarantined => {
+            SkillTrustLevel::Blocked | SkillTrustLevel::Quarantined => {
                 return Err(ToolError::Blocked {
                     command: format!(
                         "tool execution denied (trust={})",
@@ -181,7 +181,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                     ),
                 });
             }
-            TrustLevel::Trusted | TrustLevel::Verified => {}
+            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
         }
         self.inner.execute(response).await
     }
@@ -189,7 +189,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
     async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         // Same rationale as execute(): no tool_id available for QUARANTINE_DENIED check.
         match self.effective_trust() {
-            TrustLevel::Blocked | TrustLevel::Quarantined => {
+            SkillTrustLevel::Blocked | SkillTrustLevel::Quarantined => {
                 return Err(ToolError::Blocked {
                     command: format!(
                         "tool execution denied (trust={})",
@@ -197,7 +197,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                     ),
                 });
             }
-            TrustLevel::Trusted | TrustLevel::Verified => {}
+            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
         }
         self.inner.execute_confirmed(response).await
     }
@@ -227,19 +227,19 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         // Bypass check_trust: caller already obtained user approval.
         // Still enforce Blocked/Quarantined trust level constraints.
         match self.effective_trust() {
-            TrustLevel::Blocked => {
+            SkillTrustLevel::Blocked => {
                 return Err(ToolError::Blocked {
                     command: "all tools blocked (trust=blocked)".to_owned(),
                 });
             }
-            TrustLevel::Quarantined => {
+            SkillTrustLevel::Quarantined => {
                 if is_quarantine_denied(&call.tool_id) || self.is_mcp_tool(&call.tool_id) {
                     return Err(ToolError::Blocked {
                         command: format!("{} denied (trust=quarantined)", call.tool_id),
                     });
                 }
             }
-            TrustLevel::Trusted | TrustLevel::Verified => {}
+            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
         }
         self.inner.execute_tool_call_confirmed(call).await
     }
@@ -252,7 +252,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.inner.is_tool_retryable(tool_id)
     }
 
-    fn set_effective_trust(&self, level: crate::TrustLevel) {
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         self.effective_trust
             .store(trust_to_u8(level), Ordering::Relaxed);
     }
@@ -306,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn trusted_allows_all() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate.execute_tool_call(&make_call("bash")).await;
         // Default policy has no rules for bash => skip policy check => Ok
@@ -316,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_bash() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("bash")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -325,7 +325,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_write() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("write")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -334,7 +334,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_edit() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("edit")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -343,7 +343,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_delete_path() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("delete_path")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_fetch() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("fetch")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -361,7 +361,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_memory_save() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("memory_save")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -371,7 +371,7 @@ mod tests {
     async fn quarantined_allows_read() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         // "read" (file read) is not in QUARANTINE_DENIED — should be allowed
         let result = gate.execute_tool_call(&make_call("read")).await;
@@ -382,7 +382,7 @@ mod tests {
     async fn quarantined_allows_file_read() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("file_read")).await;
         // file_read is not in quarantine denied list, and policy has no rules for file_read => Ok
@@ -392,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn blocked_denies_everything() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Blocked);
+        gate.set_effective_trust(SkillTrustLevel::Blocked);
 
         let result = gate.execute_tool_call(&make_call("file_read")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -402,7 +402,7 @@ mod tests {
     async fn policy_deny_overrides_trust() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&["sudo".into()], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate
             .execute_tool_call(&make_call_with_cmd("bash", "sudo rm"))
@@ -413,7 +413,7 @@ mod tests {
     #[tokio::test]
     async fn blocked_denies_execute() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Blocked);
+        gate.set_effective_trust(SkillTrustLevel::Blocked);
 
         let result = gate.execute("some response").await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -422,7 +422,7 @@ mod tests {
     #[tokio::test]
     async fn blocked_denies_execute_confirmed() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Blocked);
+        gate.set_effective_trust(SkillTrustLevel::Blocked);
 
         let result = gate.execute_confirmed("some response").await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -431,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn trusted_allows_execute() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate.execute("some response").await;
         assert!(result.is_ok());
@@ -441,7 +441,7 @@ mod tests {
     async fn verified_with_allow_policy_succeeds() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Verified);
+        gate.set_effective_trust(SkillTrustLevel::Verified);
 
         let result = gate
             .execute_tool_call(&make_call_with_cmd("bash", "echo hi"))
@@ -453,7 +453,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_web_scrape() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("web_scrape")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -523,7 +523,7 @@ mod tests {
         // MCP tool with Supervised mode + from_legacy policy (no rules for MCP tool) => Ok
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let mut params = serde_json::Map::new();
         params.insert(
@@ -546,7 +546,7 @@ mod tests {
         // Bash with explicit Deny rule => Err(ToolCallBlocked)
         let policy = crate::permissions::PermissionPolicy::from_legacy(&["sudo".into()], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate
             .execute_tool_call(&make_call_with_cmd("bash", "sudo apt install vim"))
@@ -562,7 +562,7 @@ mod tests {
         // Tool with explicit Allow rules => Ok
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate
             .execute_tool_call(&make_call_with_cmd("bash", "echo hello"))
@@ -579,7 +579,7 @@ mod tests {
         let policy =
             crate::permissions::PermissionPolicy::default().with_autonomy(AutonomyLevel::ReadOnly);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate
             .execute_tool_call(&make_call("mcpls_get_diagnostics"))
@@ -593,16 +593,16 @@ mod tests {
     #[test]
     fn set_effective_trust_interior_mutability() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        assert_eq!(gate.effective_trust(), TrustLevel::Trusted);
+        assert_eq!(gate.effective_trust(), SkillTrustLevel::Trusted);
 
-        gate.set_effective_trust(TrustLevel::Quarantined);
-        assert_eq!(gate.effective_trust(), TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+        assert_eq!(gate.effective_trust(), SkillTrustLevel::Quarantined);
 
-        gate.set_effective_trust(TrustLevel::Blocked);
-        assert_eq!(gate.effective_trust(), TrustLevel::Blocked);
+        gate.set_effective_trust(SkillTrustLevel::Blocked);
+        assert_eq!(gate.effective_trust(), SkillTrustLevel::Blocked);
 
-        gate.set_effective_trust(TrustLevel::Trusted);
-        assert_eq!(gate.effective_trust(), TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
+        assert_eq!(gate.effective_trust(), SkillTrustLevel::Trusted);
     }
 
     // is_quarantine_denied unit tests
@@ -669,7 +669,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_mcp_write_tool() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("filesystem_write")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -679,7 +679,7 @@ mod tests {
     async fn quarantined_allows_mcp_read_file() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate
             .execute_tool_call(&make_call("filesystem_read_file"))
@@ -690,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_mcp_bash_tool() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("shell_bash")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -699,7 +699,7 @@ mod tests {
     #[tokio::test]
     async fn quarantined_denies_mcp_memory_save() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate
             .execute_tool_call(&make_call("server_memory_save"))
@@ -711,7 +711,7 @@ mod tests {
     async fn quarantined_denies_mcp_confirmed_path() {
         // execute_tool_call_confirmed also enforces quarantine via is_quarantine_denied
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate
             .execute_tool_call_confirmed(&make_call("filesystem_write"))
@@ -733,7 +733,7 @@ mod tests {
     async fn quarantined_denies_registered_mcp_tool_novel_name() {
         // "github_run_command" has no QUARANTINE_DENIED suffix match, but is registered as MCP.
         let gate = gate_with_mcp_ids(&["github_run_command"]);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate
             .execute_tool_call(&make_call("github_run_command"))
@@ -745,7 +745,7 @@ mod tests {
     async fn quarantined_denies_registered_mcp_tool_execute() {
         // "shell_execute" — no suffix match on "execute", but registered as MCP.
         let gate = gate_with_mcp_ids(&["shell_execute"]);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("shell_execute")).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -755,7 +755,7 @@ mod tests {
     async fn quarantined_allows_unregistered_tool_not_in_denied_list() {
         // Tool not in MCP set and not in QUARANTINE_DENIED — allowed.
         let gate = gate_with_mcp_ids(&["other_tool"]);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("read")).await;
         assert!(result.is_ok());
@@ -765,7 +765,7 @@ mod tests {
     async fn trusted_allows_registered_mcp_tool() {
         // At Trusted level, MCP registry check must NOT fire.
         let gate = gate_with_mcp_ids(&["github_run_command"]);
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate
             .execute_tool_call(&make_call("github_run_command"))
@@ -777,7 +777,7 @@ mod tests {
     async fn quarantined_denies_mcp_tool_via_confirmed_path() {
         // execute_tool_call_confirmed must also check the MCP registry.
         let gate = gate_with_mcp_ids(&["docker_container_exec"]);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate
             .execute_tool_call_confirmed(&make_call("docker_container_exec"))

@@ -216,7 +216,7 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
         self.inner.set_skill_env(env);
     }
 
-    fn set_effective_trust(&self, level: crate::TrustLevel) {
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         self.inner.set_effective_trust(level);
     }
 
@@ -476,11 +476,11 @@ mod tests {
 
     #[tokio::test]
     async fn delegation_set_effective_trust() {
-        use crate::TrustLevel;
+        use crate::SkillTrustLevel;
         let (_, llm) = MockLlm::new("ALLOW");
         let (_, inner) = MockInner::new();
         let gate = AdversarialPolicyGateExecutor::new(inner, make_validator(false), Arc::new(llm));
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
     }
 
     #[tokio::test]

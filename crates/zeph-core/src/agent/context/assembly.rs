@@ -1454,13 +1454,13 @@ impl<C: Channel> Agent<C> {
 
         // Apply the most restrictive trust level among active skills to the executor gate.
         let effective_trust = if self.skill_state.active_skill_names.is_empty() {
-            zeph_tools::TrustLevel::Trusted
+            zeph_tools::SkillTrustLevel::Trusted
         } else {
             self.skill_state
                 .active_skill_names
                 .iter()
                 .filter_map(|name| trust_map.get(name).copied())
-                .fold(zeph_tools::TrustLevel::Trusted, |acc, lvl| {
+                .fold(zeph_tools::SkillTrustLevel::Trusted, |acc, lvl| {
                     acc.min_trust(lvl)
                 })
         };

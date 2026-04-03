@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use zeph_skills::TrustLevel;
+use zeph_skills::SkillTrustLevel;
 
 use super::{Agent, Channel};
 
@@ -44,10 +44,10 @@ impl<C: Channel> Agent<C> {
                 if let Some(level_str) = args.get(1).copied() {
                     // Set trust level
                     let level = match level_str {
-                        "trusted" => TrustLevel::Trusted,
-                        "verified" => TrustLevel::Verified,
-                        "quarantined" => TrustLevel::Quarantined,
-                        "blocked" => TrustLevel::Blocked,
+                        "trusted" => SkillTrustLevel::Trusted,
+                        "verified" => SkillTrustLevel::Verified,
+                        "quarantined" => SkillTrustLevel::Quarantined,
+                        "blocked" => SkillTrustLevel::Blocked,
                         _ => {
                             self.channel
                                 .send("Invalid trust level. Use: trusted, verified, quarantined, blocked")
@@ -192,7 +192,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    pub(super) async fn build_skill_trust_map(&self) -> HashMap<String, TrustLevel> {
+    pub(super) async fn build_skill_trust_map(&self) -> HashMap<String, SkillTrustLevel> {
         let Some(memory) = &self.memory_state.memory else {
             return HashMap::new();
         };
@@ -202,10 +202,10 @@ impl<C: Channel> Agent<C> {
         rows.into_iter()
             .filter_map(|r| {
                 let level = match r.trust_level.as_str() {
-                    "trusted" => TrustLevel::Trusted,
-                    "verified" => TrustLevel::Verified,
-                    "quarantined" => TrustLevel::Quarantined,
-                    "blocked" => TrustLevel::Blocked,
+                    "trusted" => SkillTrustLevel::Trusted,
+                    "verified" => SkillTrustLevel::Verified,
+                    "quarantined" => SkillTrustLevel::Quarantined,
+                    "blocked" => SkillTrustLevel::Blocked,
                     _ => return None,
                 };
                 Some((r.skill_name, level))

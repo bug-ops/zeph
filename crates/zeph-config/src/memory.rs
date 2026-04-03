@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::defaults::{default_sqlite_path_field, default_true};
+use crate::providers::ProviderName;
 
 fn default_sqlite_pool_size() -> u32 {
     5
@@ -358,7 +359,7 @@ pub struct TierConfig {
     pub scene_batch_size: usize,
     /// Provider name from `[[llm.providers]]` for scene label/profile generation.
     /// Falls back to the primary provider when empty. Default: `""`.
-    pub scene_provider: String,
+    pub scene_provider: ProviderName,
     /// How often the background scene consolidation sweep runs, in seconds. Default: `7200`.
     pub scene_sweep_interval_secs: u64,
 }
@@ -378,7 +379,7 @@ impl Default for TierConfig {
             scene_enabled: false,
             scene_similarity_threshold: default_scene_similarity_threshold(),
             scene_batch_size: default_scene_batch_size(),
-            scene_provider: String::new(),
+            scene_provider: ProviderName::default(),
             scene_sweep_interval_secs: default_scene_sweep_interval_secs(),
         }
     }
@@ -1036,7 +1037,7 @@ pub struct CompressionConfig {
     pub model: String,
     /// Provider name from `[[llm.providers]]` for `compress_context` summaries.
     /// Falls back to the primary provider when empty. Default: `""`.
-    pub compress_provider: String,
+    pub compress_provider: ProviderName,
     /// Compaction probe: validates summary quality before committing it (#1609).
     #[serde(default)]
     pub probe: zeph_memory::CompactionProbeConfig,
@@ -1262,7 +1263,7 @@ pub struct ConsolidationConfig {
     /// Provider name from `[[llm.providers]]` for consolidation LLM calls.
     /// Falls back to the primary provider when empty. Default: `""`.
     #[serde(default)]
-    pub consolidation_provider: String,
+    pub consolidation_provider: ProviderName,
     /// Minimum LLM-assigned confidence for a topology op to be applied. Default: `0.7`.
     #[serde(default = "default_consolidation_confidence_threshold")]
     pub confidence_threshold: f32,
@@ -1282,7 +1283,7 @@ impl Default for ConsolidationConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            consolidation_provider: String::new(),
+            consolidation_provider: ProviderName::default(),
             confidence_threshold: default_consolidation_confidence_threshold(),
             sweep_interval_secs: default_consolidation_sweep_interval_secs(),
             sweep_batch_size: default_consolidation_sweep_batch_size(),
@@ -1482,7 +1483,7 @@ pub struct AdmissionConfig {
     pub fast_path_margin: f32,
     /// Provider name from `[[llm.providers]]` for `future_utility` LLM evaluation.
     /// Falls back to the primary provider when empty. Default: `""`.
-    pub admission_provider: String,
+    pub admission_provider: ProviderName,
     /// Per-factor weights. Normalized at runtime. Default: `{0.30, 0.15, 0.30, 0.10, 0.15}`.
     pub weights: AdmissionWeights,
     /// Admission decision strategy. Default: `heuristic`.
@@ -1504,7 +1505,7 @@ pub struct AdmissionConfig {
     /// Used only for borderline cases (similarity within 0.1 of threshold).
     /// Falls back to the primary provider when empty. Default: `""`.
     #[serde(default)]
-    pub goal_utility_provider: String,
+    pub goal_utility_provider: ProviderName,
     /// Minimum cosine similarity between goal embedding and candidate memory
     /// to consider it goal-relevant. Below this, `goal_utility = 0.0`. Default: `0.4`.
     #[serde(default = "default_goal_utility_threshold")]
@@ -1529,13 +1530,13 @@ impl Default for AdmissionConfig {
             enabled: false,
             threshold: default_admission_threshold(),
             fast_path_margin: default_admission_fast_path_margin(),
-            admission_provider: String::new(),
+            admission_provider: ProviderName::default(),
             weights: AdmissionWeights::default(),
             admission_strategy: AdmissionStrategy::default(),
             rl_min_samples: default_rl_min_samples(),
             rl_retrain_interval_secs: default_rl_retrain_interval_secs(),
             goal_conditioned_write: false,
-            goal_utility_provider: String::new(),
+            goal_utility_provider: ProviderName::default(),
             goal_utility_threshold: default_goal_utility_threshold(),
             goal_utility_weight: default_goal_utility_weight(),
         }
@@ -1569,7 +1570,7 @@ pub struct StoreRoutingConfig {
     pub strategy: StoreRoutingStrategy,
     /// Provider name from `[[llm.providers]]` for LLM-based classification.
     /// Falls back to the primary provider when empty. Default: `""`.
-    pub routing_classifier_provider: String,
+    pub routing_classifier_provider: ProviderName,
     /// Route to use when the classifier is uncertain (confidence < threshold).
     /// Default: `"hybrid"`.
     pub fallback_route: String,
@@ -1583,7 +1584,7 @@ impl Default for StoreRoutingConfig {
         Self {
             enabled: false,
             strategy: StoreRoutingStrategy::Heuristic,
-            routing_classifier_provider: String::new(),
+            routing_classifier_provider: ProviderName::default(),
             fallback_route: "hybrid".into(),
             confidence_threshold: 0.7,
         }

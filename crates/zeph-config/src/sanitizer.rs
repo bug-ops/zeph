@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
 use crate::defaults::default_true;
@@ -455,7 +456,7 @@ pub struct ResponseVerificationConfig {
     /// receives a sanitized summary (via `QuarantinedSummarizer`) to prevent recursive
     /// injection. Empty string = disabled (regex-only verification).
     #[serde(default)]
-    pub verifier_provider: String,
+    pub verifier_provider: ProviderName,
 }
 
 impl Default for ResponseVerificationConfig {
@@ -463,7 +464,7 @@ impl Default for ResponseVerificationConfig {
         Self {
             enabled: true,
             block_on_detection: false,
-            verifier_provider: String::new(),
+            verifier_provider: ProviderName::default(),
         }
     }
 }

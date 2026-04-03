@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use zeph_tools::TrustLevel;
+use zeph_tools::SkillTrustLevel;
 
 use crate::error::SkillError;
 use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta, validate_path_within};
@@ -229,7 +229,7 @@ impl SkillRegistry {
     #[must_use]
     pub fn check_escalations(
         &self,
-        trust_levels: &[(String, TrustLevel)],
+        trust_levels: &[(String, SkillTrustLevel)],
     ) -> Vec<EscalationResult> {
         let mut results = Vec::new();
         for (skill_name, trust_level) in trust_levels {

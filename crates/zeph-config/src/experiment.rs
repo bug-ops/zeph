@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
 fn default_planner_max_tokens() -> u32 {
@@ -148,7 +149,7 @@ pub struct OrchestrationConfig {
     /// Provider name from `[[llm.providers]]` for planning LLM calls.
     /// Empty string = use the agent's primary provider.
     #[serde(default)]
-    pub planner_provider: String,
+    pub planner_provider: ProviderName,
     /// Maximum tokens budget hint for planner responses. Reserved for future use when
     /// per-call token limits are added to the `LlmProvider::chat` API.
     #[serde(default = "default_planner_max_tokens")]
@@ -173,7 +174,7 @@ pub struct OrchestrationConfig {
     /// Provider name from `[[llm.providers]]` for verification LLM calls.
     /// Empty string = use the agent's primary provider. Should be a cheap/fast provider.
     #[serde(default)]
-    pub verify_provider: String,
+    pub verify_provider: ProviderName,
     /// Maximum tokens budget for verification LLM calls. Default: 1024.
     #[serde(default = "default_verify_max_tokens")]
     pub verify_max_tokens: u32,
@@ -195,7 +196,7 @@ pub struct OrchestrationConfig {
     /// Prefer mid-tier models (e.g., qwen2.5:14b) for reliability per arXiv:2601.16280.
     /// Empty string = use the primary provider.
     #[serde(default)]
-    pub tool_provider: String,
+    pub tool_provider: ProviderName,
     /// Minimum completeness score (0.0–1.0) for the plan to be accepted without
     /// replanning. Default: 0.7. When the verifier reports `confidence <
     /// completeness_threshold` AND gaps exist, a replan cycle is triggered.
@@ -228,7 +229,7 @@ impl Default for OrchestrationConfig {
             default_failure_strategy: "abort".to_string(),
             default_max_retries: 3,
             task_timeout_secs: 300,
-            planner_provider: String::new(),
+            planner_provider: ProviderName::default(),
             planner_max_tokens: default_planner_max_tokens(),
             dependency_context_budget: 16384,
             confirm_before_execute: true,
@@ -236,12 +237,12 @@ impl Default for OrchestrationConfig {
             deferral_backoff_ms: default_deferral_backoff_ms(),
             plan_cache: PlanCacheConfig::default(),
             topology_selection: false,
-            verify_provider: String::new(),
+            verify_provider: ProviderName::default(),
             verify_max_tokens: default_verify_max_tokens(),
             max_replans: default_max_replans(),
             verify_completeness: false,
             completeness_threshold: default_completeness_threshold(),
-            tool_provider: String::new(),
+            tool_provider: ProviderName::default(),
             cascade_routing: false,
             cascade_failure_threshold: default_cascade_failure_threshold(),
             tree_optimized_dispatch: false,

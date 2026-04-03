@@ -20,7 +20,7 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use zeph_tools::TrustLevel;
+use zeph_tools::SkillTrustLevel;
 use zeph_tools::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
 use zeph_tools::trust_gate::QUARANTINE_DENIED;
 
@@ -73,11 +73,11 @@ pub struct EscalationResult {
 #[must_use]
 pub fn check_capability_escalation(
     allowed_tools: &[String],
-    trust_level: TrustLevel,
+    trust_level: SkillTrustLevel,
 ) -> Vec<String> {
     match trust_level {
-        TrustLevel::Trusted | TrustLevel::Verified => Vec::new(),
-        TrustLevel::Quarantined => allowed_tools
+        SkillTrustLevel::Trusted | SkillTrustLevel::Verified => Vec::new(),
+        SkillTrustLevel::Quarantined => allowed_tools
             .iter()
             .filter(|tool| {
                 QUARANTINE_DENIED
@@ -87,7 +87,7 @@ pub fn check_capability_escalation(
             .cloned()
             .collect(),
         // Blocked skills must not declare any tools — all are violations.
-        TrustLevel::Blocked => allowed_tools.to_vec(),
+        SkillTrustLevel::Blocked => allowed_tools.to_vec(),
     }
 }
 
@@ -146,48 +146,48 @@ mod tests {
     #[test]
     fn capability_escalation_trusted_allows_all() {
         let tools = vec!["bash".to_owned(), "write".to_owned()];
-        assert!(check_capability_escalation(&tools, TrustLevel::Trusted).is_empty());
+        assert!(check_capability_escalation(&tools, SkillTrustLevel::Trusted).is_empty());
     }
 
     #[test]
     fn capability_escalation_verified_allows_all() {
         let tools = vec!["bash".to_owned()];
-        assert!(check_capability_escalation(&tools, TrustLevel::Verified).is_empty());
+        assert!(check_capability_escalation(&tools, SkillTrustLevel::Verified).is_empty());
     }
 
     #[test]
     fn capability_escalation_quarantined_detects_bash() {
         let tools = vec!["bash".to_owned()];
-        let denied = check_capability_escalation(&tools, TrustLevel::Quarantined);
+        let denied = check_capability_escalation(&tools, SkillTrustLevel::Quarantined);
         assert!(denied.contains(&"bash".to_owned()));
     }
 
     #[test]
     fn capability_escalation_quarantined_allows_safe_tool() {
         let tools = vec!["read_file".to_owned()];
-        let denied = check_capability_escalation(&tools, TrustLevel::Quarantined);
+        let denied = check_capability_escalation(&tools, SkillTrustLevel::Quarantined);
         assert!(denied.is_empty());
     }
 
     #[test]
     fn capability_escalation_blocked_returns_all() {
         let tools = vec!["read_file".to_owned(), "list_dir".to_owned()];
-        let denied = check_capability_escalation(&tools, TrustLevel::Blocked);
+        let denied = check_capability_escalation(&tools, SkillTrustLevel::Blocked);
         assert_eq!(denied.len(), 2);
     }
 
     #[test]
     fn capability_escalation_empty_allowed_tools() {
         let tools: Vec<String> = vec![];
-        assert!(check_capability_escalation(&tools, TrustLevel::Quarantined).is_empty());
-        assert!(check_capability_escalation(&tools, TrustLevel::Blocked).is_empty());
+        assert!(check_capability_escalation(&tools, SkillTrustLevel::Quarantined).is_empty());
+        assert!(check_capability_escalation(&tools, SkillTrustLevel::Blocked).is_empty());
     }
 
     #[test]
     fn capability_escalation_quarantined_detects_mcp_suffixed_bash() {
         // MCP-wrapped tool: "myserver_bash" ends with "_bash" — must be denied.
         let tools = vec!["myserver_bash".to_owned()];
-        let denied = check_capability_escalation(&tools, TrustLevel::Quarantined);
+        let denied = check_capability_escalation(&tools, SkillTrustLevel::Quarantined);
         assert!(denied.contains(&"myserver_bash".to_owned()));
     }
 

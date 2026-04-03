@@ -485,7 +485,7 @@ impl AppBuilder {
             // Build a trust-level mapping from all loaded skill metas.
             // Skills without a trust record default to the configured default_level.
             let default_level = self.config.skills.trust.default_level;
-            let trust_levels: Vec<(String, zeph_tools::TrustLevel)> = registry
+            let trust_levels: Vec<(String, zeph_tools::SkillTrustLevel)> = registry
                 .all_meta()
                 .iter()
                 .map(|meta| (meta.name.clone(), default_level))

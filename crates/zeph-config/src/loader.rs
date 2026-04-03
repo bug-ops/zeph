@@ -240,6 +240,126 @@ impl Config {
             )));
         }
 
+        self.validate_provider_names()?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_provider_names(&self) -> Result<(), ConfigError> {
+        use std::collections::HashSet;
+        let known: HashSet<String> = self
+            .llm
+            .providers
+            .iter()
+            .map(super::providers::ProviderEntry::effective_name)
+            .collect();
+
+        let fields: &[(&str, &crate::providers::ProviderName)] = &[
+            (
+                "memory.tiers.scene_provider",
+                &self.memory.tiers.scene_provider,
+            ),
+            (
+                "memory.compression.compress_provider",
+                &self.memory.compression.compress_provider,
+            ),
+            (
+                "memory.consolidation.consolidation_provider",
+                &self.memory.consolidation.consolidation_provider,
+            ),
+            (
+                "memory.admission.admission_provider",
+                &self.memory.admission.admission_provider,
+            ),
+            (
+                "memory.admission.goal_utility_provider",
+                &self.memory.admission.goal_utility_provider,
+            ),
+            (
+                "memory.store_routing.routing_classifier_provider",
+                &self.memory.store_routing.routing_classifier_provider,
+            ),
+            (
+                "skills.learning.feedback_provider",
+                &self.skills.learning.feedback_provider,
+            ),
+            (
+                "skills.learning.arise_trace_provider",
+                &self.skills.learning.arise_trace_provider,
+            ),
+            (
+                "skills.learning.stem_provider",
+                &self.skills.learning.stem_provider,
+            ),
+            (
+                "skills.learning.erl_extract_provider",
+                &self.skills.learning.erl_extract_provider,
+            ),
+            (
+                "mcp.pruning.pruning_provider",
+                &self.mcp.pruning.pruning_provider,
+            ),
+            (
+                "mcp.tool_discovery.embedding_provider",
+                &self.mcp.tool_discovery.embedding_provider,
+            ),
+            (
+                "security.response_verification.verifier_provider",
+                &self.security.response_verification.verifier_provider,
+            ),
+            (
+                "orchestration.planner_provider",
+                &self.orchestration.planner_provider,
+            ),
+            (
+                "orchestration.verify_provider",
+                &self.orchestration.verify_provider,
+            ),
+            (
+                "orchestration.tool_provider",
+                &self.orchestration.tool_provider,
+            ),
+        ];
+
+        for (field, name) in fields {
+            if !name.is_empty() && !known.contains(name.as_str()) {
+                return Err(ConfigError::Validation(format!(
+                    "{field} = {:?} does not match any [[llm.providers]] entry",
+                    name.as_str()
+                )));
+            }
+        }
+
+        if let Some(triage) = self
+            .llm
+            .complexity_routing
+            .as_ref()
+            .and_then(|cr| cr.triage_provider.as_ref())
+            .filter(|t| !t.is_empty() && !known.contains(t.as_str()))
+        {
+            return Err(ConfigError::Validation(format!(
+                "llm.complexity_routing.triage_provider = {:?} does not match any \
+                 [[llm.providers]] entry",
+                triage.as_str()
+            )));
+        }
+
+        if let Some(embed) = self
+            .llm
+            .router
+            .as_ref()
+            .and_then(|r| r.bandit.as_ref())
+            .map(|b| &b.embedding_provider)
+            .filter(|p| !p.is_empty() && !known.contains(p.as_str()))
+        {
+            return Err(ConfigError::Validation(format!(
+                "llm.router.bandit.embedding_provider = {:?} does not match any \
+                 [[llm.providers]] entry",
+                embed.as_str()
+            )));
+        }
+
         Ok(())
     }
 
@@ -450,6 +570,77 @@ mod tests {
         assert!(
             err.to_string().contains("completeness_threshold"),
             "unexpected error: {err}"
+        );
+    }
+
+    fn config_with_provider(name: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.llm.providers.push(crate::providers::ProviderEntry {
+            provider_type: crate::providers::ProviderKind::Ollama,
+            name: Some(name.into()),
+            ..Default::default()
+        });
+        cfg
+    }
+
+    #[test]
+    fn validate_provider_names_all_empty_ok() {
+        let cfg = Config::default();
+        assert!(cfg.validate_provider_names().is_ok());
+    }
+
+    #[test]
+    fn validate_provider_names_matching_provider_ok() {
+        let mut cfg = config_with_provider("fast");
+        cfg.memory.admission.admission_provider = crate::providers::ProviderName::new("fast");
+        assert!(cfg.validate_provider_names().is_ok());
+    }
+
+    #[test]
+    fn validate_provider_names_unknown_provider_err() {
+        let mut cfg = config_with_provider("fast");
+        cfg.memory.admission.admission_provider =
+            crate::providers::ProviderName::new("nonexistent");
+        let err = cfg.validate_provider_names().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("admission_provider") && msg.contains("nonexistent"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_provider_names_triage_provider_none_ok() {
+        let mut cfg = config_with_provider("fast");
+        cfg.llm.complexity_routing = Some(crate::providers::ComplexityRoutingConfig {
+            triage_provider: None,
+            ..Default::default()
+        });
+        assert!(cfg.validate_provider_names().is_ok());
+    }
+
+    #[test]
+    fn validate_provider_names_triage_provider_matching_ok() {
+        let mut cfg = config_with_provider("fast");
+        cfg.llm.complexity_routing = Some(crate::providers::ComplexityRoutingConfig {
+            triage_provider: Some(crate::providers::ProviderName::new("fast")),
+            ..Default::default()
+        });
+        assert!(cfg.validate_provider_names().is_ok());
+    }
+
+    #[test]
+    fn validate_provider_names_triage_provider_unknown_err() {
+        let mut cfg = config_with_provider("fast");
+        cfg.llm.complexity_routing = Some(crate::providers::ComplexityRoutingConfig {
+            triage_provider: Some(crate::providers::ProviderName::new("ghost")),
+            ..Default::default()
+        });
+        let err = cfg.validate_provider_names().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("triage_provider") && msg.contains("ghost"),
+            "unexpected error: {msg}"
         );
     }
 }

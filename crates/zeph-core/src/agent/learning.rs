@@ -1109,7 +1109,7 @@ impl<C: Channel> Agent<C> {
             let _ = tx.send(format!("Evolving skill: {skill_name}…"));
         }
         let args = AriseTaskArgs {
-            provider: self.resolve_background_provider(&config.arise_trace_provider),
+            provider: self.resolve_background_provider(config.arise_trace_provider.as_str()),
             memory,
             skill_name: skill_name.to_string(),
             skill_body: skill.body.clone(),
@@ -1169,7 +1169,7 @@ impl<C: Channel> Agent<C> {
             let _ = tx.send("Learning from patterns…".to_string());
         }
         let args = StemTaskArgs {
-            provider: self.resolve_background_provider(&config.stem_provider),
+            provider: self.resolve_background_provider(config.stem_provider.as_str()),
             memory,
             tool_sequence,
             sequence_hash,
@@ -1217,7 +1217,7 @@ impl<C: Channel> Agent<C> {
             let _ = tx.send("Reflecting on experience…".to_string());
         }
         let args = ErlTaskArgs {
-            provider: self.resolve_background_provider(&config.erl_extract_provider),
+            provider: self.resolve_background_provider(config.erl_extract_provider.as_str()),
             memory,
             skill_name: skill_name.to_string(),
             task_summary,
@@ -2050,7 +2050,7 @@ mod tests {
             auto_promote_threshold: 0.95,
             auto_demote_min_uses: 30,
             auto_demote_threshold: 0.40,
-            feedback_provider: String::new(),
+            feedback_provider: Default::default(),
             cross_session_rollout: false,
             min_sessions_before_promote: 2,
             min_sessions_before_demote: 1,

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use zeph_tools::AutonomyLevel;
 use zeph_tools::PreExecutionVerifierConfig;
-use zeph_tools::TrustLevel;
+use zeph_tools::SkillTrustLevel;
 
 use crate::defaults::default_true;
 
@@ -43,16 +43,16 @@ use crate::sanitizer::{
     PiiFilterConfig, ResponseVerificationConfig,
 };
 
-fn default_trust_default_level() -> TrustLevel {
-    TrustLevel::Quarantined
+fn default_trust_default_level() -> SkillTrustLevel {
+    SkillTrustLevel::Quarantined
 }
 
-fn default_trust_local_level() -> TrustLevel {
-    TrustLevel::Trusted
+fn default_trust_local_level() -> SkillTrustLevel {
+    SkillTrustLevel::Trusted
 }
 
-fn default_trust_hash_mismatch_level() -> TrustLevel {
-    TrustLevel::Quarantined
+fn default_trust_hash_mismatch_level() -> SkillTrustLevel {
+    SkillTrustLevel::Quarantined
 }
 
 fn default_llm_timeout() -> u64 {
@@ -78,11 +78,11 @@ fn default_llm_request_timeout() -> u64 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TrustConfig {
     #[serde(default = "default_trust_default_level")]
-    pub default_level: TrustLevel,
+    pub default_level: SkillTrustLevel,
     #[serde(default = "default_trust_local_level")]
-    pub local_level: TrustLevel,
+    pub local_level: SkillTrustLevel,
     #[serde(default = "default_trust_hash_mismatch_level")]
-    pub hash_mismatch_level: TrustLevel,
+    pub hash_mismatch_level: SkillTrustLevel,
     /// Scan skill body content for injection patterns at load time.
     ///
     /// When `true`, `SkillRegistry::scan_loaded()` is called at agent startup.
@@ -199,9 +199,9 @@ mod tests {
     #[test]
     fn trust_config_serde_roundtrip_with_scan_on_load() {
         let config = TrustConfig {
-            default_level: TrustLevel::Quarantined,
-            local_level: TrustLevel::Trusted,
-            hash_mismatch_level: TrustLevel::Quarantined,
+            default_level: SkillTrustLevel::Quarantined,
+            local_level: SkillTrustLevel::Trusted,
+            hash_mismatch_level: SkillTrustLevel::Quarantined,
             scan_on_load: false,
             scanner: ScannerConfig::default(),
         };

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::defaults::default_true;
+use crate::providers::ProviderName;
 
 pub use zeph_mcp::{McpTrustLevel, tool::ToolSecurityMeta};
 
@@ -246,7 +247,7 @@ pub struct ToolPruningConfig {
     pub max_tools: usize,
     /// Provider name from `[[llm.providers]]` for the pruning LLM call.
     /// Should be a fast/cheap model. Empty string = use the default provider.
-    pub pruning_provider: String,
+    pub pruning_provider: ProviderName,
     /// Minimum number of MCP tools below which pruning is skipped.
     pub min_tools_to_prune: usize,
     /// Tool names that are never pruned (always included in the result).
@@ -258,7 +259,7 @@ impl Default for ToolPruningConfig {
         Self {
             enabled: false,
             max_tools: 15,
-            pruning_provider: String::new(),
+            pruning_provider: ProviderName::default(),
             min_tools_to_prune: 10,
             always_include: Vec::new(),
         }
@@ -298,7 +299,7 @@ pub struct ToolDiscoveryConfig {
     /// Provider name from `[[llm.providers]]` for embedding computation.
     /// Should reference a fast/cheap embedding model.  Empty = use the agent's
     /// default embedding provider.
-    pub embedding_provider: String,
+    pub embedding_provider: ProviderName,
     /// Tool names always included regardless of similarity score.
     pub always_include: Vec<String>,
     /// Minimum tool count below which discovery is skipped (all tools passed through).
@@ -314,7 +315,7 @@ impl Default for ToolDiscoveryConfig {
             strategy: ToolDiscoveryStrategyConfig::None,
             top_k: 10,
             min_similarity: 0.2,
-            embedding_provider: String::new(),
+            embedding_provider: ProviderName::default(),
             always_include: Vec::new(),
             min_tools_to_filter: 10,
             strict: false,
@@ -346,7 +347,7 @@ pub struct TrustCalibrationConfig {
     pub injection_penalty: f64,
     /// Optional LLM provider for trust verification. Empty = disabled.
     #[serde(default)]
-    pub verifier_provider: String,
+    pub verifier_provider: ProviderName,
 }
 
 fn default_decay_rate() -> f64 {
@@ -366,7 +367,7 @@ impl Default for TrustCalibrationConfig {
             persist_scores: true,
             decay_rate_per_day: default_decay_rate(),
             injection_penalty: default_injection_penalty(),
-            verifier_provider: String::new(),
+            verifier_provider: ProviderName::default(),
         }
     }
 }

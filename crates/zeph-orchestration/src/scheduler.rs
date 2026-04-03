@@ -272,7 +272,7 @@ impl DagScheduler {
             topology_dirty: false,
             current_level: 0,
             verify_completeness: config.verify_completeness,
-            verify_provider: config.verify_provider.trim().to_string(),
+            verify_provider: config.verify_provider.as_str().trim().to_owned(),
             task_replan_counts: HashMap::new(),
             global_replan_count: 0,
             max_replans: config.max_replans,
@@ -375,7 +375,7 @@ impl DagScheduler {
             topology_dirty: false,
             current_level: 0,
             verify_completeness: config.verify_completeness,
-            verify_provider: config.verify_provider.trim().to_string(),
+            verify_provider: config.verify_provider.as_str().trim().to_owned(),
             task_replan_counts: HashMap::new(),
             global_replan_count: 0,
             max_replans: config.max_replans,
@@ -1367,7 +1367,7 @@ mod tests {
             default_failure_strategy: "abort".to_string(),
             default_max_retries: 3,
             task_timeout_secs: 300,
-            planner_provider: String::new(),
+            planner_provider: Default::default(),
             planner_max_tokens: 4096,
             dependency_context_budget: 16384,
             confirm_before_execute: true,
@@ -1375,12 +1375,12 @@ mod tests {
             deferral_backoff_ms: 250,
             plan_cache: zeph_config::PlanCacheConfig::default(),
             topology_selection: false,
-            verify_provider: String::new(),
+            verify_provider: Default::default(),
             verify_max_tokens: 1024,
             max_replans: 2,
             verify_completeness: false,
             completeness_threshold: 0.7,
-            tool_provider: String::new(),
+            tool_provider: Default::default(),
             cascade_routing: false,
             cascade_failure_threshold: 0.5,
             tree_optimized_dispatch: false,
@@ -3244,7 +3244,7 @@ mod tests {
     fn make_verify_config(provider: &str) -> zeph_config::OrchestrationConfig {
         zeph_config::OrchestrationConfig {
             verify_completeness: true,
-            verify_provider: provider.to_string(),
+            verify_provider: zeph_config::ProviderName::new(provider),
             ..make_config()
         }
     }
@@ -3489,7 +3489,7 @@ mod tests {
     #[test]
     fn verify_provider_name_returns_config_value() {
         let mut config = make_config();
-        config.verify_provider = "fast".to_string();
+        config.verify_provider = zeph_config::ProviderName::new("fast");
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
         let scheduler =
             DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![make_def("w")]).unwrap();

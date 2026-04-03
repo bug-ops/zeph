@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use zeph_tools::{DefaultEffect, PolicyContext, PolicyDecision, PolicyEnforcer, TrustLevel};
+use zeph_tools::{DefaultEffect, PolicyContext, PolicyDecision, PolicyEnforcer, SkillTrustLevel};
 
 use super::Agent;
 use super::error::AgentError;
@@ -73,12 +73,12 @@ impl<C: Channel> Agent<C> {
 
         // Parse optional --trust-level <level>.
         let mut remaining = raw.to_vec();
-        let mut trust_level = TrustLevel::Trusted;
+        let mut trust_level = SkillTrustLevel::Trusted;
         if let Some(pos) = remaining.iter().position(|&s| s == "--trust-level") {
             remaining.remove(pos);
             if pos < remaining.len() {
                 let level_str = remaining.remove(pos);
-                match TrustLevel::from_str(level_str) {
+                match SkillTrustLevel::from_str(level_str) {
                     Ok(level) => trust_level = level,
                     Err(e) => {
                         return self

@@ -547,7 +547,7 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 None
             } else if let Some(entry) = pool
                 .iter()
-                .find(|e| e.effective_name() == bandit_cfg.embedding_provider)
+                .find(|e| e.effective_name() == bandit_cfg.embedding_provider.as_str())
             {
                 match build_provider_from_entry(entry, config) {
                     Ok(p) => Some(p),

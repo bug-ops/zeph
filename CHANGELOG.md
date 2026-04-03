@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add `From<ToolStartEvent>` and `From<ToolOutputEvent>` conversions for owned `ToolData` types (#2561)
 - Move hash utilities (`blake3_hex`, `fast_hash`) to `zeph-common::hash` (removes duplicates across 3 crates) (#2557)
 - Move runtime config structs (`BeliefRevisionConfig`, `NoteLinkingConfig`, `ConsolidationConfig`) to `zeph-common::config::memory` (single source of truth) (#2556)
+- refactor(sanitizer): rename `zeph_sanitizer::TrustLevel` to `ContentTrustLevel` for domain clarity (#2555)
+- refactor(tools): rename `zeph_tools::TrustLevel` to `SkillTrustLevel` for domain clarity (#2555)
+- refactor(config): introduce `ProviderName` newtype in `zeph-config` replacing bare `String` for all `*_provider` config fields; invalid provider names now produce a startup error (#2560)
 
 ### Added
 

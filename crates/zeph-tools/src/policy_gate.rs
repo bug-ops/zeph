@@ -212,7 +212,7 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
         self.inner.set_skill_env(env);
     }
 
-    fn set_effective_trust(&self, level: crate::TrustLevel) {
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         match self.context.write() {
             Ok(mut ctx) => ctx.trust_level = level,
             Err(poisoned) => {
@@ -244,7 +244,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::TrustLevel;
+    use crate::SkillTrustLevel;
     use crate::policy::{
         DefaultEffect, PolicyConfig, PolicyEffect, PolicyEnforcer, PolicyRuleConfig,
     };
@@ -278,7 +278,7 @@ mod tests {
     fn make_gate(config: &PolicyConfig) -> PolicyGateExecutor<MockExecutor> {
         let enforcer = Arc::new(PolicyEnforcer::compile(config).unwrap());
         let context = Arc::new(std::sync::RwLock::new(PolicyContext {
-            trust_level: TrustLevel::Trusted,
+            trust_level: SkillTrustLevel::Trusted,
             env: HashMap::new(),
         }));
         PolicyGateExecutor::new(MockExecutor, enforcer, context)
@@ -461,13 +461,13 @@ mod tests {
                 tool: "shell".to_owned(),
                 paths: vec![],
                 env: vec![],
-                trust_level: Some(TrustLevel::Verified),
+                trust_level: Some(SkillTrustLevel::Verified),
                 args_match: None,
             }],
             policy_file: None,
         };
         let gate = make_gate(&config);
-        gate.set_effective_trust(TrustLevel::Quarantined);
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
         let result = gate.execute_tool_call(&make_call("shell")).await;
         assert!(
             matches!(result, Err(ToolError::Blocked { .. })),
@@ -488,13 +488,13 @@ mod tests {
                 tool: "shell".to_owned(),
                 paths: vec![],
                 env: vec![],
-                trust_level: Some(TrustLevel::Verified),
+                trust_level: Some(SkillTrustLevel::Verified),
                 args_match: None,
             }],
             policy_file: None,
         };
         let gate = make_gate(&config);
-        gate.set_effective_trust(TrustLevel::Trusted);
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
         let result = gate.execute_tool_call(&make_call("shell")).await;
         assert!(
             result.is_ok(),

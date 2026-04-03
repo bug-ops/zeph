@@ -77,8 +77,8 @@ pub use zeph_sanitizer::exfiltration::{
     ExfiltrationEvent, ExfiltrationGuard, ExfiltrationGuardConfig, extract_flagged_urls,
 };
 pub use zeph_sanitizer::{
-    ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind, InjectionFlag,
-    QuarantineConfig, SanitizedContent, TrustLevel,
+    ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind, ContentTrustLevel,
+    InjectionFlag, QuarantineConfig, SanitizedContent,
 };
 pub use zeph_tools::executor::DiffData;
 

@@ -7,7 +7,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-pub use zeph_tools::TrustLevel;
+pub use zeph_tools::SkillTrustLevel;
 
 /// Where a skill was loaded from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ impl fmt::Display for SkillSource {
 #[derive(Debug, Clone)]
 pub struct SkillTrust {
     pub skill_name: String,
-    pub trust_level: TrustLevel,
+    pub trust_level: SkillTrustLevel,
     pub source: SkillSource,
     pub blake3_hash: String,
 }
@@ -122,9 +122,9 @@ mod tests {
 
     #[test]
     fn trust_level_reexport_accessible() {
-        // Ensure TrustLevel re-exported from zeph-tools is usable
-        let level: TrustLevel = TrustLevel::default();
-        assert_eq!(level, TrustLevel::Quarantined);
+        // Ensure SkillTrustLevel re-exported from zeph-tools is usable
+        let level: SkillTrustLevel = SkillTrustLevel::default();
+        assert_eq!(level, SkillTrustLevel::Quarantined);
         assert!(level.is_active());
     }
 

@@ -1,8 +1,67 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig};
+
+/// Newtype wrapper for a provider name referencing an entry in `[[llm.providers]]`.
+///
+/// Using a dedicated type instead of bare `String` makes provider cross-references
+/// explicit in the type system and enables validation at config load time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderName(String);
+
+impl ProviderName {
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ProviderName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl AsRef<str> for ProviderName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for ProviderName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for ProviderName {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for ProviderName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
 
 fn default_response_cache_ttl_secs() -> u64 {
     3600
@@ -546,7 +605,7 @@ pub struct BanditConfig {
     /// Candle, or `text-embedding-3-small`) — this is called on every bandit request.
     /// Empty string disables `LinUCB` (bandit always falls back to Thompson/uniform).
     #[serde(default)]
-    pub embedding_provider: String,
+    pub embedding_provider: ProviderName,
 
     /// Hard timeout for the embedding call in milliseconds. Default: 50.
     /// If exceeded, the request falls back to Thompson/uniform selection.
@@ -594,7 +653,7 @@ impl Default for BanditConfig {
             dim: default_bandit_dim(),
             cost_weight: default_bandit_cost_weight(),
             decay_factor: default_bandit_decay_factor(),
-            embedding_provider: String::new(),
+            embedding_provider: ProviderName::default(),
             embedding_timeout_ms: default_bandit_embedding_timeout_ms(),
             cache_size: default_bandit_cache_size(),
             state_path: None,
@@ -736,7 +795,7 @@ pub struct TierMapping {
 pub struct ComplexityRoutingConfig {
     /// Provider name from `[[llm.providers]]` used for triage classification.
     #[serde(default)]
-    pub triage_provider: Option<String>,
+    pub triage_provider: Option<ProviderName>,
 
     /// Skip triage when all tiers map to the same provider.
     #[serde(default = "default_true")]
@@ -1735,5 +1794,52 @@ alpha = 1.5
             bandit.warmup_queries, None,
             "omitted warmup_queries must default to None"
         );
+    }
+
+    #[test]
+    fn provider_name_new_and_as_str() {
+        let n = ProviderName::new("fast");
+        assert_eq!(n.as_str(), "fast");
+        assert!(!n.is_empty());
+    }
+
+    #[test]
+    fn provider_name_default_is_empty() {
+        let n = ProviderName::default();
+        assert!(n.is_empty());
+        assert_eq!(n.as_str(), "");
+    }
+
+    #[test]
+    fn provider_name_deref_to_str() {
+        let n = ProviderName::new("quality");
+        let s: &str = &n;
+        assert_eq!(s, "quality");
+    }
+
+    #[test]
+    fn provider_name_partial_eq_str() {
+        let n = ProviderName::new("fast");
+        assert_eq!(n, "fast");
+        assert_ne!(n, "slow");
+    }
+
+    #[test]
+    fn provider_name_serde_roundtrip() {
+        let n = ProviderName::new("my-provider");
+        let json = serde_json::to_string(&n).expect("serialize");
+        assert_eq!(json, "\"my-provider\"");
+        let back: ProviderName = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, n);
+    }
+
+    #[test]
+    fn provider_name_serde_empty_roundtrip() {
+        let n = ProviderName::default();
+        let json = serde_json::to_string(&n).expect("serialize");
+        assert_eq!(json, "\"\"");
+        let back: ProviderName = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, n);
+        assert!(back.is_empty());
     }
 }

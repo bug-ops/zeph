@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::TrustLevel;
+use crate::SkillTrustLevel;
 
 // Max rules to prevent startup OOM from misconfigured policy files.
 const MAX_RULES: usize = 256;
@@ -68,7 +68,7 @@ pub struct PolicyRuleConfig {
     #[serde(default)]
     pub env: Vec<String>,
     /// Minimum required trust level (rule fires only when context trust <= threshold).
-    pub trust_level: Option<TrustLevel>,
+    pub trust_level: Option<SkillTrustLevel>,
     /// Regex matched against individual string param values.
     pub args_match: Option<String>,
 }
@@ -76,7 +76,7 @@ pub struct PolicyRuleConfig {
 /// Runtime context passed to `PolicyEnforcer::evaluate`.
 #[derive(Debug, Clone)]
 pub struct PolicyContext {
-    pub trust_level: TrustLevel,
+    pub trust_level: SkillTrustLevel,
     pub env: std::collections::HashMap<String, String>,
 }
 
@@ -131,7 +131,7 @@ struct CompiledRule {
     tool_matcher: glob::Pattern,
     path_matchers: Vec<glob::Pattern>,
     env_required: Vec<String>,
-    trust_threshold: Option<TrustLevel>,
+    trust_threshold: Option<SkillTrustLevel>,
     args_regex: Option<Regex>,
     source_index: usize,
 }
@@ -483,7 +483,7 @@ mod tests {
 
     use super::*;
 
-    fn make_context(trust: TrustLevel) -> PolicyContext {
+    fn make_context(trust: SkillTrustLevel) -> PolicyContext {
         PolicyContext {
             trust_level: trust,
             env: HashMap::new(),
@@ -520,7 +520,7 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/tmp/../etc/passwd");
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &params, &ctx),
@@ -547,7 +547,7 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/./shadow");
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(matches!(
             enforcer.evaluate("shell", &params, &ctx),
             PolicyDecision::Deny { .. }
@@ -573,7 +573,7 @@ mod tests {
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(matches!(
             enforcer.evaluate("shell", &empty_params(), &ctx),
             PolicyDecision::Deny { .. }
@@ -615,7 +615,7 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/tmp/secret.sh");
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &params, &ctx),
@@ -654,7 +654,7 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &params, &ctx),
@@ -692,7 +692,7 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &params, &ctx),
@@ -713,7 +713,7 @@ mod tests {
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(matches!(
             enforcer.evaluate("bash", &empty_params(), &ctx),
             PolicyDecision::Deny { .. }
@@ -729,7 +729,7 @@ mod tests {
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(matches!(
             enforcer.evaluate("bash", &empty_params(), &ctx),
             PolicyDecision::Allow { .. }
@@ -750,14 +750,14 @@ mod tests {
                 tool: "shell".to_owned(),
                 paths: vec![],
                 env: vec![],
-                trust_level: Some(TrustLevel::Verified),
+                trust_level: Some(SkillTrustLevel::Verified),
                 args_match: None,
             }],
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
 
-        let trusted_ctx = make_context(TrustLevel::Trusted);
+        let trusted_ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &empty_params(), &trusted_ctx),
@@ -766,7 +766,7 @@ mod tests {
             "Trusted (severity 0) <= Verified threshold (severity 1) -> Allow"
         );
 
-        let quarantined_ctx = make_context(TrustLevel::Quarantined);
+        let quarantined_ctx = make_context(SkillTrustLevel::Quarantined);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &empty_params(), &quarantined_ctx),
@@ -859,7 +859,7 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/a/b/c/d/../../../../../../etc/passwd");
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &params, &ctx),
@@ -887,7 +887,7 @@ mod tests {
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
 
         let params = make_params("command", "sudo rm -rf /");
         assert!(matches!(
@@ -927,7 +927,7 @@ mod tests {
         assert_eq!(config.rules.len(), 2);
         assert_eq!(config.rules[0].effect, PolicyEffect::Deny);
         assert_eq!(config.rules[0].paths[0], "/etc/*");
-        assert_eq!(config.rules[1].trust_level, Some(TrustLevel::Verified));
+        assert_eq!(config.rules[1].trust_level, Some(SkillTrustLevel::Verified));
     }
 
     #[test]
@@ -1023,7 +1023,7 @@ tool = "shell"
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("bash", &empty_params(), &ctx),
@@ -1050,7 +1050,7 @@ tool = "shell"
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("bash", &empty_params(), &ctx),
@@ -1077,7 +1077,7 @@ tool = "shell"
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("bash", &empty_params(), &ctx),
@@ -1139,7 +1139,7 @@ tool = "shell"
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         assert!(
             matches!(
                 enforcer.evaluate("shell", &params, &ctx),
@@ -1229,7 +1229,7 @@ tool = "shell"
             policy_file: None,
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
-        let ctx = make_context(TrustLevel::Trusted);
+        let ctx = make_context(SkillTrustLevel::Trusted);
         // "web_scrape" is not an alias for anything — must not be denied by shell rule.
         assert!(
             matches!(
