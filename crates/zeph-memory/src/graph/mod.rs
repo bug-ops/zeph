@@ -13,7 +13,7 @@ pub mod retrieval;
 pub mod rpe;
 
 pub use store::GraphStore;
-pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphFact};
+pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, Episode, GraphFact};
 
 pub use activation::{
     ActivatedFact, ActivatedNode, SpreadingActivation, SpreadingActivationParams,

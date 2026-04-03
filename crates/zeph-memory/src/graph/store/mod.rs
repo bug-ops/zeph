@@ -2210,6 +2210,90 @@ struct CommunityRow {
     updated_at: String,
 }
 
+// ── GAAMA Episode methods ──────────────────────────────────────────────────────
+
+impl GraphStore {
+    /// Ensure a GAAMA episode exists for this conversation, returning its ID.
+    ///
+    /// Idempotent: inserts on first call, returns existing ID on subsequent calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn ensure_episode(&self, conversation_id: i64) -> Result<i64, MemoryError> {
+        let id: i64 = zeph_db::query_scalar(sql!(
+            "INSERT INTO graph_episodes (conversation_id)
+             VALUES (?)
+             ON CONFLICT(conversation_id) DO UPDATE SET conversation_id = excluded.conversation_id
+             RETURNING id"
+        ))
+        .bind(conversation_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Record that an entity was observed in an episode.
+    ///
+    /// Idempotent: does nothing if the link already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn link_entity_to_episode(
+        &self,
+        episode_id: i64,
+        entity_id: i64,
+    ) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "INSERT INTO graph_episode_entities (episode_id, entity_id)
+             VALUES (?, ?)
+             ON CONFLICT(episode_id, entity_id) DO NOTHING"
+        ))
+        .bind(episode_id)
+        .bind(entity_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Return all episodes in which an entity appears.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn episodes_for_entity(
+        &self,
+        entity_id: i64,
+    ) -> Result<Vec<super::types::Episode>, MemoryError> {
+        #[derive(zeph_db::FromRow)]
+        struct EpisodeRow {
+            id: i64,
+            conversation_id: i64,
+            created_at: String,
+            closed_at: Option<String>,
+        }
+        let rows: Vec<EpisodeRow> = zeph_db::query_as(sql!(
+            "SELECT e.id, e.conversation_id, e.created_at, e.closed_at
+             FROM graph_episodes e
+             JOIN graph_episode_entities ee ON ee.episode_id = e.id
+             WHERE ee.entity_id = ?"
+        ))
+        .bind(entity_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| super::types::Episode {
+                id: r.id,
+                conversation_id: r.conversation_id,
+                created_at: r.created_at,
+                closed_at: r.closed_at,
+            })
+            .collect())
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -50,6 +50,9 @@ pub struct GraphExtractionConfig {
     pub belief_revision_enabled: bool,
     /// Cosine similarity threshold for belief revision contradiction detection.
     pub belief_revision_similarity_threshold: f32,
+    /// GAAMA episode linking: `conversation_id` to link extracted entities to their episode.
+    /// `None` disables episode linking for this extraction pass.
+    pub conversation_id: Option<i64>,
 }
 
 impl Default for GraphExtractionConfig {
@@ -69,6 +72,7 @@ impl Default for GraphExtractionConfig {
             link_weight_decay_interval_secs: 86400,
             belief_revision_enabled: false,
             belief_revision_similarity_threshold: 0.85,
+            conversation_id: None,
         }
     }
 }
@@ -419,6 +423,22 @@ pub async fn extract_and_store(
     store.checkpoint_wal().await?;
 
     let new_entity_ids: Vec<i64> = entity_name_to_id.into_values().collect();
+
+    // GAAMA episode linking: link all extracted entities to the episode for this conversation.
+    if let Some(conv_id) = config.conversation_id {
+        match store.ensure_episode(conv_id).await {
+            Ok(episode_id) => {
+                for &entity_id in &new_entity_ids {
+                    if let Err(e) = store.link_entity_to_episode(episode_id, entity_id).await {
+                        tracing::debug!("episode linking failed for entity {entity_id}: {e:#}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!("failed to ensure episode for conversation {conv_id}: {e:#}");
+            }
+        }
+    }
 
     Ok(ExtractionResult {
         stats: ExtractionStats {

@@ -375,6 +375,8 @@ impl<C: Channel> Agent<C> {
                     belief_revision_similarity_threshold: graph_cfg
                         .belief_revision
                         .similarity_threshold,
+                    // Backfill does not link entities to episodes — no conversation context.
+                    conversation_id: None,
                 };
                 let pool = store.pool().clone();
                 match extract_and_store(

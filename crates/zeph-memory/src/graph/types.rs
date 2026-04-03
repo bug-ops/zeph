@@ -165,6 +165,19 @@ pub struct Community {
     pub updated_at: String,
 }
 
+/// A GAAMA episode node — one per conversation.
+///
+/// Groups entities observed during a single conversation context. Enables
+/// episode-boundary-aware retrieval: facts from the current episode are
+/// more salient than facts from older episodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Episode {
+    pub id: i64,
+    pub conversation_id: i64,
+    pub created_at: String,
+    pub closed_at: Option<String>,
+}
+
 /// Entity with its match score from hybrid seed selection.
 #[derive(Debug, Clone)]
 pub struct ScoredEntity {

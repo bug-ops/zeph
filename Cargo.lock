@@ -9711,6 +9711,7 @@ dependencies = [
  "ignore",
  "notify",
  "notify-debouncer-mini",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "sqlx",
@@ -9733,6 +9734,7 @@ dependencies = [
  "zeph-db",
  "zeph-llm",
  "zeph-memory",
+ "zeph-tools",
 ]
 
 [[package]]
