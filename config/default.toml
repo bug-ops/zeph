@@ -153,6 +153,12 @@ max_active_skills = 5
 # prompt_mode = "auto"
 # Minimum score delta for skill disambiguation (0.0-1.0)
 # disambiguation_threshold = 0.05
+# SkillOrchestra: RL routing head for skill re-ranking
+# rl_routing_enabled = false
+# rl_learning_rate = 0.01
+# rl_weight = 0.3
+# rl_persist_interval = 10
+# rl_warmup_updates = 50
 
 [skills.learning]
 # Enable self-learning skill improvement (feature enabled by default, runtime toggle)
@@ -205,6 +211,10 @@ cooldown_minutes = 60
 # erl_max_heuristics_per_skill = 3
 # erl_dedup_threshold = 0.9
 # erl_min_confidence = 0.5
+# D2Skill: step-level error correction hints injected at reflection time
+# d2skill_enabled = false
+# d2skill_max_corrections = 3
+# d2skill_provider = ""
 
 [skills.trust]
 # Default trust level for newly discovered skills: trusted, verified, quarantined, blocked
