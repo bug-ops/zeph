@@ -35,6 +35,10 @@ fn default_pii_ner_max_chars() -> usize {
     8192
 }
 
+fn default_pii_ner_circuit_breaker() -> u32 {
+    2
+}
+
 fn default_pii_ner_allowlist() -> Vec<String> {
     vec![
         "Zeph".into(),
@@ -225,6 +229,17 @@ pub struct ClassifiersConfig {
     /// Set to `[]` to disable the allowlist entirely.
     #[serde(default = "default_pii_ner_allowlist")]
     pub pii_ner_allowlist: Vec<String>,
+
+    /// Number of consecutive NER timeouts before the circuit breaker trips and disables NER
+    /// for the remainder of the session.
+    ///
+    /// When the breaker trips, all subsequent chunks fall back to regex-only PII detection,
+    /// preventing repeated timeout stalls on paginated reads (e.g. 12 chunks × 30 s = 6 min).
+    /// Set to `0` to disable the circuit breaker (NER is always attempted).
+    ///
+    /// Default: `2`. Takes effect on the next session start if changed mid-session.
+    #[serde(default = "default_pii_ner_circuit_breaker")]
+    pub pii_ner_circuit_breaker: u32,
 }
 
 impl Default for ClassifiersConfig {
@@ -248,6 +263,7 @@ impl Default for ClassifiersConfig {
             pii_model_sha256: None,
             pii_ner_max_chars: default_pii_ner_max_chars(),
             pii_ner_allowlist: default_pii_ner_allowlist(),
+            pii_ner_circuit_breaker: default_pii_ner_circuit_breaker(),
         }
     }
 }
@@ -365,6 +381,7 @@ mod tests {
             pii_model_sha256: None,
             pii_ner_max_chars: 4096,
             pii_ner_allowlist: vec!["MyProject".into(), "Rust".into()],
+            pii_ner_circuit_breaker: 3,
         };
         let serialized = toml::to_string(&original).unwrap();
         let deserialized: ClassifiersConfig = toml::from_str(&serialized).unwrap();
@@ -485,5 +502,29 @@ mod tests {
     fn three_class_threshold_validation_rejects_zero() {
         let result: Result<ClassifiersConfig, _> = toml::from_str("three_class_threshold = 0.0");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn pii_ner_circuit_breaker_default() {
+        let cfg = ClassifiersConfig::default();
+        assert_eq!(cfg.pii_ner_circuit_breaker, 2);
+    }
+
+    #[test]
+    fn pii_ner_circuit_breaker_configurable() {
+        let cfg: ClassifiersConfig = toml::from_str("pii_ner_circuit_breaker = 5").unwrap();
+        assert_eq!(cfg.pii_ner_circuit_breaker, 5);
+    }
+
+    #[test]
+    fn pii_ner_circuit_breaker_zero_disables() {
+        let cfg: ClassifiersConfig = toml::from_str("pii_ner_circuit_breaker = 0").unwrap();
+        assert_eq!(cfg.pii_ner_circuit_breaker, 0);
+    }
+
+    #[test]
+    fn pii_ner_circuit_breaker_missing_uses_default() {
+        let cfg: ClassifiersConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.pii_ner_circuit_breaker, 2);
     }
 }

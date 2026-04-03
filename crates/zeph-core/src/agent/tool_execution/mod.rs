@@ -544,52 +544,77 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "classifiers")]
         if let Some(ref backend) = self.security.pii_ner_backend {
             use zeph_sanitizer::pii::build_char_to_byte_map;
-            let timeout_ms = self.security.pii_ner_timeout_ms;
-            let ner_input = if text.len() > self.security.pii_ner_max_chars {
-                let boundary = text.floor_char_boundary(self.security.pii_ner_max_chars);
-                &text[..boundary]
+
+            if self.security.pii_ner_tripped {
+                tracing::debug!(tool = %tool_name, "PII NER circuit breaker open, regex only");
             } else {
-                text
-            };
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                backend.classify(ner_input),
-            )
-            .await
-            {
-                Ok(Ok(result)) if result.is_positive => {
-                    // Precompute char→byte map once for all NER spans (C2).
-                    // Use ner_input: NER offsets are relative to the (possibly truncated) input.
-                    let char_to_byte = build_char_to_byte_map(ner_input);
-                    for ner_span in &result.spans {
-                        let byte_start = char_to_byte
-                            .get(ner_span.start)
-                            .copied()
-                            .unwrap_or(ner_input.len());
-                        let byte_end = char_to_byte
-                            .get(ner_span.end)
-                            .copied()
-                            .unwrap_or(ner_input.len());
-                        if byte_end > byte_start {
-                            spans.push(zeph_sanitizer::pii::PiiSpan {
-                                label: ner_span.label.clone(),
-                                start: byte_start,
-                                end: byte_end,
-                            });
+                let timeout_ms = self.security.pii_ner_timeout_ms;
+                let ner_input = if text.len() > self.security.pii_ner_max_chars {
+                    let boundary = text.floor_char_boundary(self.security.pii_ner_max_chars);
+                    &text[..boundary]
+                } else {
+                    text
+                };
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    backend.classify(ner_input),
+                )
+                .await
+                {
+                    Ok(Ok(result)) if result.is_positive => {
+                        // Precompute char→byte map once for all NER spans (C2).
+                        // Use ner_input: NER offsets are relative to the (possibly truncated) input.
+                        let char_to_byte = build_char_to_byte_map(ner_input);
+                        for ner_span in &result.spans {
+                            let byte_start = char_to_byte
+                                .get(ner_span.start)
+                                .copied()
+                                .unwrap_or(ner_input.len());
+                            let byte_end = char_to_byte
+                                .get(ner_span.end)
+                                .copied()
+                                .unwrap_or(ner_input.len());
+                            if byte_end > byte_start {
+                                spans.push(zeph_sanitizer::pii::PiiSpan {
+                                    label: ner_span.label.clone(),
+                                    start: byte_start,
+                                    end: byte_end,
+                                });
+                            }
+                        }
+                        self.security.pii_ner_consecutive_timeouts = 0;
+                    }
+                    Ok(Ok(_)) => {
+                        // no positive detection — still counts as success
+                        self.security.pii_ner_consecutive_timeouts = 0;
+                    }
+                    Ok(Err(e)) => {
+                        // Non-timeout backend error: do not count toward circuit breaker.
+                        tracing::warn!(error = %e, tool = %tool_name, "PII NER failed, regex only");
+                    }
+                    Err(_) => {
+                        self.update_metrics(|m| m.pii_ner_timeouts += 1);
+                        self.security.pii_ner_consecutive_timeouts += 1;
+                        let threshold = self.security.pii_ner_circuit_breaker_threshold;
+                        if threshold > 0 && self.security.pii_ner_consecutive_timeouts >= threshold
+                        {
+                            self.security.pii_ner_tripped = true;
+                            self.update_metrics(|m| m.pii_ner_circuit_breaker_trips += 1);
+                            tracing::warn!(
+                                consecutive_timeouts = self.security.pii_ner_consecutive_timeouts,
+                                threshold = threshold,
+                                tool = %tool_name,
+                                "PII NER circuit breaker tripped — NER disabled for this session, falling back to regex-only PII detection"
+                            );
+                        } else {
+                            tracing::warn!(
+                                timeout_ms = timeout_ms,
+                                tool = %tool_name,
+                                consecutive = self.security.pii_ner_consecutive_timeouts,
+                                "PII NER timed out, regex only"
+                            );
                         }
                     }
-                }
-                Ok(Ok(_)) => {} // no positive detection
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, tool = %tool_name, "PII NER failed, regex only");
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        timeout_ms = timeout_ms,
-                        tool = %tool_name,
-                        "PII NER timed out, regex only"
-                    );
-                    self.update_metrics(|m| m.pii_ner_timeouts += 1);
                 }
             }
         }

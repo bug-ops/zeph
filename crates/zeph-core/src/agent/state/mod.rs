@@ -234,6 +234,16 @@ pub(crate) struct SecurityState {
     /// the per-call timeout. Input is truncated at a valid UTF-8 boundary before classification.
     #[cfg(feature = "classifiers")]
     pub(crate) pii_ner_max_chars: usize,
+    /// Circuit-breaker threshold: number of consecutive timeouts before NER is disabled.
+    /// `0` means the circuit breaker is disabled (NER is always attempted).
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_ner_circuit_breaker_threshold: u32,
+    /// Number of consecutive NER timeouts observed since the last successful call.
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_ner_consecutive_timeouts: u32,
+    /// Set to `true` when the circuit breaker trips. NER is skipped for the rest of the session.
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_ner_tripped: bool,
     pub(crate) memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator,
     /// LLM-based prompt injection pre-screener (opt-in).
     #[cfg(feature = "guardrail")]

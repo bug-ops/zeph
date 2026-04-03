@@ -878,10 +878,12 @@ impl<C: Channel> Agent<C> {
         backend: std::sync::Arc<dyn zeph_llm::classifier::ClassifierBackend>,
         timeout_ms: u64,
         max_chars: usize,
+        circuit_breaker_threshold: u32,
     ) -> Self {
         self.security.pii_ner_backend = Some(backend);
         self.security.pii_ner_timeout_ms = timeout_ms;
         self.security.pii_ner_max_chars = max_chars;
+        self.security.pii_ner_circuit_breaker_threshold = circuit_breaker_threshold;
         self
     }
 

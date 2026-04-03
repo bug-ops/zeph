@@ -4928,3 +4928,163 @@ async fn utility_gate_disabled_does_not_produce_skipped_output() {
         "disabled utility gate must not produce [skipped] ToolResult"
     );
 }
+
+// --- PII NER circuit-breaker tests ---
+
+#[cfg(feature = "classifiers")]
+mod pii_ner_circuit_breaker {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use zeph_llm::classifier::{ClassificationResult, ClassifierBackend};
+    use zeph_sanitizer::pii::{PiiFilter, PiiFilterConfig};
+
+    use super::super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+
+    /// Backend that always sleeps longer than any reasonable timeout (simulates NER timeout).
+    struct TimeoutBackend;
+
+    impl ClassifierBackend for TimeoutBackend {
+        fn classify<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<ClassificationResult, zeph_llm::error::LlmError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(ClassificationResult {
+                    label: "O".into(),
+                    score: 0.0,
+                    is_positive: false,
+                    spans: vec![],
+                })
+            })
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "timeout"
+        }
+    }
+
+    /// Backend that returns a successful no-op result.
+    struct SuccessBackend;
+
+    impl ClassifierBackend for SuccessBackend {
+        fn classify<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<ClassificationResult, zeph_llm::error::LlmError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(ClassificationResult {
+                    label: "O".into(),
+                    score: 0.0,
+                    is_positive: false,
+                    spans: vec![],
+                })
+            })
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "success"
+        }
+    }
+
+    fn make_agent_with_ner(
+        backend: Arc<dyn ClassifierBackend>,
+        timeout_ms: u64,
+        circuit_breaker_threshold: u32,
+    ) -> super::super::Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+
+        // Enable PII filter (required for scrub_pii_union to do anything).
+        agent.security.pii_filter = PiiFilter::new(PiiFilterConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        agent.security.pii_ner_backend = Some(backend);
+        agent.security.pii_ner_timeout_ms = timeout_ms;
+        agent.security.pii_ner_max_chars = 8192;
+        agent.security.pii_ner_circuit_breaker_threshold = circuit_breaker_threshold;
+        agent.security.pii_ner_consecutive_timeouts = 0;
+        agent.security.pii_ner_tripped = false;
+        agent
+    }
+
+    #[tokio::test]
+    async fn circuit_trips_after_threshold_timeouts() {
+        // threshold = 2: after 2 timeouts the breaker must trip.
+        let mut agent = make_agent_with_ner(Arc::new(TimeoutBackend), 5, 2);
+
+        agent.scrub_pii_union("hello world", "test_tool").await;
+        assert!(
+            !agent.security.pii_ner_tripped,
+            "should not trip after 1 timeout"
+        );
+        assert_eq!(agent.security.pii_ner_consecutive_timeouts, 1);
+
+        agent.scrub_pii_union("hello world", "test_tool").await;
+        assert!(
+            agent.security.pii_ner_tripped,
+            "should trip after 2 timeouts"
+        );
+    }
+
+    #[tokio::test]
+    async fn tripped_breaker_skips_ner() {
+        // Pre-trip the breaker; subsequent calls must not increment consecutive_timeouts.
+        let mut agent = make_agent_with_ner(Arc::new(TimeoutBackend), 5, 2);
+        agent.security.pii_ner_tripped = true;
+        let before = agent.security.pii_ner_consecutive_timeouts;
+        agent.scrub_pii_union("hello world", "test_tool").await;
+        assert_eq!(
+            agent.security.pii_ner_consecutive_timeouts, before,
+            "tripped breaker must not invoke NER (consecutive counter must not change)"
+        );
+    }
+
+    #[tokio::test]
+    async fn success_resets_consecutive_counter() {
+        let mut agent = make_agent_with_ner(Arc::new(SuccessBackend), 5000, 2);
+        agent.security.pii_ner_consecutive_timeouts = 1;
+
+        agent.scrub_pii_union("hello", "test_tool").await;
+        assert_eq!(
+            agent.security.pii_ner_consecutive_timeouts, 0,
+            "successful NER call must reset consecutive timeout counter"
+        );
+        assert!(!agent.security.pii_ner_tripped);
+    }
+
+    #[tokio::test]
+    async fn zero_threshold_disables_breaker() {
+        // threshold = 0: circuit breaker disabled, NER is always attempted.
+        let mut agent = make_agent_with_ner(Arc::new(TimeoutBackend), 5, 0);
+
+        for _ in 0..5 {
+            agent.scrub_pii_union("hello", "test_tool").await;
+        }
+        assert!(
+            !agent.security.pii_ner_tripped,
+            "circuit breaker must not trip when threshold = 0"
+        );
+    }
+}

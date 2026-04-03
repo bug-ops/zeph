@@ -284,6 +284,8 @@ pub struct MetricsSnapshot {
     pub pii_scrub_count: u64,
     /// Number of times the PII NER classifier timed out; input fell back to regex-only.
     pub pii_ner_timeouts: u64,
+    /// Number of times the PII NER circuit breaker tripped (disabled NER for the session).
+    pub pii_ner_circuit_breaker_trips: u64,
     pub memory_validation_failures: u64,
     pub rate_limit_trips: u64,
     pub pre_execution_blocks: u64,

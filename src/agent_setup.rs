@@ -679,6 +679,7 @@ pub(crate) fn apply_pii_ner_classifier<C: Channel>(
         backend,
         config.classifiers.timeout_ms,
         config.classifiers.pii_ner_max_chars,
+        config.classifiers.pii_ner_circuit_breaker,
     )
 }
 
