@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- Truncate `CorrectionHint` text to 500 chars at insertion to prevent prompt injection via long tool outputs (#2596)
+- Add OOM sanity cap (1M elements) in `read_f32_slice` before `Vec::with_capacity` to prevent crafted-blob DoS (#2595)
+
+### Tests
+- Add unit tests for D2Skill and SkillOrchestra: serde round-trips, prompt placeholder substitution, warm-path rerank, REINFORCE reward direction (#2597)
+
 ### Fixed
 
 - fix(memory): resolve SQLite pool starvation causing multi-turn session hangs (#2591)

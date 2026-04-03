@@ -15,6 +15,7 @@ pub mod prompt;
 pub mod qdrant_matcher;
 pub mod registry;
 pub mod resource;
+pub mod rl_head;
 pub mod scanner;
 pub mod stem;
 pub mod trust;

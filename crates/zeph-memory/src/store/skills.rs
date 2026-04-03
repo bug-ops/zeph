@@ -707,6 +707,35 @@ impl SqliteStore {
         .await?;
         Ok(rows)
     }
+
+    // --- D2Skill: step corrections ---
+
+    /// Insert a step correction hint for a skill.
+    ///
+    /// The `hint` is truncated to 500 chars at a UTF-8 character boundary to prevent
+    /// prompt injection via arbitrarily long tool outputs (#2596).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] on insert failure.
+    pub async fn insert_step_correction(
+        &self,
+        skill_name: &str,
+        step: u32,
+        hint: &str,
+    ) -> Result<i64, MemoryError> {
+        let hint = &hint[..hint.floor_char_boundary(500)];
+        let row: (i64,) = zeph_db::query_as(sql!(
+            "INSERT INTO skill_step_corrections (skill_name, step, hint) \
+             VALUES (?, ?, ?) RETURNING id"
+        ))
+        .bind(skill_name)
+        .bind(i64::from(step))
+        .bind(hint)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
 }
 
 #[cfg(test)]

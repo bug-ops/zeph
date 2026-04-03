@@ -312,6 +312,52 @@ pub fn build_trace_improvement_prompt(name: &str, original_body: &str, tool_trac
         .replace("{tool_trace}", tool_trace)
 }
 
+// --- D2Skill: step correction and failure pattern types ---
+
+/// A single step correction hint extracted from a failed tool execution trace.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct StepCorrection {
+    pub step: u32,
+    pub hint: String,
+}
+
+/// A recurring failure pattern identified across multiple traces.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct FailurePattern {
+    pub pattern: String,
+    pub frequency: u32,
+}
+
+/// LLM response struct for correction extraction.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct CorrectionExtractionResult {
+    pub corrections: Vec<StepCorrection>,
+    pub patterns: Vec<FailurePattern>,
+}
+
+/// Prompt template for `D2Skill` correction extraction.
+///
+/// Placeholders: `{skill_name}`, `{trace}` — substituted via
+/// [`build_correction_extraction_prompt`] using `str::replace`.
+pub const CORRECTION_EXTRACTION_PROMPT_TEMPLATE: &str = "\
+Analyze the following failed tool execution trace for skill '{skill_name}' and extract \
+step-level correction hints and recurring failure patterns.
+
+Trace:
+{trace}
+
+Respond in JSON with fields:
+- corrections: list of {{\"step\": number, \"hint\": string}}
+- patterns: list of {{\"pattern\": string, \"frequency\": number}}";
+
+/// Build a correction extraction prompt by substituting template placeholders.
+#[must_use]
+pub fn build_correction_extraction_prompt(skill_name: &str, trace: &str) -> String {
+    CORRECTION_EXTRACTION_PROMPT_TEMPLATE
+        .replace("{skill_name}", skill_name)
+        .replace("{trace}", trace)
+}
+
 /// Absolute maximum body size to prevent exponential growth across generations.
 pub const MAX_BODY_BYTES: usize = 65_536;
 
@@ -721,6 +767,62 @@ mod tests {
             FailureKind::WrongApproach
         );
         assert_eq!(FailureKind::from(C::Cancelled), FailureKind::Unknown);
+    }
+
+    // D2Skill serde round-trips and prompt substitution
+
+    #[test]
+    fn step_correction_serde_roundtrip() {
+        let original = StepCorrection {
+            step: 3,
+            hint: "use --force flag".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: StepCorrection = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn failure_pattern_serde_roundtrip() {
+        let original = FailurePattern {
+            pattern: "missing env var".to_string(),
+            frequency: 5,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: FailurePattern = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn correction_extraction_result_deserialize_valid() {
+        let json = r#"{
+            "corrections": [{"step": 1, "hint": "add --verbose"}],
+            "patterns": [{"pattern": "auth error", "frequency": 3}]
+        }"#;
+        let result: CorrectionExtractionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.corrections.len(), 1);
+        assert_eq!(result.corrections[0].step, 1);
+        assert_eq!(result.corrections[0].hint, "add --verbose");
+        assert_eq!(result.patterns[0].frequency, 3);
+    }
+
+    #[test]
+    fn correction_extraction_result_deserialize_invalid() {
+        let json = r#"{"corrections": "not an array", "patterns": []}"#;
+        let result: Result<CorrectionExtractionResult, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "expected error for invalid corrections field"
+        );
+    }
+
+    #[test]
+    fn build_correction_extraction_prompt_substitutes() {
+        let result = build_correction_extraction_prompt("git-helper", "step 1: clone failed");
+        assert!(result.contains("git-helper"));
+        assert!(result.contains("step 1: clone failed"));
+        assert!(!result.contains("{skill_name}"));
+        assert!(!result.contains("{trace}"));
     }
 
     proptest! {
