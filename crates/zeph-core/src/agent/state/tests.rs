@@ -29,7 +29,6 @@ fn make_instruction_state() -> InstructionState {
 
 fn make_experiment_state() -> ExperimentState {
     let (notify_tx, notify_rx) = tokio::sync::mpsc::channel::<String>(4);
-    let (_tx, notify_rx) = tokio::sync::mpsc::channel::<String>(4);
 
     ExperimentState {
         config: crate::config::ExperimentConfig::default(),
