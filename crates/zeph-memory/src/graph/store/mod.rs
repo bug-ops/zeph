@@ -2165,7 +2165,8 @@ struct EdgeRow {
     valid_to: Option<String>,
     created_at: String,
     expired_at: Option<String>,
-    episode_id: Option<i64>,
+    #[sqlx(rename = "episode_id")]
+    source_message_id: Option<i64>,
     qdrant_point_id: Option<String>,
     edge_type: String,
     retrieval_count: i32,
@@ -2190,7 +2191,7 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         valid_to: row.valid_to,
         created_at: row.created_at,
         expired_at: row.expired_at,
-        episode_id: row.episode_id.map(MessageId),
+        source_message_id: row.source_message_id.map(MessageId),
         qdrant_point_id: row.qdrant_point_id,
         edge_type,
         retrieval_count: row.retrieval_count,

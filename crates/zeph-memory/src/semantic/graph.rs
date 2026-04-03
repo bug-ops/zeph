@@ -430,12 +430,12 @@ pub async fn extract_and_store(
             Ok(episode_id) => {
                 for &entity_id in &new_entity_ids {
                     if let Err(e) = store.link_entity_to_episode(episode_id, entity_id).await {
-                        tracing::debug!("episode linking failed for entity {entity_id}: {e:#}");
+                        tracing::warn!("episode linking failed for entity {entity_id}: {e:#}");
                     }
                 }
             }
             Err(e) => {
-                tracing::debug!("failed to ensure episode for conversation {conv_id}: {e:#}");
+                tracing::warn!("failed to ensure episode for conversation {conv_id}: {e:#}");
             }
         }
     }

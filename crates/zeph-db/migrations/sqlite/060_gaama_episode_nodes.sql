@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS graph_episode_entities (
     PRIMARY KEY (episode_id, entity_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_graph_episode_entities_entity
+    ON graph_episode_entities(entity_id);
+
 -- Rename graph_edges.episode_id (message-level provenance) to source_message_id
 -- to avoid semantic confusion with the new conversation-level graph_episodes table.
 -- SQLite does not support DROP COLUMN on tables with foreign keys in older versions,

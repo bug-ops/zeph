@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS graph_episode_entities (
     PRIMARY KEY (episode_id, entity_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_graph_episode_entities_entity
+    ON graph_episode_entities(entity_id);
+
 -- Rename graph_edges.episode_id to source_message_id.
 ALTER TABLE graph_edges ADD COLUMN IF NOT EXISTS source_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL;
 UPDATE graph_edges SET source_message_id = episode_id WHERE episode_id IS NOT NULL;

@@ -261,7 +261,7 @@ mod tests {
             valid_to: None,
             created_at: "2026-01-01".to_string(),
             expired_at: None,
-            episode_id: None,
+            source_message_id: None,
             qdrant_point_id: None,
             edge_type,
             retrieval_count: 0,

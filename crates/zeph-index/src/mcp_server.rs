@@ -209,7 +209,11 @@ fn tool_find_text_references() -> ToolDef {
 fn tool_call_graph() -> ToolDef {
     ToolDef {
         id: "call_graph".into(),
-        description: "Return a BFS subgraph of method/function relationships up to `depth` hops from a starting symbol. Default depth=2, max=3.".into(),
+        description: "Return a BFS subgraph of containment relationships (e.g. impl → methods) \
+            up to `depth` hops from a starting symbol. Default depth=2, max=3. \
+            Note: this reflects static AST containment (struct/impl → fields/methods), \
+            not runtime call relationships — cross-function calls are not traced."
+            .into(),
         schema: schemars::schema_for!(CallGraphParams),
         invocation: InvocationHint::ToolCall,
     }
@@ -550,5 +554,123 @@ impl Foo {
         };
         let result = run_module_summary(&index, &params);
         assert!(result.is_null());
+    }
+
+    #[test]
+    fn call_graph_depth_zero_returns_only_root() {
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = CallGraphParams {
+            fn_name: "Foo".to_string(),
+            depth: 0,
+        };
+        let result = run_call_graph(&index, params);
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1, "depth=0 must return only the root node");
+        assert_eq!(nodes[0].as_str(), Some("Foo"));
+        let edges = result["edges"].as_array().unwrap();
+        assert!(edges.is_empty(), "depth=0 must return no edges");
+    }
+
+    #[test]
+    fn call_graph_unknown_root_returns_single_node_no_edges() {
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = CallGraphParams {
+            fn_name: "nonexistent_fn_xyz".to_string(),
+            depth: 2,
+        };
+        let result = run_call_graph(&index, params);
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].as_str(), Some("nonexistent_fn_xyz"));
+        let edges = result["edges"].as_array().unwrap();
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn call_graph_depth_clamped_to_three() {
+        // Depth > 3 must be clamped. The BFS must terminate and return truncated=false.
+        let (_dir, server) = setup_with_rust_file();
+        let index = server.index.blocking_read();
+        let params = CallGraphParams {
+            fn_name: "Foo".to_string(),
+            depth: 99,
+        };
+        let result = run_call_graph(&index, params);
+        assert_eq!(result["truncated"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn find_text_references_max_results_respected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Write a file with many occurrences of "target".
+        let content = "fn target() {}\n".repeat(50);
+        std::fs::write(dir.path().join("many.rs"), &content).unwrap();
+        let server = IndexMcpServer::new(dir.path());
+        let index = server.index.blocking_read();
+        let params = FindTextReferencesParams {
+            name: "target".to_string(),
+            max_results: 5,
+        };
+        let result = run_find_text_references(dir.path(), &index, &params);
+        let arr = result.as_array().unwrap();
+        assert!(
+            arr.len() <= 5,
+            "must not exceed max_results, got {}",
+            arr.len()
+        );
+    }
+
+    fn make_call(tool_id: &str, params: serde_json::Value) -> ToolCall {
+        ToolCall {
+            tool_id: tool_id.into(),
+            params: match params {
+                serde_json::Value::Object(m) => m,
+                _ => serde_json::Map::new(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_unknown_tool_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let server = IndexMcpServer::new(dir.path());
+        let call = make_call("not_a_real_tool", serde_json::json!({}));
+        let result = server.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_none(), "unknown tool_id must return None");
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_symbol_definition_known() {
+        let (_dir, server) = setup_with_rust_file();
+        let call = make_call("symbol_definition", serde_json::json!({ "name": "hello" }));
+        let result = server.execute_tool_call(&call).await.unwrap();
+        assert!(
+            result.is_some(),
+            "symbol_definition should return Some for a known symbol"
+        );
+        let output = result.unwrap();
+        assert_eq!(output.tool_name, "symbol_definition");
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_module_summary_known() {
+        let (_dir, server) = setup_with_rust_file();
+        let call = make_call("module_summary", serde_json::json!({ "path": "lib.rs" }));
+        let result = server.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert_eq!(output.tool_name, "module_summary");
+    }
+
+    #[tokio::test]
+    async fn server_on_empty_directory_builds_empty_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let server = IndexMcpServer::new(dir.path());
+        let index = server.index.read().await;
+        assert!(index.definitions.is_empty());
+        assert!(index.modules.is_empty());
+        assert!(index.call_edges.is_empty());
     }
 }

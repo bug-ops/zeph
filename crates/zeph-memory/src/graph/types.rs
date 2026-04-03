@@ -142,7 +142,10 @@ pub struct Edge {
     pub valid_to: Option<String>,
     pub created_at: String,
     pub expired_at: Option<String>,
-    pub episode_id: Option<MessageId>,
+    /// Message-level provenance: the message that caused this edge to be created.
+    /// Stored as `episode_id` in the DB column (legacy name); renamed here to avoid
+    /// confusion with the GAAMA conversation-level `graph_episodes` table.
+    pub source_message_id: Option<MessageId>,
     pub qdrant_point_id: Option<String>,
     pub edge_type: EdgeType,
     /// Number of times this edge was traversed during graph recall (A-MEM link weight evolution).
