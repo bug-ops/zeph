@@ -2539,8 +2539,8 @@ mod tests {
 
     // ── InvalidInput embed break tests ────────────────────────────────────────
 
-    /// When a provider returns InvalidInput from embed(), the router must break
-    /// the fallback loop immediately and return InvalidInput — not NoProviders.
+    /// When a provider returns `InvalidInput` from `embed()`, the router must break
+    /// the fallback loop immediately and return `InvalidInput` — not `NoProviders`.
     #[tokio::test]
     async fn embed_invalid_input_breaks_loop_and_returns_invalid_input() {
         use crate::mock::MockProvider;
@@ -2554,7 +2554,7 @@ mod tests {
         );
     }
 
-    /// When a provider returns InvalidInput, the router must NOT fall through to
+    /// When a provider returns `InvalidInput`, the router must NOT fall through to
     /// the next provider — a second embed-capable provider must never be called.
     #[tokio::test]
     async fn embed_invalid_input_does_not_fall_through_to_second_provider() {
@@ -2610,9 +2610,9 @@ mod tests {
         assert_eq!(result, vec![1.0, 2.0, 3.0]);
     }
 
-    /// InvalidInput from embed does not call record_availability (no reputation penalty).
-    /// We verify this indirectly: thompson_stats must show no entry for the provider
-    /// after an InvalidInput embed, whereas a normal embed failure increments it.
+    /// `InvalidInput` from embed does not call `record_availability` (no reputation penalty).
+    /// We verify this indirectly: `thompson_stats` must show no entry for the provider
+    /// after an `InvalidInput` embed, whereas a normal embed failure increments it.
     #[tokio::test]
     async fn embed_invalid_input_does_not_record_availability() {
         use crate::mock::MockProvider;

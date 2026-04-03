@@ -12,7 +12,7 @@ fn default_injection_model() -> String {
 }
 
 fn default_injection_threshold() -> f32 {
-    0.8
+    0.95
 }
 
 fn default_injection_threshold_soft() -> f32 {
@@ -149,7 +149,7 @@ pub struct ClassifiersConfig {
     /// Hard threshold: classifier score at or above this blocks the content (in `block` mode)
     /// or emits WARN (in `warn` mode).
     ///
-    /// Range: `(0.0, 1.0]`. Conservative default of `0.8` minimises false positives.
+    /// Range: `(0.0, 1.0]`. Conservative default of `0.95` minimises false positives.
     /// Real-world ML injection classifiers have 12–37% recall gaps at high thresholds —
     /// defense-in-depth via regex fallback and spotlighting is mandatory.
     #[serde(
@@ -285,7 +285,7 @@ mod tests {
         );
         assert_eq!(cfg.enforcement_mode, InjectionEnforcementMode::Warn);
         assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.8).abs() < 1e-6);
+        assert!((cfg.injection_threshold - 0.95).abs() < 1e-6);
         assert!(cfg.injection_model_sha256.is_none());
         assert!(cfg.three_class_model.is_none());
         assert!((cfg.three_class_threshold - 0.7).abs() < 1e-6);
@@ -324,7 +324,7 @@ mod tests {
             "protectai/deberta-v3-small-prompt-injection-v2"
         );
         assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.8).abs() < 1e-6);
+        assert!((cfg.injection_threshold - 0.95).abs() < 1e-6);
         assert!(!cfg.pii_enabled);
         assert!((cfg.pii_threshold - 0.75).abs() < 1e-6);
     }
@@ -418,7 +418,7 @@ mod tests {
             "protectai/deberta-v3-small-prompt-injection-v2"
         );
         assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.8).abs() < 1e-6);
+        assert!((cfg.injection_threshold - 0.95).abs() < 1e-6);
     }
 
     #[test]

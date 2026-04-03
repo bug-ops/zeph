@@ -26,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(sanitizer): skip ML injection classification for `policy_blocked` tool error outputs — sandbox/policy denial messages produced by `ToolErrorFeedback::format_for_llm` reliably triggered the DeBERTa classifier as false positives; add `is_policy_blocked_output` guard before `classify_injection` call in tool execution (#2574)
+- fix(classifiers): raise default ML injection hard threshold from `0.80` to `0.95` to reduce false positives on benign tool outputs (e.g. `echo 'hello'`) while maintaining strong detection coverage (#2574)
+- fix(clippy): add backticks around identifiers (`InvalidInput`, `embed()`, `NoProviders`, `record_availability`, `thompson_stats`) in router test doc comments to fix `doc_markdown` lint errors (#2573)
 - fix(subagent): inject working directory into sub-agent system prompt so the LLM knows where the project is; send a one-time nudge when the first turn returns text-only (no tool calls) to prevent the agent from announcing intent without acting (#2582)
 - fix(tools): add PII NER circuit breaker — after `pii_ner_circuit_breaker` consecutive timeouts (default 2), NER is disabled for the session and PII detection falls back to regex-only, preventing up to 6-minute blocking on paginated reads (12 chunks × 30 s timeout); set `pii_ner_circuit_breaker = 0` to disable (#2562)
 - fix(memory): apply multi-vector chunking in real-time embedding paths (`remember`, `remember_with_parts`) — long messages are now split into overlapping ~400-token segments at write time, matching the existing `embed_missing()` behaviour; both SQLite and Qdrant backends are updated atomically (#2570)

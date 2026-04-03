@@ -13,6 +13,22 @@ use crate::redact::redact_secrets;
 use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 use zeph_skills::loader::Skill;
 
+/// Returns `true` when `body` is a structured tool error with `category: policy_blocked`.
+///
+/// `ToolErrorFeedback::format_for_llm()` serialises blocked/sandbox errors as:
+/// ```text
+/// [tool_error]
+/// category: policy_blocked
+/// ...
+/// ```
+/// The `DeBERTa` injection classifier reliably fires on this text (sandbox denial messages
+/// contain imperative-style phrasing), producing a circular false positive: the sanitizer's
+/// own output is flagged by the sanitizer. Skip ML classification for these outputs entirely.
+#[cfg(feature = "classifiers")]
+fn is_policy_blocked_output(body: &str) -> bool {
+    body.contains("[tool_error]") && body.contains("category: policy_blocked")
+}
+
 /// Prefix used in the overflow notice appended to tool outputs that exceed the size threshold.
 /// Shared with the pruning logic so both sides stay in sync if the format changes.
 ///
@@ -366,6 +382,9 @@ impl<C: Channel> Agent<C> {
         // ML injection classifier: runs on tool output after regex sanitization.
         // Skip for memory_search (ConversationHistory hint) — same rationale as regex skip:
         // the user's own prior messages legitimately contain terms like "system prompt".
+        // Skip for policy_blocked error outputs — they are the sanitizer's own error format
+        // (produced by ToolErrorFeedback::format_for_llm) and classifying them is circular:
+        // the sandbox/policy denial text reliably triggers the DeBERTa model as a false positive.
         #[cfg(feature = "classifiers")]
         {
             let skip_ml = matches!(
@@ -374,7 +393,7 @@ impl<C: Channel> Agent<C> {
                     zeph_sanitizer::MemorySourceHint::ConversationHistory
                         | zeph_sanitizer::MemorySourceHint::LlmSummary
                 )
-            );
+            ) || is_policy_blocked_output(body);
             if !skip_ml && self.security.sanitizer.has_classifier_backend() {
                 // Classify the original body, not sanitized.body: the spotlight wrapper
                 // (<external-data ...>) would trigger the delimiter_escape pattern in
