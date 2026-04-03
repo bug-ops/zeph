@@ -10,7 +10,7 @@
 //!   cargo nextest run --test `orchestration_integration`
 
 mod orchestration_integration {
-    use zeph_core::config::OrchestrationConfig;
+    use zeph_core::config::{OrchestrationConfig, ProviderName};
     use zeph_core::orchestration::{
         AgentRouter, Aggregator, DagScheduler, FailureStrategy, GraphStatus, LlmAggregator,
         SchedulerAction, TaskEvent, TaskGraph, TaskId, TaskNode, TaskOutcome, TaskStatus,
@@ -48,7 +48,7 @@ mod orchestration_integration {
             task_timeout_secs: 0,
             default_failure_strategy: "abort".to_string(),
             default_max_retries: 3,
-            planner_provider: String::new(),
+            planner_provider: ProviderName::default(),
             planner_max_tokens: 4096,
             dependency_context_budget: 16384,
             confirm_before_execute: false,
