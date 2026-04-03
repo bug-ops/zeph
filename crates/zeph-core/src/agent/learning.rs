@@ -2028,6 +2028,7 @@ mod tests {
         (registry, temp_dir)
     }
 
+    #[allow(clippy::default_trait_access)]
     fn learning_config_enabled() -> LearningConfig {
         LearningConfig {
             enabled: true,

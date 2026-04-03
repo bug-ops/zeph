@@ -4470,6 +4470,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_agent_command(&mut self, cmd: crate::subagent::AgentCommand) -> Option<String> {
         use crate::subagent::AgentCommand;
 
@@ -4641,10 +4642,10 @@ impl<C: Channel> Agent<C> {
         &self,
         config: &zeph_config::SubAgentConfig,
     ) -> Vec<zeph_llm::provider::Message> {
+        use zeph_llm::provider::Role;
         if config.context_window_turns == 0 {
             return Vec::new();
         }
-        use zeph_llm::provider::Role;
         let non_system: Vec<_> = self
             .msg
             .messages

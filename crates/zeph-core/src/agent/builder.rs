@@ -1496,6 +1496,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::default_trait_access)]
     fn with_compression_sets_proactive_strategy() {
         let compression = CompressionConfig {
             strategy: CompressionStrategy::Proactive {

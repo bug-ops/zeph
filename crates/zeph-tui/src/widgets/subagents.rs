@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use zeph_core::subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name};
+use zeph_core::subagent::{ModelSpec, SubAgentDef, ToolPolicy, is_valid_agent_name};
 
 use crate::metrics::{MetricsSnapshot, SubAgentMetrics};
 use crate::theme::Theme;
@@ -208,11 +208,7 @@ impl AgentFormState {
         let mut form = Self::new_empty();
         form.fields[0].value.clone_from(&def.name);
         form.fields[1].value.clone_from(&def.description);
-        def.model
-            .as_ref()
-            .map(|m| m.as_str())
-            .unwrap_or("")
-            .clone_into(&mut form.fields[2].value);
+        form.fields[2].value = def.model.as_ref().map_or("", ModelSpec::as_str).to_string();
         form.fields[3].value = def.permissions.max_turns.to_string();
         // Reset focus to beginning; cursor is char-count, not byte offset.
         form.focused = 0;
@@ -453,11 +449,7 @@ fn handle_key_detail(
             )
         }
         KeyCode::Char('d') => {
-            let source = definitions[index]
-                .source
-                .as_ref()
-                .map(|m| m.as_str())
-                .unwrap_or("");
+            let source = definitions[index].source.as_deref().unwrap_or("");
             let non_project = !source.starts_with("project/");
             let defs = std::mem::take(definitions);
             (
@@ -716,8 +708,8 @@ fn render_list(
     let items: Vec<ListItem<'_>> = defs
         .iter()
         .map(|d| {
-            let scope = d.source.as_ref().map(|m| m.as_str()).unwrap_or("-");
-            let model = d.model.as_ref().map(|m| m.as_str()).unwrap_or("-");
+            let scope = d.source.as_deref().unwrap_or("-");
+            let model = d.model.as_ref().map_or("-", ModelSpec::as_str);
             let line = Line::from(vec![
                 Span::styled(
                     format!(" {:<24}", d.name),
@@ -786,14 +778,14 @@ fn render_detail(defs: &[SubAgentDef], index: usize, theme: &Theme, frame: &mut 
                 "Source:      ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(def.source.as_ref().map(|m| m.as_str()).unwrap_or("-")),
+            Span::raw(def.source.as_deref().unwrap_or("-")),
         ]),
         Line::from(vec![
             Span::styled(
                 "Model:       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(def.model.as_ref().map(|m| m.as_str()).unwrap_or("-")),
+            Span::raw(def.model.as_ref().map_or("-", ModelSpec::as_str)),
         ]),
         Line::from(vec![
             Span::styled(

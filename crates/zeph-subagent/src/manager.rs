@@ -36,6 +36,7 @@ const SECRET_REQUEST_PREFIX: &str = "[REQUEST_SECRET:";
 ///
 /// All fields default to empty/`None`, preserving existing behavior when callers
 /// pass `SpawnContext::default()`.
+#[derive(Default)]
 pub struct SpawnContext {
     /// Recent parent conversation messages (last N turns).
     pub parent_messages: Vec<Message>,
@@ -47,18 +48,6 @@ pub struct SpawnContext {
     pub spawn_depth: u32,
     /// MCP tool names available in the parent's tool executor (for diagnostics).
     pub mcp_tool_names: Vec<String>,
-}
-
-impl Default for SpawnContext {
-    fn default() -> Self {
-        Self {
-            parent_messages: Vec::new(),
-            parent_cancel: None,
-            parent_provider_name: None,
-            spawn_depth: 0,
-            mcp_tool_names: Vec::new(),
-        }
-    }
 }
 
 struct AgentLoopArgs {
@@ -973,6 +962,7 @@ impl SubAgentManager {
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
     /// does not allow it (`allow_bypass_permissions: false`).
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn spawn(
         &mut self,
         def_name: &str,
@@ -4005,10 +3995,10 @@ mod tests {
 
     #[test]
     fn parent_history_zero_turns_returns_empty() {
+        use zeph_config::ContextInjectionMode;
         let msgs = vec![make_message(Role::User, "hi".into())];
         // apply_context_injection with zero turns — we test by passing empty vec
         // The actual extract_parent_messages is in zeph-core; here we test the injection side
-        use zeph_config::ContextInjectionMode;
         let result = apply_context_injection("task", &[], ContextInjectionMode::LastAssistantTurn);
         assert_eq!(result, "task", "no history should pass prompt unchanged");
         let _ = msgs; // suppress unused

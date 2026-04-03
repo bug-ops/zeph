@@ -113,6 +113,7 @@ impl ResponseVerifier {
 }
 
 #[cfg(test)]
+#[allow(clippy::default_trait_access)]
 mod tests {
     use super::*;
 
