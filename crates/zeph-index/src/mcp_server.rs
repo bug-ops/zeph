@@ -406,7 +406,6 @@ impl ToolExecutor for IndexMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     /// Write a minimal Rust source file to a temp dir and return the dir + server.
     fn setup_with_rust_file() -> (tempfile::TempDir, IndexMcpServer) {

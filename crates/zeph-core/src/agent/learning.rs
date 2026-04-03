@@ -2051,7 +2051,7 @@ mod tests {
             auto_promote_threshold: 0.95,
             auto_demote_min_uses: 30,
             auto_demote_threshold: 0.40,
-            feedback_provider: Default::default(),
+            feedback_provider: zeph_config::ProviderName::default(),
             cross_session_rollout: false,
             min_sessions_before_promote: 2,
             min_sessions_before_demote: 1,

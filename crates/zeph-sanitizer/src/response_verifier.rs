@@ -116,12 +116,13 @@ impl ResponseVerifier {
 #[allow(clippy::default_trait_access)]
 mod tests {
     use super::*;
+    use zeph_config::ProviderName;
 
     fn verifier(block: bool) -> ResponseVerifier {
         ResponseVerifier::new(ResponseVerificationConfig {
             enabled: true,
             block_on_detection: block,
-            verifier_provider: Default::default(),
+            verifier_provider: ProviderName::default(),
         })
     }
 
@@ -129,7 +130,7 @@ mod tests {
         ResponseVerifier::new(ResponseVerificationConfig {
             enabled: false,
             block_on_detection: false,
-            verifier_provider: Default::default(),
+            verifier_provider: ProviderName::default(),
         })
     }
 

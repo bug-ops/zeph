@@ -3393,7 +3393,7 @@ async fn pool_isolation_independent_pools_do_not_starve() {
 
 // ── GAAMA episode tests ────────────────────────────────────────────────────────
 
-/// Insert a conversation row and return its id (satisfies FK in graph_episodes).
+/// Insert a conversation row and return its id (satisfies `FK` in `graph_episodes`).
 async fn insert_conversation(gs: &GraphStore) -> i64 {
     sqlx::query_scalar(sql!(
         "INSERT INTO conversations DEFAULT VALUES RETURNING id"
