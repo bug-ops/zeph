@@ -8,6 +8,7 @@ use crate::config::LearningConfig;
 use zeph_llm::provider::MessageMetadata;
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 impl<C: Channel> Agent<C> {
     pub(super) fn is_learning_enabled(&self) -> bool {
@@ -688,7 +689,9 @@ impl<C: Channel> Agent<C> {
             .ok();
         }
     }
+}
 
+impl<C: Channel> Agent<C> {
     pub(super) async fn handle_skill_command(
         &mut self,
         args: &str,
@@ -2192,8 +2195,6 @@ impl<C: Channel> Agent<C> {
         });
     }
 }
-
-use std::sync::OnceLock;
 
 static CONCISE_RE: OnceLock<regex::Regex> = OnceLock::new();
 static VERBOSE_RE: OnceLock<regex::Regex> = OnceLock::new();

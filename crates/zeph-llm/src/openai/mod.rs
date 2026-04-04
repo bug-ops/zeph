@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fmt;
-use std::time::Duration;
 
 use crate::error::LlmError;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -12,8 +11,11 @@ use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
     StatusTx, ToolDefinition, ToolUseRequest,
 };
+use crate::retry::send_with_retry;
 use crate::sse::openai_sse_to_stream;
 use crate::usage::UsageTracker;
+
+const MAX_RETRIES: u32 = 3;
 
 pub struct OpenAiProvider {
     client: reqwest::Client,
@@ -204,12 +206,6 @@ impl OpenAiProvider {
         );
     }
 
-    fn emit_status(&self, msg: impl Into<String>) {
-        if let Some(ref tx) = self.status_tx {
-            let _ = tx.send(msg.into());
-        }
-    }
-
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         let reasoning = self
             .reasoning_effort
@@ -241,13 +237,15 @@ impl OpenAiProvider {
                 frequency_penalty,
                 presence_penalty,
             };
-            self.client
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await?
+            send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
+                self.client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+            })
+            .await?
         } else {
             let api_messages = convert_messages(messages);
             let body = ChatRequest {
@@ -261,21 +259,19 @@ impl OpenAiProvider {
                 frequency_penalty,
                 presence_penalty,
             };
-            self.client
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await?
+            send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
+                self.client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+            })
+            .await?
         };
 
         let status = response.status();
         let text = response.text().await.map_err(LlmError::Http)?;
-
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(LlmError::RateLimited);
-        }
 
         if !status.is_success() {
             tracing::error!("OpenAI API error {status}: {text}");
@@ -332,20 +328,17 @@ impl OpenAiProvider {
             presence_penalty,
         };
 
-        let response = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let response = send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
+            self.client
+                .post(format!("{}/chat/completions", self.base_url))
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+        })
+        .await?;
 
         let status = response.status();
-
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(LlmError::RateLimited);
-        }
 
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
@@ -373,30 +366,11 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
-        match self.send_request(messages).await {
-            Ok(text) => Ok(text),
-            Err(LlmError::RateLimited) => {
-                self.emit_status("OpenAI rate limited, retrying in 1s");
-                tracing::warn!("OpenAI rate limited, retrying in 1s");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                self.send_request(messages).await
-            }
-            Err(e) => Err(e),
-        }
+        self.send_request(messages).await
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
-        let response = match self.send_stream_request(messages).await {
-            Ok(resp) => resp,
-            Err(LlmError::RateLimited) => {
-                self.emit_status("OpenAI rate limited, retrying in 1s");
-                tracing::warn!("OpenAI rate limited, retrying in 1s");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                self.send_stream_request(messages).await?
-            }
-            Err(e) => return Err(e),
-        };
-
+        let response = self.send_stream_request(messages).await?;
         Ok(openai_sse_to_stream(response))
     }
 

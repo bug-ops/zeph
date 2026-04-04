@@ -1345,6 +1345,64 @@ impl RouterProvider {
 
 // ── Cascade routing helpers ───────────────────────────────────────────────────
 
+/// Outcome of evaluating one provider's response during cascade routing.
+struct CascadeEvalResult {
+    verdict: cascade::QualityVerdict,
+    /// Updated token counter after adding this response's estimated cost.
+    tokens_used: u32,
+    /// Whether the token budget is now exhausted.
+    budget_exhausted: bool,
+}
+
+/// Evaluate a cascade response: score it, record the verdict in shared state, and
+/// compute whether the token budget is exhausted.
+async fn cascade_evaluate_response(
+    provider_name: &str,
+    response: &str,
+    cfg: &CascadeRouterConfig,
+    cascade_state: &Mutex<CascadeState>,
+    tokens_used_before: u32,
+    log_prefix: &str,
+) -> CascadeEvalResult {
+    let estimated_tokens =
+        u32::try_from(zeph_common::text::estimate_tokens(response).max(1)).unwrap_or(u32::MAX);
+    let tokens_used = tokens_used_before.saturating_add(estimated_tokens);
+
+    let verdict = RouterProvider::evaluate_quality(
+        response,
+        cfg.quality_threshold,
+        cfg.classifier_mode,
+        cfg.summary_provider.as_ref(),
+    )
+    .await;
+
+    {
+        let mut state = cascade_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.record(provider_name, verdict.score);
+    }
+
+    tracing::debug!(
+        provider = %provider_name,
+        score = verdict.score,
+        threshold = cfg.quality_threshold,
+        should_escalate = verdict.should_escalate,
+        reason = %verdict.reason,
+        "{log_prefix}: quality verdict"
+    );
+
+    let budget_exhausted = cfg
+        .max_cascade_tokens
+        .is_some_and(|budget| tokens_used >= budget);
+
+    CascadeEvalResult {
+        verdict,
+        tokens_used,
+        budget_exhausted,
+    }
+}
+
 impl RouterProvider {
     /// Cascade chat: try providers in order, escalate on degenerate output.
     ///
@@ -1392,35 +1450,18 @@ impl RouterProvider {
                 Ok(response) => {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-                    let estimated_tokens =
-                        u32::try_from(zeph_common::text::estimate_tokens(&response).max(1))
-                            .unwrap_or(u32::MAX);
-                    tokens_used = tokens_used.saturating_add(estimated_tokens);
-
-                    let verdict = Self::evaluate_quality(
+                    let eval = cascade_evaluate_response(
+                        p.name(),
                         &response,
-                        cfg.quality_threshold,
-                        cfg.classifier_mode,
-                        cfg.summary_provider.as_ref(),
+                        cfg,
+                        cascade_state,
+                        tokens_used,
+                        "cascade",
                     )
                     .await;
-
-                    // Record quality score separately from availability.
-                    {
-                        let mut state = cascade_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        state.record(p.name(), verdict.score);
-                    }
-
-                    tracing::debug!(
-                        provider = %p.name(),
-                        score = verdict.score,
-                        threshold = cfg.quality_threshold,
-                        should_escalate = verdict.should_escalate,
-                        reason = %verdict.reason,
-                        "cascade: quality verdict"
-                    );
+                    tokens_used = eval.tokens_used;
+                    let verdict = eval.verdict;
+                    let budget_exhausted = eval.budget_exhausted;
 
                     // Update best-seen response; skip empty strings to avoid silent failures.
                     let is_better = !response.is_empty()
@@ -1437,9 +1478,6 @@ impl RouterProvider {
                     }
 
                     let is_last = idx == providers.len() - 1;
-                    let budget_exhausted = cfg
-                        .max_cascade_tokens
-                        .is_some_and(|budget| tokens_used >= budget);
 
                     if !verdict.should_escalate
                         || is_last
@@ -1572,34 +1610,18 @@ impl RouterProvider {
                     tracing::warn!(provider = p.name(), error = %e, "cascade stream: stream error");
                 }
                 Ok(text) => {
-                    let estimated_tokens =
-                        u32::try_from(zeph_common::text::estimate_tokens(&text).max(1))
-                            .unwrap_or(u32::MAX);
-                    tokens_used = tokens_used.saturating_add(estimated_tokens);
-
-                    let verdict = Self::evaluate_quality(
+                    let eval = cascade_evaluate_response(
+                        p.name(),
                         &text,
-                        cfg.quality_threshold,
-                        cfg.classifier_mode,
-                        cfg.summary_provider.as_ref(),
+                        cfg,
+                        cascade_state,
+                        tokens_used,
+                        "cascade stream",
                     )
                     .await;
-
-                    {
-                        let mut state = cascade_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        state.record(p.name(), verdict.score);
-                    }
-
-                    tracing::debug!(
-                        provider = %p.name(),
-                        score = verdict.score,
-                        threshold = cfg.quality_threshold,
-                        should_escalate = verdict.should_escalate,
-                        reason = %verdict.reason,
-                        "cascade stream: quality verdict"
-                    );
+                    tokens_used = eval.tokens_used;
+                    let verdict = eval.verdict;
+                    let budget_exhausted = eval.budget_exhausted;
 
                     // Track the best response seen so far across early providers.
                     // Skip empty strings to avoid returning silent failures on all-fail fallback.
@@ -1615,10 +1637,6 @@ impl RouterProvider {
                         );
                         best_seen = Some((text.clone(), verdict.score));
                     }
-
-                    let budget_exhausted = cfg
-                        .max_cascade_tokens
-                        .is_some_and(|budget| tokens_used >= budget);
 
                     if !verdict.should_escalate || escalations_remaining == 0 || budget_exhausted {
                         self.record_availability(p.name(), true, latency);

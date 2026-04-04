@@ -1165,7 +1165,6 @@ impl<C: Channel> Agent<C> {
         result
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn process_user_message_inner(
         &mut self,
         text: String,
@@ -1188,6 +1187,44 @@ impl<C: Channel> Agent<C> {
 
         self.check_pending_rollbacks().await;
 
+        if self.pre_process_security(trimmed).await? {
+            return Ok(());
+        }
+
+        self.advance_context_lifecycle(&text, trimmed).await;
+
+        let user_msg = self.build_user_message(&text, image_parts);
+
+        // Extract URLs from user input and add to user_provided_urls for grounding checks.
+        let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
+        if !urls.is_empty()
+            && let Ok(mut set) = self.security.user_provided_urls.write()
+        {
+            set.extend(urls);
+        }
+
+        // Capture raw user input as goal text for A-MAC goal-conditioned write gating (#2483).
+        // Derived from the raw input text before context assembly to avoid timing dependencies.
+        self.memory_state.goal_text = Some(text.clone());
+
+        // Image parts intentionally excluded — base64 payloads too large for message history.
+        self.persist_message(Role::User, &text, &[], false).await;
+        self.push_message(user_msg);
+
+        if let Err(e) = self.process_response().await {
+            tracing::error!("Response processing failed: {e:#}");
+            let user_msg = format!("Error: {e:#}");
+            self.channel.send(&user_msg).await?;
+            self.msg.messages.pop();
+            self.recompute_prompt_tokens();
+            self.channel.flush_chunks().await?;
+        }
+
+        Ok(())
+    }
+
+    // Returns true if the input was blocked and the caller should return Ok(()) immediately.
+    async fn pre_process_security(&mut self, trimmed: &str) -> Result<bool, error::AgentError> {
         // Guardrail: LLM-based prompt injection pre-screening at the user input boundary.
         if let Some(ref guardrail) = self.security.guardrail {
             use zeph_sanitizer::guardrail::GuardrailVerdict;
@@ -1203,7 +1240,7 @@ impl<C: Channel> Agent<C> {
                         let msg = format!("[guardrail] Input blocked: {reason}");
                         let _ = self.channel.send(&msg).await;
                         let _ = self.channel.flush_chunks().await;
-                        return Ok(());
+                        return Ok(true);
                     }
                     // Warn mode: notify but continue.
                     let _ = self
@@ -1217,7 +1254,7 @@ impl<C: Channel> Agent<C> {
                         let msg = "[guardrail] Input blocked: check failed (see logs for details)";
                         let _ = self.channel.send(msg).await;
                         let _ = self.channel.flush_chunks().await;
-                        return Ok(());
+                        return Ok(true);
                     }
                     tracing::warn!(%error, "guardrail check failed (fail_strategy=open), allowing input");
                 }
@@ -1240,7 +1277,7 @@ impl<C: Channel> Agent<C> {
                         .send("[security] Input blocked: injection detected by classifier.")
                         .await;
                     let _ = self.channel.flush_chunks().await;
-                    return Ok(());
+                    return Ok(true);
                 }
                 zeph_sanitizer::InjectionVerdict::Suspicious => {
                     tracing::warn!("injection_classifier soft_signal on user input");
@@ -1251,13 +1288,17 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "classifiers")]
         self.push_classifier_metrics();
 
+        Ok(false)
+    }
+
+    async fn advance_context_lifecycle(&mut self, text: &str, trimmed: &str) {
         // Reset per-message pruning cache at the start of each turn (#2298).
         self.mcp.pruning_cache.reset();
 
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).
         let conv_id = self.memory_state.conversation_id;
-        self.rebuild_system_prompt(&text).await;
+        self.rebuild_system_prompt(text).await;
 
         self.detect_and_record_corrections(trimmed, conv_id).await;
         self.learning_engine.tick();
@@ -1307,55 +1348,36 @@ impl<C: Channel> Agent<C> {
             .set_memory_confidence(self.memory_state.last_recall_confidence);
 
         self.learning_engine.reset_reflection();
+    }
 
+    fn build_user_message(
+        &mut self,
+        text: &str,
+        image_parts: Vec<zeph_llm::provider::MessagePart>,
+    ) -> Message {
         let mut all_image_parts = std::mem::take(&mut self.msg.pending_image_parts);
         all_image_parts.extend(image_parts);
-        let image_parts = all_image_parts;
 
-        let user_msg = if !image_parts.is_empty() && self.provider.supports_vision() {
-            let mut parts = vec![zeph_llm::provider::MessagePart::Text { text: text.clone() }];
-            parts.extend(image_parts);
+        if !all_image_parts.is_empty() && self.provider.supports_vision() {
+            let mut parts = vec![zeph_llm::provider::MessagePart::Text {
+                text: text.to_owned(),
+            }];
+            parts.extend(all_image_parts);
             Message::from_parts(Role::User, parts)
         } else {
-            if !image_parts.is_empty() {
+            if !all_image_parts.is_empty() {
                 tracing::warn!(
-                    count = image_parts.len(),
+                    count = all_image_parts.len(),
                     "image attachments dropped: provider does not support vision"
                 );
             }
             Message {
                 role: Role::User,
-                content: text.clone(),
+                content: text.to_owned(),
                 parts: vec![],
                 metadata: MessageMetadata::default(),
             }
-        };
-        // Extract URLs from user input and add to user_provided_urls for grounding checks.
-        let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
-        if !urls.is_empty()
-            && let Ok(mut set) = self.security.user_provided_urls.write()
-        {
-            set.extend(urls);
         }
-
-        // Capture raw user input as goal text for A-MAC goal-conditioned write gating (#2483).
-        // Derived from the raw input text before context assembly to avoid timing dependencies.
-        self.memory_state.goal_text = Some(text.clone());
-
-        // Image parts intentionally excluded — base64 payloads too large for message history.
-        self.persist_message(Role::User, &text, &[], false).await;
-        self.push_message(user_msg);
-
-        if let Err(e) = self.process_response().await {
-            tracing::error!("Response processing failed: {e:#}");
-            let user_msg = format!("Error: {e:#}");
-            self.channel.send(&user_msg).await?;
-            self.msg.messages.pop();
-            self.recompute_prompt_tokens();
-            self.channel.flush_chunks().await?;
-        }
-
-        Ok(())
     }
 
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the

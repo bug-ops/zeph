@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::text::Line;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
 
@@ -16,125 +15,10 @@ use crate::layout::AppLayout;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 use crate::widgets;
-use crate::widgets::chat::MdLink;
 use crate::widgets::command_palette::CommandPaletteState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderCacheKey {
-    pub content_hash: u64,
-    pub terminal_width: u16,
-    pub tool_expanded: bool,
-    pub compact_tools: bool,
-    pub show_labels: bool,
-}
-
-pub struct RenderCacheEntry {
-    pub key: RenderCacheKey,
-    pub lines: Vec<Line<'static>>,
-    pub md_links: Vec<MdLink>,
-}
-
-#[derive(Default)]
-pub struct RenderCache {
-    entries: Vec<Option<RenderCacheEntry>>,
-}
-
-impl RenderCache {
-    pub fn get(&self, idx: usize, key: &RenderCacheKey) -> Option<(&[Line<'static>], &[MdLink])> {
-        self.entries
-            .get(idx)
-            .and_then(Option::as_ref)
-            .filter(|e| &e.key == key)
-            .map(|e| (e.lines.as_slice(), e.md_links.as_slice()))
-    }
-
-    pub fn put(
-        &mut self,
-        idx: usize,
-        key: RenderCacheKey,
-        lines: Vec<Line<'static>>,
-        md_links: Vec<MdLink>,
-    ) {
-        if idx >= self.entries.len() {
-            self.entries.resize_with(idx + 1, || None);
-        }
-        self.entries[idx] = Some(RenderCacheEntry {
-            key,
-            lines,
-            md_links,
-        });
-    }
-
-    pub fn invalidate(&mut self, idx: usize) {
-        if let Some(entry) = self.entries.get_mut(idx) {
-            *entry = None;
-        }
-    }
-
-    pub fn clear(&mut self) {
-        for entry in &mut self.entries {
-            *entry = None;
-        }
-    }
-}
-
-#[must_use]
-pub fn content_hash(s: &str) -> u64 {
-    zeph_common::hash::fast_hash(s)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode {
-    Normal,
-    Insert,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageRole {
-    User,
-    Assistant,
-    System,
-    Tool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChatMessage {
-    pub role: MessageRole,
-    pub content: String,
-    pub streaming: bool,
-    pub tool_name: Option<String>,
-    pub diff_data: Option<zeph_core::DiffData>,
-    pub filter_stats: Option<String>,
-    pub kept_lines: Option<Vec<usize>>,
-    pub timestamp: String,
-}
-
-impl ChatMessage {
-    pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
-        Self {
-            role,
-            content: content.into(),
-            streaming: false,
-            tool_name: None,
-            diff_data: None,
-            filter_stats: None,
-            kept_lines: None,
-            timestamp: format_local_time(),
-        }
-    }
-
-    #[must_use]
-    pub fn streaming(mut self) -> Self {
-        self.streaming = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_tool(mut self, name: String) -> Self {
-        self.tool_name = Some(name);
-        self
-    }
-}
+pub use crate::render_cache::{RenderCache, RenderCacheEntry, RenderCacheKey, content_hash};
+pub use crate::types::{ChatMessage, InputMode, MessageRole};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -2018,10 +1902,6 @@ fn load_transcript_file(
     (truncated, total)
 }
 
-fn format_local_time() -> String {
-    chrono::Local::now().format("%H:%M").to_string()
-}
-
 fn format_security_report(metrics: &MetricsSnapshot) -> String {
     use crate::metrics::SecurityEventCategory;
 
@@ -3194,7 +3074,7 @@ mod tests {
 
     mod render_cache_tests {
         use super::*;
-        use ratatui::text::Span;
+        use ratatui::text::{Line, Span};
 
         fn make_key(content_hash: u64, width: u16) -> RenderCacheKey {
             RenderCacheKey {

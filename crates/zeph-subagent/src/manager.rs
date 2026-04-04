@@ -645,7 +645,7 @@ impl SubAgentManager {
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
 
         // Transcript setup: create writer if enabled, run sweep.
-        let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name);
+        let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name, None);
 
         let task_id_for_loop = task_id.clone();
         let join_handle: JoinHandle<Result<String, SubAgentError>> =
@@ -733,6 +733,7 @@ impl SubAgentManager {
         config: &SubAgentConfig,
         task_id: &str,
         agent_name: &str,
+        resumed_from: Option<&str>,
     ) -> Option<TranscriptWriter> {
         if !config.transcript_enabled {
             return None;
@@ -753,7 +754,7 @@ impl SubAgentManager {
                     status: SubAgentState::Submitted,
                     started_at: crate::transcript::utc_now_pub(),
                     finished_at: None,
-                    resumed_from: None,
+                    resumed_from: resumed_from.map(str::to_owned),
                     turns_used: 0,
                 };
                 if let Err(e) = TranscriptWriter::write_meta(&dir, task_id, &meta) {
@@ -1096,56 +1097,13 @@ impl SubAgentManager {
         let agent_hooks = def.hooks.clone();
         let agent_name_clone = def.name.clone();
 
-        let filtered_executor = FilteredToolExecutor::with_disallowed(
-            tool_executor.clone(),
-            def.tools.clone(),
-            def.disallowed_tools.clone(),
-        );
-        let executor: FilteredToolExecutor = if permission_mode == PermissionMode::Plan {
-            let plan_inner = Arc::new(PlanModeExecutor::new(tool_executor));
-            FilteredToolExecutor::with_disallowed(
-                plan_inner,
-                def.tools.clone(),
-                def.disallowed_tools.clone(),
-            )
-        } else {
-            filtered_executor
-        };
+        let executor = build_filtered_executor(tool_executor, permission_mode, &def);
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
 
-        // Transcript writer for the new (resumed) session.
-        let transcript_writer = if config.transcript_enabled {
-            if self.transcript_max_files > 0
-                && let Err(e) = sweep_old_transcripts(&dir, self.transcript_max_files)
-            {
-                tracing::warn!(error = %e, "transcript sweep failed");
-            }
-            let new_path = dir.join(format!("{new_task_id}.jsonl"));
-            let init_meta = TranscriptMeta {
-                agent_id: new_task_id.clone(),
-                agent_name: def.name.clone(),
-                def_name: def.name.clone(),
-                status: SubAgentState::Submitted,
-                started_at: crate::transcript::utc_now_pub(),
-                finished_at: None,
-                resumed_from: Some(original_id.clone()),
-                turns_used: 0,
-            };
-            if let Err(e) = TranscriptWriter::write_meta(&dir, &new_task_id, &init_meta) {
-                tracing::warn!(error = %e, "failed to write resumed transcript meta");
-            }
-            match TranscriptWriter::new(&new_path) {
-                Ok(w) => Some(w),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to create resumed transcript writer");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let transcript_writer =
+            self.create_transcript_writer(config, &new_task_id, &def.name, Some(&original_id));
 
         let new_task_id_for_loop = new_task_id.clone();
         let join_handle: JoinHandle<Result<String, SubAgentError>> =

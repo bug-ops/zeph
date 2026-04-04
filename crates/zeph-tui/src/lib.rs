@@ -11,9 +11,11 @@ pub mod highlight;
 pub mod hyperlink;
 pub mod layout;
 pub mod metrics;
+pub mod render_cache;
 #[cfg(test)]
 pub mod test_utils;
 pub mod theme;
+pub mod types;
 pub mod widgets;
 
 use std::io;
