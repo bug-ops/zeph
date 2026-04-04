@@ -91,6 +91,9 @@ pub struct AgentSessionConfig {
     pub debug_config: DebugConfig,
     pub server_compaction: bool,
 
+    /// Inject `<budget>` XML into the volatile system prompt section (#2267).
+    pub budget_hint_enabled: bool,
+
     /// Custom secrets from config.
     ///
     /// Stored as `Arc` because `Secret` intentionally does not implement `Clone` —
@@ -143,6 +146,7 @@ impl AgentSessionConfig {
             orchestration_config: config.orchestration.clone(),
             debug_config: config.debug.clone(),
             server_compaction: config.llm.providers.iter().any(|e| e.server_compaction),
+            budget_hint_enabled: config.agent.budget_hint_enabled,
             secrets: config
                 .secrets
                 .custom

@@ -715,6 +715,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_budget_hint_enabled(mut self, enabled: bool) -> Self {
+        self.runtime.budget_hint_enabled = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
         self.tool_orchestrator.summarize_tool_output_enabled = enabled;
         self
@@ -1460,6 +1466,7 @@ impl<C: Channel> Agent<C> {
             // it per-session (e.g. `spawn_acp_agent` passes it to `with_debug_config`).
             debug_config: _debug_config,
             server_compaction,
+            budget_hint_enabled,
             secrets,
         } = cfg;
 
@@ -1496,7 +1503,8 @@ impl<C: Channel> Agent<C> {
             .with_server_compaction(server_compaction)
             .with_document_config(document_config)
             .with_graph_config(graph_config)
-            .with_orchestration_config(orchestration_config);
+            .with_orchestration_config(orchestration_config)
+            .with_budget_hint_enabled(budget_hint_enabled);
 
         self.debug_state.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {

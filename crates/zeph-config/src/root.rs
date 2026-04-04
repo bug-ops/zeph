@@ -131,6 +131,7 @@ impl Default for Config {
                 max_retry_duration_secs: 30,
                 focus: FocusConfig::default(),
                 tool_filter: crate::agent::ToolFilterConfig::default(),
+                budget_hint_enabled: true,
             },
             llm: LlmConfig {
                 providers: Vec::new(),

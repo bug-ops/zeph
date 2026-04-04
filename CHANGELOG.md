@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `skills.generation_output_dir` config field: directory where generated skills are written (defaults to first `skills.paths` entry)
 - `[skills.mining]` config section: `queries`, `max_repos_per_query`, `dedup_threshold`, `output_dir`, `generation_provider`, `embedding_provider`, `rate_limit_rpm`
 - `load_skill_meta_from_str()` in `zeph-skills`: parse SKILL.md from in-memory string without disk access
+- **BATS budget hint** (`#2267`): inject a `<budget>` XML block into the volatile system prompt section so the LLM can self-regulate tool calls and remaining cost. Enabled by default via `agent.budget_hint_enabled = true`; self-suppresses when no budget data sources are available (i.e. `CostTracker` disabled and no `max_daily_cents` set). Includes `--init` wizard prompt and `migrate-config` migration step.
+- **Utility 5-way action policy** (`#2477`): extend `UtilityScorer` from binary allow/deny to a five-action recommendation (`ToolCall`, `Respond`, `Retrieve`, `Verify`, `Stop`). Decision tree thresholds follow arXiv:2603.19896. `Retrieve` and `Verify` actions inject a synthetic system message to guide the next LLM turn; all non-`ToolCall` actions emit a TUI status indicator.
 
 ### Security
 - Fix trust level fallback in `format_skills_prompt`: replace `unwrap_or(SkillTrustLevel::Trusted)` with `unwrap_or_default()` (yields `Quarantined`) — unknown skills no longer bypass sanitization (#2506)

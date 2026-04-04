@@ -1818,6 +1818,36 @@ impl<C: Channel> Agent<C> {
             );
         }
 
+        // Budget hint injection (#2267): inject remaining cost and tool call budget so the
+        // LLM can self-regulate. Only injected when budget_hint_enabled = true (default).
+        // Self-suppresses when no budget data sources are available.
+        if self.runtime.budget_hint_enabled {
+            let remaining_cost_cents = self.metrics.cost_tracker.as_ref().and_then(|ct| {
+                let max = ct.max_daily_cents();
+                if max > 0.0 {
+                    Some((max - ct.current_spend()).max(0.0))
+                } else {
+                    None
+                }
+            });
+            let total_budget_cents = self.metrics.cost_tracker.as_ref().and_then(|ct| {
+                let max = ct.max_daily_cents();
+                if max > 0.0 { Some(max) } else { None }
+            });
+            let max_tool_calls = self.tool_orchestrator.max_iterations;
+            let remaining_tool_calls = max_tool_calls.saturating_sub(self.current_tool_iteration);
+            let hint = BudgetHint {
+                remaining_cost_cents,
+                total_budget_cents,
+                remaining_tool_calls,
+                max_tool_calls,
+            };
+            if let Some(xml) = hint.format_xml() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&xml);
+            }
+        }
+
         tracing::debug!(
             len = system_prompt.len(),
             skills = ?self.skill_state.active_skill_names,
@@ -1828,6 +1858,51 @@ impl<C: Channel> Agent<C> {
         if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }
+    }
+}
+
+/// Budget state injected into the volatile system prompt section (#2267).
+///
+/// All fields are optional — omitted when the corresponding data source is unavailable.
+/// `format_xml()` returns `None` when all fields would be absent (nothing to inject).
+struct BudgetHint {
+    remaining_cost_cents: Option<f64>,
+    total_budget_cents: Option<f64>,
+    remaining_tool_calls: usize,
+    max_tool_calls: usize,
+}
+
+impl BudgetHint {
+    fn format_xml(&self) -> Option<String> {
+        let has_cost = self.remaining_cost_cents.is_some();
+        // Always include tool call budget — max_tool_calls > 0 in any real config.
+        if !has_cost && self.max_tool_calls == 0 {
+            return None;
+        }
+        let mut s = String::from("<budget>");
+        if let Some(remaining) = self.remaining_cost_cents {
+            let _ = write!(
+                s,
+                "\n<remaining_cost_cents>{remaining:.2}</remaining_cost_cents>"
+            );
+        }
+        if let Some(total) = self.total_budget_cents {
+            let _ = write!(s, "\n<total_budget_cents>{total:.2}</total_budget_cents>");
+        }
+        if self.max_tool_calls > 0 {
+            let _ = write!(
+                s,
+                "\n<remaining_tool_calls>{}</remaining_tool_calls>",
+                self.remaining_tool_calls
+            );
+            let _ = write!(
+                s,
+                "\n<max_tool_calls>{}</max_tool_calls>",
+                self.max_tool_calls
+            );
+        }
+        s.push_str("\n</budget>");
+        Some(s)
     }
 }
 
@@ -1992,5 +2067,61 @@ mod tests {
         let msgs = vec![sys(), tool_result_msg()];
         // len=2, len-history_start=1 → while condition `keep_tail < 1` is false from the start
         assert_eq!(memory_first_keep_tail(&msgs, 1), 2);
+    }
+
+    // ── BudgetHint tests (#2267) ─────────────────────────────────────────────
+
+    #[test]
+    fn budget_hint_all_none_no_xml_when_max_tools_zero() {
+        let hint = BudgetHint {
+            remaining_cost_cents: None,
+            total_budget_cents: None,
+            remaining_tool_calls: 0,
+            max_tool_calls: 0,
+        };
+        assert!(hint.format_xml().is_none());
+    }
+
+    #[test]
+    fn budget_hint_tool_only_produces_xml() {
+        let hint = BudgetHint {
+            remaining_cost_cents: None,
+            total_budget_cents: None,
+            remaining_tool_calls: 7,
+            max_tool_calls: 10,
+        };
+        let xml = hint.format_xml().unwrap();
+        assert!(xml.contains("<remaining_tool_calls>7</remaining_tool_calls>"));
+        assert!(xml.contains("<max_tool_calls>10</max_tool_calls>"));
+        assert!(!xml.contains("remaining_cost_cents"));
+    }
+
+    #[test]
+    fn budget_hint_full_produces_all_fields() {
+        let hint = BudgetHint {
+            remaining_cost_cents: Some(42.5),
+            total_budget_cents: Some(100.0),
+            remaining_tool_calls: 5,
+            max_tool_calls: 10,
+        };
+        let xml = hint.format_xml().unwrap();
+        assert!(xml.contains("<remaining_cost_cents>42.50</remaining_cost_cents>"));
+        assert!(xml.contains("<total_budget_cents>100.00</total_budget_cents>"));
+        assert!(xml.contains("<remaining_tool_calls>5</remaining_tool_calls>"));
+        assert!(xml.contains("<max_tool_calls>10</max_tool_calls>"));
+    }
+
+    #[test]
+    fn budget_hint_zero_max_daily_cents_omits_cost_fields() {
+        // max_daily_cents == 0.0 means unlimited — cost fields must be omitted.
+        let hint = BudgetHint {
+            remaining_cost_cents: None, // caller guards with > 0.0 check
+            total_budget_cents: None,
+            remaining_tool_calls: 3,
+            max_tool_calls: 10,
+        };
+        let xml = hint.format_xml().unwrap();
+        assert!(!xml.contains("remaining_cost_cents"));
+        assert!(!xml.contains("total_budget_cents"));
     }
 }

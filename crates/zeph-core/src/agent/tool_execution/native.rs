@@ -210,6 +210,8 @@ impl<C: Channel> Agent<C> {
         iteration: usize,
         query_embedding: Option<Vec<f32>>,
     ) -> Result<Option<()>, super::super::error::AgentError> {
+        // Track iteration for BudgetHint injection (#2267).
+        self.current_tool_iteration = iteration;
         self.channel.send_typing().await?;
 
         // Inject any pending LSP notes as a Role::System message before calling
@@ -789,11 +791,11 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        // Utility gate: score each call before dispatch. Calls below the threshold are skipped.
+        // Utility gate: score each call and recommend an action (#2477).
         // Fail-closed on scoring errors (None when scoring produces invalid result).
         // user_requested is only true for explicit /tool slash commands — never set from
         // LLM-requested calls to prevent prompt-injection bypass (C2 fix).
-        let utility_blocked: Vec<bool> = {
+        let utility_actions: Vec<zeph_tools::UtilityAction> = {
             #[allow(clippy::cast_possible_truncation)]
             let tokens_consumed =
                 usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
@@ -805,7 +807,8 @@ impl<C: Channel> Agent<C> {
                 .enumerate()
                 .map(|(idx, call)| {
                     if pre_exec_blocked[idx] {
-                        return false; // already blocked, no need to score
+                        // Already blocked upstream — treat as ToolCall to avoid double-counting.
+                        return zeph_tools::UtilityAction::ToolCall;
                     }
                     let ctx = zeph_tools::UtilityContext {
                         tool_calls_this_turn: tool_calls_this_turn + idx,
@@ -815,31 +818,30 @@ impl<C: Channel> Agent<C> {
                         user_requested: false,
                     };
                     let score = self.tool_orchestrator.utility_scorer.score(call, &ctx);
+                    let action = self
+                        .tool_orchestrator
+                        .utility_scorer
+                        .recommend_action(score.as_ref(), &ctx);
                     tracing::debug!(
                         tool = %call.tool_id,
                         score = ?score.as_ref().map(|s| s.total),
                         threshold = self.tool_orchestrator.utility_scorer.threshold(),
-                        "utility gate: scored tool call"
+                        action = ?action,
+                        "utility gate: action recommended"
                     );
-                    let execute = self
-                        .tool_orchestrator
-                        .utility_scorer
-                        .should_execute(score.as_ref(), false);
-                    if !execute {
-                        tracing::warn!(
+                    if action != zeph_tools::UtilityAction::ToolCall {
+                        tracing::info!(
                             tool = %call.tool_id,
-                            score = ?score.as_ref().map(|s| s.total),
-                            threshold = self.tool_orchestrator.utility_scorer.threshold(),
-                            "utility gate: skipping low-utility tool call"
+                            action = ?action,
+                            "utility gate: non-execute action"
                         );
                     }
                     // Record call regardless so subsequent calls in this batch see it as prior.
                     self.tool_orchestrator.utility_scorer.record_call(call);
-                    !execute
+                    action
                 })
                 .collect()
         };
-
         // Repeat-detection (CRIT-3): record LLM-initiated calls BEFORE execution.
         // Retry re-executions must NOT be pushed here — they are handled inside the retry loop.
         // Build args hashes and check for repeats. Blocked calls get a pre-built error result.
@@ -1088,28 +1090,131 @@ impl<C: Channel> Agent<C> {
                     continue;
                 }
 
-                if utility_blocked[idx] {
-                    let threshold = self.tool_orchestrator.utility_scorer.threshold();
-                    let msg = format!(
-                        "[skipped] Tool call to {} was skipped by the utility gate \
-                         (score below threshold {threshold:.2}). \
-                         Try a different approach or disable the utility gate in config.",
-                        tc.name
-                    );
-                    let out = zeph_tools::ToolOutput {
-                        tool_name: tc.name.clone(),
-                        summary: msg,
-                        blocks_executed: 0,
-                        filter_stats: None,
-                        diff: None,
-                        streamed: false,
-                        terminal_id: None,
-                        locations: None,
-                        raw_response: None,
-                        claim_source: None,
-                    };
-                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
-                    continue;
+                match utility_actions[idx] {
+                    zeph_tools::UtilityAction::ToolCall => {}
+                    zeph_tools::UtilityAction::Respond => {
+                        let _ = self
+                            .channel
+                            .send_status(&format!("Utility action: Respond ({})", tc.name))
+                            .await;
+                        let msg = format!(
+                            "[skipped] Tool call to {} skipped — utility policy recommends a \
+                             direct response without further tool use.",
+                            tc.name
+                        );
+                        let out = zeph_tools::ToolOutput {
+                            tool_name: tc.name.clone(),
+                            summary: msg,
+                            blocks_executed: 0,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                            claim_source: None,
+                        };
+                        tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                        continue;
+                    }
+                    zeph_tools::UtilityAction::Retrieve => {
+                        let _ = self
+                            .channel
+                            .send_status(&format!("Utility action: Retrieve ({})", tc.name))
+                            .await;
+                        // Inject a system message directing the LLM to retrieve context first.
+                        let hint = format!(
+                            "[utility:retrieve] Before executing the '{}' tool, retrieve \
+                             relevant context via memory_search or a related lookup to ensure \
+                             the call is well-targeted.",
+                            tc.name
+                        );
+                        self.push_message(zeph_llm::provider::Message::from_legacy(
+                            zeph_llm::provider::Role::System,
+                            &hint,
+                        ));
+                        let msg = format!(
+                            "[skipped] Tool call to {} skipped — utility policy recommends \
+                             retrieving additional context first.",
+                            tc.name
+                        );
+                        let out = zeph_tools::ToolOutput {
+                            tool_name: tc.name.clone(),
+                            summary: msg,
+                            blocks_executed: 0,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                            claim_source: None,
+                        };
+                        tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                        continue;
+                    }
+                    zeph_tools::UtilityAction::Verify => {
+                        let _ = self
+                            .channel
+                            .send_status(&format!("Utility action: Verify ({})", tc.name))
+                            .await;
+                        // Inject a system message directing the LLM to verify the prior result.
+                        let hint = format!(
+                            "[utility:verify] Before executing the '{}' tool again, verify \
+                             the result of the previous tool call to confirm it is correct \
+                             and that further tool use is necessary.",
+                            tc.name
+                        );
+                        self.push_message(zeph_llm::provider::Message::from_legacy(
+                            zeph_llm::provider::Role::System,
+                            &hint,
+                        ));
+                        let msg = format!(
+                            "[skipped] Tool call to {} skipped — utility policy recommends \
+                             verifying the previous result first.",
+                            tc.name
+                        );
+                        let out = zeph_tools::ToolOutput {
+                            tool_name: tc.name.clone(),
+                            summary: msg,
+                            blocks_executed: 0,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                            claim_source: None,
+                        };
+                        tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                        continue;
+                    }
+                    zeph_tools::UtilityAction::Stop => {
+                        let _ = self
+                            .channel
+                            .send_status(&format!("Utility action: Stop ({})", tc.name))
+                            .await;
+                        let threshold = self.tool_orchestrator.utility_scorer.threshold();
+                        let msg = format!(
+                            "[stopped] Tool call to {} halted by the utility gate — \
+                             budget exhausted or score below threshold {threshold:.2}.",
+                            tc.name
+                        );
+                        let out = zeph_tools::ToolOutput {
+                            tool_name: tc.name.clone(),
+                            summary: msg,
+                            blocks_executed: 0,
+                            filter_stats: None,
+                            diff: None,
+                            streamed: false,
+                            terminal_id: None,
+                            locations: None,
+                            raw_response: None,
+                            claim_source: None,
+                        };
+                        tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                        continue;
+                    }
                 }
 
                 if repeat_blocked[idx] {

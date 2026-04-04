@@ -213,6 +213,9 @@ pub struct Agent<C: Channel> {
     ///
     /// Default: empty vec (zero-cost — loops never iterate).
     pub(super) runtime_layers: Vec<std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>>,
+    /// Current tool loop iteration index within the active user turn. Reset to 0 at turn start,
+    /// incremented each iteration. Used to compute remaining tool call budget for `BudgetHint` (#2267).
+    pub(super) current_tool_iteration: usize,
 }
 
 impl<C: Channel> Agent<C> {
@@ -380,6 +383,7 @@ impl<C: Channel> Agent<C> {
                 dependency_config: zeph_tools::DependencyConfig::default(),
                 adversarial_policy_info: None,
                 spawn_depth: 0,
+                budget_hint_enabled: true,
             },
             mcp: McpState {
                 tools: Vec::new(),
@@ -528,6 +532,7 @@ impl<C: Channel> Agent<C> {
             deferred_db_hide_ids: Vec::new(),
             deferred_db_summaries: Vec::new(),
             runtime_layers: Vec::new(),
+            current_tool_iteration: 0,
         }
     }
 

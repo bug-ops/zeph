@@ -1478,6 +1478,47 @@ pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, Mi
     })
 }
 
+/// Migration step: add `budget_hint_enabled` as a commented-out entry under `[agent]` if absent.
+///
+/// # Errors
+///
+/// Returns an error if the config cannot be parsed or the `[agent]` section is malformed.
+pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    let agent_exists = doc.contains_key("agent");
+    if !agent_exists {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let agent = doc
+        .get_mut("agent")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure("[agent] is not a table"))?;
+
+    if agent.contains_key("budget_hint_enabled") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "# Inject <budget> XML into the system prompt so the LLM can self-regulate (#2267).\n\
+         # budget_hint_enabled = true\n";
+    append_comment_to_table_suffix(agent, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["agent.budget_hint_enabled".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -2301,5 +2342,36 @@ trust_level = "untrusted"
         let result = migrate_database_url(src).expect("migrate");
         assert_eq!(result.added_count, 1);
         assert!(result.output.contains("# database_url = \"\""));
+    }
+
+    // ── migrate_agent_budget_hint tests (#2267) ───────────────────────────────
+
+    #[test]
+    fn migrate_agent_budget_hint_adds_comment_to_existing_agent_section() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_agent_budget_hint(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert!(result.output.contains("budget_hint_enabled"));
+        assert!(
+            result
+                .sections_added
+                .contains(&"agent.budget_hint_enabled".to_owned())
+        );
+    }
+
+    #[test]
+    fn migrate_agent_budget_hint_no_agent_section_is_noop() {
+        let src = "[llm]\nmodel = \"gpt-4o\"\n";
+        let result = migrate_agent_budget_hint(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_agent_budget_hint_already_present_is_noop() {
+        let src = "[agent]\nname = \"Zeph\"\nbudget_hint_enabled = true\n";
+        let result = migrate_agent_budget_hint(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
     }
 }

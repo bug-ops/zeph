@@ -174,6 +174,8 @@ pub(crate) struct WizardState {
     // File read sandbox (#2525)
     pub(crate) file_deny_read: Vec<String>,
     pub(crate) file_allow_read: Vec<String>,
+    // Budget hint injection (#2267)
+    pub(crate) budget_hint_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -306,6 +308,7 @@ impl Default for WizardState {
             shell_auto_rollback: false,
             file_deny_read: Vec::new(),
             file_allow_read: Vec::new(),
+            budget_hint_enabled: true,
         }
     }
 }
@@ -996,6 +999,7 @@ fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
 pub(crate) fn build_config(state: &WizardState) -> Config {
     let mut config = Config::default();
     config.agent.auto_update_check = state.auto_update_check;
+    config.agent.budget_hint_enabled = state.budget_hint_enabled;
     let provider = state.provider.unwrap_or(ProviderKind::Ollama);
 
     // Build the providers pool.
@@ -1379,6 +1383,13 @@ fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
 
     state.auto_update_check = Confirm::new()
         .with_prompt("Enable automatic update checks?")
+        .default(true)
+        .interact()?;
+
+    state.budget_hint_enabled = Confirm::new()
+        .with_prompt(
+            "Inject budget hints into the system prompt so the LLM can self-regulate tool calls and cost? (budget_hint_enabled)",
+        )
         .default(true)
         .interact()?;
 

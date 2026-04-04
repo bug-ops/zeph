@@ -236,6 +236,15 @@ pub struct AgentConfig {
     /// Dynamic tool schema filtering configuration (#2020).
     #[serde(default)]
     pub tool_filter: ToolFilterConfig,
+    /// Inject a `<budget>` XML block into the volatile system prompt section so the LLM
+    /// can self-regulate tool calls and cost. Self-suppresses when no budget data is
+    /// available (#2267).
+    #[serde(default = "default_budget_hint_enabled")]
+    pub budget_hint_enabled: bool,
+}
+
+fn default_budget_hint_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

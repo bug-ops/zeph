@@ -5,9 +5,9 @@ use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
-    ConfigMigrator, migrate_agent_retry_to_tools_retry, migrate_database_url,
-    migrate_mcp_trust_levels, migrate_planner_model_to_provider, migrate_shell_transactional,
-    migrate_stt_to_provider,
+    ConfigMigrator, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
+    migrate_database_url, migrate_mcp_trust_levels, migrate_planner_model_to_provider,
+    migrate_shell_transactional, migrate_stt_to_provider,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -52,9 +52,13 @@ pub(crate) fn handle_migrate_config(
     let shell_txn_result = migrate_shell_transactional(&after_db_url)?;
     let after_shell_txn = shell_txn_result.output;
 
-    // Step 7: add missing default keys as commented-out entries.
+    // Step 7: add commented-out budget_hint_enabled to [agent] if absent (#2267).
+    let budget_hint_result = migrate_agent_budget_hint(&after_shell_txn)?;
+    let after_budget_hint = budget_hint_result.output;
+
+    // Step 8: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_shell_txn)?;
+    let result = migrator.migrate(&after_budget_hint)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -82,6 +86,9 @@ pub(crate) fn handle_migrate_config(
             eprintln!(
                 "Shell transactional migration: added commented-out transactional fields to [tools.shell]."
             );
+        }
+        if budget_hint_result.added_count > 0 {
+            eprintln!("Budget hint migration: added commented-out budget_hint_enabled to [agent].");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

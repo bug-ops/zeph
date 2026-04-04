@@ -81,6 +81,7 @@ fn make_runtime_config() -> RuntimeConfig {
         dependency_config: zeph_tools::DependencyConfig::default(),
         adversarial_policy_info: None,
         spawn_depth: 0,
+        budget_hint_enabled: true,
     }
 }
 

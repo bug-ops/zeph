@@ -207,6 +207,8 @@ pub(crate) struct RuntimeConfig {
     /// Current spawn depth of this agent instance (0 = top-level, 1 = first sub-agent, etc.).
     /// Used by `build_spawn_context()` to propagate depth to children.
     pub(crate) spawn_depth: u32,
+    /// Inject `<budget>` XML into the volatile system prompt section (#2267).
+    pub(crate) budget_hint_enabled: bool,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.

@@ -213,6 +213,12 @@ impl CostTracker {
         Ok(())
     }
 
+    /// Returns the configured daily budget in cents. Zero means unlimited.
+    #[must_use]
+    pub fn max_daily_cents(&self) -> f64 {
+        self.max_daily_cents
+    }
+
     #[must_use]
     pub fn current_spend(&self) -> f64 {
         let state = self

@@ -7,6 +7,8 @@ max_tool_iterations = 10
 # auto_update_check = true
 # Automatically detect provider-specific instruction files (CLAUDE.md, AGENTS.md, etc.)
 # instruction_auto_detect = true
+# Inject a <budget> XML block into the system prompt so the LLM can self-regulate (#2267)
+# budget_hint_enabled = true
 # Additional instruction files to always inject into the system prompt
 # instruction_files = ["custom-instructions.md"]
 
