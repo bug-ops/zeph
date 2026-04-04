@@ -66,6 +66,13 @@ const BRIDGE_BUFFER_SIZE: usize = 64 * 1024;
 /// # Errors
 ///
 /// Returns `AcpError::Transport` if the underlying JSON-RPC I/O fails.
+///
+/// # SECURITY(layer-2): Session binding limitation
+///
+/// stdio transport has no cryptographic session binding. Any process with access to
+/// the pipe can inject messages into any session. This is an inherent limitation of
+/// stdio IPC. For multi-tenant scenarios, switch to HTTP/WS transport which provides
+/// bearer-token session binding.
 pub async fn serve_stdio(
     spawner: AgentSpawner,
     server_config: AcpServerConfig,

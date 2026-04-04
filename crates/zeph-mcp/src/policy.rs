@@ -321,6 +321,7 @@ mod tests {
             security_meta: ToolSecurityMeta {
                 data_sensitivity: sensitivity,
                 capabilities: vec![],
+                flagged_parameters: Vec::new(),
             },
         }
     }

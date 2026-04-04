@@ -1360,6 +1360,23 @@ async fn apply_injection_penalties(
         event_type = "registration_injection",
         "injection patterns detected in MCP tool definitions"
     );
+
+    // Apply additional penalties for High-severity cross-tool references (cross-ref + injection).
+    let high_cross_refs: usize = result
+        .cross_references
+        .iter()
+        .filter(|r| r.severity == crate::sanitize::CrossRefSeverity::High)
+        .count();
+    for _ in 0..high_cross_refs.min(MAX_INJECTION_PENALTIES_PER_REGISTRATION) {
+        let _ = store
+            .load_and_apply_delta(
+                server_id,
+                -crate::trust_score::ServerTrustScore::INJECTION_PENALTY,
+                0,
+                1,
+            )
+            .await;
+    }
 }
 
 /// Always sanitizes first (security invariant), then assigns security metadata,
@@ -2235,6 +2252,7 @@ mod tests {
             ToolSecurityMeta {
                 data_sensitivity: DataSensitivity::High,
                 capabilities: vec![CapabilityClass::Shell],
+                flagged_parameters: Vec::new(),
             },
         );
         let tools = vec![make_tool("srv", "my_tool")];
@@ -2269,6 +2287,7 @@ mod tests {
             ToolSecurityMeta {
                 data_sensitivity: DataSensitivity::High,
                 capabilities: vec![CapabilityClass::Shell],
+                flagged_parameters: Vec::new(),
             },
         );
         let tools = vec![make_tool("srv", "exec_tool")];
@@ -2510,6 +2529,7 @@ mod tests {
             injection_count: 0,
             flagged_tools: vec![],
             flagged_patterns: vec![],
+            cross_references: vec![],
         }
     }
 
@@ -2518,6 +2538,7 @@ mod tests {
             injection_count: n,
             flagged_tools: vec!["tool".to_owned()],
             flagged_patterns: vec![("tool".to_owned(), "pattern".to_owned()); n.min(3)],
+            cross_references: vec![],
         }
     }
 

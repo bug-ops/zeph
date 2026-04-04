@@ -28,6 +28,17 @@ pub enum CapabilityClass {
     ExternalApi,
 }
 
+/// A parameter path and the injection pattern that matched it.
+///
+/// JSON pointer format: `/properties/key/description`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FlaggedParameter {
+    /// JSON pointer into `input_schema` identifying the flagged value.
+    pub path: String,
+    /// Name of the injection pattern that matched.
+    pub pattern_name: String,
+}
+
 /// Per-tool security metadata.
 ///
 /// Assigned by operator config or inferred from tool name heuristics at registration time.
@@ -40,6 +51,9 @@ pub struct ToolSecurityMeta {
     /// Capability classes this tool exercises.
     #[serde(default)]
     pub capabilities: Vec<CapabilityClass>,
+    /// Parameters whose `input_schema` values matched an injection pattern.
+    #[serde(default)]
+    pub flagged_parameters: Vec<FlaggedParameter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +141,7 @@ pub fn infer_security_meta(tool_name: &str) -> ToolSecurityMeta {
     ToolSecurityMeta {
         data_sensitivity: sensitivity,
         capabilities: caps,
+        flagged_parameters: Vec::new(),
     }
 }
 
@@ -361,6 +376,7 @@ mod tests {
             security_meta: ToolSecurityMeta {
                 data_sensitivity: DataSensitivity::Medium,
                 capabilities: vec![CapabilityClass::FilesystemWrite],
+                flagged_parameters: Vec::new(),
             },
         };
         let json = serde_json::to_string(&tool).unwrap();

@@ -67,6 +67,11 @@ fn error_response(
     }
 }
 
+/// # SECURITY(layer-6): Audit completeness gap
+///
+/// Completed tasks and their message content are not written to a persistent audit log.
+/// Only `tracing::debug` is emitted per request. For structured audit trails, a `SQLite`
+/// append-only log should be added here. Tracked as a known gap — see architecture doc.
 pub async fn jsonrpc_handler(
     State(state): State<AppState>,
     Extension(identity): Extension<AuthIdentity>,

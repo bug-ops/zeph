@@ -37,6 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(mcp): cross-tool injection correlation — `detect_cross_tool_references` scans all tool descriptions for references to other tool names in the same batch; High severity when source tool also has injection patterns, triggering an additional trust-score penalty per cross-reference (#2480)
+- feat(mcp): JSON pointer paths for flagged schema parameters — `FlaggedParameter { path, pattern_name }` stored in `ToolSecurityMeta.flagged_parameters`; schema walk refactored into `SchemaWalkCtx` accumulator (#2480)
+- feat(mcp): `MIN_CROSS_REF_NAME_LEN = 4` guard to exclude short ambiguous names ("get", "set", "run") from cross-reference matching (#2480)
+- docs(security): AgentRFC 6-layer security audit with `SECURITY:` gap annotations in `handlers.rs` (layer-6 audit log gap) and `stdio.rs` (layer-2 session binding limitation); full audit document at `.local/specs/security/agentrfc-audit.md` (#2509)
 - feat(subagent): propagate parent conversation history to spawned sub-agents — last `context_window_turns` (default 10) non-system messages are passed as `initial_messages`; a 25% context window cap is applied using a 4-chars-per-token heuristic (#2576)
 - feat(subagent): cascade cancellation from parent to foreground sub-agents via `CancellationToken::child_token()`; background sub-agents (`background: true`) retain independent tokens (#2577)
 - feat(subagent): add `model: inherit` keyword to `SubAgentDef` — sub-agent inherits the parent's active provider name at spawn time; named providers continue to work as before (#2578)
