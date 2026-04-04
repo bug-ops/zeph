@@ -6,28 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-
-- refactor: split `agent/learning.rs` (3749 lines) into `agent/learning/` directory with submodules `mod.rs`, `trust.rs`, `outcomes.rs`, `skill_commands.rs`, `erl.rs`, `arise.rs`, `d2skill.rs`, `rl.rs`, `preferences.rs`, `background.rs`, `tests.rs` (#2630)
-- refactor: split `agent/mod.rs` into focused submodules — `plan.rs`, `scheduler_loop.rs`, `corrections.rs`, `model_commands.rs`; extend `slash_commands.rs` with extracted slash command handlers; extract `sanitize_tool_output` into `agent/tool_execution/sanitize.rs`
-- refactor: extract `run_agent_loop`, `AgentLoopArgs`, `handle_tool_step`, `append_transcript`, `make_message` from `zeph-subagent/src/manager.rs` into `zeph-subagent/src/agent_loop.rs`
-- refactor: split `src/init.rs` (3187 lines) into `src/init/` directory with submodules `llm.rs`, `memory.rs`, `security.rs`, `mcp.rs`, `agents.rs`
-- refactor: extract per-provider migration helpers (`migrate_ollama_provider`, `migrate_claude_provider`, `migrate_openai_provider`, `migrate_gemini_provider`, `migrate_compatible_provider`, `migrate_orchestrator_provider`, `migrate_router_provider`) from `migrate_llm_to_providers` in `zeph-config/src/migrate.rs`
-- refactor: extract `reanalyze_topology_if_dirty`, `advance_level_barrier_if_needed`, `check_graph_completion` from `tick()` in `zeph-orchestration/src/scheduler.rs`
-
-### Fixed
-
-- fix(persistence): persist tombstone `ToolResult` entries on shutdown for any unpaired `tool_use` written to the DB mid-execution (stdin EOF) — eliminates orphaned tool_use WARN messages on next session startup (#2628)
-- fix(memory): ensure conversation row exists before `graph_episodes` FK insert on fresh DB (#2627)
-- fix(agent): exclude [skipped] utility messages from semantic memory, strengthen Retrieve re-dispatch hint (#2620)
-- fix(skills): scan `/skill create` input description for injection patterns before LLM generation (#2621)
-- fix(skills): `/skill create` dedup now works with Qdrant backend via `match_skills` (#2622)
-- fix(agent): defer utility gate System hint injection until after tool results are persisted (#2615)
-- refactor(dry): remove duplicate `cosine_similarity` in `zeph-mcp` — use canonical `zeph-common::math::cosine_similarity`
-- refactor(dry): eliminate `zeph-memory/src/math.rs` single-line re-export module — direct imports from `zeph_common::math`
-- refactor(dry): consolidate `normalize_path` in `zeph-tools` — `policy.rs` now delegates to `file::normalize_path`
-- refactor(dry): add `strip_control_chars_preserve_whitespace` to `zeph-common::sanitize`; remove duplicate implementations in `zeph-sanitizer` and `zeph-gateway`
-- refactor(dry): add `estimate_tokens` to `zeph-common::text`; replace all inline `chars().count() / 4` expressions in `zeph-llm` and `zeph-memory`
+## [0.18.3] - 2026-04-04
 
 ### Added
 
@@ -41,54 +20,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Utility 5-way action policy** (`#2477`): extend `UtilityScorer` from binary allow/deny to a five-action recommendation (`ToolCall`, `Respond`, `Retrieve`, `Verify`, `Stop`). Decision tree thresholds follow arXiv:2603.19896. `Retrieve` and `Verify` actions inject a synthetic system message to guide the next LLM turn; all non-`ToolCall` actions emit a TUI status indicator.
 - feat(memory): SleepGate forgetting sweep (#2397) — background loop that decays importance scores (synaptic downscaling), restores recently-accessed memories (selective replay), and prunes memories below `forgetting_floor`. Configurable via `[memory.forgetting]`. Disabled by default.
 - feat(memory): performance-floor compression ratio predictor (#2460) — lightweight linear regression model that selects the most aggressive compression ratio keeping predicted probe quality above `hard_fail_threshold`. Training data collected from live compaction probes. Configurable via `[memory.compression.predictor]`. Disabled by default.
-
-### Fixed
-
-- SkillOrchestra RL routing cold start (#2610): when `rl_routing_enabled = true` and no persisted weights exist, initialize a fresh `RoutingHead` instead of skipping RL entirely. Add `skills.rl_embed_dim` config field (default 1536). Add dimension mismatch guard in assembly to skip RL with a warning when embed dim does not match head dim.
-- `/skill create` injection hard block (#2606): if the generated skill contains injection patterns, require `yes force` confirmation instead of plain `yes`. Adds `has_injection_patterns` field to `GeneratedSkill`.
-- `/skill create` dedup against registry (#2609): after generation, embed the new skill and compare cosine similarity against all existing in-memory skill embeddings. If any similarity exceeds 0.85, a warning naming the similar skill is shown in the preview.
-
-### Changed
-- `SkillMiner::github_token` wrapped in `zeph_common::secret::Secret` (zeroize-on-drop, redacted in Debug/Display); `SkillMiner::new` now accepts `impl Into<String>` (#2607)
-- `/skill create`: cap description at 2048 characters; return error "Description too long (max 2048 characters)." for longer inputs (#2608)
-- Channel skill allowlist (`ChannelSkillsConfig::allowed`) now enforced at prompt assembly time: skills not matching the allowlist are excluded from `<available_skills>` and the skill catalog, with a `DEBUG` log per filtered skill. Wired from `[telegram.skills]`, `[discord.skills]`, `[slack.skills]` config sections (#2612)
-
-### Security
-- Fix trust level fallback in `format_skills_prompt`: replace `unwrap_or(SkillTrustLevel::Trusted)` with `unwrap_or_default()` (yields `Quarantined`) — unknown skills no longer bypass sanitization (#2506)
-- Add `sanitize_skill_text()` in `zeph-skills/src/prompt.rs`: applies XML tag escaping plus injection marker removal (defense-in-depth) to both `description` and `body` for non-Trusted skills (#2506)
-- Add `allowed_domains`/`denied_domains` to `ScrapeConfig` with `check_domain_policy()` enforced in `WebScrapeExecutor` before each fetch; wildcard prefix matching (`*.example.com`) supported (#2506)
-- Add `tool_risk_summary` field to `AuditConfig`; when true, logs per-tool privilege level and expected sanitization at startup via `log_tool_risk_summary()` (#2500)
-- Add `ChannelSkillsConfig` with `allowed` list to `TelegramConfig`, `DiscordConfig`, `SlackConfig`; emit startup `WARN` when remote channel uses wildcard `["*"]` allowlist (#2506)
-- Truncate `CorrectionHint` text to 500 chars at insertion to prevent prompt injection via long tool outputs (#2596)
-- Add OOM sanity cap (1M elements) in `read_f32_slice` before `Vec::with_capacity` to prevent crafted-blob DoS (#2595)
-
-### Tests
-- Add unit tests for D2Skill and SkillOrchestra: serde round-trips, prompt placeholder substitution, warm-path rerank, REINFORCE reward direction (#2597)
-
-### Fixed
-
-- fix(memory): resolve SQLite pool starvation causing multi-turn session hangs (#2591)
-- fix(config): add regression test for TOML float deserialization across router, bandit, memory, and skills config sections (#2599)
-
-### Changed
-
-- **BREAKING**: Removed feature flags `guardrail`, `context-compression`, `compression-guidelines`, `policy-enforcer`, `lsp-context`, `experiments` — these features are now always compiled in and cannot be disabled (#2565)
-- **BREAKING**: Removed `bundled-skills` flag — SKILL.md files are always compiled into the binary via `include_dir`
-- **BREAKING**: Removed `stt` flag — speech-to-text (Whisper API) is always compiled in; `reqwest/multipart` is now an unconditional dependency of `zeph-llm`
-- **BREAKING**: Removed `acp-unstable` flag — unstable ACP session features are enabled automatically when the `acp` flag is set
-- Updated bundle definitions: `desktop` now only includes `tui` (compression and guardrail are always-on); `ide` now only includes `acp` and `acp-http` (lsp-context is always-on); `ml` no longer includes `stt` (always-on); `full` simplified
-- `default` features reduced to `["scheduler", "sqlite"]` — removed `bundled-skills` and `guardrail` (now always-on)
-- Consolidate `cosine_similarity` into `zeph-common::math` (removes duplicate in `zeph-memory`) (#2558)
-- Consolidate `truncate_chars` into `zeph-common::text` (removes duplicates in `zeph-llm`) (#2559)
-- Add `From<ToolStartEvent>` and `From<ToolOutputEvent>` conversions for owned `ToolData` types (#2561)
-- Move hash utilities (`blake3_hex`, `fast_hash`) to `zeph-common::hash` (removes duplicates across 3 crates) (#2557)
-- Move runtime config structs (`BeliefRevisionConfig`, `NoteLinkingConfig`, `ConsolidationConfig`) to `zeph-common::config::memory` (single source of truth) (#2556)
-- refactor(sanitizer): rename `zeph_sanitizer::TrustLevel` to `ContentTrustLevel` for domain clarity (#2555)
-- refactor(tools): rename `zeph_tools::TrustLevel` to `SkillTrustLevel` for domain clarity (#2555)
-- refactor(config): introduce `ProviderName` newtype in `zeph-config` replacing bare `String` for all `*_provider` config fields; invalid provider names now produce a startup error (#2560)
-
-### Added
-
 - feat(mcp): cross-tool injection correlation — `detect_cross_tool_references` scans all tool descriptions for references to other tool names in the same batch; High severity when source tool also has injection patterns, triggering an additional trust-score penalty per cross-reference (#2480)
 - feat(mcp): JSON pointer paths for flagged schema parameters — `FlaggedParameter { path, pattern_name }` stored in `ToolSecurityMeta.flagged_parameters`; schema walk refactored into `SchemaWalkCtx` accumulator (#2480)
 - feat(mcp): `MIN_CROSS_REF_NAME_LEN = 4` guard to exclude short ambiguous names ("get", "set", "run") from cross-reference matching (#2480)
@@ -112,14 +43,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(config): `[index] mcp_enabled` (default `false`) — opt-in flag to enable `IndexMcpServer`; logs a warning when `repo_map_tokens` is also set
 - feat(config): postgres migration 059 (`embeddings_metadata` chunk index) sync — was previously only applied for sqlite
 - feat(config): expose `warmup_queries` as TOML config field in `[llm.router.bandit]` — accepts `Option<u64>`; when unset or `0`, the default of `10 × number of providers` is used; allows operators to control how long the PILOT bandit explores uniformly before switching to `LinUCB` context-aware routing (#2543)
-
-### Added
-
 - feat(skills): D2Skill step-level error correction (#2502) — `step_corrections` SQLite table stores per-skill correction hints extracted from ARISE failure→success traces; on tool failure, matching hints are injected into the reflection prompt; controlled by `[skills.learning] d2skill_enabled = false` (opt-in)
 - feat(skills): SkillOrchestra RL routing head (#2499) — 2-layer MLP in pure Rust re-ranks embedding-matched skill candidates using REINFORCE learning from skill outcome signals; blended score `(1-rl_weight)*cosine + rl_weight*rl_score`; weights persisted as SQLite blob; cold-start warmup period (first `rl_warmup_updates` outcomes use pure cosine); controlled by `[skills] rl_routing_enabled = false` (opt-in)
+- Add unit tests for D2Skill and SkillOrchestra: serde round-trips, prompt placeholder substitution, warm-path rerank, REINFORCE reward direction (#2597)
+
+### Changed
+
+- refactor: split `agent/learning.rs` (3749 lines) into `agent/learning/` directory with submodules `mod.rs`, `trust.rs`, `outcomes.rs`, `skill_commands.rs`, `erl.rs`, `arise.rs`, `d2skill.rs`, `rl.rs`, `preferences.rs`, `background.rs`, `tests.rs` (#2630)
+- refactor: split `agent/mod.rs` into focused submodules — `plan.rs`, `scheduler_loop.rs`, `corrections.rs`, `model_commands.rs`; extend `slash_commands.rs` with extracted slash command handlers; extract `sanitize_tool_output` into `agent/tool_execution/sanitize.rs`
+- refactor: extract `run_agent_loop`, `AgentLoopArgs`, `handle_tool_step`, `append_transcript`, `make_message` from `zeph-subagent/src/manager.rs` into `zeph-subagent/src/agent_loop.rs`
+- refactor: split `src/init.rs` (3187 lines) into `src/init/` directory with submodules `llm.rs`, `memory.rs`, `security.rs`, `mcp.rs`, `agents.rs`
+- refactor: extract per-provider migration helpers (`migrate_ollama_provider`, `migrate_claude_provider`, `migrate_openai_provider`, `migrate_gemini_provider`, `migrate_compatible_provider`, `migrate_orchestrator_provider`, `migrate_router_provider`) from `migrate_llm_to_providers` in `zeph-config/src/migrate.rs`
+- refactor: extract `reanalyze_topology_if_dirty`, `advance_level_barrier_if_needed`, `check_graph_completion` from `tick()` in `zeph-orchestration/src/scheduler.rs`
+- `SkillMiner::github_token` wrapped in `zeph_common::secret::Secret` (zeroize-on-drop, redacted in Debug/Display); `SkillMiner::new` now accepts `impl Into<String>` (#2607)
+- `/skill create`: cap description at 2048 characters; return error "Description too long (max 2048 characters)." for longer inputs (#2608)
+- Channel skill allowlist (`ChannelSkillsConfig::allowed`) now enforced at prompt assembly time: skills not matching the allowlist are excluded from `<available_skills>` and the skill catalog, with a `DEBUG` log per filtered skill. Wired from `[telegram.skills]`, `[discord.skills]`, `[slack.skills]` config sections (#2612)
+- **BREAKING**: Removed feature flags `guardrail`, `context-compression`, `compression-guidelines`, `policy-enforcer`, `lsp-context`, `experiments` — these features are now always compiled in and cannot be disabled (#2565)
+- **BREAKING**: Removed `bundled-skills` flag — SKILL.md files are always compiled into the binary via `include_dir`
+- **BREAKING**: Removed `stt` flag — speech-to-text (Whisper API) is always compiled in; `reqwest/multipart` is now an unconditional dependency of `zeph-llm`
+- **BREAKING**: Removed `acp-unstable` flag — unstable ACP session features are enabled automatically when the `acp` flag is set
+- Updated bundle definitions: `desktop` now only includes `tui` (compression and guardrail are always-on); `ide` now only includes `acp` and `acp-http` (lsp-context is always-on); `ml` no longer includes `stt` (always-on); `full` simplified
+- `default` features reduced to `["scheduler", "sqlite"]` — removed `bundled-skills` and `guardrail` (now always-on)
+- Consolidate `cosine_similarity` into `zeph-common::math` (removes duplicate in `zeph-memory`) (#2558)
+- Consolidate `truncate_chars` into `zeph-common::text` (removes duplicates in `zeph-llm`) (#2559)
+- Add `From<ToolStartEvent>` and `From<ToolOutputEvent>` conversions for owned `ToolData` types (#2561)
+- Move hash utilities (`blake3_hex`, `fast_hash`) to `zeph-common::hash` (removes duplicates across 3 crates) (#2557)
+- Move runtime config structs (`BeliefRevisionConfig`, `NoteLinkingConfig`, `ConsolidationConfig`) to `zeph-common::config::memory` (single source of truth) (#2556)
+- refactor(sanitizer): rename `zeph_sanitizer::TrustLevel` to `ContentTrustLevel` for domain clarity (#2555)
+- refactor(tools): rename `zeph_tools::TrustLevel` to `SkillTrustLevel` for domain clarity (#2555)
+- refactor(config): introduce `ProviderName` newtype in `zeph-config` replacing bare `String` for all `*_provider` config fields; invalid provider names now produce a startup error (#2560)
+- refactor(dry): remove duplicate `cosine_similarity` in `zeph-mcp` — use canonical `zeph-common::math::cosine_similarity`
+- refactor(dry): eliminate `zeph-memory/src/math.rs` single-line re-export module — direct imports from `zeph_common::math`
+- refactor(dry): consolidate `normalize_path` in `zeph-tools` — `policy.rs` now delegates to `file::normalize_path`
+- refactor(dry): add `strip_control_chars_preserve_whitespace` to `zeph-common::sanitize`; remove duplicate implementations in `zeph-sanitizer` and `zeph-gateway`
+- refactor(dry): add `estimate_tokens` to `zeph-common::text`; replace all inline `chars().count() / 4` expressions in `zeph-llm` and `zeph-memory`
 
 ### Fixed
 
+- fix(persistence): persist tombstone `ToolResult` entries on shutdown for any unpaired `tool_use` written to the DB mid-execution (stdin EOF) — eliminates orphaned tool_use WARN messages on next session startup (#2628)
+- fix(memory): ensure conversation row exists before `graph_episodes` FK insert on fresh DB (#2627)
+- fix(agent): exclude [skipped] utility messages from semantic memory, strengthen Retrieve re-dispatch hint (#2620)
+- fix(skills): scan `/skill create` input description for injection patterns before LLM generation (#2621)
+- fix(skills): `/skill create` dedup now works with Qdrant backend via `match_skills` (#2622)
+- fix(agent): defer utility gate System hint injection until after tool results are persisted (#2615)
+- fix(skills): SkillOrchestra RL routing cold start (#2610) — when `rl_routing_enabled = true` and no persisted weights exist, initialize a fresh `RoutingHead` instead of skipping RL entirely. Add `skills.rl_embed_dim` config field (default 1536). Add dimension mismatch guard in assembly to skip RL with a warning when embed dim does not match head dim.
+- fix(skills): `/skill create` injection hard block (#2606) — if the generated skill contains injection patterns, require `yes force` confirmation instead of plain `yes`. Adds `has_injection_patterns` field to `GeneratedSkill`.
+- fix(skills): `/skill create` dedup against registry (#2609) — after generation, embed the new skill and compare cosine similarity against all existing in-memory skill embeddings. If any similarity exceeds 0.85, a warning naming the similar skill is shown in the preview.
+- fix(memory): resolve SQLite pool starvation causing multi-turn session hangs (#2591)
+- fix(config): add regression test for TOML float deserialization across router, bandit, memory, and skills config sections (#2599)
 - fix(sanitizer): skip ML injection classification for `policy_blocked` tool error outputs — sandbox/policy denial messages produced by `ToolErrorFeedback::format_for_llm` reliably triggered the DeBERTa classifier as false positives; add `is_policy_blocked_output` guard before `classify_injection` call in tool execution (#2574)
 - fix(classifiers): raise default ML injection hard threshold from `0.80` to `0.95` to reduce false positives on benign tool outputs (e.g. `echo 'hello'`) while maintaining strong detection coverage (#2574)
 - fix(clippy): add backticks around identifiers (`InvalidInput`, `embed()`, `NoProviders`, `record_availability`, `thompson_stats`) in router test doc comments to fix `doc_markdown` lint errors (#2573)
@@ -129,7 +100,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(db): add `build.rs` to `zeph-db` so Cargo re-runs the build script when any migration `.sql` file changes, preventing stale migration state after schema updates (#2571)
 - fix(memory): chunk large messages into overlapping ~400-token segments in `embed_missing()` — each chunk is stored as a separate Qdrant vector, so the full content of long tool outputs is indexed rather than truncated; search deduplicates results by `message_id` keeping the highest-scoring chunk (#2551, #2552)
 - fix(llm): classify HTTP 400 embed responses as non-retryable `LlmError::InvalidInput`; the router fallback loop now breaks immediately on `InvalidInput` without penalizing provider reputation (#2551)
-- Add backticks to doc comments in telegram.rs elicitation tests to fix clippy `doc_markdown` warnings (#2549)
+- fix(docs): add backticks to doc comments in telegram.rs elicitation tests to fix clippy `doc_markdown` warnings (#2549)
+
+### Security
+
+- Fix trust level fallback in `format_skills_prompt`: replace `unwrap_or(SkillTrustLevel::Trusted)` with `unwrap_or_default()` (yields `Quarantined`) — unknown skills no longer bypass sanitization (#2506)
+- Add `sanitize_skill_text()` in `zeph-skills/src/prompt.rs`: applies XML tag escaping plus injection marker removal (defense-in-depth) to both `description` and `body` for non-Trusted skills (#2506)
+- Add `allowed_domains`/`denied_domains` to `ScrapeConfig` with `check_domain_policy()` enforced in `WebScrapeExecutor` before each fetch; wildcard prefix matching (`*.example.com`) supported (#2506)
+- Add `tool_risk_summary` field to `AuditConfig`; when true, logs per-tool privilege level and expected sanitization at startup via `log_tool_risk_summary()` (#2500)
+- Add `ChannelSkillsConfig` with `allowed` list to `TelegramConfig`, `DiscordConfig`, `SlackConfig`; emit startup `WARN` when remote channel uses wildcard `["*"]` allowlist (#2506)
+- Truncate `CorrectionHint` text to 500 chars at insertion to prevent prompt injection via long tool outputs (#2596)
+- Add OOM sanity cap (1M elements) in `read_f32_slice` before `Vec::with_capacity` to prevent crafted-blob DoS (#2595)
 
 ### Removed
 
@@ -3309,7 +3290,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.3...HEAD
+[0.18.3]: https://github.com/bug-ops/zeph/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/bug-ops/zeph/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/bug-ops/zeph/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/bug-ops/zeph/compare/v0.17.1...v0.18.0

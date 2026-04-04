@@ -18,13 +18,13 @@ pub enum DiffLineKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct DiffLine<'a> {
+pub struct DiffLine {
     pub kind: DiffLineKind,
-    pub content: &'a str,
+    pub content: String,
 }
 
 #[must_use]
-pub fn compute_diff<'a>(old: &'a str, new: &'a str) -> Vec<DiffLine<'a>> {
+pub fn compute_diff(old: &str, new: &str) -> Vec<DiffLine> {
     let diff = similar::TextDiff::from_lines(old, new);
     diff.iter_all_changes()
         .map(|change| {
@@ -35,7 +35,7 @@ pub fn compute_diff<'a>(old: &'a str, new: &'a str) -> Vec<DiffLine<'a>> {
             };
             DiffLine {
                 kind,
-                content: change.value(),
+                content: change.value().to_owned(),
             }
         })
         .collect()
