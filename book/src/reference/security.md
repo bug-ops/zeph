@@ -353,6 +353,41 @@ All decrypted values in the in-memory secrets map are stored as `BTreeMap<String
 
 If you need to pass a secret to a function, accept `&Secret` or extract the inner `&str` directly rather than cloning.
 
+## Indirect Prompt Injection (IPI) Defense
+
+Zeph includes a multi-layer defense against indirect prompt injection — malicious instructions embedded in tool outputs, web pages, or MCP server responses that attempt to hijack the agent's behavior.
+
+### Detection Pipeline
+
+Three classifiers operate in sequence on every piece of external content before it enters the LLM context:
+
+| Classifier | Method | Purpose |
+|------------|--------|---------|
+| **DeBERTa soft-signal** | Local NER model (feature-gated) | Fast token-level detection of injection patterns |
+| **AlignSentinel** (3-class) | Lightweight LLM classifier | Classifies content as `safe`, `suspicious`, or `malicious` |
+| **TurnCausalAnalyzer** | Heuristic + LLM | Detects whether a tool output is attempting to influence subsequent agent actions |
+
+When any classifier flags content as malicious, the content is quarantined before reaching the LLM. Suspicious content is passed through with a warning annotation. The DeBERTa classifier requires the `candle` feature; without it, detection falls back to regex patterns and the LLM classifiers.
+
+### Cross-Tool Injection Correlation
+
+Zeph tracks injection signals across consecutive tool calls within a single turn. If multiple tool outputs in the same turn contain injection indicators, the correlation engine escalates the severity — even if individual signals are below the blocking threshold. This defends against split-payload attacks where malicious instructions are distributed across multiple tool responses.
+
+### MCP/A2A Security Hardening
+
+- **Tool collision detection**: when multiple MCP servers expose tools with the same name, Zeph detects the collision and either prefixes with the server ID or blocks the duplicate
+- **SMCP lifecycle**: Secure MCP session lifecycle management with token-based authentication for dynamic server connections
+- **IBCT tokens**: Identity-Bound Capability Tokens for A2A agent authentication
+- **MCP to ACP confused-deputy enforcement**: prevents MCP tool results from being used to bypass ACP permission boundaries
+
+### Credential Environment Scrubbing
+
+Shell commands executed by the agent run in a scrubbed environment. Variables matching credential patterns (API keys, tokens, passwords) are removed from the subprocess environment before execution. This prevents skills or tool calls from exfiltrating secrets via environment variable inspection.
+
+### PII Protection
+
+A configurable NER-based PII detection system can identify and redact personally identifiable information in tool outputs before they enter the LLM context. A circuit breaker protects against runaway cost from paginated reads that trigger repeated PII scans.
+
 ## Code Security
 
 Rust-native memory safety guarantees:

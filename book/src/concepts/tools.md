@@ -10,6 +10,9 @@ Execute any shell command via the `bash` tool. Commands are sandboxed:
 - **Network control**: block `curl`, `wget`, `nc` with `allow_network = false`
 - **Confirmation**: destructive commands (`rm`, `git push -f`, `drop table`) require a y/N prompt
 - **Output filtering**: test results, git diffs, and clippy output are automatically stripped of noise to reduce token usage
+- **Structured output envelope**: shell results include exit code, stdout, stderr as separate fields for reliable parsing
+- **Transactional execution**: when enabled, the shell executor snapshots the working directory before execution and can rollback on failure. Configure `max_snapshot_bytes` to limit snapshot size
+- **Credential scrubbing**: environment variables matching credential patterns are scrubbed from subprocess environments
 - **Detection limits**: indirect execution via process substitution, here-strings, `eval`, or variable expansion bypasses blocked-command detection; these patterns trigger a confirmation prompt instead
 
 ## File Operations
@@ -176,6 +179,30 @@ prefers = ["lint"]             # Soft boost: deploy scores higher if lint ran
 ```
 
 This is useful for multi-step workflows where tool order matters (e.g., `read` before `edit`, `build` before `deploy`).
+
+## Adversarial Policy Agent
+
+The adversarial policy agent is an optional pre-execution validation layer that uses an LLM to evaluate tool calls before they run. When enabled, each tool call is sent to a lightweight LLM that assesses whether the call is safe, appropriate, and aligned with the user's intent. Suspicious calls are blocked or flagged for confirmation.
+
+```toml
+[tools.adversarial_policy]
+enabled = true
+provider = "fast"              # Provider name for validation LLM
+block_on_reject = true         # Block rejected calls (false = warn only)
+```
+
+The adversarial policy agent is distinct from the permission system — permissions are pattern-based and static, while the policy agent uses LLM reasoning to evaluate context-dependent risk.
+
+## File Read Sandbox
+
+File read operations are controlled by a configurable per-path sandbox in `[tools.file]`:
+
+```toml
+[tools.file]
+allowed_paths = ["/home/user/project"]   # Sandbox directories (empty = cwd only)
+```
+
+This is independent of the shell sandbox (`[tools.shell].allowed_paths`). File tools and shell tools can have different access scopes.
 
 ## Deep Dives
 

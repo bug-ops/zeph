@@ -2,7 +2,7 @@
 
 Database abstraction layer for [Zeph](https://github.com/bug-ops/zeph) — unified SQLite and PostgreSQL backends with compile-time backend selection, automatic migrations, dialect-aware SQL helpers, and FTS support.
 
-> [!IMPORTANT]
+**Important:**
 > Exactly one of the `sqlite` or `postgres` features must be enabled. The default is `sqlite`. Enabling both simultaneously triggers a `compile_error!`. Using `--all-features` is intentionally unsupported — use `--features full` or `--features full,postgres` instead.
 
 ## Features
@@ -29,7 +29,7 @@ database_url = "postgres://user:pass@localhost/zeph"
 ZEPH_DATABASE_URL=postgres://user:pass@localhost/zeph zeph
 ```
 
-> [!IMPORTANT]
+**Important:**
 > The URL scheme (`sqlite:` / `postgres:`) must match the compiled feature. A `postgres://` URL with the `sqlite` feature (or vice versa) will fail at startup with a clear error.
 
 ## CLI migrations
@@ -41,7 +41,7 @@ zeph db migrate                               # apply pending migrations using c
 zeph db migrate --url postgres://user:pass@localhost/zeph
 ```
 
-> [!TIP]
+**Tip:**
 > Use `zeph db migrate --dry-run` to print the SQL that would be applied without executing it.
 
 ## Installation
@@ -98,7 +98,7 @@ let rows = sqlx::query(sql!("SELECT id FROM messages WHERE conversation_id = ?")
     .await?;
 ```
 
-> [!NOTE]
+**Note:**
 > Do not use the `sql!` macro for PostgreSQL JSONB queries that contain `?`, `?|`, or `?&` operators — use `$N` placeholders directly for those.
 
 ### Dialect-aware SQL fragments

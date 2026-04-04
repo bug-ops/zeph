@@ -687,6 +687,28 @@ transcript_max_files = 50
 
 > **Caution:** Set `allow_bypass_permissions = true` only in fully trusted, sandboxed environments. Without this flag, any definition requesting `bypass_permissions` mode is rejected at load time.
 
+## Context Propagation
+
+Sub-agents inherit context from the parent agent to reduce cold-start overhead:
+
+- **Conversation history**: the parent's recent conversation history is forwarded to the sub-agent's initial context, giving it awareness of what has been discussed
+- **Cancellation**: the parent's cancellation token is propagated so that cancelling the parent also cancels active sub-agents
+- **Model inheritance**: sub-agents inherit the parent's active model unless overridden in the definition's `model` field
+
+Sub-agents no longer exit after a single text-only LLM response — they continue the conversation loop until the task is complete or `max_turns` is reached.
+
+### MCP Tool Awareness
+
+Sub-agent system prompts are automatically annotated with the names of available MCP tools from connected servers. This helps the sub-agent's LLM understand what external capabilities are available without injecting full tool schemas.
+
+## Interactive TUI Sidebar
+
+When the `tui` feature is enabled, pressing `Tab` in Normal mode cycles to the sub-agent sidebar. The sidebar provides:
+
+- Live status for all active sub-agents with color-coded indicators
+- A transcript viewer that shows the full conversation history of a selected sub-agent
+- Keyboard navigation: `j`/`k` to select agents, `Enter` to open the transcript, `Esc` to close
+
 ## TUI Dashboard Panel
 
 When the `tui` feature is enabled, a Sub-Agents panel appears in the sidebar showing active agents with color-coded status:

@@ -31,6 +31,11 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `cache` | `ToolResultCache` — in-memory LRU cache for deterministic tool results with TTL expiry; `CacheKey` hashes tool name + args; `is_cacheable()` whitelist for safe-to-cache tools |
 | `tool_filter` | `ToolFilter<E>` — executor wrapper that suppresses specified tools from the LLM tool set |
 | `overflow` | (removed — overflow storage migrated to SQLite in `zeph-memory`) |
+| `shell::transaction` | Transactional shell executor — snapshot/rollback filesystem state around shell commands; captures pre-execution state and reverts on failure or user request |
+| `adversarial_policy` | Adversarial policy agent — pre-execution LLM validation that evaluates tool calls for safety before dispatch |
+| `adversarial_gate` | `AdversarialPolicyGateExecutor` — executor wrapper that routes tool calls through the adversarial policy agent before execution |
+| `policy_gate` | Policy-based tool access control gate |
+| `error_taxonomy` | Tool invocation phase taxonomy — classifies errors by execution phase for structured diagnostics |
 | `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block); `TafcConfig` for `[tools.tafc]` section; `ResultCacheConfig` for `[tools.result_cache]`; `DependencyConfig` + `ToolDependency` for `[tools.dependencies]`; `FileConfig` for `[tools.file]` section (deny_read/allow_read glob lists) |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`, `ToolResultCache`, `CacheKey`, `ToolSchemaFilter`, `ToolDependencyGraph`, `ToolFilter`
@@ -72,7 +77,7 @@ allow_read = ["/home/user/projects/**"]
 4. **Pinned address client** — the validated IP set is pinned into the HTTP client via `resolve_to_addrs`, eliminating DNS TOCTOU rebinding attacks.
 5. **Redirect chain defense** — automatic redirects are disabled; the executor manually follows up to 3 redirect hops. Each `Location` header (including relative URLs resolved against the current request URL) is passed through steps 1–4 before the next request is made.
 
-> [!WARNING]
+**Warning:**
 > Any redirect hop that resolves to a private or internal address causes the entire request to fail with `ToolError::Blocked`. This prevents open-redirect SSRF where a public server redirects to an internal endpoint.
 
 ## Shell sandbox
@@ -82,7 +87,7 @@ The `ShellExecutor` enforces two layers of protection:
 1. **Blocklist** (`blocked_commands`) — tokenizer-based detection that normalizes escapes, splits on shell metacharacters, and matches through transparent prefixes (`env`, `command`, `exec`, etc.).
 2. **Confirmation patterns** (`confirm_patterns`) — substring scan that triggers `ConfirmationRequired` before execution. Defaults include `$(`, `` ` ``, `<(`, `>(`, `<<<`, and `eval `.
 
-> [!WARNING]
+**Warning:**
 > `find_blocked_command` does **not** detect commands hidden inside `eval`/`bash -c` string arguments or variable expansion (`$cmd`). Backtick substitution (`` `cmd` ``), `$(cmd)`, and process substitution (`<(...)` / `>(...)`) are now detected by the blocklist tokenizer; they are also covered by `confirm_patterns` as a second layer. For high-security deployments, complement this filter with OS-level sandboxing.
 
 ## Installation

@@ -39,6 +39,29 @@ Use `/skills` in chat to see active skills and their usage statistics.
 - **Two matching backends**: in-memory (default) or Qdrant (faster startup with many skills, delta sync via BLAKE3 hash). Both support BM25+cosine hybrid search via Reciprocal Rank Fusion (enabled by default, disable with `hybrid_search = false`)
 - **Secret gating**: skills that declare `x-requires-secrets` in their frontmatter are excluded from the prompt if the required secrets are not present in the vault. This prevents the agent from attempting to use a skill that would fail due to missing credentials
 - **Compact prompt mode**: when context budget is tight, `skills.prompt_mode = "auto"` (default) switches to a condensed XML format that includes only name, description, and triggers — ~80% smaller than full bodies. Force with `"compact"` or disable with `"full"`. See [Context Engineering — Skill Prompt Modes](../advanced/context.md#skill-prompt-modes)
+- **Channel allowlist**: skills can declare which I/O channels they are permitted to run on via `x-channels` in YAML frontmatter. When set, the skill is excluded from matching on channels not in the list. Omit to allow all channels.
+- **Description cap**: skill descriptions are capped at 2048 characters to prevent oversized prompt injection from user-created skills
+- **Injection sanitization**: skill bodies and `/skill create` inputs are sanitized against prompt injection. URL domains in skill bodies are checked against a configurable allowlist. Untrusted skill content has structural XML tags escaped before prompt injection
+
+## Natural Language Skill Generation
+
+Use `/skill create` to generate a new skill from a natural language description:
+
+```
+/skill create "A skill that formats JSON files using jq"
+```
+
+Zeph generates a complete `SKILL.md` with frontmatter, instructions, and examples via LLM reflection. Skills can also be mined from GitHub repositories — Zeph analyzes repo structure and README to extract actionable skill definitions.
+
+Duplicate detection prevents creating skills that overlap with existing ones by checking semantic similarity against the skill registry.
+
+## Semantic Confusability Mitigation
+
+When multiple skills have overlapping descriptions, the matcher can confuse them. Zeph mitigates this with:
+
+- **Category grouping**: skills are grouped by functional category, and matching considers category affinity alongside raw similarity
+- **Two-stage matching**: an initial broad match is followed by a disambiguation stage that compares top candidates within the same category
+- Use `/skill confusability` to generate a report showing which skills are at risk of being confused
 
 ## External Skill Management
 

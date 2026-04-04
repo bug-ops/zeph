@@ -10,7 +10,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![Tests](https://img.shields.io/badge/tests-7658-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
-  [![Crates](https://img.shields.io/badge/crates-20-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
+  [![Crates](https://img.shields.io/badge/crates-21-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
   [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 </div>
@@ -26,8 +26,7 @@ zeph migrate-config --config config.toml --diff      # check for new options aft
 zeph                                                 # start the agent
 ```
 
-> [!TIP]
-> `cargo install zeph` also works. Pre-built binaries and Docker images are on the [releases page](https://github.com/bug-ops/zeph/releases).
+**Tip:** `cargo install zeph` also works. Pre-built binaries and Docker images are on the [releases page](https://github.com/bug-ops/zeph/releases).
 
 ---
 
@@ -55,17 +54,13 @@ export ZEPH_CLAUDE_API_KEY=sk-ant-...
 zeph
 ```
 
-> [!WARNING]
-> **v0.17.0 breaking change**: the `[llm.cloud]`, `[llm.openai]`, `[llm.orchestrator]`, and `[llm.router]` config sections are replaced by `[[llm.providers]]`. Run `zeph migrate-config --in-place` to upgrade automatically.
+**Warning:** **v0.17.0 breaking change**: the `[llm.cloud]`, `[llm.openai]`, `[llm.orchestrator]`, and `[llm.router]` config sections are replaced by `[[llm.providers]]`. Run `zeph migrate-config --in-place` to upgrade automatically.
 
-> [!NOTE]
-> **v0.18.1**: PILOT LinUCB contextual bandit routing (`LlmRoutingStrategy::Bandit`) and PostgreSQL memory backend are now available.
+**Note:** **v0.18.1**: PILOT LinUCB contextual bandit routing (`LlmRoutingStrategy::Bandit`) and PostgreSQL memory backend are now available.
 
-> [!NOTE]
-> **v0.18.2**: Structured shell output envelope (`ShellOutputEnvelope` with separate stdout/stderr/exit_code/truncated), per-path file read sandbox (`[tools.file]` deny_read/allow_read), MCP elicitation support, IBCT capability tokens for A2A (`ibct` feature), reactive hooks for `CwdChanged`/`FileChanged` events, `[memory.store_routing]` strategy wired (BREAKING: `[memory.routing]` removed), and skill `disambiguation_threshold` default raised to 0.20.
+**Note:** **v0.18.2**: Structured shell output envelope (`ShellOutputEnvelope` with separate stdout/stderr/exit_code/truncated), per-path file read sandbox (`[tools.file]` deny_read/allow_read), MCP elicitation support, IBCT capability tokens for A2A (`ibct` feature), reactive hooks for `CwdChanged`/`FileChanged` events, `[memory.store_routing]` strategy wired (BREAKING: `[memory.routing]` removed), and skill `disambiguation_threshold` default raised to 0.20.
 
-> [!TIP]
-> Copy-paste configs for all common setups — local, cloud, hybrid, coding assistant, Telegram bot — are in the **[Configuration Recipes](https://bug-ops.github.io/zeph/guides/config-recipes.html)** guide.
+**Tip:** Copy-paste configs for all common setups — local, cloud, hybrid, coding assistant, Telegram bot — are in the **[Configuration Recipes](https://bug-ops.github.io/zeph/guides/config-recipes.html)** guide.
 
 ---
 

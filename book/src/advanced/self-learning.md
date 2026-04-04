@@ -286,3 +286,38 @@ The `/feedback` command records explicit user feedback about the agent's most re
 4. The Wilson score and EMA metrics continue to accumulate on the new version. If performance drops below `rollback_threshold`, automatic rollback restores the previous version.
 
 > Set `auto_activate = false` (default) to review LLM-generated improvements before they go live. Use `/skill versions` and `/skill approve <id>` to inspect and promote candidates manually.
+
+## D2Skill: Step-Level Error Correction
+
+D2Skill (Dynamic Dual-loop Skill learning) extends the improvement pipeline with step-level error correction. Instead of regenerating an entire skill body after failures, D2Skill identifies the specific step within a multi-step skill that failed and generates a targeted correction.
+
+When a skill execution fails partway through a multi-step sequence, D2Skill records which step failed and why. On subsequent improvement cycles, only the failing step is regenerated — preserving working steps and reducing LLM cost.
+
+### SkillOrchestra RL Routing Head
+
+SkillOrchestra adds a reinforcement learning routing head on top of the skill matcher. When `rl_routing_enabled = true`, the RL head learns from execution outcomes to adjust skill selection probabilities, preferring skills that succeed for a given query type over time.
+
+```toml
+[skills]
+rl_routing_enabled = true      # Enable RL-based skill routing (default: false)
+```
+
+The RL head uses a contextual bandit algorithm. Cold start is handled by falling back to the standard BM25+cosine matcher until sufficient observations accumulate.
+
+Enable D2Skill in the learning config:
+
+```toml
+[skills.learning]
+d2skill_enabled = true         # Enable step-level error correction (default: false)
+```
+
+## ARISE Trace Evolution
+
+ARISE (Adaptive Reinforcement of Instruction-Skill Evolution) tracks execution traces — the sequence of tool calls and their outcomes during skill execution — and uses them to evolve skill instructions over time.
+
+Key components:
+
+- **STEM pattern-to-skill**: detects recurring tool-call patterns (e.g., "read file, then grep, then edit") across sessions and proposes new skills to codify them
+- **ERL heuristics**: Exploration-Reinforcement-Learning heuristics that balance trying new skill variations against exploiting known-good ones
+
+ARISE operates in the background and surfaces proposals via `/skill versions` for manual review.

@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Cargo workspace (Edition 2024, resolver 3) with 10 crates + binary root.
+Cargo workspace (Edition 2024, resolver 3) with 21 crates + binary root.
 
 Requires Rust 1.88+. Native async traits are used throughout — no `async-trait` crate.
 
@@ -8,35 +8,41 @@ Requires Rust 1.88+. Native async traits are used throughout — no `async-trait
 
 ```text
 zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
-├── zeph-core       Agent loop, bootstrap/AppBuilder, config, config hot-reload, channel trait, context builder
-├── zeph-llm        LlmProvider trait, Ollama + Claude + OpenAI + Candle backends, orchestrator, embeddings
-├── zeph-skills     SKILL.md parser, registry with lazy body loading, embedding matcher, resource resolver, hot-reload
-├── zeph-memory     SQLite + Qdrant, SemanticMemory orchestrator, summarization
-├── zeph-channels   Telegram adapter (teloxide) with streaming
-├── zeph-tools      ToolExecutor trait, ShellExecutor, WebScrapeExecutor, CompositeExecutor, TrustLevel
-├── zeph-index      AST-based code indexing, hybrid retrieval, repo map (always-on)
-├── zeph-mcp        MCP client via rmcp, multi-server lifecycle, unified tool matching (optional)
-├── zeph-a2a        A2A protocol client + server, agent discovery, JSON-RPC 2.0 (optional)
-└── zeph-tui        ratatui TUI dashboard with real-time metrics (optional)
+├── Layer 0 — Primitives
+│   └── zeph-common         Shared primitives: Secret, VaultError, common types
+├── Layer 1 — Configuration & Secrets
+│   ├── zeph-config         Pure-data configuration types, TOML loader, env overrides, migration
+│   └── zeph-vault          VaultProvider trait + env and age-encrypted backends
+├── Layer 2 — Core Domain Crates
+│   ├── zeph-db             Database abstraction (SQLite + PostgreSQL)
+│   ├── zeph-llm            LlmProvider trait, Ollama/Claude/OpenAI/Gemini/Candle backends, router
+│   ├── zeph-memory         SQLite + Qdrant, SemanticMemory, summarization, document loaders
+│   ├── zeph-tools          ToolExecutor trait, ShellExecutor, FileExecutor, TrustLevel
+│   ├── zeph-skills         SKILL.md parser, registry, embedding matcher, hot-reload
+│   └── zeph-index          AST-based code indexing, hybrid retrieval, repo map (always-on)
+├── Layer 3 — Agent Subsystems
+│   ├── zeph-sanitizer      Content sanitization, PII filter, exfiltration guard
+│   ├── zeph-experiments    Autonomous experiment engine, LLM-as-judge evaluation
+│   ├── zeph-subagent       Subagent lifecycle, grants, transcripts, hooks
+│   └── zeph-orchestration  DAG-based task orchestration, planner, router, aggregator
+├── Layer 4 — Agent Core
+│   └── zeph-core           Agent loop, AppBuilder bootstrap, context builder, metrics
+├── Layer 5 — Protocol & I/O
+│   ├── zeph-channels       Telegram, Discord, Slack adapters
+│   ├── zeph-mcp            MCP client via rmcp, multi-server lifecycle (optional)
+│   ├── zeph-acp            ACP server — IDE integration (optional)
+│   ├── zeph-a2a            A2A protocol client + server (optional)
+│   ├── zeph-gateway        HTTP webhook gateway (optional)
+│   └── zeph-scheduler      Cron task scheduler (optional)
+└── Layer 6 — UI
+    └── zeph-tui            ratatui TUI dashboard with real-time metrics (optional)
 ```
+
+See [Crates Overview](crates-overview.md) for the full layered architecture with dependencies.
 
 ## Dependency Graph
 
-```text
-zeph (binary)
-  ├── zeph-core (orchestrates everything)
-  │     ├── zeph-llm (leaf)
-  │     ├── zeph-skills (leaf)
-  │     ├── zeph-memory (leaf)
-  │     ├── zeph-channels (leaf)
-  │     ├── zeph-tools (leaf)
-  │     ├── zeph-index (leaf)
-  │     ├── zeph-mcp (optional, leaf)
-  │     └── zeph-tui (optional, leaf)
-  └── zeph-a2a (optional, wired by binary, not by zeph-core)
-```
-
-`zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation. `zeph-a2a` is feature-gated and wired directly by the binary — `zeph-core` does not depend on it. Sub-agent lifecycle state (`SubAgentState`) is defined inside `zeph-core` to keep the core agent loop self-contained.
+The layered architecture enforces a strict dependency direction: higher layers depend on lower layers, never the reverse. `zeph-core` (Layer 4) orchestrates all subsystems. Protocol crates (Layer 5) are feature-gated and wired by the binary. Sub-agent lifecycle state is defined in `zeph-subagent` (Layer 3) to keep `zeph-core` focused on the agent loop.
 
 ## Agent Loop
 

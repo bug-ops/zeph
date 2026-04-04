@@ -25,6 +25,12 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 
 **Compaction probe validation** verifies compaction quality by generating probe questions from pre-compaction content and scoring the post-compaction text against them, detecting information loss before it becomes permanent.
 
+**SleepGate forgetting pass** runs periodic background sweeps that soft-delete messages whose importance scores fall below `forgetting_floor`, preventing low-value content from accumulating in long-running conversations. Configure via `[memory.forgetting]`.
+
+**GAAMA episode nodes** extend the graph memory with episode-typed entities that capture temporal context boundaries — start/end timestamps and associated entity sets — enabling episodic recall alongside semantic and graph retrieval.
+
+**Compression predictor** (`compression_predictor`) estimates whether a compaction pass will produce a net context savings before invoking the LLM, avoiding wasted inference on messages that are already dense.
+
 ## Key modules
 
 | Module | Description |
@@ -58,6 +64,12 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `anchored_summary` | `AnchoredSummary` — structured summarization that preserves factual anchors (entities, relationships, decisions) during compaction |
 | `compaction_probe` | `CompactionProbeConfig`, `validate_compaction` — post-compaction quality validation via probe question generation and answer scoring |
 | `sqlite::experiments` | `ExperimentResultRow`, `NewExperimentResult`, `SessionSummaryRow` — SQLite persistence for experiment results and session summaries (feature-gated: `experiments`) |
+| `forgetting` | `SleepGate` — background forgetting sweep that soft-deletes messages below `forgetting_floor`; configurable interval and floor threshold via `[memory.forgetting]` |
+| `compression_predictor` | Performance-floor compression predictor — estimates compaction savings before invoking the LLM |
+| `consolidation` | Background memory consolidation — promotes/demotes entries between tiers based on access patterns |
+| `tiers` | `MemScene` tiered memory — hot working memory, episodic scene buffer, and long-term archive with background consolidation |
+| `scenes` | Scene buffer management for episodic memory |
+| `eviction` | Graph eviction — cleanup of expired edges, orphan entities, and entity cap enforcement |
 | `error` | `MemoryError` — unified error type |
 
 **Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`, `AnchoredSummary`, `CompactionProbeConfig`, `validate_compaction`
@@ -94,7 +106,7 @@ threshold = 0.30   # initial relevance threshold (0.0–1.0)
 goal_conditioned_write = true  # only write when content is relevant to the active goal (A-MAC)
 ```
 
-> [!TIP]
+**Tip:**
 > Set `threshold = 0.0` to disable filtering while keeping the subsystem active (useful for debugging admission decisions).
 
 When `goal_conditioned_write = true`, each candidate write is additionally scored against the current active goal. Writes that are not relevant to the goal are suppressed even if they pass the similarity threshold.
@@ -114,7 +126,7 @@ rl_min_samples       = 500           # minimum training samples before RL activa
 rl_retrain_interval_secs = 3600      # retrain frequency
 ```
 
-> [!NOTE]
+**Note:**
 > Until `rl_min_samples` is accumulated, the controller falls back to the heuristic threshold automatically. No configuration change is required when the model becomes active.
 
 ## MemScene consolidation
@@ -141,7 +153,7 @@ This prevents permanent information loss when large tool outputs are compacted a
 archive_tool_outputs = true   # opt-in: archive tool outputs before compaction (default: false)
 ```
 
-> [!NOTE]
+**Note:**
 > Archive rows live in the `tool_overflow` SQLite table alongside regular overflow entries but are protected from the cleanup sweep by a `is_archive` flag. Querying them uses the same `read_overflow` tool exposed to the LLM.
 
 ## ACON per-category compression guidelines
@@ -155,7 +167,7 @@ Each failure pair is tagged with its category at detection time. Guideline updat
 categorized_guidelines = true   # opt-in: per-category guideline optimization (default: false)
 ```
 
-> [!TIP]
+**Tip:**
 > Enable this when your workload produces a mix of large tool outputs and long reasoning chains — the agent can then independently tune compression behaviour for each category rather than averaging across all failure types.
 
 ## Session digest
@@ -204,7 +216,7 @@ Configure via `[memory.documents]` in `config.toml`:
 | `top_k` | usize | `3` | Max chunks injected into context per turn |
 | `rag_enabled` | bool | `false` | Enable automatic RAG context injection |
 
-> [!NOTE]
+**Note:**
 > RAG injection is a no-op when the `zeph_documents` collection is empty. Documents must be ingested with `zeph ingest` before retrieval has any effect.
 
 ## Snapshot export/import
@@ -249,7 +261,7 @@ At context-build time, the top-K most similar corrections are retrieved by embed
 | `correction_recall_limit` | usize | `5` | Max corrections injected per context-build turn |
 | `correction_min_similarity` | f64 | `0.75` | Minimum vector similarity for correction recall |
 
-> [!NOTE]
+**Note:**
 > Corrections are stored in the `zeph_corrections` Qdrant collection. If you use the `sqlite` vector backend, corrections are stored in the `zeph_corrections` SQLite virtual table instead.
 
 ## ACP session storage
@@ -263,7 +275,7 @@ At context-build time, the top-K most similar corrections are retrieved by embed
 - `list_acp_sessions()` — returns all sessions ordered by `created_at DESC` as `Vec<AcpSessionInfo>` (id + created_at). Used by `_session/list` to merge persisted sessions with in-memory state.
 - `import_acp_events(session_id, &[(&str, &str)])` — bulk-inserts events inside a single SQLite transaction. All events are written atomically (commit or rollback). Used by `_session/import` for portable session transfer.
 
-> [!NOTE]
+**Note:**
 > Event cascade delete is handled at the SQL level: deleting a session via `delete_acp_session` removes all associated events.
 
 ## Graph memory
@@ -323,12 +335,25 @@ Messages are scored at write time via `compute_importance()`. The score is store
 | `importance_enabled` | bool | `false` | Enable importance-blended recall ranking |
 | `importance_weight` | f64 | `0.3` | Weight of importance score in the final blend |
 
+## SleepGate forgetting
+
+Background forgetting sweep that periodically soft-deletes messages whose importance scores fall below a configurable floor. Prevents low-value content from accumulating in long-running conversations.
+
+```toml
+[memory.forgetting]
+enabled          = true
+interval_secs    = 3600     # sweep interval
+forgetting_floor = 0.15     # messages below this importance score are soft-deleted
+```
+
 ## Features
 
 | Feature | Description |
 |---------|-------------|
 | `experiments` | Experiment result and session summary persistence in SQLite |
 | `pdf` | PDF document loading via `pdf-extract` |
+| `sqlite` | SQLite backend (default) |
+| `postgres` | PostgreSQL backend via `zeph-db` |
 
 ## Installation
 

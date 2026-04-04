@@ -22,6 +22,10 @@ Implements the Model Context Protocol client for Zeph, managing connections to m
 - **prompt** — MCP prompt template support
 - **error** — `McpError` error types
 
+## MCP Roots protocol
+
+The MCP client implements the `roots/list` handler, exposing configured project roots to MCP servers. Roots are declared via `[mcp.roots]` in config and passed to each server connection at initialization time. Servers that support `roots/list` can use this information to scope their file system access to the declared directories.
+
 ## Semantic tool discovery
 
 `SemanticToolIndex` indexes all registered MCP tool definitions as embedding vectors in Qdrant (or the SQLite vector backend). On each LLM turn, only the top-K most relevant tools — ranked by cosine similarity to the current query — are included in the tools array sent to the model. This keeps the tools payload small for models with narrow context windows and reduces prompt injection surface area.
@@ -34,7 +38,7 @@ min_score    = 0.55       # minimum similarity threshold
 collection   = "zeph_mcp_tools"
 ```
 
-> [!NOTE]
+**Note:**
 > Tool discovery requires an embedding model. Configure `[llm.orchestrator] embedding_model` or set a dedicated `embedding_provider` for the mcp subsystem. When Qdrant is unavailable the index falls back to BM25 keyword matching.
 
 ## Per-message pruning cache
@@ -55,7 +59,7 @@ args           = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 expected_tools = ["read_file", "write_file", "list_directory"]
 ```
 
-> [!IMPORTANT]
+**Important:**
 > Leave `expected_tools` empty (or omit it) to allow all tools from a server. Setting it to an empty list `[]` blocks all tools from that server.
 
 ## Elicitation
@@ -107,7 +111,7 @@ quarantine_threshold  = 0.4    # score below which a server is quarantined
 decay_half_life_secs  = 3600   # half-life for trust score recovery
 ```
 
-> [!TIP]
+**Tip:**
 > View per-server trust scores in the TUI with `mcp:list` from the command palette — the trust column shows the current score and a coloured indicator (green ≥ 0.7, yellow ≥ 0.4, red < 0.4).
 
 ## Configuration
@@ -125,7 +129,7 @@ command = "uvx"
 args = ["mcp-server-fetch"]
 ```
 
-> [!NOTE]
+**Note:**
 > Statically configured servers (from `[[mcp.servers]]`) bypass SSRF validation to allow connections to `localhost` and private IPs. Dynamically added servers retain full SSRF protection.
 
 ## Features

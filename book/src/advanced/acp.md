@@ -1266,3 +1266,32 @@ If a terminal command does not complete, Zeph sends `kill_terminal` after `termi
 [acp]
 terminal_timeout_secs = 30
 ```
+
+## Session Close Handler
+
+Zeph implements the `session/close` ACP method for explicit session teardown. When an IDE sends `session/close`, Zeph:
+
+1. Cancels any active agent turn for that session
+2. Persists final session state to SQLite
+3. Removes the session from the LRU map
+4. Fires any registered `SubagentStop` hooks
+
+This is cleaner than relying on idle reaping and ensures state is saved immediately.
+
+## Capability Advertisement
+
+During the `initialize` handshake, Zeph advertises its supported capabilities to the IDE. The advertised set includes: `prompt`, `cancel`, `load_session`, `set_session_mode`, `config_options`, `ext_methods`, and conditionally `elicitation` (when MCP elicitation is enabled).
+
+The `authMethods` field in the manifest is populated based on whether bearer token authentication is configured.
+
+## Agent Discovery Endpoint
+
+Zeph exposes a `GET /agent.json` endpoint on the HTTP transport that returns a JSON agent card compatible with agent discovery protocols. The card includes the agent name, version, description, supported capabilities, and transport endpoints.
+
+## SessionInfoUpdate with Current Model
+
+When the active model changes (via `/model` command, ACP `set_session_config_option`, or provider fallback), Zeph emits a `SessionInfoUpdate` notification containing the current model name. IDEs can use this to update their model indicator in real time.
+
+## Protocol Version
+
+Zeph targets `agent-client-protocol` version 0.10.3 with schema version 0.11.3.

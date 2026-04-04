@@ -18,9 +18,24 @@ zeph [OPTIONS] [COMMAND]
 | `memory` | Export and import conversation history snapshots |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 | `router` | Inspect or reset Thompson Sampling router state (see [Adaptive Inference](../advanced/adaptive-inference.md)) |
+| `db` | Database management — run migrations, check status (see [Database Abstraction](../concepts/database.md)) |
 | `migrate-config` | Add missing config parameters as commented-out blocks and reformat the file (see [Migrate Config](../guides/migrate-config.md)) |
 
 When no subcommand is given, Zeph starts the agent loop.
+
+### `zeph db`
+
+Manage database schema migrations.
+
+| Subcommand | Description |
+|------------|-------------|
+| `db migrate` | Apply pending database migrations |
+| `db migrate --status` | Show migration status without applying changes |
+
+```bash
+zeph db migrate                    # apply pending migrations
+zeph db migrate --status           # check what would be applied
+```
 
 ### `zeph init`
 
@@ -279,6 +294,16 @@ Show a diff of config changes that `migrate-config` would apply. Opens the comma
 To apply changes, use the CLI: `zeph migrate-config --config <path> --in-place`.
 
 See [Migrate Config](../guides/migrate-config.md) for details.
+
+### `/new`
+
+Reset the current conversation while preserving session state (provider, skills, memory backend). Starts a fresh conversation with a new conversation ID without restarting the agent.
+
+```bash
+> /new
+```
+
+This is useful when you want to change topics without carrying over stale context from a long session.
 
 ### `/debug-dump`
 

@@ -21,7 +21,7 @@ zeph-acp = "0.15.2"
 zeph-acp = { version = "0.15.2", features = ["acp-http"] }
 ```
 
-> [!IMPORTANT]
+**Important:**
 > Requires Rust 1.88 or later.
 
 ## Features
@@ -30,7 +30,7 @@ zeph-acp = { version = "0.15.2", features = ["acp-http"] }
 |---------|-------------|---------|
 | `acp-http` | HTTP+SSE transport via axum (`AcpHttpState`, `acp_router`, `post_handler`, `get_handler`) | No |
 
-> [!TIP]
+**Tip:**
 > Enable `acp-http` only when deploying Zeph as a network-accessible ACP endpoint. The default stdio transport is sufficient for local IDE integrations.
 
 ## Key modules
@@ -83,7 +83,7 @@ The `conversation_id` is pre-created in SQLite before the agent loop starts. Thi
 - **Session fork** — `fork_session` copies the source conversation's messages into a new conversation via `copy_conversation`.
 - **Session resume** — `load_session` and `resume_session` look up the existing `conversation_id` from the `acp_sessions` table; legacy sessions (pre-migration 026) get a new conversation created on demand.
 
-> [!NOTE]
+**Note:**
 > When the SQLite store is unavailable, `ConversationId(0)` is used as a sentinel. The agent's `SemanticMemory` will create its own conversation if needed.
 
 ## ResourceLink resolution
@@ -108,7 +108,7 @@ The agent loop emits `StopHint` values that `ZephAcpAgent` maps to protocol-leve
 | Turn count >= `max_turns` | `MaxTurnRequests` | `MaxTurnRequests` |
 | IDE cancel request | _(cancel signal)_ | `Cancelled` |
 
-> [!NOTE]
+**Note:**
 > `StopHint` is defined in `zeph-core::channel` and carried via `LoopbackEvent::Stop`. The ACP layer consumes it in `prompt()` to produce the final `StopReason`.
 
 ## Tool call lifecycle
@@ -122,7 +122,7 @@ Each tool call is identified by a UUID generated per invocation. The UUID is thr
 
 **Terminal release ordering** — when a shell tool call embeds a terminal via `ToolCallContent::Terminal`, the ACP spec requires the terminal to remain alive until the IDE has processed the `tool_call_update` notification. `ZephAcpAgent` defers `terminal/release` until after all notifications for that event are dispatched. The deferred release is triggered from the `prompt()` event loop via `AcpShellExecutor::release_terminal()`, which is retained in `SessionEntry` for exactly this purpose.
 
-> [!NOTE]
+**Note:**
 > Prior to #1003 the fenced-block path did not generate a UUID or emit `ToolStart`. Prior to #1013 the terminal was released inside `execute_in_terminal` before `tool_call_update` was sent, preventing IDEs from displaying terminal output. Both issues are now resolved.
 
 ## Subagent IDE visibility
@@ -145,7 +145,7 @@ Every `session_update` emitted by a sub-agent carries `_meta.claudeCode.parentTo
 
 `ToolCall.location` carries a `filePath` for file read/write tool calls. IDEs move the editor cursor to the referenced file as the agent works, so the user always sees which file is being modified without manually switching tabs.
 
-> [!TIP]
+**Tip:**
 > All three extensions are additive `_meta` fields — they are ignored by clients that do not recognize them and require no feature flag.
 
 ### Terminal command timeout
@@ -205,7 +205,7 @@ This signals to the IDE that the agent supports session config options (`session
 | `McpServer::Http` | `McpTransport::Http` | Streamable HTTP via rmcp |
 | `McpServer::Sse` | `McpTransport::Http` | Legacy SSE mapped to streamable HTTP (backward-compatible) |
 
-> [!NOTE]
+**Note:**
 > SSE is a legacy MCP transport. rmcp's `StreamableHttpClientTransport` handles both SSE and streamable HTTP endpoints, so both variants map to `McpTransport::Http`.
 
 ```rust
@@ -239,7 +239,7 @@ Endpoints:
 
 Session IDs are UUIDs returned in the `Acp-Session-Id` response header. Idle connections (beyond `session_idle_timeout_secs`) are reaped by a background task.
 
-> [!TIP]
+**Tip:**
 > Use `SendAgentSpawner` (the `Send`-safe variant of `AgentSpawner`) when constructing `AcpHttpState`. This satisfies axum's `State` requirement for `Send + Sync`.
 ## Rich content
 
@@ -368,7 +368,7 @@ The `initialize` response includes an `auth_hint` key in its metadata map. For s
 | `unstable-elicitation` | unstable | Exposes elicitation schema types (`ElicitationRequest`, etc.) for future agent-loop integration. SDK methods not yet available in 0.10.3. |
 | `unstable-logout` | unstable | Enables the `logout` ACP method and advertises `auth.logout` capability. Zeph logout is a no-op (vault-based auth). |
 
-> [!WARNING]
+**Warning:**
 > All `unstable-*` features have wire protocol that is not yet finalized. Expect breaking changes before these features graduate to stable.
 
 To opt in, add the desired features in your `Cargo.toml`:

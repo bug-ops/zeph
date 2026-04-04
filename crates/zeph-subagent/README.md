@@ -92,8 +92,15 @@ let grants = PermissionGrants::builder()
     .build();
 ```
 
-> [!IMPORTANT]
-> Tools not in the grant list are inaccessible to the sub-agent even if they are globally available. Use `tools.except` in the definition to additionally deny specific tools from an inherited grant set.
+**Important:** Tools not in the grant list are inaccessible to the sub-agent even if they are globally available. Use `tools.except` in the definition to additionally deny specific tools from an inherited grant set.
+
+## Context propagation
+
+Sub-agents inherit context from their parent agent to reduce cold-start latency:
+
+- **History propagation** — the parent's recent conversation history is injected into the sub-agent's system prompt, giving it awareness of the ongoing task without requiring explicit re-briefing.
+- **Cancellation propagation** — the parent's cancel signal is forwarded so that cancelling the parent also cancels running sub-agents.
+- **Model inheritance** — when a sub-agent definition does not specify a model, it inherits the parent's active provider, avoiding unnecessary provider resolution overhead.
 
 ## Transcript persistence
 

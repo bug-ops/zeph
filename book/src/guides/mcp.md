@@ -155,6 +155,12 @@ When a server sends `elicitation/create`:
 - `elicitation_warn_sensitive_fields = true` (default) logs a warning when field names match secret patterns before prompting.
 - See [Elicitation Security](../reference/security/mcp.md#elicitation-security) for the full security model.
 
+## MCP Roots Protocol
+
+Zeph implements the MCP Roots protocol, which allows MCP servers to discover the project root directory and workspace structure. When a server requests roots, Zeph responds with the current working directory and any configured project paths.
+
+Tool descriptions from MCP servers are capped at a configurable limit to prevent oversized prompt injection from servers with verbose tool descriptions.
+
 ## How Matching Works
 
 MCP tools are embedded in Qdrant (`zeph_mcp_tools` collection) with BLAKE3 content-hash delta sync. Unified matching injects both skills and MCP tools into the system prompt by relevance score — keeping prompt size O(K) instead of O(N) where N is total tools across all servers.

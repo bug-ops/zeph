@@ -428,6 +428,54 @@ When hard compaction fires, the summarizer can produce structured summaries anch
 
 Anchored summaries are validated for completeness (`session_intent` and `next_steps` must be non-empty) and rendered as Markdown with `[anchored summary]` headers for context injection. This structured format reduces information loss during compaction compared to unstructured prose summaries.
 
+## SleepGate Forgetting Pass
+
+Over time, the vector index accumulates stale or low-value embeddings that dilute recall quality. SleepGate implements a periodic forgetting pass inspired by memory consolidation during sleep: it scans stored embeddings, scores them on recency, access frequency, and semantic density, then soft-deletes entries below the retention threshold.
+
+```toml
+[memory.forgetting]
+enabled = true
+interval_secs = 86400          # Run forgetting pass every N seconds (default: 86400 = 24h)
+retention_threshold = 0.30     # Composite score below which entries are forgotten (default: 0.30)
+```
+
+SleepGate also integrates a performance-floor compression predictor that estimates whether removing a candidate embedding would degrade recall quality for recent queries. Entries that the predictor flags as load-bearing are preserved regardless of their retention score.
+
+Forgotten entries are soft-deleted (marked in SQLite, removed from the vector index) and can be restored manually if needed.
+
+## Multi-Vector Chunking
+
+Long messages (tool outputs, code blocks, large paste operations) that exceed the embedding model's token limit are automatically split into overlapping chunks, each embedded independently. During recall, chunk scores are aggregated back to the parent message using max-pooling, so a message is retrieved if any of its chunks is relevant.
+
+This runs in the real-time embedding path — no configuration is needed. The chunk size and overlap are derived from the embedding model's context window.
+
+## BATS Budget Hint
+
+The Budget-Aware Token Steering (BATS) system injects a budget hint into the system prompt that tells the LLM how much context space remains. This helps the model produce appropriately-sized responses and make better decisions about when to use tools versus answering from context.
+
+BATS also implements a utility-based 5-way action policy that evaluates each agent turn against five action categories (respond, search, tool-use, delegate, wait) and selects the action with the highest expected utility given the current context budget and conversation state.
+
+## Cost-Sensitive Store Routing
+
+When multiple storage backends are available (SQLite vectors, Qdrant, graph store), the memory system routes write operations to the backend with the lowest cost for the given content type. Short factual statements are routed to the graph store, long narratives to vector storage, and structured data to SQLite key-value pairs.
+
+```toml
+[memory.routing]
+cost_sensitive = true          # Enable cost-aware write routing (default: false)
+```
+
+## Goal-Conditioned Write Gate
+
+When enabled, the write gate evaluates whether a candidate memory entry is relevant to the user's current goal before admitting it. This prevents the memory system from storing tangential information during long exploratory sessions.
+
+The goal text is extracted from the most recent `/plan` goal or from the first user message in the session if no plan is active.
+
+## Kumiho Belief Revision
+
+Kumiho implements belief revision for the graph memory store. When new information contradicts an existing entity-relationship fact, Kumiho evaluates the conflict using temporal recency and source reliability, then either updates the existing edge, creates a versioned override, or flags the conflict for user resolution.
+
+This is paired with D-MEM RPE (Reward Prediction Error) routing for graph memory, which uses prediction errors from graph queries to adaptively weight the graph store's contribution to hybrid recall.
+
 ## Deep Dives
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

@@ -22,6 +22,7 @@
 - [LSP Context Injection](concepts/lsp-context-injection.md)
 - [Code Intelligence](concepts/code-intelligence.md)
 - [Task Orchestration](concepts/task-orchestration.md)
+- [Database Abstraction](concepts/database.md)
 - [Reactive Hooks](concepts/hooks.md)
 - [Logging](concepts/logging.md)
 - [Experiments](concepts/experiments.md)
@@ -83,6 +84,8 @@
 - [zeph-sanitizer](reference/crate-sanitizer.md)
 - [zeph-subagent](reference/crate-subagent.md)
 - [zeph-orchestration](reference/crate-orchestration.md)
+- [zeph-db](reference/crate-db.md)
+- [zeph-common](reference/crate-common.md)
 
 # Reference
 
