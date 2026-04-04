@@ -811,18 +811,21 @@ impl<C: Channel> Agent<C> {
                 .iter()
                 .rfind(|m| m.role == zeph_llm::provider::Role::User)
                 .is_some_and(|m| {
-                    let text = m
-                        .parts
-                        .iter()
-                        .filter_map(|p| {
-                            if let zeph_llm::provider::MessagePart::Text { text } = p {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let text = if m.parts.is_empty() {
+                        m.content.clone()
+                    } else {
+                        m.parts
+                            .iter()
+                            .filter_map(|p| {
+                                if let zeph_llm::provider::MessagePart::Text { text } = p {
+                                    Some(text.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    };
                     zeph_tools::has_explicit_tool_request(&text)
                 });
             calls
@@ -2647,6 +2650,62 @@ mod tests {
         assert!(
             score_after.redundancy.abs() < f32::EPSILON,
             "redundancy must be 0.0 after clear_utility_state"
+        );
+    }
+
+    // --- explicit_request detection: parts vs content (#2641) ---
+
+    #[test]
+    fn explicit_request_detected_from_content_when_parts_empty() {
+        // Text-only user messages are created via Message::from_legacy which sets
+        // parts: vec![] and stores text only in content.  The fix ensures we read
+        // content when parts is empty so the bypass fires correctly.
+        use zeph_llm::provider::Message;
+        let msg = Message::from_legacy(Role::User, "please call the list_directory tool");
+        assert!(msg.parts.is_empty(), "from_legacy must produce empty parts");
+        let text = if msg.parts.is_empty() {
+            msg.content.clone()
+        } else {
+            msg.parts
+                .iter()
+                .filter_map(|p| {
+                    if let zeph_llm::provider::MessagePart::Text { text } = p {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(
+            zeph_tools::has_explicit_tool_request(&text),
+            "explicit_request must be true when content contains tool request"
+        );
+    }
+
+    #[test]
+    fn explicit_request_not_detected_from_empty_parts_without_tool_keyword() {
+        use zeph_llm::provider::Message;
+        let msg = Message::from_legacy(Role::User, "what is the weather today?");
+        let text = if msg.parts.is_empty() {
+            msg.content.clone()
+        } else {
+            msg.parts
+                .iter()
+                .filter_map(|p| {
+                    if let zeph_llm::provider::MessagePart::Text { text } = p {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(
+            !zeph_tools::has_explicit_tool_request(&text),
+            "explicit_request must be false when content has no tool request"
         );
     }
 }
