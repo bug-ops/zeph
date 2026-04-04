@@ -3,6 +3,7 @@
 
 //! Subagent management: spawning, grants, transcripts, and lifecycle hooks.
 
+mod agent_loop;
 pub mod command;
 pub mod def;
 pub mod error;

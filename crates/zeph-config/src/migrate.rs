@@ -453,6 +453,282 @@ fn is_top_level_section_header(line: &str) -> bool {
     false
 }
 
+#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+fn migrate_ollama_provider(
+    llm: &toml_edit::Table,
+    model: &Option<String>,
+    base_url: &Option<String>,
+    embedding_model: &Option<String>,
+) -> Vec<String> {
+    let mut block = "[[llm.providers]]\ntype = \"ollama\"\n".to_owned();
+    if let Some(m) = model {
+        block.push_str(&format!("model = \"{m}\"\n"));
+    }
+    if let Some(em) = embedding_model {
+        block.push_str(&format!("embedding_model = \"{em}\"\n"));
+    }
+    if let Some(u) = base_url {
+        block.push_str(&format!("base_url = \"{u}\"\n"));
+    }
+    let _ = llm; // not needed for simple ollama case
+    vec![block]
+}
+
+#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+fn migrate_claude_provider(llm: &toml_edit::Table, model: &Option<String>) -> Vec<String> {
+    let mut block = "[[llm.providers]]\ntype = \"claude\"\n".to_owned();
+    if let Some(cloud) = llm.get("cloud").and_then(toml_edit::Item::as_table) {
+        if let Some(m) = cloud.get("model").and_then(toml_edit::Item::as_str) {
+            block.push_str(&format!("model = \"{m}\"\n"));
+        }
+        if let Some(t) = cloud
+            .get("max_tokens")
+            .and_then(toml_edit::Item::as_integer)
+        {
+            block.push_str(&format!("max_tokens = {t}\n"));
+        }
+        if cloud
+            .get("server_compaction")
+            .and_then(toml_edit::Item::as_bool)
+            == Some(true)
+        {
+            block.push_str("server_compaction = true\n");
+        }
+        if cloud
+            .get("enable_extended_context")
+            .and_then(toml_edit::Item::as_bool)
+            == Some(true)
+        {
+            block.push_str("enable_extended_context = true\n");
+        }
+        if let Some(thinking) = cloud.get("thinking").and_then(toml_edit::Item::as_table) {
+            let pairs: Vec<String> = thinking.iter().map(|(k, v)| format!("{k} = {v}")).collect();
+            block.push_str(&format!("thinking = {{ {} }}\n", pairs.join(", ")));
+        }
+    } else if let Some(m) = model {
+        block.push_str(&format!("model = \"{m}\"\n"));
+    }
+    vec![block]
+}
+
+#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+fn migrate_openai_provider(llm: &toml_edit::Table, model: &Option<String>) -> Vec<String> {
+    let mut block = "[[llm.providers]]\ntype = \"openai\"\n".to_owned();
+    if let Some(openai) = llm.get("openai").and_then(toml_edit::Item::as_table) {
+        copy_str_field(openai, "model", &mut block);
+        copy_str_field(openai, "base_url", &mut block);
+        copy_int_field(openai, "max_tokens", &mut block);
+        copy_str_field(openai, "embedding_model", &mut block);
+        copy_str_field(openai, "reasoning_effort", &mut block);
+    } else if let Some(m) = model {
+        block.push_str(&format!("model = \"{m}\"\n"));
+    }
+    vec![block]
+}
+
+#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+fn migrate_gemini_provider(llm: &toml_edit::Table, model: &Option<String>) -> Vec<String> {
+    let mut block = "[[llm.providers]]\ntype = \"gemini\"\n".to_owned();
+    if let Some(gemini) = llm.get("gemini").and_then(toml_edit::Item::as_table) {
+        copy_str_field(gemini, "model", &mut block);
+        copy_int_field(gemini, "max_tokens", &mut block);
+        copy_str_field(gemini, "base_url", &mut block);
+        copy_str_field(gemini, "embedding_model", &mut block);
+        copy_str_field(gemini, "thinking_level", &mut block);
+        copy_int_field(gemini, "thinking_budget", &mut block);
+        if let Some(v) = gemini
+            .get("include_thoughts")
+            .and_then(toml_edit::Item::as_bool)
+        {
+            block.push_str(&format!("include_thoughts = {v}\n"));
+        }
+    } else if let Some(m) = model {
+        block.push_str(&format!("model = \"{m}\"\n"));
+    }
+    vec![block]
+}
+
+#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+fn migrate_compatible_provider(llm: &toml_edit::Table) -> Vec<String> {
+    let mut blocks = Vec::new();
+    if let Some(compat_arr) = llm
+        .get("compatible")
+        .and_then(toml_edit::Item::as_array_of_tables)
+    {
+        for entry in compat_arr {
+            let mut block = "[[llm.providers]]\ntype = \"compatible\"\n".to_owned();
+            copy_str_field(entry, "name", &mut block);
+            copy_str_field(entry, "base_url", &mut block);
+            copy_str_field(entry, "model", &mut block);
+            copy_int_field(entry, "max_tokens", &mut block);
+            copy_str_field(entry, "embedding_model", &mut block);
+            blocks.push(block);
+        }
+    }
+    blocks
+}
+
+// Returns (provider_blocks, routing, routes_block)
+#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+fn migrate_orchestrator_provider(
+    llm: &toml_edit::Table,
+    model: &Option<String>,
+    base_url: &Option<String>,
+    embedding_model: &Option<String>,
+) -> (Vec<String>, Option<String>, Option<String>) {
+    let mut blocks = Vec::new();
+    let routing = Some("task".to_owned());
+    let mut routes_block = None;
+    if let Some(orch) = llm.get("orchestrator").and_then(toml_edit::Item::as_table) {
+        let default_name = orch
+            .get("default")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let embed_name = orch
+            .get("embed")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("")
+            .to_owned();
+        if let Some(routes) = orch.get("routes").and_then(toml_edit::Item::as_table) {
+            let mut rb = "[llm.routes]\n".to_owned();
+            for (key, val) in routes {
+                if let Some(arr) = val.as_array() {
+                    let items: Vec<String> = arr
+                        .iter()
+                        .filter_map(toml_edit::Value::as_str)
+                        .map(|s| format!("\"{s}\""))
+                        .collect();
+                    rb.push_str(&format!("{key} = [{}]\n", items.join(", ")));
+                }
+            }
+            routes_block = Some(rb);
+        }
+        if let Some(providers) = orch.get("providers").and_then(toml_edit::Item::as_table) {
+            for (name, pcfg_item) in providers {
+                let Some(pcfg) = pcfg_item.as_table() else {
+                    continue;
+                };
+                let ptype = pcfg
+                    .get("type")
+                    .and_then(toml_edit::Item::as_str)
+                    .unwrap_or("ollama");
+                let mut block =
+                    format!("[[llm.providers]]\nname = \"{name}\"\ntype = \"{ptype}\"\n");
+                if name == default_name {
+                    block.push_str("default = true\n");
+                }
+                if name == embed_name {
+                    block.push_str("embed = true\n");
+                }
+                copy_str_field(pcfg, "model", &mut block);
+                copy_str_field(pcfg, "base_url", &mut block);
+                copy_str_field(pcfg, "embedding_model", &mut block);
+                if ptype == "claude" && !pcfg.contains_key("model") {
+                    if let Some(cloud) = llm.get("cloud").and_then(toml_edit::Item::as_table) {
+                        copy_str_field(cloud, "model", &mut block);
+                        copy_int_field(cloud, "max_tokens", &mut block);
+                    }
+                }
+                if ptype == "openai" && !pcfg.contains_key("model") {
+                    if let Some(openai) = llm.get("openai").and_then(toml_edit::Item::as_table) {
+                        copy_str_field(openai, "model", &mut block);
+                        copy_str_field(openai, "base_url", &mut block);
+                        copy_int_field(openai, "max_tokens", &mut block);
+                        copy_str_field(openai, "embedding_model", &mut block);
+                    }
+                }
+                if ptype == "ollama" && !pcfg.contains_key("base_url") {
+                    if let Some(u) = base_url {
+                        block.push_str(&format!("base_url = \"{u}\"\n"));
+                    }
+                }
+                if ptype == "ollama" && !pcfg.contains_key("model") {
+                    if let Some(m) = model {
+                        block.push_str(&format!("model = \"{m}\"\n"));
+                    }
+                }
+                if ptype == "ollama" && !pcfg.contains_key("embedding_model") {
+                    if let Some(em) = embedding_model {
+                        block.push_str(&format!("embedding_model = \"{em}\"\n"));
+                    }
+                }
+                blocks.push(block);
+            }
+        }
+    }
+    (blocks, routing, routes_block)
+}
+
+// Returns (provider_blocks, routing)
+#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+fn migrate_router_provider(
+    llm: &toml_edit::Table,
+    model: &Option<String>,
+    base_url: &Option<String>,
+    embedding_model: &Option<String>,
+) -> (Vec<String>, Option<String>) {
+    let mut blocks = Vec::new();
+    let mut routing = None;
+    if let Some(router) = llm.get("router").and_then(toml_edit::Item::as_table) {
+        let strategy = router
+            .get("strategy")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("ema");
+        routing = Some(strategy.to_owned());
+        if let Some(chain) = router.get("chain").and_then(toml_edit::Item::as_array) {
+            for item in chain {
+                let name = item.as_str().unwrap_or_default();
+                let ptype = infer_provider_type(name, llm);
+                let mut block =
+                    format!("[[llm.providers]]\nname = \"{name}\"\ntype = \"{ptype}\"\n");
+                match ptype {
+                    "claude" => {
+                        if let Some(cloud) = llm.get("cloud").and_then(toml_edit::Item::as_table) {
+                            copy_str_field(cloud, "model", &mut block);
+                            copy_int_field(cloud, "max_tokens", &mut block);
+                        }
+                    }
+                    "openai" => {
+                        if let Some(openai) = llm.get("openai").and_then(toml_edit::Item::as_table)
+                        {
+                            copy_str_field(openai, "model", &mut block);
+                            copy_str_field(openai, "base_url", &mut block);
+                            copy_int_field(openai, "max_tokens", &mut block);
+                            copy_str_field(openai, "embedding_model", &mut block);
+                        } else {
+                            if let Some(m) = model {
+                                block.push_str(&format!("model = \"{m}\"\n"));
+                            }
+                            if let Some(u) = base_url {
+                                block.push_str(&format!("base_url = \"{u}\"\n"));
+                            }
+                        }
+                    }
+                    "ollama" => {
+                        if let Some(m) = model {
+                            block.push_str(&format!("model = \"{m}\"\n"));
+                        }
+                        if let Some(em) = embedding_model {
+                            block.push_str(&format!("embedding_model = \"{em}\"\n"));
+                        }
+                        if let Some(u) = base_url {
+                            block.push_str(&format!("base_url = \"{u}\"\n"));
+                        }
+                    }
+                    _ => {
+                        if let Some(m) = model {
+                            block.push_str(&format!("model = \"{m}\"\n"));
+                        }
+                    }
+                }
+                blocks.push(block);
+            }
+        }
+    }
+    (blocks, routing)
+}
+
 /// Migrate a TOML config string from the old `[llm]` format (with `provider`, `[llm.cloud]`,
 /// `[llm.openai]`, `[llm.orchestrator]`, `[llm.router]` sections) to the new
 /// `[[llm.providers]]` array format.
@@ -543,266 +819,38 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
 
     match provider_str {
         "ollama" => {
-            let mut block = "[[llm.providers]]\ntype = \"ollama\"\n".to_owned();
-            if let Some(ref m) = model {
-                block.push_str(&format!("model = \"{m}\"\n"));
-            }
-            if let Some(ref em) = embedding_model {
-                block.push_str(&format!("embedding_model = \"{em}\"\n"));
-            }
-            if let Some(ref u) = base_url {
-                block.push_str(&format!("base_url = \"{u}\"\n"));
-            }
-            provider_blocks.push(block);
+            provider_blocks.extend(migrate_ollama_provider(
+                llm,
+                &model,
+                &base_url,
+                &embedding_model,
+            ));
         }
         "claude" => {
-            let mut block = "[[llm.providers]]\ntype = \"claude\"\n".to_owned();
-            if let Some(cloud) = llm.get("cloud").and_then(toml_edit::Item::as_table) {
-                if let Some(m) = cloud.get("model").and_then(toml_edit::Item::as_str) {
-                    block.push_str(&format!("model = \"{m}\"\n"));
-                }
-                if let Some(t) = cloud
-                    .get("max_tokens")
-                    .and_then(toml_edit::Item::as_integer)
-                {
-                    block.push_str(&format!("max_tokens = {t}\n"));
-                }
-                if cloud
-                    .get("server_compaction")
-                    .and_then(toml_edit::Item::as_bool)
-                    == Some(true)
-                {
-                    block.push_str("server_compaction = true\n");
-                }
-                if cloud
-                    .get("enable_extended_context")
-                    .and_then(toml_edit::Item::as_bool)
-                    == Some(true)
-                {
-                    block.push_str("enable_extended_context = true\n");
-                }
-                // H1: migrate thinking config as TOML inline table
-                if let Some(thinking) = cloud.get("thinking").and_then(toml_edit::Item::as_table) {
-                    let pairs: Vec<String> =
-                        thinking.iter().map(|(k, v)| format!("{k} = {v}")).collect();
-                    block.push_str(&format!("thinking = {{ {} }}\n", pairs.join(", ")));
-                }
-            } else if let Some(ref m) = model {
-                block.push_str(&format!("model = \"{m}\"\n"));
-            }
-            provider_blocks.push(block);
+            provider_blocks.extend(migrate_claude_provider(llm, &model));
         }
         "openai" => {
-            let mut block = "[[llm.providers]]\ntype = \"openai\"\n".to_owned();
-            if let Some(openai) = llm.get("openai").and_then(toml_edit::Item::as_table) {
-                copy_str_field(openai, "model", &mut block);
-                copy_str_field(openai, "base_url", &mut block);
-                copy_int_field(openai, "max_tokens", &mut block);
-                copy_str_field(openai, "embedding_model", &mut block);
-                copy_str_field(openai, "reasoning_effort", &mut block);
-            } else if let Some(ref m) = model {
-                block.push_str(&format!("model = \"{m}\"\n"));
-            }
-            provider_blocks.push(block);
+            provider_blocks.extend(migrate_openai_provider(llm, &model));
         }
         "gemini" => {
-            let mut block = "[[llm.providers]]\ntype = \"gemini\"\n".to_owned();
-            if let Some(gemini) = llm.get("gemini").and_then(toml_edit::Item::as_table) {
-                copy_str_field(gemini, "model", &mut block);
-                copy_int_field(gemini, "max_tokens", &mut block);
-                copy_str_field(gemini, "base_url", &mut block);
-                copy_str_field(gemini, "embedding_model", &mut block);
-                // H2: migrate thinking_level, thinking_budget, include_thoughts
-                copy_str_field(gemini, "thinking_level", &mut block);
-                copy_int_field(gemini, "thinking_budget", &mut block);
-                if let Some(v) = gemini
-                    .get("include_thoughts")
-                    .and_then(toml_edit::Item::as_bool)
-                {
-                    block.push_str(&format!("include_thoughts = {v}\n"));
-                }
-            } else if let Some(ref m) = model {
-                block.push_str(&format!("model = \"{m}\"\n"));
-            }
-            provider_blocks.push(block);
+            provider_blocks.extend(migrate_gemini_provider(llm, &model));
         }
         "compatible" => {
-            // [[llm.compatible]] → [[llm.providers]] with type="compatible"
-            if let Some(compat_arr) = llm
-                .get("compatible")
-                .and_then(toml_edit::Item::as_array_of_tables)
-            {
-                for entry in compat_arr {
-                    let mut block = "[[llm.providers]]\ntype = \"compatible\"\n".to_owned();
-                    copy_str_field(entry, "name", &mut block);
-                    copy_str_field(entry, "base_url", &mut block);
-                    copy_str_field(entry, "model", &mut block);
-                    copy_int_field(entry, "max_tokens", &mut block);
-                    copy_str_field(entry, "embedding_model", &mut block);
-                    provider_blocks.push(block);
-                }
-            }
+            provider_blocks.extend(migrate_compatible_provider(llm));
         }
         "orchestrator" => {
-            // B3: dereference router chain entries from orchestrator sections.
-            routing = Some("task".to_owned());
-            if let Some(orch) = llm.get("orchestrator").and_then(toml_edit::Item::as_table) {
-                let default_name = orch
-                    .get("default")
-                    .and_then(toml_edit::Item::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                let embed_name = orch
-                    .get("embed")
-                    .and_then(toml_edit::Item::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-
-                // Build routes block.
-                if let Some(routes) = orch.get("routes").and_then(toml_edit::Item::as_table) {
-                    let mut rb = "[llm.routes]\n".to_owned();
-                    for (key, val) in routes {
-                        if let Some(arr) = val.as_array() {
-                            let items: Vec<String> = arr
-                                .iter()
-                                .filter_map(toml_edit::Value::as_str)
-                                .map(|s| format!("\"{s}\""))
-                                .collect();
-                            rb.push_str(&format!("{key} = [{}]\n", items.join(", ")));
-                        }
-                    }
-                    routes_block = Some(rb);
-                }
-
-                // Build provider entries.
-                if let Some(providers) = orch.get("providers").and_then(toml_edit::Item::as_table) {
-                    for (name, pcfg_item) in providers {
-                        let Some(pcfg) = pcfg_item.as_table() else {
-                            continue;
-                        };
-                        let ptype = pcfg
-                            .get("type")
-                            .and_then(toml_edit::Item::as_str)
-                            .unwrap_or("ollama");
-                        let mut block =
-                            format!("[[llm.providers]]\nname = \"{name}\"\ntype = \"{ptype}\"\n");
-                        if name == &default_name {
-                            block.push_str("default = true\n");
-                        }
-                        if name == &embed_name {
-                            block.push_str("embed = true\n");
-                        }
-                        // Copy provider-specific fields; for claude also copy from [llm.cloud].
-                        copy_str_field(pcfg, "model", &mut block);
-                        copy_str_field(pcfg, "base_url", &mut block);
-                        copy_str_field(pcfg, "embedding_model", &mut block);
-                        // If claude and no model in pcfg, pull from [llm.cloud].
-                        if ptype == "claude" && !pcfg.contains_key("model") {
-                            if let Some(cloud) =
-                                llm.get("cloud").and_then(toml_edit::Item::as_table)
-                            {
-                                copy_str_field(cloud, "model", &mut block);
-                                copy_int_field(cloud, "max_tokens", &mut block);
-                            }
-                        }
-                        // If openai and no model in pcfg, pull from [llm.openai].
-                        if ptype == "openai" && !pcfg.contains_key("model") {
-                            if let Some(openai) =
-                                llm.get("openai").and_then(toml_edit::Item::as_table)
-                            {
-                                copy_str_field(openai, "model", &mut block);
-                                copy_str_field(openai, "base_url", &mut block);
-                                copy_int_field(openai, "max_tokens", &mut block);
-                                copy_str_field(openai, "embedding_model", &mut block);
-                            }
-                        }
-                        // Ollama default fields.
-                        if ptype == "ollama" && !pcfg.contains_key("base_url") {
-                            if let Some(ref u) = base_url {
-                                block.push_str(&format!("base_url = \"{u}\"\n"));
-                            }
-                        }
-                        if ptype == "ollama" && !pcfg.contains_key("model") {
-                            if let Some(ref m) = model {
-                                block.push_str(&format!("model = \"{m}\"\n"));
-                            }
-                        }
-                        if ptype == "ollama" && !pcfg.contains_key("embedding_model") {
-                            if let Some(ref em) = embedding_model {
-                                block.push_str(&format!("embedding_model = \"{em}\"\n"));
-                            }
-                        }
-                        provider_blocks.push(block);
-                    }
-                }
-            }
+            let (blocks, r, rb) =
+                migrate_orchestrator_provider(llm, &model, &base_url, &embedding_model);
+            provider_blocks.extend(blocks);
+            routing = r;
+            routes_block = rb;
         }
         "router" => {
-            // B3: router chain entries → providers pool with routing strategy.
-            if let Some(router) = llm.get("router").and_then(toml_edit::Item::as_table) {
-                let strategy = router
-                    .get("strategy")
-                    .and_then(toml_edit::Item::as_str)
-                    .unwrap_or("ema");
-                routing = Some(strategy.to_owned());
-
-                if let Some(chain) = router.get("chain").and_then(toml_edit::Item::as_array) {
-                    for item in chain {
-                        let name = item.as_str().unwrap_or_default();
-                        // Try to dereference from legacy sections.
-                        let ptype = infer_provider_type(name, llm);
-                        let mut block =
-                            format!("[[llm.providers]]\nname = \"{name}\"\ntype = \"{ptype}\"\n");
-                        match ptype {
-                            "claude" => {
-                                if let Some(cloud) =
-                                    llm.get("cloud").and_then(toml_edit::Item::as_table)
-                                {
-                                    copy_str_field(cloud, "model", &mut block);
-                                    copy_int_field(cloud, "max_tokens", &mut block);
-                                }
-                            }
-                            "openai" => {
-                                if let Some(openai) =
-                                    llm.get("openai").and_then(toml_edit::Item::as_table)
-                                {
-                                    copy_str_field(openai, "model", &mut block);
-                                    copy_str_field(openai, "base_url", &mut block);
-                                    copy_int_field(openai, "max_tokens", &mut block);
-                                    copy_str_field(openai, "embedding_model", &mut block);
-                                } else {
-                                    if let Some(ref m) = model {
-                                        block.push_str(&format!("model = \"{m}\"\n"));
-                                    }
-                                    if let Some(ref u) = base_url {
-                                        block.push_str(&format!("base_url = \"{u}\"\n"));
-                                    }
-                                }
-                            }
-                            "ollama" => {
-                                if let Some(ref m) = model {
-                                    block.push_str(&format!("model = \"{m}\"\n"));
-                                }
-                                if let Some(ref em) = embedding_model {
-                                    block.push_str(&format!("embedding_model = \"{em}\"\n"));
-                                }
-                                if let Some(ref u) = base_url {
-                                    block.push_str(&format!("base_url = \"{u}\"\n"));
-                                }
-                            }
-                            _ => {
-                                if let Some(ref m) = model {
-                                    block.push_str(&format!("model = \"{m}\"\n"));
-                                }
-                            }
-                        }
-                        provider_blocks.push(block);
-                    }
-                }
-            }
+            let (blocks, r) = migrate_router_provider(llm, &model, &base_url, &embedding_model);
+            provider_blocks.extend(blocks);
+            routing = r;
         }
         other => {
-            // Unknown provider — create a minimal entry.
             let mut block = format!("[[llm.providers]]\ntype = \"{other}\"\n");
             if let Some(ref m) = model {
                 block.push_str(&format!("model = \"{m}\"\n"));

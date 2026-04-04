@@ -1,0 +1,924 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use tokio_util::sync::CancellationToken;
+use zeph_llm::provider::LlmProvider;
+
+use super::Agent;
+use super::error;
+
+pub(super) fn format_plan_summary(graph: &crate::orchestration::TaskGraph) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "Plan: \"{}\"", graph.goal);
+    let _ = writeln!(out, "Tasks: {}", graph.tasks.len());
+    let _ = writeln!(out);
+    for (i, task) in graph.tasks.iter().enumerate() {
+        let deps = if task.depends_on.is_empty() {
+            String::new()
+        } else {
+            let ids: Vec<String> = task.depends_on.iter().map(ToString::to_string).collect();
+            format!(" (after: {})", ids.join(", "))
+        };
+        let agent = task.agent_hint.as_deref().unwrap_or("-");
+        let _ = writeln!(out, "  {}. [{}] {}{}", i + 1, agent, task.title, deps);
+    }
+    out
+}
+
+pub(super) fn collect_and_truncate_task_outputs(
+    graph: &crate::orchestration::TaskGraph,
+    max_tokens: u32,
+) -> String {
+    use crate::orchestration::TaskStatus;
+
+    let char_budget = max_tokens as usize * 4;
+    let mut raw = String::new();
+    for task in &graph.tasks {
+        if task.status == TaskStatus::Completed
+            && let Some(ref result) = task.result
+        {
+            if !raw.is_empty() {
+                raw.push('\n');
+            }
+            raw.push_str(&result.output);
+        }
+    }
+    if raw.len() > char_budget {
+        tracing::warn!(
+            original_len = raw.len(),
+            truncated_to = char_budget,
+            "whole-plan verify: output truncated to verify_max_tokens * 4 chars"
+        );
+        raw.chars().take(char_budget).collect()
+    } else {
+        raw
+    }
+}
+
+impl<C: crate::channel::Channel> Agent<C> {
+    pub(super) async fn handle_plan_command(
+        &mut self,
+        cmd: crate::orchestration::PlanCommand,
+    ) -> Result<(), error::AgentError> {
+        use crate::orchestration::PlanCommand;
+
+        if !self.config_for_orchestration().enabled {
+            self.channel
+                .send(
+                    "Task orchestration is disabled. Set `orchestration.enabled = true` in config.",
+                )
+                .await?;
+            return Ok(());
+        }
+
+        match cmd {
+            PlanCommand::Goal(goal) => self.handle_plan_goal(&goal).await,
+            PlanCommand::Confirm => self.handle_plan_confirm().await,
+            PlanCommand::Status(id) => self.handle_plan_status(id.as_deref()).await,
+            PlanCommand::List => self.handle_plan_list().await,
+            PlanCommand::Cancel(id) => self.handle_plan_cancel(id.as_deref()).await,
+            PlanCommand::Resume(id) => self.handle_plan_resume(id.as_deref()).await,
+            PlanCommand::Retry(id) => self.handle_plan_retry(id.as_deref()).await,
+        }
+    }
+
+    pub(super) fn config_for_orchestration(&self) -> &crate::config::OrchestrationConfig {
+        &self.orchestration.orchestration_config
+    }
+
+    pub(super) async fn init_plan_cache_if_needed(&mut self) {
+        let plan_cache_config = self.orchestration.orchestration_config.plan_cache.clone();
+        if !plan_cache_config.enabled || self.orchestration.plan_cache.is_some() {
+            return;
+        }
+        if let Some(ref memory) = self.memory_state.memory {
+            let pool = memory.sqlite().pool().clone();
+            let embed_model = self.skill_state.embedding_model.clone();
+            match crate::orchestration::PlanCache::new(pool, plan_cache_config, &embed_model).await
+            {
+                Ok(cache) => self.orchestration.plan_cache = Some(cache),
+                Err(e) => {
+                    tracing::warn!(error = %e, "plan cache: init failed, proceeding without cache");
+                }
+            }
+        } else {
+            tracing::warn!("plan cache: memory not configured, proceeding without cache");
+        }
+    }
+
+    pub(super) async fn goal_embedding_for_cache(&self, goal: &str) -> Option<Vec<f32>> {
+        use crate::orchestration::normalize_goal;
+
+        self.orchestration.plan_cache.as_ref()?;
+        let normalized = normalize_goal(goal);
+        match self.embedding_provider.embed(&normalized).await {
+            Ok(emb) => Some(emb),
+            Err(zeph_llm::LlmError::EmbedUnsupported { .. }) => {
+                tracing::debug!(
+                    "plan cache: provider does not support embeddings, skipping cache lookup"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "plan cache: goal embedding failed, skipping cache");
+                None
+            }
+        }
+    }
+
+    pub(super) async fn handle_plan_goal(&mut self, goal: &str) -> Result<(), error::AgentError> {
+        use crate::orchestration::{LlmPlanner, plan_with_cache};
+
+        if self.orchestration.pending_graph.is_some() {
+            self.channel
+                .send(
+                    "A plan is already pending confirmation. \
+                     Use /plan confirm to execute it or /plan cancel to discard.",
+                )
+                .await?;
+            return Ok(());
+        }
+
+        self.channel.send("Planning task decomposition...").await?;
+
+        let available_agents = self
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+
+        let confirm_before_execute = self
+            .orchestration
+            .orchestration_config
+            .confirm_before_execute;
+
+        self.init_plan_cache_if_needed().await;
+        let goal_embedding = self.goal_embedding_for_cache(goal).await;
+
+        tracing::debug!(
+            cache_enabled = self.orchestration.orchestration_config.plan_cache.enabled,
+            has_embedding = goal_embedding.is_some(),
+            "plan cache state for goal"
+        );
+
+        let planner_provider = self
+            .orchestration
+            .planner_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
+            .clone();
+        let planner = LlmPlanner::new(planner_provider, &self.orchestration.orchestration_config);
+        let embed_model = self.skill_state.embedding_model.clone();
+        let (graph, planner_usage) = plan_with_cache(
+            &planner,
+            self.orchestration.plan_cache.as_ref(),
+            &self.provider,
+            goal_embedding.as_deref(),
+            &embed_model,
+            goal,
+            &available_agents,
+            self.orchestration.orchestration_config.max_tasks,
+        )
+        .await
+        .map_err(|e| error::AgentError::Other(e.to_string()))?;
+
+        // Store embedding for cache_plan() after execution completes.
+        self.orchestration.pending_goal_embedding = goal_embedding;
+
+        let task_count = graph.tasks.len() as u64;
+        let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
+        let (planner_prompt, planner_completion) = planner_usage.unwrap_or((0, 0));
+        self.update_metrics(|m| {
+            m.api_calls += 1;
+            m.prompt_tokens += planner_prompt;
+            m.completion_tokens += planner_completion;
+            m.total_tokens = m.prompt_tokens + m.completion_tokens;
+            m.orchestration.plans_total += 1;
+            m.orchestration.tasks_total += task_count;
+            m.orchestration_graph = Some(snapshot);
+        });
+        self.record_cost(planner_prompt, planner_completion);
+        self.record_cache_usage();
+
+        if confirm_before_execute {
+            let summary = format_plan_summary(&graph);
+            self.channel.send(&summary).await?;
+            self.channel
+                .send("Type `/plan confirm` to execute, or `/plan cancel` to abort.")
+                .await?;
+            self.orchestration.pending_graph = Some(graph);
+        } else {
+            let summary = format_plan_summary(&graph);
+            self.channel.send(&summary).await?;
+            self.channel
+                .send("Plan ready. Full execution will be available in a future phase.")
+                .await?;
+            let now = std::time::Instant::now();
+            self.update_metrics(|m| {
+                if let Some(ref mut s) = m.orchestration_graph {
+                    "completed".clone_into(&mut s.status);
+                    s.completed_at = Some(now);
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn validate_pending_graph(
+        &mut self,
+        graph: crate::orchestration::TaskGraph,
+    ) -> Result<crate::orchestration::TaskGraph, ()> {
+        use crate::orchestration::GraphStatus;
+
+        if self.orchestration.subagent_manager.is_none() {
+            let _ = self
+                .channel
+                .send(
+                    "No sub-agents configured. Add sub-agent definitions to config \
+                     to enable plan execution.",
+                )
+                .await;
+            self.orchestration.pending_graph = Some(graph);
+            return Err(());
+        }
+
+        if graph.tasks.is_empty() {
+            let _ = self.channel.send("Plan has no tasks.").await;
+            self.orchestration.pending_graph = Some(graph);
+            return Err(());
+        }
+
+        if matches!(graph.status, GraphStatus::Completed | GraphStatus::Canceled) {
+            let _ = self
+                .channel
+                .send(&format!(
+                    "Cannot re-execute a {} plan. Use `/plan <goal>` to create a new one.",
+                    graph.status
+                ))
+                .await;
+            self.orchestration.pending_graph = Some(graph);
+            return Err(());
+        }
+
+        Ok(graph)
+    }
+
+    pub(super) fn build_dag_scheduler(
+        &mut self,
+        graph: crate::orchestration::TaskGraph,
+    ) -> Result<(crate::orchestration::DagScheduler, usize), error::AgentError> {
+        use crate::orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
+
+        let available_agents = self
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+
+        let max_concurrent = self.orchestration.subagent_config.max_concurrent;
+        let max_parallel = self.orchestration.orchestration_config.max_parallel as usize;
+        if max_concurrent < max_parallel + 1 {
+            tracing::warn!(
+                max_concurrent,
+                max_parallel,
+                "max_concurrent < max_parallel + 1: orchestration tasks may be starved by \
+                 planning-phase sub-agents; recommend setting max_concurrent >= {}",
+                max_parallel + 1
+            );
+        }
+
+        let reserved = max_parallel.min(max_concurrent.saturating_sub(1));
+        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+            mgr.reserve_slots(reserved);
+        }
+
+        let scheduler = if graph.status == GraphStatus::Created {
+            DagScheduler::new(
+                graph,
+                &self.orchestration.orchestration_config,
+                Box::new(RuleBasedRouter),
+                available_agents,
+            )
+        } else {
+            DagScheduler::resume_from(
+                graph,
+                &self.orchestration.orchestration_config,
+                Box::new(RuleBasedRouter),
+                available_agents,
+            )
+        }
+        .map_err(|e| {
+            if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                mgr.release_reservation(reserved);
+            }
+            error::AgentError::Other(e.to_string())
+        })?;
+
+        let provider_names: Vec<&str> = self
+            .providers
+            .provider_pool
+            .iter()
+            .filter_map(|e| e.name.as_deref())
+            .collect();
+        scheduler
+            .validate_verify_config(&provider_names)
+            .map_err(|e| {
+                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                    mgr.release_reservation(reserved);
+                }
+                error::AgentError::Other(e.to_string())
+            })?;
+
+        Ok((scheduler, reserved))
+    }
+
+    pub(super) async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
+        let Some(graph) = self.orchestration.pending_graph.take() else {
+            self.channel
+                .send("No pending plan to confirm. Use `/plan <goal>` to create one.")
+                .await?;
+            return Ok(());
+        };
+
+        let Ok(graph) = self.validate_pending_graph(graph).await else {
+            return Ok(());
+        };
+
+        let (mut scheduler, reserved) = self.build_dag_scheduler(graph)?;
+
+        let task_count = scheduler.graph().tasks.len();
+        self.channel
+            .send(&format!(
+                "Confirmed. Executing plan ({task_count} tasks)..."
+            ))
+            .await?;
+
+        let plan_token = CancellationToken::new();
+        self.orchestration.plan_cancel_token = Some(plan_token.clone());
+
+        let scheduler_result = self
+            .run_scheduler_loop(&mut scheduler, task_count, plan_token)
+            .await;
+        self.orchestration.plan_cancel_token = None;
+
+        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+            mgr.release_reservation(reserved);
+        }
+
+        let final_status = scheduler_result?;
+
+        let extra_task_outputs = self
+            .run_whole_plan_verify(&mut scheduler, final_status)
+            .await;
+
+        let mut completed_graph = scheduler.into_graph();
+
+        if let Some(extra_tasks) = extra_task_outputs {
+            completed_graph.tasks.extend(extra_tasks);
+        }
+
+        let snapshot = crate::metrics::TaskGraphSnapshot::from(&completed_graph);
+        self.update_metrics(|m| {
+            m.orchestration_graph = Some(snapshot);
+        });
+
+        let result_label = self
+            .finalize_plan_execution(completed_graph, final_status)
+            .await?;
+
+        let now = std::time::Instant::now();
+        self.update_metrics(|m| {
+            if let Some(ref mut s) = m.orchestration_graph {
+                result_label.clone_into(&mut s.status);
+                s.completed_at = Some(now);
+            }
+        });
+        Ok(())
+    }
+
+    pub(super) async fn run_whole_plan_verify(
+        &mut self,
+        scheduler: &mut crate::orchestration::DagScheduler,
+        final_status: crate::orchestration::GraphStatus,
+    ) -> Option<Vec<crate::orchestration::TaskNode>> {
+        use crate::orchestration::{GraphStatus, PlanVerifier};
+
+        if final_status != GraphStatus::Completed
+            || !self.orchestration.orchestration_config.verify_completeness
+            || scheduler.max_replans_remaining() == 0
+        {
+            return None;
+        }
+
+        let threshold = scheduler.completeness_threshold();
+        let max_tokens = self.orchestration.orchestration_config.verify_max_tokens;
+        let max_tasks = self.orchestration.orchestration_config.max_tasks;
+        let goal = scheduler.graph().goal.clone();
+        let truncated_output = collect_and_truncate_task_outputs(scheduler.graph(), max_tokens);
+
+        if truncated_output.is_empty() {
+            return None;
+        }
+
+        let verify_provider = self
+            .orchestration
+            .verify_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
+            .clone();
+        let mut verifier =
+            PlanVerifier::new(verify_provider, max_tokens, self.security.sanitizer.clone());
+        let result = verifier.verify_plan(&goal, &truncated_output).await;
+
+        tracing::debug!(
+            complete = result.complete,
+            confidence = result.confidence,
+            gaps = result.gaps.len(),
+            threshold,
+            "whole-plan verification result"
+        );
+
+        let should_replan =
+            !result.complete && result.confidence < f64::from(threshold) && !result.gaps.is_empty();
+
+        if !should_replan {
+            return None;
+        }
+
+        scheduler.record_whole_plan_replan();
+
+        let next_id = u32::try_from(scheduler.graph().tasks.len()).unwrap_or(u32::MAX);
+        let gap_tasks = match verifier
+            .replan_from_plan(&goal, &result.gaps, next_id, max_tasks)
+            .await
+        {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                tracing::warn!(error = %e, "whole-plan replan_from_plan failed (fail-open)");
+                return None;
+            }
+        };
+
+        if gap_tasks.is_empty() {
+            return None;
+        }
+
+        self.execute_partial_replan_dag(gap_tasks, &goal).await
+    }
+
+    pub(super) async fn execute_partial_replan_dag(
+        &mut self,
+        gap_tasks: Vec<crate::orchestration::TaskNode>,
+        goal: &str,
+    ) -> Option<Vec<crate::orchestration::TaskNode>> {
+        use crate::orchestration::{DagScheduler, RuleBasedRouter, TaskStatus};
+
+        let mut partial_graph = crate::orchestration::TaskGraph::new(goal);
+        partial_graph.tasks = gap_tasks;
+
+        let mut partial_config = self.orchestration.orchestration_config.clone();
+        partial_config.max_replans = 0;
+        partial_config.verify_completeness = false;
+
+        let available_agents = self
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+
+        let mut partial_scheduler = match DagScheduler::new(
+            partial_graph,
+            &partial_config,
+            Box::new(RuleBasedRouter),
+            available_agents,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "whole-plan replan: failed to create partial DagScheduler (fail-open)"
+                );
+                return None;
+            }
+        };
+
+        let partial_task_count = partial_scheduler.graph().tasks.len();
+        let cancel_token = CancellationToken::new();
+        if let Err(e) = self
+            .run_scheduler_loop(&mut partial_scheduler, partial_task_count, cancel_token)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "whole-plan replan: partial DAG run failed (fail-open)"
+            );
+        }
+
+        let completed: Vec<_> = partial_scheduler
+            .into_graph()
+            .tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::Completed)
+            .collect();
+
+        if completed.is_empty() {
+            None
+        } else {
+            Some(completed)
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(super) async fn finalize_plan_execution(
+        &mut self,
+        completed_graph: crate::orchestration::TaskGraph,
+        final_status: crate::orchestration::GraphStatus,
+    ) -> Result<&'static str, error::AgentError> {
+        use std::fmt::Write;
+
+        use crate::orchestration::{Aggregator, GraphStatus, LlmAggregator};
+
+        let result_label = match final_status {
+            GraphStatus::Completed => {
+                let completed_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count() as u64;
+                let skipped_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .count() as u64;
+                self.update_metrics(|m| {
+                    m.orchestration.tasks_completed += completed_count;
+                    m.orchestration.tasks_skipped += skipped_count;
+                });
+
+                let aggregator = LlmAggregator::new(
+                    self.provider.clone(),
+                    &self.orchestration.orchestration_config,
+                );
+                match aggregator.aggregate(&completed_graph).await {
+                    Ok((synthesis, aggregator_usage)) => {
+                        let (aggr_prompt, aggr_completion) = aggregator_usage.unwrap_or((0, 0));
+                        self.update_metrics(|m| {
+                            m.api_calls += 1;
+                            m.prompt_tokens += aggr_prompt;
+                            m.completion_tokens += aggr_completion;
+                            m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                        });
+                        self.record_cost(aggr_prompt, aggr_completion);
+                        self.record_cache_usage();
+                        self.channel.send(&synthesis).await?;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "aggregation failed");
+                        self.channel
+                            .send(
+                                "Plan completed but aggregation failed. \
+                                 Check individual task results.",
+                            )
+                            .await?;
+                    }
+                }
+
+                if let Some(ref cache) = self.orchestration.plan_cache
+                    && let Some(embedding) = self.orchestration.pending_goal_embedding.take()
+                {
+                    let embed_model = self.skill_state.embedding_model.clone();
+                    if let Err(e) = cache
+                        .cache_plan(&completed_graph, &embedding, &embed_model)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "plan cache: failed to cache completed plan");
+                    }
+                }
+
+                "completed"
+            }
+            GraphStatus::Failed => {
+                let failed_tasks: Vec<_> = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Failed)
+                    .collect();
+                let cancelled_tasks: Vec<_> = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Canceled)
+                    .collect();
+                let completed_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count() as u64;
+                let skipped_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .count() as u64;
+                self.update_metrics(|m| {
+                    m.orchestration.tasks_failed += failed_tasks.len() as u64;
+                    m.orchestration.tasks_completed += completed_count;
+                    m.orchestration.tasks_skipped += skipped_count;
+                });
+                let total = completed_graph.tasks.len();
+                let msg = if failed_tasks.is_empty() && !cancelled_tasks.is_empty() {
+                    format!(
+                        "Plan canceled. {}/{} tasks did not run.\n\
+                         Use `/plan retry` to retry or check logs for details.",
+                        cancelled_tasks.len(),
+                        total
+                    )
+                } else if failed_tasks.is_empty() && cancelled_tasks.is_empty() {
+                    tracing::warn!(
+                        "plan finished with GraphStatus::Failed but no failed or canceled tasks"
+                    );
+                    "Plan failed. No task errors recorded; check logs for details.".to_string()
+                } else {
+                    let mut m = if cancelled_tasks.is_empty() {
+                        format!(
+                            "Plan failed. {}/{} tasks failed:\n",
+                            failed_tasks.len(),
+                            total
+                        )
+                    } else {
+                        format!(
+                            "Plan failed. {}/{} tasks failed, {} canceled:\n",
+                            failed_tasks.len(),
+                            total,
+                            cancelled_tasks.len()
+                        )
+                    };
+                    for t in &failed_tasks {
+                        let err: std::borrow::Cow<str> =
+                            t.result.as_ref().map_or("unknown error".into(), |r| {
+                                if r.output.len() > 500 {
+                                    r.output.chars().take(500).collect::<String>().into()
+                                } else {
+                                    r.output.as_str().into()
+                                }
+                            });
+                        let _ = writeln!(m, "  - {}: {err}", t.title);
+                    }
+                    m.push_str("\nUse `/plan retry` to retry failed tasks.");
+                    m
+                };
+                self.channel.send(&msg).await?;
+                self.orchestration.pending_graph = Some(completed_graph);
+                "failed"
+            }
+            GraphStatus::Paused => {
+                self.channel
+                    .send(
+                        "Plan paused due to a task failure (ask strategy). \
+                         Use `/plan resume` to continue or `/plan retry` to retry failed tasks.",
+                    )
+                    .await?;
+                self.orchestration.pending_graph = Some(completed_graph);
+                "paused"
+            }
+            GraphStatus::Canceled => {
+                let done_count = completed_graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .count();
+                self.update_metrics(|m| m.orchestration.tasks_completed += done_count as u64);
+                let total = completed_graph.tasks.len();
+                self.channel
+                    .send(&format!(
+                        "Plan canceled. {done_count}/{total} tasks completed before cancellation."
+                    ))
+                    .await?;
+                self.orchestration.pending_goal_embedding.take();
+                "canceled"
+            }
+            _ => {
+                self.orchestration.pending_goal_embedding.take();
+                "unknown"
+            }
+        };
+        Ok(result_label)
+    }
+
+    pub(super) async fn handle_plan_status(
+        &mut self,
+        _graph_id: Option<&str>,
+    ) -> Result<(), error::AgentError> {
+        use crate::orchestration::GraphStatus;
+        let Some(ref graph) = self.orchestration.pending_graph else {
+            self.channel.send("No active plan.").await?;
+            return Ok(());
+        };
+        let msg = match graph.status {
+            GraphStatus::Created => {
+                "A plan is awaiting confirmation. Type `/plan confirm` to execute or `/plan cancel` to abort."
+            }
+            GraphStatus::Running => "Plan is currently running.",
+            GraphStatus::Paused => {
+                "Plan is paused. Use `/plan resume` to continue or `/plan cancel` to abort."
+            }
+            GraphStatus::Failed => {
+                "Plan failed. Use `/plan retry` to retry or `/plan cancel` to discard."
+            }
+            GraphStatus::Completed => "Plan completed successfully.",
+            GraphStatus::Canceled => "Plan was canceled.",
+        };
+        self.channel.send(msg).await?;
+        Ok(())
+    }
+
+    pub(super) async fn handle_plan_list(&mut self) -> Result<(), error::AgentError> {
+        if let Some(ref graph) = self.orchestration.pending_graph {
+            let summary = format_plan_summary(graph);
+            let status_label = match graph.status {
+                crate::orchestration::GraphStatus::Created => "awaiting confirmation",
+                crate::orchestration::GraphStatus::Running => "running",
+                crate::orchestration::GraphStatus::Paused => "paused",
+                crate::orchestration::GraphStatus::Failed => "failed (retryable)",
+                _ => "unknown",
+            };
+            self.channel
+                .send(&format!("{summary}\nStatus: {status_label}"))
+                .await?;
+        } else {
+            self.channel.send("No recent plans.").await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn handle_plan_cancel(
+        &mut self,
+        _graph_id: Option<&str>,
+    ) -> Result<(), error::AgentError> {
+        if let Some(token) = self.orchestration.plan_cancel_token.take() {
+            token.cancel();
+            self.channel.send("Canceling plan execution...").await?;
+        } else if self.orchestration.pending_graph.take().is_some() {
+            let now = std::time::Instant::now();
+            self.update_metrics(|m| {
+                if let Some(ref mut s) = m.orchestration_graph {
+                    "canceled".clone_into(&mut s.status);
+                    s.completed_at = Some(now);
+                }
+            });
+            self.orchestration.pending_goal_embedding = None;
+            self.channel.send("Plan canceled.").await?;
+        } else {
+            self.channel.send("No active plan to cancel.").await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn handle_plan_resume(
+        &mut self,
+        graph_id: Option<&str>,
+    ) -> Result<(), error::AgentError> {
+        use crate::orchestration::GraphStatus;
+
+        let Some(ref graph) = self.orchestration.pending_graph else {
+            self.channel
+                .send("No paused plan to resume. Use `/plan status` to check the current state.")
+                .await?;
+            return Ok(());
+        };
+
+        if let Some(id) = graph_id
+            && graph.id.to_string() != id
+        {
+            self.channel
+                .send(&format!(
+                    "Graph id '{id}' does not match the active plan ({}). \
+                     Use `/plan status` to see the active plan id.",
+                    graph.id
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        if graph.status != GraphStatus::Paused {
+            self.channel
+                .send(&format!(
+                    "The active plan is in '{}' status and cannot be resumed. \
+                     Only Paused plans can be resumed.",
+                    graph.status
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        let graph = self.orchestration.pending_graph.take().unwrap();
+
+        tracing::info!(
+            graph_id = %graph.id,
+            "resuming paused graph"
+        );
+
+        self.channel
+            .send(&format!(
+                "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
+                graph.goal
+            ))
+            .await?;
+
+        self.orchestration.pending_graph = Some(graph);
+        Ok(())
+    }
+
+    pub(super) async fn handle_plan_retry(
+        &mut self,
+        graph_id: Option<&str>,
+    ) -> Result<(), error::AgentError> {
+        use crate::orchestration::{GraphStatus, dag};
+
+        let Some(ref graph) = self.orchestration.pending_graph else {
+            self.channel
+                .send("No active plan to retry. Use `/plan status` to check the current state.")
+                .await?;
+            return Ok(());
+        };
+
+        if let Some(id) = graph_id
+            && graph.id.to_string() != id
+        {
+            self.channel
+                .send(&format!(
+                    "Graph id '{id}' does not match the active plan ({}). \
+                     Use `/plan status` to see the active plan id.",
+                    graph.id
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        if graph.status != GraphStatus::Failed && graph.status != GraphStatus::Paused {
+            self.channel
+                .send(&format!(
+                    "The active plan is in '{}' status. Only Failed or Paused plans can be retried.",
+                    graph.status
+                ))
+                .await?;
+            return Ok(());
+        }
+
+        let mut graph = self.orchestration.pending_graph.take().unwrap();
+
+        let failed_count = graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == crate::orchestration::TaskStatus::Failed)
+            .count();
+
+        dag::reset_for_retry(&mut graph).map_err(|e| error::AgentError::Other(e.to_string()))?;
+
+        for task in &mut graph.tasks {
+            if task.status == crate::orchestration::TaskStatus::Running {
+                task.status = crate::orchestration::TaskStatus::Ready;
+                task.assigned_agent = None;
+            }
+        }
+
+        tracing::info!(
+            graph_id = %graph.id,
+            failed_count,
+            "retrying failed tasks in graph"
+        );
+
+        self.channel
+            .send(&format!(
+                "Retrying {failed_count} failed task(s) in plan: {}\n\
+                 Use `/plan confirm` to execute.",
+                graph.goal
+            ))
+            .await?;
+
+        self.orchestration.pending_graph = Some(graph);
+        Ok(())
+    }
+
+    pub(super) async fn dispatch_plan_command(
+        &mut self,
+        trimmed: &str,
+    ) -> Result<(), error::AgentError> {
+        match crate::orchestration::PlanCommand::parse(trimmed) {
+            Ok(cmd) => {
+                self.handle_plan_command(cmd).await?;
+            }
+            Err(e) => {
+                self.channel
+                    .send(&e.to_string())
+                    .await
+                    .map_err(error::AgentError::from)?;
+            }
+        }
+        let _ = self.channel.flush_chunks().await;
+        Ok(())
+    }
+}

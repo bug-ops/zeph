@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- refactor: split `agent/mod.rs` into focused submodules — `plan.rs`, `scheduler_loop.rs`, `corrections.rs`, `model_commands.rs`; extend `slash_commands.rs` with extracted slash command handlers; extract `sanitize_tool_output` into `agent/tool_execution/sanitize.rs`
+- refactor: extract `run_agent_loop`, `AgentLoopArgs`, `handle_tool_step`, `append_transcript`, `make_message` from `zeph-subagent/src/manager.rs` into `zeph-subagent/src/agent_loop.rs`
+- refactor: split `src/init.rs` (3187 lines) into `src/init/` directory with submodules `llm.rs`, `memory.rs`, `security.rs`, `mcp.rs`, `agents.rs`
+- refactor: extract per-provider migration helpers (`migrate_ollama_provider`, `migrate_claude_provider`, `migrate_openai_provider`, `migrate_gemini_provider`, `migrate_compatible_provider`, `migrate_orchestrator_provider`, `migrate_router_provider`) from `migrate_llm_to_providers` in `zeph-config/src/migrate.rs`
+- refactor: extract `reanalyze_topology_if_dirty`, `advance_level_barrier_if_needed`, `check_graph_completion` from `tick()` in `zeph-orchestration/src/scheduler.rs`
+
 ### Fixed
 
 - fix(agent): exclude [skipped] utility messages from semantic memory, strengthen Retrieve re-dispatch hint (#2620)

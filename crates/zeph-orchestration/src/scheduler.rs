@@ -562,77 +562,7 @@ impl DagScheduler {
             }];
         }
 
-        // Re-analyze topology when task set has changed (inject_tasks was called).
-        // Deferred from inject_tasks() to avoid stale analysis (critic C2).
-        if self.topology_dirty {
-            // Rebuild with topology_selection=true config equivalent: reuse existing analysis
-            // approach. Since we don't store the config here, re-analyze using a stub config
-            // that reflects what was originally set up.
-            let new_analysis = {
-                let n = self.graph.tasks.len();
-                if n == 0 {
-                    TopologyAnalysis {
-                        topology: Topology::AllParallel,
-                        strategy: DispatchStrategy::FullParallel,
-                        // Use the immutable config base so the fallback is consistent with
-                        // the initial analysis (not a previously reduced max_parallel).
-                        max_parallel: self.config_max_parallel,
-                        depth: 0,
-                        depths: std::collections::HashMap::new(),
-                    }
-                } else {
-                    // Compute depths once, then classify using pre-computed values.
-                    // This eliminates a redundant toposort compared to calling classify()
-                    // (which internally calls compute_longest_path_and_depths again).
-                    let (depth, depths) =
-                        super::topology::compute_depths_for_scheduler(&self.graph);
-                    let topo =
-                        TopologyClassifier::classify_with_depths(&self.graph, depth, &depths);
-                    // Reconstruct a minimal config stub carrying only the strategy-selection flags
-                    // so `strategy()` can apply the same overrides as at construction time.
-                    let strategy_config = zeph_config::OrchestrationConfig {
-                        cascade_routing: self.cascade_routing,
-                        tree_optimized_dispatch: self.tree_optimized_dispatch,
-                        ..zeph_config::OrchestrationConfig::default()
-                    };
-                    let strategy = TopologyClassifier::strategy(topo, &strategy_config);
-                    // ALWAYS use config_max_parallel as the base, never self.max_parallel,
-                    // to prevent drift across successive replan cycles (architect S2).
-                    let max_parallel =
-                        TopologyClassifier::compute_max_parallel(topo, self.config_max_parallel);
-                    TopologyAnalysis {
-                        topology: topo,
-                        strategy,
-                        max_parallel,
-                        depth,
-                        depths,
-                    }
-                }
-            };
-            self.topology = new_analysis;
-            // Sync max_parallel to match the newly computed topology analysis (architect S2).
-            // The dispatch logic at line 559 reads self.max_parallel for slot computation;
-            // without this sync, self.max_parallel and self.topology.max_parallel diverge.
-            self.max_parallel = self.topology.max_parallel;
-            self.topology_dirty = false;
-
-            // After re-analysis, reset the level pointer to the shallowest non-terminal depth
-            // so injected tasks at lower depths are not skipped by the LevelBarrier.
-            // Uses .min() (not unconditional reset to 0) to preserve forward progress when
-            // injected tasks are at equal or deeper levels than current_level.
-            if self.topology.strategy == DispatchStrategy::LevelBarrier {
-                let min_active = self
-                    .graph
-                    .tasks
-                    .iter()
-                    .filter(|t| !t.status.is_terminal())
-                    .filter_map(|t| self.topology.depths.get(&t.id).copied())
-                    .min();
-                if let Some(min_depth) = min_active {
-                    self.current_level = self.current_level.min(min_depth);
-                }
-            }
-        }
+        self.reanalyze_topology_if_dirty();
 
         let mut actions = Vec::new();
 
@@ -706,39 +636,7 @@ impl DagScheduler {
             ready
         };
 
-        // LevelBarrier: advance the current level when all tasks at this level are terminal.
-        // This handles failures/skips correctly because propagate_failure() uses BFS to
-        // transitively mark all non-terminal dependents as Skipped before tick() runs dispatch.
-        if self.topology.strategy == DispatchStrategy::LevelBarrier {
-            let all_current_level_terminal = self.graph.tasks.iter().all(|t| {
-                let task_depth = self
-                    .topology
-                    .depths
-                    .get(&t.id)
-                    .copied()
-                    .unwrap_or(usize::MAX);
-                task_depth != self.current_level || t.status.is_terminal()
-            });
-            if all_current_level_terminal {
-                // Advance until we find a level with non-terminal tasks, or exhaust all levels.
-                let max_depth = self.topology.depth;
-                while self.current_level <= max_depth {
-                    let has_non_terminal = self.graph.tasks.iter().any(|t| {
-                        let d = self
-                            .topology
-                            .depths
-                            .get(&t.id)
-                            .copied()
-                            .unwrap_or(usize::MAX);
-                        d == self.current_level && !t.status.is_terminal()
-                    });
-                    if has_non_terminal {
-                        break;
-                    }
-                    self.current_level += 1;
-                }
-            }
-        }
+        self.advance_level_barrier_if_needed();
 
         // Available dispatch slots for this tick.
         let mut slots = self.max_parallel.saturating_sub(self.running.len());
@@ -807,53 +705,133 @@ impl DagScheduler {
             slots -= 1;
         }
 
-        // Check for completion or deadlock.
-        // Use graph Running status count to avoid false positives while Spawn actions
-        // are in-flight (record_spawn hasn't been called yet for freshly emitted spawns).
-        // Note: non-transient spawn failures (e.g. capability errors) are handled by
-        // record_spawn_failure() which marks the task Failed and propagates failure per
-        // the task's FailureStrategy — this detector does not fire for those cases because
-        // failed tasks are terminal and dag::ready_tasks() returns their unblocked dependents.
-        // ConcurrencyLimit errors are transient: record_spawn_failure() reverts the task
-        // from Running back to Ready, so ready_tasks() is non-empty and deadlock is not
-        // triggered.
+        actions.extend(self.check_graph_completion());
+
+        actions
+    }
+
+    fn reanalyze_topology_if_dirty(&mut self) {
+        if !self.topology_dirty {
+            return;
+        }
+        let new_analysis = {
+            let n = self.graph.tasks.len();
+            if n == 0 {
+                TopologyAnalysis {
+                    topology: Topology::AllParallel,
+                    strategy: DispatchStrategy::FullParallel,
+                    max_parallel: self.config_max_parallel,
+                    depth: 0,
+                    depths: std::collections::HashMap::new(),
+                }
+            } else {
+                let (depth, depths) = super::topology::compute_depths_for_scheduler(&self.graph);
+                let topo = TopologyClassifier::classify_with_depths(&self.graph, depth, &depths);
+                let strategy_config = zeph_config::OrchestrationConfig {
+                    cascade_routing: self.cascade_routing,
+                    tree_optimized_dispatch: self.tree_optimized_dispatch,
+                    ..zeph_config::OrchestrationConfig::default()
+                };
+                let strategy = TopologyClassifier::strategy(topo, &strategy_config);
+                let max_parallel =
+                    TopologyClassifier::compute_max_parallel(topo, self.config_max_parallel);
+                TopologyAnalysis {
+                    topology: topo,
+                    strategy,
+                    max_parallel,
+                    depth,
+                    depths,
+                }
+            }
+        };
+        self.topology = new_analysis;
+        self.max_parallel = self.topology.max_parallel;
+        self.topology_dirty = false;
+        if self.topology.strategy == DispatchStrategy::LevelBarrier {
+            let min_active = self
+                .graph
+                .tasks
+                .iter()
+                .filter(|t| !t.status.is_terminal())
+                .filter_map(|t| self.topology.depths.get(&t.id).copied())
+                .min();
+            if let Some(min_depth) = min_active {
+                self.current_level = self.current_level.min(min_depth);
+            }
+        }
+    }
+
+    fn advance_level_barrier_if_needed(&mut self) {
+        if self.topology.strategy != DispatchStrategy::LevelBarrier {
+            return;
+        }
+        let all_current_level_terminal = self.graph.tasks.iter().all(|t| {
+            let task_depth = self
+                .topology
+                .depths
+                .get(&t.id)
+                .copied()
+                .unwrap_or(usize::MAX);
+            task_depth != self.current_level || t.status.is_terminal()
+        });
+        if all_current_level_terminal {
+            let max_depth = self.topology.depth;
+            while self.current_level <= max_depth {
+                let has_non_terminal = self.graph.tasks.iter().any(|t| {
+                    let d = self
+                        .topology
+                        .depths
+                        .get(&t.id)
+                        .copied()
+                        .unwrap_or(usize::MAX);
+                    d == self.current_level && !t.status.is_terminal()
+                });
+                if has_non_terminal {
+                    break;
+                }
+                self.current_level += 1;
+            }
+        }
+    }
+
+    fn check_graph_completion(&mut self) -> Vec<SchedulerAction> {
         let running_in_graph_now = self
             .graph
             .tasks
             .iter()
             .filter(|t| t.status == TaskStatus::Running)
             .count();
-        if running_in_graph_now == 0 && self.running.is_empty() {
-            let all_terminal = self.graph.tasks.iter().all(|t| t.status.is_terminal());
-            if all_terminal {
-                self.graph.status = GraphStatus::Completed;
-                self.graph.finished_at = Some(super::graph::chrono_now());
-                actions.push(SchedulerAction::Done {
-                    status: GraphStatus::Completed,
-                });
-            } else if dag::ready_tasks(&self.graph).is_empty() {
-                tracing::error!(
-                    "scheduler deadlock: no running or ready tasks, but graph not complete"
-                );
-                self.graph.status = GraphStatus::Failed;
-                self.graph.finished_at = Some(super::graph::chrono_now());
-                // Invariant: deadlock fires only when self.running is empty (checked above).
-                debug_assert!(
-                    self.running.is_empty(),
-                    "deadlock branch reached with non-empty running map"
-                );
-                for task in &mut self.graph.tasks {
-                    if !task.status.is_terminal() {
-                        task.status = TaskStatus::Canceled;
-                    }
-                }
-                actions.push(SchedulerAction::Done {
-                    status: GraphStatus::Failed,
-                });
-            }
+        if running_in_graph_now != 0 || !self.running.is_empty() {
+            return vec![];
         }
-
-        actions
+        let all_terminal = self.graph.tasks.iter().all(|t| t.status.is_terminal());
+        if all_terminal {
+            self.graph.status = GraphStatus::Completed;
+            self.graph.finished_at = Some(super::graph::chrono_now());
+            return vec![SchedulerAction::Done {
+                status: GraphStatus::Completed,
+            }];
+        }
+        if dag::ready_tasks(&self.graph).is_empty() {
+            tracing::error!(
+                "scheduler deadlock: no running or ready tasks, but graph not complete"
+            );
+            self.graph.status = GraphStatus::Failed;
+            self.graph.finished_at = Some(super::graph::chrono_now());
+            debug_assert!(
+                self.running.is_empty(),
+                "deadlock branch reached with non-empty running map"
+            );
+            for task in &mut self.graph.tasks {
+                if !task.status.is_terminal() {
+                    task.status = TaskStatus::Canceled;
+                }
+            }
+            return vec![SchedulerAction::Done {
+                status: GraphStatus::Failed,
+            }];
+        }
+        vec![]
     }
 
     /// Wait for the next event from a running sub-agent.
