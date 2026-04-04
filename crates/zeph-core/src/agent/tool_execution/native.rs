@@ -1097,23 +1097,14 @@ impl<C: Channel> Agent<C> {
                             .channel
                             .send_status(&format!("Utility action: Respond ({})", tc.name))
                             .await;
-                        let msg = format!(
-                            "[skipped] Tool call to {} skipped — utility policy recommends a \
-                             direct response without further tool use.",
-                            tc.name
+                        let out = skipped_output(
+                            tc.name.clone(),
+                            format!(
+                                "[skipped] Tool call to {} skipped — utility policy recommends a \
+                                 direct response without further tool use.",
+                                tc.name
+                            ),
                         );
-                        let out = zeph_tools::ToolOutput {
-                            tool_name: tc.name.clone(),
-                            summary: msg,
-                            blocks_executed: 0,
-                            filter_stats: None,
-                            diff: None,
-                            streamed: false,
-                            terminal_id: None,
-                            locations: None,
-                            raw_response: None,
-                            claim_source: None,
-                        };
                         tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                         continue;
                     }
@@ -1133,23 +1124,14 @@ impl<C: Channel> Agent<C> {
                             zeph_llm::provider::Role::System,
                             &hint,
                         ));
-                        let msg = format!(
-                            "[skipped] Tool call to {} skipped — utility policy recommends \
-                             retrieving additional context first.",
-                            tc.name
+                        let out = skipped_output(
+                            tc.name.clone(),
+                            format!(
+                                "[skipped] Tool call to {} skipped — utility policy recommends \
+                                 retrieving additional context first.",
+                                tc.name
+                            ),
                         );
-                        let out = zeph_tools::ToolOutput {
-                            tool_name: tc.name.clone(),
-                            summary: msg,
-                            blocks_executed: 0,
-                            filter_stats: None,
-                            diff: None,
-                            streamed: false,
-                            terminal_id: None,
-                            locations: None,
-                            raw_response: None,
-                            claim_source: None,
-                        };
                         tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                         continue;
                     }
@@ -1169,23 +1151,14 @@ impl<C: Channel> Agent<C> {
                             zeph_llm::provider::Role::System,
                             &hint,
                         ));
-                        let msg = format!(
-                            "[skipped] Tool call to {} skipped — utility policy recommends \
-                             verifying the previous result first.",
-                            tc.name
+                        let out = skipped_output(
+                            tc.name.clone(),
+                            format!(
+                                "[skipped] Tool call to {} skipped — utility policy recommends \
+                                 verifying the previous result first.",
+                                tc.name
+                            ),
                         );
-                        let out = zeph_tools::ToolOutput {
-                            tool_name: tc.name.clone(),
-                            summary: msg,
-                            blocks_executed: 0,
-                            filter_stats: None,
-                            diff: None,
-                            streamed: false,
-                            terminal_id: None,
-                            locations: None,
-                            raw_response: None,
-                            claim_source: None,
-                        };
                         tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                         continue;
                     }
@@ -1195,23 +1168,14 @@ impl<C: Channel> Agent<C> {
                             .send_status(&format!("Utility action: Stop ({})", tc.name))
                             .await;
                         let threshold = self.tool_orchestrator.utility_scorer.threshold();
-                        let msg = format!(
-                            "[stopped] Tool call to {} halted by the utility gate — \
-                             budget exhausted or score below threshold {threshold:.2}.",
-                            tc.name
+                        let out = skipped_output(
+                            tc.name.clone(),
+                            format!(
+                                "[stopped] Tool call to {} halted by the utility gate — \
+                                 budget exhausted or score below threshold {threshold:.2}.",
+                                tc.name
+                            ),
                         );
-                        let out = zeph_tools::ToolOutput {
-                            tool_name: tc.name.clone(),
-                            summary: msg,
-                            blocks_executed: 0,
-                            filter_stats: None,
-                            diff: None,
-                            streamed: false,
-                            terminal_id: None,
-                            locations: None,
-                            raw_response: None,
-                            claim_source: None,
-                        };
                         tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
                         continue;
                     }
@@ -2383,6 +2347,28 @@ async fn recv_elicitation(
     match rx {
         Some(r) => r.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+/// Build a skipped `ToolOutput` for utility gate non-`ToolCall` actions.
+///
+/// All four non-execute arms (Respond/Retrieve/Verify/Stop) produce an identical struct shape
+/// with zero blocks executed and no diff/filter metadata.
+fn skipped_output(
+    tool_name: impl Into<String>,
+    summary: impl Into<String>,
+) -> zeph_tools::ToolOutput {
+    zeph_tools::ToolOutput {
+        tool_name: tool_name.into(),
+        summary: summary.into(),
+        blocks_executed: 0,
+        filter_stats: None,
+        diff: None,
+        streamed: false,
+        terminal_id: None,
+        locations: None,
+        raw_response: None,
+        claim_source: None,
     }
 }
 

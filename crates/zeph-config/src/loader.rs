@@ -648,7 +648,7 @@ mod tests {
     // across all config sections that contain f32/f64 fields.
     #[test]
     fn toml_float_fields_deserialise_correctly() {
-        let toml = "
+        let toml = r"
 [llm.router.reputation]
 enabled = true
 decay_factor = 0.95

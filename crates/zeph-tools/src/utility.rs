@@ -172,25 +172,6 @@ impl UtilityScorer {
         if score.is_valid() { Some(score) } else { None }
     }
 
-    /// Returns `true` when the tool call should be executed based on its score.
-    ///
-    /// `user_requested` tools bypass the gate unconditionally.
-    /// When `score` is `None` (scoring disabled or produced invalid result) and
-    /// `user_requested` is false, the tool is skipped (fail-closed).
-    #[must_use]
-    pub fn should_execute(&self, score: Option<&UtilityScore>, user_requested: bool) -> bool {
-        if user_requested {
-            return true;
-        }
-        match score {
-            Some(s) => s.total >= self.config.threshold,
-            // Scoring disabled → always execute.
-            // Scoring produced invalid result → fail-closed: skip.
-            None if !self.config.enabled => true,
-            None => false,
-        }
-    }
-
     /// Recommend an action based on the utility score and turn context.
     ///
     /// Decision tree (thresholds from arXiv:2603.19896):
@@ -310,8 +291,11 @@ mod tests {
         let call = make_call("bash", json!({}));
         let score = scorer.score(&call, &default_ctx());
         assert!(score.is_none());
-        // When disabled, should_execute always returns true (never gated).
-        assert!(scorer.should_execute(score.as_ref(), false));
+        // When disabled, recommend_action always returns ToolCall (never gated).
+        assert_eq!(
+            scorer.recommend_action(score.as_ref(), &default_ctx()),
+            UtilityAction::ToolCall
+        );
     }
 
     #[test]
@@ -326,7 +310,13 @@ mod tests {
             "first call should exceed threshold: {}",
             s.total
         );
-        assert!(scorer.should_execute(Some(&s), false));
+        // First call with high uncertainty may trigger Retrieve (gather context) — that is also
+        // a non-blocking outcome. Only Stop/Respond are considered failures here.
+        let action = scorer.recommend_action(Some(&s), &default_ctx());
+        assert!(
+            action == UtilityAction::ToolCall || action == UtilityAction::Retrieve,
+            "first call should not be blocked, got {action:?}",
+        );
     }
 
     #[test]
@@ -359,20 +349,33 @@ mod tests {
             uncertainty: 0.0,
             total: -100.0,
         };
-        assert!(scorer.should_execute(Some(&score), true));
+        let ctx = UtilityContext {
+            user_requested: true,
+            ..default_ctx()
+        };
+        assert_eq!(
+            scorer.recommend_action(Some(&score), &ctx),
+            UtilityAction::ToolCall
+        );
     }
 
     #[test]
     fn none_score_fail_closed_when_enabled() {
         let scorer = UtilityScorer::new(default_config());
-        // Simulate scoring failure (None with scoring enabled).
-        assert!(!scorer.should_execute(None, false));
+        // Scoring failure (None with scoring enabled) → Stop (fail-closed).
+        assert_eq!(
+            scorer.recommend_action(None, &default_ctx()),
+            UtilityAction::Stop
+        );
     }
 
     #[test]
     fn none_score_executes_when_disabled() {
         let scorer = UtilityScorer::new(UtilityScoringConfig::default()); // disabled
-        assert!(scorer.should_execute(None, false));
+        assert_eq!(
+            scorer.recommend_action(None, &default_ctx()),
+            UtilityAction::ToolCall
+        );
     }
 
     #[test]
@@ -476,7 +479,12 @@ mod tests {
             "total should be non-negative: {}",
             score.total
         );
-        assert!(scorer.should_execute(Some(&score), false));
+        // With threshold=0 any non-blocking action (ToolCall or Retrieve) is acceptable.
+        let action = scorer.recommend_action(Some(&score), &default_ctx());
+        assert!(
+            action == UtilityAction::ToolCall || action == UtilityAction::Retrieve,
+            "threshold=0 should not block calls, got {action:?}",
+        );
     }
 
     #[test]
@@ -494,7 +502,11 @@ mod tests {
             "realistic score should be below 1.0: {}",
             score.total
         );
-        assert!(!scorer.should_execute(Some(&score), false));
+        // Below threshold, no prior calls → Respond.
+        assert_ne!(
+            scorer.recommend_action(Some(&score), &default_ctx()),
+            UtilityAction::ToolCall
+        );
     }
 
     // ── recommend_action tests ────────────────────────────────────────────────
