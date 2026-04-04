@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(agent): defer utility gate System hint injection until after tool results are persisted (#2615)
+
 ### Added
 
 - `/skill create <description>` command: generate a SKILL.md via LLM from natural language, preview before save (#2418)

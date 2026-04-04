@@ -971,6 +971,9 @@ impl<C: Channel> Agent<C> {
         // IMP-02: ConfirmationRequired is treated as a failure for dependency propagation —
         // a dependent tool must not proceed when its prerequisite is awaiting user approval.
         let mut failed_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Utility gate hints (Retrieve/Verify) are deferred so they are pushed after
+        // User(tool_results), maintaining valid OpenAI message ordering (#2615).
+        let mut pending_system_hints: Vec<String> = Vec::new();
 
         for (tier_idx, tier) in tiers.into_iter().enumerate() {
             if cancel.is_cancelled() {
@@ -1120,10 +1123,7 @@ impl<C: Channel> Agent<C> {
                              the call is well-targeted.",
                             tc.name
                         );
-                        self.push_message(zeph_llm::provider::Message::from_legacy(
-                            zeph_llm::provider::Role::System,
-                            &hint,
-                        ));
+                        pending_system_hints.push(hint);
                         let out = skipped_output(
                             tc.name.clone(),
                             format!(
@@ -1147,10 +1147,7 @@ impl<C: Channel> Agent<C> {
                              and that further tool use is necessary.",
                             tc.name
                         );
-                        self.push_message(zeph_llm::provider::Message::from_legacy(
-                            zeph_llm::provider::Role::System,
-                            &hint,
-                        ));
+                        pending_system_hints.push(hint);
                         let out = skipped_output(
                             tc.name.clone(),
                             format!(
@@ -1960,6 +1957,15 @@ impl<C: Channel> Agent<C> {
             (self.last_persisted_message_id, self.msg.messages.last_mut())
         {
             last.metadata.db_id = Some(id);
+        }
+
+        // Flush deferred utility gate hints (Retrieve/Verify). Pushed after User(tool_results)
+        // so the ordering Assistant→User→System is valid for OpenAI (#2615).
+        for hint in pending_system_hints {
+            self.push_message(zeph_llm::provider::Message::from_legacy(
+                zeph_llm::provider::Role::System,
+                &hint,
+            ));
         }
 
         // Deferred self-reflection: user_msg is now in history so the reflection dialogue
