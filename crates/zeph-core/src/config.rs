@@ -25,7 +25,7 @@ pub use zeph_config::{
     VaultConfig, VectorBackend,
 };
 
-pub use zeph_config::{ContextStrategy, DigestConfig};
+pub use zeph_config::{ContextStrategy, DigestConfig, PersonaConfig};
 pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 
 pub use zeph_config::{

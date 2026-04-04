@@ -86,6 +86,8 @@ pub(super) enum CompactionOutcome {
     NoChange,
 }
 
+pub(super) const PERSONA_PREFIX: &str = "[Persona context]\n";
+
 /// Tagged output of each concurrent context-fetch future.
 ///
 /// Using an enum instead of a tuple allows individual sources to be added or
@@ -99,6 +101,8 @@ pub(super) enum ContextSlot {
     Corrections(Option<Message>),
     CodeContext(Option<String>),
     GraphFacts(Option<Message>),
+    /// Persona memory facts injected after the system prompt (#2461).
+    PersonaFacts(Option<Message>),
 }
 impl<C: Channel> Agent<C> {
     pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {

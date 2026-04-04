@@ -68,6 +68,12 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::System || !m.content.starts_with(GRAPH_FACTS_PREFIX));
     }
 
+    pub(in crate::agent) fn remove_persona_facts_messages(&mut self) {
+        self.msg
+            .messages
+            .retain(|m| m.role != Role::System || !m.content.starts_with(super::PERSONA_PREFIX));
+    }
+
     /// Remove previously injected LSP context notes from the message history.
     ///
     /// Called before injecting fresh notes each turn so stale diagnostics/hover
@@ -199,6 +205,49 @@ impl<C: Channel> Agent<C> {
         }
 
         if body == GRAPH_FACTS_PREFIX {
+            return Ok(None);
+        }
+
+        Ok(Some(Message::from_legacy(Role::System, body)))
+    }
+
+    /// Fetch persona facts from `SQLite` and format as a system message.
+    ///
+    /// Injects facts after the system prompt (position 1 in message list), giving the LLM
+    /// supplementary user context without overriding the authoritative system prompt.
+    pub(super) async fn fetch_persona_facts(
+        memory_state: &MemoryState,
+        budget_tokens: usize,
+        tc: &TokenCounter,
+    ) -> Result<Option<Message>, super::super::error::AgentError> {
+        if budget_tokens == 0 || !memory_state.persona_config.enabled {
+            return Ok(None);
+        }
+        let Some(ref memory) = memory_state.memory else {
+            return Ok(None);
+        };
+
+        let min_confidence = memory_state.persona_config.min_confidence;
+        let facts = memory.sqlite().load_persona_facts(min_confidence).await?;
+
+        if facts.is_empty() {
+            return Ok(None);
+        }
+
+        let mut body = String::from(super::PERSONA_PREFIX);
+        let mut tokens_so_far = tc.count_tokens(&body);
+
+        for fact in &facts {
+            let line = format!("[{}] {}\n", fact.category, fact.content);
+            let line_tokens = tc.count_tokens(&line);
+            if tokens_so_far + line_tokens > budget_tokens {
+                break;
+            }
+            body.push_str(&line);
+            tokens_so_far += line_tokens;
+        }
+
+        if body == super::PERSONA_PREFIX {
             return Ok(None);
         }
 
@@ -856,6 +905,7 @@ impl<C: Channel> Agent<C> {
         self.remove_correction_messages();
         self.remove_code_context_messages();
         self.remove_graph_facts_messages();
+        self.remove_persona_facts_messages();
 
         // Own the query to satisfy Send bounds when agent.run() is spawned
         let query = query.to_owned();
@@ -883,6 +933,7 @@ impl<C: Channel> Agent<C> {
         let mut corrections_msg: Option<Message> = None;
         let mut code_rag_text: Option<String> = None;
         let mut graph_facts_msg: Option<Message> = None;
+        let mut persona_facts_msg: Option<Message> = None;
 
         {
             type CtxFuture<'a> = Pin<
@@ -944,6 +995,12 @@ impl<C: Channel> Agent<C> {
                     .await
                     .map(ContextSlot::GraphFacts)
             }));
+            fetchers.push(Box::pin(async {
+                let persona_budget = memory_state.persona_config.context_budget_tokens;
+                Self::fetch_persona_facts(memory_state, persona_budget, &tc)
+                    .await
+                    .map(ContextSlot::PersonaFacts)
+            }));
 
             while let Some(result) = fetchers.next().await {
                 match result {
@@ -958,6 +1015,7 @@ impl<C: Channel> Agent<C> {
                         ContextSlot::Corrections(msg) => corrections_msg = msg,
                         ContextSlot::CodeContext(text) => code_rag_text = text,
                         ContextSlot::GraphFacts(msg) => graph_facts_msg = msg,
+                        ContextSlot::PersonaFacts(msg) => persona_facts_msg = msg,
                     },
                     Err(e) => {
                         // Drop fetchers (releases immutable borrows) before &mut self below
@@ -1040,6 +1098,18 @@ impl<C: Channel> Agent<C> {
                     .await,
             ); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected summaries into context");
+        }
+        // Persona facts are inserted last so they land immediately after the system prompt (pos 1).
+        // The system prompt remains the authoritative first message; persona is supplementary.
+        // Use ExternalContent hint: persona facts are extracted from user conversation by LLM and
+        // stored in SQLite — they can contain adversarial content if the extraction was poisoned.
+        if let Some(msg) = persona_facts_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg.messages.insert(
+                1,
+                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
+                    .await,
+            ); // lgtm[rust/cleartext-logging]
+            tracing::debug!("injected persona facts into context");
         }
 
         if let Some(text) = code_rag_text {

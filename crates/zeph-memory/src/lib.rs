@@ -67,6 +67,7 @@ pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
 pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy, start_eviction_loop};
 pub use forgetting::{ForgettingConfig, ForgettingResult, start_forgetting_loop};
+pub use graph::EntityLockManager;
 pub use graph::{
     BeliefRevisionConfig, Community, Edge, EdgeType, Entity, EntityType, GraphFact, GraphStore,
     RpeRouter, RpeSignal, extract_candidate_entities,
@@ -82,14 +83,16 @@ pub use scenes::{
     MemScene, SceneConfig, consolidate_scenes, list_scenes, start_scene_consolidation_loop,
 };
 pub use semantic::{
-    EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats,
-    NoteLinkingConfig, StructuredSummary, build_summarization_prompt, extract_and_store,
-    link_memory_notes,
+    BufferedWrite, EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig,
+    LinkingStats, NoteLinkingConfig, PersonaExtractionConfig, StructuredSummary, WriteBuffer,
+    build_summarization_prompt, contains_self_referential_language, extract_and_store,
+    extract_persona_facts, link_memory_notes,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 pub use store::compression_guidelines::CompressionFailurePair;
 pub use store::corrections::UserCorrectionRow;
 pub use store::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
+pub use store::persona::PersonaFactRow;
 pub use store::session_digest::SessionDigest;
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;

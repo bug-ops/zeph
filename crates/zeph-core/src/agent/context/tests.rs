@@ -3186,6 +3186,7 @@ fn make_mem_state(
         crossover_turn_threshold: 20,
         rpe_router: None,
         goal_text: None,
+        persona_config: crate::config::PersonaConfig::default(),
     }
 }
 

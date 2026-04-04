@@ -797,6 +797,12 @@ pub struct MemoryConfig {
     /// the cheapest sufficient backend instead of querying all stores on every turn.
     #[serde(default)]
     pub store_routing: StoreRoutingConfig,
+    /// Persona memory layer (#2461).
+    ///
+    /// When `persona.enabled = true`, user preferences and domain knowledge are extracted
+    /// from conversation history and injected into context after the system prompt.
+    #[serde(default)]
+    pub persona: PersonaConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -1710,6 +1716,44 @@ impl Default for StoreRoutingConfig {
             routing_classifier_provider: ProviderName::default(),
             fallback_route: "hybrid".into(),
             confidence_threshold: 0.7,
+        }
+    }
+}
+
+/// Persona memory layer configuration (#2461).
+///
+/// When `enabled = true`, user preferences and domain knowledge are extracted from
+/// conversation history via a cheap LLM provider and injected after the system prompt.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PersonaConfig {
+    /// Enable persona memory extraction and injection. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for persona extraction.
+    /// Should be a cheap/fast model. Falls back to the primary provider when empty.
+    pub persona_provider: ProviderName,
+    /// Minimum confidence threshold for facts included in context. Default: `0.6`.
+    pub min_confidence: f64,
+    /// Minimum user messages before extraction runs in a session. Default: `3`.
+    pub min_messages: usize,
+    /// Maximum messages sent to the LLM per extraction pass. Default: `10`.
+    pub max_messages: usize,
+    /// LLM timeout for the extraction call in seconds. Default: `10`.
+    pub extraction_timeout_secs: u64,
+    /// Token budget allocated to persona context in assembly. Default: `500`.
+    pub context_budget_tokens: usize,
+}
+
+impl Default for PersonaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            persona_provider: ProviderName::default(),
+            min_confidence: 0.6,
+            min_messages: 3,
+            max_messages: 10,
+            extraction_timeout_secs: 10,
+            context_budget_tokens: 500,
         }
     }
 }

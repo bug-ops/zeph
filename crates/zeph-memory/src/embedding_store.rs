@@ -508,6 +508,33 @@ impl EmbeddingStore {
 
         Ok(row.0 > 0)
     }
+
+    /// Check whether a Qdrant embedding for `entity_name` is current by comparing the
+    /// Qdrant-side epoch against the epoch stored in `graph_entities`.
+    ///
+    /// Returns `true` if the Qdrant embedding is up-to-date or if the entity no longer
+    /// exists in `SQLite` (embedding should be cleaned up separately).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` query fails.
+    pub async fn is_epoch_current(
+        &self,
+        entity_name: &str,
+        qdrant_epoch: u64,
+    ) -> Result<bool, MemoryError> {
+        let row: Option<(i64,)> = zeph_db::query_as(sql!(
+            "SELECT embedding_epoch FROM graph_entities WHERE name = ? LIMIT 1"
+        ))
+        .bind(entity_name)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(true), // entity deleted; Qdrant point is orphaned, not stale per epoch
+            Some((db_epoch,)) => Ok(qdrant_epoch >= db_epoch.cast_unsigned()),
+        }
+    }
 }
 
 #[cfg(test)]

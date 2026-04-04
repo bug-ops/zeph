@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-/// Memory tier classification for the AOI three-layer architecture.
+/// Memory tier classification for the AOI four-layer architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryTier {
@@ -12,6 +12,9 @@ pub enum MemoryTier {
     /// Cross-session distilled facts. Promoted from Episodic when a fact
     /// appears in `promotion_min_sessions`+ distinct sessions.
     Semantic,
+    /// Long-lived user attributes (preferences, domain knowledge, working style).
+    /// Extracted from conversation history and injected into context (#2461).
+    Persona,
 }
 
 impl MemoryTier {
@@ -21,6 +24,7 @@ impl MemoryTier {
             Self::Working => "working",
             Self::Episodic => "episodic",
             Self::Semantic => "semantic",
+            Self::Persona => "persona",
         }
     }
 }
@@ -38,6 +42,7 @@ impl std::str::FromStr for MemoryTier {
             "working" => Ok(Self::Working),
             "episodic" => Ok(Self::Episodic),
             "semantic" => Ok(Self::Semantic),
+            "persona" => Ok(Self::Persona),
             other => Err(format!("unknown memory tier: {other}")),
         }
     }
@@ -86,6 +91,7 @@ mod tests {
             MemoryTier::Working,
             MemoryTier::Episodic,
             MemoryTier::Semantic,
+            MemoryTier::Persona,
         ] {
             let s = tier.as_str();
             let parsed: MemoryTier = s.parse().expect("should parse");

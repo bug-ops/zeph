@@ -76,6 +76,8 @@ pub(crate) struct MemoryState {
     /// Passed to A-MAC admission control to enable goal-conditioned write gating.
     /// Reset at the start of each user turn. `None` only before the first user message.
     pub(crate) goal_text: Option<String>,
+    /// Persona memory configuration (#2461).
+    pub(crate) persona_config: zeph_config::PersonaConfig,
 }
 
 pub(crate) struct SkillState {

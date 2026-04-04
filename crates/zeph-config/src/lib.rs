@@ -59,9 +59,9 @@ pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{
     AdmissionConfig, AdmissionStrategy, AdmissionWeights, BeliefRevisionConfig, CompressionConfig,
     CompressionPredictorConfig, CompressionStrategy, ContextStrategy, DigestConfig, DocumentConfig,
-    ForgettingConfig, GraphConfig, MemoryConfig, NoteLinkingConfig, PruningStrategy, RpeConfig,
-    SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy,
-    TierConfig, VectorBackend,
+    ForgettingConfig, GraphConfig, MemoryConfig, NoteLinkingConfig, PersonaConfig, PruningStrategy,
+    RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig,
+    StoreRoutingStrategy, TierConfig, VectorBackend,
 };
 pub use providers::{
     BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,

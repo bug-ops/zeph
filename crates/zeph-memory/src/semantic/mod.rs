@@ -6,8 +6,10 @@ mod corrections;
 mod cross_session;
 mod graph;
 pub(crate) mod importance;
+pub mod persona;
 mod recall;
 mod summarization;
+pub(crate) mod write_buffer;
 
 #[cfg(test)]
 mod tests;
@@ -33,8 +35,12 @@ pub use graph::{
     ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
     PostExtractValidator, extract_and_store, link_memory_notes,
 };
+pub use persona::{
+    PersonaExtractionConfig, contains_self_referential_language, extract_persona_facts,
+};
 pub use recall::{EmbedContext, RecalledMessage};
 pub use summarization::{StructuredSummary, Summary, build_summarization_prompt};
+pub use write_buffer::{BufferedWrite, WriteBuffer};
 
 pub struct SemanticMemory {
     pub(crate) sqlite: SqliteStore,

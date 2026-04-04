@@ -218,6 +218,7 @@ impl Default for Config {
                 forgetting: crate::memory::ForgettingConfig::default(),
                 database_url: None,
                 store_routing: crate::memory::StoreRoutingConfig::default(),
+                persona: crate::memory::PersonaConfig::default(),
             },
             telegram: None,
             discord: None,

@@ -270,6 +270,7 @@ impl<C: Channel> Agent<C> {
                 crossover_turn_threshold: 20,
                 rpe_router: None,
                 goal_text: None,
+                persona_config: crate::config::PersonaConfig::default(),
             },
             skill_state: SkillState {
                 registry,

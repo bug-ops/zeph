@@ -12,6 +12,7 @@ mod history;
 mod mem_scenes;
 pub(crate) mod messages;
 pub mod overflow;
+pub mod persona;
 pub mod preferences;
 pub mod session_digest;
 mod skills;
@@ -26,6 +27,7 @@ use crate::error::MemoryError;
 
 pub use acp_sessions::{AcpSessionEvent, AcpSessionInfo};
 pub use messages::role_str;
+pub use persona::PersonaFactRow;
 pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
 pub use trust::{SkillTrustRow, SourceKind};
 

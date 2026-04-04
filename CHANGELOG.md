@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Persona memory layer** (`#2461`): new `MemoryTier::Persona` fourth tier. User attributes (preferences, domain knowledge, working style, communication style, background) are extracted from conversation history via a cheap LLM provider (`[memory.persona]` config section) and injected into context assembly immediately after the system prompt. Extraction uses a self-referential language heuristic gate to avoid unnecessary LLM calls. Contradictory facts are resolved via `supersedes_id` FK: the extraction LLM classifies extracted facts as NEW or UPDATE and marks older conflicting facts as superseded so they are excluded from context. SQLite migrations 066 (persona_memory table + persona_meta tracking) added.
+- **Multi-agent memory consistency** (`#2478`): session-scoped `WriteBuffer` batches memory writes per turn into a single `BEGIN IMMEDIATE` SQLite transaction, reducing lock contention. Advisory entity locking (`entity_advisory_locks` table, migration 067) with 120s TTL and `extend_lock()` method prevents duplicate entity resolution when concurrent sessions run. Epoch-based Qdrant invalidation (`embedding_epoch` column, migration 068) detects stale embeddings via `EmbeddingStore::is_epoch_current()`.
+
 - TUI: slash-command autocomplete dropdown in Insert mode (#2642)
 
 ### Fixed

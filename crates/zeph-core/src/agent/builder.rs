@@ -323,6 +323,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_persona_config(mut self, config: crate::config::PersonaConfig) -> Self {
+        self.memory_state.persona_config = config;
+        self
+    }
+
+    #[must_use]
     pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
         // R-IMP-03: graph extraction writes raw entity names/relations extracted by the LLM.
         // No PII redaction is applied on the graph write path (pre-1.0 MVP limitation).
@@ -1464,6 +1470,7 @@ impl<C: Channel> Agent<C> {
             learning,
             document_config,
             graph_config,
+            persona_config,
             anomaly_config,
             result_cache_config,
             utility_config,
@@ -1509,6 +1516,7 @@ impl<C: Channel> Agent<C> {
             .with_server_compaction(server_compaction)
             .with_document_config(document_config)
             .with_graph_config(graph_config)
+            .with_persona_config(persona_config)
             .with_orchestration_config(orchestration_config)
             .with_budget_hint_enabled(budget_hint_enabled);
 

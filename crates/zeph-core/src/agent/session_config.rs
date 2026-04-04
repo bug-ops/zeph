@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::config::{
     Config, DebugConfig, DocumentConfig, GraphConfig, LearningConfig, OrchestrationConfig,
-    SecurityConfig, TimeoutConfig,
+    PersonaConfig, SecurityConfig, TimeoutConfig,
 };
 use crate::vault::Secret;
 
@@ -84,6 +84,7 @@ pub struct AgentSessionConfig {
     pub learning: LearningConfig,
     pub document_config: DocumentConfig,
     pub graph_config: GraphConfig,
+    pub persona_config: PersonaConfig,
     pub anomaly_config: zeph_tools::AnomalyConfig,
     pub result_cache_config: zeph_tools::ResultCacheConfig,
     pub utility_config: zeph_tools::UtilityScoringConfig,
@@ -140,6 +141,7 @@ impl AgentSessionConfig {
             learning: config.skills.learning.clone(),
             document_config: config.memory.documents.clone(),
             graph_config: config.memory.graph.clone(),
+            persona_config: config.memory.persona.clone(),
             anomaly_config: config.tools.anomaly.clone(),
             result_cache_config: config.tools.result_cache.clone(),
             utility_config: config.tools.utility.clone(),
