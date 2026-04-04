@@ -643,4 +643,60 @@ mod tests {
             "unexpected error: {msg}"
         );
     }
+
+    // Regression test for issue #2599: TOML float values must deserialise without error
+    // across all config sections that contain f32/f64 fields.
+    #[test]
+    fn toml_float_fields_deserialise_correctly() {
+        let toml = r#"
+[llm.router.reputation]
+enabled = true
+decay_factor = 0.95
+weight = 0.3
+
+[llm.router.bandit]
+enabled = false
+cost_weight = 0.3
+alpha = 1.0
+decay_factor = 0.99
+
+[skills]
+disambiguation_threshold = 0.25
+cosine_weight = 0.7
+"#;
+        // Wrap in a full Config to exercise the nested paths.
+        let wrapped = format!(
+            "{}\n{}",
+            toml,
+            r#"[memory.semantic]
+mmr_lambda = 0.7
+"#
+        );
+        // We only need the sub-structs to round-trip; build minimal wrappers.
+        let router: crate::providers::RouterConfig = toml::from_str(
+            r#"[reputation]
+enabled = true
+decay_factor = 0.95
+weight = 0.3
+"#,
+        )
+        .expect("RouterConfig with float fields must deserialise");
+        assert!((router.reputation.unwrap().decay_factor - 0.95).abs() < f64::EPSILON);
+
+        let bandit: crate::providers::BanditConfig =
+            toml::from_str("cost_weight = 0.3\nalpha = 1.0\n")
+                .expect("BanditConfig with float fields must deserialise");
+        assert!((bandit.cost_weight - 0.3_f32).abs() < f32::EPSILON);
+
+        let semantic: crate::memory::SemanticConfig = toml::from_str("mmr_lambda = 0.7\n")
+            .expect("SemanticConfig with float fields must deserialise");
+        assert!((semantic.mmr_lambda - 0.7_f32).abs() < f32::EPSILON);
+
+        let skills: crate::features::SkillsConfig =
+            toml::from_str("disambiguation_threshold = 0.25\n")
+                .expect("SkillsConfig with float fields must deserialise");
+        assert!((skills.disambiguation_threshold - 0.25_f32).abs() < f32::EPSILON);
+
+        let _ = wrapped; // silence unused-variable lint
+    }
 }

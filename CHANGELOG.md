@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(memory): resolve SQLite pool starvation causing multi-turn session hangs (#2591)
+- fix(config): add regression test for TOML float deserialization across router, bandit, memory, and skills config sections (#2599)
 
 ### Changed
 
