@@ -1217,6 +1217,14 @@ impl McpManager {
         Ok(())
     }
 
+    /// Return all non-empty server instructions, concatenated with double newlines.
+    pub async fn all_server_instructions(&self) -> String {
+        let map = self.server_instructions.read().await;
+        let mut parts: Vec<&str> = map.values().map(String::as_str).collect();
+        parts.sort_unstable();
+        parts.join("\n\n")
+    }
+
     /// Return sorted list of connected server IDs.
     pub async fn list_servers(&self) -> Vec<String> {
         let clients = self.clients.read().await;

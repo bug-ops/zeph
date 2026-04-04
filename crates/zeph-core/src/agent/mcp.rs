@@ -329,6 +329,13 @@ impl<C: Channel> Agent<C> {
             m.mcp_server_count = mcp_server_count;
             m.mcp_connected_count = mcp_connected_count;
         });
+        if let Some(ref manager) = self.mcp.manager {
+            let instructions = manager.all_server_instructions().await;
+            if !instructions.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&instructions);
+            }
+        }
         // When native tool_use is active, MCP tools flow through the executor chain
         // as ToolDefinitions — skip text prompt injection to avoid duplication.
         if self.provider.supports_tool_use() {
