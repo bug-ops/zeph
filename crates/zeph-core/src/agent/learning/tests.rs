@@ -172,8 +172,7 @@ fn is_learning_enabled_with_disabled_config_returns_false() {
     let executor = MockToolExecutor::no_tools();
     let mut config = learning_config_enabled();
     config.enabled = false;
-    let agent =
-        Agent::new(provider, channel, registry, None, 5, executor).with_learning(config);
+    let agent = Agent::new(provider, channel, registry, None, 5, executor).with_learning(config);
     assert!(!agent.is_learning_enabled());
 }
 
