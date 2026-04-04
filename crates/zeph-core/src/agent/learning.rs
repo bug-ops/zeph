@@ -746,6 +746,14 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
+        let input_scan = zeph_skills::scanner::scan_skill_body(description);
+        if input_scan.has_matches() {
+            self.channel
+                .send("Input blocked: injection patterns detected in description.")
+                .await?;
+            return Ok(());
+        }
+
         // Determine output directory: generation_output_dir > managed_dir > first skill_path.
         let output_dir = if let Some(ref dir) = self.skill_state.generation_output_dir {
             dir.clone()
@@ -803,25 +811,29 @@ impl<C: Channel> Agent<C> {
         // Dedup check: compare against existing registry embeddings.
         if let Some(ref matcher) = self.skill_state.matcher {
             let skill_text = format!("{} {}", generated.meta.description, generated.content);
-            if let Ok(new_embed) = self.embedding_provider.embed(&skill_text).await {
+            let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = {
                 let registry = self.skill_state.registry.read().unwrap();
-                let all_meta = registry.all_meta();
-                let mut best_sim = 0.0_f32;
-                let mut best_name = String::new();
-                for (idx, meta) in all_meta.iter().enumerate() {
-                    if let Some(existing_emb) = matcher.skill_embedding(idx) {
-                        let sim = zeph_common::math::cosine_similarity(&new_embed, existing_emb);
-                        if sim > best_sim {
-                            best_sim = sim;
-                            best_name.clone_from(&meta.name);
-                        }
-                    }
-                }
-                if best_sim > 0.85 {
-                    generated.warnings.push(format!(
-                        "Similar skill exists: **{best_name}** (similarity: {best_sim:.2}). Consider using the existing skill instead."
-                    ));
-                }
+                registry.all_meta().into_iter().cloned().collect()
+            };
+            let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> =
+                all_meta_owned.iter().collect();
+            let embed_provider = self.embedding_provider.clone();
+            let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
+                let owned = text.to_owned();
+                let p = embed_provider.clone();
+                Box::pin(async move { p.embed(&owned).await })
+            };
+            let matches = matcher
+                .match_skills(&all_meta_refs, &skill_text, 1, false, embed_fn)
+                .await;
+            if let Some(best) = matches.first()
+                && best.score > 0.85
+                && let Some(meta) = all_meta_refs.get(best.index)
+            {
+                generated.warnings.push(format!(
+                    "Similar skill exists: **{}** (similarity: {:.2}). Consider using the existing skill instead.",
+                    meta.name, best.score
+                ));
             }
         }
 
