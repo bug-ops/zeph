@@ -15,12 +15,6 @@ pub(crate) struct WebhookPayload {
     pub body: String,
 }
 
-pub(crate) fn sanitize_control_chars(s: &str) -> String {
-    s.chars()
-        .filter(|c| !c.is_ascii_control() || *c == '\n')
-        .collect()
-}
-
 impl WebhookPayload {
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if self.sender.len() > 256 {
@@ -54,8 +48,8 @@ pub(crate) async fn webhook_handler(
     if let Err(e) = payload.validate() {
         return (StatusCode::UNPROCESSABLE_ENTITY, e).into_response();
     }
-    let sender = sanitize_control_chars(&payload.sender);
-    let channel = sanitize_control_chars(&payload.channel);
+    let sender = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.sender);
+    let channel = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.channel);
     let msg = format!("[{}@{}] {}", sender, channel, payload.body);
     match state.webhook_tx.send(msg).await {
         Ok(()) => Json(WebhookResponse { status: "accepted" }).into_response(),
@@ -136,14 +130,14 @@ mod tests {
     #[test]
     fn sanitize_strips_control_chars_keeps_newline() {
         let input = "hel\x01lo\x7f\nworld";
-        let result = sanitize_control_chars(input);
+        let result = zeph_common::sanitize::strip_control_chars_preserve_whitespace(input);
         assert_eq!(result, "hello\nworld");
     }
 
     #[test]
     fn sanitize_strips_null_byte() {
         let input = "he\x00llo";
-        let result = sanitize_control_chars(input);
+        let result = zeph_common::sanitize::strip_control_chars_preserve_whitespace(input);
         assert_eq!(result, "hello");
     }
 

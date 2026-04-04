@@ -487,7 +487,7 @@ impl SkillMatcherBackend {
     }
 }
 
-pub use zeph_memory::cosine_similarity;
+pub use zeph_common::math::cosine_similarity;
 
 #[cfg(test)]
 mod tests {

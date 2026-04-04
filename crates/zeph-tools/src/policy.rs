@@ -6,7 +6,7 @@
 //! Evaluates TOML-based access-control rules before any tool executes.
 //! Deny-wins semantics: deny rules checked first, then allow rules, then `default_effect`.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -153,7 +153,9 @@ impl CompiledRule {
         if !self.path_matchers.is_empty() {
             let paths = extract_paths(params);
             let any_path_matches = paths.iter().any(|p| {
-                let normalized = normalize_path(p);
+                let normalized = crate::file::normalize_path(Path::new(p))
+                    .to_string_lossy()
+                    .into_owned();
                 self.path_matchers
                     .iter()
                     .any(|pat| pat.matches(&normalized))
@@ -431,50 +433,6 @@ fn extract_paths(params: &serde_json::Map<String, serde_json::Value>) -> Vec<Str
     }
 
     paths
-}
-
-/// Lexically normalize a path by resolving `.` and `..` components
-/// without any filesystem I/O (no `canonicalize`).
-///
-/// This addresses CRIT-01 path traversal: `/tmp/../etc/passwd` normalizes to `/etc/passwd`
-/// and will match a deny rule for `/etc/*`.
-fn normalize_path(raw: &str) -> String {
-    let mut components: Vec<&str> = Vec::new();
-    for component in Path::new(raw).components() {
-        match component {
-            Component::RootDir => {
-                components.clear();
-                components.push("/");
-            }
-            Component::CurDir => {} // skip `.`
-            Component::ParentDir => {
-                // Pop the last component (but never pop root `/`).
-                if components.len() > 1 {
-                    components.pop();
-                }
-            }
-            Component::Normal(s) => {
-                components.push(s.to_str().unwrap_or(""));
-            }
-            Component::Prefix(_) => {
-                components.push(component.as_os_str().to_str().unwrap_or(""));
-            }
-        }
-    }
-
-    if components.is_empty() {
-        return raw.to_owned();
-    }
-    if components == ["/"] {
-        return "/".to_owned();
-    }
-    let root = if components.first() == Some(&"/") {
-        components.remove(0);
-        "/"
-    } else {
-        ""
-    };
-    format!("{root}{}", components.join("/"))
 }
 
 #[cfg(test)]
@@ -800,45 +758,6 @@ mod tests {
             PolicyEnforcer::compile(&config),
             Err(PolicyCompileError::TooManyRules { .. })
         ));
-    }
-
-    // ── normalize_path unit tests ─────────────────────────────────────────────
-
-    #[test]
-    fn normalize_path_simple() {
-        assert_eq!(normalize_path("/etc/passwd"), "/etc/passwd");
-    }
-
-    #[test]
-    fn normalize_path_dot_dot() {
-        assert_eq!(normalize_path("/tmp/../etc/passwd"), "/etc/passwd");
-    }
-
-    #[test]
-    fn normalize_path_dot() {
-        assert_eq!(normalize_path("/etc/./shadow"), "/etc/shadow");
-    }
-
-    #[test]
-    fn normalize_path_root_stays() {
-        assert_eq!(normalize_path("/"), "/");
-    }
-
-    #[test]
-    fn normalize_path_double_dot_at_root() {
-        // Can't go above root.
-        assert_eq!(normalize_path("/../etc"), "/etc");
-    }
-
-    // GAP-01: deep `..` chain traversal must still normalize correctly.
-    #[test]
-    fn normalize_path_deep_dotdot_chain() {
-        // /a/b/c/d/../../../../../../etc/passwd
-        // After normalization: /etc/passwd (excess `..` above root are discarded)
-        assert_eq!(
-            normalize_path("/a/b/c/d/../../../../../../etc/passwd"),
-            "/etc/passwd"
-        );
     }
 
     #[test]

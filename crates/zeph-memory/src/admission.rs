@@ -13,7 +13,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::embedding_store::EmbeddingStore;
-use crate::math::cosine_similarity;
+use zeph_common::math::cosine_similarity;
 
 /// Per-factor scores for the admission decision.
 #[derive(Debug, Clone, serde::Serialize)]

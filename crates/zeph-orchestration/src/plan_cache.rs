@@ -284,7 +284,7 @@ impl PlanCache {
 
         for (id, template_json, blob) in rows {
             if let Some(stored) = blob_to_embedding(&blob) {
-                let score = zeph_memory::cosine_similarity(goal_embedding, &stored);
+                let score = zeph_common::math::cosine_similarity(goal_embedding, &stored);
                 if score > best_score {
                     best_score = score;
                     best_id = Some(id);

@@ -108,7 +108,7 @@ pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemC
         // last explicit cacheable block). When no markers exist, `remaining` equals the
         // full system prompt — apply the same min-token threshold as the fallback path.
         let had_markers = remaining.len() < cacheable_part.trim().len();
-        let estimated_tokens = remaining.chars().count() / 4;
+        let estimated_tokens = zeph_common::text::estimate_tokens(remaining);
         let cc = if had_markers || estimated_tokens >= min_tokens {
             Some(CacheControl {
                 cache_type: CacheType::Ephemeral,

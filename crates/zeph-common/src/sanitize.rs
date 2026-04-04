@@ -18,6 +18,21 @@ pub fn strip_control_chars(s: &str) -> String {
         .collect()
 }
 
+/// Strip ASCII control characters while preserving common whitespace (`\t`, `\n`, `\r`).
+///
+/// Also strips Unicode `BiDi` override codepoints (U+202A–U+202E, U+2066–U+2069).
+/// Use this variant when the input may contain intentional newlines or tabs that
+/// should be kept (e.g., multi-line tool output, webhook payloads).
+#[must_use]
+pub fn strip_control_chars_preserve_whitespace(s: &str) -> String {
+    s.chars()
+        .filter(|&c| {
+            (!c.is_control() || c == '\t' || c == '\n' || c == '\r')
+                && !matches!(c as u32, 0x202A..=0x202E | 0x2066..=0x2069)
+        })
+        .collect()
+}
+
 /// Remove null bytes (`\0`) from `s`.
 #[must_use]
 pub fn strip_null_bytes(s: &str) -> String {

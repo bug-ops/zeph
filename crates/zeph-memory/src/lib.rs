@@ -22,7 +22,6 @@ pub mod error;
 pub mod eviction;
 pub mod graph;
 pub mod in_memory_store;
-pub mod math;
 pub mod qdrant_ops;
 pub mod response_cache;
 pub mod router;
@@ -72,7 +71,6 @@ pub use graph::{
     BeliefRevisionConfig, Community, Edge, EdgeType, Entity, EntityType, GraphFact, GraphStore,
     RpeRouter, RpeSignal, extract_candidate_entities,
 };
-pub use math::cosine_similarity;
 pub use qdrant_ops::QdrantOps;
 pub use response_cache::ResponseCache;
 pub use router::{

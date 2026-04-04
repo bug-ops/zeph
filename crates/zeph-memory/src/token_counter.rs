@@ -70,7 +70,7 @@ impl TokenCounter {
         }
 
         if text.len() > MAX_INPUT_LEN {
-            return text.chars().count() / 4;
+            return zeph_common::text::estimate_tokens(text);
         }
 
         let key = hash_text(text);
@@ -81,7 +81,7 @@ impl TokenCounter {
 
         let count = match &self.bpe {
             Some(bpe) => bpe.encode_with_special_tokens(text).len(),
-            None => text.chars().count() / 4,
+            None => zeph_common::text::estimate_tokens(text),
         };
 
         // TOCTOU between len() check and insert is benign: worst case we evict
@@ -433,7 +433,7 @@ mod tests {
         let large = "a".repeat(MAX_INPUT_LEN + 1);
         let result = counter.count_tokens(&large);
         // chars/4 fallback: (65537 chars) / 4
-        assert_eq!(result, large.chars().count() / 4);
+        assert_eq!(result, zeph_common::text::estimate_tokens(&large));
         // Must not be cached
         assert!(counter.cache.is_empty());
     }
@@ -443,7 +443,7 @@ mod tests {
         let counter = TokenCounter::new();
         let text = "Привет мир! 你好世界! こんにちは! 🌍";
         let bpe_count = counter.count_tokens(text);
-        let fallback_count = text.chars().count() / 4;
+        let fallback_count = zeph_common::text::estimate_tokens(text);
         // BPE should return > 0
         assert!(bpe_count > 0, "BPE count must be positive");
         // BPE result should differ from naive chars/4 for multi-byte text

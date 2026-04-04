@@ -42,6 +42,16 @@ pub fn truncate_to_bytes_ref(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Rough token count estimate: 1 token ≈ 4 Unicode scalar values.
+///
+/// Uses `chars().count()` rather than byte length to avoid overestimating for
+/// non-ASCII content. This is the canonical fallback used when a BPE tokenizer
+/// is unavailable or the input exceeds the tokenizer's size limit.
+#[must_use]
+pub fn estimate_tokens(text: &str) -> usize {
+    text.chars().count() / 4
+}
+
 /// Borrow a prefix of `s` that is at most `max_chars` Unicode scalar values long.
 ///
 /// Returns a subslice of `s`. No ellipsis is appended.

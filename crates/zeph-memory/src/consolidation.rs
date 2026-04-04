@@ -30,8 +30,8 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
-use crate::math::cosine_similarity;
 use crate::store::SqliteStore;
+use zeph_common::math::cosine_similarity;
 
 /// Topology operation proposed by the LLM for memory consolidation.
 ///

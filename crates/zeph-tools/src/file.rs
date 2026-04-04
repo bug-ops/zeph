@@ -657,7 +657,7 @@ impl ToolExecutor for FileExecutor {
 /// Lexically normalize a path by collapsing `.` and `..` components without
 /// any filesystem access. This prevents `..` components from bypassing the
 /// sandbox check inside `validate_path`.
-fn normalize_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
     // On Windows, paths may have a drive prefix (e.g. `D:` or `\\?\D:`).
     // We track it separately so that `RootDir` (the `\` after the drive letter)

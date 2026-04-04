@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::math::cosine_similarity;
 use crate::types::MessageId;
+use zeph_common::math::cosine_similarity;
 
 #[allow(clippy::implicit_hasher)]
 pub fn apply_temporal_decay(

@@ -588,7 +588,7 @@ impl ContentSanitizer {
         let (truncated, was_truncated) = Self::truncate(content, self.max_content_size);
 
         // Step 2: strip control characters
-        let cleaned = Self::strip_control_chars(truncated);
+        let cleaned = zeph_common::sanitize::strip_control_chars_preserve_whitespace(truncated);
 
         // Step 3: detect injection patterns (advisory only — never blocks content).
         // For memory retrieval sub-sources that carry ConversationHistory or LlmSummary
@@ -639,15 +639,6 @@ impl ContentSanitizer {
         // floor_char_boundary is stable since Rust 1.82
         let boundary = content.floor_char_boundary(max_bytes);
         (&content[..boundary], true)
-    }
-
-    fn strip_control_chars(s: &str) -> String {
-        s.chars()
-            .filter(|&c| {
-                // Allow tab (0x09), LF (0x0A), CR (0x0D); strip everything else in 0x00-0x1F
-                !c.is_control() || c == '\t' || c == '\n' || c == '\r'
-            })
-            .collect()
     }
 
     pub(crate) fn detect_injections(content: &str) -> Vec<InjectionFlag> {

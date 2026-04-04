@@ -23,10 +23,10 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
-use crate::math::cosine_similarity;
 use crate::store::SqliteStore;
 use crate::store::messages::PromotionCandidate;
 use crate::types::ConversationId;
+use zeph_common::math::cosine_similarity;
 
 /// Minimum cosine similarity between the merged result and at least one original for the
 /// merge to be accepted. Prevents the LLM from producing semantically unrelated output.

@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - fix(agent): defer utility gate System hint injection until after tool results are persisted (#2615)
+- refactor(dry): remove duplicate `cosine_similarity` in `zeph-mcp` — use canonical `zeph-common::math::cosine_similarity`
+- refactor(dry): eliminate `zeph-memory/src/math.rs` single-line re-export module — direct imports from `zeph_common::math`
+- refactor(dry): consolidate `normalize_path` in `zeph-tools` — `policy.rs` now delegates to `file::normalize_path`
+- refactor(dry): add `strip_control_chars_preserve_whitespace` to `zeph-common::sanitize`; remove duplicate implementations in `zeph-sanitizer` and `zeph-gateway`
+- refactor(dry): add `estimate_tokens` to `zeph-common::text`; replace all inline `chars().count() / 4` expressions in `zeph-llm` and `zeph-memory`
 
 ### Added
 

@@ -13,9 +13,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use zeph_common::math::cosine_similarity;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
-use zeph_memory::cosine_similarity;
 
 use zeph_common::secret::Secret;
 

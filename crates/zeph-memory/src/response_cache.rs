@@ -102,7 +102,7 @@ impl ResponseCache {
                 .chunks_exact(4)
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
-            let score = crate::math::cosine_similarity(embedding, &stored);
+            let score = zeph_common::math::cosine_similarity(embedding, &stored);
             tracing::debug!(
                 score,
                 threshold = similarity_threshold,

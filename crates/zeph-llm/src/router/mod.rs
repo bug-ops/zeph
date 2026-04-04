@@ -1392,13 +1392,9 @@ impl RouterProvider {
                 Ok(response) => {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-                    // Estimate token cost: rough approximation (1 token ≈ 4 Unicode chars).
-                    // Use chars().count() rather than len() (bytes) to avoid overestimating
-                    // for non-ASCII content (PERF-CASCADE-06).
-                    // Minimum 1 token for any non-empty response to ensure budget accounting
-                    // is not defeated by very short outputs.
                     let estimated_tokens =
-                        u32::try_from((response.chars().count() / 4).max(1)).unwrap_or(u32::MAX);
+                        u32::try_from(zeph_common::text::estimate_tokens(&response).max(1))
+                            .unwrap_or(u32::MAX);
                     tokens_used = tokens_used.saturating_add(estimated_tokens);
 
                     let verdict = Self::evaluate_quality(
@@ -1577,7 +1573,8 @@ impl RouterProvider {
                 }
                 Ok(text) => {
                     let estimated_tokens =
-                        u32::try_from((text.chars().count() / 4).max(1)).unwrap_or(u32::MAX);
+                        u32::try_from(zeph_common::text::estimate_tokens(&text).max(1))
+                            .unwrap_or(u32::MAX);
                     tokens_used = tokens_used.saturating_add(estimated_tokens);
 
                     let verdict = Self::evaluate_quality(

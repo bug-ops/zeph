@@ -30,7 +30,7 @@ impl DbVectorStore {
     }
 }
 
-use crate::math::cosine_similarity;
+use zeph_common::math::cosine_similarity;
 
 fn matches_filter(payload: &HashMap<String, serde_json::Value>, filter: &VectorFilter) -> bool {
     for cond in &filter.must {

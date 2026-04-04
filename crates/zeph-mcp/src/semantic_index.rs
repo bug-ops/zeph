@@ -16,6 +16,7 @@
 //! Callers in `zeph-core` convert between the two.
 
 use futures::stream::{self, StreamExt};
+use zeph_common::math::cosine_similarity;
 
 use crate::tool::McpTool;
 
@@ -286,28 +287,6 @@ impl Default for DiscoveryParams {
     }
 }
 
-// ── Cosine similarity ─────────────────────────────────────────────────────────
-
-/// Compute cosine similarity between two equal-length vectors.
-///
-/// Returns 0.0 if either vector has zero magnitude (avoids NaN).
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len(), "cosine_similarity: dimension mismatch");
-
-    let mut dot = 0.0f32;
-    let mut mag_a = 0.0f32;
-    let mut mag_b = 0.0f32;
-
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        mag_a += x * x;
-        mag_b += y * y;
-    }
-
-    let denom = mag_a.sqrt() * mag_b.sqrt();
-    if denom == 0.0 { 0.0 } else { dot / denom }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -461,29 +440,6 @@ mod tests {
         // Query with 2-dim vector — dimension mismatch, tool must be skipped.
         let result = idx.select(&[1.0, 0.0], 10, 0.0, &[]);
         assert!(result.is_empty(), "dimension mismatch must skip entry");
-    }
-
-    #[test]
-    fn cosine_similarity_identical_vectors() {
-        let v = vec![1.0, 2.0, 3.0];
-        let s = cosine_similarity(&v, &v);
-        assert!((s - 1.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0];
-        let s = cosine_similarity(&a, &b);
-        assert!(s.abs() < 1e-5);
-    }
-
-    #[test]
-    fn cosine_similarity_zero_vector_returns_zero() {
-        let a = vec![0.0, 0.0];
-        let b = vec![1.0, 2.0];
-        let s = cosine_similarity(&a, &b);
-        assert!(s.abs() < f32::EPSILON);
     }
 
     // top_k larger than the number of available tools: must return all tools, not panic.
