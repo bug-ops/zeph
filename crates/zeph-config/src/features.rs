@@ -175,6 +175,11 @@ pub struct SkillsConfig {
     /// Skip RL blending for the first N updates (cold-start warmup).
     #[serde(default = "default_rl_warmup_updates")]
     pub rl_warmup_updates: u32,
+    /// Embedding dimension for the RL routing head.
+    /// Must match the output dimension of the configured embedding provider.
+    /// Defaults to `None` → 1536 (`text-embedding-3-small` output dimension).
+    #[serde(default)]
+    pub rl_embed_dim: Option<usize>,
 
     // --- NL skill generation ---
     /// Provider name for `/skill create` NL generation. Empty = primary provider.

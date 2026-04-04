@@ -82,6 +82,8 @@ pub struct GeneratedSkill {
     pub meta: SkillMeta,
     /// Non-fatal validation warnings (e.g. injection pattern matches).
     pub warnings: Vec<String>,
+    /// True when the scanner detected injection patterns in the generated content.
+    pub has_injection_patterns: bool,
 }
 
 /// Orchestrates the NL-to-SKILL.md generation pipeline.
@@ -307,11 +309,13 @@ fn parse_and_validate(content: &str) -> Result<GeneratedSkill, SkillError> {
         )));
     }
 
+    let has_injection_patterns = fm_scan.has_matches() || body_scan.has_matches();
     Ok(GeneratedSkill {
         name: meta.name.clone(),
         content: content.to_string(),
         meta,
         warnings,
+        has_injection_patterns,
     })
 }
 
@@ -436,6 +440,7 @@ mod tests {
             content: content.clone(),
             meta,
             warnings: vec![],
+            has_injection_patterns: false,
         };
         let path = generator.approve_and_save(&skill).await.unwrap();
         assert!(path.exists());
@@ -462,6 +467,7 @@ mod tests {
             content,
             meta,
             warnings: vec![],
+            has_injection_patterns: false,
         };
         let err = generator.approve_and_save(&skill).await.unwrap_err();
         assert!(matches!(err, SkillError::AlreadyExists(_)));

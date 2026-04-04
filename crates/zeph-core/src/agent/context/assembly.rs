@@ -1336,6 +1336,17 @@ impl<C: Channel> Agent<C> {
                 // SkillOrchestra: RL routing head re-rank (past warmup only).
                 if let Some(rl_head) = &self.skill_state.rl_head
                     && let Ok(query_embed) = self.embedding_provider.embed(query).await
+                    && {
+                        let ok = query_embed.len() == rl_head.embed_dim();
+                        if !ok {
+                            tracing::warn!(
+                                query_dim = query_embed.len(),
+                                head_dim = rl_head.embed_dim(),
+                                "rl_head: embed dim mismatch, skipping RL re-rank this turn"
+                            );
+                        }
+                        ok
+                    }
                 {
                     let rl_weight = self.skill_state.rl_weight;
                     let warmup = self.skill_state.rl_warmup_updates;

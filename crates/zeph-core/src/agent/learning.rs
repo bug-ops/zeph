@@ -783,7 +783,7 @@ impl<C: Channel> Agent<C> {
             allowed_tools: Vec::new(),
         };
 
-        let generated = match generator.generate(request).await {
+        let mut generated = match generator.generate(request).await {
             Ok(g) => g,
             Err(e) => {
                 self.channel
@@ -792,6 +792,31 @@ impl<C: Channel> Agent<C> {
                 return Ok(());
             }
         };
+
+        // Dedup check: compare against existing registry embeddings.
+        if let Some(ref matcher) = self.skill_state.matcher {
+            let skill_text = format!("{} {}", generated.meta.description, generated.content);
+            if let Ok(new_embed) = self.embedding_provider.embed(&skill_text).await {
+                let registry = self.skill_state.registry.read().unwrap();
+                let all_meta = registry.all_meta();
+                let mut best_sim = 0.0_f32;
+                let mut best_name = String::new();
+                for (idx, meta) in all_meta.iter().enumerate() {
+                    if let Some(existing_emb) = matcher.skill_embedding(idx) {
+                        let sim = zeph_common::math::cosine_similarity(&new_embed, existing_emb);
+                        if sim > best_sim {
+                            best_sim = sim;
+                            best_name.clone_from(&meta.name);
+                        }
+                    }
+                }
+                if best_sim > 0.85 {
+                    generated.warnings.push(format!(
+                        "Similar skill exists: **{best_name}** (similarity: {best_sim:.2}). Consider using the existing skill instead."
+                    ));
+                }
+            }
+        }
 
         // Show preview.
         let mut preview = format!(
@@ -806,13 +831,24 @@ impl<C: Channel> Agent<C> {
                 preview.push_str(w);
             }
         }
-        preview.push_str("\n\nType **yes** to save, anything else to discard.");
+        let confirm_text = if generated.has_injection_patterns {
+            "\n\nInjection patterns detected. Type **yes force** to save anyway, anything else to discard."
+        } else {
+            "\n\nType **yes** to save, anything else to discard."
+        };
+        preview.push_str(confirm_text);
         self.channel.send(&preview).await?;
 
         // Wait for confirmation.
         let reply = self.channel.recv().await;
-        let confirmed =
-            matches!(reply, Ok(Some(ref msg)) if msg.text.trim().eq_ignore_ascii_case("yes"));
+        let confirmed = matches!(reply, Ok(Some(ref msg)) if {
+            let trimmed = msg.text.trim();
+            if generated.has_injection_patterns {
+                trimmed.eq_ignore_ascii_case("yes force")
+            } else {
+                trimmed.eq_ignore_ascii_case("yes")
+            }
+        });
 
         if !confirmed {
             self.channel.send("Skill discarded.").await?;

@@ -416,11 +416,15 @@ pub(crate) async fn run_daemon(
 
     // SkillOrchestra: load persisted RL routing head weights if enabled.
     let agent = if config.skills.rl_routing_enabled {
-        if let Some(head) = crate::runner::load_rl_head(&memory).await {
-            agent.with_rl_head(head)
-        } else {
-            agent
-        }
+        let dim = config.skills.rl_embed_dim.unwrap_or(1536);
+        let head = crate::runner::load_rl_head(&memory)
+            .await
+            .unwrap_or_else(|| {
+                // Cold start: no persisted weights yet, initialize a fresh head.
+                tracing::info!(dim, "rl_head: cold start, initializing fresh routing head");
+                zeph_skills::rl_head::RoutingHead::new(dim)
+            });
+        agent.with_rl_head(head)
     } else {
         agent
     };

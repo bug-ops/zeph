@@ -23,6 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(memory): SleepGate forgetting sweep (#2397) — background loop that decays importance scores (synaptic downscaling), restores recently-accessed memories (selective replay), and prunes memories below `forgetting_floor`. Configurable via `[memory.forgetting]`. Disabled by default.
 - feat(memory): performance-floor compression ratio predictor (#2460) — lightweight linear regression model that selects the most aggressive compression ratio keeping predicted probe quality above `hard_fail_threshold`. Training data collected from live compaction probes. Configurable via `[memory.compression.predictor]`. Disabled by default.
 
+### Fixed
+
+- SkillOrchestra RL routing cold start (#2610): when `rl_routing_enabled = true` and no persisted weights exist, initialize a fresh `RoutingHead` instead of skipping RL entirely. Add `skills.rl_embed_dim` config field (default 1536). Add dimension mismatch guard in assembly to skip RL with a warning when embed dim does not match head dim.
+- `/skill create` injection hard block (#2606): if the generated skill contains injection patterns, require `yes force` confirmation instead of plain `yes`. Adds `has_injection_patterns` field to `GeneratedSkill`.
+- `/skill create` dedup against registry (#2609): after generation, embed the new skill and compare cosine similarity against all existing in-memory skill embeddings. If any similarity exceeds 0.85, a warning naming the similar skill is shown in the preview.
+
 ### Security
 - Fix trust level fallback in `format_skills_prompt`: replace `unwrap_or(SkillTrustLevel::Trusted)` with `unwrap_or_default()` (yields `Quarantined`) — unknown skills no longer bypass sanitization (#2506)
 - Add `sanitize_skill_text()` in `zeph-skills/src/prompt.rs`: applies XML tag escaping plus injection marker removal (defense-in-depth) to both `description` and `body` for non-Trusted skills (#2506)

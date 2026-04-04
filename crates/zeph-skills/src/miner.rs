@@ -496,6 +496,7 @@ mod tests {
             content: content.into(),
             meta,
             warnings: vec![],
+            has_injection_patterns: false,
         }
     }
 
