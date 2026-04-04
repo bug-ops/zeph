@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use futures::StreamExt as _;
 use tokio::sync::watch;
 
 use crate::chunker::{ChunkerConfig, CodeChunk, chunk_file};
@@ -18,9 +19,23 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 
 /// Indexer configuration.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct IndexerConfig {
     pub chunker: ChunkerConfig,
+    /// Number of files to process concurrently during `index_project`. Default: 4.
+    pub concurrency: usize,
+    /// Maximum number of new chunks to batch per file into a single Qdrant upsert. Default: 32.
+    pub batch_size: usize,
+}
+
+impl Default for IndexerConfig {
+    fn default() -> Self {
+        Self {
+            chunker: ChunkerConfig::default(),
+            concurrency: 4,
+            batch_size: 32,
+        }
+    }
 }
 
 /// Snapshot of indexing progress, sent via watch channel.
@@ -92,18 +107,49 @@ impl CodeIndexer {
         tracing::info!(total, "indexing started");
 
         let mut current_files: HashSet<String> = HashSet::new();
-
-        for (i, entry) in entries.iter().enumerate() {
-            report.files_scanned += 1;
+        for entry in &entries {
             let rel_path = entry
                 .path()
                 .strip_prefix(root)
                 .unwrap_or(entry.path())
                 .to_string_lossy()
                 .to_string();
-            current_files.insert(rel_path.clone());
+            current_files.insert(rel_path);
+        }
 
-            match self.index_file(entry.path(), &rel_path).await {
+        let concurrency = self.config.concurrency;
+        let store = self.store.clone();
+        let provider = Arc::clone(&self.provider);
+        let config = self.config.clone();
+
+        let mut stream = futures::stream::iter(entries.into_iter().map(|entry| {
+            let store = store.clone();
+            let provider = Arc::clone(&provider);
+            let config = config.clone();
+            let rel_path = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .to_string();
+            let abs_path = entry.path().to_path_buf();
+            async move {
+                let worker = FileIndexWorker {
+                    store,
+                    provider,
+                    config,
+                };
+                let result = worker.index_file(&abs_path, &rel_path).await;
+                (rel_path, result)
+            }
+        }))
+        .buffer_unordered(concurrency);
+
+        let mut files_done = 0usize;
+        while let Some((rel_path, outcome)) = stream.next().await {
+            report.files_scanned += 1;
+            files_done += 1;
+            match outcome {
                 Ok((created, skipped)) => {
                     if created > 0 {
                         report.files_indexed += 1;
@@ -112,7 +158,7 @@ impl CodeIndexer {
                     report.chunks_skipped += skipped;
                     tracing::info!(
                         file = %rel_path,
-                        progress = format_args!("{}/{total}", i + 1),
+                        progress = format_args!("{files_done}/{total}"),
                         created,
                         skipped,
                     );
@@ -123,7 +169,7 @@ impl CodeIndexer {
             }
             if let Some(tx) = progress_tx {
                 let _ = tx.send(IndexProgress {
-                    files_done: i + 1,
+                    files_done,
                     files_total: total,
                     chunks_created: report.chunks_created,
                 });
@@ -157,32 +203,58 @@ impl CodeIndexer {
             .to_string();
 
         self.store.remove_file_chunks(&rel_path).await?;
-        let (created, _) = self.index_file(abs_path, &rel_path).await?;
+        let worker = FileIndexWorker {
+            store: self.store.clone(),
+            provider: Arc::clone(&self.provider),
+            config: self.config.clone(),
+        };
+        let (created, _) = worker.index_file(abs_path, &rel_path).await?;
         Ok(created)
     }
+}
 
+/// Per-file indexing worker — cloneable and `Send` so it can run inside `buffer_unordered`.
+struct FileIndexWorker {
+    store: CodeStore,
+    provider: Arc<AnyProvider>,
+    config: IndexerConfig,
+}
+
+impl FileIndexWorker {
+    /// Embed and upsert all new chunks from a single file.
+    ///
+    /// New chunks (those not already in the store) are accumulated, embedded in order, and
+    /// upserted in a single batch call to minimise round-trips to `Qdrant` and `SQLite`.
     async fn index_file(&self, abs_path: &Path, rel_path: &str) -> Result<(usize, usize)> {
         let source = tokio::fs::read_to_string(abs_path).await?;
         let lang = detect_language(abs_path).ok_or(IndexError::UnsupportedLanguage)?;
 
         let chunks = chunk_file(&source, rel_path, lang, &self.config.chunker)?;
 
-        let mut created = 0usize;
+        let mut new_chunks: Vec<CodeChunk> = Vec::new();
         let mut skipped = 0usize;
 
-        for chunk in &chunks {
+        for chunk in chunks {
             if self.store.chunk_exists(&chunk.content_hash).await? {
                 skipped += 1;
-                continue;
+            } else {
+                new_chunks.push(chunk);
             }
+        }
 
+        if new_chunks.is_empty() {
+            return Ok((0, skipped));
+        }
+
+        // Embed all new chunks and collect (insert, vector) pairs for batched upsert.
+        let mut batch: Vec<(ChunkInsert<'_>, Vec<f32>)> = Vec::with_capacity(new_chunks.len());
+        for chunk in &new_chunks {
             let embedding_text = contextualize_for_embedding(chunk);
             let vector = self.provider.embed(&embedding_text).await?;
-
-            let insert = chunk_to_insert(chunk);
-            self.store.upsert_chunk(&insert, vector).await?;
-            created += 1;
+            batch.push((chunk_to_insert(chunk), vector));
         }
+
+        let created = self.store.upsert_chunks_batch(batch).await?.len();
 
         if created > 0 {
             tracing::debug!("{rel_path}: {created} chunks indexed, {skipped} unchanged");
@@ -290,6 +362,19 @@ mod tests {
     fn default_config() {
         let config = IndexerConfig::default();
         assert_eq!(config.chunker.target_size, 600);
+        assert_eq!(config.concurrency, 4);
+        assert_eq!(config.batch_size, 32);
+    }
+
+    #[test]
+    fn indexer_config_custom_concurrency_and_batch_size() {
+        let config = IndexerConfig {
+            concurrency: 8,
+            batch_size: 64,
+            ..IndexerConfig::default()
+        };
+        assert_eq!(config.concurrency, 8);
+        assert_eq!(config.batch_size, 64);
     }
 
     #[test]

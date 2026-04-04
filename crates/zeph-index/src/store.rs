@@ -134,6 +134,87 @@ impl CodeStore {
         Ok(point_id)
     }
 
+    /// Upsert multiple chunks into both `Qdrant` and `SQLite` in a single batch.
+    ///
+    /// All vector points are sent to `Qdrant` in one request and all metadata rows are inserted
+    /// in a single `SQLite` transaction, reducing per-chunk overhead during full-project indexing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `Qdrant` or `SQLite` operations fail.
+    pub async fn upsert_chunks_batch(
+        &self,
+        chunks: Vec<(ChunkInsert<'_>, Vec<f32>)>,
+    ) -> Result<Vec<String>> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut point_ids: Vec<String> = Vec::with_capacity(chunks.len());
+        let mut points: Vec<VectorPoint> = Vec::with_capacity(chunks.len());
+
+        for (chunk, vector) in &chunks {
+            let point_id = uuid::Uuid::new_v4().to_string();
+
+            let payload = serde_json::json!({
+                "file_path": chunk.file_path,
+                "language": chunk.language,
+                "node_type": chunk.node_type,
+                "entity_name": chunk.entity_name,
+                "line_start": chunk.line_start,
+                "line_end": chunk.line_end,
+                "code": chunk.code,
+                "scope_chain": chunk.scope_chain,
+                "content_hash": chunk.content_hash,
+            });
+
+            let payload_map = match payload {
+                serde_json::Value::Object(m) => m.into_iter().collect(),
+                _ => std::collections::HashMap::new(),
+            };
+
+            points.push(VectorPoint {
+                id: point_id.clone(),
+                vector: vector.clone(),
+                payload: payload_map,
+            });
+            point_ids.push(point_id);
+        }
+
+        VectorStore::upsert(&self.ops, &self.collection, points).await?;
+
+        let mut tx = self.pool.begin().await?;
+        for (idx, (chunk, _)) in chunks.iter().enumerate() {
+            let point_id = &point_ids[idx];
+            let line_start = i64::try_from(chunk.line_start)?;
+            let line_end = i64::try_from(chunk.line_end)?;
+
+            zeph_db::query(
+                sql!("INSERT INTO chunk_metadata \
+                 (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type, entity_name) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(qdrant_id) DO UPDATE SET \
+                   file_path = excluded.file_path, content_hash = excluded.content_hash, \
+                   line_start = excluded.line_start, line_end = excluded.line_end, \
+                   language = excluded.language, node_type = excluded.node_type, \
+                   entity_name = excluded.entity_name"),
+            )
+            .bind(point_id)
+            .bind(chunk.file_path)
+            .bind(chunk.content_hash)
+            .bind(line_start)
+            .bind(line_end)
+            .bind(chunk.language)
+            .bind(chunk.node_type)
+            .bind(chunk.entity_name)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+
+        Ok(point_ids)
+    }
+
     /// Check if a chunk with this content hash already exists.
     ///
     /// # Errors

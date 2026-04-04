@@ -9,9 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - TUI: slash-command autocomplete dropdown in Insert mode (#2642)
+- `IndexConfig`: new `workspace_root` (`Option<PathBuf>`), `concurrency` (default 4), and `batch_size` (default 32) config fields (#2646); `workspace_root` overrides the previous hard-coded `current_dir()` fallback so the indexer targets the configured project root.
+- `IndexerConfig`: `concurrency` and `batch_size` fields mirror the new `IndexConfig` fields and are passed through from `apply_code_indexer`.
 
 ### Fixed
 
+- **Code indexer always indexed `current_dir` regardless of config** (`#2646`): `apply_code_indexer` now resolves `workspace_root` from `IndexConfig` (canonicalized) and falls back to `current_dir()` only when the field is `None`. Both the background indexing task and the file watcher use the same resolved root.
+- **Sequential per-chunk Qdrant upserts caused slow full-project indexing** (`#2647`): `index_project` now processes files concurrently via `futures::stream::buffer_unordered(concurrency)`. Within each file, new chunks are collected, embedded in order, and upserted in a single batched `Qdrant` call + single `SQLite` transaction via the new `CodeStore::upsert_chunks_batch` method, reducing per-chunk overhead significantly.
 - **MCP server instructions not injected into system prompt** (`#2637`): `append_mcp_prompt` now collects server-level instructions from all connected MCP servers via `McpManager::all_server_instructions()` and prepends them to the system prompt on every turn, regardless of whether the provider supports native tool_use. Added `all_server_instructions()` helper to `McpManager` that returns all stored instructions concatenated in stable order.
 - **Utility gate explicit-request bypass** (`#2636`): when the user message contains an unambiguous tool-invocation phrase (e.g. "using a tool", "call the X tool", "run the X tool"), the utility gate now sets `user_requested = true` and routes directly to `ToolCall`, bypassing the Retrieve→Respond cycle that previously caused the agent to respond with "I'm unable to use tools". Detection uses a LazyLock regex on the last user `MessagePart::Text` only — never on LLM call content or tool outputs, preserving the existing prompt-injection bypass protection.
 - **ML classifier false-positive on utility gate synthetic output** (`#2635`): `sanitize_tool_output` now skips the ML injection classifier for bodies that start with `[skipped]` or `[stopped]`. These strings are produced internally by the utility gate and are trusted content; classifying them produced noisy `WARN` log entries and incremented `classifier_tool_suspicious` metrics, which could mask real injection events.

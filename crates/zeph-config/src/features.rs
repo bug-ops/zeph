@@ -56,6 +56,14 @@ fn default_index_max_chunks() -> usize {
     12
 }
 
+fn default_index_concurrency() -> usize {
+    4
+}
+
+fn default_index_batch_size() -> usize {
+    32
+}
+
 fn default_index_score_threshold() -> f32 {
     0.25
 }
@@ -255,6 +263,16 @@ pub struct IndexConfig {
     /// uses on-demand tool calls instead.
     #[serde(default)]
     pub mcp_enabled: bool,
+    /// Root directory to index. When `None`, falls back to the current working directory at
+    /// startup. Relative paths are resolved relative to the process working directory.
+    #[serde(default)]
+    pub workspace_root: Option<std::path::PathBuf>,
+    /// Number of files to process concurrently during initial indexing. Default: 4.
+    #[serde(default = "default_index_concurrency")]
+    pub concurrency: usize,
+    /// Maximum number of new chunks to batch into a single Qdrant upsert per file. Default: 32.
+    #[serde(default = "default_index_batch_size")]
+    pub batch_size: usize,
 }
 
 impl Default for IndexConfig {
@@ -269,6 +287,9 @@ impl Default for IndexConfig {
             repo_map_tokens: default_index_repo_map_tokens(),
             repo_map_ttl_secs: default_repo_map_ttl_secs(),
             mcp_enabled: false,
+            workspace_root: None,
+            concurrency: default_index_concurrency(),
+            batch_size: default_index_batch_size(),
         }
     }
 }
@@ -420,6 +441,68 @@ pub struct ScheduledTaskConfig {
     pub kind: ScheduledTaskKind,
     #[serde(default)]
     pub config: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_config_defaults() {
+        let cfg = IndexConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.search_enabled);
+        assert!(cfg.watch);
+        assert_eq!(cfg.concurrency, 4);
+        assert_eq!(cfg.batch_size, 32);
+        assert!(cfg.workspace_root.is_none());
+    }
+
+    #[test]
+    fn index_config_serde_roundtrip_with_new_fields() {
+        let toml = r#"
+            enabled = true
+            concurrency = 8
+            batch_size = 16
+            workspace_root = "/tmp/myproject"
+        "#;
+        let cfg: IndexConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.concurrency, 8);
+        assert_eq!(cfg.batch_size, 16);
+        assert_eq!(
+            cfg.workspace_root,
+            Some(std::path::PathBuf::from("/tmp/myproject"))
+        );
+        // Re-serialize and deserialize
+        let serialized = toml::to_string(&cfg).unwrap();
+        let cfg2: IndexConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(cfg2.concurrency, 8);
+        assert_eq!(cfg2.batch_size, 16);
+    }
+
+    #[test]
+    fn index_config_backward_compat_old_toml_without_new_fields() {
+        // Old config without workspace_root, concurrency, batch_size — must still parse
+        // and use defaults for the missing fields.
+        let toml = "
+            enabled = true
+            max_chunks = 20
+            score_threshold = 0.3
+        ";
+        let cfg: IndexConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_chunks, 20);
+        assert!(cfg.workspace_root.is_none());
+        assert_eq!(cfg.concurrency, 4);
+        assert_eq!(cfg.batch_size, 32);
+    }
+
+    #[test]
+    fn index_config_workspace_root_none_by_default() {
+        let cfg: IndexConfig = toml::from_str("enabled = false").unwrap();
+        assert!(cfg.workspace_root.is_none());
+    }
 }
 
 fn default_trace_service_name() -> String {
