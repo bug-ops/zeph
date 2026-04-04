@@ -323,6 +323,10 @@ pub(crate) enum MemoryCommand {
         /// Input file path
         path: PathBuf,
     },
+    /// Run the `SleepGate` forgetting sweep once and print the result
+    ForgettingSweep,
+    /// Show compression predictor status (sample count, weights summary)
+    PredictorStatus,
 }
 
 #[derive(Subcommand)]

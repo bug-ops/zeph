@@ -1560,6 +1560,7 @@ mod tests {
             focus_scorer_provider: zeph_config::ProviderName::default(),
             high_density_budget: 0.7,
             low_density_budget: 0.3,
+            predictor: Default::default(),
         };
         let agent = make_agent().with_compression(compression);
         assert!(

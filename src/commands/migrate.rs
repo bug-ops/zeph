@@ -6,8 +6,9 @@ use std::path::Path;
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
     ConfigMigrator, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_database_url, migrate_mcp_trust_levels, migrate_planner_model_to_provider,
-    migrate_shell_transactional, migrate_stt_to_provider,
+    migrate_compression_predictor_config, migrate_database_url, migrate_forgetting_config,
+    migrate_mcp_trust_levels, migrate_planner_model_to_provider, migrate_shell_transactional,
+    migrate_stt_to_provider,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -56,9 +57,17 @@ pub(crate) fn handle_migrate_config(
     let budget_hint_result = migrate_agent_budget_hint(&after_shell_txn)?;
     let after_budget_hint = budget_hint_result.output;
 
-    // Step 8: add missing default keys as commented-out entries.
+    // Step 8: add commented-out [memory.forgetting] section if absent (#2397).
+    let forgetting_result = migrate_forgetting_config(&after_budget_hint)?;
+    let after_forgetting = forgetting_result.output;
+
+    // Step 9: add commented-out [memory.compression.predictor] block if absent (#2460).
+    let predictor_result = migrate_compression_predictor_config(&after_forgetting)?;
+    let after_predictor = predictor_result.output;
+
+    // Step 10: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_budget_hint)?;
+    let result = migrator.migrate(&after_predictor)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -89,6 +98,14 @@ pub(crate) fn handle_migrate_config(
         }
         if budget_hint_result.added_count > 0 {
             eprintln!("Budget hint migration: added commented-out budget_hint_enabled to [agent].");
+        }
+        if forgetting_result.added_count > 0 {
+            eprintln!("Forgetting migration: added commented-out [memory.forgetting] section.");
+        }
+        if predictor_result.added_count > 0 {
+            eprintln!(
+                "Predictor migration: added commented-out [memory.compression.predictor] block."
+            );
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

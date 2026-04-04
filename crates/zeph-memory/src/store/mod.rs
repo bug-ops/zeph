@@ -4,6 +4,7 @@
 mod acp_sessions;
 pub mod admission_training;
 pub mod compression_guidelines;
+pub mod compression_predictor;
 pub mod corrections;
 pub mod experiments;
 pub mod graph_store;

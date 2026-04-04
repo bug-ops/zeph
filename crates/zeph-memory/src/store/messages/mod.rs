@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[allow(unused_imports)]
+use zeph_common;
 use zeph_db::ActiveDialect;
 use zeph_db::fts::sanitize_fts_query;
 #[allow(unused_imports)]
@@ -1341,6 +1343,198 @@ impl SqliteStore {
 
         tx.commit().await?;
         Ok(true)
+    }
+
+    // ── Forgetting sweep helpers ───────────────────────────────────────────────
+
+    /// Set `importance_score` for a single message by ID.
+    ///
+    /// Used in tests and by forgetting sweep helpers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn set_importance_score(&self, id: MessageId, score: f64) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "UPDATE messages SET importance_score = ? WHERE id = ? AND deleted_at IS NULL"
+        ))
+        .bind(score)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Get `importance_score` for a single message by ID.
+    ///
+    /// Returns `None` if the message does not exist or is deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn get_importance_score(&self, id: MessageId) -> Result<Option<f64>, MemoryError> {
+        let row: Option<(f64,)> = zeph_db::query_as(sql!(
+            "SELECT importance_score FROM messages WHERE id = ? AND deleted_at IS NULL"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(s,)| s))
+    }
+
+    /// Increment `access_count` and update `last_accessed` for a batch of messages.
+    ///
+    /// Alias used in forgetting tests; forwards to `increment_access_counts`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn batch_increment_access_count(&self, ids: &[MessageId]) -> Result<(), MemoryError> {
+        self.increment_access_counts(ids).await
+    }
+
+    /// Mark a set of messages as consolidated (`consolidated = 1`).
+    ///
+    /// Used in tests to simulate the state after consolidation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn mark_messages_consolidated(&self, ids: &[i64]) -> Result<(), MemoryError> {
+        for &id in ids {
+            zeph_db::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Execute the three-phase forgetting sweep (`SleepGate`) inside a single transaction.
+    ///
+    /// **Phase 1** — Downscale all active non-consolidated importance scores by `decay_rate`.
+    /// **Phase 2** — Undo the decay for messages accessed within `replay_window_hours` or
+    ///   with `access_count >= replay_min_access_count` (undo current sweep's decay only).
+    /// **Phase 3** — Soft-delete messages below `forgetting_floor` that are not protected
+    ///   by recent access (`protect_recent_hours`) or high access count
+    ///   (`protect_min_access_count`). Uses `batch_size` as a row-count cap.
+    ///
+    /// All phases commit atomically: concurrent readers see either the pre-sweep or
+    /// post-sweep state, never an intermediate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database operation fails.
+    pub async fn run_forgetting_sweep_tx(
+        &self,
+        config: &zeph_common::config::memory::ForgettingConfig,
+    ) -> Result<crate::forgetting::ForgettingResult, MemoryError> {
+        let mut tx = self.pool.begin().await?;
+
+        let decay = f64::from(config.decay_rate);
+        let floor = f64::from(config.forgetting_floor);
+        let batch = i64::try_from(config.sweep_batch_size).unwrap_or(i64::MAX);
+        let replay_hours = i64::from(config.replay_window_hours);
+        let replay_min_access = i64::from(config.replay_min_access_count);
+        let protect_hours = i64::from(config.protect_recent_hours);
+        let protect_min_access = i64::from(config.protect_min_access_count);
+
+        // Phase 1: downscale all active, non-consolidated messages (limited to batch_size).
+        // We target a specific set of IDs to respect sweep_batch_size.
+        let candidate_ids: Vec<(MessageId,)> = zeph_db::query_as(sql!(
+            "SELECT id FROM messages \
+             WHERE deleted_at IS NULL AND consolidated = 0 \
+             ORDER BY importance_score ASC \
+             LIMIT ?"
+        ))
+        .bind(batch)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        #[allow(clippy::cast_possible_truncation)]
+        let downscaled = candidate_ids.len() as u32;
+
+        if downscaled > 0 {
+            let placeholders: String = candidate_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let downscale_sql = format!(
+                "UPDATE messages SET importance_score = importance_score * (1.0 - {decay}) \
+                 WHERE id IN ({placeholders})"
+            );
+            let mut q = zeph_db::query(&downscale_sql);
+            for &(id,) in &candidate_ids {
+                q = q.bind(id);
+            }
+            q.execute(&mut *tx).await?;
+        }
+
+        // Phase 2: selective replay — undo decay for recently-accessed messages.
+        // Formula: score / (1 - decay_rate) restores the current sweep's downscaling.
+        // Cap at 1.0 to avoid exceeding the maximum importance score.
+        // Scoped to the Phase 1 batch only: messages not decayed this sweep must not
+        // have their scores inflated by the inverse formula.
+        let replayed = if downscaled > 0 {
+            let replay_placeholders: String = candidate_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let replay_sql = format!(
+                "UPDATE messages \
+                 SET importance_score = MIN(1.0, importance_score / (1.0 - {decay})) \
+                 WHERE id IN ({replay_placeholders}) \
+                 AND (\
+                     (last_accessed IS NOT NULL \
+                      AND last_accessed >= datetime('now', '-' || ? || ' hours')) \
+                     OR access_count >= ?\
+                 )"
+            );
+            let mut rq = zeph_db::query(&replay_sql);
+            for &(id,) in &candidate_ids {
+                rq = rq.bind(id);
+            }
+            let replay_result = rq
+                .bind(replay_hours)
+                .bind(replay_min_access)
+                .execute(&mut *tx)
+                .await?;
+            #[allow(clippy::cast_possible_truncation)]
+            let n = replay_result.rows_affected() as u32;
+            n
+        } else {
+            0
+        };
+
+        // Phase 3: targeted forgetting — soft-delete low-score unprotected messages.
+        let prune_sql = format!(
+            "UPDATE messages \
+             SET deleted_at = CURRENT_TIMESTAMP \
+             WHERE deleted_at IS NULL AND consolidated = 0 \
+             AND importance_score < {floor} \
+             AND (\
+                 last_accessed IS NULL \
+                 OR last_accessed < datetime('now', '-' || ? || ' hours')\
+             ) \
+             AND access_count < ?"
+        );
+        let prune_result = zeph_db::query(&prune_sql)
+            .bind(protect_hours)
+            .bind(protect_min_access)
+            .execute(&mut *tx)
+            .await?;
+        #[allow(clippy::cast_possible_truncation)]
+        let pruned = prune_result.rows_affected() as u32;
+
+        tx.commit().await?;
+
+        Ok(crate::forgetting::ForgettingResult {
+            downscaled,
+            replayed,
+            pruned,
+        })
     }
 }
 

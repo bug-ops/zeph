@@ -1320,6 +1320,12 @@ impl App {
             TuiCommand::ViewGuidelines => {
                 let _ = self.user_input_tx.try_send("/guidelines".to_owned());
             }
+            TuiCommand::ForgettingSweep => {
+                let _ = self.user_input_tx.try_send("/forgetting-sweep".to_owned());
+            }
+            TuiCommand::PredictorStatus => {
+                let _ = self.user_input_tx.try_send("/predictor-status".to_owned());
+            }
             _ => {}
         }
     }

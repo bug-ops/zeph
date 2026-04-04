@@ -777,6 +777,12 @@ pub struct MemoryConfig {
     /// messages and merges them into consolidated entries via LLM.
     #[serde(default)]
     pub consolidation: ConsolidationConfig,
+    /// `SleepGate` forgetting sweep (#2397).
+    ///
+    /// When `forgetting.enabled = true`, a background loop periodically decays importance
+    /// scores and prunes memories below the forgetting floor.
+    #[serde(default)]
+    pub forgetting: ForgettingConfig,
     /// `PostgreSQL` connection URL.
     ///
     /// Used when the binary is compiled with `--features postgres`.
@@ -1034,6 +1040,84 @@ fn default_low_density_budget() -> f32 {
     0.3
 }
 
+/// Configuration for the performance-floor compression ratio predictor (#2460).
+///
+/// When `enabled = true`, before hard compaction the predictor selects the most aggressive
+/// compression ratio that keeps the predicted probe score above `probe.hard_fail_threshold`.
+/// Requires enough training data (`min_samples`) before activating — during cold start the
+/// predictor returns `None` and default behavior applies.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CompressionPredictorConfig {
+    /// Enable the adaptive compression ratio predictor. Default: `false`.
+    pub enabled: bool,
+    /// Minimum training samples before the predictor activates. Default: `10`.
+    pub min_samples: u64,
+    /// Candidate compression ratios evaluated from most to least aggressive.
+    /// Default: `[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`.
+    pub candidate_ratios: Vec<f32>,
+    /// Retrain the model after this many new samples. Default: `5`.
+    pub retrain_interval: u64,
+    /// Maximum training samples to retain (sliding window). Default: `200`.
+    pub max_training_samples: usize,
+}
+
+impl Default for CompressionPredictorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_samples: 10,
+            candidate_ratios: vec![0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+            retrain_interval: 5,
+            max_training_samples: 200,
+        }
+    }
+}
+
+/// Configuration for the `SleepGate` forgetting sweep (#2397).
+///
+/// When `enabled = true`, a background loop periodically decays importance scores
+/// (synaptic downscaling), restores recently-accessed memories (selective replay),
+/// and prunes memories below `forgetting_floor` (targeted forgetting).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ForgettingConfig {
+    /// Enable the `SleepGate` forgetting sweep. Default: `false`.
+    pub enabled: bool,
+    /// Per-sweep decay rate applied to importance scores. Range: (0.0, 1.0). Default: `0.1`.
+    pub decay_rate: f32,
+    /// Importance floor below which memories are pruned. Range: [0.0, 1.0]. Default: `0.05`.
+    pub forgetting_floor: f32,
+    /// How often the forgetting sweep runs, in seconds. Default: `7200`.
+    pub sweep_interval_secs: u64,
+    /// Maximum messages to process per sweep. Default: `500`.
+    pub sweep_batch_size: usize,
+    /// Hours: messages accessed within this window get replay protection. Default: `24`.
+    pub replay_window_hours: u32,
+    /// Messages with `access_count` >= this get replay protection. Default: `3`.
+    pub replay_min_access_count: u32,
+    /// Hours: never prune messages accessed within this window. Default: `24`.
+    pub protect_recent_hours: u32,
+    /// Never prune messages with `access_count` >= this. Default: `3`.
+    pub protect_min_access_count: u32,
+}
+
+impl Default for ForgettingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            decay_rate: 0.1,
+            forgetting_floor: 0.05,
+            sweep_interval_secs: 7200,
+            sweep_batch_size: 500,
+            replay_window_hours: 24,
+            replay_min_access_count: 3,
+            protect_recent_hours: 24,
+            protect_min_access_count: 3,
+        }
+    }
+}
+
 /// Configuration for active context compression (#1161).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -1074,6 +1158,9 @@ pub struct CompressionConfig {
     /// Must sum to 1.0 with `high_density_budget`. Default: `0.3`.
     #[serde(default = "default_low_density_budget")]
     pub low_density_budget: f32,
+    /// Performance-floor compression ratio predictor (#2460).
+    #[serde(default)]
+    pub predictor: CompressionPredictorConfig,
 }
 
 fn default_sidequest_interval_turns() -> u32 {

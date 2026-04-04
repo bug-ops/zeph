@@ -1519,6 +1519,112 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
     })
 }
 
+/// Add a commented-out `[memory.forgetting]` section if absent (#2397).
+///
+/// All forgetting fields have `#[serde(default)]` so existing configs parse without changes.
+/// This step surfaces the new section for users upgrading from older configs.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    use toml_edit::{Item, Table};
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    // If [memory] does not exist, create it so we can check for [memory.forgetting].
+    if !doc.contains_key("memory") {
+        doc.insert("memory", Item::Table(Table::new()));
+    }
+
+    let memory = doc
+        .get_mut("memory")
+        .and_then(Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
+
+    if memory.contains_key("forgetting") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "# SleepGate forgetting sweep (#2397). Disabled by default.\n\
+         # [memory.forgetting]\n\
+         # enabled = false\n\
+         # decay_rate = 0.1                   # per-sweep importance decay\n\
+         # forgetting_floor = 0.05            # prune below this score\n\
+         # sweep_interval_secs = 7200         # run every 2 hours\n\
+         # sweep_batch_size = 500\n\
+         # protect_recent_hours = 24\n\
+         # protect_min_access_count = 3\n";
+    append_comment_to_table_suffix(memory, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["memory.forgetting".to_owned()],
+    })
+}
+
+/// Add a commented-out `[memory.compression.predictor]` block if absent (#2460).
+///
+/// All predictor fields have `#[serde(default)]` so existing configs parse without changes.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_compression_predictor_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    use toml_edit::{Item, Table};
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    // Ensure [memory] and [memory.compression] exist.
+    if !doc.contains_key("memory") {
+        doc.insert("memory", Item::Table(Table::new()));
+    }
+    let memory = doc
+        .get_mut("memory")
+        .and_then(Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
+
+    if !memory.contains_key("compression") {
+        memory.insert("compression", Item::Table(Table::new()));
+    }
+    let compression = memory
+        .get_mut("compression")
+        .and_then(Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[memory.compression] is not a table",
+        ))?;
+
+    if compression.contains_key("predictor") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "# Performance-floor compression ratio predictor (#2460). Disabled by default.\n\
+         # [memory.compression.predictor]\n\
+         # enabled = false\n\
+         # min_samples = 10                                             # cold-start threshold\n\
+         # candidate_ratios = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]\n\
+         # retrain_interval = 5\n\
+         # max_training_samples = 200\n";
+    append_comment_to_table_suffix(compression, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["memory.compression.predictor".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {

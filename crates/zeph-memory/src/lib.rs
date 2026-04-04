@@ -8,8 +8,10 @@ pub mod admission_rl;
 pub mod anchored_summary;
 pub mod compaction_probe;
 pub mod compression_guidelines;
+pub mod compression_predictor;
 pub mod consolidation;
 pub mod document;
+pub mod forgetting;
 pub mod scenes;
 pub mod tiers;
 
@@ -47,6 +49,9 @@ pub use compression_guidelines::{
     build_guidelines_update_prompt, sanitize_guidelines, start_guidelines_updater,
     truncate_to_token_budget, update_guidelines_once,
 };
+pub use compression_predictor::{
+    CompressionFeatures, CompressionModelWeights, CompressionPredictor,
+};
 pub use consolidation::{
     ConsolidationConfig, ConsolidationResult, TopologyOp, start_consolidation_loop,
 };
@@ -62,6 +67,7 @@ pub use embedding_registry::{
 pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
 pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy, start_eviction_loop};
+pub use forgetting::{ForgettingConfig, ForgettingResult, start_forgetting_loop};
 pub use graph::{
     BeliefRevisionConfig, Community, Edge, EdgeType, Entity, EntityType, GraphFact, GraphStore,
     RpeRouter, RpeSignal, extract_candidate_entities,

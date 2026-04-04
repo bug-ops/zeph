@@ -75,6 +75,10 @@ pub enum TuiCommand {
     ViewGuidelines,
     // Think-Augmented Function Calling
     TafcStatus,
+    // SleepGate forgetting sweep
+    ForgettingSweep,
+    // Compression ratio predictor
+    PredictorStatus,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -285,6 +289,20 @@ fn build_infra_commands() -> Vec<CommandEntry> {
             category: "tools",
             shortcut: None,
             command: TuiCommand::TafcStatus,
+        },
+        CommandEntry {
+            id: "memory:forgetting-sweep",
+            label: "Run forgetting sweep once (/forgetting-sweep)",
+            category: "memory",
+            shortcut: None,
+            command: TuiCommand::ForgettingSweep,
+        },
+        CommandEntry {
+            id: "memory:predictor-status",
+            label: "Show compression predictor status (/predictor-status)",
+            category: "memory",
+            shortcut: None,
+            command: TuiCommand::PredictorStatus,
         },
     ]
 }
@@ -554,8 +572,9 @@ mod tests {
     #[test]
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
-        // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status = 35
-        assert_eq!(extra_command_registry().len(), 35);
+        // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
+        // + 1 forgetting-sweep + 1 predictor-status = 37
+        assert_eq!(extra_command_registry().len(), 37);
     }
 
     #[test]

@@ -214,6 +214,7 @@ impl Default for Config {
                 context_strategy: crate::memory::ContextStrategy::default(),
                 crossover_turn_threshold: 20,
                 consolidation: crate::memory::ConsolidationConfig::default(),
+                forgetting: crate::memory::ForgettingConfig::default(),
                 database_url: None,
                 store_routing: crate::memory::StoreRoutingConfig::default(),
             },

@@ -838,6 +838,29 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             consolidation_cancel,
         )
     };
+    let _forgetting_handle = {
+        let forgetting_cancel = zeph_memory::CancellationToken::new();
+        let forgetting_cancel_clone = forgetting_cancel.clone();
+        let mut shutdown_for_forgetting = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = shutdown_for_forgetting.changed().await;
+            forgetting_cancel_clone.cancel();
+        });
+        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+        let forgetting_cfg = zeph_memory::ForgettingConfig {
+            enabled: config.memory.forgetting.enabled,
+            decay_rate: config.memory.forgetting.decay_rate,
+            forgetting_floor: config.memory.forgetting.forgetting_floor,
+            sweep_interval_secs: config.memory.forgetting.sweep_interval_secs,
+            sweep_batch_size: config.memory.forgetting.sweep_batch_size,
+            replay_window_hours: config.memory.forgetting.replay_window_hours,
+            replay_min_access_count: config.memory.forgetting.replay_min_access_count,
+            protect_recent_hours: config.memory.forgetting.protect_recent_hours,
+            protect_min_access_count: config.memory.forgetting.protect_min_access_count,
+        };
+        zeph_memory::start_forgetting_loop(sqlite_store, forgetting_cfg, forgetting_cancel)
+    };
+
     let _guidelines_handle = if config.memory.compression_guidelines.enabled {
         let guidelines_cancel = zeph_memory::CancellationToken::new();
         let guidelines_cancel_clone = guidelines_cancel.clone();

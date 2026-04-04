@@ -665,11 +665,22 @@ disambiguation_threshold = 0.25
 cosine_weight = 0.7
 ";
         // Wrap in a full Config to exercise the nested paths.
-        let wrapped = format!("{}\n{}", toml, "[memory.semantic]\nmmr_lambda = 0.7\n");
+        let wrapped = format!(
+            "{}\n{}",
+            toml,
+            r"[memory.semantic]
+mmr_lambda = 0.7
+"
+        );
         // We only need the sub-structs to round-trip; build minimal wrappers.
-        let router: crate::providers::RouterConfig =
-            toml::from_str("[reputation]\nenabled = true\ndecay_factor = 0.95\nweight = 0.3\n")
-                .expect("RouterConfig with float fields must deserialise");
+        let router: crate::providers::RouterConfig = toml::from_str(
+            r"[reputation]
+enabled = true
+decay_factor = 0.95
+weight = 0.3
+",
+        )
+        .expect("RouterConfig with float fields must deserialise");
         assert!((router.reputation.unwrap().decay_factor - 0.95).abs() < f64::EPSILON);
 
         let bandit: crate::providers::BanditConfig =

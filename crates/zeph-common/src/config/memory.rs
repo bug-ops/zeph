@@ -41,3 +41,42 @@ pub struct ConsolidationConfig {
     pub sweep_batch_size: usize,
     pub similarity_threshold: f32,
 }
+
+/// Runtime config for the forgetting sweep (#2397).
+#[derive(Debug, Clone)]
+pub struct ForgettingConfig {
+    /// Enable the forgetting sweep.
+    pub enabled: bool,
+    /// Per-sweep decay rate applied to importance scores. Range: (0.0, 1.0).
+    pub decay_rate: f32,
+    /// Importance floor below which memories are pruned. Range: [0.0, 1.0].
+    pub forgetting_floor: f32,
+    /// How often the forgetting sweep runs, in seconds.
+    pub sweep_interval_secs: u64,
+    /// Maximum messages to process per sweep.
+    pub sweep_batch_size: usize,
+    /// Hours: messages accessed within this window get replay protection.
+    pub replay_window_hours: u32,
+    /// Messages with `access_count` >= this get replay protection.
+    pub replay_min_access_count: u32,
+    /// Hours: never prune messages accessed within this window.
+    pub protect_recent_hours: u32,
+    /// Never prune messages with `access_count` >= this.
+    pub protect_min_access_count: u32,
+}
+
+impl Default for ForgettingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            decay_rate: 0.1,
+            forgetting_floor: 0.05,
+            sweep_interval_secs: 7200,
+            sweep_batch_size: 500,
+            replay_window_hours: 24,
+            replay_min_access_count: 3,
+            protect_recent_hours: 24,
+            protect_min_access_count: 3,
+        }
+    }
+}

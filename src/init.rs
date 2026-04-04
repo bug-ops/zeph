@@ -176,6 +176,10 @@ pub(crate) struct WizardState {
     pub(crate) file_allow_read: Vec<String>,
     // Budget hint injection (#2267)
     pub(crate) budget_hint_enabled: bool,
+    // SleepGate forgetting sweep (#2397)
+    pub(crate) forgetting_enabled: bool,
+    // Compression ratio predictor (#2460)
+    pub(crate) compression_predictor_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -309,6 +313,8 @@ impl Default for WizardState {
             file_deny_read: Vec::new(),
             file_allow_read: Vec::new(),
             budget_hint_enabled: true,
+            forgetting_enabled: false,
+            compression_predictor_enabled: false,
         }
     }
 }
@@ -780,6 +786,22 @@ fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
             .validate_with(|v: &u32| if *v >= 1 { Ok(()) } else { Err("must be >= 1") })
             .interact_text()?;
     }
+
+    state.forgetting_enabled = Confirm::new()
+        .with_prompt(
+            "Enable SleepGate forgetting sweep? \
+             (background decay + pruning of low-importance memories)",
+        )
+        .default(false)
+        .interact()?;
+
+    state.compression_predictor_enabled = Confirm::new()
+        .with_prompt(
+            "Enable compression ratio predictor? \
+             (adaptive compaction quality, requires enough probe data to activate)",
+        )
+        .default(false)
+        .interact()?;
 
     let strategy_options = &[
         "reactive (oldest-first, default)",
@@ -1354,6 +1376,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             }
         }
     }
+
+    config.memory.forgetting.enabled = state.forgetting_enabled;
+    config.memory.compression.predictor.enabled = state.compression_predictor_enabled;
 
     config
 }
