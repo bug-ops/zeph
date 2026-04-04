@@ -141,3 +141,27 @@ correction_min_similarity = 0.75
 ```
 
 Keep `auto_activate = false` until you have enough history to trust the LLM-generated improvements.
+
+## Step 5 -- Enable D2Skill Step-Level Correction (Optional)
+
+D2Skill extends the improvement pipeline with targeted step-level error correction. Instead of regenerating an entire skill after failures, D2Skill identifies the specific failing step and corrects only that step:
+
+```toml
+[skills.learning]
+d2skill_enabled = true         # Enable step-level error correction (default: false)
+```
+
+This reduces LLM cost during improvement cycles and preserves working steps within multi-step skills.
+
+## Step 6 -- Enable SkillOrchestra RL Routing (Optional)
+
+When you have 10+ skills with overlapping descriptions, SkillOrchestra adds an RL routing head that learns from execution outcomes to improve skill selection over time:
+
+```toml
+[skills]
+rl_routing_enabled = true      # Enable RL-based skill routing (default: false)
+```
+
+SkillOrchestra requires `[skills.learning] enabled = true` to collect reward signals. It falls back to standard BM25+cosine matching during cold start until enough observations accumulate.
+
+See [SkillOrchestra](../advanced/skill-orchestra.md) for details on the contextual bandit algorithm and tuning.

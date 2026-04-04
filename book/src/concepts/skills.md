@@ -71,8 +71,11 @@ Installed skills start at the `quarantined` trust level. Use `zeph skill verify`
 
 See [CLI Reference — `zeph skill`](../reference/cli.md#zeph-skill) for the full subcommand list, or use the in-session `/skill install` and `/skill remove` commands for hot-reloaded management without restart.
 
-## Deep Dives
+## Next Steps
 
 - [Add Custom Skills](../guides/custom-skills.md) — create your own skills
+- [Context Budgets](context-budgets.md) — how BATS budget hints affect skill prompt modes
 - [Self-Learning Skills](../advanced/self-learning.md) — how skills evolve through failure detection
+- [SkillOrchestra](../advanced/skill-orchestra.md) — RL-based adaptive skill routing
+- [NL Skill Generation](../advanced/nl-skill-generation.md) — generate skills from descriptions or GitHub repos
 - [Skill Trust Levels](../advanced/skill-trust.md) — security model for imported skills

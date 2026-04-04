@@ -67,6 +67,20 @@ zeph vault set ZEPH_SECRET_GITHUB_ORG my-org
 
 See [Vault — Custom Secrets](../reference/security.md#custom-secrets) for full details.
 
+### Channel Allowlist
+
+Restrict a skill to specific I/O channels with `x-channels`. When set, the skill is excluded from matching on channels not in the list:
+
+```markdown
+---
+name: deploy-prod
+description: Production deployment via kubectl.
+x-channels: cli
+---
+```
+
+This skill only activates in CLI mode — it is invisible in Telegram or TUI. Omit `x-channels` to allow all channels. Multiple channels are comma-separated: `x-channels: cli, tui`.
+
 ### Name Rules
 
 Lowercase letters, numbers, and hyphens only. No leading, trailing, or consecutive hyphens. Must match the directory name.
@@ -131,8 +145,21 @@ In an active session, use `/skill install <url|path>` and `/skill remove <name>`
 
 See [Skill Trust Levels](../advanced/skill-trust.md) for the full security model.
 
-## Deep Dives
+## Generate a Skill from a Description
+
+Instead of writing SKILL.md manually, use `/skill create` with a natural language description:
+
+```
+/skill create "A skill that manages systemd services — start, stop, restart, status"
+```
+
+Zeph generates a complete SKILL.md with frontmatter, instructions, and examples. The skill is saved to your skills directory and hot-reloaded immediately. Duplicate detection prevents creating skills that overlap with existing ones.
+
+See [NL Skill Generation](../advanced/nl-skill-generation.md) for details on generation from descriptions and GitHub repository mining.
+
+## Next Steps
 
 - [Skills](../concepts/skills.md) — how embedding-based matching works
 - [Self-Learning Skills](../advanced/self-learning.md) — automatic skill evolution
+- [NL Skill Generation](../advanced/nl-skill-generation.md) — generate skills from descriptions or repos
 - [Skill Trust Levels](../advanced/skill-trust.md) — security model for imported skills

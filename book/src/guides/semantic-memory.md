@@ -146,6 +146,23 @@ importance_weight = 0.15          # Blend weight in recall ranking (default: 0.1
 
 Messages with high importance scores (architectural decisions, key constraints, user preferences) receive a recall boost proportional to `importance_weight`. The score is computed by an LLM classifier at message persist time and stored in the `importance_score` column (migration 039).
 
+## SleepGate: Automatic Forgetting
+
+Over time, the vector index accumulates stale embeddings. Enable SleepGate to periodically remove low-value entries:
+
+```toml
+[memory.forgetting]
+enabled = true
+interval_secs = 86400          # Run every 24 hours (default)
+retention_threshold = 0.30     # Score below which entries are forgotten (default: 0.30)
+```
+
+SleepGate scores entries on recency, access frequency, and semantic density. A built-in compression predictor preserves load-bearing entries even if their retention score is low.
+
+Forgotten entries are soft-deleted — removed from the vector index but retained in SQLite for potential restoration.
+
+See [SleepGate](../advanced/sleep-gate.md) for tuning guidelines and interaction with other memory features.
+
 ## Storage Architecture
 
 | Store | Purpose |

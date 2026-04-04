@@ -1,6 +1,6 @@
 # Installation
 
-Install Zeph from source, the install script, pre-built binaries, or Docker.
+The fastest way to get Zeph running is the install script. Alternative methods (crates.io, source, binaries, Docker) are listed below.
 
 ## Install Script (recommended)
 
@@ -22,11 +22,19 @@ Install a specific version:
 curl -fsSL https://github.com/bug-ops/zeph/releases/latest/download/install.sh | sh -s -- --version v0.15.3
 ```
 
-After installation, run the configuration wizard:
+Verify it works:
+
+```bash
+zeph --version
+```
+
+Then run the configuration wizard:
 
 ```bash
 zeph init
 ```
+
+See [Configuration Wizard](wizard.md) for a step-by-step walkthrough of `zeph init`.
 
 ## From crates.io
 
@@ -79,3 +87,8 @@ docker pull ghcr.io/bug-ops/zeph:v0.9.8
 Images are scanned with [Trivy](https://trivy.dev/) in CI/CD and use Oracle Linux 9 Slim base with **0 HIGH/CRITICAL CVEs**. Multi-platform: linux/amd64, linux/arm64.
 
 See [Docker Deployment](../guides/docker.md) for full deployment options including GPU support and age vault.
+
+## Next Steps
+
+- [Configuration Wizard](wizard.md) — generate a config with `zeph init`
+- [First Conversation](first-conversation.md) — send your first message

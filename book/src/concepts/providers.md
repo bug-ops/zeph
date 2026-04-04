@@ -150,9 +150,10 @@ response_cache_ttl_secs = 3600  # 1 hour (default)
 
 See [Memory and Context — LLM Response Cache](memory.md#llm-response-cache) for details.
 
-## Deep Dives
+## Next Steps
 
 - [Use a Cloud Provider](../guides/cloud-provider.md) — Claude, OpenAI, and compatible API setup
 - [Model Orchestrator](../advanced/orchestrator.md) — multi-provider routing with fallback chains
 - [Adaptive Inference](../advanced/adaptive-inference.md) — Thompson Sampling and EMA-based provider routing
+- [SkillOrchestra](../advanced/skill-orchestra.md) — RL-based adaptive routing that learns from execution outcomes
 - [Local Inference (Candle)](../advanced/candle.md) — HuggingFace GGUF models

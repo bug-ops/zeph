@@ -476,8 +476,10 @@ Kumiho implements belief revision for the graph memory store. When new informati
 
 This is paired with D-MEM RPE (Reward Prediction Error) routing for graph memory, which uses prediction errors from graph queries to adaptively weight the graph store's contribution to hybrid recall.
 
-## Deep Dives
+## Next Steps
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide
+- [Context Budgets](context-budgets.md) — BATS budget hints and allocation strategy
+- [SleepGate](../advanced/sleep-gate.md) — automatic memory forgetting and index hygiene
 - [Graph Memory](graph-memory.md) — entity-relationship tracking and multi-hop reasoning
 - [Context Engineering](../advanced/context.md) — budget allocation, compaction, recall tuning

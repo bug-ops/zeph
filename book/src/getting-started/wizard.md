@@ -184,7 +184,8 @@ The wizard prints the secrets you need to configure:
 - **env backend**: `export ZEPH_CLAUDE_API_KEY=...` commands to add to your shell profile
 - **age backend**: `zeph vault init` and `zeph vault set` commands to run
 
-## Further Reading
+## Next Steps
 
+- [First Conversation](first-conversation.md) — start talking to the agent
 - [Configuration Reference](../reference/configuration.md) — full config file and environment variables
 - [Vault — Age Vault](../reference/security.md#age-vault) — vault setup, custom secrets, and Docker integration
