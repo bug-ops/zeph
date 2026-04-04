@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(persistence): persist tombstone `ToolResult` entries on shutdown for any unpaired `tool_use` written to the DB mid-execution (stdin EOF) — eliminates orphaned tool_use WARN messages on next session startup (#2628)
 - fix(memory): ensure conversation row exists before `graph_episodes` FK insert on fresh DB (#2627)
 - fix(agent): exclude [skipped] utility messages from semantic memory, strengthen Retrieve re-dispatch hint (#2620)
 - fix(skills): scan `/skill create` input description for injection patterns before LLM generation (#2621)

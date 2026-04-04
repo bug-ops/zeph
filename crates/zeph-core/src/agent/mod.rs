@@ -588,6 +588,74 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Persist tombstone `ToolResult` messages for any assistant `ToolUse` parts that were written
+    /// to the DB during this session but never paired with a `ToolResult` (e.g. because stdin
+    /// closed while tool execution was in progress). Without this the next session startup strips
+    /// those assistant messages and emits orphan warnings.
+    async fn flush_orphaned_tool_use_on_shutdown(&mut self) {
+        use zeph_llm::provider::{MessagePart, Role};
+
+        // Walk messages in reverse: if the last assistant message (ignoring any trailing
+        // system messages) has ToolUse parts and is NOT immediately followed by a user
+        // message whose ToolResult ids cover those ToolUse ids, persist tombstones.
+        let msgs = &self.msg.messages;
+        // Find last assistant message index.
+        let Some(asst_idx) = msgs.iter().rposition(|m| m.role == Role::Assistant) else {
+            return;
+        };
+        let asst_msg = &msgs[asst_idx];
+        let tool_use_ids: Vec<(&str, &str, &serde_json::Value)> = asst_msg
+            .parts
+            .iter()
+            .filter_map(|p| {
+                if let MessagePart::ToolUse { id, name, input } = p {
+                    Some((id.as_str(), name.as_str(), input))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if tool_use_ids.is_empty() {
+            return;
+        }
+
+        // Check whether a following user message already pairs all ToolUse ids.
+        let paired_ids: std::collections::HashSet<&str> = msgs
+            .get(asst_idx + 1..)
+            .into_iter()
+            .flatten()
+            .filter(|m| m.role == Role::User)
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                    Some(tool_use_id.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let unpaired: Vec<zeph_llm::provider::ToolUseRequest> = tool_use_ids
+            .iter()
+            .filter(|(id, _, _)| !paired_ids.contains(*id))
+            .map(|(id, name, input)| zeph_llm::provider::ToolUseRequest {
+                id: (*id).to_owned(),
+                name: (*name).to_owned(),
+                input: (*input).clone(),
+            })
+            .collect();
+
+        if unpaired.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            count = unpaired.len(),
+            "shutdown: persisting tombstone ToolResults for unpaired in-flight tool calls"
+        );
+        self.persist_cancelled_tool_results(&unpaired).await;
+    }
+
     /// Generate and store a lightweight session summary at shutdown when no hard compaction fired.
     ///
     /// Guards:
@@ -744,6 +812,11 @@ impl<C: Channel> Agent<C> {
                 );
             }
         }
+
+        // Flush tombstone ToolResults for any assistant ToolUse that was persisted but never
+        // paired with a ToolResult (e.g. stdin EOF mid-execution). Without this the next session
+        // startup strips the orphaned ToolUse and emits warnings.
+        self.flush_orphaned_tool_use_on_shutdown().await;
 
         self.maybe_store_shutdown_summary().await;
         self.maybe_store_session_digest().await;
