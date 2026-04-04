@@ -243,3 +243,76 @@ max_activated_nodes = 50
 - SA-INV-09: `edges_for_entities` chunks at 490 IDs — never exceed SQLite 999-slot bind limit
 - NEVER await spreading activation without the 500ms timeout
 - NEVER let activation exceed 1.0 (clamped sum invariant)
+
+---
+
+## SYNAPSE: Hybrid Seed Selection
+
+Issue #2167. Replaces binary FTS5 match with combined scoring.
+
+### Seed Scoring
+
+```
+final_score = fts_score * (1 - w) + structural_score * w
+```
+
+Where `structural_score = degree_centrality + edge_type_diversity`.
+
+- Embedding fallback: when FTS5 returns 0 results, embeddings are used to find seed candidates
+- Community-aware seed capping: per-community seed count capped at `seed_community_cap` to prevent over-representation of dense clusters
+- SA-INV-10 guard: when community cap empties the seed set, fallback to top-N seeds uncapped
+
+### Config
+
+```toml
+[memory.synapse]
+seed_structural_weight = 0.3  # w in the formula
+seed_community_cap = 3         # max seeds per community
+```
+
+### Key Invariants
+
+- SA-INV-10: Community cap must never produce an empty seed set — fall back to top-N when cap empties results
+- FTS5 embedding fallback is triggered only when FTS5 returns zero results, not on partial results
+- NEVER use binary FTS5 match (present/absent) as the sole seed score — structural signal must be blended
+
+---
+
+## A-MEM: Link Weight Evolution
+
+Issue #2163. Per-edge retrieval tracking with temporal decay.
+
+### Schema
+
+Migration 043 adds `retrieval_count` and `last_retrieved_at` to the edges table.
+
+### Weight Boost
+
+```
+effective_confidence = confidence * min(1.0, 1.0 + 0.2 * ln(1 + retrieval_count))
+```
+
+Applied during both spreading activation and BFS traversal.
+
+### Decay
+
+`decay_edge_retrieval_counts()` — triggered independently of the eviction cycle:
+
+```
+new_count = count * exp(-lambda * elapsed_days)
+```
+
+### Config
+
+```toml
+[memory.graph]
+link_weight_decay_lambda = 0.01
+link_weight_decay_interval_secs = 86400
+```
+
+### Key Invariants
+
+- Boost cap at 1.0 — `min(1.0, ...)` is mandatory
+- Decay runs independently of eviction — never couple to GC cycle timing
+- `retrieval_count` is incremented atomically on each successful edge traversal
+- NEVER apply boost to edges with `retrieval_count = 0` — baseline confidence applies unchanged

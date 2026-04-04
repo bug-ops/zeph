@@ -1,0 +1,90 @@
+# Spec: ML Classifiers
+
+## Overview
+
+`zeph-classifiers` (feature: `classifiers`, implies `candle`) — Candle-backed ML classifiers for injection detection and PII detection. All classifiers are lazy-loaded on first use and cached for the session.
+
+## Sources
+
+| File | Contents |
+|---|---|
+| `crates/zeph-classifiers/src/classifier.rs` | `ClassifierBackend` trait, `CandleClassifier` |
+| `crates/zeph-classifiers/src/pii.rs` | `CandlePiiClassifier`, `PiiDetector` trait |
+| `crates/zeph-classifiers/src/sanitizer.rs` | `ContentSanitizer::classify_injection()`, `detect_pii()` |
+| `crates/zeph-classifiers/src/llm.rs` | `LlmClassifier` wrapping `AnyProvider` |
+
+## ClassifierBackend Trait
+
+Object-safe async trait for ML classifiers:
+
+```rust
+trait ClassifierBackend: Send + Sync {
+    async fn classify(&self, text: &str) -> Result<ClassificationResult, ClassifierError>;
+}
+```
+
+## Injection Detection (Phase 1)
+
+`CandleClassifier` uses `deberta-v3-small-prompt-injection-v2`:
+- Token-based chunking: 448-token chunks with 64-token overlap
+- Every chunk framed with `[CLS]` at position 0 and `[SEP]` at end
+- Special-token labels stripped from `token_labels` before BIO decode
+- `ContentSanitizer::classify_injection()` — async path, separate from sync `sanitize()`
+
+## PII Detection (Phase 2)
+
+`CandlePiiClassifier` uses `iiiorg/piiranha-v1-detect-personal-information` (DeBERTa-v2 NER):
+- BIO span extraction with special-token masking
+- 448-token chunked inference with max-confidence overlap merge
+- `PiiSpan { start, end, label, confidence }` — char-level spans
+- SHA-256 hash verification before loading safetensors
+
+## Unified Sanitization Pipeline
+
+When `pii_enabled = true`, `ContentSanitizer::sanitize()` uses regex+NER union merge:
+1. Regex `PiiFilter::detect_spans()` → span list A
+2. `CandlePiiClassifier` NER → span list B
+3. Merge with O(n) char→byte precompute, dedup overlapping spans
+4. Single-pass redaction
+
+This eliminates double-redaction offset corruption from independent-path design.
+
+## LlmClassifier
+
+`LlmClassifier` wrapping `AnyProvider` returns `FeedbackVerdict` for feedback/correction detection without implementing `ClassifierBackend`. Used by self-learning when `DetectorMode::Model` is set in `LearningConfig`.
+
+`build_feedback_classifier()` in `AppBuilder` resolves the `feedback_provider` named reference from `[[llm.providers]]` and falls back gracefully if not found.
+
+## Config
+
+```toml
+[classifiers]
+enabled = false
+pii_enabled = false
+pii_threshold = 0.75
+
+[self_learning]
+detector_mode = "model"       # "model" uses LlmClassifier
+feedback_provider = "fast"    # named provider reference
+```
+
+`--migrate-config` adds `[classifiers]` section with `enabled = false` to existing configs.
+
+## CLI
+
+```bash
+zeph classifiers download             # pre-cache all models
+zeph classifiers download --model pii|injection|all
+```
+
+## Key Invariants
+
+- Every NER chunk (including middle and last) must be framed with `[CLS]` at position 0 and `[SEP]` at end
+- Special-token labels must be stripped before BIO decode — not after
+- Regex and NER spans must be merged via union before single-pass redaction — never applied independently
+- SHA-256 hash must be verified before loading safetensors
+- `classify_injection()` is async and separate from sync `sanitize()` — never block the sync path
+- Latency must be traced (`task`, `latency_ms`) on every classifier inference
+- NEVER load models on startup — lazy-load on first use
+- NEVER apply PII redaction when `pii_enabled = false`, even if NER model is loaded
+- NEVER emit a `WARN` security scan false-positive for `.bundled` skill content

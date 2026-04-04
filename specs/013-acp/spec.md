@@ -1,14 +1,10 @@
 # Spec: ACP (Agent Client Protocol)
-
 ## Sources
-
-### External
-- ACP specification: https://agentclientprotocol.com/get-started/introduction
+### External- ACP specification: https://agentclientprotocol.com/get-started/introduction
 - ACP Rust SDK: https://github.com/agentclientprotocol/rust-sdk
 - `agent-client-protocol` crate: https://crates.io/crates/agent-client-protocol
 
-### Internal
-| File | Contents |
+### Internal| File | Contents |
 |---|---|
 | `crates/zeph-acp/src/lib.rs` | Public API, `AgentSpawner`, `AcpContext` |
 | `crates/zeph-acp/src/transport/stdio.rs` | stdio transport |
@@ -26,7 +22,6 @@
 `crates/zeph-acp/` (feature: `acp`) — ACP v0.12.0+, enables IDE integration.
 
 ## Transports
-
 | Transport | Feature | Notes |
 |---|---|---|
 | stdio | `acp` (base) | Primary; mutually exclusive with TUI |
@@ -37,7 +32,6 @@
 - Enforced at startup: attempting both → hard error with clear message
 
 ## Session Model
-
 ```
 AcpSessionManager
 ├── sessions: LruCache<SessionId, AcpSession>  — bounded by max_sessions
@@ -51,7 +45,6 @@ AcpSessionManager
 - Session resume: reconnect to an existing session by ID
 
 ## Permission Model
-
 ```
 AcpPermissionGate (TOML-backed, SQLite-persisted)
 ├── per-tool rules: Simple("allow"|"deny") | Patterned { default, patterns }
@@ -65,7 +58,6 @@ AcpPermissionGate (TOML-backed, SQLite-persisted)
 - Tool call lifecycle: `proposed → approved/denied → persisted → executed → result`
 
 ## Protocol Messages (ACP v0.12.0+)
-
 - Rich content: images, file resources, binary data
 - Model switching: client can request a specific model per session
 - Terminal forwarding: tool output streams back to IDE terminal
@@ -73,13 +65,11 @@ AcpPermissionGate (TOML-backed, SQLite-persisted)
 - MCP passthrough: MCP tools are forwarded to ACP client via `mcp_passthrough` capability
 
 ## Unstable Features (feature: `acp-unstable`)
-
 - `unstable-session-list`: enumerate active sessions
 - `unstable-session-fork`: fork session at a point
 - `unstable-session-resume`: resume by session ID
 
 ## Resource Link Rules (`resolve_resource_link`)
-
 - `file://` URIs: canonicalize (resolve symlinks), must be under `session_cwd`
   - Reject: `/proc`, `/sys`, `/dev`, `/.ssh`, `/.gnupg`, `/.aws`
   - Null byte in content → treat as binary → reject
@@ -89,7 +79,6 @@ AcpPermissionGate (TOML-backed, SQLite-persisted)
   - Validate UTF-8 before returning
 
 ## Config Coverage
-
 ACP mode uses the same `config/default.toml` and the same resolution order as CLI/TUI
 (see `020-config-loading/spec.md`). However, not all config sections affect ACP agent
 behavior. The table below is the authoritative source of truth.
@@ -117,7 +106,6 @@ behavior. The table below is the authoritative source of truth.
 | `[telegram]` / `[discord]` / `[slack]` | **Ignored** | ACP uses `LoopbackChannel` — external chat channels do not apply |
 
 ### Code annotation requirement
-
 `build_acp_deps()` and `spawn_acp_agent()` in `src/acp.rs` **must** contain an explicit
 comment block that mirrors the "Ignored" rows above, with a one-line reason per section.
 This ensures the divergence is visible to any developer editing the initialization path.
@@ -125,7 +113,6 @@ This ensures the divergence is visible to any developer editing the initializati
 **NEVER** silently drop a config section in ACP without updating this table first.
 
 ## Key Invariants
-
 - ACP stdio transport is always mutually exclusive with TUI — enforced at startup
 - Session IDs are stable UUIDs — never reassigned or reused after expiry
 - LRU eviction is by last-access time, not creation time
@@ -133,3 +120,47 @@ This ensures the divergence is visible to any developer editing the initializati
 - Null byte in file content = binary → reject unconditionally
 - Bearer token comparison is constant-time (BLAKE3 + `ct_eq`) — never `==`
 - MCP passthrough requires `mcp` crate active — verify capability at negotiation time
+
+---
+
+## Session Close Handler
+> **Status**: Implemented. Closes #2421.
+
+`session/close` handler gracefully terminates an ACP session: flushes pending memory writes, cancels in-flight tool calls, persists session state to SQLite, and removes the session from the LRU cache.
+
+### Key Invariants
+- `session/close` must flush all pending writes before removing the session — no data loss on close
+- In-flight tool calls receive a cancellation signal; callers must handle `ToolError::Cancelled`
+- Session ID is invalidated after close — subsequent requests with the same session ID return 404
+
+---
+
+## Capability Advertisement
+> **Status**: Implemented. Closes #2421, #2429.
+
+ACP server advertises its capabilities in the `initialize` response and via the `/agent.json` endpoint.
+
+### /agent.json Endpoint
+`GET /agent.json` returns a JSON document describing the agent's identity, declared capabilities, supported protocol version, and authentication methods. This endpoint is unauthenticated and used by IDE clients for discovery.
+
+```json
+{
+  "name": "...",
+  "version": "...",
+  "protocol": "acp/0.10.3",
+  "capabilities": ["tools", "memory", "streaming"],
+  "authMethods": ["bearer"]
+}
+```
+
+### Protocol Version
+Updated to `agent-client-protocol 0.10.3` / `schema 0.11.3` in v0.18.2.
+
+### Current Model in SessionInfoUpdate
+`SessionInfoUpdate` messages now include the `current_model` field so clients can display which LLM model is active for the session. Exposed also in `session/list` response.
+
+### Key Invariants
+- `/agent.json` is always unauthenticated — bearer token must NOT be required for this endpoint
+- `authMethods` in `/agent.json` must reflect the actual authentication configuration — never hardcoded
+- IPI duplication between ACP session init and MCP passthrough is eliminated — validate once, not twice
+- Protocol version in `/agent.json` must match the compiled `agent-client-protocol` crate version

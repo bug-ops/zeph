@@ -122,6 +122,23 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
 
 **NEVER**: add required (non-default) fields to optional config sections; never read raw secrets from TOML.
 
+## 8a. Provider Registry Contract
+
+`[[llm.providers]]` (`crates/zeph-config/src/providers.rs`) is the **single source of truth** for all LLM provider declarations:
+
+- All providers are declared **once** in `[[llm.providers]]` with a `name` field; no other section duplicates provider credentials or model names
+- Subsystems that call LLMs reference a provider by name via a `*_provider` config field (e.g., `extract_provider = "fast"`)
+- When `*_provider` is empty or absent, the subsystem falls back to the first (default) provider in the pool
+- An unknown `*_provider` name produces a warning and falls back to the default provider — never a hard error
+- `RoutingStrategy` is a property of the pool (`[llm] routing = "cascade"`), not a separate provider type
+- The first entry in `[[llm.providers]]` is the default unless one entry has `default = true`; exactly one provider is the default
+- Exactly one entry must have `embed = true` or `embedding_model` set; if none, the default provider handles embeddings with a warning if it lacks that capability
+- Provider names must be unique; duplicate names are a config error at startup
+
+**NEVER**: inline a model name, base URL, or provider credentials inside a subsystem config section; never resolve a provider by type string ("openai") — always by configured `name`; never add a new `[llm.*]` sub-section with its own provider credentials.
+
+See `.local/specs/022-config-simplification/spec.md` for the full schema and examples.
+
 ## 9. Feature Flag Contract
 
 Feature flags (`Cargo.toml [features]`):
@@ -170,6 +187,47 @@ Every new feature MUST be wired at all applicable integration points:
 
 ---
 
+## 13. Database Backend Contract
+
+`zeph-db` crate (feature-flag selected at compile time):
+
+- `sqlite` and `postgres` features in `zeph-db` are **mutually exclusive** — enabling both is a `compile_error!`
+- Default build uses `zeph-db/sqlite` (included via root `default` features) — PostgreSQL is always opt-in
+- `--all-features` is **not a supported build mode** — use `--features full` for standard builds; `--features full,postgres --no-default-features` for PostgreSQL
+- All consumer crates use `zeph_db::DbPool` — never `sqlx::SqlitePool` or `sqlx::PgPool` directly
+- All SQL strings in consumer crates must pass through `sql!()` macro for placeholder compatibility
+- Both migration directories (`sqlite/` and `postgres/`) must have matching file counts and schema-equivalent content
+- `ZEPH_DATABASE_URL` is the canonical vault key for PostgreSQL credentials — never inline in TOML
+
+**NEVER**: use `sqlx::Any` backend; enable both `sqlite` and `postgres` features simultaneously; reference raw sqlx pool types in consumer crates.
+
+## 14. Memory Admission Control Contract
+
+`AdmissionControl` in `zeph-memory::admission`:
+
+- `remember()` returns `Result<Option<MessageId>>` — `None` means rejected by admission control, not an error
+- When `[memory.admission] enabled = false`, `remember()` always returns `Some(_)` (pass-through)
+- Admission scoring failure is **fail-open** — content is admitted on any scoring error
+- Admission score is computed per-call and never stored
+- Weight sum in `[memory.admission.weights]` must equal 1.0 ± 0.01
+
+**NEVER**: treat `None` from `remember()` as an error; use admission control as a security gate; store admission scores.
+
+## 15. RuntimeLayer Contract
+
+`RuntimeLayer` trait (`crates/zeph-core/src/runtime_layer.rs`):
+
+- All hooks have default no-op implementations — never required to override
+- Hook failures are **non-fatal** — panics or errors in layer hooks must not abort the agent turn
+- `LayerContext.turn_number` is incremented exactly once per user turn, before any hooks fire
+- `before_chat` fires before the LLM call; `after_chat` fires after response receipt
+- `before_tool` fires before executor dispatch; `after_tool` fires after `Option<ToolOutput>` resolves
+- No blocking I/O in hooks — all are called synchronously in the async loop
+
+**NEVER**: block the agent loop in a hook; store `Box<dyn RuntimeLayer>` in the agent (use `Arc<dyn RuntimeLayer>`).
+
+---
+
 ## Agent Boundaries
 
 ### Always (without asking)
@@ -178,6 +236,8 @@ Every new feature MUST be wired at all applicable integration points:
 - Maintain `kind` discriminator in `MessagePart` serde
 - Enforce `max_active_skills` limit in skill injection
 - Run blocklist check before permission policy in shell executor
+- Use `Arc<dyn RuntimeLayer>` not `Box<dyn RuntimeLayer>` in agent struct
+- Return `Result<Option<MessageId>>` from `remember()` — never `Result<MessageId>`
 
 ### Ask First
 - Adding a new `MessagePart` variant (breaks serialization compatibility)
@@ -185,6 +245,8 @@ Every new feature MUST be wired at all applicable integration points:
 - Adding required (non-default) config fields
 - Removing or renaming existing feature flags
 - Adding a new always-on capability (currently compiled without a feature flag)
+- Adding new hook methods to `RuntimeLayer` (requires default impl to avoid breaking changes)
+- Adding fields to `LayerContext` (affects all RuntimeLayer hook signatures)
 
 ### Never
 - Add `async-trait` to library crates
@@ -194,3 +256,6 @@ Every new feature MUST be wired at all applicable integration points:
 - Use `unsafe` blocks
 - Commit secrets to source files
 - Skip `--features full` in pre-merge checks
+- Enable `sqlite` and `postgres` features simultaneously
+- Use `sqlx::Any` backend
+- Block the agent loop in a `RuntimeLayer` hook

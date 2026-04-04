@@ -85,6 +85,31 @@ AnyProvider { Claude, OpenAI, Ollama, Compatible, Candle, Gemini }
 - **EMA latency routing**: exponential moving average latency to prefer fastest provider
 - **Fallback chain**: if primary fails, try next in configured order
 
+## Config Format
+
+All providers are declared via `[[llm.providers]]` in the TOML config — one entry per provider, no duplication across sections. See `.local/specs/022-config-simplification/spec.md` for the full `ProviderEntry` schema and examples.
+
+```toml
+[llm]
+routing = "cascade"   # none | ema | thompson | cascade | task
+
+[[llm.providers]]
+name = "fast"
+type = "openai"
+model = "gpt-4o-mini"
+embedding_model = "text-embedding-3-small"
+embed = true
+
+[[llm.providers]]
+name = "quality"
+type = "claude"
+model = "claude-sonnet-4-6"
+max_tokens = 4096
+default = true
+```
+
+Subsystems reference a provider by name via a `*_provider` field. When the field is absent, the subsystem falls back to the default provider. See `.local/specs/024-multi-model-design/spec.md` for the full per-subsystem mapping.
+
 ## Key Invariants
 
 - Provider methods are always `&self` — immutable, concurrent-safe
@@ -92,3 +117,4 @@ AnyProvider { Claude, OpenAI, Ollama, Compatible, Candle, Gemini }
 - `last_usage()` is updated after every call — must be accurate for cost tracking
 - `chat`, `chat_stream`, `chat_with_tools` are independent codepaths — do not delegate one to another
 - Candle and metal/cuda features are mutually exclusive in the build
+- Provider identity is the `name` field from `[[llm.providers]]` — never resolved by type string

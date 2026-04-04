@@ -35,7 +35,10 @@ TuiApp
 | Metrics | `m` | Token usage, latency, cost, model |
 | Plan View | `p` | DAG task graph, task states |
 | Security | `s` | Content sanitizer status, quarantine events |
+| SubAgents | `a` | Interactive subagent sidebar with j/k navigation and transcript viewer |
 | Status Bar | always | Current operation spinner + short status text |
+
+Tab cycling order includes SubAgents. See `026-tui-subagent-management/spec.md` for full SubAgents panel spec.
 
 ## Spinner Rule (NON-NEGOTIABLE)
 
