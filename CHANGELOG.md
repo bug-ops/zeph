@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **MCP server instructions not injected into system prompt** (`#2637`): `append_mcp_prompt` now collects server-level instructions from all connected MCP servers via `McpManager::all_server_instructions()` and prepends them to the system prompt on every turn, regardless of whether the provider supports native tool_use. Added `all_server_instructions()` helper to `McpManager` that returns all stored instructions concatenated in stable order.
+- **Utility gate explicit-request bypass** (`#2636`): when the user message contains an unambiguous tool-invocation phrase (e.g. "using a tool", "call the X tool", "run the X tool"), the utility gate now sets `user_requested = true` and routes directly to `ToolCall`, bypassing the Retrieve→Respond cycle that previously caused the agent to respond with "I'm unable to use tools". Detection uses a LazyLock regex on the last user `MessagePart::Text` only — never on LLM call content or tool outputs, preserving the existing prompt-injection bypass protection.
+- **ML classifier false-positive on utility gate synthetic output** (`#2635`): `sanitize_tool_output` now skips the ML injection classifier for bodies that start with `[skipped]` or `[stopped]`. These strings are produced internally by the utility gate and are trusted content; classifying them produced noisy `WARN` log entries and incremented `classifier_tool_suspicious` metrics, which could mask real injection events.
 
 ## [0.18.3] - 2026-04-04
 

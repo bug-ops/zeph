@@ -86,7 +86,9 @@ pub use shell::{
 pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;
 pub use trust_level::SkillTrustLevel;
-pub use utility::{UtilityAction, UtilityContext, UtilityScore, UtilityScorer};
+pub use utility::{
+    UtilityAction, UtilityContext, UtilityScore, UtilityScorer, has_explicit_tool_request,
+};
 pub use verifier::{
     DestructiveCommandVerifier, DestructiveVerifierConfig, FirewallVerifier,
     FirewallVerifierConfig, InjectionPatternVerifier, InjectionVerifierConfig,

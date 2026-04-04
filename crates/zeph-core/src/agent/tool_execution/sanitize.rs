@@ -82,13 +82,18 @@ impl<C: Channel> Agent<C> {
 
         #[cfg(feature = "classifiers")]
         {
+            // Synthetic outputs from the utility gate are trusted internal content — never
+            // classify them. Only real tool output from external sources needs ML inspection.
+            let is_utility_gate_synthetic =
+                body.starts_with("[skipped]") || body.starts_with("[stopped]");
             let skip_ml = matches!(
                 memory_hint,
                 Some(
                     zeph_sanitizer::MemorySourceHint::ConversationHistory
                         | zeph_sanitizer::MemorySourceHint::LlmSummary
                 )
-            ) || is_policy_blocked_output(body);
+            ) || is_policy_blocked_output(body)
+                || is_utility_gate_synthetic;
             if !skip_ml && self.security.sanitizer.has_classifier_backend() {
                 let ml_verdict = self.security.sanitizer.classify_injection(body).await;
                 match ml_verdict {

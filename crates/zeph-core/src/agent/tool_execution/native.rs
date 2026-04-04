@@ -793,8 +793,9 @@ impl<C: Channel> Agent<C> {
 
         // Utility gate: score each call and recommend an action (#2477).
         // Fail-closed on scoring errors (None when scoring produces invalid result).
-        // user_requested is only true for explicit /tool slash commands — never set from
-        // LLM-requested calls to prevent prompt-injection bypass (C2 fix).
+        // user_requested is set when the user message explicitly requests tool invocation
+        // (e.g. "using a tool", "call the X tool"). Detected from the last user message only —
+        // never from LLM call content or tool outputs to prevent prompt-injection bypass (C2 fix).
         let utility_actions: Vec<zeph_tools::UtilityAction> = {
             #[allow(clippy::cast_possible_truncation)]
             let tokens_consumed =
@@ -802,6 +803,28 @@ impl<C: Channel> Agent<C> {
             // token_budget = 0 signals "unknown" to UtilityContext — cost component is zeroed.
             let token_budget: usize = 0;
             let tool_calls_this_turn = self.tool_orchestrator.recent_tool_calls.len();
+            // Extract the last user message text for explicit-request detection.
+            // We only read MessagePart::Text parts so tool outputs/thinking blocks are excluded.
+            let explicit_request = self
+                .msg
+                .messages
+                .iter()
+                .rfind(|m| m.role == zeph_llm::provider::Role::User)
+                .is_some_and(|m| {
+                    let text = m
+                        .parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let zeph_llm::provider::MessagePart::Text { text } = p {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    zeph_tools::has_explicit_tool_request(&text)
+                });
             calls
                 .iter()
                 .enumerate()
@@ -814,8 +837,7 @@ impl<C: Channel> Agent<C> {
                         tool_calls_this_turn: tool_calls_this_turn + idx,
                         tokens_consumed,
                         token_budget,
-                        // Never set from LLM call content to prevent prompt-injection bypass.
-                        user_requested: false,
+                        user_requested: explicit_request,
                     };
                     let score = self.tool_orchestrator.utility_scorer.score(call, &ctx);
                     let action = self

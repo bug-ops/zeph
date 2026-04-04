@@ -4929,6 +4929,65 @@ async fn utility_gate_disabled_does_not_produce_skipped_output() {
     );
 }
 
+// --- #2635: ML classifier must skip [skipped]/[stopped] synthetic outputs ---
+
+#[tokio::test]
+async fn sanitize_tool_output_skipped_prefix_no_injection_flags() {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+    let cfg = zeph_sanitizer::ContentIsolationConfig {
+        enabled: true,
+        flag_injection_patterns: true,
+        ..Default::default()
+    };
+    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    let body =
+        "[skipped] Tool call to list_directory skipped — utility policy recommends Retrieve.";
+    let (result, has_injection_flags) = agent.sanitize_tool_output(body, "list_directory").await;
+    assert!(
+        !has_injection_flags,
+        "[skipped] output must not trigger injection flags"
+    );
+    assert!(
+        !result.contains("[tool output blocked"),
+        "[skipped] output must not be blocked by sanitizer"
+    );
+}
+
+#[tokio::test]
+async fn sanitize_tool_output_stopped_prefix_no_injection_flags() {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
+    let cfg = zeph_sanitizer::ContentIsolationConfig {
+        enabled: true,
+        flag_injection_patterns: true,
+        ..Default::default()
+    };
+    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    let body = "[stopped] Tool call to shell halted by the utility gate — budget exhausted or score below threshold 0.10.";
+    let (result, has_injection_flags) = agent.sanitize_tool_output(body, "shell").await;
+    assert!(
+        !has_injection_flags,
+        "[stopped] output must not trigger injection flags"
+    );
+    assert!(
+        !result.contains("[tool output blocked"),
+        "[stopped] output must not be blocked by sanitizer"
+    );
+}
+
 // --- PII NER circuit-breaker tests ---
 
 #[cfg(feature = "classifiers")]

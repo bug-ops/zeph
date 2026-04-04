@@ -8,9 +8,38 @@
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 use crate::config::UtilityScoringConfig;
 use crate::executor::ToolCall;
+
+/// Returns `true` when a user message explicitly requests tool invocation.
+///
+/// Patterns are matched case-insensitively against the user message text.
+/// This is intentionally limited to unambiguous phrasings to avoid false positives
+/// that would incorrectly bypass the utility gate.
+///
+/// Safe to call on user-supplied text — does NOT bypass prompt-injection defences
+/// because those are enforced on tool OUTPUT paths, not on gate routing decisions.
+#[must_use]
+pub fn has_explicit_tool_request(user_message: &str) -> bool {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?xi)
+            using\s+a\s+tool
+            | call\s+(the\s+)?[a-z_]+\s+tool
+            | use\s+(the\s+)?[a-z_]+\s+tool
+            | run\s+(the\s+)?[a-z_]+\s+tool
+            | invoke\s+(the\s+)?[a-z_]+\s+tool
+            | execute\s+(the\s+)?[a-z_]+\s+tool
+            ",
+        )
+        .expect("static regex is valid")
+    });
+    RE.is_match(user_message)
+}
 
 /// Estimated gain for known tool categories.
 ///
@@ -66,8 +95,9 @@ pub struct UtilityContext {
     pub tokens_consumed: usize,
     /// Token budget for the current turn. 0 = budget unknown (cost component treated as 0).
     pub token_budget: usize,
-    /// True only when the tool was explicitly invoked via a `/tool` slash command.
-    /// Must NOT be set based on tool names found inside user message text or tool outputs.
+    /// True when the user explicitly requested tool invocation — either via a `/tool` slash
+    /// command or when the user message contains an unambiguous tool-invocation phrase detected
+    /// by [`has_explicit_tool_request`]. Must NOT be set from LLM call content or tool outputs.
     pub user_requested: bool,
 }
 
@@ -648,5 +678,56 @@ mod tests {
             scorer.recommend_action(Some(&score), &ctx),
             UtilityAction::Respond
         );
+    }
+
+    // ── has_explicit_tool_request tests ──────────────────────────────────────
+
+    #[test]
+    fn explicit_request_using_a_tool() {
+        assert!(has_explicit_tool_request(
+            "Please list the files in the current directory using a tool"
+        ));
+    }
+
+    #[test]
+    fn explicit_request_call_the_tool() {
+        assert!(has_explicit_tool_request("call the list_directory tool"));
+    }
+
+    #[test]
+    fn explicit_request_use_the_tool() {
+        assert!(has_explicit_tool_request("use the shell tool to run ls"));
+    }
+
+    #[test]
+    fn explicit_request_run_the_tool() {
+        assert!(has_explicit_tool_request("run the bash tool"));
+    }
+
+    #[test]
+    fn explicit_request_invoke_the_tool() {
+        assert!(has_explicit_tool_request("invoke the search_code tool"));
+    }
+
+    #[test]
+    fn explicit_request_execute_the_tool() {
+        assert!(has_explicit_tool_request("execute the grep tool for me"));
+    }
+
+    #[test]
+    fn explicit_request_case_insensitive() {
+        assert!(has_explicit_tool_request("USING A TOOL to find files"));
+    }
+
+    #[test]
+    fn explicit_request_no_match_plain_message() {
+        assert!(!has_explicit_tool_request("what is the weather today?"));
+    }
+
+    #[test]
+    fn explicit_request_no_match_tool_mentioned_without_invocation() {
+        assert!(!has_explicit_tool_request(
+            "the shell tool is very useful in general"
+        ));
     }
 }
