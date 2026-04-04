@@ -340,6 +340,8 @@ impl<C: Channel> Agent<C> {
                 rl_head: None,
                 rl_weight: 0.3,
                 rl_warmup_updates: 50,
+                generation_output_dir: None,
+                generation_provider_name: String::new(),
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -4917,6 +4919,20 @@ impl<C: Channel> Agent<C> {
         self.skill_state.two_stage_matching = config.skills.two_stage_matching;
         self.skill_state.confusability_threshold =
             config.skills.confusability_threshold.clamp(0.0, 1.0);
+        config
+            .skills
+            .generation_provider
+            .as_str()
+            .clone_into(&mut self.skill_state.generation_provider_name);
+        self.skill_state.generation_output_dir =
+            config.skills.generation_output_dir.as_deref().map(|p| {
+                if let Some(stripped) = p.strip_prefix("~/") {
+                    dirs::home_dir()
+                        .map_or_else(|| std::path::PathBuf::from(p), |h| h.join(stripped))
+                } else {
+                    std::path::PathBuf::from(p)
+                }
+            });
 
         if config.memory.context_budget_tokens > 0 {
             self.context_manager.budget = Some(

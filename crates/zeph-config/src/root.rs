@@ -170,6 +170,9 @@ impl Default for Config {
                 rl_weight: 0.3,
                 rl_persist_interval: 10,
                 rl_warmup_updates: 50,
+                generation_provider: crate::providers::ProviderName::default(),
+                generation_output_dir: None,
+                mining: crate::features::SkillMiningConfig::default(),
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),

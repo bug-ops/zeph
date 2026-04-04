@@ -190,6 +190,13 @@ pub const COMMANDS: &[SlashCommandInfo] = &[
         feature_gate: None,
     },
     SlashCommandInfo {
+        name: "/skill create",
+        args: "<description>",
+        description: "Generate a SKILL.md from natural language via LLM",
+        category: SlashCategory::Tools,
+        feature_gate: None,
+    },
+    SlashCommandInfo {
         name: "/mcp",
         args: "[add|list|tools|remove]",
         description: "Manage MCP servers",

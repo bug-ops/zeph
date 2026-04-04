@@ -708,6 +708,10 @@ impl<C: Channel> Agent<C> {
             Some("unblock") => self.handle_skill_unblock(parts.get(1).copied()).await,
             Some("install") => self.handle_skill_install(parts.get(1).copied()).await,
             Some("remove") => self.handle_skill_remove(parts.get(1).copied()).await,
+            Some("create") => {
+                let description = parts[1..].join(" ");
+                self.handle_skill_create(&description).await
+            }
             Some("scan") => self.handle_skill_scan().await,
             Some("reject") => {
                 let tail = if parts.len() > 2 { &parts[2..] } else { &[] };
@@ -715,11 +719,132 @@ impl<C: Channel> Agent<C> {
             }
             _ => {
                 self.channel
-                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove, reject, scan")
+                    .send("Unknown /skill subcommand. Available: stats, versions, activate, approve, reset, trust, block, unblock, install, remove, reject, scan, create")
                     .await?;
                 Ok(())
             }
         }
+    }
+
+    /// Handle `/skill create <description>` — generate a SKILL.md via LLM and save it.
+    #[allow(clippy::too_many_lines)]
+    async fn handle_skill_create(
+        &mut self,
+        description: &str,
+    ) -> Result<(), super::error::AgentError> {
+        if description.trim().is_empty() {
+            self.channel
+                .send("Usage: /skill create <description>\n\nExample:\n  /skill create fetch weather data from wttr.in and display current conditions")
+                .await?;
+            return Ok(());
+        }
+
+        // Determine output directory: generation_output_dir > managed_dir > first skill_path.
+        let output_dir = if let Some(ref dir) = self.skill_state.generation_output_dir {
+            dir.clone()
+        } else if let Some(ref dir) = self.skill_state.managed_dir {
+            dir.clone()
+        } else if let Some(first) = self.skill_state.skill_paths.first() {
+            first.clone()
+        } else {
+            self.channel
+                .send("No skill output directory configured. Set skills.generation_output_dir or skills.paths.")
+                .await?;
+            return Ok(());
+        };
+        // Warn if output_dir is not in watched skill_paths (hot-reload may miss the new skill).
+        let is_watched = self
+            .skill_state
+            .skill_paths
+            .iter()
+            .any(|p| output_dir.starts_with(p) || p == &output_dir);
+        if !is_watched {
+            tracing::warn!(
+                output_dir = %output_dir.display(),
+                "generation_output_dir is not in skills.paths — hot-reload may not pick up the new skill"
+            );
+            self.channel
+                .send(&format!(
+                    "Warning: {} is not listed in skills.paths. The generated skill may not be hot-reloaded automatically.",
+                    output_dir.display()
+                ))
+                .await?;
+        }
+
+        let generation_provider =
+            self.resolve_background_provider(&self.skill_state.generation_provider_name.clone());
+        let generator = zeph_skills::SkillGenerator::new(generation_provider, output_dir.clone());
+        self.channel
+            .send(&format!("Generating skill from: \"{description}\"…"))
+            .await?;
+        let request = zeph_skills::SkillGenerationRequest {
+            description: description.to_owned(),
+            category: None,
+            allowed_tools: Vec::new(),
+        };
+
+        let generated = match generator.generate(request).await {
+            Ok(g) => g,
+            Err(e) => {
+                self.channel
+                    .send(&format!("Skill generation failed: {e}"))
+                    .await?;
+                return Ok(());
+            }
+        };
+
+        // Show preview.
+        let mut preview = format!(
+            "Generated skill **{}**:\n\n```\n{}\n```",
+            generated.name, generated.content
+        );
+        if !generated.warnings.is_empty() {
+            preview.push_str("\n\n**Warnings:**");
+            for w in &generated.warnings {
+                preview.push('\n');
+                preview.push_str("- ");
+                preview.push_str(w);
+            }
+        }
+        preview.push_str("\n\nType **yes** to save, anything else to discard.");
+        self.channel.send(&preview).await?;
+
+        // Wait for confirmation.
+        let reply = self.channel.recv().await;
+        let confirmed =
+            matches!(reply, Ok(Some(ref msg)) if msg.text.trim().eq_ignore_ascii_case("yes"));
+
+        if !confirmed {
+            self.channel.send("Skill discarded.").await?;
+            return Ok(());
+        }
+
+        // Save to disk.
+        match generator.approve_and_save(&generated).await {
+            Ok(path) => {
+                // Register quarantined trust so hot-reload does not grant implicit trust.
+                if let Some(ref memory) = self.memory_state.memory {
+                    let _ = memory
+                        .sqlite()
+                        .set_skill_trust_level(&generated.name, "quarantined")
+                        .await;
+                }
+                self.channel
+                    .send(&format!(
+                        "Skill **{}** saved to {}. It will be loaded automatically by hot-reload.",
+                        generated.name,
+                        path.display()
+                    ))
+                    .await?;
+            }
+            Err(e) => {
+                self.channel
+                    .send(&format!("Failed to save skill: {e}"))
+                    .await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_skill_reject(

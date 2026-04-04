@@ -15,27 +15,39 @@ readme = "README.md"
 
 [features]
 default = []
+miner = ["anyhow", "clap", "dirs", "toml", "tracing-subscriber"]
 
 [dependencies]
-include_dir.workspace = true
+anyhow = { workspace = true, optional = true }
 blake3.workspace = true
+clap = { workspace = true, features = ["derive", "env"], optional = true }
+dirs = { workspace = true, optional = true }
+include_dir.workspace = true
 futures.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
 regex.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls"] }
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "fs"] }
+toml = { workspace = true, optional = true }
 tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"], optional = true }
 uuid = { workspace = true, features = ["v5"] }
 zeph-config.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
+
+[[bin]]
+name = "zeph-skills-miner"
+path = "src/bin/miner.rs"
+required-features = ["miner"]
 
 [[bench]]
 name = "matcher"

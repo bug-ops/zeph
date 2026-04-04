@@ -8,9 +8,11 @@ pub mod bundled;
 pub mod erl;
 pub mod error;
 pub mod evolution;
+pub mod generator;
 pub mod loader;
 pub mod manager;
 pub mod matcher;
+pub mod miner;
 pub mod prompt;
 pub mod qdrant_matcher;
 pub mod registry;
@@ -23,5 +25,6 @@ pub mod trust_score;
 pub mod watcher;
 
 pub use error::SkillError;
+pub use generator::{GeneratedSkill, SkillGenerationRequest, SkillGenerator};
 pub use matcher::{IntentClassification, ScoredMatch};
 pub use trust::{SkillSource, SkillTrust, SkillTrustLevel, compute_skill_hash};

@@ -216,6 +216,27 @@ cooldown_minutes = 60
 # d2skill_max_corrections = 3
 # d2skill_provider = ""
 
+# Provider name for `/skill create` NL skill generation. Empty = primary provider.
+# generation_provider = "quality"
+# Directory where generated skills are saved. Defaults to first entry in paths.
+# generation_output_dir = "~/.config/zeph/generated-skills"
+
+[skills.mining]
+# GitHub search queries for automated skill discovery.
+# queries = ["topic:cli-tool language:rust stars:>100", "topic:devops-tool"]
+# Maximum repos to fetch per query (capped at 100 by GitHub API). Default: 20.
+max_repos_per_query = 20
+# Cosine similarity threshold for dedup against existing skills. Default: 0.85.
+dedup_threshold = 0.85
+# Output directory for mined skills.
+# output_dir = "~/.config/zeph/mined-skills"
+# Provider name for generation during mining. Empty = primary provider.
+# generation_provider = "quality"
+# Provider name for embedding during dedup. Empty = primary provider.
+# embedding_provider = "fast"
+# Maximum GitHub search API requests per minute. Default: 25.
+rate_limit_rpm = 25
+
 [skills.trust]
 # Default trust level for newly discovered skills: trusted, verified, quarantined, blocked
 default_level = "quarantined"

@@ -432,6 +432,72 @@ pub fn validate_path_within(path: &Path, base_dir: &Path) -> Result<PathBuf, Ski
     Ok(canonical_path)
 }
 
+/// Parse a SKILL.md string in memory, returning `(meta, body)`.
+///
+/// The `skill_dir` in the returned `SkillMeta` is set to `PathBuf::new()` (empty) because
+/// no filesystem path is available. Callers that write to disk should update `skill_dir`
+/// after saving.
+///
+/// Unlike [`load_skill_meta`], this variant skips the directory-name ↔ skill-name consistency
+/// check, since the skill has not yet been written to any directory.
+///
+/// # Errors
+///
+/// Returns `SkillError::Invalid` if frontmatter is missing or fields fail validation.
+pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), SkillError> {
+    let (yaml_str, body) = split_frontmatter(content)?;
+    let raw = parse_frontmatter(yaml_str);
+
+    let name = raw
+        .name
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| SkillError::Invalid("missing 'name' in frontmatter".into()))?;
+    let description = raw
+        .description
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| SkillError::Invalid("missing 'description' in frontmatter".into()))?;
+
+    if description.len() > 1024 {
+        return Err(SkillError::Invalid(format!(
+            "description exceeds 1024 characters ({})",
+            description.len()
+        )));
+    }
+
+    if let Some(ref c) = raw.compatibility
+        && c.len() > 500
+    {
+        return Err(SkillError::Invalid(format!(
+            "compatibility exceeds 500 characters ({})",
+            c.len()
+        )));
+    }
+
+    if let Some(ref cat) = raw.category {
+        validate_category(cat)?;
+    }
+
+    if raw.deprecated_requires_secrets {
+        tracing::warn!("'requires-secrets' is deprecated, use 'x-requires-secrets'");
+    }
+
+    let meta = SkillMeta {
+        name,
+        description,
+        compatibility: raw.compatibility,
+        license: raw.license,
+        metadata: raw.metadata,
+        allowed_tools: raw.allowed_tools,
+        requires_secrets: raw.requires_secrets,
+        skill_dir: PathBuf::new(),
+        source_url: raw.source_url,
+        git_hash: raw.git_hash,
+        category: raw.category,
+    };
+
+    Ok((meta, body.to_string()))
+}
+
 /// Load only frontmatter metadata from a SKILL.md file.
 ///
 /// # Errors

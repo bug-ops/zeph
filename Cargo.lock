@@ -9904,8 +9904,11 @@ dependencies = [
 name = "zeph-skills"
 version = "0.18.2"
 dependencies = [
+ "anyhow",
  "blake3",
+ "clap",
  "criterion",
+ "dirs",
  "futures",
  "include_dir",
  "notify",
@@ -9913,13 +9916,16 @@ dependencies = [
  "proptest",
  "qdrant-client",
  "regex",
+ "reqwest 0.13.2",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml 1.1.0+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
  "uuid",
  "zeph-config",

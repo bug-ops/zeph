@@ -107,6 +107,11 @@ pub(crate) struct SkillState {
     pub(crate) rl_weight: f32,
     /// Skip RL blending for the first N updates (cold-start warmup).
     pub(crate) rl_warmup_updates: u32,
+    /// Directory where `/skill create` writes generated skills.
+    /// Defaults to `managed_dir` if `None`.
+    pub(crate) generation_output_dir: Option<std::path::PathBuf>,
+    /// Provider name for `/skill create` generation. Empty = primary.
+    pub(crate) generation_provider_name: String,
 }
 
 pub(crate) struct McpState {

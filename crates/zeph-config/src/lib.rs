@@ -49,8 +49,8 @@ pub use dump_format::DumpFormat;
 pub use experiment::{ExperimentConfig, ExperimentSchedule, OrchestrationConfig, PlanCacheConfig};
 pub use features::{
     CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
-    ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SkillPromptMode, SkillsConfig,
-    TraceConfig, VaultConfig,
+    ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SkillMiningConfig, SkillPromptMode,
+    SkillsConfig, TraceConfig, VaultConfig,
 };
 pub use hooks::{FileChangedConfig, HooksConfig};
 pub use learning::{DetectorMode, LearningConfig};

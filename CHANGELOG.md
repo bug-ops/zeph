@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `/skill create <description>` command: generate a SKILL.md via LLM from natural language, preview before save (#2418)
+- `zeph-skills-miner` binary (`cargo run -p zeph-skills --features miner --bin zeph-skills-miner`): automated skill mining from GitHub repositories with cosine dedup (#1889)
+- `skills.generation_provider` config field: select LLM provider for `/skill create` generation
+- `skills.generation_output_dir` config field: directory where generated skills are written (defaults to first `skills.paths` entry)
+- `[skills.mining]` config section: `queries`, `max_repos_per_query`, `dedup_threshold`, `output_dir`, `generation_provider`, `embedding_provider`, `rate_limit_rpm`
+- `load_skill_meta_from_str()` in `zeph-skills`: parse SKILL.md from in-memory string without disk access
+
 ### Security
 - Truncate `CorrectionHint` text to 500 chars at insertion to prevent prompt injection via long tool outputs (#2596)
 - Add OOM sanity cap (1M elements) in `read_f32_slice` before `Vec::with_capacity` to prevent crafted-blob DoS (#2595)

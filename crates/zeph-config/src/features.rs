@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::defaults::{default_skill_paths, default_true};
 use crate::learning::LearningConfig;
+use crate::providers::ProviderName;
 use crate::security::TrustConfig;
 
 fn default_disambiguation_threshold() -> f32 {
@@ -174,6 +175,55 @@ pub struct SkillsConfig {
     /// Skip RL blending for the first N updates (cold-start warmup).
     #[serde(default = "default_rl_warmup_updates")]
     pub rl_warmup_updates: u32,
+
+    // --- NL skill generation ---
+    /// Provider name for `/skill create` NL generation. Empty = primary provider.
+    #[serde(default)]
+    pub generation_provider: ProviderName,
+    /// Directory where generated skills are written. Defaults to first entry in `paths`.
+    #[serde(default)]
+    pub generation_output_dir: Option<String>,
+    /// Skill mining configuration.
+    #[serde(default)]
+    pub mining: SkillMiningConfig,
+}
+
+fn default_max_repos_per_query() -> usize {
+    20
+}
+
+fn default_dedup_threshold() -> f32 {
+    0.85
+}
+
+fn default_rate_limit_rpm() -> u32 {
+    25
+}
+
+/// Configuration for the automated skill mining pipeline (`zeph-skills-miner` binary).
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct SkillMiningConfig {
+    /// GitHub search queries for repo discovery (e.g. "topic:cli-tool language:rust stars:>100").
+    #[serde(default)]
+    pub queries: Vec<String>,
+    /// Maximum repos to fetch per query (capped at 100 by GitHub API). Default: 20.
+    #[serde(default = "default_max_repos_per_query")]
+    pub max_repos_per_query: usize,
+    /// Cosine similarity threshold for dedup against existing skills. Default: 0.85.
+    #[serde(default = "default_dedup_threshold")]
+    pub dedup_threshold: f32,
+    /// Output directory for mined skills.
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    /// Provider name for skill generation during mining. Empty = primary provider.
+    #[serde(default)]
+    pub generation_provider: ProviderName,
+    /// Provider name for embedding during dedup. Empty = primary provider.
+    #[serde(default)]
+    pub embedding_provider: ProviderName,
+    /// Maximum GitHub search requests per minute. Default: 25.
+    #[serde(default = "default_rate_limit_rpm")]
+    pub rate_limit_rpm: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
