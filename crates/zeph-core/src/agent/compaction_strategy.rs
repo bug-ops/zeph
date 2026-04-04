@@ -583,6 +583,114 @@ impl SubgoalRegistry {
     }
 }
 
+/// Density classification for a message or segment (#2481).
+///
+/// Used to partition compaction token budgets: high-density content (structured data,
+/// code, JSON) receives a larger fraction of the summary budget than low-density prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContentDensity {
+    /// More than 50% of lines are structured (code fences, JSON, lists, shell output).
+    High,
+    /// 50% or fewer lines are structured.
+    Low,
+}
+
+/// Classify a message's content density.
+///
+/// A line is considered structured if it matches any of:
+/// - code fence delimiters (` ``` ` or `~~~`)
+/// - leading special characters: `{`, `[`, `|`, `$`, `>`, `#`
+/// - indentation of 4+ spaces (typical for code blocks / shell output)
+///
+/// Threshold: >50% structured lines → `High`.
+pub(crate) fn classify_density(content: &str) -> ContentDensity {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return ContentDensity::Low;
+    }
+
+    let structured = lines
+        .iter()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("```")
+                || trimmed.starts_with("~~~")
+                || trimmed.starts_with('{')
+                || trimmed.starts_with('[')
+                || trimmed.starts_with('|')
+                || trimmed.starts_with('$')
+                || trimmed.starts_with('>')
+                || trimmed.starts_with('#')
+                || (line.len() >= 4 && line.starts_with("    "))
+        })
+        .count();
+
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = structured as f32 / lines.len() as f32;
+
+    if ratio > 0.5 {
+        ContentDensity::High
+    } else {
+        ContentDensity::Low
+    }
+}
+
+/// Validate that density budget fractions sum to approximately 1.0.
+///
+/// Returns `Ok(())` when `(high + low - 1.0).abs() < 0.01`.
+///
+/// # Errors
+///
+/// Returns an error string when the budgets do not sum to 1.0 within epsilon.
+#[allow(dead_code)]
+pub(crate) fn validate_density_budgets(high: f32, low: f32) -> Result<(), String> {
+    if (high + low - 1.0_f32).abs() < 0.01 {
+        Ok(())
+    } else {
+        Err(format!(
+            "density budgets must sum to 1.0 (got {high} + {low} = {})",
+            high + low
+        ))
+    }
+}
+
+/// Partition messages into (high-density, low-density) groups by content classification.
+///
+/// System messages and pinned messages are excluded from both groups.
+pub(crate) fn partition_by_density(messages: &[Message]) -> (Vec<Message>, Vec<Message>) {
+    let mut high = Vec::new();
+    let mut low = Vec::new();
+    for msg in messages {
+        if msg.metadata.focus_pinned {
+            continue;
+        }
+        match classify_density(&msg.content) {
+            ContentDensity::High => high.push(msg.clone()),
+            ContentDensity::Low => low.push(msg.clone()),
+        }
+    }
+    (high, low)
+}
+
+/// Apply density-aware token budget cap to a message slice.
+///
+/// Returns a vec of messages trimmed to approximately `max_chars` total content length.
+/// Messages are included in order until the budget is exhausted.
+#[allow(dead_code)]
+pub(crate) fn apply_density_budget(messages: &[Message], max_chars: usize) -> Vec<Message> {
+    let mut result = Vec::new();
+    let mut used = 0usize;
+    for msg in messages {
+        let len = msg.content.len();
+        if used + len > max_chars {
+            break;
+        }
+        result.push(msg.clone());
+        used += len;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -927,5 +1035,126 @@ mod tests {
         assert!(registry.active_subgoal().is_some());
         // At least the new messages should be tagged
         assert!(!registry.msg_to_subgoal.is_empty());
+    }
+
+    // ─── classify_density tests ───────────────────────────────────────────────
+
+    #[test]
+    fn classify_density_empty_string_is_low() {
+        assert_eq!(classify_density(""), ContentDensity::Low);
+    }
+
+    #[test]
+    fn classify_density_all_structured_is_high() {
+        // 4 lines, all structured (code fence or leading special char)
+        let content = "```rust\nfn main() {}\n```\n$ cargo build\n";
+        assert_eq!(classify_density(content), ContentDensity::High);
+    }
+
+    #[test]
+    fn classify_density_all_prose_is_low() {
+        let content = "This is a sentence.\nAnother sentence here.\nNo structured content at all.";
+        assert_eq!(classify_density(content), ContentDensity::Low);
+    }
+
+    #[test]
+    fn classify_density_exactly_50_percent_is_low() {
+        // 2 structured lines out of 4 = 50% → Low (threshold is strictly > 0.5)
+        let content = "```rust\n$ cargo test\nplain prose line one\nplain prose line two";
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(classify_density(content), ContentDensity::Low);
+    }
+
+    #[test]
+    fn classify_density_cargo_output_is_high() {
+        // Cargo JSON/shell output: lines starting with `{`, `[`, `$` or 4-space indent.
+        // 4 structured out of 6 = 66% → High.
+        let content = "$ cargo build --message-format json\n\
+                       {\"reason\":\"compiler-message\"}\n\
+                       {\"reason\":\"build-script-executed\"}\n\
+                       {\"reason\":\"compiler-artifact\"}\n\
+                       Build finished.\n\
+                       Done.";
+        assert_eq!(classify_density(content), ContentDensity::High);
+    }
+
+    #[test]
+    fn classify_density_indented_code_4_spaces_is_structured() {
+        // Lines with 4+ spaces of indentation count as structured
+        let content = "    let x = 5;\n    let y = 6;\nnormal prose\n    return x + y;";
+        // 3 structured out of 4 = 75% → High
+        assert_eq!(classify_density(content), ContentDensity::High);
+    }
+
+    // ─── validate_density_budgets tests ──────────────────────────────────────
+
+    #[test]
+    fn validate_density_budgets_default_values_ok() {
+        assert!(validate_density_budgets(0.7, 0.3).is_ok());
+    }
+
+    #[test]
+    fn validate_density_budgets_exact_one_ok() {
+        assert!(validate_density_budgets(0.5, 0.5).is_ok());
+        assert!(validate_density_budgets(1.0, 0.0).is_ok());
+        assert!(validate_density_budgets(0.0, 1.0).is_ok());
+    }
+
+    #[test]
+    fn validate_density_budgets_within_epsilon_ok() {
+        // 0.7 + 0.3 + 0.009 < 0.01 threshold
+        assert!(validate_density_budgets(0.7, 0.309).is_ok());
+    }
+
+    #[test]
+    fn validate_density_budgets_over_epsilon_err() {
+        let result = validate_density_budgets(0.5, 0.6);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("1.0"), "error must mention expected sum");
+    }
+
+    #[test]
+    fn validate_density_budgets_under_sum_err() {
+        let result = validate_density_budgets(0.3, 0.3);
+        assert!(result.is_err());
+    }
+
+    // ─── KnowledgeBlock eviction order tests ─────────────────────────────────
+
+    #[test]
+    fn eviction_auto_consolidated_evicted_before_llm_curated() {
+        use crate::agent::focus::{FocusState, KnowledgeBlockSource};
+        use crate::config::FocusConfig;
+        // Cap = 10 tokens ≈ 40 chars. Each block below is ~100 chars each.
+        let config = FocusConfig {
+            max_knowledge_tokens: 10,
+            ..FocusConfig::default()
+        };
+        let mut state = FocusState::new(config);
+
+        // Add LlmCurated first, then AutoConsolidated.
+        state.append_llm_knowledge("llm_curated_summary_content ".repeat(4));
+        state.append_auto_knowledge("auto_consolidated_summary ".repeat(4));
+        // Add another LlmCurated — this triggers eviction to stay under cap.
+        state.append_llm_knowledge("second_llm_curated_summary ".repeat(4));
+
+        // AutoConsolidated must be evicted first. No AutoConsolidated blocks should remain
+        // if the cap forced any eviction.
+        let has_auto = state
+            .knowledge_blocks
+            .iter()
+            .any(|b| b.source == KnowledgeBlockSource::AutoConsolidated);
+        assert!(
+            !has_auto,
+            "AutoConsolidated block must be evicted before LlmCurated"
+        );
+        // At least one LlmCurated must survive.
+        let has_llm = state
+            .knowledge_blocks
+            .iter()
+            .any(|b| b.source == KnowledgeBlockSource::LlmCurated);
+        assert!(has_llm, "at least one LlmCurated block must survive");
     }
 }

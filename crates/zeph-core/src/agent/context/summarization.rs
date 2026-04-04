@@ -501,6 +501,26 @@ impl<C: Channel> Agent<C> {
         messages: &[Message],
         guidelines: &str,
     ) -> Result<String, super::super::error::AgentError> {
+        // Density-aware budget partitioning (#2481).
+        //
+        // When density budgets are configured (non-default or explicitly set), log the split
+        // so operators can observe which fraction of content is high vs. low density.
+        // The budgets inform future per-density summarization passes (Phase 2).
+        {
+            use crate::agent::compaction_strategy::partition_by_density;
+            let compression = &self.context_manager.compression;
+            let high_budget = compression.high_density_budget;
+            let low_budget = compression.low_density_budget;
+            let (high, low) = partition_by_density(messages);
+            tracing::debug!(
+                high_density_count = high.len(),
+                low_density_count = low.len(),
+                high_budget,
+                low_budget,
+                "compaction: density-aware partition"
+            );
+        }
+
         // Structured path: attempt AnchoredSummary when enabled, fall back to prose on failure.
         if self.memory_state.structured_summaries {
             match self.try_summarize_structured(messages, guidelines).await {

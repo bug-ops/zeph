@@ -129,6 +129,79 @@ impl EmbeddingStore {
         Ok(())
     }
 
+    /// Store a vector in Qdrant with additional tool execution metadata as payload fields.
+    ///
+    /// Metadata fields (`tool_name`, `exit_code`, `timestamp`) are stored as Qdrant payload
+    /// alongside the standard fields. This allows filtering and scoring by tool context
+    /// without corrupting the embedding vector with text prefixes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn store_with_tool_context(
+        &self,
+        message_id: MessageId,
+        conversation_id: ConversationId,
+        role: &str,
+        vector: Vec<f32>,
+        kind: MessageKind,
+        model: &str,
+        chunk_index: u32,
+        tool_name: &str,
+        exit_code: Option<i32>,
+        timestamp: Option<&str>,
+    ) -> Result<String, MemoryError> {
+        let point_id = uuid::Uuid::new_v4().to_string();
+        let dimensions = i64::try_from(vector.len())?;
+
+        let mut payload = std::collections::HashMap::from([
+            ("message_id".to_owned(), serde_json::json!(message_id.0)),
+            (
+                "conversation_id".to_owned(),
+                serde_json::json!(conversation_id.0),
+            ),
+            ("role".to_owned(), serde_json::json!(role)),
+            (
+                "is_summary".to_owned(),
+                serde_json::json!(kind.is_summary()),
+            ),
+            ("tool_name".to_owned(), serde_json::json!(tool_name)),
+        ]);
+        if let Some(code) = exit_code {
+            payload.insert("exit_code".to_owned(), serde_json::json!(code));
+        }
+        if let Some(ts) = timestamp {
+            payload.insert("timestamp".to_owned(), serde_json::json!(ts));
+        }
+
+        let point = VectorPoint {
+            id: point_id.clone(),
+            vector,
+            payload,
+        };
+
+        self.ops.upsert(&self.collection, vec![point]).await?;
+
+        let chunk_index_i64 = i64::from(chunk_index);
+        zeph_db::query(sql!(
+            "INSERT INTO embeddings_metadata \
+             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(message_id, chunk_index, model) DO UPDATE SET \
+             qdrant_point_id = excluded.qdrant_point_id, dimensions = excluded.dimensions"
+        ))
+        .bind(message_id)
+        .bind(chunk_index_i64)
+        .bind(&point_id)
+        .bind(dimensions)
+        .bind(model)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(point_id)
+    }
+
     /// Store a vector in Qdrant and persist metadata to `SQLite`.
     ///
     /// `chunk_index` is 0 for single-vector messages and increases for each chunk

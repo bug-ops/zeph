@@ -67,6 +67,16 @@ use crate::types::{ConversationId, MessageId};
 use super::SemanticMemory;
 use super::algorithms::{apply_mmr, apply_temporal_decay};
 
+/// Tool execution metadata stored as Qdrant payload fields alongside embeddings.
+///
+/// Stored as payload — NOT prepended to content — to avoid corrupting embedding vectors.
+#[derive(Debug, Clone, Default)]
+pub struct EmbedContext {
+    pub tool_name: Option<String>,
+    pub exit_code: Option<i32>,
+    pub timestamp: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct RecalledMessage {
     pub message: Message,
@@ -254,6 +264,130 @@ impl SemanticMemory {
         }
 
         Ok((Some(message_id), embedding_stored))
+    }
+
+    /// Save a tool output to `SQLite` and embed with tool metadata in Qdrant payload.
+    ///
+    /// Tool metadata (`tool_name`, `exit_code`, `timestamp`) is stored as Qdrant payload fields
+    /// so it is available for filtering without corrupting the embedding vector.
+    ///
+    /// Returns `Ok(Some(message_id))` when admitted and persisted.
+    /// Returns `Ok(None)` when A-MAC admission control rejects the message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` save fails.
+    pub async fn remember_tool_output(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+        embed_ctx: EmbedContext,
+    ) -> Result<(Option<MessageId>, bool), MemoryError> {
+        if let Some(ref admission) = self.admission_control {
+            let decision = admission
+                .evaluate(content, role, &self.provider, self.qdrant.as_ref(), None)
+                .await;
+            let preview: String = content.chars().take(100).collect();
+            log_admission_decision(&decision, &preview, role, admission.threshold());
+            if !decision.admitted {
+                return Ok((None, false));
+            }
+        }
+
+        let message_id = self
+            .sqlite
+            .save_message_with_parts(conversation_id, role, content, parts_json)
+            .await?;
+
+        let embedding_stored = self
+            .embed_chunks_with_tool_context(message_id, conversation_id, role, content, embed_ctx)
+            .await;
+
+        Ok((Some(message_id), embedding_stored))
+    }
+
+    /// Embed content chunks, enriching Qdrant payload with tool metadata when present.
+    ///
+    /// Returns `true` if at least one chunk was successfully stored.
+    async fn embed_chunks_with_tool_context(
+        &self,
+        message_id: MessageId,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        embed_ctx: EmbedContext,
+    ) -> bool {
+        let Some(qdrant) = &self.qdrant else {
+            return false;
+        };
+        if !self.provider.supports_embeddings() {
+            return false;
+        }
+
+        let chunks = chunk_text(content);
+        let chunk_count = chunks.len();
+        let mut collection_ready = false;
+        let mut stored = false;
+
+        for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+            let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+            let Ok(vector) = self.provider.embed(chunk).await else {
+                tracing::warn!(
+                    "Failed to embed tool-output chunk {chunk_index}/{chunk_count} \
+                     for msg {message_id}"
+                );
+                continue;
+            };
+            if !collection_ready {
+                let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+                if let Err(e) = qdrant.ensure_collection(vector_size).await {
+                    tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
+                    break;
+                }
+                collection_ready = true;
+            }
+            let result = if let Some(ref tool_name) = embed_ctx.tool_name {
+                qdrant
+                    .store_with_tool_context(
+                        message_id,
+                        conversation_id,
+                        role,
+                        vector,
+                        MessageKind::Regular,
+                        &self.embedding_model,
+                        chunk_index_u32,
+                        tool_name,
+                        embed_ctx.exit_code,
+                        embed_ctx.timestamp.as_deref(),
+                    )
+                    .await
+                    .map(|_| ())
+            } else {
+                qdrant
+                    .store(
+                        message_id,
+                        conversation_id,
+                        role,
+                        vector,
+                        MessageKind::Regular,
+                        &self.embedding_model,
+                        chunk_index_u32,
+                    )
+                    .await
+                    .map(|_| ())
+            };
+            match result {
+                Ok(()) => stored = true,
+                Err(e) => tracing::warn!(
+                    "Failed to store tool-output chunk {chunk_index}/{chunk_count} \
+                     for msg {message_id}: {e:#}"
+                ),
+            }
+        }
+
+        stored
     }
 
     /// Save a message to `SQLite` without generating an embedding.
@@ -960,5 +1094,41 @@ impl SemanticMemory {
 
         tracing::info!("Embedded {count}/{} missing messages", unembedded.len());
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embed_context_default_all_none() {
+        let ctx = EmbedContext::default();
+        assert!(ctx.tool_name.is_none());
+        assert!(ctx.exit_code.is_none());
+        assert!(ctx.timestamp.is_none());
+    }
+
+    #[test]
+    fn embed_context_fields_set_correctly() {
+        let ctx = EmbedContext {
+            tool_name: Some("shell".to_string()),
+            exit_code: Some(0),
+            timestamp: Some("2026-04-04T00:00:00Z".to_string()),
+        };
+        assert_eq!(ctx.tool_name.as_deref(), Some("shell"));
+        assert_eq!(ctx.exit_code, Some(0));
+        assert_eq!(ctx.timestamp.as_deref(), Some("2026-04-04T00:00:00Z"));
+    }
+
+    #[test]
+    fn embed_context_non_zero_exit_code() {
+        let ctx = EmbedContext {
+            tool_name: Some("shell".to_string()),
+            exit_code: Some(1),
+            timestamp: None,
+        };
+        assert_eq!(ctx.exit_code, Some(1));
+        assert!(ctx.timestamp.is_none());
     }
 }

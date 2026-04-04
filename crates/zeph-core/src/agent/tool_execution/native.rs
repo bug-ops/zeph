@@ -2032,9 +2032,15 @@ impl<C: Channel> Agent<C> {
                 // The LLM-supplied summary is the primary knowledge entry; the bracketed messages
                 // are removed to free context (not re-summarized here to avoid LLM overhead).
                 let _ = messages_to_summarize; // messages available for future semantic use
-                self.focus.append_knowledge(sanitized_summary.clone());
+                self.focus.append_llm_knowledge(sanitized_summary.clone());
                 if let Some(ref d) = self.debug_state.debug_dumper {
-                    let kb = self.focus.knowledge_blocks.join("\n---\n");
+                    let kb = self
+                        .focus
+                        .knowledge_blocks
+                        .iter()
+                        .map(|b| b.content.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n---\n");
                     d.dump_focus_knowledge(&kb);
                 }
                 self.focus.complete();
@@ -2201,8 +2207,8 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.content.len() / 4)
             .sum::<usize>();
 
-        // Append summary to Knowledge block.
-        self.focus.append_knowledge(summary.trim().to_owned());
+        // Append summary to Knowledge block (LLM-authored via compress_context).
+        self.focus.append_llm_knowledge(summary.trim().to_owned());
 
         // Remove compressed messages from in-memory history using their original indices.
         // Index-based removal avoids false positives when two messages share identical content.

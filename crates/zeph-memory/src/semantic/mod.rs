@@ -33,7 +33,7 @@ pub use graph::{
     ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
     PostExtractValidator, extract_and_store, link_memory_notes,
 };
-pub use recall::RecalledMessage;
+pub use recall::{EmbedContext, RecalledMessage};
 pub use summarization::{StructuredSummary, Summary, build_summarization_prompt};
 
 pub struct SemanticMemory {

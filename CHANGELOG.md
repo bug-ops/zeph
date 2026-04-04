@@ -41,6 +41,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(mcp): JSON pointer paths for flagged schema parameters — `FlaggedParameter { path, pattern_name }` stored in `ToolSecurityMeta.flagged_parameters`; schema walk refactored into `SchemaWalkCtx` accumulator (#2480)
 - feat(mcp): `MIN_CROSS_REF_NAME_LEN = 4` guard to exclude short ambiguous names ("get", "set", "run") from cross-reference matching (#2480)
 - docs(security): AgentRFC 6-layer security audit with `SECURITY:` gap annotations in `handlers.rs` (layer-6 audit log gap) and `stdio.rs` (layer-2 session binding limitation); full audit document at `.local/specs/security/agentrfc-audit.md` (#2509)
+- feat(memory): add `EmbedContext` struct and `remember_tool_output()` method — tool metadata (`tool_name`, `exit_code`, `timestamp`) stored as Qdrant payload fields (not prepended to content) to enable tool-aware semantic search without corrupting embedding vectors (#2553)
+- feat(memory): add `store_with_tool_context()` to `EmbeddingStore` — enriches Qdrant point payload with tool execution metadata fields
+- feat(focus): add `KnowledgeBlockSource` enum (`LlmCurated` / `AutoConsolidated`) to distinguish knowledge block origins; eviction policy now prefers `AutoConsolidated` blocks before `LlmCurated` ones (#2510)
+- feat(focus): add `CompressionStrategy::Focus` variant and `focus_scorer_provider` field to `CompressionConfig` (#2510)
+- feat(compression): add `ContentDensity` enum and `classify_density()` / `partition_by_density()` utilities — classifies messages by structured-content ratio (>50% threshold); density-aware budget fields `high_density_budget` / `low_density_budget` added to `CompressionConfig` with epsilon-validated sum (#2481)
+- feat(compression): apply density partition logging in `summarize_messages` — `partition_by_density` called on every compaction with debug-level tracing of high/low split
 - feat(subagent): propagate parent conversation history to spawned sub-agents — last `context_window_turns` (default 10) non-system messages are passed as `initial_messages`; a 25% context window cap is applied using a 4-chars-per-token heuristic (#2576)
 - feat(subagent): cascade cancellation from parent to foreground sub-agents via `CancellationToken::child_token()`; background sub-agents (`background: true`) retain independent tokens (#2577)
 - feat(subagent): add `model: inherit` keyword to `SubAgentDef` — sub-agent inherits the parent's active provider name at spawn time; named providers continue to work as before (#2578)

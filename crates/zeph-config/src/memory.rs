@@ -950,6 +950,11 @@ pub enum CompressionStrategy {
     /// Agent calls `compress_context` tool explicitly. Reactive compaction still fires as a
     /// safety net. The `compress_context` tool is also available in all other strategies.
     Autonomous,
+    /// Knowledge-block-aware compression strategy (#2510).
+    ///
+    /// Low-relevance context segments are automatically consolidated into `AutoConsolidated`
+    /// knowledge blocks. LLM-curated blocks are never evicted before auto-consolidated ones.
+    Focus,
 }
 
 /// Pruning strategy for tool-output eviction inside the compaction pipeline (#1851, #2022).
@@ -1021,6 +1026,14 @@ impl std::str::FromStr for PruningStrategy {
     }
 }
 
+fn default_high_density_budget() -> f32 {
+    0.7
+}
+
+fn default_low_density_budget() -> f32 {
+    0.3
+}
+
 /// Configuration for active context compression (#1161).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -1050,6 +1063,17 @@ pub struct CompressionConfig {
     /// Default: `false`.
     #[serde(default)]
     pub archive_tool_outputs: bool,
+    /// Provider for Focus strategy segment scoring (#2510).
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub focus_scorer_provider: ProviderName,
+    /// Token-budget fraction for high-density content in density-aware compression (#2481).
+    /// Must sum to 1.0 with `low_density_budget`. Default: `0.7`.
+    #[serde(default = "default_high_density_budget")]
+    pub high_density_budget: f32,
+    /// Token-budget fraction for low-density content in density-aware compression (#2481).
+    /// Must sum to 1.0 with `high_density_budget`. Default: `0.3`.
+    #[serde(default = "default_low_density_budget")]
+    pub low_density_budget: f32,
 }
 
 fn default_sidequest_interval_turns() -> u32 {
@@ -1836,5 +1860,45 @@ mod tests {
         cfg.activation_threshold = 0.5;
         cfg.inhibition_threshold = 0.5;
         assert!(cfg.validate().is_err());
+    }
+
+    // ─── CompressionConfig: new Focus fields deserialization (#2510, #2481) ──
+
+    #[test]
+    fn compression_config_focus_strategy_deserializes() {
+        let toml = r#"strategy = "focus""#;
+        let cfg: CompressionConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.strategy, CompressionStrategy::Focus);
+    }
+
+    #[test]
+    fn compression_config_density_budget_defaults_on_deserialize() {
+        // `#[serde(default = "...")]` applies during deserialization, not via Default::default().
+        // Verify that omitting both fields yields the serde defaults (0.7 / 0.3).
+        let toml = r#"strategy = "reactive""#;
+        let cfg: CompressionConfig = toml::from_str(toml).unwrap();
+        assert!((cfg.high_density_budget - 0.7).abs() < 1e-6);
+        assert!((cfg.low_density_budget - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compression_config_density_budget_round_trip() {
+        let toml = "strategy = \"reactive\"\nhigh_density_budget = 0.6\nlow_density_budget = 0.4";
+        let cfg: CompressionConfig = toml::from_str(toml).unwrap();
+        assert!((cfg.high_density_budget - 0.6).abs() < f32::EPSILON);
+        assert!((cfg.low_density_budget - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn compression_config_focus_scorer_provider_default_empty() {
+        let cfg = CompressionConfig::default();
+        assert!(cfg.focus_scorer_provider.is_empty());
+    }
+
+    #[test]
+    fn compression_config_focus_scorer_provider_round_trip() {
+        let toml = "strategy = \"focus\"\nfocus_scorer_provider = \"fast\"";
+        let cfg: CompressionConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.focus_scorer_provider.as_str(), "fast");
     }
 }

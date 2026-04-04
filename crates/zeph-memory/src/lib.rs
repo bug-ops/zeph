@@ -78,8 +78,9 @@ pub use scenes::{
     MemScene, SceneConfig, consolidate_scenes, list_scenes, start_scene_consolidation_loop,
 };
 pub use semantic::{
-    ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
-    StructuredSummary, build_summarization_prompt, extract_and_store, link_memory_notes,
+    EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats,
+    NoteLinkingConfig, StructuredSummary, build_summarization_prompt, extract_and_store,
+    link_memory_notes,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 pub use store::compression_guidelines::CompressionFailurePair;

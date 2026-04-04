@@ -1549,6 +1549,9 @@ mod tests {
             probe: zeph_memory::CompactionProbeConfig::default(),
             compress_provider: zeph_config::ProviderName::default(),
             archive_tool_outputs: false,
+            focus_scorer_provider: zeph_config::ProviderName::default(),
+            high_density_budget: 0.7,
+            low_density_budget: 0.3,
         };
         let agent = make_agent().with_compression(compression);
         assert!(

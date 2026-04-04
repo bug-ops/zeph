@@ -89,12 +89,30 @@ pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
 // Used by build_knowledge_message (context-compression feature).
 pub(crate) const KNOWLEDGE_BLOCK_PREFIX: &str = "[knowledge]\n";
 
+/// Indicates the origin of a knowledge block entry.
+///
+/// Used to differentiate LLM-authored summaries from auto-consolidated context segments,
+/// allowing eviction policy to prefer evicting `AutoConsolidated` before `LlmCurated`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KnowledgeBlockSource {
+    /// Created by the LLM via `complete_focus` or `compress_context`.
+    LlmCurated,
+    /// Created by automatic context consolidation (Focus compression strategy).
+    AutoConsolidated,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct KnowledgeBlock {
+    pub(crate) content: String,
+    pub(crate) source: KnowledgeBlockSource,
+}
+
 /// Tracks the state of the active focus session.
 // Fields and methods below are consumed by context-compression feature paths.
 pub(crate) struct FocusState {
     pub(crate) config: FocusConfig,
     /// Accumulated knowledge entries from all completed focus sessions.
-    pub(crate) knowledge_blocks: Vec<String>,
+    pub(crate) knowledge_blocks: Vec<KnowledgeBlock>,
     /// Marker UUID written into the checkpoint message's `focus_marker_id` field.
     /// `None` = no active focus session.
     pub(crate) active_marker: Option<Uuid>,
@@ -112,7 +130,7 @@ impl FocusState {
     pub(crate) fn new(config: FocusConfig) -> Self {
         Self {
             config,
-            knowledge_blocks: Vec::new(),
+            knowledge_blocks: Vec::<KnowledgeBlock>::new(),
             active_marker: None,
             active_scope: None,
             turns_since_focus: 0,
@@ -148,11 +166,11 @@ impl FocusState {
     pub(crate) fn reset(&mut self) {
         self.knowledge_blocks.clear();
         self.active_marker = None;
-        self.compressing
-            .store(false, std::sync::atomic::Ordering::Release);
         self.active_scope = None;
         self.turns_since_focus = 0;
         self.turns_since_reminder = 0;
+        self.compressing
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// Increment turn counters. Called at the start of each user-message turn.
@@ -163,27 +181,59 @@ impl FocusState {
 
     /// Append a completed focus summary to the accumulated knowledge.
     ///
-    /// Enforces `max_knowledge_tokens` by evicting the oldest entry (FIFO) when the
-    /// serialized block would exceed the cap (SEC-CC-01 fix).
+    /// Enforces `max_knowledge_tokens` by evicting entries when the serialized block would
+    /// exceed the cap. Eviction prefers `AutoConsolidated` blocks over `LlmCurated` ones;
+    /// within the same source tier, oldest entries are evicted first (SEC-CC-01 fix).
     ///
     /// Returns `true` if the Knowledge block was actually updated.
-    pub(crate) fn append_knowledge(&mut self, summary: String) -> bool {
+    pub(crate) fn append_knowledge(
+        &mut self,
+        summary: String,
+        source: KnowledgeBlockSource,
+    ) -> bool {
         if summary.is_empty() {
             return false;
         }
-        self.knowledge_blocks.push(summary);
-        // Enforce the token cap by evicting from the front (oldest-first) until within budget.
-        // Each block is approximated at 4 chars/token (fast, no external dep needed here).
-        while self.knowledge_blocks.len() > 1 {
-            let total_chars: usize = self.knowledge_blocks.iter().map(String::len).sum();
+        self.knowledge_blocks.push(KnowledgeBlock {
+            content: summary,
+            source,
+        });
+        // Enforce the token cap. Eviction order: AutoConsolidated first (oldest), then LlmCurated.
+        // Each block is approximated at 4 chars/token.
+        loop {
+            if self.knowledge_blocks.len() <= 1 {
+                break;
+            }
+            let total_chars: usize = self.knowledge_blocks.iter().map(|b| b.content.len()).sum();
             #[allow(clippy::integer_division)]
             let approx_tokens = total_chars / 4;
             if approx_tokens <= self.config.max_knowledge_tokens {
                 break;
             }
-            self.knowledge_blocks.remove(0);
+            // Prefer evicting the oldest AutoConsolidated block.
+            if let Some(pos) = self
+                .knowledge_blocks
+                .iter()
+                .position(|b| b.source == KnowledgeBlockSource::AutoConsolidated)
+            {
+                self.knowledge_blocks.remove(pos);
+            } else {
+                // All remaining are LlmCurated — evict oldest.
+                self.knowledge_blocks.remove(0);
+            }
         }
         true
+    }
+
+    /// Append an LLM-curated summary (from `complete_focus` or `compress_context`).
+    pub(crate) fn append_llm_knowledge(&mut self, summary: String) -> bool {
+        self.append_knowledge(summary, KnowledgeBlockSource::LlmCurated)
+    }
+
+    // TODO(#2510): wire Focus strategy Phase 2 — auto-consolidation path
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn append_auto_knowledge(&mut self, summary: String) -> bool {
+        self.append_knowledge(summary, KnowledgeBlockSource::AutoConsolidated)
     }
 
     /// Build the pinned Knowledge block message, or `None` if there is no knowledge yet.
@@ -200,7 +250,7 @@ impl FocusState {
             body.push_str("## Focus summary ");
             body.push_str(&(i + 1).to_string());
             body.push('\n');
-            body.push_str(block);
+            body.push_str(&block.content);
         }
 
         Some(Message {
@@ -249,14 +299,14 @@ mod tests {
     #[test]
     fn append_knowledge_adds_entry() {
         let mut state = FocusState::new(FocusConfig::default());
-        assert!(state.append_knowledge("test summary".to_string()));
+        assert!(state.append_llm_knowledge("test summary".to_string()));
         assert_eq!(state.knowledge_blocks.len(), 1);
     }
 
     #[test]
     fn append_knowledge_ignores_empty() {
         let mut state = FocusState::new(FocusConfig::default());
-        assert!(!state.append_knowledge(String::new()));
+        assert!(!state.append_llm_knowledge(String::new()));
         assert!(state.knowledge_blocks.is_empty());
     }
     #[test]
@@ -283,7 +333,7 @@ mod tests {
     #[test]
     fn build_knowledge_message_contains_prefix() {
         let mut state = FocusState::new(FocusConfig::default());
-        state.append_knowledge("my summary".to_string());
+        state.append_llm_knowledge("my summary".to_string());
         let msg = state.build_knowledge_message().unwrap();
         assert!(msg.content.starts_with(KNOWLEDGE_BLOCK_PREFIX));
         assert!(msg.content.contains("my summary"));
@@ -300,9 +350,9 @@ mod tests {
         let mut state = FocusState::new(config);
 
         // Add entries that will exceed the cap
-        state.append_knowledge("a".repeat(100)); // ~25 tokens (400 chars / 4)
-        state.append_knowledge("b".repeat(100));
-        state.append_knowledge("c".repeat(100));
+        state.append_llm_knowledge("a".repeat(100)); // ~25 tokens (400 chars / 4)
+        state.append_llm_knowledge("b".repeat(100));
+        state.append_llm_knowledge("c".repeat(100));
 
         // Should have evicted oldest entries to stay within cap
         // At least one entry must remain (we never evict the last one)
@@ -313,7 +363,7 @@ mod tests {
         // The oldest ('a' block) should have been evicted if we have multiple blocks
         if state.knowledge_blocks.len() > 1 {
             assert!(
-                !state.knowledge_blocks[0].starts_with('a'),
+                !state.knowledge_blocks[0].content.starts_with('a'),
                 "oldest block must be evicted first"
             );
         }
@@ -326,7 +376,7 @@ mod tests {
             ..FocusConfig::default()
         }; // impossibly small cap
         let mut state = FocusState::new(config);
-        state.append_knowledge("very long summary that exceeds any token cap".to_string());
+        state.append_llm_knowledge("very long summary that exceeds any token cap".to_string());
         // Must keep at least 1 block — never evict all
         assert_eq!(
             state.knowledge_blocks.len(),
@@ -397,24 +447,24 @@ mod tests {
     fn knowledge_block_persists_across_multiple_appends() {
         let mut state = FocusState::new(FocusConfig::default());
 
-        state.append_knowledge("First compression summary.".to_string());
-        state.append_knowledge("Second compression summary.".to_string());
+        state.append_llm_knowledge("First compression summary.".to_string());
+        state.append_llm_knowledge("Second compression summary.".to_string());
 
         assert_eq!(
             state.knowledge_blocks.len(),
             2,
             "both summaries must persist"
         );
-        assert!(state.knowledge_blocks[0].contains("First"));
-        assert!(state.knowledge_blocks[1].contains("Second"));
+        assert!(state.knowledge_blocks[0].content.contains("First"));
+        assert!(state.knowledge_blocks[1].content.contains("Second"));
     }
 
     // Test: Knowledge block message contains all summaries after multiple compressions.
     #[test]
     fn knowledge_message_contains_all_summaries() {
         let mut state = FocusState::new(FocusConfig::default());
-        state.append_knowledge("Summary A: learned about auth.".to_string());
-        state.append_knowledge("Summary B: learned about storage.".to_string());
+        state.append_llm_knowledge("Summary A: learned about auth.".to_string());
+        state.append_llm_knowledge("Summary B: learned about storage.".to_string());
 
         let msg = state.build_knowledge_message().unwrap();
         assert!(msg.content.contains("Summary A"));
@@ -425,7 +475,10 @@ mod tests {
     #[test]
     fn reset_clears_all_session_state() {
         let mut state = FocusState::new(FocusConfig::default());
-        state.knowledge_blocks.push("some knowledge".to_string());
+        state.knowledge_blocks.push(KnowledgeBlock {
+            content: "some knowledge".to_string(),
+            source: KnowledgeBlockSource::LlmCurated,
+        });
         state.active_scope = Some("active scope".to_string());
         state.turns_since_focus = 7;
         state.turns_since_reminder = 3;
@@ -434,5 +487,38 @@ mod tests {
         assert!(state.active_scope.is_none());
         assert_eq!(state.turns_since_focus, 0);
         assert_eq!(state.turns_since_reminder, 0);
+    }
+
+    #[test]
+    fn append_auto_knowledge_uses_auto_consolidated_source() {
+        let mut state = FocusState::new(FocusConfig::default());
+        assert!(state.append_auto_knowledge("auto summary".to_string()));
+        assert_eq!(state.knowledge_blocks.len(), 1);
+        assert_eq!(
+            state.knowledge_blocks[0].source,
+            KnowledgeBlockSource::AutoConsolidated
+        );
+    }
+
+    // SEC-CC-02: AutoConsolidated evicted before LlmCurated under token cap.
+    #[test]
+    fn eviction_prefers_auto_consolidated_over_llm_curated() {
+        let config = FocusConfig {
+            max_knowledge_tokens: 10,
+            ..FocusConfig::default()
+        };
+        let mut state = FocusState::new(config);
+        state.append_llm_knowledge("a".repeat(20)); // LlmCurated
+        state.append_auto_knowledge("b".repeat(20)); // AutoConsolidated
+        state.append_llm_knowledge("c".repeat(20)); // LlmCurated — triggers eviction
+
+        // AutoConsolidated block must be evicted first.
+        assert!(
+            state
+                .knowledge_blocks
+                .iter()
+                .all(|b| b.source != KnowledgeBlockSource::AutoConsolidated),
+            "AutoConsolidated block must be evicted before LlmCurated"
+        );
     }
 }
