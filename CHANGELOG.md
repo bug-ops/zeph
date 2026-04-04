@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor: split `agent/learning.rs` (3749 lines) into `agent/learning/` directory with submodules `mod.rs`, `trust.rs`, `outcomes.rs`, `skill_commands.rs`, `erl.rs`, `arise.rs`, `d2skill.rs`, `rl.rs`, `preferences.rs`, `background.rs`, `tests.rs` (#2630)
 - refactor: split `agent/mod.rs` into focused submodules — `plan.rs`, `scheduler_loop.rs`, `corrections.rs`, `model_commands.rs`; extend `slash_commands.rs` with extracted slash command handlers; extract `sanitize_tool_output` into `agent/tool_execution/sanitize.rs`
 - refactor: extract `run_agent_loop`, `AgentLoopArgs`, `handle_tool_step`, `append_transcript`, `make_message` from `zeph-subagent/src/manager.rs` into `zeph-subagent/src/agent_loop.rs`
 - refactor: split `src/init.rs` (3187 lines) into `src/init/` directory with submodules `llm.rs`, `memory.rs`, `security.rs`, `mcp.rs`, `agents.rs`
