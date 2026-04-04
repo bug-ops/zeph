@@ -16,6 +16,7 @@ use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 use crate::widgets;
 use crate::widgets::command_palette::CommandPaletteState;
+use crate::widgets::slash_autocomplete::{SlashAutocompleteState, command_id_to_slash_form};
 
 pub use crate::render_cache::{RenderCache, RenderCacheEntry, RenderCacheKey, content_hash};
 pub use crate::types::{ChatMessage, InputMode, MessageRole};
@@ -191,6 +192,7 @@ pub struct App {
     command_tx: Option<mpsc::Sender<TuiCommand>>,
     file_picker_state: Option<FilePickerState>,
     file_index: Option<FileIndex>,
+    slash_autocomplete: Option<SlashAutocompleteState>,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,
@@ -247,6 +249,7 @@ impl App {
             command_tx: None,
             file_picker_state: None,
             file_index: None,
+            slash_autocomplete: None,
             should_quit: false,
             user_input_tx,
             agent_event_rx,
@@ -838,6 +841,10 @@ impl App {
 
         if let Some(state) = &self.file_picker_state {
             widgets::file_picker::render(state, frame, layout.input);
+        }
+
+        if let Some(state) = &self.slash_autocomplete {
+            widgets::slash_autocomplete::render(state, frame, layout.input);
         }
 
         if let Some(state) = &self.confirm_state {
@@ -1542,6 +1549,10 @@ impl App {
     }
 
     fn handle_insert_key(&mut self, key: KeyEvent) {
+        if self.slash_autocomplete.is_some() {
+            self.handle_slash_autocomplete_key(key);
+            return;
+        }
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 let byte_offset = self.byte_offset_of_char(self.cursor_position);
@@ -1626,9 +1637,90 @@ impl App {
                 self.open_file_picker();
             }
             KeyCode::Char(c) => {
+                let was_empty = self.input.is_empty();
                 let byte_offset = self.byte_offset_of_char(self.cursor_position);
                 self.input.insert(byte_offset, c);
                 self.cursor_position += 1;
+                if c == '/' && was_empty {
+                    self.slash_autocomplete = Some(SlashAutocompleteState::new());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_slash_autocomplete_key(&mut self, key: KeyEvent) {
+        let Some(state) = self.slash_autocomplete.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.slash_autocomplete = None;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                let entry = state.selected_entry().map(|e| e.id);
+                self.slash_autocomplete = None;
+                if let Some(id) = entry {
+                    let slash_form = command_id_to_slash_form(id);
+                    self.input = slash_form;
+                    self.cursor_position = self.char_count();
+                }
+                if key.code == KeyCode::Enter {
+                    self.submit_input();
+                }
+            }
+            KeyCode::Down => {
+                if let Some(s) = self.slash_autocomplete.as_mut() {
+                    s.move_down();
+                }
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                if let Some(s) = self.slash_autocomplete.as_mut() {
+                    s.move_up();
+                }
+            }
+            KeyCode::Backspace => {
+                let dismiss = self
+                    .slash_autocomplete
+                    .as_mut()
+                    .is_none_or(SlashAutocompleteState::pop_char);
+                if dismiss {
+                    self.input.clear();
+                    self.cursor_position = 0;
+                    self.slash_autocomplete = None;
+                } else {
+                    let query = self
+                        .slash_autocomplete
+                        .as_ref()
+                        .map_or(String::new(), |s| s.query.clone());
+                    self.input = format!("/{query}");
+                    self.cursor_position = self.char_count();
+                    if self
+                        .slash_autocomplete
+                        .as_ref()
+                        .is_none_or(|s| s.filtered.is_empty())
+                    {
+                        self.slash_autocomplete = None;
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(s) = self.slash_autocomplete.as_mut() {
+                    s.push_char(c);
+                }
+                let query = self
+                    .slash_autocomplete
+                    .as_ref()
+                    .map_or(String::new(), |s| s.query.clone());
+                self.input = format!("/{query}");
+                self.cursor_position = self.char_count();
+                if self
+                    .slash_autocomplete
+                    .as_ref()
+                    .is_none_or(|s| s.filtered.is_empty())
+                {
+                    self.slash_autocomplete = None;
+                }
             }
             _ => {}
         }
@@ -4287,5 +4379,78 @@ mod tests {
         app.set_view_target(AgentViewTarget::Main);
         assert_eq!(app.scroll_offset, 0);
         assert!(app.transcript_cache.is_none());
+    }
+
+    mod slash_autocomplete_tests {
+        use super::*;
+
+        #[test]
+        fn slash_on_empty_input_opens_autocomplete() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            assert!(app.slash_autocomplete.is_none());
+
+            let key = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key));
+            assert!(app.slash_autocomplete.is_some());
+            assert_eq!(app.input(), "/");
+        }
+
+        #[test]
+        fn no_open_mid_input() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            app.input = "hello ".to_owned();
+            app.cursor_position = 6;
+
+            let key = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key));
+            assert!(app.slash_autocomplete.is_none());
+        }
+
+        #[test]
+        fn esc_dismisses_autocomplete() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            app.slash_autocomplete =
+                Some(crate::widgets::slash_autocomplete::SlashAutocompleteState::new());
+            app.input = "/sk".to_owned();
+            app.cursor_position = 3;
+
+            let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key));
+            assert!(app.slash_autocomplete.is_none());
+            // Input retained
+            assert_eq!(app.input(), "/sk");
+        }
+
+        #[test]
+        fn at_char_while_autocomplete_open_does_not_open_file_picker() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            app.slash_autocomplete =
+                Some(crate::widgets::slash_autocomplete::SlashAutocompleteState::new());
+            app.input = "/".to_owned();
+            app.cursor_position = 1;
+
+            let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key));
+            assert!(app.file_picker_state.is_none());
+        }
+
+        #[test]
+        fn backspace_removes_slash_and_dismisses() {
+            let (mut app, _rx, _tx) = make_app();
+            app.input_mode = InputMode::Insert;
+            app.slash_autocomplete =
+                Some(crate::widgets::slash_autocomplete::SlashAutocompleteState::new());
+            app.input = "/".to_owned();
+            app.cursor_position = 1;
+
+            let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+            app.handle_event(AppEvent::Key(key));
+            assert!(app.slash_autocomplete.is_none());
+            assert!(app.input().is_empty());
+        }
     }
 }

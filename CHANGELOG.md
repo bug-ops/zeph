@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- TUI: slash-command autocomplete dropdown in Insert mode (#2642)
+
 ### Fixed
 
 - **MCP server instructions not injected into system prompt** (`#2637`): `append_mcp_prompt` now collects server-level instructions from all connected MCP servers via `McpManager::all_server_instructions()` and prepends them to the system prompt on every turn, regardless of whether the provider supports native tool_use. Added `all_server_instructions()` helper to `McpManager` that returns all stored instructions concatenated in stable order.

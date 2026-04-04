@@ -14,6 +14,7 @@ pub mod plan_view;
 pub mod resources;
 pub mod security;
 pub mod skills;
+pub mod slash_autocomplete;
 pub mod splash;
 pub mod status;
 pub mod subagents;
