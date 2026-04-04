@@ -2178,7 +2178,7 @@ mod tests {
         snippets
             .iter()
             .filter(|s| !recall_is_policy_marker(s))
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect()
     }
 

@@ -2222,6 +2222,14 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     pub async fn ensure_episode(&self, conversation_id: i64) -> Result<i64, MemoryError> {
+        // Ensure the conversation row exists before inserting into graph_episodes,
+        // which has a FK referencing conversations(id). On a fresh database the agent
+        // may run graph extraction before the conversation row is committed.
+        zeph_db::query(sql!("INSERT OR IGNORE INTO conversations (id) VALUES (?)"))
+            .bind(conversation_id)
+            .execute(&self.pool)
+            .await?;
+
         let id: i64 = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_episodes (conversation_id)
              VALUES (?)
