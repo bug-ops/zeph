@@ -1116,12 +1116,16 @@ impl<C: Channel> Agent<C> {
                             .channel
                             .send_status(&format!("Utility action: Retrieve ({})", tc.name))
                             .await;
-                        // Inject a system message directing the LLM to retrieve context first.
+                        // Inject a system message directing the LLM to retrieve context first,
+                        // then re-invoke the original tool. Without the explicit re-dispatch
+                        // instruction the LLM tends to treat the skipped result as a hard
+                        // block and responds in text instead of calling the tool again (#2620).
                         let hint = format!(
                             "[utility:retrieve] Before executing the '{}' tool, retrieve \
                              relevant context via memory_search or a related lookup to ensure \
-                             the call is well-targeted.",
-                            tc.name
+                             the call is well-targeted. After retrieving context, you MUST call \
+                             the '{}' tool again with the same arguments.",
+                            tc.name, tc.name
                         );
                         pending_system_hints.push(hint);
                         let out = skipped_output(

@@ -301,6 +301,14 @@ impl<C: Channel> Agent<C> {
         let mut tokens_used = tc.count_tokens(&recall_text);
 
         for item in &recalled {
+            // Filter out internal utility-policy markers so they never surface as recalled
+            // context — a [skipped] bash ToolResult in Qdrant would make the LLM believe the
+            // tool is blocked and prevent re-dispatch after a Retrieve gate (#2620).
+            if item.message.content.starts_with("[skipped]")
+                || item.message.content.starts_with("[stopped]")
+            {
+                continue;
+            }
             let role_label = match item.message.role {
                 Role::User => "user",
                 Role::Assistant => "assistant",
@@ -2153,5 +2161,88 @@ mod tests {
         let xml = hint.format_xml().unwrap();
         assert!(!xml.contains("remaining_cost_cents"));
         assert!(!xml.contains("total_budget_cents"));
+    }
+
+    // ── recall snippet filter (#2620) ────────────────────────────────────────
+
+    /// Mirrors the filter condition in `fetch_semantic_recall` — used to verify
+    /// that `[skipped]`/`[stopped]` markers are recognised and that normal
+    /// snippets are not accidentally rejected.
+    fn recall_is_policy_marker(content: &str) -> bool {
+        content.starts_with("[skipped]") || content.starts_with("[stopped]")
+    }
+
+    /// Simulates the recall-text assembly loop from `fetch_semantic_recall`,
+    /// returning only the snippets that pass the policy-marker filter.
+    fn apply_recall_filter(snippets: &[&str]) -> Vec<String> {
+        snippets
+            .iter()
+            .filter(|s| !recall_is_policy_marker(s))
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn recall_filter_skipped_marker_is_excluded() {
+        let snippets = ["[skipped] bash was blocked by utility gate"];
+        let result = apply_recall_filter(&snippets);
+        assert!(
+            result.is_empty(),
+            "[skipped] snippet must be filtered from recall block"
+        );
+    }
+
+    #[test]
+    fn recall_filter_stopped_marker_is_excluded() {
+        let snippets = ["[stopped] execution limit reached"];
+        let result = apply_recall_filter(&snippets);
+        assert!(
+            result.is_empty(),
+            "[stopped] snippet must be filtered from recall block"
+        );
+    }
+
+    #[test]
+    fn recall_filter_normal_snippet_passes_through() {
+        let snippets = ["total 42\ndrwxr-xr-x  5 user group  160 Jan  1 00:00 src"];
+        let result = apply_recall_filter(&snippets);
+        assert_eq!(
+            result.len(),
+            1,
+            "normal snippet must not be filtered from recall block"
+        );
+        assert_eq!(result[0], snippets[0]);
+    }
+
+    #[test]
+    fn recall_filter_mixed_passes_only_normal_snippets() {
+        let snippets = [
+            "[skipped] bash blocked",
+            "real output line",
+            "[stopped] limit hit",
+            "another real line",
+        ];
+        let result = apply_recall_filter(&snippets);
+        assert_eq!(result, vec!["real output line", "another real line"]);
+    }
+
+    #[test]
+    fn recall_filter_empty_content_is_not_a_marker() {
+        // Empty string does not start with either marker → must pass through.
+        let snippets = [""];
+        let result = apply_recall_filter(&snippets);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn recall_filter_partial_prefix_is_not_a_marker() {
+        // "[skip]" and "[stop]" are not the recognised markers.
+        let snippets = ["[skip] not a real marker", "[stop] also not a marker"];
+        let result = apply_recall_filter(&snippets);
+        assert_eq!(
+            result.len(),
+            2,
+            "partial prefixes must not be treated as policy markers"
+        );
     }
 }

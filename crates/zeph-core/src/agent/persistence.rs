@@ -426,6 +426,7 @@ impl<C: Channel> Agent<C> {
     /// `has_injection_flags` controls whether Qdrant embedding is skipped for this message.
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn persist_message(
         &mut self,
         role: Role,
@@ -470,7 +471,18 @@ impl<C: Channel> Agent<C> {
 
         let skip_embedding = guard_event.is_some();
 
-        let should_embed = if skip_embedding {
+        // Do not embed [skipped] or [stopped] ToolResult content into Qdrant — these are
+        // internal policy markers that carry no useful semantic information and would
+        // contaminate memory_search results, causing the utility-gate Retrieve loop (#2620).
+        let has_skipped_tool_result = parts.iter().any(|p| {
+            if let MessagePart::ToolResult { content, .. } = p {
+                content.starts_with("[skipped]") || content.starts_with("[stopped]")
+            } else {
+                false
+            }
+        });
+
+        let should_embed = if skip_embedding || has_skipped_tool_result {
             false
         } else {
             match role {
@@ -3035,5 +3047,127 @@ mod tests {
             mixed_msg.content, "Let me list the directory. [tool_use: shell(call_mixed)]",
             "content field must be unchanged — only parts are stripped"
         );
+    }
+
+    // ── [skipped]/[stopped] ToolResult embedding guard (#2620) ──────────────
+
+    #[tokio::test]
+    async fn persist_message_skipped_tool_result_does_not_embed() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+            .with_autosave_config(true, 0);
+
+        let parts = vec![MessagePart::ToolResult {
+            tool_use_id: "tu1".into(),
+            content: "[skipped] bash tool was blocked by utility gate".into(),
+            is_error: false,
+        }];
+
+        agent
+            .persist_message(
+                Role::User,
+                "[skipped] bash tool was blocked by utility gate",
+                &parts,
+                false,
+            )
+            .await;
+
+        assert_eq!(
+            rx.borrow().embeddings_generated,
+            0,
+            "[skipped] ToolResult must not be embedded into Qdrant"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_message_stopped_tool_result_does_not_embed() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+            .with_autosave_config(true, 0);
+
+        let parts = vec![MessagePart::ToolResult {
+            tool_use_id: "tu2".into(),
+            content: "[stopped] execution limit reached".into(),
+            is_error: false,
+        }];
+
+        agent
+            .persist_message(
+                Role::User,
+                "[stopped] execution limit reached",
+                &parts,
+                false,
+            )
+            .await;
+
+        assert_eq!(
+            rx.borrow().embeddings_generated,
+            0,
+            "[stopped] ToolResult must not be embedded into Qdrant"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_message_normal_tool_result_is_saved_not_blocked_by_guard() {
+        // Regression: a normal ToolResult (no [skipped]/[stopped] prefix) must not be
+        // suppressed by the utility-gate guard and must reach the save path (SQLite).
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory_arc = std::sync::Arc::new(memory);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(memory_arc.clone(), cid, 50, 5, 100)
+            .with_autosave_config(true, 0);
+
+        let content = "total 42\ndrwxr-xr-x  5 user group";
+        let parts = vec![MessagePart::ToolResult {
+            tool_use_id: "tu3".into(),
+            content: content.into(),
+            is_error: false,
+        }];
+
+        agent
+            .persist_message(Role::User, content, &parts, false)
+            .await;
+
+        // Must be saved to SQLite — confirms the guard did not block this path.
+        let history = memory_arc.sqlite().load_history(cid, 50).await.unwrap();
+        assert_eq!(
+            history.len(),
+            1,
+            "normal ToolResult must be saved to SQLite"
+        );
+        assert_eq!(history[0].content, content);
     }
 }

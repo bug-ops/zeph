@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(agent): exclude [skipped] utility messages from semantic memory, strengthen Retrieve re-dispatch hint (#2620)
 - fix(agent): defer utility gate System hint injection until after tool results are persisted (#2615)
 - refactor(dry): remove duplicate `cosine_similarity` in `zeph-mcp` — use canonical `zeph-common::math::cosine_similarity`
 - refactor(dry): eliminate `zeph-memory/src/math.rs` single-line re-export module — direct imports from `zeph_common::math`
