@@ -4799,6 +4799,7 @@ mod pre_execution_audit_tests {
         let audit_config = zeph_tools::AuditConfig {
             enabled: true,
             destination: audit_path.display().to_string(),
+            ..Default::default()
         };
         let logger = Arc::new(
             zeph_tools::AuditLogger::from_config(&audit_config)

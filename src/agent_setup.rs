@@ -364,6 +364,15 @@ pub(crate) async fn build_tool_setup(
         scrape_executor = scrape_executor.with_audit(Arc::clone(&logger));
         audit_logger = Some(logger);
     }
+    if config.tools.audit.tool_risk_summary {
+        zeph_tools::log_tool_risk_summary(&[
+            "shell",
+            "web_scrape",
+            "fetch",
+            "file_read",
+            "file_write",
+        ]);
+    }
 
     let tool_event_rx = if with_tool_events {
         let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<zeph_tools::ToolEvent>();

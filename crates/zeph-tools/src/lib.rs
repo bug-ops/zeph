@@ -36,7 +36,7 @@ pub use adversarial_policy::{
     PolicyValidator, parse_policy_lines,
 };
 pub use anomaly::{AnomalyDetector, AnomalySeverity, is_reasoning_model};
-pub use audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
+pub use audit::{AuditEntry, AuditLogger, AuditResult, chrono_now, log_tool_risk_summary};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::AdversarialPolicyConfig;

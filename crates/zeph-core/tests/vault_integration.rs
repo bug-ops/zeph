@@ -77,6 +77,7 @@ async fn age_vault_injects_token_into_existing_telegram_config() {
     config.telegram = Some(zeph_core::config::TelegramConfig {
         token: None,
         allowed_users: vec!["test_user".to_owned()],
+        skills: zeph_core::config::ChannelSkillsConfig::default(),
     });
     config.resolve_secrets(&vault).await.unwrap();
 

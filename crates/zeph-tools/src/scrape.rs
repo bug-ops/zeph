@@ -67,6 +67,8 @@ impl ExtractMode {
 pub struct WebScrapeExecutor {
     timeout: Duration,
     max_body_bytes: usize,
+    allowed_domains: Vec<String>,
+    denied_domains: Vec<String>,
     audit_logger: Option<Arc<AuditLogger>>,
 }
 
@@ -76,6 +78,8 @@ impl WebScrapeExecutor {
         Self {
             timeout: Duration::from_secs(config.timeout),
             max_body_bytes: config.max_body_bytes,
+            allowed_domains: config.allowed_domains.clone(),
+            denied_domains: config.denied_domains.clone(),
             audit_logger: None,
         }
     }
@@ -316,6 +320,11 @@ impl WebScrapeExecutor {
 
     async fn handle_fetch(&self, params: &FetchParams) -> Result<String, ToolError> {
         let parsed = validate_url(&params.url)?;
+        check_domain_policy(
+            parsed.host_str().unwrap_or(""),
+            &self.allowed_domains,
+            &self.denied_domains,
+        )?;
         let (host, addrs) = resolve_and_validate(&parsed).await?;
         self.fetch_html(&params.url, &host, &addrs).await
     }
@@ -325,6 +334,11 @@ impl WebScrapeExecutor {
         instruction: &ScrapeInstruction,
     ) -> Result<String, ToolError> {
         let parsed = validate_url(&instruction.url)?;
+        check_domain_policy(
+            parsed.host_str().unwrap_or(""),
+            &self.allowed_domains,
+            &self.denied_domains,
+        )?;
         let (host, addrs) = resolve_and_validate(&parsed).await?;
         let html = self.fetch_html(&instruction.url, &host, &addrs).await?;
         let selector = instruction.select.clone();
@@ -430,6 +444,67 @@ impl WebScrapeExecutor {
 
 fn extract_scrape_blocks(text: &str) -> Vec<&str> {
     crate::executor::extract_fenced_blocks(text, "scrape")
+}
+
+/// Check host against the domain allowlist/denylist from `ScrapeConfig`.
+///
+/// Logic:
+/// 1. If `denied_domains` matches the host → block.
+/// 2. If `allowed_domains` is non-empty:
+///    a. IP address hosts are always rejected (no pattern can match a bare IP).
+///    b. Hosts not matching any entry → block.
+/// 3. Otherwise → allow.
+///
+/// Wildcard prefix matching: `*.example.com` matches `sub.example.com` but NOT `example.com`.
+/// Multiple wildcards are not supported; patterns with more than one `*` are treated as exact.
+fn check_domain_policy(
+    host: &str,
+    allowed_domains: &[String],
+    denied_domains: &[String],
+) -> Result<(), ToolError> {
+    if denied_domains.iter().any(|p| domain_matches(p, host)) {
+        return Err(ToolError::Blocked {
+            command: format!("domain blocked by denylist: {host}"),
+        });
+    }
+    if !allowed_domains.is_empty() {
+        // Bare IP addresses cannot match any domain pattern — reject when allowlist is active.
+        let is_ip = host.parse::<std::net::IpAddr>().is_ok()
+            || (host.starts_with('[') && host.ends_with(']'));
+        if is_ip {
+            return Err(ToolError::Blocked {
+                command: format!(
+                    "bare IP address not allowed when domain allowlist is active: {host}"
+                ),
+            });
+        }
+        if !allowed_domains.iter().any(|p| domain_matches(p, host)) {
+            return Err(ToolError::Blocked {
+                command: format!("domain not in allowlist: {host}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Match a domain pattern against a hostname.
+///
+/// Pattern `*.example.com` matches `sub.example.com` but not `example.com` or
+/// `sub.sub.example.com`. Exact patterns match only themselves.
+/// Patterns with multiple `*` characters are not supported and are treated as exact strings.
+fn domain_matches(pattern: &str, host: &str) -> bool {
+    if pattern.starts_with("*.") {
+        // Allow only a single subdomain level: `*.example.com` → `<label>.example.com`
+        let suffix = &pattern[1..]; // ".example.com"
+        if let Some(remainder) = host.strip_suffix(suffix) {
+            // remainder must be a single DNS label (no dots)
+            !remainder.is_empty() && !remainder.contains('.')
+        } else {
+            false
+        }
+    } else {
+        pattern == host
+    }
 }
 
 fn validate_url(raw: &str) -> Result<Url, ToolError> {
@@ -908,6 +983,7 @@ mod tests {
         let config = ScrapeConfig {
             timeout: 1,
             max_body_bytes: 1_048_576,
+            ..Default::default()
         };
         let executor = WebScrapeExecutor::new(&config);
         let response = "```scrape\n{\"url\":\"https://192.0.2.1:1/page\",\"select\":\"h1\"}\n```";
@@ -999,6 +1075,8 @@ mod tests {
         let executor = WebScrapeExecutor {
             timeout: Duration::from_secs(5),
             max_body_bytes: 1_048_576,
+            allowed_domains: vec![],
+            denied_domains: vec![],
             audit_logger: None,
         };
         (executor, server)
@@ -1286,6 +1364,8 @@ mod tests {
         let small_limit_executor = WebScrapeExecutor {
             timeout: Duration::from_secs(5),
             max_body_bytes: 10,
+            allowed_domains: vec![],
+            denied_domains: vec![],
             audit_logger: None,
         };
         let server = wiremock::MockServer::start().await;
@@ -1334,6 +1414,7 @@ mod tests {
         let config = ScrapeConfig {
             timeout: 60,
             max_body_bytes: 512,
+            ..Default::default()
         };
         let executor = WebScrapeExecutor::new(&config);
         assert_eq!(executor.max_body_bytes, 512);
@@ -1773,6 +1854,7 @@ mod tests {
         let config = AuditConfig {
             enabled: true,
             destination: path.display().to_string(),
+            ..Default::default()
         };
         let logger = std::sync::Arc::new(AuditLogger::from_config(&config).await.unwrap());
         (logger, path)
@@ -1993,5 +2075,85 @@ mod tests {
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap().contains("end-to-end"));
+    }
+
+    // --- domain_matches ---
+
+    #[test]
+    fn domain_matches_exact() {
+        assert!(domain_matches("example.com", "example.com"));
+        assert!(!domain_matches("example.com", "other.com"));
+        assert!(!domain_matches("example.com", "sub.example.com"));
+    }
+
+    #[test]
+    fn domain_matches_wildcard_single_subdomain() {
+        assert!(domain_matches("*.example.com", "sub.example.com"));
+        assert!(!domain_matches("*.example.com", "example.com"));
+        assert!(!domain_matches("*.example.com", "sub.sub.example.com"));
+    }
+
+    #[test]
+    fn domain_matches_wildcard_does_not_match_empty_label() {
+        // Pattern "*.example.com" requires a non-empty label before ".example.com"
+        assert!(!domain_matches("*.example.com", ".example.com"));
+    }
+
+    #[test]
+    fn domain_matches_multi_wildcard_treated_as_exact() {
+        // Multiple wildcards are unsupported — treated as literal pattern
+        assert!(!domain_matches("*.*.example.com", "a.b.example.com"));
+    }
+
+    // --- check_domain_policy ---
+
+    #[test]
+    fn check_domain_policy_empty_lists_allow_all() {
+        assert!(check_domain_policy("example.com", &[], &[]).is_ok());
+        assert!(check_domain_policy("evil.com", &[], &[]).is_ok());
+    }
+
+    #[test]
+    fn check_domain_policy_denylist_blocks() {
+        let denied = vec!["evil.com".to_string()];
+        let err = check_domain_policy("evil.com", &[], &denied).unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn check_domain_policy_denylist_does_not_block_other_domains() {
+        let denied = vec!["evil.com".to_string()];
+        assert!(check_domain_policy("good.com", &[], &denied).is_ok());
+    }
+
+    #[test]
+    fn check_domain_policy_allowlist_permits_matching() {
+        let allowed = vec!["docs.rs".to_string(), "*.rust-lang.org".to_string()];
+        assert!(check_domain_policy("docs.rs", &allowed, &[]).is_ok());
+        assert!(check_domain_policy("blog.rust-lang.org", &allowed, &[]).is_ok());
+    }
+
+    #[test]
+    fn check_domain_policy_allowlist_blocks_unknown() {
+        let allowed = vec!["docs.rs".to_string()];
+        let err = check_domain_policy("other.com", &allowed, &[]).unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn check_domain_policy_deny_overrides_allow() {
+        let allowed = vec!["example.com".to_string()];
+        let denied = vec!["example.com".to_string()];
+        let err = check_domain_policy("example.com", &allowed, &denied).unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn check_domain_policy_wildcard_in_denylist() {
+        let denied = vec!["*.evil.com".to_string()];
+        let err = check_domain_policy("sub.evil.com", &[], &denied).unwrap_err();
+        assert!(matches!(err, ToolError::Blocked { .. }));
+        // parent domain not blocked
+        assert!(check_domain_policy("evil.com", &[], &denied).is_ok());
     }
 }

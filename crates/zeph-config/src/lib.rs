@@ -35,9 +35,9 @@ pub use agent::{
     SubAgentLifecycleHooks, ToolFilterConfig,
 };
 pub use channels::{
-    A2aServerConfig, DiscordConfig, IbctKeyConfig, McpConfig, McpOAuthConfig, McpServerConfig,
-    McpTrustLevel, OAuthTokenStorage, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
-    ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig,
+    A2aServerConfig, ChannelSkillsConfig, DiscordConfig, IbctKeyConfig, McpConfig, McpOAuthConfig,
+    McpServerConfig, McpTrustLevel, OAuthTokenStorage, SlackConfig, TelegramConfig,
+    ToolDiscoveryConfig, ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig,
 };
 pub use defaults::{
     DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,

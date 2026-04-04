@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `load_skill_meta_from_str()` in `zeph-skills`: parse SKILL.md from in-memory string without disk access
 
 ### Security
+- Fix trust level fallback in `format_skills_prompt`: replace `unwrap_or(SkillTrustLevel::Trusted)` with `unwrap_or_default()` (yields `Quarantined`) — unknown skills no longer bypass sanitization (#2506)
+- Add `sanitize_skill_text()` in `zeph-skills/src/prompt.rs`: applies XML tag escaping plus injection marker removal (defense-in-depth) to both `description` and `body` for non-Trusted skills (#2506)
+- Add `allowed_domains`/`denied_domains` to `ScrapeConfig` with `check_domain_policy()` enforced in `WebScrapeExecutor` before each fetch; wildcard prefix matching (`*.example.com`) supported (#2506)
+- Add `tool_risk_summary` field to `AuditConfig`; when true, logs per-tool privilege level and expected sanitization at startup via `log_tool_risk_summary()` (#2500)
+- Add `ChannelSkillsConfig` with `allowed` list to `TelegramConfig`, `DiscordConfig`, `SlackConfig`; emit startup `WARN` when remote channel uses wildcard `["*"]` allowlist (#2506)
 - Truncate `CorrectionHint` text to 500 chars at insertion to prevent prompt injection via long tool outputs (#2596)
 - Add OOM sanity cap (1M elements) in `read_f32_slice` before `Vec::with_capacity` to prevent crafted-blob DoS (#2595)
 

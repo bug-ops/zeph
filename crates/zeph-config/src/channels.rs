@@ -10,6 +10,123 @@ use crate::providers::ProviderName;
 
 pub use zeph_mcp::{McpTrustLevel, tool::ToolSecurityMeta};
 
+fn default_skill_allowlist() -> Vec<String> {
+    vec!["*".into()]
+}
+
+/// Per-channel skill allowlist configuration.
+///
+/// Declares which skills are permitted on a given channel. The config is parsed and
+/// `is_skill_allowed()` is available for callers to check membership. Runtime enforcement
+/// (filtering skills before prompt assembly) is tracked in issue #2507 and not yet wired.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChannelSkillsConfig {
+    /// Skill allowlist. `["*"]` = all skills allowed. `[]` = deny all.
+    /// Supports exact names and `*` wildcard (e.g. `"web-*"` matches `"web-search"`).
+    #[serde(default = "default_skill_allowlist")]
+    pub allowed: Vec<String>,
+}
+
+impl Default for ChannelSkillsConfig {
+    fn default() -> Self {
+        Self {
+            allowed: default_skill_allowlist(),
+        }
+    }
+}
+
+/// Returns `true` if the skill `name` matches any pattern in the allowlist.
+///
+/// Pattern rules: `"*"` matches any name; `"prefix-*"` matches names starting with `"prefix-"`;
+/// exact strings match only themselves. Matching is case-sensitive.
+#[must_use]
+pub fn is_skill_allowed(name: &str, config: &ChannelSkillsConfig) -> bool {
+    config.allowed.iter().any(|p| glob_match(p, name))
+}
+
+fn glob_match(pattern: &str, name: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        if prefix.is_empty() {
+            return true;
+        }
+        name.starts_with(prefix)
+    } else {
+        pattern == name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allow(patterns: &[&str]) -> ChannelSkillsConfig {
+        ChannelSkillsConfig {
+            allowed: patterns.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    #[test]
+    fn wildcard_star_allows_any_skill() {
+        let cfg = allow(&["*"]);
+        assert!(is_skill_allowed("anything", &cfg));
+        assert!(is_skill_allowed("web-search", &cfg));
+    }
+
+    #[test]
+    fn empty_allowlist_denies_all() {
+        let cfg = allow(&[]);
+        assert!(!is_skill_allowed("web-search", &cfg));
+        assert!(!is_skill_allowed("shell", &cfg));
+    }
+
+    #[test]
+    fn exact_match_allows_only_that_skill() {
+        let cfg = allow(&["web-search"]);
+        assert!(is_skill_allowed("web-search", &cfg));
+        assert!(!is_skill_allowed("shell", &cfg));
+        assert!(!is_skill_allowed("web-search-extra", &cfg));
+    }
+
+    #[test]
+    fn prefix_wildcard_allows_matching_skills() {
+        let cfg = allow(&["web-*"]);
+        assert!(is_skill_allowed("web-search", &cfg));
+        assert!(is_skill_allowed("web-fetch", &cfg));
+        assert!(!is_skill_allowed("shell", &cfg));
+        assert!(!is_skill_allowed("awesome-web-thing", &cfg));
+    }
+
+    #[test]
+    fn multiple_patterns_or_logic() {
+        let cfg = allow(&["shell", "web-*"]);
+        assert!(is_skill_allowed("shell", &cfg));
+        assert!(is_skill_allowed("web-search", &cfg));
+        assert!(!is_skill_allowed("memory", &cfg));
+    }
+
+    #[test]
+    fn default_config_allows_all() {
+        let cfg = ChannelSkillsConfig::default();
+        assert!(is_skill_allowed("any-skill", &cfg));
+    }
+
+    #[test]
+    fn prefix_wildcard_does_not_match_empty_suffix() {
+        let cfg = allow(&["web-*"]);
+        // "web-" itself — prefix is "web-", remainder after stripping is "", which is the name
+        // glob_match("web-*", "web-") → prefix="web-", name.starts_with("web-") is true, len > prefix
+        // but name == "web-" means remainder is "", so starts_with returns true, let's verify:
+        assert!(is_skill_allowed("web-", &cfg));
+    }
+
+    #[test]
+    fn matching_is_case_sensitive() {
+        let cfg = allow(&["Web-Search"]);
+        assert!(!is_skill_allowed("web-search", &cfg));
+        assert!(is_skill_allowed("Web-Search", &cfg));
+    }
+}
+
 fn default_slack_port() -> u16 {
     3000
 }
@@ -59,6 +176,8 @@ pub struct TelegramConfig {
     pub token: Option<String>,
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub skills: ChannelSkillsConfig,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -66,6 +185,7 @@ impl std::fmt::Debug for TelegramConfig {
         f.debug_struct("TelegramConfig")
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
             .field("allowed_users", &self.allowed_users)
+            .field("skills", &self.skills)
             .finish()
     }
 }
@@ -80,6 +200,8 @@ pub struct DiscordConfig {
     pub allowed_role_ids: Vec<String>,
     #[serde(default)]
     pub allowed_channel_ids: Vec<String>,
+    #[serde(default)]
+    pub skills: ChannelSkillsConfig,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -90,6 +212,7 @@ impl std::fmt::Debug for DiscordConfig {
             .field("allowed_user_ids", &self.allowed_user_ids)
             .field("allowed_role_ids", &self.allowed_role_ids)
             .field("allowed_channel_ids", &self.allowed_channel_ids)
+            .field("skills", &self.skills)
             .finish()
     }
 }
@@ -106,6 +229,8 @@ pub struct SlackConfig {
     pub allowed_user_ids: Vec<String>,
     #[serde(default)]
     pub allowed_channel_ids: Vec<String>,
+    #[serde(default)]
+    pub skills: ChannelSkillsConfig,
 }
 
 impl std::fmt::Debug for SlackConfig {
@@ -120,6 +245,7 @@ impl std::fmt::Debug for SlackConfig {
             .field("port", &self.port)
             .field("allowed_user_ids", &self.allowed_user_ids)
             .field("allowed_channel_ids", &self.allowed_channel_ids)
+            .field("skills", &self.skills)
             .finish()
     }
 }

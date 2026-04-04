@@ -558,6 +558,12 @@ pub struct AuditConfig {
     pub enabled: bool,
     #[serde(default = "default_audit_destination")]
     pub destination: String,
+    /// When true, log a per-tool risk summary at startup.
+    /// Each entry includes: tool name, privilege level, and expected input sanitization.
+    /// This is a design-time risk inventory, NOT runtime static analysis or a guarantee
+    /// that sanitization is functioning correctly.
+    #[serde(default)]
+    pub tool_risk_summary: bool,
 }
 
 impl Default for ToolsConfig {
@@ -609,6 +615,7 @@ impl Default for AuditConfig {
         Self {
             enabled: true,
             destination: default_audit_destination(),
+            tool_risk_summary: false,
         }
     }
 }
@@ -628,6 +635,20 @@ pub struct ScrapeConfig {
     pub timeout: u64,
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
+    /// Domain allowlist. Empty = all public domains allowed (default, existing behavior).
+    /// When non-empty, ONLY URLs whose host matches an entry are permitted (deny-unknown).
+    /// Supports exact match (`"docs.rs"`) and wildcard prefix (`"*.rust-lang.org"`).
+    /// Wildcard `*` matches a single subdomain segment only.
+    ///
+    /// Operators SHOULD set an explicit allowlist in production deployments.
+    /// Empty allowlist with a non-empty `denied_domains` is a denylist-only configuration
+    /// which is NOT a security boundary — an attacker can use any domain not on the list.
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// Domain denylist. Always enforced, regardless of allowlist state.
+    /// Supports the same pattern syntax as `allowed_domains`.
+    #[serde(default)]
+    pub denied_domains: Vec<String>,
 }
 
 impl Default for ScrapeConfig {
@@ -635,6 +656,8 @@ impl Default for ScrapeConfig {
         Self {
             timeout: default_scrape_timeout(),
             max_body_bytes: default_max_body_bytes(),
+            allowed_domains: Vec::new(),
+            denied_domains: Vec::new(),
         }
     }
 }

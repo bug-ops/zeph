@@ -127,6 +127,41 @@ impl AuditLogger {
     }
 }
 
+/// Log a per-tool risk summary at startup when `audit.tool_risk_summary = true`.
+///
+/// Each entry records tool name, privilege level (static mapping by tool id), and the
+/// expected input sanitization method. This is a design-time inventory label —
+/// NOT a runtime guarantee that sanitization is functioning correctly.
+pub fn log_tool_risk_summary(tool_ids: &[&str]) {
+    // Static privilege mapping: tool id prefix → (privilege level, expected sanitization).
+    // "high" = can execute arbitrary OS commands; "medium" = network/filesystem access;
+    // "low" = schema-validated parameters only.
+    fn classify(id: &str) -> (&'static str, &'static str) {
+        if id.starts_with("shell") || id == "bash" || id == "exec" {
+            ("high", "env_blocklist + command_blocklist")
+        } else if id.starts_with("web_scrape") || id == "fetch" || id.starts_with("scrape") {
+            ("medium", "validate_url + SSRF + domain_policy")
+        } else if id.starts_with("file_write")
+            || id.starts_with("file_read")
+            || id.starts_with("file")
+        {
+            ("medium", "path_sandbox")
+        } else {
+            ("low", "schema_only")
+        }
+    }
+
+    for &id in tool_ids {
+        let (privilege, sanitization) = classify(id);
+        tracing::info!(
+            tool = id,
+            privilege_level = privilege,
+            expected_sanitization = sanitization,
+            "tool risk summary"
+        );
+    }
+}
+
 #[must_use]
 pub fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -249,6 +284,7 @@ mod tests {
         let config = AuditConfig {
             enabled: true,
             destination: "stdout".into(),
+            ..Default::default()
         };
         let logger = AuditLogger::from_config(&config).await.unwrap();
         let entry = AuditEntry {
@@ -279,6 +315,7 @@ mod tests {
         let config = AuditConfig {
             enabled: true,
             destination: path.display().to_string(),
+            ..Default::default()
         };
         let logger = AuditLogger::from_config(&config).await.unwrap();
         let entry = AuditEntry {
@@ -310,6 +347,7 @@ mod tests {
         let config = AuditConfig {
             enabled: true,
             destination: "/nonexistent/dir/audit.log".into(),
+            ..Default::default()
         };
         let result = AuditLogger::from_config(&config).await;
         assert!(result.is_err());
@@ -398,6 +436,7 @@ mod tests {
         let config = AuditConfig {
             enabled: true,
             destination: path.display().to_string(),
+            ..Default::default()
         };
         let logger = AuditLogger::from_config(&config).await.unwrap();
 
@@ -479,5 +518,27 @@ mod tests {
             !json.contains("exit_code"),
             "exit_code None must be omitted: {json}"
         );
+    }
+
+    #[test]
+    fn log_tool_risk_summary_does_not_panic() {
+        log_tool_risk_summary(&[
+            "shell",
+            "bash",
+            "exec",
+            "web_scrape",
+            "fetch",
+            "scrape_page",
+            "file_write",
+            "file_read",
+            "file_delete",
+            "memory_search",
+            "unknown_tool",
+        ]);
+    }
+
+    #[test]
+    fn log_tool_risk_summary_empty_input_does_not_panic() {
+        log_tool_risk_summary(&[]);
     }
 }

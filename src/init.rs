@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_core::config::{
-    AcpConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy, McpOAuthConfig,
-    McpServerConfig, McpTrustLevel, MemoryConfig, OAuthTokenStorage, OrchestrationConfig,
-    ProviderEntry, ProviderKind, ProviderName, PruningStrategy, SemanticConfig, SessionsConfig,
-    SlackConfig, TelegramConfig, VaultConfig,
+    AcpConfig, ChannelSkillsConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy,
+    McpOAuthConfig, McpServerConfig, McpTrustLevel, MemoryConfig, OAuthTokenStorage,
+    OrchestrationConfig, ProviderEntry, ProviderKind, ProviderName, PruningStrategy,
+    SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig, VaultConfig,
 };
 use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
@@ -1132,6 +1132,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             config.telegram = Some(TelegramConfig {
                 token: None,
                 allowed_users: state.telegram_users.clone(),
+                skills: ChannelSkillsConfig::default(),
             });
         }
         ChannelChoice::Discord => {
@@ -1141,6 +1142,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 allowed_user_ids: vec![],
                 allowed_role_ids: vec![],
                 allowed_channel_ids: vec![],
+                skills: ChannelSkillsConfig::default(),
             });
         }
         ChannelChoice::Slack => {
@@ -1151,6 +1153,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 port: 3000,
                 allowed_user_ids: vec![],
                 allowed_channel_ids: vec![],
+                skills: ChannelSkillsConfig::default(),
             });
         }
     }

@@ -510,6 +510,7 @@ mod tests {
         let audit_config = crate::config::AuditConfig {
             enabled: true,
             destination: log_path.display().to_string(),
+            ..Default::default()
         };
         let audit_logger = Arc::new(
             crate::audit::AuditLogger::from_config(&audit_config)
@@ -544,6 +545,7 @@ mod tests {
         let audit_config = crate::config::AuditConfig {
             enabled: true,
             destination: log_path.display().to_string(),
+            ..Default::default()
         };
         let audit_logger = Arc::new(
             crate::audit::AuditLogger::from_config(&audit_config)
@@ -601,6 +603,7 @@ mod tests {
         let audit_config = crate::config::AuditConfig {
             enabled: true,
             destination: log_path.display().to_string(),
+            ..Default::default()
         };
         let audit_logger = Arc::new(
             crate::audit::AuditLogger::from_config(&audit_config)
