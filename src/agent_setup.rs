@@ -800,70 +800,34 @@ pub(crate) async fn apply_code_indexer(
         let indexer = std::sync::Arc::new(CodeIndexer::new(
             store,
             provider_arc,
-            IndexerConfig::default(),
+            IndexerConfig {
+                concurrency: config.concurrency,
+                batch_size: config.batch_size,
+                ..IndexerConfig::default()
+            },
         ));
         anyhow::Ok((retriever, indexer))
     };
 
     match init.await {
         Ok((retriever, indexer)) => {
-            let indexer_clone = indexer.clone();
             let (progress_tx, progress_rx) =
                 tokio::sync::watch::channel(zeph_index::IndexProgress::default());
+            let workspace_root = config.workspace_root.as_deref().map_or_else(
+                || std::env::current_dir().unwrap_or_default(),
+                |p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()),
+            );
             if cli_mode {
-                let mut cli_progress_rx = progress_tx.subscribe();
-                tokio::spawn(async move {
-                    // Print start message once we know the file count from the first progress tick.
-                    while cli_progress_rx.changed().await.is_ok() {
-                        let p = cli_progress_rx.borrow_and_update().clone();
-                        if p.files_total > 0 {
-                            eprintln!(
-                                "Indexing codebase in the background ({} files) — you can start chatting now.",
-                                p.files_total
-                            );
-                            break;
-                        }
-                    }
-                });
+                spawn_index_progress_printer(progress_tx.subscribe());
             }
-            tokio::spawn(async move {
-                let root = std::env::current_dir().unwrap_or_default();
-                match indexer_clone.index_project(&root, Some(&progress_tx)).await {
-                    Ok(report) => {
-                        tracing::info!(
-                            files = report.files_indexed,
-                            chunks = report.chunks_created,
-                            ms = report.duration_ms,
-                            "project indexed"
-                        );
-                        if cli_mode {
-                            eprintln!(
-                                "Codebase indexed: {} files, {} chunks ({}s) — code search is ready.",
-                                report.files_indexed,
-                                report.chunks_created,
-                                report.duration_ms / 1000,
-                            );
-                        }
-                    }
-                    Err(e) => tracing::warn!("background indexing failed: {e:#}"),
-                }
-            });
+            spawn_background_indexer(
+                indexer.clone(),
+                workspace_root.clone(),
+                progress_tx,
+                cli_mode,
+            );
             tracing::info!("code indexer started");
-            let watcher = if config.watch {
-                let root = std::env::current_dir().unwrap_or_default();
-                match IndexWatcher::start(&root, indexer) {
-                    Ok(w) => {
-                        tracing::info!("index watcher started");
-                        Some(w)
-                    }
-                    Err(e) => {
-                        tracing::warn!("index watcher failed to start: {e:#}");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
+            let watcher = start_index_watcher(config.watch, &workspace_root, indexer);
             (
                 Some(std::sync::Arc::new(retriever)),
                 watcher,
@@ -873,6 +837,70 @@ pub(crate) async fn apply_code_indexer(
         Err(e) => {
             tracing::warn!("code indexer initialization failed: {e:#}");
             (None, None, None)
+        }
+    }
+}
+
+fn spawn_index_progress_printer(mut rx: tokio::sync::watch::Receiver<zeph_index::IndexProgress>) {
+    tokio::spawn(async move {
+        while rx.changed().await.is_ok() {
+            let p = rx.borrow_and_update().clone();
+            if p.files_total > 0 {
+                eprintln!(
+                    "Indexing codebase in the background ({} files) — you can start chatting now.",
+                    p.files_total
+                );
+                break;
+            }
+        }
+    });
+}
+
+fn spawn_background_indexer(
+    indexer: std::sync::Arc<CodeIndexer>,
+    root: std::path::PathBuf,
+    progress_tx: tokio::sync::watch::Sender<zeph_index::IndexProgress>,
+    cli_mode: bool,
+) {
+    tokio::spawn(async move {
+        match indexer.index_project(&root, Some(&progress_tx)).await {
+            Ok(report) => {
+                tracing::info!(
+                    files = report.files_indexed,
+                    chunks = report.chunks_created,
+                    ms = report.duration_ms,
+                    "project indexed"
+                );
+                if cli_mode {
+                    eprintln!(
+                        "Codebase indexed: {} files, {} chunks ({}s) — code search is ready.",
+                        report.files_indexed,
+                        report.chunks_created,
+                        report.duration_ms / 1000,
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("background indexing failed: {e:#}"),
+        }
+    });
+}
+
+fn start_index_watcher(
+    watch: bool,
+    root: &std::path::Path,
+    indexer: std::sync::Arc<CodeIndexer>,
+) -> Option<IndexWatcher> {
+    if !watch {
+        return None;
+    }
+    match IndexWatcher::start(root, indexer) {
+        Ok(w) => {
+            tracing::info!("index watcher started");
+            Some(w)
+        }
+        Err(e) => {
+            tracing::warn!("index watcher failed to start: {e:#}");
+            None
         }
     }
 }
@@ -1238,6 +1266,46 @@ mod tests {
             apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false).await;
         assert!(retriever.is_some());
         assert!(watcher.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_code_indexer_workspace_root_none_uses_current_dir() {
+        let config = IndexConfig {
+            enabled: false,
+            workspace_root: None,
+            ..IndexConfig::default()
+        };
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp.path().display());
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+
+        // disabled → early return; the fallback path is exercised in the enabled branch
+        // but we can verify None is accepted without panic
+        let (retriever, _, _) =
+            apply_code_indexer(&config, None, offline_provider(), pool, false).await;
+        assert!(retriever.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_code_indexer_workspace_root_some_path() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let config = IndexConfig {
+            enabled: true,
+            watch: false,
+            workspace_root: Some(tmp_dir.path().to_path_buf()),
+            ..IndexConfig::default()
+        };
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp_db.path().display());
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
+
+        let (retriever, watcher, _) =
+            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false).await;
+        // Qdrant is unreachable but the CodeStore/CodeRetriever still gets constructed —
+        // the indexer only fails when it actually tries to connect (in background task).
+        assert!(retriever.is_some());
+        assert!(watcher.is_none()); // watch = false
     }
 
     #[test]
