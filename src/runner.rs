@@ -724,6 +724,63 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
     .to_owned();
 
+    // Derive per-channel skill allowlist from the matching config section.
+    // CLI/TUI channels use the default (allow-all) allowlist.
+    #[cfg(feature = "tui")]
+    let channel_skills_config: zeph_core::config::ChannelSkillsConfig = match &channel {
+        AppChannel::Standard(AnyChannel::Telegram(_)) => app
+            .config()
+            .telegram
+            .as_ref()
+            .map_or_else(zeph_core::config::ChannelSkillsConfig::default, |c| {
+                c.skills.clone()
+            }),
+        #[cfg(feature = "discord")]
+        AppChannel::Standard(AnyChannel::Discord(_)) => app
+            .config()
+            .discord
+            .as_ref()
+            .map_or_else(zeph_core::config::ChannelSkillsConfig::default, |c| {
+                c.skills.clone()
+            }),
+        #[cfg(feature = "slack")]
+        AppChannel::Standard(AnyChannel::Slack(_)) => app
+            .config()
+            .slack
+            .as_ref()
+            .map_or_else(zeph_core::config::ChannelSkillsConfig::default, |c| {
+                c.skills.clone()
+            }),
+        _ => zeph_core::config::ChannelSkillsConfig::default(),
+    };
+    #[cfg(not(feature = "tui"))]
+    let channel_skills_config: zeph_core::config::ChannelSkillsConfig = match &channel {
+        AnyChannel::Telegram(_) => app
+            .config()
+            .telegram
+            .as_ref()
+            .map_or_else(zeph_core::config::ChannelSkillsConfig::default, |c| {
+                c.skills.clone()
+            }),
+        #[cfg(feature = "discord")]
+        AnyChannel::Discord(_) => app
+            .config()
+            .discord
+            .as_ref()
+            .map_or_else(zeph_core::config::ChannelSkillsConfig::default, |c| {
+                c.skills.clone()
+            }),
+        #[cfg(feature = "slack")]
+        AnyChannel::Slack(_) => app
+            .config()
+            .slack
+            .as_ref()
+            .map_or_else(zeph_core::config::ChannelSkillsConfig::default, |c| {
+                c.skills.clone()
+            }),
+        _ => zeph_core::config::ChannelSkillsConfig::default(),
+    };
+
     let conversation_id = match memory.sqlite().latest_conversation_id().await? {
         Some(id) => id,
         None => memory.sqlite().create_conversation().await?,
@@ -1372,6 +1429,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent
     };
     let agent = agent.with_hooks_config(&config.hooks);
+    let agent = agent.with_channel_skills(channel_skills_config);
     let agent = agent.with_learning(config.skills.learning.clone());
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {

@@ -82,6 +82,7 @@ fn make_runtime_config() -> RuntimeConfig {
         adversarial_policy_info: None,
         spawn_depth: 0,
         budget_hint_enabled: true,
+        channel_skills: zeph_config::ChannelSkillsConfig::default(),
     }
 }
 

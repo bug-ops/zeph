@@ -721,6 +721,12 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_channel_skills(mut self, config: zeph_config::ChannelSkillsConfig) -> Self {
+        self.runtime.channel_skills = config;
+        self
+    }
+
+    #[must_use]
     pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
         self.tool_orchestrator.summarize_tool_output_enabled = enabled;
         self

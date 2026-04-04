@@ -384,6 +384,7 @@ impl<C: Channel> Agent<C> {
                 adversarial_policy_info: None,
                 spawn_depth: 0,
                 budget_hint_enabled: true,
+                channel_skills: zeph_config::ChannelSkillsConfig::default(),
             },
             mcp: McpState {
                 tools: Vec::new(),

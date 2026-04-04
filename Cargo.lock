@@ -9928,6 +9928,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "uuid",
+ "zeph-common",
  "zeph-config",
  "zeph-llm",
  "zeph-memory",

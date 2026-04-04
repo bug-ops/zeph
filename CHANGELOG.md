@@ -29,6 +29,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `/skill create` injection hard block (#2606): if the generated skill contains injection patterns, require `yes force` confirmation instead of plain `yes`. Adds `has_injection_patterns` field to `GeneratedSkill`.
 - `/skill create` dedup against registry (#2609): after generation, embed the new skill and compare cosine similarity against all existing in-memory skill embeddings. If any similarity exceeds 0.85, a warning naming the similar skill is shown in the preview.
 
+### Changed
+- `SkillMiner::github_token` wrapped in `zeph_common::secret::Secret` (zeroize-on-drop, redacted in Debug/Display); `SkillMiner::new` now accepts `impl Into<String>` (#2607)
+- `/skill create`: cap description at 2048 characters; return error "Description too long (max 2048 characters)." for longer inputs (#2608)
+- Channel skill allowlist (`ChannelSkillsConfig::allowed`) now enforced at prompt assembly time: skills not matching the allowlist are excluded from `<available_skills>` and the skill catalog, with a `DEBUG` log per filtered skill. Wired from `[telegram.skills]`, `[discord.skills]`, `[slack.skills]` config sections (#2612)
+
 ### Security
 - Fix trust level fallback in `format_skills_prompt`: replace `unwrap_or(SkillTrustLevel::Trusted)` with `unwrap_or_default()` (yields `Quarantined`) — unknown skills no longer bypass sanitization (#2506)
 - Add `sanitize_skill_text()` in `zeph-skills/src/prompt.rs`: applies XML tag escaping plus injection marker removal (defense-in-depth) to both `description` and `body` for non-Trusted skills (#2506)

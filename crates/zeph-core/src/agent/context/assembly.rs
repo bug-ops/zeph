@@ -1489,12 +1489,31 @@ impl<C: Channel> Agent<C> {
                 .all_meta()
                 .iter()
                 .filter_map(|m| reg.get_skill(&m.name).ok())
+                .filter(|s| {
+                    let allowed =
+                        zeph_config::is_skill_allowed(s.name(), &self.runtime.channel_skills);
+                    if !allowed {
+                        tracing::debug!(skill = s.name(), "skill excluded by channel allowlist");
+                    }
+                    allowed
+                })
                 .collect();
             let active: Vec<Skill> = self
                 .skill_state
                 .active_skill_names
                 .iter()
                 .filter_map(|name| reg.get_skill(name).ok())
+                .filter(|s| {
+                    let allowed =
+                        zeph_config::is_skill_allowed(s.name(), &self.runtime.channel_skills);
+                    if !allowed {
+                        tracing::debug!(
+                            skill = s.name(),
+                            "active skill excluded by channel allowlist"
+                        );
+                    }
+                    allowed
+                })
                 .collect();
             (all, active)
         };

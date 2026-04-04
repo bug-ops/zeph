@@ -17,6 +17,8 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_memory::cosine_similarity;
 
+use zeph_common::secret::Secret;
+
 use crate::error::SkillError;
 use crate::generator::{GeneratedSkill, SkillGenerator};
 use crate::loader::SkillMeta;
@@ -69,7 +71,7 @@ pub struct MiningConfig {
 pub struct SkillMiner {
     generator: SkillGenerator,
     embed_provider: AnyProvider,
-    github_token: String,
+    github_token: Secret,
     config: MiningConfig,
     http: reqwest::Client,
 }
@@ -83,7 +85,7 @@ impl SkillMiner {
     pub fn new(
         generation_provider: AnyProvider,
         embed_provider: AnyProvider,
-        github_token: String,
+        github_token: impl Into<String>,
         config: MiningConfig,
     ) -> Result<Self, SkillError> {
         let http = reqwest::Client::builder()
@@ -97,7 +99,7 @@ impl SkillMiner {
         Ok(Self {
             generator,
             embed_provider,
-            github_token,
+            github_token: Secret::new(github_token),
             config,
             http,
         })
@@ -248,7 +250,10 @@ impl SkillMiner {
         let resp = self
             .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.github_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.github_token.expose()),
+            )
             .header("Accept", "application/vnd.github.v3+json")
             .send()
             .await
@@ -335,7 +340,10 @@ impl SkillMiner {
         let resp = self
             .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.github_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.github_token.expose()),
+            )
             .header("Accept", "application/vnd.github.raw")
             .send()
             .await
@@ -435,7 +443,7 @@ mod tests {
             embed_provider: zeph_llm::any::AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
-            github_token: String::new(),
+            github_token: Secret::new(String::new()),
             config,
             http: reqwest::Client::new(),
         };
@@ -480,7 +488,7 @@ mod tests {
         SkillMiner {
             generator: SkillGenerator::new(mock.clone(), PathBuf::from(output_dir)),
             embed_provider: mock,
-            github_token: String::new(),
+            github_token: Secret::new(String::new()),
             config,
             http: reqwest::Client::new(),
         }
@@ -569,7 +577,7 @@ mod tests {
         let miner = SkillMiner {
             generator: SkillGenerator::new(mock.clone(), dir.path().to_path_buf()),
             embed_provider: mock,
-            github_token: String::new(),
+            github_token: Secret::new(String::new()),
             config,
             http: reqwest::Client::new(),
         };
@@ -632,7 +640,7 @@ mod tests {
             embed_provider: zeph_llm::any::AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
-            github_token: String::new(),
+            github_token: Secret::new(String::new()),
             config,
             http: reqwest::Client::new(),
         };

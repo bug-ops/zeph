@@ -209,6 +209,9 @@ pub(crate) struct RuntimeConfig {
     pub(crate) spawn_depth: u32,
     /// Inject `<budget>` XML into the volatile system prompt section (#2267).
     pub(crate) budget_hint_enabled: bool,
+    /// Per-channel skill allowlist. Skills not matching the allowlist are excluded from the
+    /// prompt. An empty `allowed` list means all skills are permitted (default).
+    pub(crate) channel_skills: zeph_config::ChannelSkillsConfig,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.

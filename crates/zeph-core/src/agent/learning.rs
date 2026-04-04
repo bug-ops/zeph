@@ -739,6 +739,13 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
+        if description.chars().count() > 2048 {
+            self.channel
+                .send("Description too long (max 2048 characters).")
+                .await?;
+            return Ok(());
+        }
+
         // Determine output directory: generation_output_dir > managed_dir > first skill_path.
         let output_dir = if let Some(ref dir) = self.skill_state.generation_output_dir {
             dir.clone()
