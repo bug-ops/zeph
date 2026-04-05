@@ -562,7 +562,7 @@ impl<C: Channel> Agent<C> {
 
         // Persona extraction: run only for user messages that are not tool results and not injected.
         if role == Role::User && !has_tool_result_parts && !has_injection_flags {
-            self.maybe_spawn_persona_extraction();
+            self.maybe_spawn_persona_extraction().await;
         }
     }
 
@@ -698,7 +698,9 @@ impl<C: Channel> Agent<C> {
         self.sync_guidelines_status().await;
     }
 
-    fn maybe_spawn_persona_extraction(&mut self) {
+    async fn maybe_spawn_persona_extraction(&mut self) {
+        use std::time::Duration;
+
         use zeph_memory::semantic::{PersonaExtractionConfig, extract_persona_facts};
 
         let cfg = &self.memory_state.persona_config;
@@ -729,32 +731,35 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
+        let timeout_secs = cfg.extraction_timeout_secs;
         let extraction_cfg = PersonaExtractionConfig {
             enabled: cfg.enabled,
             persona_provider: cfg.persona_provider.as_str().to_owned(),
             min_messages: cfg.min_messages,
             max_messages: cfg.max_messages,
-            extraction_timeout_secs: cfg.extraction_timeout_secs,
+            extraction_timeout_secs: timeout_secs,
         };
 
         let provider = self.resolve_background_provider(cfg.persona_provider.as_str());
         let store = memory.sqlite().clone();
         let conversation_id = self.memory_state.conversation_id.map(|c| c.0);
 
-        tokio::spawn(async move {
-            match extract_persona_facts(
-                &store,
-                &provider,
-                &user_messages.iter().map(String::as_str).collect::<Vec<_>>(),
-                &extraction_cfg,
-                conversation_id,
-            )
-            .await
-            {
-                Ok(n) => tracing::debug!(upserted = n, "persona extraction complete"),
-                Err(e) => tracing::warn!(error = %e, "persona extraction failed"),
-            }
-        });
+        let user_message_refs: Vec<&str> = user_messages.iter().map(String::as_str).collect();
+        let fut = extract_persona_facts(
+            &store,
+            &provider,
+            &user_message_refs,
+            &extraction_cfg,
+            conversation_id,
+        );
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await {
+            Ok(Ok(n)) => tracing::debug!(upserted = n, "persona extraction complete"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "persona extraction failed"),
+            Err(_) => tracing::warn!(
+                timeout_secs,
+                "persona extraction timed out — no facts written this turn"
+            ),
+        }
     }
 
     pub(crate) async fn check_summarization(&mut self) {
@@ -1516,9 +1521,7 @@ mod tests {
                 metadata: MessageMetadata::default(),
             });
 
-            agent.maybe_spawn_persona_extraction();
-
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            agent.maybe_spawn_persona_extraction().await;
 
             let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
             let count = store.count_persona_facts().await.unwrap();
@@ -1548,9 +1551,7 @@ mod tests {
                 });
             }
 
-            agent.maybe_spawn_persona_extraction();
-
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            agent.maybe_spawn_persona_extraction().await;
 
             let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
             let count = store.count_persona_facts().await.unwrap();
@@ -1577,7 +1578,7 @@ mod tests {
             });
 
             // Must not panic even without memory.
-            agent.maybe_spawn_persona_extraction();
+            agent.maybe_spawn_persona_extraction().await;
         }
 
         #[tokio::test]
@@ -1596,15 +1597,12 @@ mod tests {
                 metadata: MessageMetadata::default(),
             });
 
-            agent.maybe_spawn_persona_extraction();
-
-            // Give the spawned task time to complete.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            agent.maybe_spawn_persona_extraction().await;
 
             let calls = recorded.lock().unwrap();
             assert!(
                 !calls.is_empty(),
-                "happy-path: provider.chat() must be called when extraction is spawned"
+                "happy-path: provider.chat() must be called when extraction completes"
             );
         }
     }
