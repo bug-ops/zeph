@@ -40,6 +40,21 @@ impl DbStore {
         source_conversation_id: Option<i64>,
         supersedes_id: Option<i64>,
     ) -> Result<i64, MemoryError> {
+        // Guard against stale/invalid conversation IDs: if the referenced conversation
+        // no longer exists, store NULL instead of failing with a FK constraint error.
+        let safe_source_id = match source_conversation_id {
+            None => None,
+            Some(cid) => {
+                let exists: bool = query_scalar(sql!(
+                    "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)"
+                ))
+                .bind(cid)
+                .fetch_one(self.pool())
+                .await?;
+                if exists { Some(cid) } else { None }
+            }
+        };
+
         let (id,): (i64,) = query_as(sql!(
             "INSERT INTO persona_memory
                 (category, content, confidence, evidence_count, source_conversation_id,
@@ -56,7 +71,7 @@ impl DbStore {
         .bind(category)
         .bind(content)
         .bind(confidence)
-        .bind(source_conversation_id)
+        .bind(safe_source_id)
         .bind(supersedes_id)
         .fetch_one(self.pool())
         .await?;
@@ -310,5 +325,47 @@ mod tests {
             .await
             .expect("get");
         assert_eq!(id, 42);
+    }
+
+    #[tokio::test]
+    async fn upsert_persona_fact_invalid_source_conversation_id_stored_as_null() {
+        let store = make_store().await;
+        // Conversation ID 9999 does not exist — upsert must succeed and store NULL.
+        let id = store
+            .upsert_persona_fact("preference", "I prefer Vim", 0.8, Some(9999), None)
+            .await
+            .expect("upsert with invalid source_conversation_id");
+        assert!(id > 0);
+
+        let facts = store.load_persona_facts(0.0).await.expect("load");
+        assert_eq!(facts.len(), 1);
+        assert!(
+            facts[0].source_conversation_id.is_none(),
+            "source_conversation_id should be NULL for non-existent conversation"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_persona_fact_valid_source_conversation_id_preserved() {
+        let store = make_store().await;
+        // Create a real conversation so the ID is valid.
+        let cid = store
+            .create_conversation()
+            .await
+            .expect("create_conversation")
+            .0;
+        let id = store
+            .upsert_persona_fact("preference", "I prefer Emacs", 0.7, Some(cid), None)
+            .await
+            .expect("upsert with valid source_conversation_id");
+        assert!(id > 0);
+
+        let facts = store.load_persona_facts(0.0).await.expect("load");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].source_conversation_id,
+            Some(cid),
+            "valid source_conversation_id must be preserved"
+        );
     }
 }
