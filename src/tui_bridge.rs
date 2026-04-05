@@ -70,13 +70,8 @@ pub(crate) fn start_tui_early(
 
     let agent_tx = tui_handle.agent_tx.clone();
 
-    // Send initial loading status
-    let tx = agent_tx.clone();
-    tokio::spawn(async move {
-        let _ = tx
-            .send(zeph_tui::AgentEvent::Status("Starting up...".into()))
-            .await;
-    });
+    // Send initial loading status directly — channel is empty at this point (capacity 256).
+    let _ = agent_tx.try_send(zeph_tui::AgentEvent::Status("Starting up...".into()));
 
     let tui_task = tokio::spawn(async move {
         zeph_tui::run_tui(tui_app, event_rx).await?;

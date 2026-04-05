@@ -685,7 +685,20 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     {
         let trust_cfg = config.skills.trust.clone();
         let managed_dir = zeph_core::bootstrap::managed_skills_dir();
-        for meta in &all_meta_owned {
+
+        // Step 1: collect all hashes in a single spawn_blocking to avoid blocking the async
+        // executor with synchronous FS reads (compute_skill_hash does std::fs::read).
+        let dirs: Vec<_> = all_meta_owned.iter().map(|m| m.skill_dir.clone()).collect();
+        let hashes: Vec<Option<String>> = tokio::task::spawn_blocking(move || {
+            dirs.iter()
+                .map(|dir| zeph_skills::compute_skill_hash(dir).ok())
+                .collect()
+        })
+        .await
+        .unwrap_or_else(|_| vec![None; all_meta_owned.len()]);
+
+        // Step 2: async DB calls using pre-computed hashes.
+        for (meta, maybe_hash) in all_meta_owned.iter().zip(hashes.iter()) {
             let source_kind = if meta.skill_dir.starts_with(&managed_dir) {
                 zeph_memory::store::SourceKind::Hub
             } else {
@@ -696,43 +709,40 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             } else {
                 &trust_cfg.local_level
             };
-            match zeph_skills::compute_skill_hash(&meta.skill_dir) {
-                Ok(current_hash) => {
-                    // Check if there's an existing record to handle hash mismatch.
-                    let existing = memory
-                        .sqlite()
-                        .load_skill_trust(&meta.name)
-                        .await
-                        .ok()
-                        .flatten();
-                    let trust_level_str = if let Some(ref row) = existing {
-                        if row.blake3_hash == current_hash {
-                            row.trust_level.clone()
-                        } else {
-                            trust_cfg.hash_mismatch_level.to_string()
-                        }
-                    } else {
-                        initial_level.to_string()
-                    };
-                    let source_path = meta.skill_dir.to_str();
-                    if let Err(e) = memory
-                        .sqlite()
-                        .upsert_skill_trust(
-                            &meta.name,
-                            &trust_level_str,
-                            source_kind,
-                            None,
-                            source_path,
-                            &current_hash,
-                        )
-                        .await
-                    {
-                        tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
-                    }
+            let Some(current_hash) = maybe_hash else {
+                tracing::warn!("failed to compute hash for '{}'", meta.name);
+                continue;
+            };
+            // Check if there's an existing record to handle hash mismatch.
+            let existing = memory
+                .sqlite()
+                .load_skill_trust(&meta.name)
+                .await
+                .ok()
+                .flatten();
+            let trust_level_str = if let Some(ref row) = existing {
+                if row.blake3_hash == *current_hash {
+                    row.trust_level.clone()
+                } else {
+                    trust_cfg.hash_mismatch_level.to_string()
                 }
-                Err(e) => {
-                    tracing::warn!("failed to compute hash for '{}': {e:#}", meta.name);
-                }
+            } else {
+                initial_level.to_string()
+            };
+            let source_path = meta.skill_dir.to_str();
+            if let Err(e) = memory
+                .sqlite()
+                .upsert_skill_trust(
+                    &meta.name,
+                    &trust_level_str,
+                    source_kind,
+                    None,
+                    source_path,
+                    current_hash,
+                )
+                .await
+            {
+                tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
             }
         }
     }
