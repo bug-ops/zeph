@@ -304,11 +304,6 @@ impl AppBuilder {
 
         if self.config.memory.semantic.enabled && memory.is_vector_store_connected().await {
             tracing::info!("semantic memory enabled, vector store connected");
-            match memory.embed_missing().await {
-                Ok(n) if n > 0 => tracing::info!("backfilled {n} missing embedding(s)"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("embed_missing failed: {e:#}"),
-            }
         }
 
         if self.config.memory.graph.enabled {
@@ -337,7 +332,36 @@ impl AppBuilder {
 
         Ok(memory)
     }
+}
 
+/// Spawn a background task that backfills missing embeddings.
+///
+/// Fire-and-forget: the caller does not need to await the returned handle.
+/// The task runs for at most `timeout_secs` seconds.
+///
+/// # Errors
+///
+/// The returned `JoinHandle` resolves to `()` — errors are logged internally.
+pub fn spawn_embed_backfill(
+    memory: Arc<SemanticMemory>,
+    timeout_secs: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            memory.embed_missing(),
+        )
+        .await;
+        match result {
+            Ok(Ok(n)) if n > 0 => tracing::info!("backfilled {n} missing embedding(s)"),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::warn!("embed_missing failed: {e:#}"),
+            Err(_) => tracing::warn!("embed_missing timed out after {timeout_secs}s"),
+        }
+    })
+}
+
+impl AppBuilder {
     fn build_admission_control(
         &self,
         fallback_provider: &AnyProvider,

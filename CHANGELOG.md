@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`embed_missing` blocks startup** (`#2662`): the embedding backfill was running synchronously in `build_memory`, causing startup to hang for minutes and consuming excessive RAM. It is now spawned as a background task via `zeph_core::bootstrap::spawn_embed_backfill` with a 300s timeout. An early `Ctrl+C` handler (`std::process::exit(130)`) is registered before `build_memory` so the process can be killed during the init phase; the handler is aborted once the full signal handler is wired. TUI shows "Backfilling embeddings..." status while the task runs.
+
 - **TUI status bar stuck on last init message** (`#2658`): `tui_status!` macro used `try_send` which could silently drop messages; switched to `send().await`. After `load_history` completes, an empty status string is sent immediately so the status bar clears before `run_tui_agent` takes over, eliminating the "Loading conversation history..." label lingering until the warmup task ran.
 - **TUI startup race condition** (`#2660`): initial "Starting up…" status was sent via `tokio::spawn`, creating a race where the message could arrive after later status updates or be lost entirely; replaced with a direct `try_send` (channel is empty at this point, capacity 256).
 - **Blocking `compute_skill_hash` loop on tokio thread** (`#2660`): trust DB population loop called `compute_skill_hash` (which does `std::fs::read`) synchronously inside an async `for` loop, blocking the tokio executor for every loaded skill; all FS reads are now batched in a single `spawn_blocking` call, followed by async DB upserts.

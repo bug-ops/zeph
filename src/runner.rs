@@ -654,9 +654,37 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         };
     }
 
+    // Early Ctrl+C: terminate during init before the full handler is wired.
+    let early_ctrlc = tokio::spawn(async {
+        let _ = tokio::signal::ctrl_c().await;
+        std::process::exit(130);
+    });
+
     #[cfg(feature = "tui")]
     tui_status!("Loading memory...");
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+    {
+        let memory_arc = std::sync::Arc::clone(&memory);
+        #[cfg(feature = "tui")]
+        let embed_tx = early_tui_guard.0.as_ref().map(|e| e.agent_tx.clone());
+        // Outer spawn sends TUI status updates; inner spawn_embed_backfill does the actual work.
+        let _embed_status_handle = tokio::spawn(async move {
+            #[cfg(feature = "tui")]
+            if let Some(ref tx) = embed_tx {
+                let _ = tx
+                    .send(zeph_tui::AgentEvent::Status(
+                        "Backfilling embeddings...".into(),
+                    ))
+                    .await;
+            }
+            let handle = zeph_core::bootstrap::spawn_embed_backfill(memory_arc, 300);
+            handle.await.ok();
+            #[cfg(feature = "tui")]
+            if let Some(ref tx) = embed_tx {
+                let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+            }
+        });
+    }
     #[cfg(feature = "tui")]
     tui_status!("Connecting tools...");
     let tool_setup = agent_setup::build_tool_setup(
@@ -1875,6 +1903,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     agent.init_semantic_index().await;
 
     agent_setup::spawn_ctrl_c_handler(agent.cancel_signal(), shutdown_tx);
+    early_ctrlc.abort();
     #[cfg(feature = "tui")]
     tui_status!("Loading conversation history...");
     // load_history is the last fallible call before run_tui_agent.
