@@ -926,6 +926,12 @@ pub struct SemanticConfig {
         deserialize_with = "validate_importance_weight"
     )]
     pub importance_weight: f64,
+    /// Name of a `[[llm.providers]]` entry to use exclusively for embedding calls during
+    /// memory write and backfill operations. A dedicated provider prevents `embed_backfill`
+    /// from contending with the guardrail at the API server level (rate limits, Ollama
+    /// single-model lock). When unset or empty, falls back to the main agent provider.
+    #[serde(default)]
+    pub embed_provider: Option<String>,
 }
 
 impl Default for SemanticConfig {
@@ -941,6 +947,7 @@ impl Default for SemanticConfig {
             mmr_lambda: default_mmr_lambda(),
             importance_enabled: true,
             importance_weight: default_importance_weight(),
+            embed_provider: None,
         }
     }
 }

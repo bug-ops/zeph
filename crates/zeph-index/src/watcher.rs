@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
 
@@ -13,15 +14,46 @@ use crate::error::Result;
 use crate::indexer::CodeIndexer;
 use crate::languages::is_indexable;
 
+/// Build a gitignore matcher for `root` by loading `.gitignore` from the root directory.
+/// Returns an empty (pass-all) matcher on any error so the watcher degrades gracefully.
+fn build_gitignore(root: &Path) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(root);
+    let _ = builder.add(root.join(".gitignore"));
+    builder.build().unwrap_or_else(|_| Gitignore::empty())
+}
+
+/// Returns `true` if `path` should be skipped because it (or one of its ancestors)
+/// is matched by the project's `.gitignore`.
+fn is_gitignored(gitignore: &Gitignore, root: &Path, path: &Path) -> bool {
+    // matched_path_or_any_parents requires a path relative to the gitignore root.
+    let Ok(relative) = path.strip_prefix(root) else {
+        // Path outside root — let is_indexable decide.
+        return false;
+    };
+    gitignore
+        .matched_path_or_any_parents(relative, false)
+        .is_ignore()
+}
+
 pub struct IndexWatcher {
     _handle: tokio::task::JoinHandle<()>,
 }
 
 impl IndexWatcher {
+    /// Start the file-system watcher.
+    ///
+    /// When `status_tx` is `Some`, a short status message is sent to it whenever a file
+    /// reindex begins, and an empty string is sent when it completes (clearing the TUI
+    /// status bar). Pass `None` in non-TUI modes where no status indicator is needed.
+    ///
     /// # Errors
     ///
     /// Returns an error if the filesystem watcher cannot be initialized.
-    pub fn start(root: &Path, indexer: Arc<CodeIndexer>) -> Result<Self> {
+    pub fn start(
+        root: &Path,
+        indexer: Arc<CodeIndexer>,
+        status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<Self> {
         let (notify_tx, mut notify_rx) = mpsc::channel::<PathBuf>(64);
 
         let mut debouncer = new_debouncer(
@@ -55,11 +87,27 @@ impl IndexWatcher {
             .watch(root, notify::RecursiveMode::Recursive)?;
 
         let root = root.to_path_buf();
+        let gitignore = build_gitignore(&root);
+
         let handle = tokio::spawn(async move {
             let _debouncer = debouncer;
             while let Some(path) = notify_rx.recv().await {
+                if is_gitignored(&gitignore, &root, &path) {
+                    tracing::trace!(path = %path.display(), "skipping gitignored path");
+                    continue;
+                }
+                if let Some(ref tx) = status_tx {
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
+                    let _ = tx.send(format!("Re-indexing {name}..."));
+                }
                 if let Err(e) = indexer.reindex_file(&root, &path).await {
                     tracing::warn!(path = %path.display(), "reindex failed: {e:#}");
+                }
+                if let Some(ref tx) = status_tx {
+                    let _ = tx.send(String::new());
                 }
             }
         });
@@ -100,7 +148,7 @@ mod tests {
     #[tokio::test]
     async fn start_with_valid_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let watcher = IndexWatcher::start(dir.path(), create_test_indexer().await);
+        let watcher = IndexWatcher::start(dir.path(), create_test_indexer().await, None);
         assert!(watcher.is_ok());
     }
 
@@ -109,7 +157,64 @@ mod tests {
         let result = IndexWatcher::start(
             Path::new("/nonexistent/path/xyz"),
             create_test_indexer().await,
+            None,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn gitignore_filters_target_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "target/\n.local/\n").unwrap();
+
+        let gitignore = build_gitignore(root);
+
+        // Paths inside gitignored dirs must be filtered.
+        assert!(is_gitignored(
+            &gitignore,
+            root,
+            &root.join("target/debug/build")
+        ));
+        assert!(is_gitignored(
+            &gitignore,
+            root,
+            &root.join(".local/testing/debug/dump.json")
+        ));
+        // Tracked source files must not be filtered.
+        assert!(!is_gitignored(&gitignore, root, &root.join("src/main.rs")));
+        assert!(!is_gitignored(
+            &gitignore,
+            root,
+            &root.join("crates/zeph-core/src/lib.rs")
+        ));
+    }
+
+    #[test]
+    fn gitignore_passes_all_when_no_gitignore_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // No .gitignore — nothing should be filtered.
+        let gitignore = build_gitignore(root);
+        assert!(!is_gitignored(&gitignore, root, &root.join("src/lib.rs")));
+        assert!(!is_gitignored(
+            &gitignore,
+            root,
+            &root.join("target/debug/bin")
+        ));
+    }
+
+    #[test]
+    fn gitignore_ignores_path_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        let gitignore = build_gitignore(root);
+        // Path outside root must not be filtered (strip_prefix fails → false).
+        assert!(!is_gitignored(
+            &gitignore,
+            root,
+            Path::new("/tmp/other/target/foo")
+        ));
     }
 }

@@ -780,6 +780,7 @@ pub(crate) async fn apply_code_indexer(
     provider: zeph_llm::any::AnyProvider,
     pool: zeph_db::DbPool,
     cli_mode: bool,
+    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> CodeIndexerSetup {
     if !config.enabled {
         return (None, None, None);
@@ -829,7 +830,7 @@ pub(crate) async fn apply_code_indexer(
                 cli_mode,
             );
             tracing::info!("code indexer started");
-            let watcher = start_index_watcher(config.watch, &workspace_root, indexer);
+            let watcher = start_index_watcher(config.watch, &workspace_root, indexer, status_tx);
             (
                 Some(std::sync::Arc::new(retriever)),
                 watcher,
@@ -891,11 +892,12 @@ fn start_index_watcher(
     watch: bool,
     root: &std::path::Path,
     indexer: std::sync::Arc<CodeIndexer>,
+    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Option<IndexWatcher> {
     if !watch {
         return None;
     }
-    match IndexWatcher::start(root, indexer) {
+    match IndexWatcher::start(root, indexer, status_tx) {
         Ok(w) => {
             tracing::info!("index watcher started");
             Some(w)
@@ -1246,7 +1248,7 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
 
         let (retriever, watcher, progress_rx) =
-            apply_code_indexer(&config, None, offline_provider(), pool, false).await;
+            apply_code_indexer(&config, None, offline_provider(), pool, false, None).await;
         assert!(retriever.is_none());
         assert!(watcher.is_none());
         assert!(progress_rx.is_none());
@@ -1265,7 +1267,7 @@ mod tests {
         let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
 
         let (retriever, watcher, _progress_rx) =
-            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false).await;
+            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false, None).await;
         assert!(retriever.is_some());
         assert!(watcher.is_none());
     }
@@ -1284,7 +1286,7 @@ mod tests {
         // disabled → early return; the fallback path is exercised in the enabled branch
         // but we can verify None is accepted without panic
         let (retriever, _, _) =
-            apply_code_indexer(&config, None, offline_provider(), pool, false).await;
+            apply_code_indexer(&config, None, offline_provider(), pool, false, None).await;
         assert!(retriever.is_none());
     }
 
@@ -1303,7 +1305,7 @@ mod tests {
         let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
 
         let (retriever, watcher, _) =
-            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false).await;
+            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false, None).await;
         // Qdrant is unreachable but the CodeStore/CodeRetriever still gets constructed —
         // the indexer only fails when it actually tries to connect (in background task).
         assert!(retriever.is_some());

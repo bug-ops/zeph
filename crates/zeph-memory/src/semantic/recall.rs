@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use futures::StreamExt as _;
 use zeph_llm::provider::{LlmProvider as _, Message};
 
 /// Approximate characters per token (conservative estimate for mixed content).
@@ -231,14 +232,15 @@ impl SemanticMemory {
         let Some(qdrant) = &self.qdrant else {
             return false;
         };
-        if !self.provider.supports_embeddings() {
+        let embed_provider = self.effective_embed_provider();
+        if !embed_provider.supports_embeddings() {
             return false;
         }
 
         let chunks = chunk_text(content);
         let chunk_count = chunks.len();
 
-        let vectors = match self.provider.embed_batch(&chunks).await {
+        let vectors = match embed_provider.embed_batch(&chunks).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Failed to embed chunks for msg {message_id}: {e:#}");
@@ -295,7 +297,8 @@ impl SemanticMemory {
         let Some(qdrant) = &self.qdrant else {
             return false;
         };
-        if !self.provider.supports_embeddings() {
+        let embed_provider = self.effective_embed_provider();
+        if !embed_provider.supports_embeddings() {
             return false;
         }
 
@@ -305,7 +308,7 @@ impl SemanticMemory {
 
         // Embed all chunks in a single batch call.
         // Batch semantics are atomic: if the batch fails, skip embedding for this message.
-        let vectors = match self.provider.embed_batch(&chunks).await {
+        let vectors = match embed_provider.embed_batch(&chunks).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Failed to embed tool-output chunks for msg {message_id}: {e:#}");
@@ -999,34 +1002,46 @@ impl SemanticMemory {
 
     /// Embed all messages that do not yet have embeddings.
     ///
+    /// Streams up to 1 000 unembedded rows from `SQLite` one at a time, embedding and storing
+    /// each before advancing the cursor. This avoids loading all message content into memory
+    /// at once, which can cause a significant RAM spike when messages contain large tool output
+    /// or code blocks.
+    ///
     /// Returns the count of successfully embedded messages.
     ///
     /// # Errors
     ///
-    /// Returns an error if collection initialization or database query fails.
+    /// Returns an error if collection initialization or the streaming query setup fails.
     /// Individual embedding failures are logged but do not stop processing.
     pub async fn embed_missing(&self) -> Result<usize, MemoryError> {
-        if self.qdrant.is_none() || !self.provider.supports_embeddings() {
+        if self.qdrant.is_none() || !self.effective_embed_provider().supports_embeddings() {
             return Ok(0);
         }
 
-        let unembedded = self.sqlite.unembedded_message_ids(Some(1000)).await?;
+        let mut stream = std::pin::pin!(self.sqlite.stream_unembedded_messages(1000));
 
-        if unembedded.is_empty() {
-            return Ok(0);
-        }
-
-        let mut count = 0;
-        for (msg_id, conversation_id, role, content) in &unembedded {
+        let mut count = 0usize;
+        let mut total = 0usize;
+        while let Some(row) = stream.next().await {
+            let (msg_id, conversation_id, role, content) = match row {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("embed_missing: failed to read row: {e:#}");
+                    continue;
+                }
+            };
+            total += 1;
             if self
-                .embed_and_store_regular(*msg_id, *conversation_id, role, content)
+                .embed_and_store_regular(msg_id, conversation_id, &role, &content)
                 .await
             {
                 count += 1;
             }
         }
 
-        tracing::info!("Embedded {count}/{} missing messages", unembedded.len());
+        if total > 0 {
+            tracing::info!("Embedded {count}/{total} missing messages");
+        }
         Ok(count)
     }
 }

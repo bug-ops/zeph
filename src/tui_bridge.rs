@@ -28,6 +28,10 @@ pub(crate) struct TuiRunParams<'a> {
     /// Set when TUI rendering was started early via `start_tui_early`.
     /// When `Some`, `run_tui_agent` skips creating a new TUI task and uses the existing one.
     pub(crate) early_tui: Option<EarlyTuiHandle>,
+    /// Watch receiver for embed backfill state: `true` while running, `false` when done.
+    /// After warmup completes and the init status is cleared, the TUI shows a persistent
+    /// "Backfilling embeddings..." status until this transitions to `false`.
+    pub(crate) backfill_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
@@ -79,6 +83,46 @@ pub(crate) fn start_tui_early(
     });
 
     EarlyTuiHandle { tui_task, agent_tx }
+}
+
+/// Warms up the provider, signals readiness, then shows embed backfill status until done.
+///
+/// After warmup completes and the "model ready" message clears, this task monitors
+/// `backfill_rx` and keeps the TUI status bar showing "Backfilling embeddings..." until
+/// the backfill finishes. This avoids the status being overwritten by subsequent init steps
+/// during the startup sequence.
+#[cfg(feature = "tui")]
+async fn spawn_warmup_with_backfill_status(
+    provider: AnyProvider,
+    mut backfill_rx: tokio::sync::watch::Receiver<bool>,
+    warmup_tx: tokio::sync::watch::Sender<bool>,
+    tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+) {
+    let _ = tx
+        .send(zeph_tui::AgentEvent::Status("warming up model...".into()))
+        .await;
+    warmup_provider(&provider).await;
+    let _ = tx
+        .send(zeph_tui::AgentEvent::Status("model ready".into()))
+        .await;
+    let _ = warmup_tx.send(true);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+    // After init status clears, show backfill progress until it finishes.
+    if *backfill_rx.borrow() {
+        let _ = tx
+            .send(zeph_tui::AgentEvent::Status(
+                "Backfilling embeddings...".into(),
+            ))
+            .await;
+        // Wait for backfill to complete (watch transitions to false).
+        while *backfill_rx.borrow_and_update() {
+            if backfill_rx.changed().await.is_err() {
+                break;
+            }
+        }
+        let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+    }
 }
 
 #[cfg(feature = "tui")]
@@ -167,22 +211,12 @@ pub(crate) async fn run_tui_agent<C: Channel>(
     }
 
     let (warmup_tx, warmup_rx) = tokio::sync::watch::channel(false);
-    let warmup_agent_tx = agent_tx.clone();
-    let wp = params.warmup_provider;
-    tokio::spawn(async move {
-        let _ = warmup_agent_tx
-            .send(zeph_tui::AgentEvent::Status("warming up model...".into()))
-            .await;
-        warmup_provider(&wp).await;
-        let _ = warmup_agent_tx
-            .send(zeph_tui::AgentEvent::Status("model ready".into()))
-            .await;
-        let _ = warmup_tx.send(true);
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let _ = warmup_agent_tx
-            .send(zeph_tui::AgentEvent::Status(String::new()))
-            .await;
-    });
+    tokio::spawn(spawn_warmup_with_backfill_status(
+        params.warmup_provider,
+        params.backfill_rx,
+        warmup_tx,
+        agent_tx.clone(),
+    ));
 
     let mut agent = agent.with_warmup_ready(warmup_rx);
     let agent_future = agent.run();

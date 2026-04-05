@@ -663,26 +663,24 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     tui_status!("Loading memory...");
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+    // backfill_tx/rx: signals whether embed backfill is still running.
+    // The TUI warmup completion handler uses this to show "Backfilling embeddings..."
+    // after init status clears, without being overwritten by subsequent init steps.
+    #[cfg(feature = "tui")]
+    let (backfill_tx, backfill_rx) = tokio::sync::watch::channel(true);
     {
         let memory_arc = std::sync::Arc::clone(&memory);
         #[cfg(feature = "tui")]
-        let embed_tx = early_tui_guard.0.as_ref().map(|e| e.agent_tx.clone());
-        // Outer spawn sends TUI status updates; inner spawn_embed_backfill does the actual work.
-        let _embed_status_handle = tokio::spawn(async move {
-            #[cfg(feature = "tui")]
-            if let Some(ref tx) = embed_tx {
-                let _ = tx
-                    .send(zeph_tui::AgentEvent::Status(
-                        "Backfilling embeddings...".into(),
-                    ))
-                    .await;
-            }
+        let tx_for_spawn = backfill_tx;
+        #[cfg(not(feature = "tui"))]
+        let tx_for_spawn = {
+            let (tx, _rx) = tokio::sync::watch::channel(true);
+            tx
+        };
+        tokio::spawn(async move {
             let handle = zeph_core::bootstrap::spawn_embed_backfill(memory_arc, 300);
             handle.await.ok();
-            #[cfg(feature = "tui")]
-            if let Some(ref tx) = embed_tx {
-                let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
-            }
+            let _ = tx_for_spawn.send(false);
         });
     }
     #[cfg(feature = "tui")]
@@ -1535,6 +1533,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         index_provider,
         index_pool,
         is_cli,
+        Some(agent_status_tx.clone()),
     )
     .await;
     // Wire index progress to TUI immediately after the indexer is created.
@@ -1955,10 +1954,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 index_progress_rx: progress_for_params,
                 cli_tafc: cli.tafc,
                 early_tui,
+                backfill_rx,
             },
         ))
         .await;
     }
+    // TUI feature compiled but running in CLI mode — backfill_rx not needed.
+    #[cfg(feature = "tui")]
+    drop(backfill_rx);
 
     if let Some(handle) = warmup_handle {
         let _ = handle.await;

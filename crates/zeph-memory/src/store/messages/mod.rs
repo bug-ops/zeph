@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use futures::TryStreamExt as _;
 #[allow(unused_imports)]
 use zeph_common;
 use zeph_db::ActiveDialect;
@@ -563,6 +564,34 @@ impl SqliteStore {
         .await?;
 
         Ok(rows)
+    }
+
+    /// Stream message IDs and content for messages without embeddings, one row at a time.
+    ///
+    /// Executes the same query as [`Self::unembedded_message_ids`] but returns a streaming
+    /// cursor instead of loading all rows into a `Vec`. The `SQLite` read transaction is held
+    /// for the duration of iteration; callers must not write to `embeddings_metadata` while
+    /// the stream is live (use a separate async task for writes).
+    ///
+    /// # Errors
+    ///
+    /// Yields a [`MemoryError`] if the query or row decoding fails.
+    pub fn stream_unembedded_messages(
+        &self,
+        limit: i64,
+    ) -> impl futures::Stream<Item = Result<(MessageId, ConversationId, String, String), MemoryError>> + '_
+    {
+        zeph_db::query_as(sql!(
+            "SELECT m.id, m.conversation_id, m.role, m.content \
+             FROM messages m \
+             LEFT JOIN embeddings_metadata em ON m.id = em.message_id \
+             WHERE em.id IS NULL AND m.deleted_at IS NULL \
+             ORDER BY m.id ASC \
+             LIMIT ?"
+        ))
+        .bind(limit)
+        .fetch(&self.pool)
+        .map_err(MemoryError::from)
     }
 
     /// Count the number of messages in a conversation.

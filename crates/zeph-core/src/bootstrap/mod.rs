@@ -330,7 +330,36 @@ impl AppBuilder {
             memory = memory.with_admission_control(self.build_admission_control(provider));
         }
 
+        if let Some(ep) = self.build_memory_embed_provider() {
+            memory = memory.with_embed_provider(ep);
+        }
+
         Ok(memory)
+    }
+
+    fn build_memory_embed_provider(&self) -> Option<AnyProvider> {
+        let name = self
+            .config
+            .memory
+            .semantic
+            .embed_provider
+            .as_deref()
+            .filter(|s| !s.is_empty())?;
+
+        match create_named_provider(name, &self.config) {
+            Ok(ep) => {
+                tracing::info!(provider = %name, "Using dedicated embed provider for memory backfill");
+                Some(ep)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "Memory embed_provider resolution failed — main provider will be used"
+                );
+                None
+            }
+        }
     }
 }
 

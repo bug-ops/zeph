@@ -45,7 +45,11 @@ fn default_max_active_skills() -> usize {
 }
 
 fn default_index_watch() -> bool {
-    true
+    // Default off: watcher watches ALL files recursively and bypasses gitignore
+    // filtering at the OS level. Projects with large .local/ or target/ directories
+    // trigger continuous reindex loops, causing unbounded memory growth.
+    // Users must explicitly opt in with `[index] watch = true`.
+    false
 }
 
 fn default_index_search_enabled() -> bool {
@@ -479,7 +483,7 @@ mod tests {
         let cfg = IndexConfig::default();
         assert!(!cfg.enabled);
         assert!(cfg.search_enabled);
-        assert!(cfg.watch);
+        assert!(!cfg.watch);
         assert_eq!(cfg.concurrency, 4);
         assert_eq!(cfg.batch_size, 32);
         assert!(cfg.workspace_root.is_none());

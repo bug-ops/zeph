@@ -46,6 +46,12 @@ pub struct SemanticMemory {
     pub(crate) sqlite: SqliteStore,
     pub(crate) qdrant: Option<Arc<EmbeddingStore>>,
     pub(crate) provider: AnyProvider,
+    /// Dedicated provider for batch embedding calls (backfill, write-path embedding).
+    ///
+    /// When `Some`, all embedding I/O is routed through this provider instead of `provider`.
+    /// This prevents `embed_backfill` from saturating the main provider and causing guardrail
+    /// timeouts. When `None`, falls back to `provider`.
+    pub(crate) embed_provider: Option<AnyProvider>,
     pub(crate) embedding_model: String,
     pub(crate) vector_weight: f64,
     pub(crate) keyword_weight: f64,
@@ -147,6 +153,7 @@ impl SemanticMemory {
             sqlite,
             qdrant,
             provider,
+            embed_provider: None,
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,
@@ -191,6 +198,7 @@ impl SemanticMemory {
             sqlite,
             qdrant: Some(Arc::new(store)),
             provider,
+            embed_provider: None,
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,
@@ -284,6 +292,24 @@ impl SemanticMemory {
         self
     }
 
+    /// Attach a dedicated embedding provider for write-path and backfill operations.
+    ///
+    /// When set, all batch embedding calls (backfill, `remember`) route through this provider
+    /// instead of the main `provider`. This prevents `embed_backfill` from saturating the main
+    /// provider and causing guardrail timeouts due to rate-limit contention or Ollama model-lock.
+    #[must_use]
+    pub fn with_embed_provider(mut self, embed_provider: AnyProvider) -> Self {
+        self.embed_provider = Some(embed_provider);
+        self
+    }
+
+    /// Returns the provider to use for embedding calls.
+    ///
+    /// Returns the dedicated embed provider when configured, falling back to the main provider.
+    pub(crate) fn effective_embed_provider(&self) -> &AnyProvider {
+        self.embed_provider.as_ref().unwrap_or(&self.provider)
+    }
+
     /// Construct a `SemanticMemory` from pre-built parts.
     ///
     /// Intended for tests that need full control over the backing stores.
@@ -301,6 +327,7 @@ impl SemanticMemory {
             sqlite,
             qdrant,
             provider,
+            embed_provider: None,
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,
@@ -364,6 +391,7 @@ impl SemanticMemory {
             sqlite,
             qdrant: Some(Arc::new(store)),
             provider,
+            embed_provider: None,
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,

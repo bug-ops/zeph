@@ -339,14 +339,23 @@ mmr_enabled = true
 # Write-time importance scoring: boost recall rank for messages with explicit markers (#2021)
 importance_enabled = true
 importance_weight = 0.15
+# Dedicated provider for embedding calls during memory write and backfill operations.
+# References a [[llm.providers]] name. Prevents embed_backfill from contending with the
+# guardrail at the API server level (rate limits, Ollama single-model lock).
+# Recommended: a cheap embedding model (e.g. text-embedding-3-small, nomic-embed-text).
+# Defaults to the main provider when unset.
+# embed_provider = "ollama-embed"
 
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant for semantic retrieval; tree-sitter grammars are always available
 [index]
 # Enable code indexing and retrieval (requires Qdrant)
 enabled = false
-# Watch for file changes and reindex incrementally
-watch = true
+# Watch for file changes and reindex incrementally (opt-in; default: false).
+# When enabled, all file changes under the workspace root trigger reindexing.
+# The watcher respects .gitignore, but large projects with active debug dumps or
+# build artifacts in non-gitignored paths may still generate high reindex load.
+# watch = true
 # Maximum code chunks to retrieve per query
 max_chunks = 12
 # Minimum cosine similarity score to accept

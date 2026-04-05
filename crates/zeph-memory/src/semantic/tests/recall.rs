@@ -50,6 +50,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         sqlite,
         qdrant,
         provider,
+        embed_provider: None,
         embedding_model: "test-model".into(),
         vector_weight: 0.7,
         keyword_weight: 0.3,
