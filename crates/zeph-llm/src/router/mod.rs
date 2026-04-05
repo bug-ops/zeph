@@ -20,8 +20,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::any::AnyProvider;
-use crate::embed::owned_strs;
 use crate::ema::EmaTracker;
+use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
