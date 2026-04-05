@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **TUI blocked until code indexing completed** (`#2647`): the directory walk inside `index_project` was performed synchronously on a tokio worker thread, starving the TUI render loop. The walk and `current_files` set construction are now offloaded via `tokio::task::spawn_blocking`; a `JoinError` (panic in the walk) is mapped to `IndexError::Other`. The TUI now starts and renders immediately while indexing proceeds in the background.
+
 - **Code indexer always indexed `current_dir` regardless of config** (`#2646`): `apply_code_indexer` now resolves `workspace_root` from `IndexConfig` (canonicalized) and falls back to `current_dir()` only when the field is `None`. Both the background indexing task and the file watcher use the same resolved root.
 - **Sequential per-chunk Qdrant upserts caused slow full-project indexing** (`#2647`): `index_project` now processes files concurrently via `futures::stream::buffer_unordered(concurrency)`. Within each file, new chunks are collected, embedded in order, and upserted in a single batched `Qdrant` call + single `SQLite` transaction via the new `CodeStore::upsert_chunks_batch` method, reducing per-chunk overhead significantly.
 - **MCP server instructions not injected into system prompt** (`#2637`): `append_mcp_prompt` now collects server-level instructions from all connected MCP servers via `McpManager::all_server_instructions()` and prepends them to the system prompt on every turn, regardless of whether the provider supports native tool_use. Added `all_server_instructions()` helper to `McpManager` that returns all stored instructions concatenated in stable order.

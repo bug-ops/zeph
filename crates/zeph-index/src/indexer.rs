@@ -95,27 +95,33 @@ impl CodeIndexer {
         let vector_size = u64::try_from(probe.len())?;
         self.store.ensure_collection(vector_size).await?;
 
-        let entries: Vec<_> = ignore::WalkBuilder::new(root)
-            .hidden(true)
-            .git_ignore(true)
-            .build()
-            .flatten()
-            .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()) && is_indexable(e.path()))
-            .collect();
+        let root_buf = root.to_path_buf();
+        let (entries, current_files) = tokio::task::spawn_blocking(move || {
+            let entries: Vec<_> = ignore::WalkBuilder::new(&root_buf)
+                .hidden(true)
+                .git_ignore(true)
+                .build()
+                .flatten()
+                .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()) && is_indexable(e.path()))
+                .collect();
+
+            let mut current_files: HashSet<String> = HashSet::new();
+            for entry in &entries {
+                let rel_path = entry
+                    .path()
+                    .strip_prefix(&root_buf)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy()
+                    .to_string();
+                current_files.insert(rel_path);
+            }
+            (entries, current_files)
+        })
+        .await
+        .map_err(|e| IndexError::Other(format!("directory walk panicked: {e}")))?;
 
         let total = entries.len();
         tracing::info!(total, "indexing started");
-
-        let mut current_files: HashSet<String> = HashSet::new();
-        for entry in &entries {
-            let rel_path = entry
-                .path()
-                .strip_prefix(root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .to_string();
-            current_files.insert(rel_path);
-        }
 
         let concurrency = self.config.concurrency;
         let store = self.store.clone();
