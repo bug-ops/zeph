@@ -1583,8 +1583,8 @@ mod tests {
 
         #[tokio::test]
         async fn enabled_enough_messages_spawns_extraction() {
-            // enabled=true, min_messages=1, self-referential message → tokio::spawn fires and
-            // chat() is called on the provider. We verify via MockProvider recording.
+            // enabled=true, min_messages=1, self-referential message → extraction runs eagerly
+            // (not fire-and-forget) and chat() is called on the provider, verified via MockProvider.
             use zeph_llm::mock::MockProvider;
             let (mock, recorded) = MockProvider::default().with_recording();
             let provider = AnyProvider::Mock(mock);
