@@ -545,6 +545,14 @@ mod tests {
     use crate::provider::ImageData;
     use crate::provider::MessageMetadata;
 
+    fn ollama_chat_model() -> String {
+        std::env::var("OLLAMA_CHAT_MODEL").unwrap_or_else(|_| "qwen3:8b".into())
+    }
+
+    fn ollama_embed_model() -> String {
+        std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "qwen3-embedding".into())
+    }
+
     #[test]
     fn context_window_none_by_default() {
         let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
@@ -910,8 +918,8 @@ mod tests {
     async fn integration_ollama_chat_stream() {
         let provider = OllamaProvider::new(
             "http://localhost:11434",
-            "qwen3:8b".into(),
-            "qwen3-embedding".into(),
+            ollama_chat_model(),
+            ollama_embed_model(),
         );
 
         let messages = vec![Message {
@@ -942,8 +950,8 @@ mod tests {
     async fn integration_ollama_stream_matches_chat() {
         let provider = OllamaProvider::new(
             "http://localhost:11434",
-            "qwen3:8b".into(),
-            "qwen3-embedding".into(),
+            ollama_chat_model(),
+            ollama_embed_model(),
         );
 
         let messages = vec![Message {
@@ -968,12 +976,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires running Ollama instance with qwen3-embedding model"]
+    #[ignore = "requires running Ollama instance"]
     async fn integration_ollama_embed() {
         let provider = OllamaProvider::new(
             "http://localhost:11434",
-            "qwen3:8b".into(),
-            "qwen3-embedding".into(),
+            ollama_chat_model(),
+            ollama_embed_model(),
         );
 
         let embedding = provider.embed("hello world").await.unwrap();
