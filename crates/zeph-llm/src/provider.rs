@@ -12,6 +12,7 @@ use std::{
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
+use crate::embed::owned_strs;
 use crate::error::LlmError;
 
 static SCHEMA_CACHE: LazyLock<Mutex<HashMap<TypeId, (serde_json::Value, String)>>> =
@@ -510,7 +511,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         texts: &[&str],
     ) -> impl Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
-        let owned: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
+        let owned = owned_strs(texts);
         async move {
             let mut results = Vec::with_capacity(owned.len());
             for text in &owned {

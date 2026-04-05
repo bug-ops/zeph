@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use zeph_common::text::truncate_chars;
 
 use crate::any::AnyProvider;
+use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{
     ChatResponse, ChatStream, LlmProvider, Message, MessageMetadata, Role, StatusTx, ToolDefinition,
@@ -478,7 +479,7 @@ impl LlmProvider for TriageRouter {
             });
 
         let name = self.name.clone();
-        let owned: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
+        let owned = owned_strs(texts);
         Box::pin(async move {
             match embed_provider {
                 Some(p) => {

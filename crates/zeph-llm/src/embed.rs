@@ -16,6 +16,12 @@ const EMBED_HEAD_CHARS: usize = 24_000;
 const EMBED_TAIL_CHARS: usize = 8_000;
 const EMBED_TRUNCATION_MARKER: &str = "\n...[truncated]...\n";
 
+/// Convert a slice of string references to owned `String` values.
+#[inline]
+pub(crate) fn owned_strs(texts: &[&str]) -> Vec<String> {
+    texts.iter().map(|t| (*t).to_owned()).collect()
+}
+
 /// Truncates `text` for embedding APIs with a token limit.
 ///
 /// Uses a head+tail strategy: keeps the first [`EMBED_HEAD_CHARS`] and last

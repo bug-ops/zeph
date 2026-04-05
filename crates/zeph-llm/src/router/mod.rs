@@ -20,6 +20,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::any::AnyProvider;
+use crate::embed::owned_strs;
 use crate::ema::EmaTracker;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
@@ -1172,7 +1173,7 @@ impl LlmProvider for RouterProvider {
     ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
         let providers = self.ordered_providers();
         let status_tx = self.status_tx.clone();
-        let owned: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
+        let owned = owned_strs(texts);
         let router = self.clone();
         Box::pin(async move {
             let refs: Vec<&str> = owned.iter().map(String::as_str).collect();

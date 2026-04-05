@@ -123,52 +123,8 @@ impl SemanticMemory {
             .save_message(conversation_id, role, content)
             .await?;
 
-        if let Some(qdrant) = &self.qdrant
-            && self.provider.supports_embeddings()
-        {
-            let chunks = chunk_text(content);
-            let chunk_count = chunks.len();
-
-            // Embed all chunks in a single batch call.
-            // If the batch fails, skip embedding for this message entirely (log warn).
-            // This is a behavior change from per-chunk granularity: batch semantics are
-            // atomic, so a single API error skips the whole message rather than partial chunks.
-            match self.provider.embed_batch(&chunks).await {
-                Ok(vectors) => {
-                    if let Some(first) = vectors.first() {
-                        let vector_size = u64::try_from(first.len()).unwrap_or(896);
-                        if let Err(e) = qdrant.ensure_collection(vector_size).await {
-                            tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
-                        } else {
-                            for (chunk_index, vector) in vectors.into_iter().enumerate() {
-                                let chunk_index_u32 =
-                                    u32::try_from(chunk_index).unwrap_or(u32::MAX);
-                                if let Err(e) = qdrant
-                                    .store(
-                                        message_id,
-                                        conversation_id,
-                                        role,
-                                        vector,
-                                        MessageKind::Regular,
-                                        &self.embedding_model,
-                                        chunk_index_u32,
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "Failed to store chunk {chunk_index}/{chunk_count} \
-                                         for msg {message_id}: {e:#}"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to embed chunks for msg {message_id}: {e:#}");
-                }
-            }
-        }
+        self.embed_and_store_regular(message_id, conversation_id, role, content)
+            .await;
 
         Ok(Some(message_id))
     }
@@ -212,54 +168,9 @@ impl SemanticMemory {
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
 
-        let mut embedding_stored = false;
-
-        if let Some(qdrant) = &self.qdrant
-            && self.provider.supports_embeddings()
-        {
-            let chunks = chunk_text(content);
-            let chunk_count = chunks.len();
-
-            // Embed all chunks in a single batch call.
-            // Batch semantics are atomic: if the batch fails, skip embedding for this message.
-            match self.provider.embed_batch(&chunks).await {
-                Ok(vectors) => {
-                    if let Some(first) = vectors.first() {
-                        let vector_size = u64::try_from(first.len()).unwrap_or(896);
-                        if let Err(e) = qdrant.ensure_collection(vector_size).await {
-                            tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
-                        } else {
-                            for (chunk_index, vector) in vectors.into_iter().enumerate() {
-                                let chunk_index_u32 =
-                                    u32::try_from(chunk_index).unwrap_or(u32::MAX);
-                                if let Err(e) = qdrant
-                                    .store(
-                                        message_id,
-                                        conversation_id,
-                                        role,
-                                        vector,
-                                        MessageKind::Regular,
-                                        &self.embedding_model,
-                                        chunk_index_u32,
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "Failed to store chunk {chunk_index}/{chunk_count} \
-                                         for msg {message_id}: {e:#}"
-                                    );
-                                } else {
-                                    embedding_stored = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to embed chunks for msg {message_id}: {e:#}");
-                }
-            }
-        }
+        let embedding_stored = self
+            .embed_and_store_regular(message_id, conversation_id, role, content)
+            .await;
 
         Ok((Some(message_id), embedding_stored))
     }
@@ -304,6 +215,70 @@ impl SemanticMemory {
             .await;
 
         Ok((Some(message_id), embedding_stored))
+    }
+
+    /// Embed content chunks and store each as a regular (non-tool) message vector.
+    ///
+    /// Handles: chunking → `embed_batch` → `ensure_collection` → per-chunk `store`.
+    /// Returns `true` if at least one chunk was successfully stored.
+    async fn embed_and_store_regular(
+        &self,
+        message_id: MessageId,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+    ) -> bool {
+        let Some(qdrant) = &self.qdrant else {
+            return false;
+        };
+        if !self.provider.supports_embeddings() {
+            return false;
+        }
+
+        let chunks = chunk_text(content);
+        let chunk_count = chunks.len();
+
+        let vectors = match self.provider.embed_batch(&chunks).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to embed chunks for msg {message_id}: {e:#}");
+                return false;
+            }
+        };
+
+        let Some(first) = vectors.first() else {
+            return false;
+        };
+        let vector_size = u64::try_from(first.len()).unwrap_or(896);
+        if let Err(e) = qdrant.ensure_collection(vector_size).await {
+            tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
+            return false;
+        }
+
+        let mut stored = false;
+        for (chunk_index, vector) in vectors.into_iter().enumerate() {
+            let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+            match qdrant
+                .store(
+                    message_id,
+                    conversation_id,
+                    role,
+                    vector,
+                    MessageKind::Regular,
+                    &self.embedding_model,
+                    chunk_index_u32,
+                )
+                .await
+            {
+                Ok(_) => stored = true,
+                Err(e) => tracing::warn!(
+                    "Failed to store chunk {chunk_index}/{chunk_count} \
+                     for msg {message_id}: {e:#}"
+                ),
+            }
+        }
+
+        stored
     }
 
     /// Embed content chunks, enriching Qdrant payload with tool metadata when present.
@@ -1031,10 +1006,7 @@ impl SemanticMemory {
     /// Returns an error if collection initialization or database query fails.
     /// Individual embedding failures are logged but do not stop processing.
     pub async fn embed_missing(&self) -> Result<usize, MemoryError> {
-        let Some(qdrant) = &self.qdrant else {
-            return Ok(0);
-        };
-        if !self.provider.supports_embeddings() {
+        if self.qdrant.is_none() || !self.provider.supports_embeddings() {
             return Ok(0);
         }
 
@@ -1044,52 +1016,12 @@ impl SemanticMemory {
             return Ok(0);
         }
 
-        let probe = self.provider.embed("probe").await?;
-        let vector_size = u64::try_from(probe.len())?;
-        qdrant.ensure_collection(vector_size).await?;
-
         let mut count = 0;
         for (msg_id, conversation_id, role, content) in &unembedded {
-            let chunks = chunk_text(content);
-            let chunk_count = chunks.len();
-
-            // Embed all chunks for this message in a single batch call.
-            // If the batch fails, skip the entire message (log warn).
-            // This is a behavior change from per-chunk granularity: partial embeddings
-            // for a message are confusing; atomic batch semantics are cleaner.
-            let vectors = match self.provider.embed_batch(&chunks).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!("Failed to embed msg {msg_id}: {e:#}");
-                    continue;
-                }
-            };
-
-            let mut stored = 0usize;
-            for (chunk_index, vector) in vectors.into_iter().enumerate() {
-                let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
-                if let Err(e) = qdrant
-                    .store(
-                        *msg_id,
-                        *conversation_id,
-                        role,
-                        vector,
-                        MessageKind::Regular,
-                        &self.embedding_model,
-                        chunk_index_u32,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to store chunk {chunk_index}/{chunk_count} \
-                         for msg {msg_id}: {e:#}"
-                    );
-                } else {
-                    stored += 1;
-                }
-            }
-
-            if stored > 0 {
+            if self
+                .embed_and_store_regular(*msg_id, *conversation_id, role, content)
+                .await
+            {
                 count += 1;
             }
         }
