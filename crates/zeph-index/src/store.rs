@@ -230,6 +230,42 @@ impl CodeStore {
         Ok(row.0 > 0)
     }
 
+    /// Return the set of content hashes that already exist in the store.
+    ///
+    /// Uses `WHERE content_hash IN (...)` with chunks of 900 to stay below
+    /// `SQLite`'s default variable limit of 999.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` query fails.
+    pub async fn existing_hashes(
+        &self,
+        hashes: &[&str],
+    ) -> Result<std::collections::HashSet<String>> {
+        if hashes.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        let mut result = std::collections::HashSet::new();
+
+        for chunk in hashes.chunks(900) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT content_hash FROM chunk_metadata WHERE content_hash IN ({placeholders})"
+            );
+            let mut query = zeph_db::query_scalar::<_, String>(&sql);
+            for hash in chunk {
+                query = query.bind(*hash);
+            }
+            let rows: Vec<String> = query.fetch_all(&self.pool).await?;
+            result.extend(rows);
+        }
+
+        Ok(result)
+    }
+
     /// Remove all chunks for a given file path from both stores.
     ///
     /// # Errors
@@ -538,5 +574,50 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert!(files.contains(&"src/a.rs".to_string()));
         assert!(files.contains(&"src/b.rs".to_string()));
+    }
+
+    #[tokio::test]
+    async fn existing_hashes_empty_input_returns_empty_set() {
+        let pool = setup_pool().await;
+        let ops = zeph_memory::QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let store = CodeStore::with_ops(ops, pool);
+        let result = store.existing_hashes(&[]).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn existing_hashes_chunking_above_900() {
+        let pool = setup_pool().await;
+
+        // Insert 901 rows.
+        for i in 0..901_usize {
+            zeph_db::query(sql!(
+                "INSERT INTO chunk_metadata \
+                 (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ))
+            .bind(format!("q{i}"))
+            .bind("src/lib.rs")
+            .bind(format!("hash{i:04}"))
+            .bind(1_i64)
+            .bind(2_i64)
+            .bind("rust")
+            .bind("function_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let all_hashes: Vec<String> = (0..901).map(|i| format!("hash{i:04}")).collect();
+        let refs: Vec<&str> = all_hashes.iter().map(String::as_str).collect();
+
+        let ops = zeph_memory::QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let store = CodeStore::with_ops(ops, pool);
+        let result = store.existing_hashes(&refs).await.unwrap();
+
+        assert_eq!(result.len(), 901);
+        // Spot-check a few entries.
+        assert!(result.contains("hash0000"));
+        assert!(result.contains("hash0900"));
     }
 }

@@ -97,6 +97,10 @@ impl LlmProvider for CompatibleProvider {
         self.inner.embed(text).await
     }
 
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
+        self.inner.embed_batch(texts).await
+    }
+
     fn supports_embeddings(&self) -> bool {
         self.inner.supports_embeddings()
     }

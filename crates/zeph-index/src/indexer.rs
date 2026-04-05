@@ -271,11 +271,15 @@ impl FileIndexWorker {
 
         let chunks = chunk_file(&source, rel_path, lang, &self.config.chunker)?;
 
+        // Batch-check which hashes already exist to avoid N individual queries.
+        let all_hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
+        let existing = self.store.existing_hashes(&all_hashes).await?;
+
         let mut new_chunks: Vec<CodeChunk> = Vec::new();
         let mut skipped = 0usize;
 
         for chunk in chunks {
-            if self.store.chunk_exists(&chunk.content_hash).await? {
+            if existing.contains(&chunk.content_hash) {
                 skipped += 1;
             } else {
                 new_chunks.push(chunk);
@@ -286,13 +290,17 @@ impl FileIndexWorker {
             return Ok((0, skipped));
         }
 
-        // Embed all new chunks and collect (insert, vector) pairs for batched upsert.
-        let mut batch: Vec<(ChunkInsert<'_>, Vec<f32>)> = Vec::with_capacity(new_chunks.len());
-        for chunk in &new_chunks {
-            let embedding_text = contextualize_for_embedding(chunk);
-            let vector = self.provider.embed(&embedding_text).await?;
-            batch.push((chunk_to_insert(chunk), vector));
-        }
+        // Embed all new chunks in a single batch call, then zip with inserts.
+        let embedding_texts: Vec<String> =
+            new_chunks.iter().map(contextualize_for_embedding).collect();
+        let text_refs: Vec<&str> = embedding_texts.iter().map(String::as_str).collect();
+        let vectors = self.provider.embed_batch(&text_refs).await?;
+
+        let batch: Vec<(ChunkInsert<'_>, Vec<f32>)> = new_chunks
+            .iter()
+            .zip(vectors)
+            .map(|(chunk, vector)| (chunk_to_insert(chunk), vector))
+            .collect();
 
         let created = self.store.upsert_chunks_batch(batch).await?.len();
 

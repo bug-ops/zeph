@@ -398,6 +398,40 @@ impl LlmProvider for OllamaProvider {
             })
     }
 
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
+        use crate::embed::truncate_for_embed;
+
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let truncated: Vec<String> = texts
+            .iter()
+            .map(|t| truncate_for_embed(t).into_owned())
+            .collect();
+
+        let request = GenerateEmbeddingsRequest::new(
+            self.embedding_model.clone(),
+            EmbeddingsInput::from(truncated),
+        );
+
+        let response = self
+            .client
+            .generate_embeddings(request)
+            .await
+            .map_err(|e| LlmError::Other(format!("Ollama batch embedding failed: {e}")))?;
+
+        if response.embeddings.len() != texts.len() {
+            return Err(LlmError::Other(format!(
+                "Ollama returned {} embeddings for {} inputs",
+                response.embeddings.len(),
+                texts.len()
+            )));
+        }
+
+        Ok(response.embeddings)
+    }
+
     fn supports_embeddings(&self) -> bool {
         true
     }
@@ -1139,5 +1173,14 @@ mod tests {
         }];
         let result = provider.chat_with_tools(&messages, &tools).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn embed_batch_empty_returns_empty_without_network() {
+        // Use an unreachable endpoint — empty input must return immediately without HTTP call.
+        let provider =
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
+        let result = provider.embed_batch(&[]).await.unwrap();
+        assert!(result.is_empty());
     }
 }

@@ -462,6 +462,34 @@ impl LlmProvider for TriageRouter {
         })
     }
 
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
+        let embed_provider = self
+            .tier_providers
+            .iter()
+            .find(|(_, p)| p.supports_embeddings())
+            .map(|(_, p)| p.clone())
+            .or_else(|| {
+                self.triage_provider
+                    .supports_embeddings()
+                    .then(|| self.triage_provider.clone())
+            });
+
+        let name = self.name.clone();
+        let owned: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
+        Box::pin(async move {
+            match embed_provider {
+                Some(p) => {
+                    let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+                    p.embed_batch(&refs).await
+                }
+                None => Err(LlmError::EmbedUnsupported { provider: name }),
+            }
+        })
+    }
+
     /// Classify + delegate: each method independently performs triage (MF-2).
     #[allow(refining_impl_trait_reachable)]
     fn chat(

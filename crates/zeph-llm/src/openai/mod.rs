@@ -429,6 +429,68 @@ impl LlmProvider for OpenAiProvider {
             })
     }
 
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
+        use crate::embed::truncate_for_embed;
+
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model = self
+            .embedding_model
+            .as_deref()
+            .ok_or(LlmError::EmbedUnsupported {
+                provider: "openai".into(),
+            })?;
+
+        let truncated: Vec<std::borrow::Cow<'_, str>> =
+            texts.iter().map(|t| truncate_for_embed(t)).collect();
+        let refs: Vec<&str> = truncated.iter().map(std::convert::AsRef::as_ref).collect();
+
+        let body = EmbeddingBatchRequest { model, input: refs };
+
+        let response = self
+            .client
+            .post(format!("{}/embeddings", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body_text = response.text().await.map_err(LlmError::Http)?;
+
+        if !status.is_success() {
+            tracing::error!("OpenAI batch embedding API error {status}: {body_text}");
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                return Err(LlmError::InvalidInput {
+                    provider: "openai".into(),
+                    message: body_text,
+                });
+            }
+            return Err(LlmError::Other(format!(
+                "OpenAI batch embedding failed (status {status})"
+            )));
+        }
+
+        let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
+
+        if resp.data.len() != texts.len() {
+            return Err(LlmError::Other(format!(
+                "OpenAI returned {} embeddings for {} inputs",
+                resp.data.len(),
+                texts.len()
+            )));
+        }
+
+        // Sort by index to guarantee order even if the API ever returns out of order.
+        let mut data = resp.data;
+        data.sort_unstable_by_key(|d| d.index);
+
+        Ok(data.into_iter().map(|d| d.embedding).collect())
+    }
+
     fn supports_embeddings(&self) -> bool {
         self.embedding_model.is_some()
     }
@@ -1136,7 +1198,15 @@ struct EmbeddingResponse {
 
 #[derive(Deserialize)]
 struct EmbeddingData {
+    #[serde(default)]
+    index: usize,
     embedding: Vec<f32>,
+}
+
+#[derive(Serialize)]
+struct EmbeddingBatchRequest<'a> {
+    model: &'a str,
+    input: Vec<&'a str>,
 }
 
 #[derive(Serialize)]

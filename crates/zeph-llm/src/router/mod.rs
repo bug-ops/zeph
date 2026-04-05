@@ -1166,6 +1166,62 @@ impl LlmProvider for RouterProvider {
         })
     }
 
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
+        let providers = self.ordered_providers();
+        let status_tx = self.status_tx.clone();
+        let owned: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
+        let router = self.clone();
+        Box::pin(async move {
+            let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+            for p in &providers {
+                if !p.supports_embeddings() {
+                    continue;
+                }
+                let start = std::time::Instant::now();
+                match p.embed_batch(&refs).await {
+                    Ok(r) => {
+                        router.record_availability(
+                            p.name(),
+                            true,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
+                        return Ok(r);
+                    }
+                    Err(e) if e.is_invalid_input() => {
+                        tracing::warn!(
+                            provider = p.name(),
+                            error = %e,
+                            "embed_batch: invalid input, not retrying on other providers"
+                        );
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        router.record_availability(
+                            p.name(),
+                            false,
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
+                        if let Some(ref tx) = status_tx {
+                            let _ = tx.send(format!(
+                                "router: {} embed_batch failed, falling back",
+                                p.name()
+                            ));
+                        }
+                        tracing::warn!(
+                            provider = p.name(),
+                            error = %e,
+                            "router embed_batch fallback"
+                        );
+                    }
+                }
+            }
+            Err(LlmError::NoProviders)
+        })
+    }
+
     fn supports_embeddings(&self) -> bool {
         self.providers.iter().any(LlmProvider::supports_embeddings)
     }

@@ -1448,3 +1448,31 @@ fn convert_messages_structured_preserves_internal_variants() {
         .expect("user message");
     assert_eq!(user_msg.content.as_deref(), Some("fn main() {}"));
 }
+
+#[tokio::test]
+async fn embed_batch_no_embedding_model_returns_error() {
+    let p = test_provider_no_embed();
+    let result = p.embed_batch(&["hello", "world"]).await;
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("embedding not supported")
+    );
+}
+
+#[tokio::test]
+async fn embed_batch_empty_returns_empty_without_network() {
+    // Use provider with an unreachable endpoint — empty input must return immediately.
+    let p = OpenAiProvider::new(
+        "key".into(),
+        "http://127.0.0.1:1".into(),
+        "gpt-4o".into(),
+        4096,
+        Some("text-embedding-3-small".into()),
+        None,
+    );
+    let result = p.embed_batch(&[]).await.unwrap();
+    assert!(result.is_empty());
+}

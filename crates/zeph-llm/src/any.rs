@@ -283,6 +283,10 @@ impl LlmProvider for AnyProvider {
         delegate_provider!(self, |p| p.embed(text).await)
     }
 
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, crate::LlmError> {
+        delegate_provider!(self, |p| p.embed_batch(texts).await)
+    }
+
     fn supports_embeddings(&self) -> bool {
         delegate_provider!(self, |p| p.supports_embeddings())
     }
