@@ -995,6 +995,9 @@ impl RouterProvider {
     }
 }
 
+const EMBED_MAX_RETRIES: u32 = 3;
+const EMBED_BASE_DELAY_MS: u64 = 500;
+
 impl LlmProvider for RouterProvider {
     fn context_window(&self) -> Option<usize> {
         self.providers.first().and_then(LlmProvider::context_window)
@@ -1129,38 +1132,72 @@ impl LlmProvider for RouterProvider {
                 if !p.supports_embeddings() {
                     continue;
                 }
-                let start = std::time::Instant::now();
-                match p.embed(&text).await {
-                    Ok(r) => {
-                        router.record_availability(
-                            p.name(),
-                            true,
-                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        );
-                        return Ok(r);
-                    }
-                    Err(e) if e.is_invalid_input() => {
-                        // The input itself is invalid — retrying on another provider
-                        // would fail identically. Do not penalize provider reputation.
+                let mut last_err: Option<LlmError> = None;
+                for attempt in 0..=EMBED_MAX_RETRIES {
+                    if attempt > 0 {
+                        let delay = EMBED_BASE_DELAY_MS * (1u64 << (attempt - 1));
                         tracing::warn!(
                             provider = p.name(),
-                            error = %e,
-                            "embed: invalid input, not retrying on other providers"
+                            attempt,
+                            delay_ms = delay,
+                            "embed: rate limited, retrying after backoff"
                         );
-                        return Err(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     }
-                    Err(e) => {
-                        router.record_availability(
-                            p.name(),
-                            false,
-                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        );
-                        if let Some(ref tx) = status_tx {
-                            let _ =
-                                tx.send(format!("router: {} embed failed, falling back", p.name()));
+                    let start = std::time::Instant::now();
+                    match p.embed(&text).await {
+                        Ok(r) => {
+                            router.record_availability(
+                                p.name(),
+                                true,
+                                u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            );
+                            return Ok(r);
                         }
-                        tracing::warn!(provider = p.name(), error = %e, "router embed fallback");
+                        Err(e) if e.is_invalid_input() => {
+                            // The input itself is invalid — retrying on another provider
+                            // would fail identically. Do not penalize provider reputation.
+                            tracing::warn!(
+                                provider = p.name(),
+                                error = %e,
+                                "embed: invalid input, not retrying on other providers"
+                            );
+                            return Err(e);
+                        }
+                        Err(e) if e.is_rate_limited() && attempt < EMBED_MAX_RETRIES => {
+                            last_err = Some(e);
+                        }
+                        Err(e) => {
+                            router.record_availability(
+                                p.name(),
+                                false,
+                                u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            );
+                            if let Some(ref tx) = status_tx {
+                                let _ = tx.send(format!(
+                                    "router: {} embed failed, falling back",
+                                    p.name()
+                                ));
+                            }
+                            tracing::warn!(provider = p.name(), error = %e, "router embed fallback");
+                            last_err = Some(e);
+                            break;
+                        }
                     }
+                }
+                // All retries exhausted for this provider (rate-limited every time).
+                if matches!(last_err, Some(ref e) if e.is_rate_limited()) {
+                    router.record_availability(p.name(), false, 0);
+                    if let Some(ref tx) = status_tx {
+                        let _ = tx.send(format!(
+                            "router: {} embed rate limited, falling back",
+                            p.name()
+                        ));
+                    }
+                    tracing::warn!(
+                        provider = p.name(),
+                        "embed: rate limit retries exhausted, falling back"
+                    );
                 }
             }
             Err(LlmError::NoProviders)
@@ -1181,42 +1218,74 @@ impl LlmProvider for RouterProvider {
                 if !p.supports_embeddings() {
                     continue;
                 }
-                let start = std::time::Instant::now();
-                match p.embed_batch(&refs).await {
-                    Ok(r) => {
-                        router.record_availability(
-                            p.name(),
-                            true,
-                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        );
-                        return Ok(r);
-                    }
-                    Err(e) if e.is_invalid_input() => {
+                let mut last_err: Option<LlmError> = None;
+                for attempt in 0..=EMBED_MAX_RETRIES {
+                    if attempt > 0 {
+                        let delay = EMBED_BASE_DELAY_MS * (1u64 << (attempt - 1));
                         tracing::warn!(
                             provider = p.name(),
-                            error = %e,
-                            "embed_batch: invalid input, not retrying on other providers"
+                            attempt,
+                            delay_ms = delay,
+                            "embed_batch: rate limited, retrying after backoff"
                         );
-                        return Err(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     }
-                    Err(e) => {
-                        router.record_availability(
-                            p.name(),
-                            false,
-                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        );
-                        if let Some(ref tx) = status_tx {
-                            let _ = tx.send(format!(
-                                "router: {} embed_batch failed, falling back",
-                                p.name()
-                            ));
+                    let start = std::time::Instant::now();
+                    match p.embed_batch(&refs).await {
+                        Ok(r) => {
+                            router.record_availability(
+                                p.name(),
+                                true,
+                                u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            );
+                            return Ok(r);
                         }
-                        tracing::warn!(
-                            provider = p.name(),
-                            error = %e,
-                            "router embed_batch fallback"
-                        );
+                        Err(e) if e.is_invalid_input() => {
+                            tracing::warn!(
+                                provider = p.name(),
+                                error = %e,
+                                "embed_batch: invalid input, not retrying on other providers"
+                            );
+                            return Err(e);
+                        }
+                        Err(e) if e.is_rate_limited() && attempt < EMBED_MAX_RETRIES => {
+                            last_err = Some(e);
+                        }
+                        Err(e) => {
+                            router.record_availability(
+                                p.name(),
+                                false,
+                                u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            );
+                            if let Some(ref tx) = status_tx {
+                                let _ = tx.send(format!(
+                                    "router: {} embed_batch failed, falling back",
+                                    p.name()
+                                ));
+                            }
+                            tracing::warn!(
+                                provider = p.name(),
+                                error = %e,
+                                "router embed_batch fallback"
+                            );
+                            last_err = Some(e);
+                            break;
+                        }
                     }
+                }
+                // All retries exhausted for this provider (rate-limited every time).
+                if matches!(last_err, Some(ref e) if e.is_rate_limited()) {
+                    router.record_availability(p.name(), false, 0);
+                    if let Some(ref tx) = status_tx {
+                        let _ = tx.send(format!(
+                            "router: {} embed_batch rate limited, falling back",
+                            p.name()
+                        ));
+                    }
+                    tracing::warn!(
+                        provider = p.name(),
+                        "embed_batch: rate limit retries exhausted, falling back"
+                    );
                 }
             }
             Err(LlmError::NoProviders)
@@ -2607,6 +2676,105 @@ mod tests {
         // Both providers fail → NoProviders, not a cascade-specific error.
         let err = r.chat_with_tools(&msgs, &[]).await.unwrap_err();
         assert!(matches!(err, LlmError::NoProviders));
+    }
+
+    // ── Embed retry / rate-limit tests ────────────────────────────────────────
+
+    /// Provider returns `RateLimited` twice then succeeds on the third attempt.
+    /// The router must retry and return the successful embedding.
+    #[tokio::test(start_paused = true)]
+    async fn embed_retries_on_rate_limited_then_succeeds() {
+        use crate::mock::MockProvider;
+
+        let p = AnyProvider::Mock({
+            let mut m = MockProvider::default()
+                .with_errors(vec![LlmError::RateLimited, LlmError::RateLimited])
+                .with_name("p1");
+            m.supports_embeddings = true;
+            m.embedding = vec![0.1, 0.2];
+            m
+        });
+        let r = RouterProvider::new(vec![p]);
+        let result = r.embed("text").await.unwrap();
+        assert_eq!(result, vec![0.1, 0.2]);
+    }
+
+    /// When all retries (3) are exhausted on the first provider, the router falls
+    /// back to the second provider and returns its embedding.
+    #[tokio::test(start_paused = true)]
+    async fn embed_falls_back_after_all_retries_exhausted() {
+        use crate::mock::MockProvider;
+
+        // p1: 4 RateLimited errors (attempt 0..=3 all fail)
+        let p1 = AnyProvider::Mock({
+            let mut m = MockProvider::default()
+                .with_errors(vec![
+                    LlmError::RateLimited,
+                    LlmError::RateLimited,
+                    LlmError::RateLimited,
+                    LlmError::RateLimited,
+                ])
+                .with_name("p1");
+            m.supports_embeddings = true;
+            m
+        });
+        let p2 = AnyProvider::Mock({
+            let mut m = MockProvider::default().with_name("p2");
+            m.supports_embeddings = true;
+            m.embedding = vec![9.0, 8.0];
+            m
+        });
+        let r = RouterProvider::new(vec![p1, p2]);
+        let result = r.embed("text").await.unwrap();
+        assert_eq!(result, vec![9.0, 8.0]);
+    }
+
+    /// Provider returns `RateLimited` twice then succeeds via `embed_batch`.
+    #[tokio::test(start_paused = true)]
+    async fn embed_batch_retries_on_rate_limited_then_succeeds() {
+        use crate::mock::MockProvider;
+
+        let p = AnyProvider::Mock({
+            let mut m = MockProvider::default()
+                .with_errors(vec![LlmError::RateLimited, LlmError::RateLimited])
+                .with_name("p1");
+            m.supports_embeddings = true;
+            m.embedding = vec![0.5, 0.6];
+            m
+        });
+        let r = RouterProvider::new(vec![p]);
+        let result = r.embed_batch(&["a", "b"]).await.unwrap();
+        assert_eq!(result, vec![vec![0.5, 0.6], vec![0.5, 0.6]]);
+    }
+
+    /// When all `embed_batch` retries are exhausted on the first provider, falls back
+    /// to the second provider.
+    #[tokio::test(start_paused = true)]
+    async fn embed_batch_falls_back_after_all_retries_exhausted() {
+        use crate::mock::MockProvider;
+
+        // p1 needs 4 errors per embed call * 1 text = 4 total (attempt 0..=3)
+        let p1 = AnyProvider::Mock({
+            let mut m = MockProvider::default()
+                .with_errors(vec![
+                    LlmError::RateLimited,
+                    LlmError::RateLimited,
+                    LlmError::RateLimited,
+                    LlmError::RateLimited,
+                ])
+                .with_name("p1");
+            m.supports_embeddings = true;
+            m
+        });
+        let p2 = AnyProvider::Mock({
+            let mut m = MockProvider::default().with_name("p2");
+            m.supports_embeddings = true;
+            m.embedding = vec![7.0, 8.0];
+            m
+        });
+        let r = RouterProvider::new(vec![p1, p2]);
+        let result = r.embed_batch(&["x"]).await.unwrap();
+        assert_eq!(result, vec![vec![7.0, 8.0]]);
     }
 
     // ── InvalidInput embed break tests ────────────────────────────────────────

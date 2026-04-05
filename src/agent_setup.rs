@@ -806,6 +806,7 @@ pub(crate) async fn apply_code_indexer(
                 batch_size: config.batch_size,
                 memory_batch_size: config.memory_batch_size,
                 max_file_bytes: config.max_file_bytes,
+                embed_concurrency: config.embed_concurrency,
                 ..IndexerConfig::default()
             },
         ));

@@ -76,6 +76,10 @@ fn default_index_max_file_bytes() -> usize {
     512 * 1024
 }
 
+fn default_index_embed_concurrency() -> usize {
+    2
+}
+
 fn default_index_score_threshold() -> f32 {
     0.25
 }
@@ -301,6 +305,10 @@ pub struct IndexConfig {
     /// falls back to the main agent provider.
     #[serde(default)]
     pub embed_provider: Option<String>,
+    /// Maximum parallel `embed_batch` calls during indexing (default: 2 to stay within provider
+    /// TPM limits).
+    #[serde(default = "default_index_embed_concurrency")]
+    pub embed_concurrency: usize,
 }
 
 impl Default for IndexConfig {
@@ -321,6 +329,7 @@ impl Default for IndexConfig {
             memory_batch_size: default_index_memory_batch_size(),
             max_file_bytes: default_index_max_file_bytes(),
             embed_provider: None,
+            embed_concurrency: default_index_embed_concurrency(),
         }
     }
 }

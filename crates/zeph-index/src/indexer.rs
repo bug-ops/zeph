@@ -30,6 +30,9 @@ pub struct IndexerConfig {
     pub memory_batch_size: usize,
     /// Maximum file size in bytes to index. Files larger than this are skipped. Default: 512 KiB.
     pub max_file_bytes: usize,
+    /// Maximum parallel `embed_batch` calls during indexing (default: 2 to stay within provider
+    /// TPM limits).
+    pub embed_concurrency: usize,
 }
 
 impl Default for IndexerConfig {
@@ -40,6 +43,7 @@ impl Default for IndexerConfig {
             batch_size: 32,
             memory_batch_size: 32,
             max_file_bytes: 512 * 1024,
+            embed_concurrency: 2,
         }
     }
 }
@@ -130,7 +134,7 @@ impl CodeIndexer {
         let total = entries.len();
         tracing::info!(total, "indexing started");
 
-        let concurrency = self.config.concurrency;
+        let concurrency = self.config.embed_concurrency.max(1);
         let memory_batch_size = self.config.memory_batch_size.max(1);
         let mut files_done = 0usize;
 
@@ -412,6 +416,7 @@ mod tests {
         assert_eq!(config.chunker.target_size, 600);
         assert_eq!(config.concurrency, 4);
         assert_eq!(config.batch_size, 32);
+        assert_eq!(config.embed_concurrency, 2);
     }
 
     #[test]

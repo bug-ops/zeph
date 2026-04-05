@@ -201,6 +201,11 @@ impl LlmProvider for MockProvider {
     }
 
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, crate::LlmError> {
+        if let Ok(mut errors) = self.errors.lock()
+            && !errors.is_empty()
+        {
+            return Err(errors.pop_front().expect("non-empty"));
+        }
         if self.embed_invalid_input {
             return Err(crate::LlmError::InvalidInput {
                 provider: self.name().to_owned(),

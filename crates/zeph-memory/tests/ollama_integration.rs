@@ -7,8 +7,14 @@ use zeph_memory::response_cache::ResponseCache;
 use zeph_memory::store::SqliteStore;
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const CHAT_MODEL: &str = "qwen3:8b";
-const EMBEDDING_MODEL: &str = "qwen3-embedding";
+
+fn ollama_chat_model() -> String {
+    std::env::var("OLLAMA_CHAT_MODEL").unwrap_or_else(|_| "qwen3:8b".into())
+}
+
+fn ollama_embed_model() -> String {
+    std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "qwen3-embedding".into())
+}
 
 // Cold Ollama model starts can take 30+ seconds on first embed call.
 async fn setup_cache_with_ollama() -> (ResponseCache, OllamaProvider) {
@@ -17,7 +23,7 @@ async fn setup_cache_with_ollama() -> (ResponseCache, OllamaProvider) {
         .expect("in-memory SQLite must open");
     let pool = store.pool().clone();
     let cache = ResponseCache::new(pool, 3600);
-    let provider = OllamaProvider::new(OLLAMA_BASE_URL, CHAT_MODEL.into(), EMBEDDING_MODEL.into());
+    let provider = OllamaProvider::new(OLLAMA_BASE_URL, ollama_chat_model(), ollama_embed_model());
     (cache, provider)
 }
 
@@ -48,15 +54,15 @@ async fn with_ollama_embedding() {
         .put_with_embedding(
             "k1",
             "Rust is a systems programming language",
-            CHAT_MODEL,
+            &ollama_chat_model(),
             &embedding,
-            EMBEDDING_MODEL,
+            &ollama_embed_model(),
         )
         .await
         .expect("put_with_embedding must succeed");
 
     let result = cache
-        .get_semantic(&embedding, EMBEDDING_MODEL, 0.95, 10)
+        .get_semantic(&embedding, &ollama_embed_model(), 0.95, 10)
         .await
         .expect("get_semantic must succeed");
 
@@ -85,9 +91,9 @@ async fn hit_on_rephrase() {
         .put_with_embedding(
             "k1",
             "Paris is the capital of France",
-            CHAT_MODEL,
+            &ollama_chat_model(),
             &embedding_original,
-            EMBEDDING_MODEL,
+            &ollama_embed_model(),
         )
         .await
         .expect("put_with_embedding must succeed");
@@ -99,7 +105,7 @@ async fn hit_on_rephrase() {
         .expect("Ollama embed must succeed for rephrased query");
 
     let result = cache
-        .get_semantic(&embedding_rephrase, EMBEDDING_MODEL, 0.80, 10)
+        .get_semantic(&embedding_rephrase, &ollama_embed_model(), 0.80, 10)
         .await
         .expect("get_semantic must succeed");
 
@@ -128,9 +134,9 @@ async fn threshold_boundary() {
         .put_with_embedding(
             "k1",
             "Rust ownership ensures memory safety without GC",
-            CHAT_MODEL,
+            &ollama_chat_model(),
             &embedding_tech,
-            EMBEDDING_MODEL,
+            &ollama_embed_model(),
         )
         .await
         .expect("put_with_embedding must succeed");
@@ -142,7 +148,7 @@ async fn threshold_boundary() {
         .expect("Ollama embed must succeed for unrelated query");
 
     let miss = cache
-        .get_semantic(&embedding_unrelated, EMBEDDING_MODEL, 0.95, 10)
+        .get_semantic(&embedding_unrelated, &ollama_embed_model(), 0.95, 10)
         .await
         .expect("get_semantic must succeed");
     assert!(
@@ -153,7 +159,7 @@ async fn threshold_boundary() {
     // Threshold 0.0 guarantees a hit: cosine similarity for any real embedding pair
     // stored in the cache is >= 0.0 for typical non-adversarial inputs.
     let hit = cache
-        .get_semantic(&embedding_unrelated, EMBEDDING_MODEL, 0.0, 10)
+        .get_semantic(&embedding_unrelated, &ollama_embed_model(), 0.0, 10)
         .await
         .expect("get_semantic must succeed");
     assert!(

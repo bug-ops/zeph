@@ -92,6 +92,11 @@ impl LlmError {
     pub fn is_invalid_input(&self) -> bool {
         matches!(self, Self::InvalidInput { .. })
     }
+
+    #[must_use]
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, Self::RateLimited)
+    }
 }
 
 fn is_context_length_message(msg: &str) -> bool {
