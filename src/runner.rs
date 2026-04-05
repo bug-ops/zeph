@@ -648,7 +648,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             if let Some(ref early) = early_tui_guard.0 {
                 let _ = early
                     .agent_tx
-                    .try_send(zeph_tui::AgentEvent::Status($msg.into()));
+                    .send(zeph_tui::AgentEvent::Status($msg.into()))
+                    .await;
             }
         };
     }
@@ -1869,6 +1870,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // load_history is the last fallible call before run_tui_agent.
     // EarlyTuiGuard handles cleanup for all prior ? operators automatically.
     agent.load_history().await?;
+    #[cfg(feature = "tui")]
+    tui_status!("");
 
     #[cfg(feature = "tui")]
     if let Some(tui_handle) = tui_handle {
