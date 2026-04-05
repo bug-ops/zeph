@@ -617,7 +617,47 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let suppress_mcp_stderr = false;
 
+    // For TUI path: create the channel and start rendering immediately so the user
+    // sees a spinner during the heavy init phases below. For non-TUI paths (or when
+    // --tui is not passed), channel creation is deferred until after the tokio::join!
+    // that builds cli_history (which non-TUI channels need for readline persistence).
+    //
+    // `channel_opt` is Option so it can be assigned in the tui_active branch here or
+    // in the deferred branch after the join. It is always Some before first use.
+    #[cfg(feature = "tui")]
+    let mut channel_opt: Option<AppChannel> = None;
+    #[cfg(feature = "tui")]
+    let mut tui_handle: Option<crate::channel::TuiHandle> = None;
+    #[cfg(feature = "tui")]
+    let early_tui_guard: EarlyTuiGuard;
+
+    #[cfg(feature = "tui")]
+    if tui_active {
+        let (ch, mut th) = create_channel_with_tui(app.config(), true, None).await?;
+        early_tui_guard = EarlyTuiGuard::new(th.as_mut().map(|h| start_tui_early(h, app.config())));
+        channel_opt = Some(ch);
+        tui_handle = th;
+    } else {
+        early_tui_guard = EarlyTuiGuard::new(None);
+    }
+
+    // Macro to send a status update to TUI during setup (no-op if no early TUI).
+    #[cfg(feature = "tui")]
+    macro_rules! tui_status {
+        ($msg:expr) => {
+            if let Some(ref early) = early_tui_guard.0 {
+                let _ = early
+                    .agent_tx
+                    .try_send(zeph_tui::AgentEvent::Status($msg.into()));
+            }
+        };
+    }
+
+    #[cfg(feature = "tui")]
+    tui_status!("Loading memory...");
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+    #[cfg(feature = "tui")]
+    tui_status!("Connecting tools...");
     let tool_setup = agent_setup::build_tool_setup(
         config,
         permission_policy.clone(),
@@ -697,6 +737,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
+    #[cfg(feature = "tui")]
+    tui_status!("Loading skills...");
     let (matcher, cli_history) = tokio::join!(
         app.build_skill_matcher(&provider, &all_meta_refs, &memory),
         build_cli_history(&memory),
@@ -707,36 +749,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         tracing::info!("skill matcher unavailable, using all {skill_count} skill(s)");
     }
 
+    // For the non-TUI path (or when --tui was not passed), create the channel here
+    // where cli_history is available. The TUI path was already created before build_memory.
     #[cfg(feature = "tui")]
-    let (channel, mut tui_handle) =
-        create_channel_with_tui(app.config(), tui_active, cli_history).await?;
+    if !tui_active {
+        let (ch, th) = create_channel_with_tui(app.config(), false, cli_history).await?;
+        channel_opt = Some(ch);
+        tui_handle = th;
+    }
+    #[cfg(feature = "tui")]
+    let channel = channel_opt.expect("channel always set before use");
     #[cfg(not(feature = "tui"))]
     let channel = create_channel_inner(app.config(), cli_history).await?;
-
-    // Start TUI rendering immediately so the terminal is responsive during agent setup.
-    // All background operations (indexing, memory init, history load) complete while
-    // the TUI shows status updates. The agent is wired in at Phase 2 (line ~1780).
-    //
-    // EarlyTuiGuard ensures the TUI task is aborted (and the terminal restored) if
-    // any fallible operation between here and run_tui_agent returns an error.
-    #[cfg(feature = "tui")]
-    let early_tui_guard = EarlyTuiGuard::new(
-        tui_handle
-            .as_mut()
-            .map(|handle| start_tui_early(handle, app.config())),
-    );
-
-    // Macro to send a status update to TUI during setup (no-op if no early TUI).
-    #[cfg(feature = "tui")]
-    macro_rules! tui_status {
-        ($msg:expr) => {
-            if let Some(ref early) = early_tui_guard.0 {
-                let _ = early
-                    .agent_tx
-                    .try_send(zeph_tui::AgentEvent::Status($msg.into()));
-            }
-        };
-    }
 
     // Spawn deferred OAuth connections now that the UI channel is ready and can
     // display the authorization URL. Non-OAuth tools are already available from
