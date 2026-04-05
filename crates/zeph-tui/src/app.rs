@@ -338,6 +338,23 @@ impl App {
         self
     }
 
+    /// Wire a cancel signal into a running App instance.
+    ///
+    /// Used by the two-phase TUI startup path to connect the agent's cancel signal
+    /// after the agent has been constructed (Phase 2).
+    pub fn set_cancel_signal(&mut self, signal: Arc<Notify>) {
+        self.cancel_signal = Some(signal);
+    }
+
+    /// Wire a metrics receiver into a running App instance.
+    ///
+    /// Used by the two-phase TUI startup path to connect the metrics channel
+    /// after the metrics watch channel has been created (Phase 2).
+    pub fn set_metrics_rx(&mut self, rx: watch::Receiver<MetricsSnapshot>) {
+        self.metrics = rx.borrow().clone();
+        self.metrics_rx = Some(rx);
+    }
+
     pub fn poll_metrics(&mut self) {
         if let Some(ref mut rx) = self.metrics_rx
             && rx.has_changed().unwrap_or(false)
@@ -749,6 +766,12 @@ impl App {
                 self.messages
                     .push(ChatMessage::new(MessageRole::System, output));
                 self.auto_scroll();
+            }
+            AgentEvent::SetCancelSignal(signal) => {
+                self.set_cancel_signal(signal);
+            }
+            AgentEvent::SetMetricsRx(rx) => {
+                self.set_metrics_rx(rx);
             }
         }
     }

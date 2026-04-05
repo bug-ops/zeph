@@ -113,7 +113,8 @@ impl Channel for AppChannel {
 pub(crate) struct TuiHandle {
     pub(crate) user_tx: tokio::sync::mpsc::Sender<String>,
     pub(crate) agent_tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
-    pub(crate) agent_rx: tokio::sync::mpsc::Receiver<zeph_tui::AgentEvent>,
+    /// Wrapped in `Option` so it can be taken by `start_tui_early` for early TUI rendering.
+    pub(crate) agent_rx: Option<tokio::sync::mpsc::Receiver<zeph_tui::AgentEvent>>,
     pub(crate) command_tx: tokio::sync::mpsc::Sender<zeph_tui::TuiCommand>,
     pub(crate) command_rx: tokio::sync::mpsc::Receiver<zeph_tui::TuiCommand>,
 }
@@ -194,7 +195,7 @@ pub(crate) async fn create_channel_with_tui(
         let handle = TuiHandle {
             user_tx,
             agent_tx: agent_tx_clone,
-            agent_rx,
+            agent_rx: Some(agent_rx),
             command_tx,
             command_rx,
         };

@@ -25,6 +25,65 @@ pub(crate) struct TuiRunParams<'a> {
     pub(crate) index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
     /// Whether --tafc CLI flag was passed (overrides config).
     pub(crate) cli_tafc: bool,
+    /// Set when TUI rendering was started early via `start_tui_early`.
+    /// When `Some`, `run_tui_agent` skips creating a new TUI task and uses the existing one.
+    pub(crate) early_tui: Option<EarlyTuiHandle>,
+}
+
+/// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
+#[cfg(feature = "tui")]
+pub(crate) struct EarlyTuiHandle {
+    /// Join handle for the TUI rendering task.
+    pub(crate) tui_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    /// Send status/event updates to the TUI during setup.
+    pub(crate) agent_tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+}
+
+/// Start TUI rendering immediately (Phase 1).
+///
+/// Extracts `agent_rx` from `tui_handle`, creates the TUI `App`, spawns the rendering task,
+/// and sends an initial "Starting up..." status message. The caller continues agent setup and
+/// calls `run_tui_agent` (Phase 2) once ready.
+///
+/// Index progress forwarding is wired separately via `forward_index_progress_to_tui` once
+/// `index_progress_rx` becomes available (after `apply_code_indexer`).
+///
+/// # Panics
+///
+/// Panics if `tui_handle.agent_rx` is `None` (already taken by a previous call).
+#[cfg(feature = "tui")]
+pub(crate) fn start_tui_early(
+    tui_handle: &mut TuiHandle,
+    config: &zeph_core::config::Config,
+) -> EarlyTuiHandle {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
+    let reader = zeph_tui::EventReader::new(event_tx, Duration::from_millis(100));
+    std::thread::spawn(move || reader.run());
+
+    let agent_rx = tui_handle
+        .agent_rx
+        .take()
+        .expect("agent_rx already taken by start_tui_early");
+    let mut tui_app = zeph_tui::App::new(tui_handle.user_tx.clone(), agent_rx)
+        .with_command_tx(tui_handle.command_tx.clone());
+    tui_app.set_show_source_labels(config.tui.show_source_labels);
+
+    let agent_tx = tui_handle.agent_tx.clone();
+
+    // Send initial loading status
+    let tx = agent_tx.clone();
+    tokio::spawn(async move {
+        let _ = tx
+            .send(zeph_tui::AgentEvent::Status("Starting up...".into()))
+            .await;
+    });
+
+    let tui_task = tokio::spawn(async move {
+        zeph_tui::run_tui(tui_app, event_rx).await?;
+        Ok(())
+    });
+
+    EarlyTuiHandle { tui_task, agent_tx }
 }
 
 #[cfg(feature = "tui")]
@@ -32,38 +91,69 @@ pub(crate) async fn run_tui_agent<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     params: TuiRunParams<'_>,
 ) -> anyhow::Result<()> {
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
+    // Destructure handle fields needed regardless of path.
+    let TuiHandle {
+        user_tx,
+        agent_tx: handle_agent_tx,
+        agent_rx,
+        command_tx,
+        command_rx,
+    } = params.tui_handle;
 
-    let reader = zeph_tui::EventReader::new(event_tx, Duration::from_millis(100));
-    std::thread::spawn(move || reader.run());
+    // Determine TUI task: reuse early-started task or create new one.
+    let (tui_task, agent_tx) = if let Some(early) = params.early_tui {
+        // Phase-2 path: TUI is already rendering. Wire cancel signal and metrics
+        // into the running App via AgentEvent so Ctrl+C and metrics panel work correctly.
+        drop(user_tx);
+        drop(agent_rx);
+        drop(command_tx);
+        let _ = early
+            .agent_tx
+            .try_send(zeph_tui::AgentEvent::SetCancelSignal(agent.cancel_signal()));
+        if let Some(metrics_rx) = params.metrics_rx {
+            let _ = early
+                .agent_tx
+                .try_send(zeph_tui::AgentEvent::SetMetricsRx(metrics_rx));
+        }
+        (early.tui_task, early.agent_tx)
+    } else {
+        // Legacy path: TUI hasn't started yet, create App and task now.
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
+        let reader = zeph_tui::EventReader::new(event_tx, Duration::from_millis(100));
+        std::thread::spawn(move || reader.run());
 
-    let mut tui_app = zeph_tui::App::new(params.tui_handle.user_tx, params.tui_handle.agent_rx)
-        .with_cancel_signal(agent.cancel_signal())
-        .with_command_tx(params.tui_handle.command_tx);
-    tui_app.set_show_source_labels(params.config.tui.show_source_labels);
+        let rx = agent_rx.expect("agent_rx not set in TuiHandle");
+        let mut tui_app = zeph_tui::App::new(user_tx, rx)
+            .with_cancel_signal(agent.cancel_signal())
+            .with_command_tx(command_tx);
+        tui_app.set_show_source_labels(params.config.tui.show_source_labels);
 
-    let history: Vec<(&str, &str)> = agent
-        .context_messages()
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                zeph_llm::provider::Role::User => "user",
-                zeph_llm::provider::Role::Assistant => "assistant",
-                zeph_llm::provider::Role::System => "system",
-            };
-            (role, m.content.as_str())
-        })
-        .collect();
-    tui_app.load_history(&history);
+        if let Some(metrics_rx) = params.metrics_rx {
+            tui_app = tui_app.with_metrics_rx(metrics_rx);
+        }
 
-    if let Some(rx) = params.metrics_rx {
-        tui_app = tui_app.with_metrics_rx(rx);
-    }
+        if let Some(progress_rx) = params.index_progress_rx {
+            tokio::spawn(forward_index_progress_to_tui(
+                progress_rx,
+                handle_agent_tx.clone(),
+            ));
+        }
 
-    let agent_tx = params.tui_handle.agent_tx;
+        let task = tokio::spawn(async move {
+            zeph_tui::run_tui(tui_app, event_rx)
+                .await
+                .map_err(anyhow::Error::from)
+        });
+        (task, handle_agent_tx)
+    };
+
+    // Note: when early_tui path is used, history is not pre-loaded into the TUI.
+    // The chat view starts empty and fills as new messages arrive. This is an
+    // accepted limitation — history replay is a separate enhancement.
+
     tokio::spawn(forward_status_to_tui(params.status_rx, agent_tx.clone()));
     tokio::spawn(forward_tui_commands(
-        params.tui_handle.command_rx,
+        command_rx,
         agent_tx.clone(),
         TuiCommandContext {
             provider: format!("{:?}", params.config.llm.effective_provider()),
@@ -99,13 +189,7 @@ pub(crate) async fn run_tui_agent<C: Channel>(
             .await;
     });
 
-    if let Some(rx) = params.index_progress_rx {
-        tokio::spawn(forward_index_progress_to_tui(rx, agent_tx.clone()));
-    }
-
     let mut agent = agent.with_warmup_ready(warmup_rx);
-
-    let tui_task = tokio::spawn(zeph_tui::run_tui(tui_app, event_rx));
     let agent_future = agent.run();
 
     tokio::select! {
@@ -293,7 +377,7 @@ mod tests {
 }
 
 #[cfg(feature = "tui")]
-async fn forward_index_progress_to_tui(
+pub(crate) async fn forward_index_progress_to_tui(
     mut rx: tokio::sync::watch::Receiver<zeph_index::IndexProgress>,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {

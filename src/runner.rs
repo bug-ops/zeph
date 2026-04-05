@@ -13,7 +13,9 @@ use crate::scheduler::bootstrap_scheduler;
 use crate::tracing_init::init_tracing;
 use crate::tui_bridge::forward_status_to_stderr;
 #[cfg(feature = "tui")]
-use crate::tui_bridge::{TuiRunParams, run_tui_agent};
+use crate::tui_bridge::{
+    TuiRunParams, forward_index_progress_to_tui, run_tui_agent, start_tui_early,
+};
 
 use zeph_channels::AnyChannel;
 use zeph_core::agent::Agent;
@@ -281,6 +283,36 @@ fn resolve_stt_api_key(config: &Config, entry: &zeph_core::config::ProviderEntry
             .map_or(String::new(), |k| k.expose().to_string()),
         ProviderKind::Compatible => entry.api_key.clone().unwrap_or_default(),
         _ => String::new(),
+    }
+}
+
+/// RAII guard that aborts the early TUI rendering task if setup fails between
+/// `start_tui_early` and the final `run_tui_agent` call.
+///
+/// Ensures the terminal is not left in raw mode when any `?` operator between
+/// those two points returns `Err`.
+#[cfg(feature = "tui")]
+struct EarlyTuiGuard(Option<crate::tui_bridge::EarlyTuiHandle>);
+
+#[cfg(feature = "tui")]
+impl EarlyTuiGuard {
+    fn new(handle: Option<crate::tui_bridge::EarlyTuiHandle>) -> Self {
+        Self(handle)
+    }
+
+    /// Consume the guard without aborting — called when setup succeeds and
+    /// the TUI task is handed off to `run_tui_agent`.
+    fn defuse(mut self) -> Option<crate::tui_bridge::EarlyTuiHandle> {
+        self.0.take()
+    }
+}
+
+#[cfg(feature = "tui")]
+impl Drop for EarlyTuiGuard {
+    fn drop(&mut self) {
+        if let Some(ref handle) = self.0 {
+            handle.tui_task.abort();
+        }
     }
 }
 
@@ -676,10 +708,35 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "tui")]
-    let (channel, tui_handle) =
+    let (channel, mut tui_handle) =
         create_channel_with_tui(app.config(), tui_active, cli_history).await?;
     #[cfg(not(feature = "tui"))]
     let channel = create_channel_inner(app.config(), cli_history).await?;
+
+    // Start TUI rendering immediately so the terminal is responsive during agent setup.
+    // All background operations (indexing, memory init, history load) complete while
+    // the TUI shows status updates. The agent is wired in at Phase 2 (line ~1780).
+    //
+    // EarlyTuiGuard ensures the TUI task is aborted (and the terminal restored) if
+    // any fallible operation between here and run_tui_agent returns an error.
+    #[cfg(feature = "tui")]
+    let early_tui_guard = EarlyTuiGuard::new(
+        tui_handle
+            .as_mut()
+            .map(|handle| start_tui_early(handle, app.config())),
+    );
+
+    // Macro to send a status update to TUI during setup (no-op if no early TUI).
+    #[cfg(feature = "tui")]
+    macro_rules! tui_status {
+        ($msg:expr) => {
+            if let Some(ref early) = early_tui_guard.0 {
+                let _ = early
+                    .agent_tx
+                    .try_send(zeph_tui::AgentEvent::Status($msg.into()));
+            }
+        };
+    }
 
     // Spawn deferred OAuth connections now that the UI channel is ready and can
     // display the authorization URL. Non-OAuth tools are already available from
@@ -1385,6 +1442,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_pii_ner_classifier(agent, config);
     let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
 
+    #[cfg(feature = "tui")]
+    if config.index.enabled {
+        tui_status!("Indexing codebase...");
+    }
     let (code_retriever, _index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
         &config.index,
         index_qdrant_ops,
@@ -1393,6 +1454,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         is_cli,
     )
     .await;
+    // Wire index progress to TUI immediately after the indexer is created.
+    #[cfg(feature = "tui")]
+    if let (Some(early), Some(rx)) = (&early_tui_guard.0, index_progress_rx.clone()) {
+        tokio::spawn(forward_index_progress_to_tui(rx, early.agent_tx.clone()));
+    }
     #[cfg(not(feature = "tui"))]
     let _ = index_progress_rx;
     let agent =
@@ -1765,6 +1831,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     let mut agent = agent;
+    #[cfg(feature = "tui")]
+    tui_status!("Connecting to memory store...");
     agent
         .check_vector_store_health(config.memory.vector_backend.as_str())
         .await;
@@ -1772,10 +1840,23 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     agent.init_semantic_index().await;
 
     agent_setup::spawn_ctrl_c_handler(agent.cancel_signal(), shutdown_tx);
+    #[cfg(feature = "tui")]
+    tui_status!("Loading conversation history...");
+    // load_history is the last fallible call before run_tui_agent.
+    // EarlyTuiGuard handles cleanup for all prior ? operators automatically.
     agent.load_history().await?;
 
     #[cfg(feature = "tui")]
     if let Some(tui_handle) = tui_handle {
+        // Defuse the guard — TUI task is handed off to run_tui_agent, which owns cleanup.
+        let early_tui = early_tui_guard.defuse();
+        // index_progress_rx was already forwarded to TUI after apply_code_indexer;
+        // pass None here to avoid spawning a duplicate forwarder.
+        let progress_for_params = if early_tui.is_some() {
+            None
+        } else {
+            index_progress_rx
+        };
         return Box::pin(run_tui_agent(
             agent,
             TuiRunParams {
@@ -1785,8 +1866,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 tool_rx: shell_executor_for_tui,
                 metrics_rx: tui_metrics_rx,
                 warmup_provider: warmup_provider_clone,
-                index_progress_rx,
+                index_progress_rx: progress_for_params,
                 cli_tafc: cli.tafc,
+                early_tui,
             },
         ))
         .await;

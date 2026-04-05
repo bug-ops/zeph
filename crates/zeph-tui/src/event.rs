@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEventKind};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
+
+use zeph_core::metrics::MetricsSnapshot;
 
 pub trait EventSource: Send + 'static {
     fn next_event(&mut self) -> Option<AppEvent>;
@@ -88,6 +91,10 @@ pub enum AgentEvent {
         command_id: String,
         output: String,
     },
+    /// Wire a cancel signal into the TUI App after early startup (Phase 2).
+    SetCancelSignal(Arc<Notify>),
+    /// Wire a metrics receiver into the TUI App after early startup (Phase 2).
+    SetMetricsRx(watch::Receiver<MetricsSnapshot>),
 }
 
 pub struct EventReader {
