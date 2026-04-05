@@ -357,6 +357,12 @@ budget_ratio = 0.40
 repo_map_tokens = 500
 # Cache TTL for repo map in seconds (avoids regeneration on every message)
 repo_map_ttl_secs = 300
+# Dedicated provider for embedding calls during indexing.
+# References a [[llm.providers]] name. When set, the indexer uses this provider instead of the
+# main agent provider, preventing server-side rate-limit contention and Ollama model-lock with
+# the guardrail. Recommended: a cheap embedding model (e.g. text-embedding-3-small for OpenAI,
+# nomic-embed-text for Ollama). Defaults to the main provider when unset.
+# embed_provider = "ollama-embed"
 
 # [discord]
 # token = ""                    # or set ZEPH_DISCORD_TOKEN

@@ -291,6 +291,12 @@ pub struct IndexConfig {
     /// Default: 512 KiB.
     #[serde(default = "default_index_max_file_bytes")]
     pub max_file_bytes: usize,
+    /// Name of a `[[llm.providers]]` entry to use exclusively for embedding calls during
+    /// indexing. A dedicated provider prevents the indexer from contending with the guardrail
+    /// at the API server level (rate limits, Ollama single-model lock). When unset or empty,
+    /// falls back to the main agent provider.
+    #[serde(default)]
+    pub embed_provider: Option<String>,
 }
 
 impl Default for IndexConfig {
@@ -310,6 +316,7 @@ impl Default for IndexConfig {
             batch_size: default_index_batch_size(),
             memory_batch_size: default_index_memory_batch_size(),
             max_file_bytes: default_index_max_file_bytes(),
+            embed_provider: None,
         }
     }
 }

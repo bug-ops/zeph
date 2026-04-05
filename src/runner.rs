@@ -1237,7 +1237,27 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .await;
 
     let index_pool = memory.sqlite().pool().clone();
-    let index_provider = provider.clone();
+    let index_provider = config
+        .index
+        .embed_provider
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(
+            |name| match zeph_core::bootstrap::create_named_provider(name, config) {
+                Ok(p) => {
+                    tracing::info!(provider = %name, "Using dedicated embed provider for indexer");
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %name,
+                        "Index embed_provider resolution failed, using main provider: {e:#}"
+                    );
+                    None
+                }
+            },
+        )
+        .unwrap_or_else(|| provider.clone());
     let provider_has_tools = provider.supports_tool_use();
     let index_qdrant_ops = app.qdrant_ops().cloned();
     let config_path = app.config_path().to_owned();

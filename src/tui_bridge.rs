@@ -376,12 +376,14 @@ pub(crate) async fn forward_index_progress_to_tui(
     mut rx: tokio::sync::watch::Receiver<zeph_index::IndexProgress>,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
+    let mut indexing_completed = false;
     while rx.changed().await.is_ok() {
         let p = rx.borrow_and_update().clone();
         if p.files_total == 0 {
             continue;
         }
         let msg = if p.files_done >= p.files_total {
+            indexing_completed = true;
             format!(
                 "Index ready ({} files, {} chunks)",
                 p.files_total, p.chunks_created
@@ -397,6 +399,14 @@ pub(crate) async fn forward_index_progress_to_tui(
             break;
         }
     }
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Keep the final message visible briefly so the user can read it, then clear.
+    // Use a shorter delay when indexing finished normally vs. when the sender was
+    // dropped unexpectedly (e.g. error path) so the status bar does not stall.
+    let delay = if indexing_completed {
+        Duration::from_secs(1)
+    } else {
+        Duration::from_millis(200)
+    };
+    tokio::time::sleep(delay).await;
     let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
 }

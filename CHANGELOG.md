@@ -15,8 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `IndexConfig`: new `workspace_root` (`Option<PathBuf>`), `concurrency` (default 4), and `batch_size` (default 32) config fields (#2646); `workspace_root` overrides the previous hard-coded `current_dir()` fallback so the indexer targets the configured project root.
 - `IndexerConfig`: `concurrency` and `batch_size` fields mirror the new `IndexConfig` fields and are passed through from `apply_code_indexer`.
 - **`IndexConfig`/`IndexerConfig`: `memory_batch_size` and `max_file_bytes` fields** (`#2664`): `index_project` now processes files in bounded memory batches (default 32 files per batch); after each batch the stream is dropped and the tokio executor yields so the allocator can reclaim pages. Files larger than `max_file_bytes` (default 512 KiB) are skipped entirely. Both fields are wired through `apply_code_indexer`.
+- **`IndexConfig`: `embed_provider` field** (`#2668`): new optional `embed_provider` config field in `[index]` references a `[[llm.providers]]` name. When set, the background indexer uses a dedicated provider for embedding calls instead of cloning the main agent provider, preventing server-side rate-limit contention and Ollama model-lock from starving the guardrail LLM call. Falls back to the main provider when unset.
 
 ### Fixed
+
+- **TUI status bar stalls 3 s after indexing completes** (`#2668`): `forward_index_progress_to_tui` now tracks whether indexing finished normally. When it did, the post-completion delay is 1 s (down from 3 s); when the sender was dropped unexpectedly (error path) the delay is 200 ms, so the status bar clears promptly in both cases.
 
 - **`embed_missing` blocks startup** (`#2662`): the embedding backfill was running synchronously in `build_memory`, causing startup to hang for minutes and consuming excessive RAM. It is now spawned as a background task via `zeph_core::bootstrap::spawn_embed_backfill` with a 300s timeout. An early `Ctrl+C` handler (`std::process::exit(130)`) is registered before `build_memory` so the process can be killed during the init phase; the handler is aborted once the full signal handler is wired. TUI shows "Backfilling embeddings..." status while the task runs.
 
