@@ -219,6 +219,30 @@ fn build_extraction_prompt(messages: &[&str], existing_facts: &[PersonaFactRow])
     prompt
 }
 
+fn parse_extraction_response(response: &str) -> Vec<ExtractedFact> {
+    // Try direct JSON array parse.
+    if let Ok(facts) = serde_json::from_str::<Vec<ExtractedFact>>(response) {
+        return facts;
+    }
+
+    // Try to find JSON array within the response (LLM may wrap in prose).
+    if let (Some(start), Some(end)) = (response.find('['), response.rfind(']'))
+        && end > start
+    {
+        let slice = &response[start..=end];
+        if let Ok(facts) = serde_json::from_str::<Vec<ExtractedFact>>(slice) {
+            return facts;
+        }
+    }
+
+    tracing::warn!(
+        "persona extraction: failed to parse LLM response (len={}): {:.200}",
+        response.len(),
+        response
+    );
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,28 +408,4 @@ mod tests {
         assert_eq!(facts.len(), 1, "superseded fact should be excluded");
         assert_eq!(facts[0].content, "I prefer dark mode");
     }
-}
-
-fn parse_extraction_response(response: &str) -> Vec<ExtractedFact> {
-    // Try direct JSON array parse.
-    if let Ok(facts) = serde_json::from_str::<Vec<ExtractedFact>>(response) {
-        return facts;
-    }
-
-    // Try to find JSON array within the response (LLM may wrap in prose).
-    if let (Some(start), Some(end)) = (response.find('['), response.rfind(']'))
-        && end > start
-    {
-        let slice = &response[start..=end];
-        if let Ok(facts) = serde_json::from_str::<Vec<ExtractedFact>>(slice) {
-            return facts;
-        }
-    }
-
-    tracing::warn!(
-        "persona extraction: failed to parse LLM response (len={}): {:.200}",
-        response.len(),
-        response
-    );
-    Vec::new()
 }

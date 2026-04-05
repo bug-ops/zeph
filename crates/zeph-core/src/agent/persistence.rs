@@ -559,6 +559,11 @@ impl<C: Channel> Agent<C> {
 
         self.maybe_spawn_graph_extraction(content, has_injection_flags, has_tool_result_parts)
             .await;
+
+        // Persona extraction: run only for user messages that are not tool results and not injected.
+        if role == Role::User && !has_tool_result_parts && !has_injection_flags {
+            self.maybe_spawn_persona_extraction();
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -691,6 +696,65 @@ impl<C: Channel> Agent<C> {
         self.sync_graph_extraction_metrics();
         self.sync_graph_counts().await;
         self.sync_guidelines_status().await;
+    }
+
+    fn maybe_spawn_persona_extraction(&mut self) {
+        use zeph_memory::semantic::{PersonaExtractionConfig, extract_persona_facts};
+
+        let cfg = &self.memory_state.persona_config;
+        if !cfg.enabled {
+            return;
+        }
+
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+
+        // Collect recent user messages for extraction.
+        let user_messages: Vec<String> = self
+            .msg
+            .messages
+            .iter()
+            .filter(|m| {
+                m.role == Role::User
+                    && !m
+                        .parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+            })
+            .map(|m| m.content.clone())
+            .collect();
+
+        if user_messages.len() < cfg.min_messages {
+            return;
+        }
+
+        let extraction_cfg = PersonaExtractionConfig {
+            enabled: cfg.enabled,
+            persona_provider: cfg.persona_provider.as_str().to_owned(),
+            min_messages: cfg.min_messages,
+            max_messages: cfg.max_messages,
+            extraction_timeout_secs: cfg.extraction_timeout_secs,
+        };
+
+        let provider = self.resolve_background_provider(cfg.persona_provider.as_str());
+        let store = memory.sqlite().clone();
+        let conversation_id = self.memory_state.conversation_id.map(|c| c.0);
+
+        tokio::spawn(async move {
+            match extract_persona_facts(
+                &store,
+                &provider,
+                &user_messages.iter().map(String::as_str).collect::<Vec<_>>(),
+                &extraction_cfg,
+                conversation_id,
+            )
+            .await
+            {
+                Ok(n) => tracing::debug!(upserted = n, "persona extraction complete"),
+                Err(e) => tracing::warn!(error = %e, "persona extraction failed"),
+            }
+        });
     }
 
     pub(crate) async fn check_summarization(&mut self) {
@@ -1393,6 +1457,154 @@ mod tests {
             assert!(
                 count.is_some(),
                 "conversational message must trigger extraction even with prior tool result in history"
+            );
+        }
+    }
+
+    // R-PERS-01: unit tests for maybe_spawn_persona_extraction guard conditions.
+    mod persona_extraction_guards {
+        use super::*;
+        use zeph_config::PersonaConfig;
+        use zeph_llm::provider::MessageMetadata;
+
+        fn enabled_persona_config() -> PersonaConfig {
+            PersonaConfig {
+                enabled: true,
+                min_messages: 1,
+                ..PersonaConfig::default()
+            }
+        }
+
+        async fn agent_with_persona(
+            provider: &AnyProvider,
+            config: PersonaConfig,
+        ) -> Agent<MockChannel> {
+            let memory =
+                test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+            let cid = memory.sqlite().create_conversation().await.unwrap();
+            let mut agent = Agent::new(
+                provider.clone(),
+                MockChannel::new(vec![]),
+                create_test_registry(),
+                None,
+                5,
+                MockToolExecutor::no_tools(),
+            )
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+            agent.memory_state.persona_config = config;
+            agent
+        }
+
+        #[tokio::test]
+        async fn disabled_config_skips_spawn() {
+            // persona.enabled=false → nothing is spawned; persona_memory stays empty.
+            let provider = mock_provider(vec![]);
+            let mut agent = agent_with_persona(
+                &provider,
+                PersonaConfig {
+                    enabled: false,
+                    ..PersonaConfig::default()
+                },
+            )
+            .await;
+
+            // Inject a user message so message count is above threshold.
+            agent.msg.messages.push(zeph_llm::provider::Message {
+                role: Role::User,
+                content: "I prefer Rust for systems programming".to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+
+            agent.maybe_spawn_persona_extraction();
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
+            let count = store.count_persona_facts().await.unwrap();
+            assert_eq!(count, 0, "disabled persona config must not write any facts");
+        }
+
+        #[tokio::test]
+        async fn below_min_messages_skips_spawn() {
+            // min_messages=3 but only 2 user messages → should skip.
+            let provider = mock_provider(vec![]);
+            let mut agent = agent_with_persona(
+                &provider,
+                PersonaConfig {
+                    enabled: true,
+                    min_messages: 3,
+                    ..PersonaConfig::default()
+                },
+            )
+            .await;
+
+            for text in ["I use Rust", "I prefer async code"] {
+                agent.msg.messages.push(zeph_llm::provider::Message {
+                    role: Role::User,
+                    content: text.to_owned(),
+                    parts: vec![],
+                    metadata: MessageMetadata::default(),
+                });
+            }
+
+            agent.maybe_spawn_persona_extraction();
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
+            let count = store.count_persona_facts().await.unwrap();
+            assert_eq!(
+                count, 0,
+                "below min_messages threshold must not trigger extraction"
+            );
+        }
+
+        #[tokio::test]
+        async fn no_memory_skips_spawn() {
+            // memory=None → must exit early without panic.
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.memory_state.persona_config = enabled_persona_config();
+            agent.msg.messages.push(zeph_llm::provider::Message {
+                role: Role::User,
+                content: "I like Rust".to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+
+            // Must not panic even without memory.
+            agent.maybe_spawn_persona_extraction();
+        }
+
+        #[tokio::test]
+        async fn enabled_enough_messages_spawns_extraction() {
+            // enabled=true, min_messages=1, self-referential message → tokio::spawn fires and
+            // chat() is called on the provider. We verify via MockProvider recording.
+            use zeph_llm::mock::MockProvider;
+            let (mock, recorded) = MockProvider::default().with_recording();
+            let provider = AnyProvider::Mock(mock);
+            let mut agent = agent_with_persona(&provider, enabled_persona_config()).await;
+
+            agent.msg.messages.push(zeph_llm::provider::Message {
+                role: Role::User,
+                content: "I prefer Rust for systems programming".to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+
+            agent.maybe_spawn_persona_extraction();
+
+            // Give the spawned task time to complete.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            let calls = recorded.lock().unwrap();
+            assert!(
+                !calls.is_empty(),
+                "happy-path: provider.chat() must be called when extraction is spawned"
             );
         }
     }
