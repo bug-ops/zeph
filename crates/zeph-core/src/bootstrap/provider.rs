@@ -596,6 +596,9 @@ fn build_all_pool_providers(
 ) -> Result<Vec<AnyProvider>, BootstrapError> {
     let mut providers = Vec::new();
     for entry in pool {
+        if entry.embed {
+            continue;
+        }
         match build_provider_from_entry(entry, config) {
             Ok(p) => providers.push(p),
             Err(e) => {
@@ -739,5 +742,74 @@ fn build_single_provider_from_pool(
                 "all providers in [[llm.providers]] failed to initialize; first error: {e}"
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::config::{Config, ProviderEntry, ProviderKind};
+
+    use super::build_all_pool_providers;
+
+    #[test]
+    fn excludes_embed_only_entry() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat".into()),
+                model: Some("qwen3:8b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("embedder".into()),
+                model: Some("nomic-embed-text".into()),
+                embed: true,
+                ..ProviderEntry::default()
+            },
+        ];
+        let providers = build_all_pool_providers(&config.llm.providers, &config).unwrap();
+        assert_eq!(providers.len(), 1);
+    }
+
+    #[test]
+    fn includes_all_non_embed_entries() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat1".into()),
+                model: Some("qwen3:8b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat2".into()),
+                model: Some("qwen3:1.7b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+        ];
+        let providers = build_all_pool_providers(&config.llm.providers, &config).unwrap();
+        assert_eq!(providers.len(), 2);
+    }
+
+    #[test]
+    fn errors_when_all_providers_are_embed_only() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            name: Some("embedder".into()),
+            model: Some("nomic-embed-text".into()),
+            embed: true,
+            ..ProviderEntry::default()
+        }];
+        let result = build_all_pool_providers(&config.llm.providers, &config);
+        assert!(result.is_err());
     }
 }
