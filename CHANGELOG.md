@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TUI: slash-command autocomplete dropdown in Insert mode (#2642)
 - `IndexConfig`: new `workspace_root` (`Option<PathBuf>`), `concurrency` (default 4), and `batch_size` (default 32) config fields (#2646); `workspace_root` overrides the previous hard-coded `current_dir()` fallback so the indexer targets the configured project root.
 - `IndexerConfig`: `concurrency` and `batch_size` fields mirror the new `IndexConfig` fields and are passed through from `apply_code_indexer`.
+- **`IndexConfig`/`IndexerConfig`: `memory_batch_size` and `max_file_bytes` fields** (`#2664`): `index_project` now processes files in bounded memory batches (default 32 files per batch); after each batch the stream is dropped and the tokio executor yields so the allocator can reclaim pages. Files larger than `max_file_bytes` (default 512 KiB) are skipped entirely. Both fields are wired through `apply_code_indexer`.
 
 ### Fixed
 

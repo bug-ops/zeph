@@ -26,6 +26,10 @@ pub struct IndexerConfig {
     pub concurrency: usize,
     /// Maximum number of new chunks to batch per file into a single Qdrant upsert. Default: 32.
     pub batch_size: usize,
+    /// Number of files to process per memory batch during initial indexing. Default: 32.
+    pub memory_batch_size: usize,
+    /// Maximum file size in bytes to index. Files larger than this are skipped. Default: 512 KiB.
+    pub max_file_bytes: usize,
 }
 
 impl Default for IndexerConfig {
@@ -34,6 +38,8 @@ impl Default for IndexerConfig {
             chunker: ChunkerConfig::default(),
             concurrency: 4,
             batch_size: 32,
+            memory_batch_size: 32,
+            max_file_bytes: 512 * 1024,
         }
     }
 }
@@ -83,6 +89,7 @@ impl CodeIndexer {
     /// # Errors
     ///
     /// Returns an error if the embedding probe or collection setup fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn index_project(
         &self,
         root: &Path,
@@ -124,62 +131,80 @@ impl CodeIndexer {
         tracing::info!(total, "indexing started");
 
         let concurrency = self.config.concurrency;
-        let store = self.store.clone();
-        let provider = Arc::clone(&self.provider);
-        let config = self.config.clone();
-
-        let mut stream = futures::stream::iter(entries.into_iter().map(|entry| {
-            let store = store.clone();
-            let provider = Arc::clone(&provider);
-            let config = config.clone();
-            let rel_path = entry
-                .path()
-                .strip_prefix(root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .to_string();
-            let abs_path = entry.path().to_path_buf();
-            async move {
-                let worker = FileIndexWorker {
-                    store,
-                    provider,
-                    config,
-                };
-                let result = worker.index_file(&abs_path, &rel_path).await;
-                (rel_path, result)
-            }
-        }))
-        .buffer_unordered(concurrency);
-
+        let memory_batch_size = self.config.memory_batch_size.max(1);
         let mut files_done = 0usize;
-        while let Some((rel_path, outcome)) = stream.next().await {
-            report.files_scanned += 1;
-            files_done += 1;
-            match outcome {
-                Ok((created, skipped)) => {
-                    if created > 0 {
-                        report.files_indexed += 1;
+
+        for batch in entries.chunks(memory_batch_size) {
+            let store = self.store.clone();
+            let provider = Arc::clone(&self.provider);
+            let config = self.config.clone();
+
+            // Resolve paths eagerly so the async closures below have no lifetime dependency on
+            // `entries` or `root`.
+            let file_pairs: Vec<(String, std::path::PathBuf)> = batch
+                .iter()
+                .map(|entry| {
+                    let rel = entry
+                        .path()
+                        .strip_prefix(root)
+                        .unwrap_or(entry.path())
+                        .to_string_lossy()
+                        .to_string();
+                    let abs = entry.path().to_path_buf();
+                    (rel, abs)
+                })
+                .collect();
+
+            let mut stream =
+                futures::stream::iter(file_pairs.into_iter().map(|(rel_path, abs_path)| {
+                    let store = store.clone();
+                    let provider = Arc::clone(&provider);
+                    let config = config.clone();
+                    async move {
+                        let worker = FileIndexWorker {
+                            store,
+                            provider,
+                            config,
+                        };
+                        let result = worker.index_file(&abs_path, &rel_path).await;
+                        (rel_path, result)
                     }
-                    report.chunks_created += created;
-                    report.chunks_skipped += skipped;
-                    tracing::info!(
-                        file = %rel_path,
-                        progress = format_args!("{files_done}/{total}"),
-                        created,
-                        skipped,
-                    );
+                }))
+                .buffer_unordered(concurrency);
+
+            while let Some((rel_path, outcome)) = stream.next().await {
+                report.files_scanned += 1;
+                files_done += 1;
+                match outcome {
+                    Ok((created, skipped)) => {
+                        if created > 0 {
+                            report.files_indexed += 1;
+                        }
+                        report.chunks_created += created;
+                        report.chunks_skipped += skipped;
+                        tracing::info!(
+                            file = %rel_path,
+                            progress = format_args!("{files_done}/{total}"),
+                            created,
+                            skipped,
+                        );
+                    }
+                    Err(e) => {
+                        report.errors.push(format!("{rel_path}: {e:#}"));
+                    }
                 }
-                Err(e) => {
-                    report.errors.push(format!("{rel_path}: {e:#}"));
+                if let Some(tx) = progress_tx {
+                    let _ = tx.send(IndexProgress {
+                        files_done,
+                        files_total: total,
+                        chunks_created: report.chunks_created,
+                    });
                 }
             }
-            if let Some(tx) = progress_tx {
-                let _ = tx.send(IndexProgress {
-                    files_done,
-                    files_total: total,
-                    chunks_created: report.chunks_created,
-                });
-            }
+
+            // Drop stream to release all in-flight future state before the next batch.
+            drop(stream);
+            tokio::task::yield_now().await;
         }
 
         let indexed = self.store.indexed_files().await?;
@@ -232,6 +257,15 @@ impl FileIndexWorker {
     /// New chunks (those not already in the store) are accumulated, embedded in order, and
     /// upserted in a single batch call to minimise round-trips to `Qdrant` and `SQLite`.
     async fn index_file(&self, abs_path: &Path, rel_path: &str) -> Result<(usize, usize)> {
+        let metadata = tokio::fs::metadata(abs_path).await?;
+        if metadata.len() > self.config.max_file_bytes as u64 {
+            tracing::debug!(
+                file = %abs_path.display(),
+                size = metadata.len(),
+                "skipping oversized file"
+            );
+            return Ok((0, 0));
+        }
         let source = tokio::fs::read_to_string(abs_path).await?;
         let lang = detect_language(abs_path).ok_or(IndexError::UnsupportedLanguage)?;
 

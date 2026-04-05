@@ -64,6 +64,14 @@ fn default_index_batch_size() -> usize {
     32
 }
 
+fn default_index_memory_batch_size() -> usize {
+    32
+}
+
+fn default_index_max_file_bytes() -> usize {
+    512 * 1024
+}
+
 fn default_index_score_threshold() -> f32 {
     0.25
 }
@@ -273,6 +281,16 @@ pub struct IndexConfig {
     /// Maximum number of new chunks to batch into a single Qdrant upsert per file. Default: 32.
     #[serde(default = "default_index_batch_size")]
     pub batch_size: usize,
+    /// Number of files to process per memory batch during initial indexing.
+    /// After each batch the stream is dropped and the executor yields to allow
+    /// the allocator to reclaim pages. Default: `32`.
+    #[serde(default = "default_index_memory_batch_size")]
+    pub memory_batch_size: usize,
+    /// Maximum file size in bytes to index. Files larger than this are skipped.
+    /// Protects against large generated files (e.g. lock files, minified JS).
+    /// Default: 512 KiB.
+    #[serde(default = "default_index_max_file_bytes")]
+    pub max_file_bytes: usize,
 }
 
 impl Default for IndexConfig {
@@ -290,6 +308,8 @@ impl Default for IndexConfig {
             workspace_root: None,
             concurrency: default_index_concurrency(),
             batch_size: default_index_batch_size(),
+            memory_batch_size: default_index_memory_batch_size(),
+            max_file_bytes: default_index_max_file_bytes(),
         }
     }
 }
