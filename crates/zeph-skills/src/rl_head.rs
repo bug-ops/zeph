@@ -132,14 +132,12 @@ impl RoutingHeadInner {
     /// Must be called after `score()` for the skill that was actually selected.
     /// `reward`: +1.0 for success, -1.0 for failure.
     ///
-    /// # Panics
-    ///
-    /// Panics if called without a preceding `score()` call (no cached forward pass).
-    fn update(&mut self, reward: f32, learning_rate: f32) {
-        let cache = self
-            .last_forward
-            .take()
-            .expect("update() called without preceding score()");
+    /// Returns `true` if the update was applied, `false` if no forward cache is available
+    /// (i.e. `score()` was not called in the current turn — safe no-op).
+    fn update(&mut self, reward: f32, learning_rate: f32) -> bool {
+        let Some(cache) = self.last_forward.take() else {
+            return false;
+        };
 
         // Exponential moving average baseline (alpha=0.1)
         self.baseline = 0.9 * self.baseline + 0.1 * reward;
@@ -170,6 +168,7 @@ impl RoutingHeadInner {
         }
 
         self.update_count = self.update_count.saturating_add(1);
+        true
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -321,14 +320,18 @@ impl RoutingHead {
 
     /// REINFORCE update for the skill that was actually selected.
     ///
+    /// Returns `true` if the update was applied, `false` if `rerank()` was not called
+    /// in the current turn (safe no-op — no panic).
+    ///
     /// # Panics
     ///
-    /// Panics if called without a preceding `score()` call or if mutex is poisoned.
-    pub fn update(&self, reward: f32, learning_rate: f32) {
+    /// Panics if the mutex is poisoned.
+    #[must_use]
+    pub fn update(&self, reward: f32, learning_rate: f32) -> bool {
         self.inner
             .lock()
             .expect("RoutingHead mutex poisoned")
-            .update(reward, learning_rate);
+            .update(reward, learning_rate)
     }
 
     /// Number of weight updates applied so far.
@@ -493,14 +496,11 @@ mod tests {
         let q = dummy_embed(0.1, 4);
         let s = dummy_embed(0.2, 4);
         let _ = head.score(&q, &s, 0.8, 0.9, 5);
-        head.update(1.0, 0.01);
-        // After update, last_forward should be None — second update without score should panic.
-        let result = std::panic::catch_unwind(|| {
-            head.update(1.0, 0.01);
-        });
+        assert!(head.update(1.0, 0.01), "first update should return true");
+        // After update, last_forward is None — second update without score is a safe no-op.
         assert!(
-            result.is_err(),
-            "expected panic on update without preceding score"
+            !head.update(1.0, 0.01),
+            "update without preceding score should return false"
         );
     }
 
@@ -511,7 +511,7 @@ mod tests {
         let s = dummy_embed(0.0, 4);
         assert_eq!(head.update_count(), 0);
         let _ = head.score(&q, &s, 0.5, 0.5, 1);
-        head.update(1.0, 0.01);
+        let _ = head.update(1.0, 0.01);
         assert_eq!(head.update_count(), 1);
     }
 
@@ -521,7 +521,7 @@ mod tests {
         let q = dummy_embed(0.3, 4);
         let s = dummy_embed(0.7, 4);
         let _ = head.score(&q, &s, 0.6, 0.8, 10);
-        head.update(1.0, 0.01);
+        let _ = head.update(1.0, 0.01);
 
         let bytes = head.to_bytes();
         let head2 = RoutingHead::from_bytes(&bytes).expect("deserialization failed");
@@ -573,16 +573,27 @@ mod tests {
     }
 
     #[test]
+    fn update_without_prior_rerank_returns_false() {
+        // Regression test for #2675: calling update() on a fresh head (no score/rerank)
+        // must not panic and must return false.
+        let head = make_head();
+        assert!(
+            !head.update(1.0, 0.01),
+            "update() without prior rerank() must return false, not panic"
+        );
+    }
+
+    #[test]
     fn update_changes_weights() {
         let head = make_head();
         let q = dummy_embed(0.5, 4);
         let s = dummy_embed(0.5, 4);
 
         let score_before = head.score(&q, &s, 0.5, 0.5, 5);
-        head.update(1.0, 0.1); // large LR to ensure change
+        let _ = head.update(1.0, 0.1); // large LR to ensure change
 
         let score_after = head.score(&q, &s, 0.5, 0.5, 5);
-        head.update(1.0, 0.0); // consume cache
+        let _ = head.update(1.0, 0.0); // consume cache
 
         assert!(
             (score_before - score_after).abs() > 1e-6,

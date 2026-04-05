@@ -31,7 +31,13 @@ impl<C: Channel> Agent<C> {
         let memory = self.memory_state.memory.clone();
 
         tokio::spawn(async move {
-            rl_head.update(reward, lr);
+            if !rl_head.update(reward, lr) {
+                tracing::debug!(
+                    skill = selected_skill,
+                    "rl_head: no forward cache, skipping update"
+                );
+                return;
+            }
             let update_count = rl_head.update_count();
             if (persist_interval == 0 || update_count % persist_interval == 0)
                 && let Some(mem) = memory
