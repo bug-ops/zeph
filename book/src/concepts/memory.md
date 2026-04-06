@@ -581,6 +581,31 @@ update_provider           = ""   # provider name; falls back to primary
 max_iterations            = 4    # max iterations per update call
 ```
 
+## Store Routing
+
+Store routing classifies each incoming query and routes it to the appropriate memory backend(s), avoiding unnecessary store lookups for simple requests.
+
+```toml
+[memory.store_routing]
+enabled                      = false
+strategy                     = "heuristic"   # "heuristic" | "llm" | "hybrid"
+routing_classifier_provider  = ""            # provider name; falls back to primary
+fallback_route               = "hybrid"      # route used when confidence < threshold
+confidence_threshold         = 0.7
+```
+
+| Strategy | Behavior |
+|----------|----------|
+| `heuristic` | Pure pattern matching — zero LLM calls. Fastest and cheapest. Default. |
+| `llm` | A lightweight LLM classifies the query intent and selects the target store. Higher accuracy on ambiguous queries; adds one LLM call per turn. |
+| `hybrid` | Heuristic runs first. When confidence is below `confidence_threshold`, the decision escalates to the LLM. Balances cost and accuracy. |
+
+`routing_classifier_provider` should reference a cheap/fast provider (e.g., `gpt-4o-mini`) declared in `[[llm.providers]]`. Leave it empty to fall back to the primary provider.
+
+`fallback_route` is the store used when the classifier cannot reach a confident decision (applies to `hybrid` strategy). The default value `"hybrid"` sends the query to all stores.
+
+Store routing is disabled by default (`enabled = false`). When disabled, `HeuristicRouter` is used directly, which is equivalent to `strategy = "heuristic"` with routing always enabled.
+
 ## Next Steps
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

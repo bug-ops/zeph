@@ -121,6 +121,9 @@ min_tools_to_filter = 5         # Only apply filtering when the server exposes a
 
 MCP servers can request structured user input mid-task via the `elicitation/create` protocol method. This allows a server to prompt for missing parameters, confirmations, or credentials without requiring a separate out-of-band channel.
 
+> [!NOTE]
+> Elicitation is an unstable ACP extension compiled in via the `unstable-elicitation` feature flag in `zeph-acp`. Standard release builds include it. If you built Zeph without this feature, the `elicitation/create` method is not handled and requests from servers are silently ignored.
+
 ### Enabling Elicitation
 
 Elicitation is disabled by default. Enable it globally or per server:

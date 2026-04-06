@@ -613,6 +613,43 @@ command = "./scripts/cleanup.sh"
 
 **`start`** hooks fire after a sub-agent is spawned. **`stop`** hooks fire after a sub-agent finishes or is cancelled. Both are fire-and-forget — errors are logged but do not affect the agent's operation.
 
+**Common use cases:**
+
+| Hook | Use case |
+|------|----------|
+| `start` | Send a Slack/webhook notification that a sub-agent started; initialize a working directory; write a lock file |
+| `stop` | Post results to a dashboard; remove temp files; log task duration |
+
+Each hook definition accepts the same fields as per-agent hooks:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | required | Currently only `"command"` is supported |
+| `command` | string | required | Shell command executed via `sh -c` |
+| `timeout_secs` | u64 | `30` | Hook is killed after this many seconds |
+| `fail_closed` | bool | `false` | When `true`, a non-zero exit blocks the operation; when `false`, errors are logged and execution continues |
+
+Multiple hooks per event are supported — they run sequentially in definition order:
+
+```toml
+[agents.hooks]
+
+[[agents.hooks.start]]
+type = "command"
+command = "curl -s -X POST https://hooks.example.com/agent-start -d agent=$ZEPH_AGENT_NAME"
+timeout_secs = 5
+
+[[agents.hooks.start]]
+type = "command"
+command = "mkdir -p /tmp/zeph-work/$ZEPH_AGENT_ID"
+timeout_secs = 5
+
+[[agents.hooks.stop]]
+type = "command"
+command = "rm -rf /tmp/zeph-work/$ZEPH_AGENT_ID"
+timeout_secs = 10
+```
+
 ### Environment Variables
 
 Hook processes receive a clean environment with only the `PATH` variable preserved from the parent process. The following Zeph-specific variables are set:
@@ -696,6 +733,26 @@ Sub-agents inherit context from the parent agent to reduce cold-start overhead:
 - **Model inheritance**: sub-agents inherit the parent's active model unless overridden in the definition's `model` field
 
 Sub-agents no longer exit after a single text-only LLM response — they continue the conversation loop until the task is complete or `max_turns` is reached.
+
+### Sub-Agent Context Injection
+
+`context_injection_mode` controls exactly how parent conversation history is injected into the sub-agent's task prompt. Configure it globally under `[agents]`:
+
+```toml
+[agents]
+context_window_turns   = 10   # recent parent turns forwarded to the sub-agent
+context_injection_mode = "last_assistant_turn"  # default
+```
+
+| Mode | Behavior |
+|------|----------|
+| `none` | No parent context injected. The sub-agent starts with only its system prompt and the task string. Use for fully isolated workers where parent history would be noise. |
+| `last_assistant_turn` | The last assistant turn from the parent history is prepended to the task prompt as a preamble (default). Gives the sub-agent single-turn awareness — the most recent state — at zero extra LLM cost. |
+| `summary` | A compact LLM-generated summary of the recent parent turns is injected. Suitable for long multi-turn sessions where full history injection would consume too many tokens. Requires a provider to generate the summary. |
+
+`context_window_turns` limits how many parent turns are forwarded regardless of mode. Set to `0` to disable history propagation entirely (equivalent to `none` but affects all modes uniformly).
+
+**Model inheritance**: sub-agents use the parent's active provider unless the definition's `model` field specifies an override. This means a sub-agent spawned during a `gpt-5.4` session will use `gpt-5.4` unless pinned to a different model in the definition.
 
 ### MCP Tool Awareness
 
