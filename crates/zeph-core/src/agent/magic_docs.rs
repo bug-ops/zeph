@@ -60,47 +60,65 @@ impl<C: Channel> super::Agent<C> {
     }
 
     fn scan_messages_for_magic_docs(&mut self) {
-        // Walk assistant messages: find ToolUse parts whose paired ToolOutput contains MAGIC_DOC_HEADER.
-        // Extract the file path from the ToolUse input.
+        // Walk all messages to pair ToolUse (from Assistant) with ToolOutput (from User).
+        //
+        // In the Anthropic message format ToolUse parts live in Role::Assistant messages
+        // and the corresponding ToolOutput parts live in the following Role::User message.
+        // ToolOutput.tool_name matches the tool name (e.g. "read") used to correlate with
+        // ToolUse.name and retrieve the file_path from ToolUse.input.
+        //
+        // We maintain an ordered queue of (tool_name, file_path) pairs from ToolUse parts
+        // and dequeue one entry per ToolOutput part encountered in User messages so that
+        // multiple parallel tool calls in one turn are matched in declaration order.
         let turn = u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX);
 
-        for msg in &self.msg.messages {
-            if msg.role != Role::Assistant {
-                continue;
-            }
-            // Pair ToolUse and ToolOutput parts by position.
-            let mut last_tool_use_name: Option<&str> = None;
-            let mut last_tool_use_path: Option<String> = None;
+        // Ordered list of (tool_name, file_path) from ToolUse parts yet to be paired.
+        let mut use_queue: std::collections::VecDeque<(String, Option<String>)> =
+            std::collections::VecDeque::new();
 
-            for part in &msg.parts {
-                match part {
-                    MessagePart::ToolUse { name, input, .. } => {
-                        last_tool_use_name = Some(name.as_str());
-                        last_tool_use_path = extract_file_path_from_input(input);
-                    }
-                    MessagePart::ToolOutput {
-                        tool_name, body, ..
-                    } => {
-                        let tname = last_tool_use_name.unwrap_or(tool_name.as_str());
-                        if is_file_read_tool(tname)
-                            && body.contains(MAGIC_DOC_HEADER)
-                            && let Some(ref path_str) = last_tool_use_path
-                        {
-                            let path = PathBuf::from(path_str);
-                            self.magic_docs_state
-                                .registered
-                                .entry(path.clone())
-                                .or_insert(turn);
-                            tracing::debug!(
-                                path = %path.display(),
-                                "magic_docs: registered doc"
-                            );
+        for msg in &self.msg.messages {
+            match msg.role {
+                Role::Assistant => {
+                    for part in &msg.parts {
+                        if let MessagePart::ToolUse { name, input, .. } = part {
+                            use_queue
+                                .push_back((name.clone(), extract_file_path_from_input(input)));
                         }
-                        last_tool_use_name = None;
-                        last_tool_use_path = None;
                     }
-                    _ => {}
                 }
+                Role::User => {
+                    for part in &msg.parts {
+                        if let MessagePart::ToolOutput {
+                            tool_name, body, ..
+                        } = part
+                        {
+                            // Consume the matching ToolUse entry from the queue.
+                            // Skip non-matching entries (e.g. non-file-read tools) by
+                            // peeking — ToolOutput.tool_name must equal the queued name.
+                            let file_path = use_queue
+                                .iter()
+                                .position(|(name, _)| name == tool_name)
+                                .and_then(|idx| use_queue.remove(idx))
+                                .and_then(|(_, p)| p);
+
+                            if is_file_read_tool(tool_name)
+                                && body.contains(MAGIC_DOC_HEADER)
+                                && let Some(path_str) = file_path
+                            {
+                                let path = PathBuf::from(&path_str);
+                                self.magic_docs_state
+                                    .registered
+                                    .entry(path.clone())
+                                    .or_insert(turn);
+                                tracing::debug!(
+                                    path = %path.display(),
+                                    "magic_docs: registered doc"
+                                );
+                            }
+                        }
+                    }
+                }
+                Role::System => {}
             }
         }
     }
@@ -292,5 +310,119 @@ mod tests {
         let prompt = build_update_prompt(path, &content);
         assert!(prompt.contains(MAGIC_DOC_HEADER));
         assert!(prompt.contains("/tmp/test.md"));
+    }
+
+    /// Verify the pairing logic: a ToolUse from an assistant message and the corresponding
+    /// ToolOutput from the following user message are matched by tool name, and a file path
+    /// is extracted from the ToolUse input. This exercises the fix for #2727 where ToolOutput
+    /// parts in Role::User messages were previously skipped entirely.
+    #[test]
+    fn tool_use_tool_output_pairing_extracts_path() {
+        use std::collections::VecDeque;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        // Simulate the pairing algorithm from scan_messages_for_magic_docs.
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "tu_1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"file_path": "/docs/readme.md"}),
+                }],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolOutput {
+                    tool_name: "read".into(),
+                    body: format!("{MAGIC_DOC_HEADER} readme\nSome content."),
+                    compacted_at: None,
+                }],
+            ),
+        ];
+
+        let mut use_queue: VecDeque<(String, Option<String>)> = VecDeque::new();
+        let mut detected: Vec<PathBuf> = Vec::new();
+
+        for msg in &messages {
+            match msg.role {
+                Role::Assistant => {
+                    for part in &msg.parts {
+                        if let MessagePart::ToolUse { name, input, .. } = part {
+                            use_queue
+                                .push_back((name.clone(), extract_file_path_from_input(input)));
+                        }
+                    }
+                }
+                Role::User => {
+                    for part in &msg.parts {
+                        if let MessagePart::ToolOutput {
+                            tool_name, body, ..
+                        } = part
+                        {
+                            let file_path = use_queue
+                                .iter()
+                                .position(|(name, _)| name == tool_name)
+                                .and_then(|idx| use_queue.remove(idx))
+                                .and_then(|(_, p)| p);
+
+                            if is_file_read_tool(tool_name) && body.contains(MAGIC_DOC_HEADER) {
+                                if let Some(path_str) = file_path {
+                                    detected.push(PathBuf::from(&path_str));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(detected, vec![PathBuf::from("/docs/readme.md")]);
+    }
+
+    /// ToolOutput in a User message without a matching ToolUse (no queued entry) is not detected.
+    #[test]
+    fn tool_output_without_tool_use_not_detected() {
+        use std::collections::VecDeque;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let messages = vec![Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: format!("{MAGIC_DOC_HEADER} readme\nContent."),
+                compacted_at: None,
+            }],
+        )];
+
+        let mut use_queue: VecDeque<(String, Option<String>)> = VecDeque::new();
+        let mut detected: Vec<PathBuf> = Vec::new();
+
+        for msg in &messages {
+            if msg.role == Role::User {
+                for part in &msg.parts {
+                    if let MessagePart::ToolOutput {
+                        tool_name, body, ..
+                    } = part
+                    {
+                        let file_path = use_queue
+                            .iter()
+                            .position(|(name, _)| name == tool_name)
+                            .and_then(|idx| use_queue.remove(idx))
+                            .and_then(|(_, p)| p);
+
+                        if is_file_read_tool(tool_name) && body.contains(MAGIC_DOC_HEADER) {
+                            if let Some(path_str) = file_path {
+                                detected.push(PathBuf::from(&path_str));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // No ToolUse was queued, so no path is available and nothing is detected.
+        assert!(detected.is_empty());
     }
 }

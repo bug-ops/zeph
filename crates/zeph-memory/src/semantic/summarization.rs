@@ -208,7 +208,16 @@ impl SemanticMemory {
             return;
         }
 
-        let Some(first_fact) = key_facts.first() else {
+        // Filter out transient policy-decision facts that describe a blocked or denied action.
+        // These reflect the agent's state at a single point in time and must not be recalled
+        // as stable world facts in future turns — doing so causes the agent to skip valid calls.
+        let filtered: Vec<&str> = key_facts
+            .iter()
+            .filter(|f| !is_policy_decision_fact(f.as_str()))
+            .map(String::as_str)
+            .collect();
+
+        let Some(first_fact) = filtered.first().copied() else {
             return;
         };
         let first_vector = match self.provider.embed(first_fact).await {
@@ -238,7 +247,7 @@ impl SemanticMemory {
         )
         .await;
 
-        for fact in &key_facts[1..] {
+        for fact in filtered[1..].iter().copied() {
             match self.provider.embed(fact).await {
                 Ok(vector) => {
                     self.store_key_fact_if_unique(
@@ -375,4 +384,25 @@ impl SemanticMemory {
 
         Ok(results)
     }
+}
+
+/// Returns `true` when a fact string describes a transient policy or permission decision.
+///
+/// Facts like "reading /etc/passwd was blocked by utility policy" are snapshots of a
+/// single-turn enforcement state and must not be recalled as durable world knowledge.
+/// Storing them causes the agent to believe a tool is permanently unavailable.
+pub(crate) fn is_policy_decision_fact(fact: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "blocked",
+        "skipped",
+        "cannot access",
+        "security polic",
+        "utility polic",
+        "not allowed",
+        "permission denied",
+        "access denied",
+        "was denied",
+    ];
+    let lower = fact.to_lowercase();
+    MARKERS.iter().any(|m| lower.contains(m))
 }

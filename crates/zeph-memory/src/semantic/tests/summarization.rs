@@ -651,3 +651,49 @@ async fn store_key_facts_fail_open_on_search_error() {
         .await;
     // Reaching this line confirms: no panic, no propagated error.
 }
+
+// ── is_policy_decision_fact ────────────────────────────────────────────────────
+
+#[test]
+fn policy_decision_fact_blocked_rejected() {
+    use crate::semantic::summarization::is_policy_decision_fact;
+    assert!(is_policy_decision_fact(
+        "Reading the file was blocked by utility policy."
+    ));
+}
+
+#[test]
+fn policy_decision_fact_skipped_rejected() {
+    use crate::semantic::summarization::is_policy_decision_fact;
+    assert!(is_policy_decision_fact(
+        "The tool call was skipped because access is restricted."
+    ));
+}
+
+#[test]
+fn policy_decision_fact_permission_denied_rejected() {
+    use crate::semantic::summarization::is_policy_decision_fact;
+    assert!(is_policy_decision_fact("permission denied for shell tool"));
+}
+
+#[test]
+fn policy_decision_fact_cannot_access_rejected() {
+    use crate::semantic::summarization::is_policy_decision_fact;
+    assert!(is_policy_decision_fact(
+        "Agent cannot access the filesystem path."
+    ));
+}
+
+#[test]
+fn policy_decision_fact_normal_fact_accepted() {
+    use crate::semantic::summarization::is_policy_decision_fact;
+    assert!(!is_policy_decision_fact(
+        "The project uses Rust edition 2024."
+    ));
+}
+
+#[test]
+fn policy_decision_fact_case_insensitive() {
+    use crate::semantic::summarization::is_policy_decision_fact;
+    assert!(is_policy_decision_fact("Action BLOCKED by Security Policy"));
+}
