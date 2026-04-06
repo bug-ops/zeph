@@ -629,6 +629,7 @@ impl Foo {
                 serde_json::Value::Object(m) => m,
                 _ => serde_json::Map::new(),
             },
+            caller_id: None,
         }
     }
 

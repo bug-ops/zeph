@@ -106,6 +106,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("## Instructions"));
@@ -123,6 +124,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -147,6 +149,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "bash".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -165,6 +168,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("truncated"));
@@ -182,6 +186,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -215,6 +220,7 @@ mod tests {
                             .as_object()
                             .unwrap()
                             .clone(),
+                        caller_id: None,
                     };
                     ex.execute_tool_call(&call).await
                 })
@@ -239,6 +245,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -253,6 +260,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "load_skill".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());

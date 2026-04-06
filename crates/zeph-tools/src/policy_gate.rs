@@ -111,6 +111,9 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         adversarial_policy_decision: None,
                         exit_code: None,
                         truncated: false,
+                        caller_id: call.caller_id.clone(),
+                        // M1: use trace field directly as policy_match
+                        policy_match: Some(trace.clone()),
                     };
                     audit.log(&entry).await;
                 }
@@ -138,6 +141,9 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         adversarial_policy_decision: None,
                         exit_code: None,
                         truncated: false,
+                        caller_id: call.caller_id.clone(),
+                        // M1: use trace field directly as policy_match
+                        policy_match: Some(trace.clone()),
                     };
                     audit.log(&entry).await;
                 }
@@ -151,13 +157,22 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
 }
 
 impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
-    // CRIT-03: legacy dispatch bypasses policy — no structured tool_id available.
-    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        self.inner.execute(response).await
+    // CRIT-03: legacy unstructured dispatch has no tool_id; policy cannot be enforced.
+    // PolicyGateExecutor is only constructed when policy is enabled, so reject unconditionally.
+    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Err(ToolError::Blocked {
+            command:
+                "legacy unstructured dispatch is not supported when policy enforcement is enabled"
+                    .into(),
+        })
     }
 
-    async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        self.inner.execute_confirmed(response).await
+    async fn execute_confirmed(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Err(ToolError::Blocked {
+            command:
+                "legacy unstructured dispatch is not supported when policy enforcement is enabled"
+                    .into(),
+        })
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -191,6 +206,8 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
                     adversarial_policy_decision: None,
                     exit_code: None,
                     truncated: false,
+                    caller_id: call.caller_id.clone(),
+                    policy_match: None,
                 };
                 audit.log(&entry).await;
             }
@@ -288,6 +305,7 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         }
     }
 
@@ -297,6 +315,7 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params,
+            caller_id: None,
         }
     }
 
@@ -338,6 +357,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -360,6 +380,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -432,8 +453,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_execute_bypasses_policy() {
-        // CRIT-03: legacy dispatch cannot be policy-checked (no tool_id).
+    async fn legacy_execute_blocked_when_policy_enabled() {
+        // CRIT-03: legacy dispatch has no tool_id; policy cannot be enforced.
+        // PolicyGateExecutor must reject it unconditionally when policy is enabled.
         let config = PolicyConfig {
             enabled: true,
             default_effect: DefaultEffect::Deny,
@@ -442,8 +464,9 @@ mod tests {
         };
         let gate = make_gate(&config);
         let result = gate.execute("```bash\necho hi\n```").await;
-        // MockExecutor always returns None for execute().
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        let result_confirmed = gate.execute_confirmed("```bash\necho hi\n```").await;
+        assert!(matches!(result_confirmed, Err(ToolError::Blocked { .. })));
     }
 
     // GAP-06: set_effective_trust must update PolicyContext.trust_level so trust_level rules
@@ -463,6 +486,7 @@ mod tests {
                 env: vec![],
                 trust_level: Some(SkillTrustLevel::Verified),
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -490,6 +514,7 @@ mod tests {
                 env: vec![],
                 trust_level: Some(SkillTrustLevel::Verified),
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };

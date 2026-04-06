@@ -507,6 +507,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                 serde_json::Value::Object(map) => map.clone(),
                                 _ => serde_json::Map::new(),
                             },
+                            caller_id: None,
                         };
                         let output = loop {
                             tokio::select! {

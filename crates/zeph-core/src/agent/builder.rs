@@ -215,6 +215,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the maximum tool calls allowed per session (`None` = unlimited).
+    #[must_use]
+    pub fn with_max_tool_calls_per_session(mut self, max: Option<u32>) -> Self {
+        self.tool_orchestrator.max_tool_calls_per_session = max;
+        self
+    }
+
     /// Set the provider name for LLM-based parameter reformatting (empty = disabled).
     #[must_use]
     pub fn with_parameter_reformat_provider(mut self, provider: impl Into<String>) -> Self {
@@ -1500,6 +1507,7 @@ impl<C: Channel> Agent<C> {
             tool_repeat_threshold,
             tool_summarization,
             tool_call_cutoff,
+            max_tool_calls_per_session,
             overflow_config,
             permission_policy,
             model_name,
@@ -1537,6 +1545,7 @@ impl<C: Channel> Agent<C> {
 
         self = self
             .with_max_tool_iterations(max_tool_iterations)
+            .with_max_tool_calls_per_session(max_tool_calls_per_session)
             .with_max_tool_retries(max_tool_retries)
             .with_max_retry_duration_secs(max_retry_duration_secs)
             .with_retry_backoff(retry_base_ms, retry_max_ms)

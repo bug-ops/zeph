@@ -1,6 +1,37 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+/// Typed error code for MCP tool call retry/recovery classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpErrorCode {
+    /// Transient error: retry is likely to succeed.
+    Transient,
+    /// Rate limited: back off and retry.
+    RateLimited,
+    /// Invalid input: do not retry without changing parameters.
+    InvalidInput,
+    /// Auth failure: re-authenticate or escalate.
+    AuthFailure,
+    /// Server error: may be transient, retry with backoff.
+    ServerError,
+    /// Not found: resource or tool does not exist.
+    NotFound,
+    /// Blocked by policy rules.
+    PolicyBlocked,
+}
+
+impl McpErrorCode {
+    /// Whether this error code suggests the operation can be retried.
+    #[must_use]
+    pub fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            Self::Transient | Self::RateLimited | Self::ServerError
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
     #[error("connection failed for server '{server_id}': {message}")]
@@ -11,6 +42,8 @@ pub enum McpError {
         server_id: String,
         tool_name: String,
         message: String,
+        /// Typed error code for retry classification.
+        code: McpErrorCode,
     },
 
     #[error("server '{server_id}' not found")]
@@ -72,6 +105,30 @@ pub enum McpError {
     ToolListLocked { server_id: String },
 }
 
+impl McpError {
+    /// Return the typed error code for this error variant.
+    #[must_use]
+    pub fn code(&self) -> Option<McpErrorCode> {
+        match self {
+            Self::ToolCall { code, .. } => Some(*code),
+            Self::Timeout { .. } | Self::Connection { .. } => Some(McpErrorCode::Transient),
+            Self::ServerNotFound { .. } | Self::ToolNotFound { .. } => Some(McpErrorCode::NotFound),
+            Self::PolicyViolation(_)
+            | Self::SsrfBlocked { .. }
+            | Self::CommandNotAllowed { .. }
+            | Self::EnvVarBlocked { .. } => Some(McpErrorCode::PolicyBlocked),
+            Self::OAuthError { .. } | Self::OAuthCallbackTimeout { .. } => {
+                Some(McpErrorCode::AuthFailure)
+            }
+            Self::InvalidUrl { .. } | Self::ToolListLocked { .. } => {
+                Some(McpErrorCode::InvalidInput)
+            }
+            Self::Embedding(_) => Some(McpErrorCode::ServerError),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,8 +151,41 @@ mod tests {
             server_id: "fs".into(),
             tool_name: "read_file".into(),
             message: "not found".into(),
+            code: McpErrorCode::ServerError,
         };
         assert_eq!(err.to_string(), "tool call failed: fs/read_file: not found");
+    }
+
+    #[test]
+    fn error_code_is_retryable() {
+        assert!(McpErrorCode::Transient.is_retryable());
+        assert!(McpErrorCode::RateLimited.is_retryable());
+        assert!(McpErrorCode::ServerError.is_retryable());
+        assert!(!McpErrorCode::InvalidInput.is_retryable());
+        assert!(!McpErrorCode::AuthFailure.is_retryable());
+        assert!(!McpErrorCode::NotFound.is_retryable());
+        assert!(!McpErrorCode::PolicyBlocked.is_retryable());
+    }
+
+    #[test]
+    fn mcp_error_code_method() {
+        let err = McpError::ToolCall {
+            server_id: "s".into(),
+            tool_name: "t".into(),
+            message: "e".into(),
+            code: McpErrorCode::RateLimited,
+        };
+        assert_eq!(err.code(), Some(McpErrorCode::RateLimited));
+
+        let timeout = McpError::Timeout {
+            server_id: "s".into(),
+            tool_name: "t".into(),
+            timeout_secs: 30,
+        };
+        assert_eq!(timeout.code(), Some(McpErrorCode::Transient));
+
+        let policy = McpError::PolicyViolation("denied".into());
+        assert_eq!(policy.code(), Some(McpErrorCode::PolicyBlocked));
     }
 
     #[test]

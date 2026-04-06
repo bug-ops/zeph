@@ -71,6 +71,10 @@ pub struct PolicyRuleConfig {
     pub trust_level: Option<SkillTrustLevel>,
     /// Regex matched against individual string param values.
     pub args_match: Option<String>,
+    /// Named capabilities associated with this rule (e.g., "fs:write", "net:external").
+    /// Config-only field: capability matching is deferred until tools expose capability metadata.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 /// Runtime context passed to `PolicyEnforcer::evaluate`.
@@ -473,6 +477,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -500,6 +505,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -527,6 +533,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -559,6 +566,7 @@ mod tests {
                     env: vec![],
                     trust_level: None,
                     args_match: None,
+                    capabilities: vec![],
                 },
                 PolicyRuleConfig {
                     effect: PolicyEffect::Deny,
@@ -567,6 +575,7 @@ mod tests {
                     env: vec![],
                     trust_level: None,
                     args_match: None,
+                    capabilities: vec![],
                 },
             ],
             policy_file: None,
@@ -598,6 +607,7 @@ mod tests {
                     env: vec![],
                     trust_level: None,
                     args_match: None,
+                    capabilities: vec![],
                 },
                 PolicyRuleConfig {
                     effect: PolicyEffect::Allow,
@@ -606,6 +616,7 @@ mod tests {
                     env: vec![],
                     trust_level: None,
                     args_match: None,
+                    capabilities: vec![],
                 },
             ],
             policy_file: None,
@@ -636,6 +647,7 @@ mod tests {
                     env: vec![],
                     trust_level: None,
                     args_match: None,
+                    capabilities: vec![],
                 },
                 PolicyRuleConfig {
                     effect: PolicyEffect::Deny,
@@ -644,6 +656,7 @@ mod tests {
                     env: vec![],
                     trust_level: None,
                     args_match: None,
+                    capabilities: vec![],
                 },
             ],
             policy_file: None,
@@ -710,6 +723,7 @@ mod tests {
                 env: vec![],
                 trust_level: Some(SkillTrustLevel::Verified),
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -746,6 +760,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             })
             .collect();
         let config = PolicyConfig {
@@ -773,6 +788,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -802,6 +818,7 @@ mod tests {
                 env: vec![],
                 trust_level: None,
                 args_match: Some(".*sudo.*".to_owned()),
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -938,6 +955,7 @@ tool = "shell"
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -965,6 +983,7 @@ tool = "shell"
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -992,6 +1011,7 @@ tool = "shell"
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };
@@ -1019,6 +1039,7 @@ tool = "shell"
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             })
             .collect();
         let config = PolicyConfig {
@@ -1144,6 +1165,7 @@ tool = "shell"
                 env: vec![],
                 trust_level: None,
                 args_match: None,
+                capabilities: vec![],
             }],
             policy_file: None,
         };

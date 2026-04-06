@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::permissions::{AutonomyLevel, PermissionPolicy, PermissionsConfig};
-use crate::policy::PolicyConfig;
+use crate::policy::{PolicyConfig, PolicyRuleConfig};
 
 fn default_true() -> bool {
     true
@@ -469,6 +469,16 @@ pub struct ToolsConfig {
     /// Per-path read allow/deny sandbox for the file tool.
     #[serde(default)]
     pub file: FileConfig,
+    /// OAP declarative pre-action authorization. Rules are merged into `PolicyEnforcer` at
+    /// startup. Authorization rules are appended after `policy.rules` — policy rules take
+    /// precedence (first-match-wins semantics). This means existing policy allow/deny rules
+    /// are evaluated before authorization rules.
+    #[serde(default)]
+    pub authorization: AuthorizationConfig,
+    /// Maximum tool calls allowed per agent session. `None` = unlimited (default).
+    /// Counted on the first attempt only — retries do not consume additional quota slots.
+    #[serde(default)]
+    pub max_tool_calls_per_session: Option<u32>,
 }
 
 impl ToolsConfig {
@@ -586,6 +596,8 @@ impl Default for ToolsConfig {
             adversarial_policy: AdversarialPolicyConfig::default(),
             utility: UtilityScoringConfig::default(),
             file: FileConfig::default(),
+            authorization: AuthorizationConfig::default(),
+            max_tool_calls_per_session: None,
         }
     }
 }
@@ -618,6 +630,21 @@ impl Default for AuditConfig {
             tool_risk_summary: false,
         }
     }
+}
+
+/// OAP-style declarative authorization. Rules are merged into `PolicyEnforcer` at startup.
+///
+/// Precedence: `policy.rules` are evaluated first (first-match-wins), then `authorization.rules`.
+/// Use `[tools.policy]` for deny-wins safety rules; use `[tools.authorization]` for
+/// capability-based allow/deny rules that layer on top.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AuthorizationConfig {
+    /// Enable OAP authorization checks. When false, `rules` are ignored. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-tool authorization rules. Appended after `[tools.policy]` rules at startup.
+    #[serde(default)]
+    pub rules: Vec<PolicyRuleConfig>,
 }
 
 fn default_scrape_timeout() -> u64 {

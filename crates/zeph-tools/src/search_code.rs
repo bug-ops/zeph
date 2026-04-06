@@ -672,6 +672,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "search_code".into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -689,6 +690,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
+            caller_id: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(out.summary.contains("retry_backoff_ms"));
@@ -708,6 +710,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
+            caller_id: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(out.summary.contains("grep fallback"));

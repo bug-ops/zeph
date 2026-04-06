@@ -41,9 +41,9 @@ pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::AdversarialPolicyConfig;
 pub use config::{
-    AnomalyConfig, AuditConfig, DependencyConfig, FileConfig, OverflowConfig, ResultCacheConfig,
-    RetryConfig, ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
-    UtilityScoringConfig,
+    AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig, FileConfig, OverflowConfig,
+    ResultCacheConfig, RetryConfig, ScrapeConfig, ShellConfig, TafcConfig, ToolDependency,
+    ToolsConfig, UtilityScoringConfig,
 };
 pub use cwd::SetCwdExecutor;
 pub use diagnostics::DiagnosticsExecutor;

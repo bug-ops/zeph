@@ -313,6 +313,8 @@ impl WebScrapeExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
+                caller_id: None,
+                policy_match: None,
             };
             logger.log(&entry).await;
         }
@@ -1639,6 +1641,7 @@ mod tests {
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
                 m
             },
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -1658,6 +1661,7 @@ mod tests {
                 );
                 m
             },
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -1677,6 +1681,7 @@ mod tests {
                 );
                 m
             },
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -1689,6 +1694,7 @@ mod tests {
         let call = crate::executor::ToolCall {
             tool_id: "unknown_tool".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.unwrap().is_none());
@@ -1914,6 +1920,7 @@ mod tests {
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
                 m
             },
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2021,6 +2028,7 @@ mod tests {
                 m.insert("select".to_owned(), serde_json::json!("h1"));
                 m
             },
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2049,6 +2057,7 @@ mod tests {
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
                 m
             },
+            caller_id: None,
         };
         // Must not panic even without an audit logger
         let result = executor.execute_tool_call(&call).await;

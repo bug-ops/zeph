@@ -1187,6 +1187,7 @@ async fn execute_tool_call_valid_command() {
         params: [("command".to_owned(), serde_json::json!("echo hi"))]
             .into_iter()
             .collect(),
+        caller_id: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(result.summary.contains("hi"));
@@ -1198,6 +1199,7 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
     let call = ToolCall {
         tool_id: "bash".to_owned(),
         params: serde_json::Map::new(),
+        caller_id: None,
     };
     let result = executor.execute_tool_call(&call).await;
     assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
@@ -1211,6 +1213,7 @@ async fn execute_tool_call_empty_command_returns_none() {
         params: [("command".to_owned(), serde_json::json!(""))]
             .into_iter()
             .collect(),
+        caller_id: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap();
     assert!(result.is_none());

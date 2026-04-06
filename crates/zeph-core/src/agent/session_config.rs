@@ -55,6 +55,7 @@ pub struct AgentSessionConfig {
     pub tool_repeat_threshold: usize,
     pub tool_summarization: bool,
     pub tool_call_cutoff: usize,
+    pub max_tool_calls_per_session: Option<u32>,
     pub overflow_config: zeph_tools::OverflowConfig,
     pub permission_policy: zeph_tools::PermissionPolicy,
 
@@ -123,6 +124,7 @@ impl AgentSessionConfig {
             tool_repeat_threshold: config.agent.tool_repeat_threshold,
             tool_summarization: config.tools.summarize_output,
             tool_call_cutoff: config.memory.tool_call_cutoff,
+            max_tool_calls_per_session: config.tools.max_tool_calls_per_session,
             overflow_config: config.tools.overflow.clone(),
             permission_policy: config
                 .tools

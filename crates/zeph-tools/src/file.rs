@@ -996,6 +996,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "read".to_owned(),
             params: make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.tool_name, "read");

@@ -341,6 +341,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "diagnostics".to_owned(),
             params: make_params(&[("path", serde_json::json!("/etc"))]),
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -352,6 +353,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "other".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

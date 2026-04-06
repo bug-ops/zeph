@@ -232,6 +232,7 @@ fn make_calls(n: usize) -> Vec<ToolCall> {
         .map(|i| ToolCall {
             tool_id: format!("tool-{i}"),
             params: serde_json::Map::new(),
+            caller_id: None,
         })
         .collect()
 }

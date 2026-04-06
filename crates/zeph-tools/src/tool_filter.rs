@@ -114,6 +114,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "read".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -125,6 +126,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "edit".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());

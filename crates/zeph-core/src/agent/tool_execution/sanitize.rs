@@ -154,6 +154,8 @@ impl<C: Channel> Agent<C> {
                     adversarial_policy_decision: None,
                     exit_code: None,
                     truncated: false,
+                    caller_id: None,
+                    policy_match: None,
                 };
                 let logger = std::sync::Arc::clone(logger);
                 tokio::spawn(async move { logger.log(&entry).await });

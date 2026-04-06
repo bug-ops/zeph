@@ -37,7 +37,7 @@ pub use caller::McpCaller;
 pub use client::{OAuthConnectResult, OAuthPending, ToolRefreshEvent};
 pub use elicitation::ElicitationEvent;
 pub use embedding_guard::{EmbeddingAnomalyGuard, EmbeddingGuardEvent, EmbeddingGuardResult};
-pub use error::McpError;
+pub use error::{McpError, McpErrorCode};
 pub use executor::McpToolExecutor;
 pub use manager::{McpManager, McpTransport, McpTrustLevel, ServerConnectOutcome, ServerEntry};
 #[cfg(feature = "mock")]

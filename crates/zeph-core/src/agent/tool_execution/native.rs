@@ -673,6 +673,7 @@ impl<C: Channel> Agent<C> {
                 Some(ToolCall {
                     tool_id: tc.name.clone(),
                     params,
+                    caller_id: None,
                 })
             })
             .collect();
@@ -765,6 +766,8 @@ impl<C: Channel> Agent<C> {
                                     adversarial_policy_decision: None,
                                     exit_code: None,
                                     truncated: false,
+                                    caller_id: call.caller_id.clone(),
+                                    policy_match: None,
                                 };
                                 let logger = std::sync::Arc::clone(logger);
                                 tokio::spawn(async move { logger.log(&entry).await });
@@ -869,6 +872,24 @@ impl<C: Channel> Agent<C> {
         };
         // Repeat-detection (CRIT-3): record LLM-initiated calls BEFORE execution.
         // Retry re-executions must NOT be pushed here — they are handled inside the retry loop.
+        // Per-session quota check. Counted once per logical dispatch batch (M3: retries do not
+        // consume additional quota slots). When exceeded, all calls in this batch are quota-blocked.
+        let quota_blocked = if let Some(max) = self.tool_orchestrator.check_quota() {
+            tracing::warn!(
+                max,
+                count = self.tool_orchestrator.session_tool_call_count,
+                "tool call quota exceeded for session"
+            );
+            true
+        } else {
+            // Increment before the retry loop — each call in this batch counts as one logical call.
+            self.tool_orchestrator.session_tool_call_count = self
+                .tool_orchestrator
+                .session_tool_call_count
+                .saturating_add(u32::try_from(calls.len()).unwrap_or(u32::MAX));
+            false
+        };
+
         // Build args hashes and check for repeats. Blocked calls get a pre-built error result.
         let args_hashes: Vec<u64> = calls.iter().map(|c| tool_args_hash(&c.params)).collect();
         let repeat_blocked: Vec<bool> = calls
@@ -1083,6 +1104,30 @@ impl<C: Channel> Agent<C> {
                     let out = zeph_tools::ToolOutput {
                         tool_name: tc.name.clone(),
                         summary: msg,
+                        blocks_executed: 0,
+                        filter_stats: None,
+                        diff: None,
+                        streamed: false,
+                        terminal_id: None,
+                        locations: None,
+                        raw_response: None,
+                        claim_source: None,
+                    };
+                    tier_futs.push((idx, Box::pin(std::future::ready(Ok(Some(out))))));
+                    continue;
+                }
+
+                if quota_blocked {
+                    let max = self
+                        .tool_orchestrator
+                        .max_tool_calls_per_session
+                        .unwrap_or(0);
+                    let out = zeph_tools::ToolOutput {
+                        tool_name: tc.name.clone(),
+                        summary: format!(
+                            "[error] Tool call quota exceeded (session limit: {max} calls). \
+                             No further tool calls are allowed this session."
+                        ),
                         blocks_executed: 0,
                         filter_stats: None,
                         diff: None,
@@ -2616,6 +2661,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "bash".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let ctx = UtilityContext {
             tool_calls_this_turn: 0,

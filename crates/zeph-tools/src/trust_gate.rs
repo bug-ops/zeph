@@ -291,6 +291,7 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         }
     }
 
@@ -300,6 +301,7 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params,
+            caller_id: None,
         }
     }
 
@@ -533,6 +535,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "mcp_filesystem__read_file".into(),
             params,
+            caller_id: None,
         };
         let result = gate.execute_tool_call(&call).await;
         assert!(

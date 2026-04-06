@@ -62,6 +62,13 @@ pub struct AuditEntry {
     /// Whether tool output was truncated before storage. Default false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// Caller identity that initiated this tool call. `None` for system calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_id: Option<String>,
+    /// Policy rule trace that matched this tool call. Populated from `PolicyDecision::trace`.
+    /// `None` when policy is disabled or this entry is not from a policy check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_match: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -195,6 +202,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -223,6 +232,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -250,6 +261,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -274,6 +287,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -304,6 +319,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         logger.log(&entry).await;
     }
@@ -335,6 +352,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         logger.log(&entry).await;
 
@@ -393,6 +412,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -421,6 +442,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -458,6 +481,8 @@ mod tests {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
+                policy_match: None,
+                caller_id: None,
             };
             logger.log(&entry).await;
         }
@@ -485,6 +510,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: Some(0),
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -512,6 +539,8 @@ mod tests {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
+            policy_match: None,
+            caller_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(

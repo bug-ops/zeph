@@ -1169,8 +1169,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         };
 
         // Layer 2 (outermost): declarative policy gate.
-        let executor = if config.tools.policy.enabled {
-            match zeph_tools::PolicyEnforcer::compile(&config.tools.policy) {
+        // Merge authorization rules into policy: policy.rules evaluated first (first-match-wins),
+        // then authorization.rules appended after. This means policy rules take precedence.
+        let effective_policy =
+            if config.tools.authorization.enabled && !config.tools.authorization.rules.is_empty() {
+                let mut merged = config.tools.policy.clone();
+                // M2: authorization rules appended after policy rules — policy takes precedence.
+                merged
+                    .rules
+                    .extend(config.tools.authorization.rules.clone());
+                merged.enabled = true;
+                merged
+            } else {
+                config.tools.policy.clone()
+            };
+        let executor = if effective_policy.enabled {
+            match zeph_tools::PolicyEnforcer::compile(&effective_policy) {
                 Ok(enforcer) => {
                     let policy_context =
                         std::sync::Arc::new(std::sync::RwLock::new(zeph_tools::PolicyContext {

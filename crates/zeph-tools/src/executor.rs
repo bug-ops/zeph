@@ -16,6 +16,9 @@ pub struct DiffData {
 pub struct ToolCall {
     pub tool_id: String,
     pub params: serde_json::Map<String, serde_json::Value>,
+    /// Opaque caller identifier propagated from the channel (user ID, session ID, etc.).
+    /// `None` for system-initiated calls (scheduler, self-learning, internal).
+    pub caller_id: Option<String>,
 }
 
 /// Cumulative filter statistics for a single tool execution.
@@ -842,6 +845,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "anything".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -985,6 +989,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "bash".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());

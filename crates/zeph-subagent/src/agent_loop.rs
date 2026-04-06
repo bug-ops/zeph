@@ -147,6 +147,7 @@ async fn handle_tool_step(
                 let call = ToolCall {
                     tool_id: tc.name.clone(),
                     params,
+                    caller_id: None,
                 };
                 let (content, is_error) = match executor.execute_tool_call_erased(&call).await {
                     Ok(Some(output)) => (

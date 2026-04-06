@@ -712,6 +712,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "read_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
@@ -743,6 +744,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
@@ -770,6 +772,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "unknown".to_owned(),
                     params: serde_json::Map::new(),
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap();
                 assert!(result.is_none());
@@ -854,6 +857,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "list_directory".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("file.txt"));
@@ -885,6 +889,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "find_path".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("foo.rs"));
@@ -910,6 +915,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "read_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap();
                 assert!(result.is_none());
@@ -937,6 +943,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap();
                 assert!(result.is_none());
@@ -965,6 +972,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "list_directory".to_owned(),
             params,
+            caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -990,6 +998,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "list_directory".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "[]");
@@ -1016,6 +1025,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "find_path".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "");
@@ -1042,6 +1052,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "find_path".to_owned(),
             params,
+            caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -1063,6 +1074,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "list_directory".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1089,6 +1101,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "find_path".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1115,6 +1128,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "find_path".to_owned(),
             params,
+            caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::SandboxViolation { .. }));
@@ -1137,6 +1151,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "find_path".to_owned(),
             params,
+            caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -1187,6 +1202,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "read_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 // Should succeed: relative path is resolved to cwd/relative/path.txt.
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
@@ -1233,6 +1249,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::SandboxViolation { .. }));
@@ -1329,6 +1346,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::Blocked { .. }));
@@ -1355,6 +1373,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert!(result.summary.contains("out.txt"));
@@ -1381,6 +1400,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert!(result.summary.contains("out.txt"));
@@ -1455,6 +1475,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "list_directory".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
@@ -1498,6 +1519,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "find_path".to_owned(),
             params,
+            caller_id: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
@@ -1542,6 +1564,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "read_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::SandboxViolation { .. }));
@@ -1582,6 +1605,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::SandboxViolation { .. }));
@@ -1632,6 +1656,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -1662,6 +1687,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -1730,6 +1756,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert!(result.summary.contains("wrote"));
@@ -1798,6 +1825,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::Blocked { .. }));
@@ -1909,6 +1937,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(
@@ -1942,6 +1971,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "write_file".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert!(result.summary.contains("wrote"));

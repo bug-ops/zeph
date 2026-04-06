@@ -52,6 +52,11 @@ pub(crate) struct ToolOrchestrator {
     /// threshold are skipped (fail-closed on scoring errors). Per-turn state cleared at the
     /// start of each tool round.
     pub(super) utility_scorer: UtilityScorer,
+    /// Running count of tool calls dispatched this session. Incremented once per logical call
+    /// (before the retry loop), not per retry attempt. Reset on `/clear`.
+    pub(super) session_tool_call_count: u32,
+    /// Maximum tool calls allowed per session. `None` = unlimited.
+    pub(super) max_tool_calls_per_session: Option<u32>,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -91,6 +96,8 @@ impl ToolOrchestrator {
             result_cache: ToolResultCache::new(true, Some(Duration::from_secs(300))),
             parameter_reformat_provider: String::new(),
             utility_scorer: UtilityScorer::new(UtilityScoringConfig::default()),
+            session_tool_call_count: 0,
+            max_tool_calls_per_session: None,
         }
     }
 
@@ -104,14 +111,23 @@ impl ToolOrchestrator {
         self.result_cache = ToolResultCache::new(config.enabled, ttl);
     }
 
-    /// Clear the result cache. Called on `/clear`.
+    /// Clear the result cache and reset the session quota counter. Called on `/clear`.
     pub(crate) fn clear_cache(&mut self) {
         self.result_cache.clear();
+        self.session_tool_call_count = 0;
     }
 
     /// Configure the utility scorer from config.
     pub(crate) fn set_utility_config(&mut self, config: UtilityScoringConfig) {
         self.utility_scorer = UtilityScorer::new(config);
+    }
+
+    /// Check whether the per-session quota allows another tool call.
+    /// Returns `Some(max)` when quota is exhausted, `None` when allowed.
+    #[must_use]
+    pub(super) fn check_quota(&self) -> Option<u32> {
+        self.max_tool_calls_per_session
+            .filter(|&max| self.session_tool_call_count >= max)
     }
 
     /// Clear per-turn utility scorer state. Called at the start of each tool round.
@@ -519,5 +535,40 @@ mod tests {
             ttl_secs: 60,
         });
         assert_eq!(o.result_cache.ttl_secs(), 60);
+    }
+
+    #[test]
+    fn check_quota_unlimited() {
+        let mut o = ToolOrchestrator::new();
+        o.max_tool_calls_per_session = None;
+        o.session_tool_call_count = 999;
+        assert_eq!(o.check_quota(), None);
+    }
+
+    #[test]
+    fn check_quota_below_limit() {
+        let mut o = ToolOrchestrator::new();
+        o.max_tool_calls_per_session = Some(10);
+        o.session_tool_call_count = 5;
+        assert_eq!(o.check_quota(), None);
+    }
+
+    #[test]
+    fn check_quota_at_limit() {
+        let mut o = ToolOrchestrator::new();
+        o.max_tool_calls_per_session = Some(10);
+        o.session_tool_call_count = 10;
+        assert_eq!(o.check_quota(), Some(10));
+    }
+
+    #[test]
+    fn check_quota_resets_on_clear() {
+        let mut o = ToolOrchestrator::new();
+        o.max_tool_calls_per_session = Some(5);
+        o.session_tool_call_count = 5;
+        assert_eq!(o.check_quota(), Some(5));
+        o.clear_cache();
+        assert_eq!(o.session_tool_call_count, 0);
+        assert_eq!(o.check_quota(), None);
     }
 }

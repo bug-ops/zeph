@@ -777,6 +777,7 @@ impl McpClient {
                 server_id: self.server_id.clone(),
                 tool_name: "tools/list".into(),
                 message: e.to_string(),
+                code: crate::McpErrorCode::ServerError,
             })?;
 
         Ok(tools
@@ -821,6 +822,7 @@ impl McpClient {
                 server_id: self.server_id.clone(),
                 tool_name: name.into(),
                 message: e.to_string(),
+                code: crate::McpErrorCode::ServerError,
             })?;
 
         Ok(result)

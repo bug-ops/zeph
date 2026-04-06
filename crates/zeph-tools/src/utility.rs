@@ -295,6 +295,7 @@ mod tests {
             } else {
                 serde_json::Map::new()
             },
+            caller_id: None,
         }
     }
 

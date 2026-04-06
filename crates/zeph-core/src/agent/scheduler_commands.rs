@@ -29,6 +29,7 @@ impl<C: Channel> Agent<C> {
         let call = ToolCall {
             tool_id: "list_tasks".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         match self.tool_executor.execute_tool_call_erased(&call).await {
             Ok(Some(output)) => {

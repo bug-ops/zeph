@@ -271,6 +271,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "unknown_tool".to_owned(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -288,6 +289,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "memory_search".to_owned(),
             params,
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -314,6 +316,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "memory_save".to_owned(),
             params,
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -331,6 +334,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "memory_save".to_owned(),
             params,
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -348,6 +352,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "memory_save".to_owned(),
             params,
+            caller_id: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());

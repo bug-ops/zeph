@@ -457,6 +457,7 @@ impl ToolExecutor for SchedulerExecutor {
                 let call = ToolCall {
                     tool_id: tool_id.into(),
                     params,
+                    caller_id: None,
                 };
                 return self.execute_tool_call(&call).await;
             }
@@ -552,6 +553,7 @@ mod tests {
         ToolCall {
             tool_id: tool_id.to_owned(),
             params,
+            caller_id: None,
         }
     }
 

@@ -802,6 +802,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
@@ -824,6 +825,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "unknown".to_owned(),
                     params: serde_json::Map::new(),
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap();
                 assert!(result.is_none());
@@ -913,6 +915,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
@@ -1003,6 +1006,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
@@ -1106,6 +1110,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
@@ -1132,6 +1137,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
@@ -1160,6 +1166,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
@@ -1187,6 +1194,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash".to_owned(),
                     params,
+                    caller_id: None,
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
@@ -1226,6 +1234,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash_stdin".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::Blocked { .. }));
@@ -1269,6 +1278,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash_stdin".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
                 assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -1318,6 +1328,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash_stdin".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert_eq!(result.tool_name, "bash_stdin");
@@ -1368,6 +1379,7 @@ mod tests {
                 let call = ToolCall {
                     tool_id: "bash_stdin".to_owned(),
                     params,
+                    caller_id: None,
                 };
                 let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
                 assert_eq!(result.tool_name, "bash_stdin");

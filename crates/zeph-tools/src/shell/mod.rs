@@ -698,6 +698,8 @@ impl ShellExecutor {
                 adversarial_policy_decision: None,
                 exit_code,
                 truncated,
+                caller_id: None,
+                policy_match: None,
             };
             logger.log(&entry).await;
         }

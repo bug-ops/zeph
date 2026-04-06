@@ -209,6 +209,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "srv:echo".into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -221,6 +222,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "srv:unknown".into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -235,6 +237,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "srv:fail".into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         let result = mock.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -249,6 +252,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "srv:ping".into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
         mock.execute_tool_call(&call).await.unwrap();
 
@@ -266,6 +270,7 @@ mod tests {
         let call = ToolCall {
             tool_id: "srv:once".into(),
             params: serde_json::Map::new(),
+            caller_id: None,
         };
 
         // First call succeeds.
