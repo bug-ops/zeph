@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Thread leak in `store::compression_predictor` tests** (`#2716`): `#[tokio::test]` tests in `store::compression_predictor::tests` now call `store.pool().close().await` before returning, ensuring all sqlx-sqlite background connection threads fully exit before nextest measures the thread count. Previously, pool drop only signalled threads to stop without waiting, causing nextest to attribute lingering connection threads as a LEAK for the concurrently-running pure `compression_predictor::tests::training_on_high_ratio_improves_high_ratio_prediction` test.
+
 ### Added
 
 - **Agent Stability Index (ASI) coherence tracking** (`#1841`): per-provider sliding window of response embeddings tracks coherence (cosine similarity of latest vs. window mean). Low coherence penalizes Thompson beta priors and EMA scores via `penalty_weight`. Enabled with `[llm.routing.asi] enabled = true`. Session-only; no persistence. Fire-and-forget embed via `tokio::spawn` — routing is not blocked. Emits `tracing::warn` when coherence drops below `coherence_threshold`. New file `crates/zeph-llm/src/router/asi.rs`.

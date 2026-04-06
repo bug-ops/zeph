@@ -190,6 +190,13 @@ mod tests {
         (store, cid)
     }
 
+    // Each test calls `store.pool().close().await` before returning so that the
+    // sqlx-sqlite background connection threads fully exit before nextest measures
+    // the thread count. Without an explicit close, the pool's Drop only signals the
+    // threads to stop; they may still be alive when a concurrently-running plain
+    // `#[test]` (e.g. `compression_predictor::tests::*`) is executing, causing
+    // nextest to attribute those lingering threads as a LEAK for that innocent test.
+
     #[tokio::test]
     async fn record_and_count_training_data() {
         let (store, cid) = make_store().await;
@@ -202,6 +209,7 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(count, 1);
+        store.pool().close().await;
     }
 
     #[tokio::test]
@@ -218,6 +226,7 @@ mod tests {
         assert_eq!(batch.len(), 1);
         assert!((batch[0].compression_ratio - 0.5).abs() < 1e-4);
         assert!((batch[0].probe_score - 0.75).abs() < 1e-4);
+        store.pool().close().await;
     }
 
     #[tokio::test]
@@ -235,6 +244,7 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(count, 2);
+        store.pool().close().await;
     }
 
     #[tokio::test]
@@ -250,6 +260,7 @@ mod tests {
             .expect("load");
         assert!(loaded.is_some());
         assert!(loaded.unwrap().contains("weights"));
+        store.pool().close().await;
     }
 
     #[tokio::test]
@@ -260,5 +271,6 @@ mod tests {
             .await
             .expect("load");
         assert!(loaded.is_none());
+        store.pool().close().await;
     }
 }
