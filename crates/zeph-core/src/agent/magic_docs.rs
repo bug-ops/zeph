@@ -312,10 +312,10 @@ mod tests {
         assert!(prompt.contains("/tmp/test.md"));
     }
 
-    /// Verify the pairing logic: a ToolUse from an assistant message and the corresponding
-    /// ToolOutput from the following user message are matched by tool name, and a file path
-    /// is extracted from the ToolUse input. This exercises the fix for #2727 where ToolOutput
-    /// parts in Role::User messages were previously skipped entirely.
+    /// Verify the pairing logic: a `ToolUse` from an assistant message and the corresponding
+    /// `ToolOutput` from the following user message are matched by tool name, and a file path
+    /// is extracted from the `ToolUse` input. This exercises the fix for #2727 where `ToolOutput`
+    /// parts in `Role::User` messages were previously skipped entirely.
     #[test]
     fn tool_use_tool_output_pairing_extracts_path() {
         use std::collections::VecDeque;
@@ -366,22 +366,23 @@ mod tests {
                                 .and_then(|idx| use_queue.remove(idx))
                                 .and_then(|(_, p)| p);
 
-                            if is_file_read_tool(tool_name) && body.contains(MAGIC_DOC_HEADER) {
-                                if let Some(path_str) = file_path {
-                                    detected.push(PathBuf::from(&path_str));
-                                }
+                            if is_file_read_tool(tool_name)
+                                && body.contains(MAGIC_DOC_HEADER)
+                                && let Some(path_str) = file_path
+                            {
+                                detected.push(PathBuf::from(&path_str));
                             }
                         }
                     }
                 }
-                _ => {}
+                Role::System => {}
             }
         }
 
         assert_eq!(detected, vec![PathBuf::from("/docs/readme.md")]);
     }
 
-    /// ToolOutput in a User message without a matching ToolUse (no queued entry) is not detected.
+    /// `ToolOutput` in a `User` message without a matching `ToolUse` (no queued entry) is not detected.
     #[test]
     fn tool_output_without_tool_use_not_detected() {
         use std::collections::VecDeque;
@@ -412,10 +413,11 @@ mod tests {
                             .and_then(|idx| use_queue.remove(idx))
                             .and_then(|(_, p)| p);
 
-                        if is_file_read_tool(tool_name) && body.contains(MAGIC_DOC_HEADER) {
-                            if let Some(path_str) = file_path {
-                                detected.push(PathBuf::from(&path_str));
-                            }
+                        if is_file_read_tool(tool_name)
+                            && body.contains(MAGIC_DOC_HEADER)
+                            && let Some(path_str) = file_path
+                        {
+                            detected.push(PathBuf::from(&path_str));
                         }
                     }
                 }
