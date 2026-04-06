@@ -143,13 +143,13 @@ mod tests {
     fn cosine_similarity_zero_norm() {
         let z = vec![0.0, 0.0];
         let v = vec![1.0, 0.0];
-        assert_eq!(cosine_similarity(&z, &v), 0.0);
+        assert!((cosine_similarity(&z, &v) - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn asi_state_returns_one_before_warmup() {
         let state = AsiState::default();
-        assert_eq!(state.coherence("unknown-provider"), 1.0);
+        assert!((state.coherence("unknown-provider") - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

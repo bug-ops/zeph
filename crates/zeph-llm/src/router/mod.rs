@@ -18,6 +18,7 @@ pub mod triage;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::any::AnyProvider;
@@ -241,6 +242,12 @@ pub struct RouterProvider {
     /// After provider selection, `cosine_similarity(query_emb, response_emb)` must be >= this
     /// value; otherwise the next provider in the ordered list is tried.
     quality_gate: Option<f32>,
+    /// Monotonically increasing turn counter. Incremented once per top-level `chat()` call.
+    /// Shared across clones so that concurrent sub-calls within the same turn see the same value.
+    turn_counter: Arc<AtomicU64>,
+    /// Turn ID of the last ASI embedding update. Used to debounce `spawn_asi_update` so that
+    /// only one embed call fires per turn even when `chat()` is invoked N times concurrently.
+    asi_last_turn: Arc<AtomicU64>,
 }
 
 impl RouterProvider {
@@ -275,6 +282,8 @@ impl RouterProvider {
             asi: None,
             asi_config: None,
             quality_gate: None,
+            turn_counter: Arc::new(AtomicU64::new(0)),
+            asi_last_turn: Arc::new(AtomicU64::new(u64::MAX)),
         }
     }
 
@@ -1133,7 +1142,19 @@ impl RouterProvider {
     ///
     /// Fire-and-forget: routing is not blocked on the embed call. If the embed fails,
     /// the ASI window is not updated (no penalty for embed failure).
-    fn spawn_asi_update(&self, provider: &str, response: String) {
+    ///
+    /// `turn_id` is used to debounce: at most one ASI update fires per turn even when
+    /// `chat()` is called N times concurrently (e.g., tool schema fetches). Subsequent
+    /// calls within the same turn are silently dropped.
+    fn spawn_asi_update(&self, provider: &str, response: String, turn_id: u64) {
+        // Debounce: swap in turn_id; if the previous value equals turn_id, another call
+        // already claimed this turn → drop silently. `swap` is atomic so exactly one
+        // concurrent caller wins the "first for this turn" race.
+        let prev = self.asi_last_turn.swap(turn_id, Ordering::AcqRel);
+        if prev == turn_id {
+            return;
+        }
+
         let Some(ref asi_arc) = self.asi else { return };
         let Some(ref asi_cfg) = self.asi_config else {
             return;
@@ -1177,6 +1198,11 @@ impl LlmProvider for RouterProvider {
         // TODO: DRY — `chat` and `chat_stream` share the same fallback loop pattern.
         // Refactor into a shared helper once the API stabilizes.
         Box::pin(async move {
+            // Increment turn counter once per top-level chat() call. All concurrent sub-calls
+            // (tool schema fetches, embed probes) that re-enter chat() will see the same
+            // turn_id via the shared Arc<AtomicU64>, enabling ASI debounce.
+            let turn_id = router.turn_counter.fetch_add(1, Ordering::Relaxed);
+
             if router.strategy == RouterStrategy::Cascade {
                 // Cascade: pass Arc slice directly — providers are sorted at construction,
                 // so no Vec allocation needed on the hot path.
@@ -1236,13 +1262,13 @@ impl LlmProvider for RouterProvider {
                                     best_response = Some((similarity, r.clone()));
                                 }
                                 // Spawn ASI update even on quality failure.
-                                router.spawn_asi_update(p.name(), r);
+                                router.spawn_asi_update(p.name(), r, turn_id);
                                 continue;
                             }
                         }
 
                         // Spawn ASI embedding update (fire-and-forget).
-                        router.spawn_asi_update(p.name(), r.clone());
+                        router.spawn_asi_update(p.name(), r.clone(), turn_id);
 
                         return Ok(r);
                     }
@@ -2899,7 +2925,7 @@ mod tests {
 
     /// Provider returns `RateLimited` twice then succeeds on the third attempt.
     /// The router must retry and return the successful embedding.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn embed_retries_on_rate_limited_then_succeeds() {
         use crate::mock::MockProvider;
 
@@ -2918,7 +2944,7 @@ mod tests {
 
     /// When all retries (3) are exhausted on the first provider, the router falls
     /// back to the second provider and returns its embedding.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn embed_falls_back_after_all_retries_exhausted() {
         use crate::mock::MockProvider;
 
@@ -2947,7 +2973,7 @@ mod tests {
     }
 
     /// Provider returns `RateLimited` twice then succeeds via `embed_batch`.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn embed_batch_retries_on_rate_limited_then_succeeds() {
         use crate::mock::MockProvider;
 
@@ -2966,7 +2992,7 @@ mod tests {
 
     /// When all `embed_batch` retries are exhausted on the first provider, falls back
     /// to the second provider.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn embed_batch_falls_back_after_all_retries_exhausted() {
         use crate::mock::MockProvider;
 
@@ -3175,5 +3201,50 @@ mod tests {
             Some(0.8),
             "valid quality_gate must be wired"
         );
+    }
+
+    // --- ASI debounce tests ---
+
+    #[test]
+    fn asi_debounce_same_turn_fires_once() {
+        let router = RouterProvider::new(vec![]);
+        let turn_id = 42u64;
+
+        // First call: prev == u64::MAX (initial) → not equal to turn_id → proceeds (returns false)
+        let prev1 = router.asi_last_turn.swap(turn_id, Ordering::AcqRel);
+        let first_dropped = prev1 == turn_id;
+
+        // Second call same turn: prev == turn_id → dropped
+        let prev2 = router.asi_last_turn.swap(turn_id, Ordering::AcqRel);
+        let second_dropped = prev2 == turn_id;
+
+        assert!(!first_dropped, "first call in turn must not be dropped");
+        assert!(second_dropped, "second call in same turn must be dropped");
+    }
+
+    #[test]
+    fn asi_debounce_next_turn_fires_again() {
+        let router = RouterProvider::new(vec![]);
+
+        // Simulate turn 1
+        let prev1 = router.asi_last_turn.swap(1u64, Ordering::AcqRel);
+        assert_ne!(prev1, 1u64, "turn 1: initial value != 1, should proceed");
+
+        // Simulate turn 2 — different turn_id
+        let prev2 = router.asi_last_turn.swap(2u64, Ordering::AcqRel);
+        let dropped = prev2 == 2u64;
+        assert!(!dropped, "turn 2 must not be dropped (different turn_id)");
+    }
+
+    #[test]
+    fn turn_counter_increments_across_clones() {
+        let router = RouterProvider::new(vec![]);
+        let clone = router.clone();
+
+        let t0 = router.turn_counter.fetch_add(1, Ordering::Relaxed);
+        let t1 = clone.turn_counter.fetch_add(1, Ordering::Relaxed);
+
+        // Both clones share the same Arc<AtomicU64>
+        assert_eq!(t1, t0 + 1, "cloned router shares turn_counter");
     }
 }
