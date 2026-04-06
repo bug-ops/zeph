@@ -151,8 +151,8 @@ This means frequently retrieved edges — facts the agent has found useful many 
 A background decay task can periodically reduce `retrieval_count` to prevent indefinite accumulation:
 
 ```toml
-[memory.graph.note_linking]
-link_weight_decay_lambda = 0.95      # Multiplicative decay per interval, (0.0, 1.0] (default: 0.95)
+[memory.graph]
+link_weight_decay_lambda = 0.95          # Multiplicative decay per interval, (0.0, 1.0] (default: 0.95)
 link_weight_decay_interval_secs = 86400  # Decay interval in seconds (default: 24h)
 ```
 
@@ -424,6 +424,78 @@ Graph memory is being implemented incrementally:
 4. ~~**Background Extraction** — non-blocking extraction in agent loop, context injection, budget allocation~~
 5. ~~**Community Detection** — label propagation with petgraph, graph eviction~~
 6. ~~**TUI & Observability** — `/graph` commands, metrics, init wizard~~
+
+## Belief Revision
+
+Belief revision (Kumiho AGM-inspired) handles the case where a newly extracted fact contradicts an existing one. Without revision, the graph accumulates conflicting beliefs indefinitely.
+
+When `belief_revision.enabled = true`, each new edge is compared against existing active edges for the same source/target entity pair using embedding cosine similarity. If the similarity exceeds `similarity_threshold`, the new fact is considered a contradiction of the existing one:
+
+1. The existing edge is invalidated — `valid_until` and `expired_at` are set, and a `superseded_by` pointer is written linking the old edge to its replacement.
+2. The new edge is inserted as the current belief.
+
+Both the old and new edges are preserved for temporal queries. The old edge is visible via `edge_history()` but excluded from active recall.
+
+```toml
+[memory.graph.belief_revision]
+enabled = false              # Enable contradiction detection and revision (default: false)
+similarity_threshold = 0.85  # Cosine similarity threshold for conflict detection (default: 0.85)
+```
+
+Belief revision requires an embedding store (`qdrant` or `sqlite` vector backend). On any embedding failure the revision step is skipped and the new edge is inserted normally.
+
+## Note Linking
+
+Note linking (A-MEM) automatically creates `similar_to` edges between semantically similar entities after each extraction pass. This builds a secondary similarity layer on top of the explicitly extracted relation edges, enabling retrieval to traverse conceptual proximity even when no direct relation was stated.
+
+After each extraction completes, every newly extracted entity is compared against the existing entity embedding collection. Entity pairs with cosine similarity above `similarity_threshold` receive a bidirectional `similar_to` edge. The number of links per entity is capped by `top_k` to prevent high-degree hubs.
+
+```toml
+[memory.graph.note_linking]
+enabled = false              # Enable A-MEM note linking after extraction (default: false)
+similarity_threshold = 0.85  # Min cosine similarity to create a similar_to edge (default: 0.85)
+top_k = 10                   # Max similar entities to link per extracted entity (default: 10)
+timeout_secs = 5             # Linking pass timeout in seconds (default: 5)
+```
+
+Note linking requires an embedding store. It runs non-blocking after each extraction and is bounded by `timeout_secs` to prevent slow searches from stalling the pipeline.
+
+## RPE Gate
+
+The RPE (Relevance/Prediction Error) gate is a D-MEM inspired cost-reduction mechanism. Graph extraction via an LLM call is expensive; many conversational turns carry little new factual content. The RPE gate estimates how "surprising" each turn is and skips extraction for low-surprise turns.
+
+Surprise is measured as the divergence between the expected response pattern (rolling average of recent turns) and the actual response. Turns with RPE below `threshold` skip the MAGMA extraction pipeline entirely. A consecutive-skip safety valve (`max_skip_turns`) ensures no turn is silently skipped indefinitely — after `max_skip_turns` consecutive skips, the next turn always triggers extraction regardless of its RPE score.
+
+```toml
+[memory.graph.rpe]
+enabled = false       # Enable RPE-based extraction gating (default: false)
+threshold = 0.3       # RPE below this value skips extraction; range [0.0, 1.0] (default: 0.3)
+max_skip_turns = 5    # Max consecutive turns to skip before forcing extraction (default: 5)
+```
+
+When `enabled = false` (the default), every turn triggers extraction as before.
+
+## Link Weight Decay
+
+The A-MEM link weight decay mechanism prevents `retrieval_count` from growing without bound. Without decay, edges traversed early in a conversation permanently dominate recall scoring regardless of how stale they become.
+
+A background task runs periodically and multiplies `retrieval_count` by `link_weight_decay_lambda` for all edges that were not traversed since the last decay pass:
+
+```
+new_retrieval_count = retrieval_count * link_weight_decay_lambda
+```
+
+With the default `lambda = 0.95`, each decay pass reduces unused edge counts by 5%. Over 14 daily passes an edge that was never traversed again decays to roughly half its original count. Set `lambda = 1.0` to disable decay.
+
+These fields live directly under `[memory.graph]`, not under a subsection:
+
+```toml
+[memory.graph]
+link_weight_decay_lambda = 0.95       # Multiplicative decay per interval, (0.0, 1.0] (default: 0.95)
+link_weight_decay_interval_secs = 86400  # Seconds between decay passes (default: 86400 = 24h)
+```
+
+Decay interacts with the A-MEM evolved weight formula (see [A-MEM Link Weight Evolution](#a-mem-link-weight-evolution)): decay reduces the effective boost of stale edges while recent retrievals continue to accumulate their count normally.
 
 ## See Also
 
