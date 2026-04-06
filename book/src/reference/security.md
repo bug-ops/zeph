@@ -141,6 +141,54 @@ Commands matching `confirm_patterns` trigger an interactive confirmation before 
 allowed_paths = ["/home/user/workspace"]  # Empty = cwd only
 ```
 
+## File Read Sandbox
+
+The `[tools.file]` section exposes per-path glob filters that are applied independently of the `allowed_paths` filesystem sandbox. They operate on the canonicalized absolute path, making them symlink-safe.
+
+**Evaluation order: deny first, then allow.**
+
+| Field | Purpose |
+|-------|---------|
+| `deny_read` | Glob patterns that are always blocked. Evaluated before `allow_read`. |
+| `allow_read` | Glob patterns that are permitted even when a `deny_read` rule would match. Empty list means "allow all paths that are not denied." |
+
+If a path matches `deny_read` and does **not** match `allow_read`, the read is rejected with a `SandboxViolation` error. If `deny_read` is empty, no paths are blocked (the allow list has no effect).
+
+**Example — block secrets, allow a single public file:**
+
+```toml
+[tools.file]
+deny_read  = ["**/.env", "**/secrets/**", "**/*.key"]
+allow_read = ["/home/user/projects/**"]
+```
+
+In this configuration, any `.env` file under any directory is denied. Paths under `/home/user/projects/` are permitted even if they would otherwise match a deny pattern.
+
+Paths are canonicalized before matching, so symlinks that resolve outside the allow list or into a denied path are correctly blocked.
+
+## MCP Tool Name Collision
+
+Each MCP tool is identified internally by a `sanitized_id` derived from its `qualified_name` (`server_id:tool_name`). The colon and any characters outside `[a-zA-Z0-9_-]` are replaced with `_`. This means two different `(server_id, tool_name)` pairs can produce the same `sanitized_id` — for example, `a.b:c` and `a:b_c` both sanitize to `a_b_c`.
+
+**Detection:** Zeph runs `detect_collisions` against the full tool list whenever servers are loaded or a new server is added. Every collision pair is reported at `WARN` level:
+
+```
+WARN zeph_mcp: MCP tool sanitized_id collision: 'a_b_c' shadows 'a:b_c' — executor will always dispatch to the first-registered tool
+```
+
+**Resolution:** The first-registered tool wins dispatch. Subsequent tools with the same `sanitized_id` are unreachable — the executor cannot route calls to them.
+
+**Security implication:** A malicious or misconfigured MCP server could register a tool whose `sanitized_id` collides with a trusted server's tool, causing the trusted tool to become unreachable. Zeph does not silently allow this: the collision is logged with both the `qualified_name` and trust level of each conflicting tool so the operator can identify and remove the offending server.
+
+**Mitigation:** Choose server IDs that are unique and do not produce overlapping sanitized names. If two legitimate servers expose tools with colliding names, rename one server's ID in the Zeph config:
+
+```toml
+[[mcp.servers]]
+id = "github-primary"   # unique prefix prevents sanitized_id collision
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+```
+
 ## Autonomy Levels
 
 The `security.autonomy_level` setting controls the agent's tool access scope:
