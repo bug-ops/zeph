@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Thread leak in `shared_agent_deps_has_document_and_graph_config_fields` test** (`#2710`): the test constructed `GraphConfig` via `..Default::default()` which transitively initializes lazy globals, leaving background threads alive and causing nextest to report a thread leak. Replaced `GraphConfig::default()` with a never-called closure that performs only compile-time type-checking of the `enabled` field, eliminating runtime construction. `DocumentConfig` is now constructed with explicit field literals (5 fields, no nesting) instead of `..Default::default()`.
+
 - **Graph episode FK constraint on `link_entity_to_episode`** (`#2704`): `INSERT INTO graph_episode_entities` failed with `FOREIGN KEY constraint failed` when the entity was pruned or missing at link time. Changed to `INSERT OR IGNORE` so missing entities are silently skipped. Downgraded the episode-linking failure log from `warn!` to `debug!` in `zeph-memory/src/semantic/graph.rs` — the error is non-actionable when caused by intentional entity pruning.
 - **Thread leak in `apply_summary_provider_none_returns_agent_unchanged` test** (`#2698`): the plain `#[test]` function constructed an `Agent` that spawns background Tokio tasks; without a runtime to shut them down, `cargo nextest` reported a thread leak. Converted the test to `#[tokio::test] async fn` so the runtime tears down tasks cleanly on exit.
 

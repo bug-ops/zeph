@@ -1444,23 +1444,31 @@ mod tests {
     // Verify that SharedAgentDeps has the document_config and graph_config fields with the
     // correct types. This is a compile-time regression test for issue #1634: before the fix,
     // these fields were absent and spawn_acp_agent could not propagate RAG config to the agent.
+    //
+    // Implementation note: `GraphConfig` has 20+ fields with deeply nested sub-configs whose
+    // `Default` impls may trigger lazy global initialization (once_cell / tracing subscribers)
+    // that leaves background threads running, causing nextest to report this test as leaky.
+    // To avoid the issue entirely, field existence is verified via a never-called closure —
+    // the closure must compile (proving the fields exist with the right types) but is never
+    // invoked at runtime, so no Default construction or global initialization occurs.
     #[test]
     fn shared_agent_deps_has_document_and_graph_config_fields() {
+        // Explicit construction for the small DocumentConfig (5 fields, no nested types).
         let doc_cfg = zeph_core::config::DocumentConfig {
             rag_enabled: true,
             top_k: 7,
-            ..Default::default()
+            collection: String::new(),
+            chunk_size: 0,
+            chunk_overlap: 0,
         };
-        let graph_cfg = zeph_core::config::GraphConfig {
-            enabled: true,
-            ..Default::default()
-        };
-        // Use ZST trick: read through a raw pointer to verify field offsets exist without
-        // constructing the full SharedAgentDeps (which has ~50 required fields).
-        // The assertions below confirm the field types are correct at compile time.
         assert!(doc_cfg.rag_enabled);
         assert_eq!(doc_cfg.top_k, 7);
-        assert!(graph_cfg.enabled);
+
+        // Closure-based compile-time check for GraphConfig: the closure is never called,
+        // so no Default construction takes place, but the field accesses are type-checked.
+        let _check_graph = |g: &zeph_core::config::GraphConfig| {
+            let _: bool = g.enabled;
+        };
     }
 
     // Compile-time regression test for issue #1643: anomaly_config and orchestration_config
