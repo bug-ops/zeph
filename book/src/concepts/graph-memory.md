@@ -497,6 +497,25 @@ link_weight_decay_interval_secs = 86400  # Seconds between decay passes (default
 
 Decay interacts with the A-MEM evolved weight formula (see [A-MEM Link Weight Evolution](#a-mem-link-weight-evolution)): decay reduces the effective boost of stale edges while recent retrievals continue to accumulate their count normally.
 
+## Advanced Tuning
+
+The following fields under `[memory.graph]` control performance and resource usage. They rarely need adjustment in typical deployments.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `community_summary_max_prompt_bytes` | `8192` | Maximum prompt size in bytes fed to the LLM when generating a community summary; truncates long community context to keep costs predictable. |
+| `community_summary_concurrency` | `4` | Number of LLM calls issued in parallel during community summarization; lower values reduce concurrent API load at the cost of slower detection runs. |
+| `lpa_edge_chunk_size` | `10000` | Edges loaded per chunk during label-propagation community detection; reduces peak memory on large graphs. Set to `0` to load all edges at once (legacy path). |
+| `pool_size` | `3` | SQLite connection pool size for the graph tables; kept separate from the main memory pool to prevent starvation when community detection or spreading activation runs concurrently with regular operations. |
+
+```toml
+[memory.graph]
+community_summary_max_prompt_bytes = 8192
+community_summary_concurrency = 4
+lpa_edge_chunk_size = 10000
+pool_size = 3
+```
+
 ## See Also
 
 - [Memory & Context](memory.md) — overview of Zeph's memory system

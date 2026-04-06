@@ -150,6 +150,45 @@ response_cache_ttl_secs = 3600  # 1 hour (default)
 
 See [Memory and Context — LLM Response Cache](memory.md#llm-response-cache) for details.
 
+## Per-Subsystem Embedding Providers
+
+Every subsystem that generates vector embeddings has its own `embed_provider` or `embedding_provider` config field. Pointing these at a dedicated embedding provider (e.g., a local Ollama model) prevents embedding requests from saturating the chat provider's connection pool or triggering guardrails.
+
+| Config field | Subsystem |
+|---|---|
+| `[memory.semantic] embed_provider` | Semantic memory — stores and retrieves conversation embeddings |
+| `[skills] embedding_provider` | Skill matcher — finds relevant skills by embedding similarity |
+| `[skills.mining] embedding_provider` | Skill mining — deduplicates candidate skills during self-learning |
+| `[index] embed_provider` | Code indexer — embeds AST chunks for RAG retrieval |
+| `[mcp.tool_discovery] embedding_provider` | MCP tool registry — indexes discovered tools by description |
+
+When a field is empty or omitted, the subsystem falls back to the agent's primary LLM provider. For deployments using Claude (which does not support embeddings) or any cloud provider where embedding volume is significant, set all five fields to a dedicated embedding provider:
+
+```toml
+[[llm.providers]]
+name = "embed"
+type = "ollama"
+model = "nomic-embed-text"
+embed = true
+
+[memory.semantic]
+embed_provider = "embed"
+
+[skills]
+embedding_provider = "embed"
+
+[skills.mining]
+embedding_provider = "embed"
+
+[index]
+embed_provider = "embed"
+
+[mcp.tool_discovery]
+embedding_provider = "embed"
+```
+
+This ensures that a burst of embedding requests (e.g., during code indexing or skill hot-reload) does not compete with ongoing chat inference.
+
 ## Next Steps
 
 - [Use a Cloud Provider](../guides/cloud-provider.md) — Claude, OpenAI, and compatible API setup

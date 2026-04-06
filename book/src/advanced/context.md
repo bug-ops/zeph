@@ -339,6 +339,25 @@ If a single chunk fits all messages, or if chunked summarization fails, the syst
 
 Both tiers are idempotent and run automatically during the agent loop.
 
+### Compression Archive Mode
+
+Three additional knobs in `[memory.compression]` control how tool outputs are preserved and how token budget is distributed during compaction:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `archive_tool_outputs` | `false` | When `true`, tool output bodies are written to an overflow file with a postfix reference instead of being discarded during compaction, so the agent can reload them if needed. |
+| `high_density_budget` | `0.7` | Fraction of the compaction token budget allocated to high-density content (code, tool results, structured data); must sum to `1.0` with `low_density_budget`. |
+| `low_density_budget` | `0.3` | Fraction allocated to low-density content (prose, reasoning, conversational turns); must sum to `1.0` with `high_density_budget`. |
+| `focus_scorer_provider` | `""` | Named provider used for segment scoring in the Focus compression strategy; empty string falls back to the primary provider. |
+
+```toml
+[memory.compression]
+archive_tool_outputs = false
+high_density_budget = 0.7
+low_density_budget = 0.3
+focus_scorer_provider = "fast"  # optional: use a cheaper model for scoring
+```
+
 ### Post-Compression Validation (Compaction Probe)
 
 After hard-tier LLM compaction produces a candidate summary, an optional
