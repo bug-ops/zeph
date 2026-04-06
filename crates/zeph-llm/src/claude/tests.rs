@@ -1229,7 +1229,7 @@ async fn chat_with_tools_sends_correct_tool_fields() {
     use crate::provider::ToolDefinition;
 
     let response = tool_api_response_json();
-    let (port, mut rx, _handle) = spawn_capture_server(vec![response]).await;
+    let (port, mut rx, handle) = spawn_capture_server(vec![response]).await;
 
     let client = reqwest::Client::new();
     let provider =
@@ -1254,6 +1254,7 @@ async fn chat_with_tools_sends_correct_tool_fields() {
     assert!(api_tools[0]["input_schema"].is_object());
     assert_eq!(api_tools[0]["input_schema"]["type"], "object");
     let _ = messages;
+    handle.abort();
 }
 
 #[tokio::test]

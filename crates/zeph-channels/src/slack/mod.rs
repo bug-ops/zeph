@@ -269,7 +269,7 @@ mod tests {
         assert!(ch.should_send_update());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn flush_chunks_clears_state() {
         let mut ch = make_channel();
         ch.accumulated = "test".into();
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(ch.accumulated, "part1 part2");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn confirm_returns_err_without_active_channel() {
         // confirm() calls send() first. Without channel_id, send() returns
         // Err("no active channel") and confirm() propagates it via `?`.
@@ -336,7 +336,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn confirm_timeout_logic_denies_on_timeout() {
         // Verify the timeout + recv logic used inside confirm() in isolation.
         // Full integration testing of confirm() (including the Slack API call)
