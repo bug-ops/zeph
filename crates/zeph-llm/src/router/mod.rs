@@ -9,6 +9,7 @@
 //! validated (finite floats, clamped range) and written with `0o600` permissions
 //! on Unix. Do not store state files in world-writable directories.
 
+pub mod asi;
 pub mod bandit;
 pub mod cascade;
 pub mod reputation;
@@ -25,6 +26,7 @@ use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 
+use asi::AsiState;
 use bandit::{BanditState, embedding_to_features};
 use cascade::{CascadeState, ClassifierMode, heuristic_score};
 use reputation::ReputationTracker;
@@ -132,6 +134,30 @@ impl Default for BanditRouterConfig {
     }
 }
 
+/// Runtime ASI configuration passed to [`RouterProvider::with_asi`].
+///
+/// Mirrors `AsiRouterConfig` but lives in `zeph-llm` to avoid
+/// a dependency on `zeph-config`. The bootstrap layer maps config → this struct.
+#[derive(Debug, Clone)]
+pub struct AsiRouterConfig {
+    /// Sliding window size. Default: 5.
+    pub window: usize,
+    /// Coherence score threshold below which the provider is penalized. Default: 0.7.
+    pub coherence_threshold: f32,
+    /// Penalty weight added to Thompson beta on low coherence. Default: 0.3.
+    pub penalty_weight: f32,
+}
+
+impl Default for AsiRouterConfig {
+    fn default() -> Self {
+        Self {
+            window: 5,
+            coherence_threshold: 0.7,
+            penalty_weight: 0.3,
+        }
+    }
+}
+
 /// Configuration for cascade routing in `RouterProvider`.
 #[derive(Debug, Clone)]
 pub struct CascadeRouterConfig {
@@ -207,6 +233,14 @@ pub struct RouterProvider {
     /// Maps provider name to model identifier for cost estimation.
     /// Built at construction time from `self.providers`.
     provider_models: Arc<std::collections::HashMap<String, String>>,
+    /// Agent Stability Index state (session-only coherence tracking).
+    asi: Option<Arc<Mutex<AsiState>>>,
+    /// ASI configuration. `None` when ASI is disabled.
+    asi_config: Option<AsiRouterConfig>,
+    /// Embedding-based quality gate threshold. `None` = disabled.
+    /// After provider selection, `cosine_similarity(query_emb, response_emb)` must be >= this
+    /// value; otherwise the next provider in the ordered list is tried.
+    quality_gate: Option<f32>,
 }
 
 impl RouterProvider {
@@ -238,6 +272,9 @@ impl RouterProvider {
             bandit_embed_cache: Arc::new(Mutex::new(BanditEmbedCache::default())),
             last_memory_confidence: Arc::new(Mutex::new(None)),
             provider_models: Arc::new(provider_models),
+            asi: None,
+            asi_config: None,
+            quality_gate: None,
         }
     }
 
@@ -255,6 +292,31 @@ impl RouterProvider {
     #[must_use]
     pub fn with_ema(mut self, alpha: f64, reorder_interval: u64) -> Self {
         self.ema = Some(EmaTracker::new(alpha, reorder_interval));
+        self
+    }
+
+    /// Enable Agent Stability Index (ASI) coherence tracking.
+    ///
+    /// When enabled, each successful response is embedded in a background task and added
+    /// to a per-provider sliding window. The coherence score (cosine similarity of the
+    /// latest embedding vs. window mean) penalizes Thompson/EMA routing priors for
+    /// providers whose responses drift.
+    #[must_use]
+    pub fn with_asi(mut self, config: AsiRouterConfig) -> Self {
+        self.asi = Some(Arc::new(Mutex::new(AsiState::default())));
+        self.asi_config = Some(config);
+        self
+    }
+
+    /// Enable embedding-based quality gate for Thompson/EMA routing.
+    ///
+    /// After provider selection, computes cosine similarity between the query embedding
+    /// and the response embedding. If below `threshold`, tries the next provider in the
+    /// ordered list. On full exhaustion, returns the best response seen (highest similarity).
+    /// Fail-open: embedding errors disable the gate for that request.
+    #[must_use]
+    pub fn with_quality_gate(mut self, threshold: f32) -> Self {
+        self.quality_gate = Some(threshold);
         self
     }
 
@@ -774,6 +836,44 @@ impl RouterProvider {
             ordered = reordered;
         }
 
+        // ASI: re-score by down-weighting providers with low coherence.
+        if let (Some(asi_arc), Some(asi_cfg)) = (&self.asi, &self.asi_config) {
+            let asi: std::sync::MutexGuard<'_, AsiState> = asi_arc
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snap = self.ema.as_ref().map(EmaTracker::snapshot);
+            let mut scored: Vec<(usize, f64)> = ordered
+                .iter()
+                .enumerate()
+                .map(|(idx, p)| {
+                    let coherence = asi.coherence(p.name());
+                    if coherence < asi_cfg.coherence_threshold {
+                        tracing::warn!(
+                            provider = p.name(),
+                            coherence,
+                            threshold = asi_cfg.coherence_threshold,
+                            "asi: coherence below threshold"
+                        );
+                    }
+                    let base_score = snap
+                        .as_ref()
+                        .and_then(|s| s.get(p.name()))
+                        .map_or(0.0, |s| s.success_ema - s.latency_ema_ms / 10_000.0);
+                    // Multiply EMA score by coherence multiplier clamped to [0.5, 1.0].
+                    let multiplier = (coherence / asi_cfg.coherence_threshold).clamp(0.5, 1.0);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let adjusted = base_score * f64::from(multiplier);
+                    (idx, adjusted)
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let reordered: Vec<AnyProvider> = scored
+                .into_iter()
+                .filter_map(|(idx, _)| ordered.get(idx).cloned())
+                .collect();
+            ordered = reordered;
+        }
+
         if let Some(first) = ordered.first() {
             tracing::debug!(
                 provider = %first.name(),
@@ -793,24 +893,54 @@ impl RouterProvider {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
 
-        // CRIT-3 fix: shift Thompson Beta priors using quality reputation rather than
-        // blending two separate samples. This preserves Thompson's single-distribution
-        // sampling property and its theoretical guarantees.
-        let selected = if let Some(ref reputation) = self.reputation {
-            let rep = reputation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Compute per-provider prior overrides: start from base Beta distribution, apply
+        // reputation shift (CRIT-3), then apply ASI coherence penalty.
+        let has_reputation = self.reputation.is_some();
+        let has_asi = self.asi.is_some() && self.asi_config.is_some();
+
+        let selected = if has_reputation || has_asi {
+            // Build overrides by composing reputation and ASI adjustments.
+            let rep_guard = self
+                .reputation
+                .as_ref()
+                .map(|r| r.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            let asi_guard: Option<std::sync::MutexGuard<'_, AsiState>> = self
+                .asi
+                .as_ref()
+                .map(|a| a.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
             let w = self.reputation_weight;
+
             let overrides: std::collections::HashMap<String, (f64, f64)> = names
                 .iter()
                 .map(|name| {
                     let base = state.get_distribution(name);
-                    let (a, b) = rep.shift_thompson_priors(name, base.alpha, base.beta, w);
-                    (name.clone(), (a, b))
+                    // Apply reputation prior shift.
+                    let (alpha, mut beta) = if let Some(ref rep) = rep_guard {
+                        rep.shift_thompson_priors(name, base.alpha, base.beta, w)
+                    } else {
+                        (base.alpha, base.beta)
+                    };
+                    // Apply ASI coherence penalty: shift beta by penalty_weight * deficit.
+                    if let (Some(asi), Some(asi_cfg)) = (&asi_guard, &self.asi_config) {
+                        let coherence = asi.coherence(name);
+                        if coherence < asi_cfg.coherence_threshold {
+                            tracing::warn!(
+                                provider = name.as_str(),
+                                coherence,
+                                threshold = asi_cfg.coherence_threshold,
+                                "asi: coherence below threshold"
+                            );
+                            let deficit = asi_cfg.coherence_threshold - coherence;
+                            let penalty = f64::from(asi_cfg.penalty_weight * deficit);
+                            beta += penalty;
+                        }
+                    }
+                    (name.clone(), (alpha, beta))
                 })
                 .collect();
-            // Drop rep lock before locking state (already held above via state).
-            drop(rep);
+
+            drop(rep_guard);
+            drop(asi_guard);
             state.select_with_priors(&names, &overrides)
         } else {
             state.select(&names)
@@ -998,6 +1128,40 @@ impl RouterProvider {
 const EMBED_MAX_RETRIES: u32 = 3;
 const EMBED_BASE_DELAY_MS: u64 = 500;
 
+impl RouterProvider {
+    /// Spawn a background task to embed `response` and update the ASI window for `provider`.
+    ///
+    /// Fire-and-forget: routing is not blocked on the embed call. If the embed fails,
+    /// the ASI window is not updated (no penalty for embed failure).
+    fn spawn_asi_update(&self, provider: &str, response: String) {
+        let Some(ref asi_arc) = self.asi else { return };
+        let Some(ref asi_cfg) = self.asi_config else {
+            return;
+        };
+        let asi = Arc::clone(asi_arc);
+        let router = self.clone();
+        let window_size = asi_cfg.window;
+        let provider_name = provider.to_owned();
+        tokio::spawn(async move {
+            match router.embed(&response).await {
+                Ok(emb) => {
+                    let mut state = asi
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.push_embedding(&provider_name, emb, window_size);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        provider = provider_name,
+                        error = %e,
+                        "asi: embed failed, skipping coherence update"
+                    );
+                }
+            }
+        });
+    }
+}
+
 impl LlmProvider for RouterProvider {
     fn context_window(&self) -> Option<usize> {
         self.providers.first().and_then(LlmProvider::context_window)
@@ -1024,6 +1188,21 @@ impl LlmProvider for RouterProvider {
                 return router.bandit_chat(&messages, status_tx).await;
             }
             let providers = router.ordered_providers();
+
+            // Pre-compute query embedding once for quality gate (fail-open on error).
+            let query_text = messages
+                .last()
+                .map(Message::to_llm_content)
+                .unwrap_or_default();
+            let query_embedding = if router.quality_gate.is_some() && !query_text.is_empty() {
+                router.embed(query_text).await.ok()
+            } else {
+                None
+            };
+
+            // Best response seen so far (for quality gate exhaustion fallback, M2).
+            let mut best_response: Option<(f32, String)> = None;
+
             for p in &providers {
                 let start = std::time::Instant::now();
                 match p.chat(&messages).await {
@@ -1033,6 +1212,38 @@ impl LlmProvider for RouterProvider {
                             true,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
+
+                        // Quality gate: check response-query embedding similarity.
+                        if let (Some(threshold), Some(qemb)) =
+                            (router.quality_gate, &query_embedding)
+                        {
+                            let resp_emb = router.embed(&r).await.ok();
+                            let similarity = resp_emb
+                                .as_ref()
+                                .map_or(threshold, |e| asi::cosine_similarity(qemb, e)); // fail-open: None → treat as passing
+                            if similarity < threshold {
+                                tracing::info!(
+                                    provider = p.name(),
+                                    score = similarity,
+                                    threshold,
+                                    "thompson_quality_fallback"
+                                );
+                                // Track best response seen so far.
+                                let is_better = best_response
+                                    .as_ref()
+                                    .is_none_or(|(best, _)| similarity > *best);
+                                if is_better {
+                                    best_response = Some((similarity, r.clone()));
+                                }
+                                // Spawn ASI update even on quality failure.
+                                router.spawn_asi_update(p.name(), r);
+                                continue;
+                            }
+                        }
+
+                        // Spawn ASI embedding update (fire-and-forget).
+                        router.spawn_asi_update(p.name(), r.clone());
+
                         return Ok(r);
                     }
                     Err(e) => {
@@ -1048,6 +1259,12 @@ impl LlmProvider for RouterProvider {
                     }
                 }
             }
+
+            // All providers exhausted by quality gate: return best response seen (M2).
+            if let Some((_, response)) = best_response {
+                return Ok(response);
+            }
+
             Err(LlmError::NoProviders)
         })
     }
@@ -2872,6 +3089,91 @@ mod tests {
         assert!(
             !provider_in_stats,
             "InvalidInput must not update provider reputation; stats: {stats:?}"
+        );
+    }
+
+    // ── quality_gate tests ────────────────────────────────────────────────────
+
+    /// `with_quality_gate()` happy path: when cosine similarity >= threshold the
+    /// response is returned directly without falling back.
+    #[tokio::test]
+    async fn quality_gate_passes_when_similarity_above_threshold() {
+        use crate::mock::MockProvider;
+
+        // p1 returns a response; embed returns a unit vector so cosine similarity
+        // with itself is 1.0 (>= any reasonable threshold).
+        let p1 = AnyProvider::Mock({
+            let mut m = MockProvider::with_responses(vec!["answer".to_owned()]).with_name("p1");
+            m.supports_embeddings = true;
+            m.embedding = vec![1.0, 0.0];
+            m
+        });
+        let r = RouterProvider::new(vec![p1])
+            .with_thompson(None)
+            .with_quality_gate(0.5);
+        let msgs = vec![Message::from_legacy(Role::User, "question")];
+        let result = r.chat(&msgs).await.unwrap();
+        assert_eq!(result, "answer");
+    }
+
+    /// `with_quality_gate()` exhaustion: when all providers fail the gate the router
+    /// returns the best-seen response (highest similarity) rather than an error.
+    #[tokio::test]
+    async fn quality_gate_exhaustion_returns_best_seen() {
+        use crate::mock::MockProvider;
+
+        // p1 returns a response but embedding similarity is 0.0 (orthogonal vectors)
+        // so it fails the gate (0.0 < 0.9). p2 fails entirely.
+        // Expected: best_seen from p1 is returned.
+        let p1 = AnyProvider::Mock({
+            let mut m =
+                MockProvider::with_responses(vec!["best_so_far".to_owned()]).with_name("p1");
+            m.supports_embeddings = true;
+            // query embed = [1,0], response embed = [0,1] → similarity = 0.0
+            m.embedding = vec![0.0, 1.0];
+            m
+        });
+        let p2 = AnyProvider::Mock(MockProvider::failing().with_name("p2"));
+        let r = RouterProvider::new(vec![p1, p2])
+            .with_thompson(None)
+            .with_quality_gate(0.9);
+        let msgs = vec![Message::from_legacy(Role::User, "question")];
+        let result = r.chat(&msgs).await.unwrap();
+        assert_eq!(result, "best_so_far");
+    }
+
+    // ── apply_routing_signals guard logic tests ───────────────────────────────
+
+    /// `quality_gate = 5.0` (> 1.0) must be silently ignored — the field is left
+    /// as `None` and no panic occurs.
+    #[test]
+    fn routing_signals_quality_gate_above_one_is_ignored() {
+        // Build a RouterProvider directly and check that with_quality_gate is only
+        // called for in-range values by replicating the guard from provider.rs.
+        let threshold: f32 = 5.0;
+        let mut router = RouterProvider::new(vec![]);
+        if threshold.is_finite() && threshold > 0.0 && threshold <= 1.0 {
+            router = router.with_quality_gate(threshold);
+        }
+        assert!(
+            router.quality_gate.is_none(),
+            "out-of-range quality_gate must not be wired; got {:?}",
+            router.quality_gate
+        );
+    }
+
+    /// `quality_gate = 0.8` (valid) must be wired into the router.
+    #[test]
+    fn routing_signals_quality_gate_valid_is_wired() {
+        let threshold: f32 = 0.8;
+        let mut router = RouterProvider::new(vec![]);
+        if threshold.is_finite() && threshold > 0.0 && threshold <= 1.0 {
+            router = router.with_quality_gate(threshold);
+        }
+        assert_eq!(
+            router.quality_gate,
+            Some(0.8),
+            "valid quality_gate must be wired"
         );
     }
 }

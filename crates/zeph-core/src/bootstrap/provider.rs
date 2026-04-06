@@ -30,7 +30,7 @@ use zeph_llm::http::llm_client;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::openai::OpenAiProvider;
 use zeph_llm::router::cascade::ClassifierMode;
-use zeph_llm::router::{BanditRouterConfig, CascadeRouterConfig, RouterProvider};
+use zeph_llm::router::{AsiRouterConfig, BanditRouterConfig, CascadeRouterConfig, RouterProvider};
 
 use crate::agent::state::ProviderConfigSnapshot;
 use crate::config::{Config, LlmRoutingStrategy, ProviderEntry, ProviderKind};
@@ -105,6 +105,44 @@ fn build_cascade_router_config(
         summary_provider,
         cost_tiers: cascade_cfg.cost_tiers.clone(),
     }
+}
+
+/// Apply ASI and `quality_gate` configuration to a `RouterProvider` from `[llm.routing]` config.
+fn apply_routing_signals(router: RouterProvider, config: &Config) -> RouterProvider {
+    let router_cfg = config.llm.router.as_ref();
+    let mut router = router;
+
+    // ASI coherence tracking.
+    if let Some(asi_cfg) = router_cfg.and_then(|r| r.asi.as_ref())
+        && asi_cfg.enabled
+    {
+        let threshold = asi_cfg.coherence_threshold.clamp(0.0, 1.0);
+        let penalty = asi_cfg.penalty_weight.clamp(0.0, 1.0);
+        if (threshold - asi_cfg.coherence_threshold).abs() > f32::EPSILON
+            || (penalty - asi_cfg.penalty_weight).abs() > f32::EPSILON
+        {
+            tracing::warn!("asi: coherence_threshold/penalty_weight clamped to [0.0, 1.0]");
+        }
+        router = router.with_asi(AsiRouterConfig {
+            window: asi_cfg.window,
+            coherence_threshold: threshold,
+            penalty_weight: penalty,
+        });
+    }
+
+    // Quality gate.
+    if let Some(threshold) = router_cfg.and_then(|r| r.quality_gate) {
+        if threshold.is_finite() && threshold > 0.0 && threshold <= 1.0 {
+            router = router.with_quality_gate(threshold);
+        } else {
+            tracing::warn!(
+                quality_gate = threshold,
+                "quality_gate must be in (0.0, 1.0], ignoring"
+            );
+        }
+    }
+
+    router
 }
 
 /// Look up a provider entry from the pool by name (exact match on `effective_name()`) or type.
@@ -494,9 +532,11 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                     "router_ema_alpha out of range [MIN_POSITIVE, 1.0], clamped"
                 );
             }
-            Ok(AnyProvider::Router(Box::new(
-                RouterProvider::new(providers).with_ema(alpha, config.llm.router_reorder_interval),
-            )))
+            let router =
+                RouterProvider::new(providers).with_ema(alpha, config.llm.router_reorder_interval);
+            Ok(AnyProvider::Router(Box::new(apply_routing_signals(
+                router, config,
+            ))))
         }
         LlmRoutingStrategy::Thompson => {
             let providers = build_all_pool_providers(pool, config)?;
@@ -506,9 +546,10 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 .as_ref()
                 .and_then(|r| r.thompson_state_path.as_deref())
                 .map(std::path::Path::new);
-            Ok(AnyProvider::Router(Box::new(
-                RouterProvider::new(providers).with_thompson(state_path),
-            )))
+            let router = RouterProvider::new(providers).with_thompson(state_path);
+            Ok(AnyProvider::Router(Box::new(apply_routing_signals(
+                router, config,
+            ))))
         }
         LlmRoutingStrategy::Cascade => {
             let providers = build_all_pool_providers(pool, config)?;

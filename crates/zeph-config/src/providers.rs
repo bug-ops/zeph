@@ -407,6 +407,63 @@ pub enum RouterStrategyConfig {
     Bandit,
 }
 
+/// Agent Stability Index (ASI) configuration.
+///
+/// Tracks per-provider response coherence via a sliding window of response embeddings.
+/// When coherence drops below `coherence_threshold`, the provider's routing prior is
+/// penalized by `penalty_weight`. Disabled by default; session-only (no persistence).
+///
+/// # Known Limitation
+///
+/// ASI embeddings are computed in a background `tokio::spawn` task after the response is
+/// returned to the caller. Under high request rates, the coherence score used for routing
+/// may lag 1–2 responses behind due to this fire-and-forget design. With the default
+/// `window = 5`, this lag is tolerable — coherence is a slow-moving signal.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AsiConfig {
+    /// Enable ASI coherence tracking. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Sliding window size for response embeddings per provider. Default: 5.
+    #[serde(default = "default_asi_window")]
+    pub window: usize,
+
+    /// Coherence score [0.0, 1.0] below which the provider is penalized. Default: 0.7.
+    #[serde(default = "default_asi_coherence_threshold")]
+    pub coherence_threshold: f32,
+
+    /// Penalty weight applied to Thompson beta / EMA score on low coherence. Default: 0.3.
+    ///
+    /// For Thompson, this shifts the beta prior: `beta += penalty_weight * (threshold - coherence)`.
+    /// For EMA, the score is multiplied by `max(0.5, coherence / threshold)`.
+    #[serde(default = "default_asi_penalty_weight")]
+    pub penalty_weight: f32,
+}
+
+fn default_asi_window() -> usize {
+    5
+}
+
+fn default_asi_coherence_threshold() -> f32 {
+    0.7
+}
+
+fn default_asi_penalty_weight() -> f32 {
+    0.3
+}
+
+impl Default for AsiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            window: default_asi_window(),
+            coherence_threshold: default_asi_coherence_threshold(),
+            penalty_weight: default_asi_penalty_weight(),
+        }
+    }
+}
+
 /// Routing configuration for multi-provider setups.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterConfig {
@@ -431,6 +488,19 @@ pub struct RouterConfig {
     /// PILOT bandit routing configuration. Only used when `strategy = "bandit"`.
     #[serde(default)]
     pub bandit: Option<BanditConfig>,
+    /// Embedding-based quality gate threshold for Thompson/EMA routing. Default: disabled.
+    ///
+    /// When set, after provider selection, the cosine similarity between the query embedding
+    /// and the response embedding is computed. If below this threshold, the next provider in
+    /// the ordered list is tried. On exhaustion, the best response seen is returned.
+    ///
+    /// Only applies to Thompson and EMA strategies. Cascade uses its own quality classifier.
+    /// Fail-open: embedding errors disable the gate for that request.
+    #[serde(default)]
+    pub quality_gate: Option<f32>,
+    /// Agent Stability Index configuration. Disabled by default.
+    #[serde(default)]
+    pub asi: Option<AsiConfig>,
 }
 
 /// Configuration for Bayesian reputation scoring (RAPS — Reputation-Adjusted Provider Selection).
