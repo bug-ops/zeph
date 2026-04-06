@@ -54,12 +54,16 @@ struct Heartbeat {
     d: Option<u64>,
 }
 
-/// Spawn the gateway connection loop, returning a receiver of incoming messages.
+/// Spawn the gateway connection loop, returning a handle and a receiver of incoming messages.
+///
+/// The caller should abort the handle when the gateway is no longer needed.
 #[must_use]
-pub fn spawn_gateway(token: String) -> mpsc::Receiver<IncomingMessage> {
+pub fn spawn_gateway(
+    token: String,
+) -> (tokio::task::JoinHandle<()>, mpsc::Receiver<IncomingMessage>) {
     let (tx, rx) = mpsc::channel(64);
-    tokio::spawn(gateway_loop(token, tx));
-    rx
+    let handle = tokio::spawn(gateway_loop(token, tx));
+    (handle, rx)
 }
 
 async fn gateway_loop(token: String, tx: mpsc::Sender<IncomingMessage>) {
@@ -353,7 +357,11 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let _rx = rt.block_on(async { spawn_gateway("invalid-token".into()) });
+        rt.block_on(async {
+            let (handle, _rx) = spawn_gateway("invalid-token".into());
+            handle.abort();
+            let _ = handle.await;
+        });
     }
 
     #[test]

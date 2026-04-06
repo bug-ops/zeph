@@ -49,7 +49,7 @@ impl DiscordChannel {
         allowed_role_ids: Vec<String>,
         allowed_channel_ids: Vec<String>,
     ) -> Self {
-        let rx = gateway::spawn_gateway(token.clone());
+        let (_gateway_handle, rx) = gateway::spawn_gateway(token.clone());
         let rest = rest::RestClient::new(token);
         // Register slash commands asynchronously; failure is non-fatal.
         let rest_for_reg = rest.clone();
