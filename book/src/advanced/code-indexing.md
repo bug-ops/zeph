@@ -271,6 +271,47 @@ All tree-sitter grammars are compiled into every build. Language sub-features on
 | `ZEPH_INDEX_REPO_MAP_BUDGET` | Token budget for repo map | `1024` |
 | `ZEPH_INDEX_REPO_MAP_TTL_SECS` | Cache TTL for repo map in seconds | `300` |
 
+## Code Index as MCP Tools
+
+When `index.mcp_enabled = true`, the code index is exposed as an in-process MCP server (`IndexMcpServer`) that registers four navigation tools directly into the tool executor pipeline. No JSON-RPC transport is involved — the tools run in-process alongside external MCP servers.
+
+### Exposed Tools
+
+| Tool | Input | Description |
+|------|-------|-------------|
+| `symbol_definition` | `name: String` | Returns file path and line number for all definitions of a symbol (function, struct, enum, trait, etc.) found via tree-sitter AST |
+| `find_text_references` | `name: String` | Textual search for references to a symbol across all indexed files; may include false positives from comments and strings |
+| `call_graph` | `fn_name: String` | Returns a heuristic call graph rooted at the given function, derived from child symbol relationships in the AST |
+| `module_summary` | `path: String` | Lists all symbols (name, kind, visibility, line number) defined in a given source file |
+
+### How This Differs from Repo Map Injection
+
+The repo map (`repo_map_budget`) is a static overview injected once per system prompt. It lists symbol names and locations but does not answer specific queries. The MCP tools are dynamic: the LLM calls them on demand to answer precise navigation questions, similar to IDE "go to definition" or "find references". This is more token-efficient for targeted lookups and avoids injecting an entire structural overview when only one symbol matters.
+
+| Capability | Repo Map | MCP Tools |
+|-----------|----------|-----------|
+| Always present in context | Yes | No (on-demand) |
+| Find definition of one symbol | No | Yes (`symbol_definition`) |
+| List all symbols in a file | No | Yes (`module_summary`) |
+| Find all usages of a symbol | No | Yes (`find_text_references`) |
+| Call chain from a function | No | Yes (`call_graph`) |
+
+### Configuration
+
+```toml
+[index]
+enabled     = true
+mcp_enabled = true   # expose index as MCP tools
+```
+
+`mcp_enabled` defaults to `false`. Enabling it does not require Qdrant — the tool index is built directly from tree-sitter AST parsing and held in memory.
+
+### When to Use
+
+Enable `mcp_enabled` for IDE-like workflows where the LLM needs to navigate the codebase interactively: tracing a call chain, checking where a struct is defined, or listing all symbols in a module. For large codebases where a full repo map would exceed the context budget, MCP tools provide targeted lookups without the token overhead.
+
+The two mechanisms complement each other: repo map gives the model a high-level structural overview, and MCP tools let it drill into specific locations on demand.
+
 ## Embedding Model Recommendations
 
 The indexer uses the same `LlmProvider.embed()` as semantic memory. Any embedding model works. For code-heavy workloads:

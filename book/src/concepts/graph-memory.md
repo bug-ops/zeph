@@ -497,6 +497,44 @@ link_weight_decay_interval_secs = 86400  # Seconds between decay passes (default
 
 Decay interacts with the A-MEM evolved weight formula (see [A-MEM Link Weight Evolution](#a-mem-link-weight-evolution)): decay reduces the effective boost of stale edges while recent retrievals continue to accumulate their count normally.
 
+## Episode Nodes
+
+Every conversation is represented as an **episode node** in the graph. When graph memory is enabled, Zeph calls `ensure_episode(conversation_id)` at the start of each session to create or retrieve an episode record in the `graph_episodes` table. The call is idempotent — repeated calls for the same conversation return the same episode ID.
+
+### Entity Linking
+
+As entities are extracted during a conversation, each entity is linked to the current episode via `link_entity_to_episode(episode_id, entity_id)`, stored in the `graph_episode_entities` join table. This link uses `INSERT OR IGNORE` so re-extracted entities never produce duplicates.
+
+The reverse lookup — all episodes in which a given entity appeared — is available via `episodes_for_entity(entity_id)`. This enables time-aware queries: "which sessions mentioned this entity?", "what entities appeared in the last three sessions?", or "when did we first discuss this concept?"
+
+### Schema
+
+Two tables support episode tracking:
+
+```
+graph_episodes (
+    id              INTEGER PRIMARY KEY,
+    conversation_id INTEGER NOT NULL UNIQUE,  -- FK → conversations.id
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+
+graph_episode_entities (
+    episode_id  INTEGER NOT NULL,  -- FK → graph_episodes.id
+    entity_id   INTEGER NOT NULL,  -- FK → graph_entities.id
+    PRIMARY KEY (episode_id, entity_id)
+)
+```
+
+### Uses
+
+Episode boundaries are the foundation for temporal reasoning over the knowledge graph:
+
+- **Freshness scoring** — facts from the current episode are more salient than facts from older episodes, complementing the bi-temporal edge timestamps.
+- **Session-scoped recall** — retrieve only entities observed in recent sessions without full BFS traversal.
+- **Temporal queries** — combine `episodes_for_entity` with `edges_at_timestamp` to reconstruct the agent's knowledge state at any past session boundary.
+
+No configuration is required — episode tracking is always active when `memory.graph.enabled = true`.
+
 ## Advanced Tuning
 
 The following fields under `[memory.graph]` control performance and resource usage. They rarely need adjustment in typical deployments.
