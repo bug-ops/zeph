@@ -6,10 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Trajectory-informed memory** (`#2498`): after each agent turn containing tool calls, a fast LLM provider extracts procedural (reusable how-to patterns) and episodic (one-off event) entries from the turn messages. Entries are stored per-conversation in `trajectory_memory` / `trajectory_meta` tables (migrations 069). Top-k procedural entries above a confidence threshold are injected into context assembly as "past experience" hints. Extraction is fire-and-forget (`tokio::spawn`) — no latency added to the response path. Per-conversation watermarking via `trajectory_meta(conversation_id PK)` prevents duplicate extraction across concurrent sessions. New `[memory.trajectory]` config section with `enabled`, `trajectory_provider`, `max_messages`, `extraction_timeout_secs`, `recall_top_k`, `min_confidence`, `context_budget_tokens`. CLI: `zeph memory trajectory`. TUI: `/memory trajectory`.
+- **Category-aware memory** (`#2428`): nullable `category TEXT` column added to `messages` table (migration 070) with a partial index for filtered recall. `SearchFilter` gains an optional `category` field that adds a Qdrant `FieldCondition` when set. New `remember_categorized` / `recall_with_category` methods on `SemanticMemory`. Auto-tagging from active skill/tool context wired via `save_message_with_category`. New `[memory.category]` config section with `enabled` and `auto_tag` fields.
+- **`TiMem` temporal-hierarchical memory tree** (`#2262`): hierarchical `memory_tree` SQLite table (migration 071) stores leaf nodes at level 0 and LLM-merged summaries at higher levels. A background consolidation loop (`[memory.tree]`) clusters unconsolidated leaf nodes by cosine similarity and merges each cluster into a parent node via LLM summarization. Each cluster merge runs in its own SQLite transaction (prevents `SQLITE_BUSY` contention). Traversal from leaf to root via `traverse_tree_up`. New `[memory.tree]` config section with `enabled`, `consolidation_provider`, `sweep_interval_secs`, `batch_size`, `similarity_threshold`, `max_level`, `min_cluster_size`, `recall_top_k`, `context_budget_tokens`. CLI: `zeph memory tree`. TUI: `/memory tree`.
+
 ### Fixed
 
 - **`build_skill_matcher` now uses embedding provider** (`#2686`): `runner.rs`, `acp.rs`, and `daemon.rs` were passing the main chat provider to `build_skill_matcher` instead of the configured embedding provider, causing a Qdrant dimension mismatch on every session startup and falling back to returning all skills.
-
 - **`mcp.tool_discovery.embedding_provider` config field now respected in `runner.rs`** (`#2684`): `create_mcp_registry` was always called with the main chat provider instead of the configured embed provider. The runner now resolves `config.mcp.tool_discovery.embedding_provider` via `create_named_provider`, matching the pattern used by the agent setup path. Falls back to the main provider when the field is empty or resolution fails.
 
 ## [0.18.4] - 2026-04-06

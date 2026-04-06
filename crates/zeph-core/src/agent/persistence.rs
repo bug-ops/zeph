@@ -564,6 +564,11 @@ impl<C: Channel> Agent<C> {
         if role == Role::User && !has_tool_result_parts && !has_injection_flags {
             self.maybe_spawn_persona_extraction().await;
         }
+
+        // Trajectory extraction: run after turns that contained tool results.
+        if has_tool_result_parts {
+            self.maybe_spawn_trajectory_extraction();
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -760,6 +765,104 @@ impl<C: Channel> Agent<C> {
                 "persona extraction timed out — no facts written this turn"
             ),
         }
+    }
+
+    fn maybe_spawn_trajectory_extraction(&mut self) {
+        use zeph_memory::semantic::{TrajectoryExtractionConfig, extract_trajectory_entries};
+
+        let cfg = self.memory_state.trajectory_config.clone();
+        if !cfg.enabled {
+            return;
+        }
+
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+
+        let conversation_id = match self.memory_state.conversation_id {
+            Some(cid) => cid.0,
+            None => return,
+        };
+
+        // Collect messages from this turn to pass to the extractor.
+        let turn_messages: Vec<zeph_llm::provider::Message> = self.msg.messages.clone();
+
+        if turn_messages.is_empty() {
+            return;
+        }
+
+        let extraction_cfg = TrajectoryExtractionConfig {
+            enabled: cfg.enabled,
+            max_messages: cfg.max_messages,
+            extraction_timeout_secs: cfg.extraction_timeout_secs,
+        };
+
+        let provider = self.resolve_background_provider(cfg.trajectory_provider.as_str());
+        let store = memory.sqlite().clone();
+        let min_confidence = cfg.min_confidence;
+
+        // Fire-and-forget: do not block response path (critic M3).
+        tokio::spawn(async move {
+            let entries = match extract_trajectory_entries(
+                &provider,
+                &turn_messages,
+                &extraction_cfg,
+            )
+            .await
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(error = %e, "trajectory extraction failed");
+                    return;
+                }
+            };
+
+            // Get or initialize the watermark for this conversation.
+            let last_id = store
+                .trajectory_last_extracted_message_id(conversation_id)
+                .await
+                .unwrap_or(0);
+
+            let mut max_id = last_id;
+            for entry in &entries {
+                if entry.confidence < min_confidence {
+                    continue;
+                }
+                let tools_json =
+                    serde_json::to_string(&entry.tools_used).unwrap_or_else(|_| "[]".to_string());
+                match store
+                    .insert_trajectory_entry(zeph_memory::NewTrajectoryEntry {
+                        conversation_id: Some(conversation_id),
+                        turn_index: 0, // turn_index placeholder (best effort)
+                        kind: &entry.kind,
+                        intent: &entry.intent,
+                        outcome: &entry.outcome,
+                        tools_used: &tools_json,
+                        confidence: entry.confidence,
+                    })
+                    .await
+                {
+                    Ok(id) => {
+                        if id > max_id {
+                            max_id = id;
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "failed to insert trajectory entry"),
+                }
+            }
+
+            if max_id > last_id {
+                let _ = store
+                    .set_trajectory_last_extracted_message_id(conversation_id, max_id)
+                    .await;
+            }
+
+            tracing::debug!(
+                count = entries.len(),
+                conversation_id,
+                "trajectory extraction complete"
+            );
+        });
     }
 
     pub(crate) async fn check_summarization(&mut self) {

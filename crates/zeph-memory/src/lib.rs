@@ -84,16 +84,20 @@ pub use scenes::{
 };
 pub use semantic::{
     BufferedWrite, EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig,
-    LinkingStats, NoteLinkingConfig, PersonaExtractionConfig, StructuredSummary, WriteBuffer,
+    LinkingStats, NoteLinkingConfig, PersonaExtractionConfig, StructuredSummary, TrajectoryEntry,
+    TrajectoryExtractionConfig, TreeConsolidationConfig, TreeConsolidationResult, WriteBuffer,
     build_summarization_prompt, contains_self_referential_language, extract_and_store,
-    extract_persona_facts, link_memory_notes,
+    extract_persona_facts, extract_trajectory_entries, link_memory_notes,
+    run_tree_consolidation_sweep, start_tree_consolidation_loop,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 pub use store::compression_guidelines::CompressionFailurePair;
 pub use store::corrections::UserCorrectionRow;
 pub use store::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
+pub use store::memory_tree::MemoryTreeRow;
 pub use store::persona::PersonaFactRow;
 pub use store::session_digest::SessionDigest;
+pub use store::trajectory::{NewTrajectoryEntry, TrajectoryEntryRow};
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;

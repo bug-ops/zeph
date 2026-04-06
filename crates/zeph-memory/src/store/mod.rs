@@ -10,6 +10,7 @@ pub mod experiments;
 pub mod graph_store;
 mod history;
 mod mem_scenes;
+pub mod memory_tree;
 pub(crate) mod messages;
 pub mod overflow;
 pub mod persona;
@@ -17,6 +18,7 @@ pub mod preferences;
 pub mod session_digest;
 mod skills;
 mod summaries;
+pub mod trajectory;
 mod trust;
 
 #[allow(unused_imports)]
@@ -26,9 +28,11 @@ use zeph_db::{DbConfig, DbPool};
 use crate::error::MemoryError;
 
 pub use acp_sessions::{AcpSessionEvent, AcpSessionInfo};
+pub use memory_tree::MemoryTreeRow;
 pub use messages::role_str;
 pub use persona::PersonaFactRow;
 pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
+pub use trajectory::{NewTrajectoryEntry, TrajectoryEntryRow};
 pub use trust::{SkillTrustRow, SourceKind};
 
 /// Backward-compatible type alias. Prefer [`DbStore`] in new code.

@@ -118,6 +118,7 @@ async fn search_with_conversation_filter() {
     let filter = zeph_memory::embedding_store::SearchFilter {
         conversation_id: Some(cid1),
         role: None,
+        category: None,
     };
 
     let results = qdrant.search(&query, 10, Some(filter)).await.unwrap();

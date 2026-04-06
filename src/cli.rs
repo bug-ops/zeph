@@ -327,6 +327,10 @@ pub(crate) enum MemoryCommand {
     ForgettingSweep,
     /// Show compression predictor status (sample count, weights summary)
     PredictorStatus,
+    /// Show trajectory memory statistics (entry count by kind)
+    Trajectory,
+    /// Show memory tree statistics (node count by level)
+    Tree,
 }
 
 #[derive(Subcommand)]

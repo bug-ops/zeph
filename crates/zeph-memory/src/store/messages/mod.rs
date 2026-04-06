@@ -168,6 +168,37 @@ impl SqliteStore {
             .await
     }
 
+    /// Save a message with an optional category tag.
+    ///
+    /// The `category` column is NULL when `None` — existing rows are unaffected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
+    pub async fn save_message_with_category(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        category: Option<&str>,
+    ) -> Result<MessageId, MemoryError> {
+        let importance_score = crate::semantic::importance::compute_importance(content, role);
+        let row: (MessageId,) = zeph_db::query_as(sql!(
+            "INSERT INTO messages \
+                 (conversation_id, role, content, parts, agent_visible, user_visible, \
+                  importance_score, category) \
+                 VALUES (?, ?, ?, '[]', 1, 1, ?, ?) RETURNING id"
+        ))
+        .bind(conversation_id)
+        .bind(role)
+        .bind(content)
+        .bind(importance_score)
+        .bind(category)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
     /// Save a message with visibility metadata.
     ///
     /// # Errors

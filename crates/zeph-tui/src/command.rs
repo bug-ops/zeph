@@ -79,6 +79,10 @@ pub enum TuiCommand {
     ForgettingSweep,
     // Compression ratio predictor
     PredictorStatus,
+    // Trajectory-informed memory (#2498)
+    TrajectoryStats,
+    // TiMem memory tree (#2262)
+    MemoryTreeStats,
 }
 
 /// Metadata for command palette display and fuzzy matching.
@@ -303,6 +307,20 @@ fn build_infra_commands() -> Vec<CommandEntry> {
             category: "memory",
             shortcut: None,
             command: TuiCommand::PredictorStatus,
+        },
+        CommandEntry {
+            id: "memory:trajectory",
+            label: "Show trajectory memory statistics (/memory trajectory)",
+            category: "memory",
+            shortcut: None,
+            command: TuiCommand::TrajectoryStats,
+        },
+        CommandEntry {
+            id: "memory:tree",
+            label: "Show memory tree statistics (/memory tree)",
+            category: "memory",
+            shortcut: None,
+            command: TuiCommand::MemoryTreeStats,
         },
     ]
 }
@@ -574,7 +592,7 @@ mod tests {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
         // + 1 forgetting-sweep + 1 predictor-status = 37
-        assert_eq!(extra_command_registry().len(), 37);
+        assert_eq!(extra_command_registry().len(), 39);
     }
 
     #[test]

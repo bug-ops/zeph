@@ -78,6 +78,15 @@ pub(crate) struct MemoryState {
     pub(crate) goal_text: Option<String>,
     /// Persona memory configuration (#2461).
     pub(crate) persona_config: zeph_config::PersonaConfig,
+    /// Trajectory-informed memory configuration (#2498).
+    pub(crate) trajectory_config: zeph_config::TrajectoryConfig,
+    /// Category-aware memory configuration (#2428).
+    pub(crate) category_config: zeph_config::CategoryConfig,
+    /// `TiMem` temporal-hierarchical memory tree configuration (#2262).
+    pub(crate) tree_config: zeph_config::TreeConfig,
+    /// Background tree consolidation loop handle — kept alive for the agent's lifetime (#2262).
+    /// `None` when tree consolidation is disabled or memory is not initialized.
+    pub(crate) tree_consolidation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub(crate) struct SkillState {

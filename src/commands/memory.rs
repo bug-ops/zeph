@@ -17,95 +17,160 @@ pub(crate) async fn handle_memory_command(
         .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
 
     match cmd {
-        MemoryCommand::Export { path } => {
-            let snapshot = zeph_memory::export_snapshot(&sqlite)
-                .await
-                .map_err(|e| anyhow::anyhow!("export failed: {e}"))?;
-            let json = serde_json::to_string_pretty(&snapshot)
-                .map_err(|e| anyhow::anyhow!("serialization failed: {e}"))?;
-            std::fs::write(&path, json)
-                .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
-            let convs = snapshot.conversations.len();
-            let msgs: usize = snapshot
-                .conversations
-                .iter()
-                .map(|c| c.messages.len())
-                .sum();
-            println!(
-                "Exported {convs} conversation(s) with {msgs} message(s) to {}",
-                path.display()
-            );
-            if config.memory.redact_credentials {
-                eprintln!(
-                    "Warning: snapshot may contain sensitive conversation data predating \
-                     redaction. Store the file securely and restrict access."
-                );
-            }
-        }
-        MemoryCommand::Import { path } => {
-            let json = std::fs::read_to_string(&path)
-                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
-            let snapshot: zeph_memory::MemorySnapshot = serde_json::from_str(&json)
-                .map_err(|e| anyhow::anyhow!("invalid snapshot format: {e}"))?;
-            let stats = zeph_memory::import_snapshot(&sqlite, snapshot)
-                .await
-                .map_err(|e| anyhow::anyhow!("import failed: {e}"))?;
-            println!(
-                "Imported: {} conversation(s), {} message(s), {} summary(ies), {} skipped",
-                stats.conversations_imported,
-                stats.messages_imported,
-                stats.summaries_imported,
-                stats.skipped,
-            );
-        }
-        MemoryCommand::ForgettingSweep => {
-            let forgetting_cfg = zeph_memory::ForgettingConfig {
-                enabled: true, // always run when triggered manually
-                decay_rate: config.memory.forgetting.decay_rate,
-                forgetting_floor: config.memory.forgetting.forgetting_floor,
-                sweep_interval_secs: config.memory.forgetting.sweep_interval_secs,
-                sweep_batch_size: config.memory.forgetting.sweep_batch_size,
-                replay_window_hours: config.memory.forgetting.replay_window_hours,
-                replay_min_access_count: config.memory.forgetting.replay_min_access_count,
-                protect_recent_hours: config.memory.forgetting.protect_recent_hours,
-                protect_min_access_count: config.memory.forgetting.protect_min_access_count,
-            };
-            let result = zeph_memory::forgetting::run_forgetting_sweep(&sqlite, &forgetting_cfg)
-                .await
-                .map_err(|e| anyhow::anyhow!("forgetting sweep failed: {e}"))?;
-            println!(
-                "Forgetting sweep complete: downscaled={} replayed={} pruned={}",
-                result.downscaled, result.replayed, result.pruned
-            );
-        }
-        MemoryCommand::PredictorStatus => {
-            let sample_count = sqlite
-                .count_compression_training_records()
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to query training records: {e}"))?;
-            let weights_json = sqlite
-                .load_compression_predictor_weights()
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to load weights: {e}"))?;
-            let min_samples = config.memory.compression.predictor.min_samples;
-            println!("Compression predictor status:");
-            println!("  Training samples: {sample_count}");
-            println!("  Min samples for activation: {min_samples}");
-            println!(
-                "  Active: {}",
-                if sample_count >= 0 && sample_count.unsigned_abs() >= min_samples {
-                    "yes"
-                } else {
-                    "no (cold start)"
-                }
-            );
-            if weights_json.is_some() {
-                println!("  Weights: saved");
-            } else {
-                println!("  Weights: not yet trained");
-            }
-        }
+        MemoryCommand::Export { path } => cmd_export(&sqlite, &config, &path).await?,
+        MemoryCommand::Import { path } => cmd_import(&sqlite, &path).await?,
+        MemoryCommand::ForgettingSweep => cmd_forgetting_sweep(&sqlite, &config).await?,
+        MemoryCommand::Trajectory => cmd_trajectory(&sqlite).await?,
+        MemoryCommand::Tree => cmd_tree(&sqlite).await?,
+        MemoryCommand::PredictorStatus => cmd_predictor_status(&sqlite, &config).await?,
     }
 
+    Ok(())
+}
+
+async fn cmd_export(
+    sqlite: &zeph_memory::store::SqliteStore,
+    config: &zeph_core::config::Config,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let snapshot = zeph_memory::export_snapshot(sqlite)
+        .await
+        .map_err(|e| anyhow::anyhow!("export failed: {e}"))?;
+    let json = serde_json::to_string_pretty(&snapshot)
+        .map_err(|e| anyhow::anyhow!("serialization failed: {e}"))?;
+    std::fs::write(path, json)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
+    let convs = snapshot.conversations.len();
+    let msgs: usize = snapshot
+        .conversations
+        .iter()
+        .map(|c| c.messages.len())
+        .sum();
+    println!(
+        "Exported {convs} conversation(s) with {msgs} message(s) to {}",
+        path.display()
+    );
+    if config.memory.redact_credentials {
+        eprintln!(
+            "Warning: snapshot may contain sensitive conversation data predating \
+             redaction. Store the file securely and restrict access."
+        );
+    }
+    Ok(())
+}
+
+async fn cmd_import(
+    sqlite: &zeph_memory::store::SqliteStore,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+    let snapshot: zeph_memory::MemorySnapshot =
+        serde_json::from_str(&json).map_err(|e| anyhow::anyhow!("invalid snapshot format: {e}"))?;
+    let stats = zeph_memory::import_snapshot(sqlite, snapshot)
+        .await
+        .map_err(|e| anyhow::anyhow!("import failed: {e}"))?;
+    println!(
+        "Imported: {} conversation(s), {} message(s), {} summary(ies), {} skipped",
+        stats.conversations_imported,
+        stats.messages_imported,
+        stats.summaries_imported,
+        stats.skipped,
+    );
+    Ok(())
+}
+
+async fn cmd_forgetting_sweep(
+    sqlite: &zeph_memory::store::SqliteStore,
+    config: &zeph_core::config::Config,
+) -> anyhow::Result<()> {
+    let forgetting_cfg = zeph_memory::ForgettingConfig {
+        enabled: true,
+        decay_rate: config.memory.forgetting.decay_rate,
+        forgetting_floor: config.memory.forgetting.forgetting_floor,
+        sweep_interval_secs: config.memory.forgetting.sweep_interval_secs,
+        sweep_batch_size: config.memory.forgetting.sweep_batch_size,
+        replay_window_hours: config.memory.forgetting.replay_window_hours,
+        replay_min_access_count: config.memory.forgetting.replay_min_access_count,
+        protect_recent_hours: config.memory.forgetting.protect_recent_hours,
+        protect_min_access_count: config.memory.forgetting.protect_min_access_count,
+    };
+    let result = zeph_memory::forgetting::run_forgetting_sweep(sqlite, &forgetting_cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("forgetting sweep failed: {e}"))?;
+    println!(
+        "Forgetting sweep complete: downscaled={} replayed={} pruned={}",
+        result.downscaled, result.replayed, result.pruned
+    );
+    Ok(())
+}
+
+async fn cmd_trajectory(sqlite: &zeph_memory::store::SqliteStore) -> anyhow::Result<()> {
+    let total = sqlite
+        .count_trajectory_entries()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to count trajectory entries: {e}"))?;
+    let procedural = sqlite
+        .load_trajectory_entries(Some("procedural"), 1000)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to load procedural entries: {e}"))?
+        .len();
+    let episodic = sqlite
+        .load_trajectory_entries(Some("episodic"), 1000)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to load episodic entries: {e}"))?
+        .len();
+    println!("Trajectory memory statistics:");
+    println!("  Total entries:  {total}");
+    println!("  Procedural:     {procedural}");
+    println!("  Episodic:       {episodic}");
+    Ok(())
+}
+
+async fn cmd_tree(sqlite: &zeph_memory::store::SqliteStore) -> anyhow::Result<()> {
+    let total = sqlite
+        .count_tree_nodes()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to count tree nodes: {e}"))?;
+    let leaves = sqlite
+        .load_tree_leaves_unconsolidated(10000)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to load leaves: {e}"))?
+        .len();
+    println!("Memory tree statistics:");
+    println!("  Total nodes:             {total}");
+    println!("  Unconsolidated leaves:   {leaves}");
+    Ok(())
+}
+
+async fn cmd_predictor_status(
+    sqlite: &zeph_memory::store::SqliteStore,
+    config: &zeph_core::config::Config,
+) -> anyhow::Result<()> {
+    let sample_count = sqlite
+        .count_compression_training_records()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to query training records: {e}"))?;
+    let weights_json = sqlite
+        .load_compression_predictor_weights()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to load weights: {e}"))?;
+    let min_samples = config.memory.compression.predictor.min_samples;
+    println!("Compression predictor status:");
+    println!("  Training samples: {sample_count}");
+    println!("  Min samples for activation: {min_samples}");
+    println!(
+        "  Active: {}",
+        if sample_count >= 0 && sample_count.unsigned_abs() >= min_samples {
+            "yes"
+        } else {
+            "no (cold start)"
+        }
+    );
+    if weights_json.is_some() {
+        println!("  Weights: saved");
+    } else {
+        println!("  Weights: not yet trained");
+    }
     Ok(())
 }

@@ -803,6 +803,15 @@ pub struct MemoryConfig {
     /// from conversation history and injected into context after the system prompt.
     #[serde(default)]
     pub persona: PersonaConfig,
+    /// Trajectory-informed memory (#2498).
+    #[serde(default)]
+    pub trajectory: TrajectoryConfig,
+    /// Category-aware memory (#2428).
+    #[serde(default)]
+    pub category: CategoryConfig,
+    /// `TiMem` temporal-hierarchical memory tree (#2262).
+    #[serde(default)]
+    pub tree: TreeConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -1761,6 +1770,113 @@ impl Default for PersonaConfig {
             max_messages: 10,
             extraction_timeout_secs: 10,
             context_budget_tokens: 500,
+        }
+    }
+}
+
+/// Trajectory-informed memory configuration (#2498).
+///
+/// When `enabled = true`, tool-call turns are analyzed by a fast LLM provider to extract
+/// procedural (reusable how-to) and episodic (one-off event) entries stored per-conversation.
+/// Procedural entries are injected into context as "past experience" during assembly.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TrajectoryConfig {
+    /// Enable trajectory extraction and context injection. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for extraction.
+    /// Should be a fast/cheap model. Falls back to the primary provider when empty.
+    pub trajectory_provider: ProviderName,
+    /// Token budget allocated to trajectory hints in context assembly. Default: `400`.
+    pub context_budget_tokens: usize,
+    /// Maximum messages fed to the extraction LLM per pass. Default: `10`.
+    pub max_messages: usize,
+    /// LLM timeout for the extraction call in seconds. Default: `10`.
+    pub extraction_timeout_secs: u64,
+    /// Number of procedural entries retrieved for context injection. Default: `5`.
+    pub recall_top_k: usize,
+    /// Minimum confidence score for entries included in context. Default: `0.6`.
+    pub min_confidence: f64,
+}
+
+impl Default for TrajectoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            trajectory_provider: ProviderName::default(),
+            context_budget_tokens: 400,
+            max_messages: 10,
+            extraction_timeout_secs: 10,
+            recall_top_k: 5,
+            min_confidence: 0.6,
+        }
+    }
+}
+
+/// Category-aware memory configuration (#2428).
+///
+/// When `enabled = true`, messages are auto-tagged with a category derived from the active
+/// skill or tool context. The category is stored in the `messages.category` column and used
+/// as a Qdrant payload filter during recall.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CategoryConfig {
+    /// Enable category tagging and category-filtered recall. Default: `false`.
+    pub enabled: bool,
+    /// Automatically assign category from skill metadata or tool type. Default: `true`.
+    pub auto_tag: bool,
+}
+
+impl Default for CategoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_tag: true,
+        }
+    }
+}
+
+/// `TiMem` temporal-hierarchical memory tree configuration (#2262).
+///
+/// When `enabled = true`, memories are stored as leaf nodes and periodically consolidated
+/// into hierarchical summaries by a background loop. Context assembly uses tree traversal
+/// for complex queries.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TreeConfig {
+    /// Enable the memory tree and background consolidation loop. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for node consolidation.
+    /// Should be a fast/cheap model. Falls back to the primary provider when empty.
+    pub consolidation_provider: ProviderName,
+    /// Interval between consolidation sweeps in seconds. Default: `300`.
+    pub sweep_interval_secs: u64,
+    /// Maximum leaf nodes loaded per sweep batch. Default: `20`.
+    pub batch_size: usize,
+    /// Cosine similarity threshold for clustering leaves. Default: `0.8`.
+    pub similarity_threshold: f32,
+    /// Maximum tree depth (levels above leaves). Default: `3`.
+    pub max_level: u32,
+    /// Token budget allocated to tree memory in context assembly. Default: `400`.
+    pub context_budget_tokens: usize,
+    /// Number of tree nodes retrieved for context. Default: `5`.
+    pub recall_top_k: usize,
+    /// Minimum cluster size before triggering LLM consolidation. Default: `2`.
+    pub min_cluster_size: usize,
+}
+
+impl Default for TreeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            consolidation_provider: ProviderName::default(),
+            sweep_interval_secs: 300,
+            batch_size: 20,
+            similarity_threshold: 0.8,
+            max_level: 3,
+            context_budget_tokens: 400,
+            recall_top_k: 5,
+            min_cluster_size: 2,
         }
     }
 }

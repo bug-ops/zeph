@@ -103,6 +103,7 @@ impl ToolExecutor for MemoryToolExecutor {
                 let filter = Some(SearchFilter {
                     conversation_id: Some(self.conversation_id),
                     role: None,
+                    category: None,
                 });
 
                 let recalled = self

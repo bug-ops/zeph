@@ -218,6 +218,137 @@ impl SemanticMemory {
         Ok((Some(message_id), embedding_stored))
     }
 
+    /// Save a categorized message to `SQLite` and embed with category payload in Qdrant.
+    ///
+    /// The `category` is stored in both the `messages.category` column and as a Qdrant payload
+    /// field for recall filtering. Uses A-MAC admission gate.
+    ///
+    /// Returns `Ok(Some(message_id))` when admitted; `Ok(None)` when rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` save fails.
+    pub async fn remember_categorized(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        category: Option<&str>,
+        goal_text: Option<&str>,
+    ) -> Result<Option<MessageId>, MemoryError> {
+        if let Some(ref admission) = self.admission_control {
+            let decision = admission
+                .evaluate(
+                    content,
+                    role,
+                    &self.provider,
+                    self.qdrant.as_ref(),
+                    goal_text,
+                )
+                .await;
+            let preview: String = content.chars().take(100).collect();
+            log_admission_decision(&decision, &preview, role, admission.threshold());
+            if !decision.admitted {
+                return Ok(None);
+            }
+        }
+
+        let message_id = self
+            .sqlite
+            .save_message_with_category(conversation_id, role, content, category)
+            .await?;
+
+        self.embed_and_store_with_category(message_id, conversation_id, role, content, category)
+            .await;
+
+        Ok(Some(message_id))
+    }
+
+    /// Recall messages filtered by category.
+    ///
+    /// When `category` is `None`, behaves identically to [`recall`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the search fails.
+    pub async fn recall_with_category(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<SearchFilter>,
+        category: Option<&str>,
+    ) -> Result<Vec<RecalledMessage>, MemoryError> {
+        let filter_with_category = filter.map(|mut f| {
+            f.category = category.map(str::to_owned);
+            f
+        });
+        self.recall(query, limit, filter_with_category).await
+    }
+
+    /// Embed content chunks and store each with an optional category payload field.
+    async fn embed_and_store_with_category(
+        &self,
+        message_id: MessageId,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        category: Option<&str>,
+    ) -> bool {
+        let Some(qdrant) = &self.qdrant else {
+            return false;
+        };
+        let embed_provider = self.effective_embed_provider();
+        if !embed_provider.supports_embeddings() {
+            return false;
+        }
+
+        let chunks = chunk_text(content);
+        let chunk_count = chunks.len();
+
+        let vectors = match embed_provider.embed_batch(&chunks).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to embed categorized chunks for msg {message_id}: {e:#}");
+                return false;
+            }
+        };
+
+        let Some(first) = vectors.first() else {
+            return false;
+        };
+        let vector_size = u64::try_from(first.len()).unwrap_or(896);
+        if let Err(e) = qdrant.ensure_collection(vector_size).await {
+            tracing::warn!("Failed to ensure Qdrant collection for categorized msg: {e:#}");
+            return false;
+        }
+
+        let mut stored = false;
+        for (chunk_index, vector) in vectors.into_iter().enumerate() {
+            let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+            match qdrant
+                .store_with_category(
+                    message_id,
+                    conversation_id,
+                    role,
+                    vector,
+                    MessageKind::Regular,
+                    &self.embedding_model,
+                    chunk_index_u32,
+                    category,
+                )
+                .await
+            {
+                Ok(_) => stored = true,
+                Err(e) => tracing::warn!(
+                    "Failed to store categorized chunk {chunk_index}/{chunk_count} \
+                     for msg {message_id}: {e:#}"
+                ),
+            }
+        }
+
+        stored
+    }
+
     /// Embed content chunks and store each as a regular (non-tool) message vector.
     ///
     /// Handles: chunking → `embed_batch` → `ensure_collection` → per-chunk `store`.

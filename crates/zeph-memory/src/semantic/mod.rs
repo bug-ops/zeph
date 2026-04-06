@@ -9,6 +9,8 @@ pub(crate) mod importance;
 pub mod persona;
 mod recall;
 mod summarization;
+pub mod trajectory;
+pub mod tree_consolidation;
 pub(crate) mod write_buffer;
 
 #[cfg(test)]
@@ -40,6 +42,11 @@ pub use persona::{
 };
 pub use recall::{EmbedContext, RecalledMessage};
 pub use summarization::{StructuredSummary, Summary, build_summarization_prompt};
+pub use trajectory::{TrajectoryEntry, TrajectoryExtractionConfig, extract_trajectory_entries};
+pub use tree_consolidation::{
+    TreeConsolidationConfig, TreeConsolidationResult, run_tree_consolidation_sweep,
+    start_tree_consolidation_loop,
+};
 pub use write_buffer::{BufferedWrite, WriteBuffer};
 
 pub struct SemanticMemory {

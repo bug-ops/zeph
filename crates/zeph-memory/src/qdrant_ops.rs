@@ -437,6 +437,29 @@ impl crate::vector_store::VectorStore for QdrantOps {
                 .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))
         })
     }
+
+    fn create_keyword_indexes(
+        &self,
+        collection: &str,
+        fields: &[&str],
+    ) -> BoxFuture<'_, Result<(), crate::VectorStoreError>> {
+        use qdrant_client::qdrant::{CreateFieldIndexCollectionBuilder, FieldType};
+        let collection = collection.to_owned();
+        let fields: Vec<String> = fields.iter().map(|f| (*f).to_owned()).collect();
+        Box::pin(async move {
+            for field in &fields {
+                self.client
+                    .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                        &collection,
+                        field.as_str(),
+                        FieldType::Keyword,
+                    ))
+                    .await
+                    .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+            }
+            Ok(())
+        })
+    }
 }
 
 fn vector_filter_to_qdrant(filter: crate::VectorFilter) -> Filter {

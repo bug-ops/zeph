@@ -87,6 +87,8 @@ pub(super) enum CompactionOutcome {
 }
 
 pub(super) const PERSONA_PREFIX: &str = "[Persona context]\n";
+pub(super) const TRAJECTORY_PREFIX: &str = "[Past experience]\n";
+pub(super) const TREE_MEMORY_PREFIX: &str = "[Memory summary]\n";
 
 /// Tagged output of each concurrent context-fetch future.
 ///
@@ -103,6 +105,10 @@ pub(super) enum ContextSlot {
     GraphFacts(Option<Message>),
     /// Persona memory facts injected after the system prompt (#2461).
     PersonaFacts(Option<Message>),
+    /// Top-k procedural trajectory hints recalled for the current turn (#2498).
+    TrajectoryHints(Option<Message>),
+    /// `TiMem` tree summary nodes recalled for context (#2262).
+    TreeMemory(Option<Message>),
 }
 impl<C: Channel> Agent<C> {
     pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {

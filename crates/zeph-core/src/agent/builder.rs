@@ -329,6 +329,55 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
+    pub fn with_trajectory_config(mut self, config: crate::config::TrajectoryConfig) -> Self {
+        self.memory_state.trajectory_config = config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_category_config(mut self, config: crate::config::CategoryConfig) -> Self {
+        self.memory_state.category_config = config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tree_config(mut self, config: crate::config::TreeConfig) -> Self {
+        self.memory_state.tree_config = config;
+        self
+    }
+
+    /// Start the `TiMem` tree consolidation background loop and store the handle.
+    ///
+    /// Call after memory and tree configuration have been applied so that both the `SQLite`
+    /// store and config are available. The loop runs until the agent cancel token fires.
+    /// The handle is kept in the memory state and is aborted when the agent is dropped.
+    ///
+    /// No-op if tree consolidation is disabled in the config or memory has not been set.
+    #[must_use]
+    pub fn with_tree_consolidation_loop(mut self, provider: zeph_llm::any::AnyProvider) -> Self {
+        let cfg = &self.memory_state.tree_config;
+        if !cfg.enabled {
+            return self;
+        }
+        let Some(ref memory) = self.memory_state.memory else {
+            return self;
+        };
+        let sqlite = std::sync::Arc::new(memory.sqlite().clone());
+        let tree_cfg = zeph_memory::TreeConsolidationConfig {
+            enabled: cfg.enabled,
+            sweep_interval_secs: cfg.sweep_interval_secs,
+            batch_size: cfg.batch_size,
+            similarity_threshold: cfg.similarity_threshold,
+            max_level: cfg.max_level,
+            min_cluster_size: cfg.min_cluster_size,
+        };
+        let cancel = self.lifecycle.cancel_token.clone();
+        let handle = zeph_memory::start_tree_consolidation_loop(sqlite, provider, tree_cfg, cancel);
+        self.memory_state.tree_consolidation_handle = Some(handle);
+        self
+    }
+
+    #[must_use]
     pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
         // R-IMP-03: graph extraction writes raw entity names/relations extracted by the LLM.
         // No PII redaction is applied on the graph write path (pre-1.0 MVP limitation).
@@ -1471,6 +1520,9 @@ impl<C: Channel> Agent<C> {
             document_config,
             graph_config,
             persona_config,
+            trajectory_config,
+            category_config,
+            tree_config,
             anomaly_config,
             result_cache_config,
             utility_config,
@@ -1517,6 +1569,9 @@ impl<C: Channel> Agent<C> {
             .with_document_config(document_config)
             .with_graph_config(graph_config)
             .with_persona_config(persona_config)
+            .with_trajectory_config(trajectory_config)
+            .with_category_config(category_config)
+            .with_tree_config(tree_config)
             .with_orchestration_config(orchestration_config)
             .with_budget_hint_enabled(budget_hint_enabled);
 

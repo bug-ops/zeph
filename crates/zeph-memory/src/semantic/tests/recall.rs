@@ -110,6 +110,7 @@ async fn embed_missing_without_embedding_support_returns_zero() {
 async fn recall_empty_without_qdrant_regardless_of_filter() {
     let memory = test_semantic_memory(true).await;
     let filter = SearchFilter {
+        category: None,
         conversation_id: Some(ConversationId(1)),
         role: None,
     };
@@ -157,6 +158,7 @@ async fn recall_fts5_fallback_with_filter() {
         .unwrap();
 
     let filter = SearchFilter {
+        category: None,
         conversation_id: Some(cid1),
         role: None,
     };
@@ -306,6 +308,7 @@ async fn recall_routed_episodic_route_no_time_range() {
             "when did we discuss rust ownership",
             5,
             Some(SearchFilter {
+                category: None,
                 conversation_id: Some(cid),
                 role: None,
             }),
@@ -355,6 +358,7 @@ async fn recall_routed_episodic_all_temporal_stripped_falls_back_to_original() {
             "last time",
             5,
             Some(SearchFilter {
+                category: None,
                 conversation_id: Some(cid),
                 role: None,
             }),

@@ -1357,6 +1357,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_focus_config(config.agent.focus.clone())
     .with_sidequest_config(config.memory.sidequest.clone())
     .with_embedding_provider(embedding_provider)
+    .with_tree_consolidation_loop(
+        app.build_tree_consolidation_provider()
+            .unwrap_or_else(|| provider.clone()),
+    )
     .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
 

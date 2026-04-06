@@ -101,4 +101,15 @@ pub trait VectorStore: Send + Sync {
     ) -> BoxFuture<'_, Result<ScrollResult, VectorStoreError>>;
 
     fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>>;
+
+    /// Create keyword payload indexes for the given field names.
+    ///
+    /// Default implementation is a no-op (for non-Qdrant backends).
+    fn create_keyword_indexes(
+        &self,
+        _collection: &str,
+        _fields: &[&str],
+    ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+        Box::pin(async { Ok(()) })
+    }
 }

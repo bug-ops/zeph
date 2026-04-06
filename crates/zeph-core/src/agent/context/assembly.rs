@@ -74,6 +74,18 @@ impl<C: Channel> Agent<C> {
             .retain(|m| m.role != Role::System || !m.content.starts_with(super::PERSONA_PREFIX));
     }
 
+    pub(in crate::agent) fn remove_trajectory_hints_messages(&mut self) {
+        self.msg
+            .messages
+            .retain(|m| m.role != Role::System || !m.content.starts_with(super::TRAJECTORY_PREFIX));
+    }
+
+    pub(in crate::agent) fn remove_tree_memory_messages(&mut self) {
+        self.msg.messages.retain(|m| {
+            m.role != Role::System || !m.content.starts_with(super::TREE_MEMORY_PREFIX)
+        });
+    }
+
     /// Remove previously injected LSP context notes from the message history.
     ///
     /// Called before injecting fresh notes each turn so stale diagnostics/hover
@@ -248,6 +260,93 @@ impl<C: Channel> Agent<C> {
         }
 
         if body == super::PERSONA_PREFIX {
+            return Ok(None);
+        }
+
+        Ok(Some(Message::from_legacy(Role::System, body)))
+    }
+
+    pub(super) async fn fetch_trajectory_hints(
+        memory_state: &MemoryState,
+        budget_tokens: usize,
+        tc: &TokenCounter,
+    ) -> Result<Option<Message>, super::super::error::AgentError> {
+        if budget_tokens == 0 || !memory_state.trajectory_config.enabled {
+            return Ok(None);
+        }
+        let Some(ref memory) = memory_state.memory else {
+            return Ok(None);
+        };
+
+        let top_k = memory_state.trajectory_config.recall_top_k;
+        let min_conf = memory_state.trajectory_config.min_confidence;
+        let entries = memory
+            .sqlite()
+            .load_trajectory_entries(Some("procedural"), top_k)
+            .await?;
+
+        if entries.is_empty() {
+            return Ok(None);
+        }
+
+        let mut body = String::from(super::TRAJECTORY_PREFIX);
+        let mut tokens_so_far = tc.count_tokens(&body);
+
+        for entry in entries
+            .iter()
+            .filter(|e| e.confidence >= min_conf)
+            .take(top_k)
+        {
+            let line = format!("- {}: {}\n", entry.intent, entry.outcome);
+            let line_tokens = tc.count_tokens(&line);
+            if tokens_so_far + line_tokens > budget_tokens {
+                break;
+            }
+            body.push_str(&line);
+            tokens_so_far += line_tokens;
+        }
+
+        if body == super::TRAJECTORY_PREFIX {
+            return Ok(None);
+        }
+
+        Ok(Some(Message::from_legacy(Role::System, body)))
+    }
+
+    pub(super) async fn fetch_tree_memory(
+        memory_state: &MemoryState,
+        budget_tokens: usize,
+        tc: &TokenCounter,
+    ) -> Result<Option<Message>, super::super::error::AgentError> {
+        if budget_tokens == 0 || !memory_state.tree_config.enabled {
+            return Ok(None);
+        }
+        let Some(ref memory) = memory_state.memory else {
+            return Ok(None);
+        };
+
+        let top_k = memory_state.tree_config.recall_top_k;
+        // Load level-1+ nodes (consolidated summaries) — level 0 are raw leaves.
+        let nodes = memory.sqlite().load_tree_level(1, top_k).await?;
+
+        if nodes.is_empty() {
+            return Ok(None);
+        }
+
+        let mut body = String::from(super::TREE_MEMORY_PREFIX);
+        let mut tokens_so_far = tc.count_tokens(&body);
+
+        for node in nodes.iter().take(top_k) {
+            let line = format!("- {}\n", node.content);
+            let line_tokens = tc.count_tokens(&line);
+            if tokens_so_far + line_tokens > budget_tokens {
+                break;
+            }
+            body.push_str(&line);
+            tokens_so_far += line_tokens;
+        }
+
+        if body == super::TREE_MEMORY_PREFIX {
             return Ok(None);
         }
 
@@ -906,6 +1005,8 @@ impl<C: Channel> Agent<C> {
         self.remove_code_context_messages();
         self.remove_graph_facts_messages();
         self.remove_persona_facts_messages();
+        self.remove_trajectory_hints_messages();
+        self.remove_tree_memory_messages();
 
         // Own the query to satisfy Send bounds when agent.run() is spawned
         let query = query.to_owned();
@@ -934,6 +1035,8 @@ impl<C: Channel> Agent<C> {
         let mut code_rag_text: Option<String> = None;
         let mut graph_facts_msg: Option<Message> = None;
         let mut persona_facts_msg: Option<Message> = None;
+        let mut trajectory_hints_msg: Option<Message> = None;
+        let mut tree_memory_msg: Option<Message> = None;
 
         {
             type CtxFuture<'a> = Pin<
@@ -1001,6 +1104,18 @@ impl<C: Channel> Agent<C> {
                     .await
                     .map(ContextSlot::PersonaFacts)
             }));
+            fetchers.push(Box::pin(async {
+                let budget = memory_state.trajectory_config.context_budget_tokens;
+                Self::fetch_trajectory_hints(memory_state, budget, &tc)
+                    .await
+                    .map(ContextSlot::TrajectoryHints)
+            }));
+            fetchers.push(Box::pin(async {
+                let budget = memory_state.tree_config.context_budget_tokens;
+                Self::fetch_tree_memory(memory_state, budget, &tc)
+                    .await
+                    .map(ContextSlot::TreeMemory)
+            }));
 
             while let Some(result) = fetchers.next().await {
                 match result {
@@ -1016,6 +1131,8 @@ impl<C: Channel> Agent<C> {
                         ContextSlot::CodeContext(text) => code_rag_text = text,
                         ContextSlot::GraphFacts(msg) => graph_facts_msg = msg,
                         ContextSlot::PersonaFacts(msg) => persona_facts_msg = msg,
+                        ContextSlot::TrajectoryHints(msg) => trajectory_hints_msg = msg,
+                        ContextSlot::TreeMemory(msg) => tree_memory_msg = msg,
                     },
                     Err(e) => {
                         // Drop fetchers (releases immutable borrows) before &mut self below
@@ -1110,6 +1227,24 @@ impl<C: Channel> Agent<C> {
                     .await,
             ); // lgtm[rust/cleartext-logging]
             tracing::debug!("injected persona facts into context");
+        }
+
+        if let Some(msg) = trajectory_hints_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg.messages.insert(
+                1,
+                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
+                    .await,
+            );
+            tracing::debug!("injected trajectory hints into context");
+        }
+
+        if let Some(msg) = tree_memory_msg.filter(|_| self.msg.messages.len() > 1) {
+            self.msg.messages.insert(
+                1,
+                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
+                    .await,
+            );
+            tracing::debug!("injected tree memory summary into context");
         }
 
         if let Some(text) = code_rag_text {

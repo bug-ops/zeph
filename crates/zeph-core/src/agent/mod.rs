@@ -271,6 +271,10 @@ impl<C: Channel> Agent<C> {
                 rpe_router: None,
                 goal_text: None,
                 persona_config: crate::config::PersonaConfig::default(),
+                trajectory_config: crate::config::TrajectoryConfig::default(),
+                category_config: crate::config::CategoryConfig::default(),
+                tree_config: crate::config::TreeConfig::default(),
+                tree_consolidation_handle: None,
             },
             skill_state: SkillState {
                 registry,

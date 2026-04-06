@@ -928,6 +928,30 @@ impl AppBuilder {
         }
     }
 
+    /// Build a dedicated provider for `TiMem` tree consolidation LLM calls (#2262).
+    ///
+    /// Returns `None` when `consolidation_provider` is empty or resolution fails.
+    pub fn build_tree_consolidation_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.tree.consolidation_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "tree consolidation provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "tree consolidation provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for orchestration planner LLM calls.
     ///
     /// Returns `None` when `planner_provider` is empty (falls back to primary provider at call site).
