@@ -65,6 +65,24 @@ When `context_budget_tokens > 0`, the context window is structured as:
 └─────────────────────────────────────────────────┘
 ```
 
+## Context Strategy Modes
+
+The `[memory.context_strategy]` setting controls how Zeph assembles the conversation history portion of the context window.
+
+| Strategy | Behavior |
+|----------|----------|
+| `full_history` | Always include the full message history, trimmed to budget. This is the default. |
+| `memory_first` | Drop raw conversation history; assemble context from summaries, semantic recall, cross-session memory, and session digest only. Useful for long-running assistants where history is a liability. |
+| `adaptive` | Start as `full_history`; automatically switch to `memory_first` once the turn count exceeds `crossover_turn_threshold`. |
+
+```toml
+[memory]
+context_strategy = "adaptive"        # full_history | memory_first | adaptive
+crossover_turn_threshold = 20        # switch to memory_first after N turns (adaptive only)
+```
+
+`crossover_turn_threshold` defaults to `20`. In `memory_first` mode the semantic recall, cross-session, and digest slots still receive their normal budget allocations, so factual continuity is maintained through retrieval rather than raw history.
+
 ## Parallel Context Preparation
 
 Context sources (summaries, cross-session recall, semantic recall, code RAG) are fetched concurrently via `tokio::try_join!`, reducing context build latency to the slowest single source rather than the sum of all.
@@ -476,6 +494,28 @@ and per-question score into a single object per question for easy inspection.
 | `last_probe_verdict` | Most recent verdict (Pass/SoftFail/HardFail/Error) |
 | `last_probe_score` | Most recent probe score in [0.0, 1.0] |
 
+### Compression Ratio Predictor
+
+The compression ratio predictor (`[memory.compression.predictor]`) is an adaptive component that selects the most aggressive compression ratio that is still expected to keep the compaction probe score above the configured `probe.hard_fail_threshold`. Rather than compressing with a fixed ratio, it learns from historical compaction outcomes and adjusts its candidate selection over time.
+
+**How it works:**
+
+1. After each hard compaction event, the probe score and the compression ratio used are recorded as a training sample.
+2. Once at least `min_samples` observations have been collected, the predictor evaluates candidate ratios from most to least aggressive. It returns the first candidate whose predicted probe score exceeds `probe.hard_fail_threshold`.
+3. If no candidate passes the floor, the predictor returns `None` and the default compaction behavior applies.
+4. The internal model is retrained after every `retrain_interval` new samples, using a sliding window of `max_training_samples` observations.
+
+```toml
+[memory.compression.predictor]
+enabled = false              # Enable the adaptive compression ratio predictor (default: false)
+min_samples = 10             # Minimum training samples before the predictor activates
+candidate_ratios = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # Evaluated most-to-least aggressive
+retrain_interval = 5         # Retrain after this many new samples
+max_training_samples = 200   # Sliding window size for training data
+```
+
+Requires the compaction probe to be enabled (`[memory.compression.probe] enabled = true`) — the predictor uses probe scores as its training signal.
+
 ### Compaction Loop Prevention
 
 `maybe_compact()` tracks whether compaction is making progress. The `compaction_exhausted` flag is set permanently when any of the following conditions are detected after a hard-tier attempt:
@@ -630,6 +670,21 @@ After execution, the tool returns a summary of tokens freed and the compaction o
 
 ## Tool Output Management
 
+### SideQuest Eviction
+
+The SideQuest eviction system (`[memory.sidequest]`) uses an LLM to identify and remove tool output chains that are no longer relevant to the main task. It runs periodically during the agent loop and evicts stale "side-thread" tool output segments — for example, exploratory searches or dead-end investigations that no longer contribute to the current goal.
+
+**How it works:** Every `interval_turns` user turns, the eviction pass scores tool output groups (cursors) against the current conversation goal. Groups below the relevance threshold and above `min_cursor_tokens` are candidates for eviction. At most `max_eviction_ratio` of all cursors are evicted per pass.
+
+```toml
+[memory.sidequest]
+enabled = false                  # Enable LLM-based side-thread eviction (default: false)
+interval_turns = 4               # Run eviction every N user turns
+max_eviction_ratio = 0.5         # Maximum fraction of tool output cursors to evict per pass
+max_cursors = 10                 # Maximum number of cursors to evaluate per pass
+min_cursor_tokens = 100          # Exclude tool outputs smaller than this from eviction candidates
+```
+
 ### Truncation
 
 Tool outputs exceeding 30,000 characters are automatically truncated using a head+tail split with UTF-8 safe boundaries. Both the first and last ~15K chars are preserved.
@@ -672,6 +727,59 @@ Zeph walks up the directory tree from the current working directory looking for:
 - `.zeph/config.md`
 
 Found configs are concatenated (global first, then ancestors from root to cwd) and injected into the system prompt as a `<project_context>` block. Use this to provide project-specific instructions.
+
+## Session Digest and Shutdown Summary
+
+### Session Digest
+
+A session digest is a concise LLM-generated summary of the current session, produced at session end and stored in the vector store. On the next session start it is retrieved and injected into context, providing continuity even when the conversation history is trimmed or replaced by `memory_first` strategy.
+
+```toml
+[memory.digest]
+enabled = false              # Enable session digest generation at session end (default: false)
+provider = ""                # Provider name from [[llm.providers]]; falls back to primary when empty
+max_tokens = 500             # Maximum tokens for the digest text
+max_input_messages = 50      # Maximum messages fed into the digest prompt
+```
+
+Digests complement hard-compaction summaries: they cover sessions that ended cleanly without ever triggering compaction. When a session digest already exists for a conversation (from a previous compaction), a new digest is not generated.
+
+### Shutdown Summary
+
+On clean agent shutdown, Zeph can generate a short LLM summary of the session and store it in the vector store. This enables cross-session semantic recall for conversations that were too short to trigger hard compaction — such as quick one-off queries.
+
+```toml
+[memory]
+shutdown_summary = true                 # Generate a summary on clean shutdown (default: true)
+shutdown_summary_min_messages = 4       # Minimum user turns before a shutdown summary is generated
+shutdown_summary_max_messages = 20      # Maximum recent messages sent to the LLM for summarization
+shutdown_summary_timeout_secs = 10      # Per-attempt timeout for the LLM call
+```
+
+The shutdown summary is stored with the same schema as compaction summaries and is retrievable in future sessions via cross-session semantic recall. Sessions with fewer than `shutdown_summary_min_messages` user turns are considered trivial and skipped.
+
+## Lifelong Memory Consolidation
+
+The consolidation sweep (`[memory.consolidation]`) is a background loop that periodically clusters semantically similar memories and merges duplicate or contradictory entries via an LLM call. This keeps the long-term memory store clean and reduces redundancy without deleting history — original messages are marked consolidated and deprioritized in recall via temporal decay.
+
+**How it works:**
+
+1. The background loop wakes every `sweep_interval_secs` seconds.
+2. It loads up to `sweep_batch_size` messages and clusters those with cosine similarity above `similarity_threshold`.
+3. For each cluster, an LLM call proposes a topology operation (merge, supersede, or link). Operations with LLM-assigned confidence below `confidence_threshold` are discarded.
+4. Accepted operations are applied: a new consolidated entry is created and originals are flagged so they rank lower in future recall.
+
+```toml
+[memory.consolidation]
+enabled = false                  # Enable the consolidation background loop (default: false)
+consolidation_provider = ""      # Provider name from [[llm.providers]]; falls back to primary
+confidence_threshold = 0.7       # Minimum LLM confidence for a topology operation to be applied
+sweep_interval_secs = 3600       # How often the sweep runs, in seconds
+sweep_batch_size = 50            # Maximum messages evaluated per sweep cycle
+similarity_threshold = 0.85      # Minimum cosine similarity for two messages to be candidates
+```
+
+Requires Qdrant (vector backend must be enabled). Originals are never deleted from SQLite — only their recall priority is reduced.
 
 ## Environment Variables
 
