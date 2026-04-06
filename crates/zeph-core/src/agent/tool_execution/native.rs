@@ -839,6 +839,13 @@ impl<C: Channel> Agent<C> {
                         // Already blocked upstream — treat as ToolCall to avoid double-counting.
                         return zeph_tools::UtilityAction::ToolCall;
                     }
+                    if self
+                        .tool_orchestrator
+                        .utility_scorer
+                        .is_exempt(&call.tool_id)
+                    {
+                        return zeph_tools::UtilityAction::ToolCall;
+                    }
                     let ctx = zeph_tools::UtilityContext {
                         tool_calls_this_turn: tool_calls_this_turn + idx,
                         tokens_consumed,

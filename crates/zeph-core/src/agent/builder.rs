@@ -1555,7 +1555,7 @@ impl<C: Channel> Agent<C> {
             magic_docs_config,
             anomaly_config,
             result_cache_config,
-            utility_config,
+            mut utility_config,
             orchestration_config,
             // Not applied here: caller clones this before `apply_session_config` and applies
             // it per-session (e.g. `spawn_acp_agent` passes it to `with_debug_config`).
@@ -1622,6 +1622,18 @@ impl<C: Channel> Agent<C> {
         self.runtime.semantic_cache_threshold = semantic_cache_threshold;
         self.runtime.semantic_cache_max_candidates = semantic_cache_max_candidates;
         self = self.with_result_cache_config(&result_cache_config);
+
+        // When MagicDocs is enabled, file-read tools must bypass the utility gate so that
+        // MagicDocs detection can inspect real file content (not a [skipped] sentinel).
+        if self.memory_state.magic_docs_config.enabled {
+            utility_config.exempt_tools.extend(
+                crate::agent::magic_docs::FILE_READ_TOOLS
+                    .iter()
+                    .map(|s| (*s).to_string()),
+            );
+            utility_config.exempt_tools.sort_unstable();
+            utility_config.exempt_tools.dedup();
+        }
         self.tool_orchestrator.set_utility_config(utility_config);
 
         self

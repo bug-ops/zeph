@@ -222,6 +222,11 @@ pub struct UtilityScoringConfig {
     /// Weight for the exploration bonus. Must be >= 0. Default: 0.2.
     #[serde(default = "default_utility_uncertainty_bonus")]
     pub uncertainty_bonus: f32,
+    /// Tool names that bypass the utility gate unconditionally (case-insensitive).
+    /// Auto-populated with file-read tools when `MagicDocs` is enabled. User-specified
+    /// entries are preserved and merged additively with any auto-populated names.
+    #[serde(default)]
+    pub exempt_tools: Vec<String>,
 }
 
 impl Default for UtilityScoringConfig {
@@ -233,6 +238,7 @@ impl Default for UtilityScoringConfig {
             cost_weight: default_utility_cost_weight(),
             redundancy_weight: default_utility_redundancy_weight(),
             uncertainty_bonus: default_utility_uncertainty_bonus(),
+            exempt_tools: Vec::new(),
         }
     }
 }

@@ -1423,6 +1423,12 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Cache-expiry warning (#2715): notify user when prompt cache has likely expired.
+        if let Some(warning) = self.cache_expiry_warning() {
+            tracing::info!(warning, "cache expiry warning");
+            let _ = self.channel.send_status(&warning).await;
+        }
+
         // Time-based microcompact (#2699): strip stale low-value tool outputs before compaction.
         // Zero-LLM-cost; runs only when session gap exceeds configured threshold.
         self.maybe_time_based_microcompact();

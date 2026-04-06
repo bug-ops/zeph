@@ -18,7 +18,7 @@ use crate::channel::Channel;
 const MAGIC_DOC_HEADER: &str = "# MAGIC DOC:";
 
 /// Tool names that perform file reads (case-insensitive).
-const FILE_READ_TOOLS: &[&str] = &["read", "file_read", "cat", "view", "open"];
+pub(crate) const FILE_READ_TOOLS: &[&str] = &["read", "file_read", "cat", "view", "open"];
 
 /// Per-session `MagicDocs` state.
 pub(crate) struct MagicDocsState {

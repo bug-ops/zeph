@@ -275,6 +275,18 @@ impl UtilityScorer {
         self.recent_calls.clear();
     }
 
+    /// Returns `true` when `tool_name` is in the exempt list (case-insensitive).
+    ///
+    /// Exempt tools bypass the utility gate unconditionally and always receive `ToolCall`.
+    #[must_use]
+    pub fn is_exempt(&self, tool_name: &str) -> bool {
+        let lower = tool_name.to_lowercase();
+        self.config
+            .exempt_tools
+            .iter()
+            .any(|e| e.to_lowercase() == lower)
+    }
+
     /// The configured threshold.
     #[must_use]
     pub fn threshold(&self) -> f32 {
@@ -730,5 +742,25 @@ mod tests {
         assert!(!has_explicit_tool_request(
             "the shell tool is very useful in general"
         ));
+    }
+
+    #[test]
+    fn is_exempt_matches_case_insensitively() {
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            exempt_tools: vec!["Read".to_owned(), "file_read".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        assert!(scorer.is_exempt("read"));
+        assert!(scorer.is_exempt("READ"));
+        assert!(scorer.is_exempt("FILE_READ"));
+        assert!(!scorer.is_exempt("write"));
+        assert!(!scorer.is_exempt("bash"));
+    }
+
+    #[test]
+    fn is_exempt_empty_list_returns_false() {
+        let scorer = UtilityScorer::new(UtilityScoringConfig::default());
+        assert!(!scorer.is_exempt("read"));
     }
 }
