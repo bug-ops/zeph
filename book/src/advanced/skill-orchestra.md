@@ -34,6 +34,32 @@ rl_routing_enabled = true      # Enable RL-based skill routing (default: false)
 
 SkillOrchestra requires `[skills.learning] enabled = true` to collect outcome data. Without the learning system, there are no reward signals to train on.
 
+## RL Routing Configuration
+
+The SkillOrchestra routing head is a linear layer that takes a query embedding as input and produces a score for each skill candidate. Scores are blended with cosine similarity via `rl_weight`. Weights are updated via REINFORCE after each observed outcome and persisted to SQLite every `rl_persist_interval` updates.
+
+**Thompson Sampling / RL update cycle:**
+
+1. At match time, cosine similarity candidates are re-ranked using the linear head's predicted scores.
+2. The blend formula is: `final_score = (1 - rl_weight) * cosine + rl_weight * rl_score`.
+3. After execution, the outcome (success = 1.0, failure = 0.0) is used as the REINFORCE reward to update the head weights.
+4. For the first `rl_warmup_updates` weight updates, the RL score is not blended — the routing head observes outcomes but does not influence selection. This prevents cold-start bias.
+
+Enable RL routing only after the agent has accumulated at least 50 turns of skill usage so the warmup phase completes quickly and the head has enough signal to learn meaningful routing patterns.
+
+```toml
+[skills]
+rl_routing_enabled   = true   # Enable RL routing head (default: false)
+rl_learning_rate     = 0.01   # REINFORCE weight update step size (default: 0.01)
+rl_weight            = 0.3    # Blend: (1-rl_weight)*cosine + rl_weight*rl_score (default: 0.3)
+rl_persist_interval  = 10     # Persist weights every N updates; 0 = every update (default: 10)
+rl_warmup_updates    = 50     # Updates before RL score influences ranking (default: 50)
+rl_embed_dim         = 768    # Must match embedding provider output dim; None → 1536 (default: null)
+```
+
+> [!IMPORTANT]
+> `rl_embed_dim` must match the vector dimension produced by your embedding provider. Mismatches cause a dim mismatch error at startup and the routing head falls back to cosine-only ranking. For Ollama providers using `nomic-embed-text` or similar 768-dim models, set `rl_embed_dim = 768`. For OpenAI `text-embedding-3-small`, set `rl_embed_dim = 1536`.
+
 ## When to Enable
 
 Enable SkillOrchestra when:
