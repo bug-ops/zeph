@@ -1225,9 +1225,33 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let _config_watcher = watchers.config_watcher;
     let config_reload_rx = watchers.config_reload_rx;
 
+    let mcp_embed_provider = {
+        let discovery = &config.mcp.tool_discovery;
+        if discovery.embedding_provider.is_empty() {
+            provider.clone()
+        } else {
+            match zeph_core::bootstrap::create_named_provider(&discovery.embedding_provider, config)
+            {
+                Ok(p) => {
+                    tracing::info!(
+                        provider = %discovery.embedding_provider,
+                        "Using dedicated embed provider for MCP registry"
+                    );
+                    p
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %discovery.embedding_provider,
+                        "MCP registry embed_provider resolution failed, using main provider: {e:#}"
+                    );
+                    provider.clone()
+                }
+            }
+        }
+    };
     let mcp_registry = create_mcp_registry(
         config,
-        &provider,
+        &mcp_embed_provider,
         &mcp_tools,
         &embed_model,
         app.qdrant_ops(),

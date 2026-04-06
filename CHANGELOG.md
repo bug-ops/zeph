@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mcp.tool_discovery.embedding_provider` config field now respected in `runner.rs`** (`#2684`): `create_mcp_registry` was always called with the main chat provider instead of the configured embed provider. The runner now resolves `config.mcp.tool_discovery.embedding_provider` via `create_named_provider`, matching the pattern used by the agent setup path. Falls back to the main provider when the field is empty or resolution fails.
+
 ## [0.18.4] - 2026-04-06
 
 ### Added
