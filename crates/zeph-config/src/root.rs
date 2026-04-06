@@ -227,6 +227,7 @@ impl Default for Config {
                 tree: crate::memory::TreeConfig::default(),
                 microcompact: crate::memory::MicrocompactConfig::default(),
                 autodream: crate::memory::AutoDreamConfig::default(),
+                key_facts_dedup_threshold: 0.95,
             },
             telegram: None,
             discord: None,

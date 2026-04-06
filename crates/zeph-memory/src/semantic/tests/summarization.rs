@@ -7,12 +7,86 @@ use std::sync::atomic::AtomicU64;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 
+use crate::db_vector_store::DbVectorStore;
 use crate::store::SqliteStore;
 use crate::token_counter::TokenCounter;
 use crate::types::{ConversationId, MessageId};
+use crate::vector_store::{
+    BoxFuture, ScoredVectorPoint, ScrollResult, VectorFilter, VectorPoint, VectorStore,
+    VectorStoreError,
+};
 
 use super::super::*;
 use super::test_semantic_memory;
+
+/// A `VectorStore` wrapper that delegates all operations to an inner store except `search`,
+/// which always returns a `VectorStoreError::Search` error.  Used to test the fail-open path
+/// in `store_key_fact_if_unique`.
+struct FailingSearchStore(DbVectorStore);
+
+impl VectorStore for FailingSearchStore {
+    fn ensure_collection(
+        &self,
+        collection: &str,
+        vector_size: u64,
+    ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+        self.0.ensure_collection(collection, vector_size)
+    }
+
+    fn collection_exists(&self, collection: &str) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
+        self.0.collection_exists(collection)
+    }
+
+    fn delete_collection(&self, collection: &str) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+        self.0.delete_collection(collection)
+    }
+
+    fn upsert(
+        &self,
+        collection: &str,
+        points: Vec<VectorPoint>,
+    ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+        self.0.upsert(collection, points)
+    }
+
+    fn search(
+        &self,
+        _collection: &str,
+        _vector: Vec<f32>,
+        _limit: u64,
+        _filter: Option<VectorFilter>,
+    ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
+        Box::pin(async { Err(VectorStoreError::Search("injected search error".into())) })
+    }
+
+    fn delete_by_ids(
+        &self,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+        self.0.delete_by_ids(collection, ids)
+    }
+
+    fn scroll_all(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> BoxFuture<'_, Result<ScrollResult, VectorStoreError>> {
+        self.0.scroll_all(collection, key_field)
+    }
+
+    fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
+        self.0.health_check()
+    }
+
+    fn create_keyword_indexes(
+        &self,
+        collection: &str,
+        fields: &[&str],
+    ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+        self.0.create_keyword_indexes(collection, fields)
+    }
+}
 
 #[tokio::test]
 async fn unsummarized_count_decreases_after_summary() {
@@ -262,6 +336,7 @@ async fn summarize_fails_when_provider_chat_fails() {
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        key_facts_dedup_threshold: 0.95,
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -324,6 +399,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        key_facts_dedup_threshold: 0.95,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -433,4 +509,145 @@ async fn load_summaries_nonexistent_conversation() {
     let memory = test_semantic_memory(false).await;
     let summaries = memory.load_summaries(ConversationId(999)).await.unwrap();
     assert!(summaries.is_empty());
+}
+
+async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::SemanticMemory {
+    let mut mock = MockProvider::default();
+    mock.supports_embeddings = true;
+    // Use a non-zero unit-ish vector so cosine similarity is well-defined (not 0/0).
+    mock.embedding = {
+        let mut v = vec![0.0f32; 384];
+        v[0] = 1.0;
+        v
+    };
+    let provider = AnyProvider::Mock(mock);
+
+    let sqlite = SqliteStore::new(":memory:").await.unwrap();
+    let pool = sqlite.pool().clone();
+    let store = crate::embedding_store::EmbeddingStore::new_sqlite(pool);
+
+    super::super::SemanticMemory {
+        sqlite,
+        qdrant: Some(Arc::new(store)),
+        provider,
+        embed_provider: None,
+        embedding_model: "test-model".into(),
+        vector_weight: 0.7,
+        keyword_weight: 0.3,
+        temporal_decay_enabled: false,
+        temporal_decay_half_life_days: 30,
+        mmr_enabled: false,
+        mmr_lambda: 0.7,
+        importance_enabled: false,
+        importance_weight: 0.15,
+        token_counter: Arc::new(TokenCounter::new()),
+        graph_store: None,
+        community_detection_failures: Arc::new(AtomicU64::new(0)),
+        graph_extraction_count: Arc::new(AtomicU64::new(0)),
+        graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
+        admission_control: None,
+        key_facts_dedup_threshold: threshold,
+    }
+}
+
+#[tokio::test]
+async fn store_key_facts_first_fact_stored() {
+    let memory = make_embed_memory_with_threshold(0.95).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    memory
+        .store_key_facts(cid, 1, &["unique fact".to_string()])
+        .await;
+    let results = memory.search_key_facts("unique fact", 5).await.unwrap();
+    assert!(!results.is_empty(), "first fact must be stored");
+}
+
+#[tokio::test]
+async fn store_key_facts_duplicate_skipped_at_threshold() {
+    // MockProvider always returns vec![0.0; 384], so cosine similarity between any two
+    // embeddings is always 1.0.  With threshold=0.95, the second insert must be skipped.
+    let memory = make_embed_memory_with_threshold(0.95).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    memory
+        .store_key_facts(cid, 1, &["fact A".to_string()])
+        .await;
+    memory
+        .store_key_facts(cid, 2, &["fact A again".to_string()])
+        .await;
+    // Both embed to the same unit vector (v[0]=1.0); second should be deduplicated.
+    let results = memory.search_key_facts("fact A", 10).await.unwrap();
+    assert_eq!(results.len(), 1, "duplicate fact must be skipped");
+}
+
+#[tokio::test]
+async fn store_key_facts_stored_when_threshold_above_one() {
+    // With threshold > 1.0, cosine similarity can never reach it, so dedup never fires.
+    // Both facts (same vector) must be stored.
+    let memory = make_embed_memory_with_threshold(2.0).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    memory
+        .store_key_facts(cid, 1, &["fact C".to_string()])
+        .await;
+    memory
+        .store_key_facts(cid, 2, &["fact C twin".to_string()])
+        .await;
+    let results = memory.search_key_facts("fact C", 10).await.unwrap();
+    assert_eq!(
+        results.len(),
+        2,
+        "both facts must be stored when threshold > 1.0"
+    );
+}
+
+#[tokio::test]
+async fn store_key_facts_fail_open_on_search_error() {
+    // When search_collection returns an error, the dedup check is skipped and the fact
+    // must still be stored (fail-open guarantee).
+    let mut mock = MockProvider::default();
+    mock.supports_embeddings = true;
+    mock.embedding = {
+        let mut v = vec![0.0f32; 384];
+        v[0] = 1.0;
+        v
+    };
+    let provider = AnyProvider::Mock(mock);
+
+    let sqlite = SqliteStore::new(":memory:").await.unwrap();
+    let pool = sqlite.pool().clone();
+    let failing_store = FailingSearchStore(DbVectorStore::new(pool.clone()));
+    let store = crate::embedding_store::EmbeddingStore::with_store(Box::new(failing_store), pool);
+
+    let memory = super::super::SemanticMemory {
+        sqlite,
+        qdrant: Some(Arc::new(store)),
+        provider,
+        embed_provider: None,
+        embedding_model: "test-model".into(),
+        vector_weight: 0.7,
+        keyword_weight: 0.3,
+        temporal_decay_enabled: false,
+        temporal_decay_half_life_days: 30,
+        mmr_enabled: false,
+        mmr_lambda: 0.7,
+        importance_enabled: false,
+        importance_weight: 0.15,
+        token_counter: Arc::new(TokenCounter::new()),
+        graph_store: None,
+        community_detection_failures: Arc::new(AtomicU64::new(0)),
+        graph_extraction_count: Arc::new(AtomicU64::new(0)),
+        graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
+        admission_control: None,
+        key_facts_dedup_threshold: 0.95,
+    };
+
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    // store_key_facts must complete without panicking even though every search call will fail.
+    // This is the documented fail-open guarantee: a dedup-search error does not suppress
+    // the insert, and the error is not propagated to the caller.
+    memory
+        .store_key_facts(cid, 1, &["fact stored despite search error".to_string()])
+        .await;
+    // Reaching this line confirms: no panic, no propagated error.
 }

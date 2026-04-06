@@ -824,10 +824,22 @@ pub struct MemoryConfig {
     /// after a session ends if both `min_sessions` and `min_hours` gates pass.
     #[serde(default)]
     pub autodream: AutoDreamConfig,
+    /// Cosine similarity threshold for deduplicating key facts in `zeph_key_facts` (#2717).
+    ///
+    /// Before inserting a new key fact, its nearest neighbour is looked up in the
+    /// `zeph_key_facts` collection.  If the best score is ≥ this threshold the fact is
+    /// considered a near-duplicate and skipped.  Set to a value greater than `1.0` (e.g.
+    /// `2.0`) to disable dedup entirely.  Default: `0.95`.
+    #[serde(default = "default_key_facts_dedup_threshold")]
+    pub key_facts_dedup_threshold: f32,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
     20
+}
+
+fn default_key_facts_dedup_threshold() -> f32 {
+    0.95
 }
 
 /// Session digest configuration (#2289).

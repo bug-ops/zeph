@@ -48,6 +48,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        key_facts_dedup_threshold: 0.95,
     }
 }
 
@@ -475,6 +476,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         graph_extraction_failures: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        key_facts_dedup_threshold: 0.95,
     };
 
     memory

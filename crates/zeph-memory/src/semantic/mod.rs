@@ -78,6 +78,10 @@ pub struct SemanticMemory {
     pub(crate) graph_extraction_failures: Arc<AtomicU64>,
     /// A-MAC admission control gate. When `Some`, each `remember()` call is evaluated.
     pub(crate) admission_control: Option<Arc<AdmissionControl>>,
+    /// Cosine similarity threshold for skipping near-duplicate key facts (0.0–1.0).
+    /// When a new fact's nearest neighbour in `zeph_key_facts` has score >= this value,
+    /// the fact is considered a duplicate and not inserted.  Default: `0.95`.
+    pub(crate) key_facts_dedup_threshold: f32,
 }
 
 impl SemanticMemory {
@@ -177,6 +181,7 @@ impl SemanticMemory {
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            key_facts_dedup_threshold: 0.95,
         })
     }
 
@@ -222,6 +227,7 @@ impl SemanticMemory {
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            key_facts_dedup_threshold: 0.95,
         })
     }
 
@@ -299,6 +305,16 @@ impl SemanticMemory {
         self
     }
 
+    /// Set the cosine similarity threshold used to skip near-duplicate key facts on insert.
+    ///
+    /// When a candidate fact's nearest neighbour in `zeph_key_facts` has a score ≥ this value,
+    /// the fact is not stored.  Default: `0.95`.
+    #[must_use]
+    pub fn with_key_facts_dedup_threshold(mut self, threshold: f32) -> Self {
+        self.key_facts_dedup_threshold = threshold;
+        self
+    }
+
     /// Attach a dedicated embedding provider for write-path and backfill operations.
     ///
     /// When set, all batch embedding calls (backfill, `remember`) route through this provider
@@ -351,6 +367,7 @@ impl SemanticMemory {
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            key_facts_dedup_threshold: 0.95,
         }
     }
 
@@ -415,6 +432,7 @@ impl SemanticMemory {
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            key_facts_dedup_threshold: 0.95,
         })
     }
 

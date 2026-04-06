@@ -334,6 +334,9 @@ impl AppBuilder {
             memory = memory.with_embed_provider(ep);
         }
 
+        memory =
+            memory.with_key_facts_dedup_threshold(self.config.memory.key_facts_dedup_threshold);
+
         Ok(memory)
     }
 

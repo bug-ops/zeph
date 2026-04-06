@@ -227,37 +227,74 @@ impl SemanticMemory {
             return;
         }
 
-        let first_payload = serde_json::json!({
-            "conversation_id": conversation_id.0,
-            "fact_text": first_fact,
-            "source_summary_id": source_summary_id,
-        });
-        if let Err(e) = qdrant
-            .store_to_collection(KEY_FACTS_COLLECTION, first_payload, first_vector)
-            .await
-        {
-            tracing::warn!("Failed to store key fact: {e:#}");
-        }
+        let threshold = self.key_facts_dedup_threshold;
+        self.store_key_fact_if_unique(
+            qdrant,
+            conversation_id,
+            source_summary_id,
+            first_fact,
+            first_vector,
+            threshold,
+        )
+        .await;
 
         for fact in &key_facts[1..] {
             match self.provider.embed(fact).await {
                 Ok(vector) => {
-                    let payload = serde_json::json!({
-                        "conversation_id": conversation_id.0,
-                        "fact_text": fact,
-                        "source_summary_id": source_summary_id,
-                    });
-                    if let Err(e) = qdrant
-                        .store_to_collection(KEY_FACTS_COLLECTION, payload, vector)
-                        .await
-                    {
-                        tracing::warn!("Failed to store key fact: {e:#}");
-                    }
+                    self.store_key_fact_if_unique(
+                        qdrant,
+                        conversation_id,
+                        source_summary_id,
+                        fact,
+                        vector,
+                        threshold,
+                    )
+                    .await;
                 }
                 Err(e) => {
                     tracing::warn!("Failed to embed key fact: {e:#}");
                 }
             }
+        }
+    }
+
+    async fn store_key_fact_if_unique(
+        &self,
+        qdrant: &crate::embedding_store::EmbeddingStore,
+        conversation_id: ConversationId,
+        source_summary_id: i64,
+        fact: &str,
+        vector: Vec<f32>,
+        threshold: f32,
+    ) {
+        match qdrant
+            .search_collection(KEY_FACTS_COLLECTION, &vector, 1, None)
+            .await
+        {
+            Ok(hits) if hits.first().is_some_and(|h| h.score >= threshold) => {
+                tracing::debug!(
+                    score = hits[0].score,
+                    threshold,
+                    "key-facts: skipping near-duplicate fact"
+                );
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("key-facts: dedup search failed, storing anyway: {e:#}");
+            }
+        }
+
+        let payload = serde_json::json!({
+            "conversation_id": conversation_id.0,
+            "fact_text": fact,
+            "source_summary_id": source_summary_id,
+        });
+        if let Err(e) = qdrant
+            .store_to_collection(KEY_FACTS_COLLECTION, payload, vector)
+            .await
+        {
+            tracing::warn!("Failed to store key fact: {e:#}");
         }
     }
 
