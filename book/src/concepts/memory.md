@@ -606,6 +606,51 @@ confidence_threshold         = 0.7
 
 Store routing is disabled by default (`enabled = false`). When disabled, `HeuristicRouter` is used directly, which is equivalent to `strategy = "heuristic"` with routing always enabled.
 
+## Memory Tiers
+
+The tier promotion system organises memories into a hierarchy of four conceptual tiers:
+
+| Tier | Description |
+|------|-------------|
+| **Working memory** | Active conversation messages in the current session |
+| **Episodic** | Recent messages persisted to SQLite after the turn completes |
+| **Semantic** | Frequently-recalled facts promoted from episodic by the background sweep |
+| **Archival** | Long-term storage; entries demoted from semantic when they age out of active recall |
+
+Promotion is driven by a background sweep that clusters near-duplicate episodic messages by cosine similarity. When a fact appears in at least `promotion_min_sessions` distinct sessions, the cluster is distilled into a single semantic-tier entry via an LLM call, and the source episodic entries are marked `agent_visible = false`.
+
+The tier system is disabled by default. Enable it under `[memory.tiers]`:
+
+```toml
+[memory.tiers]
+enabled                  = true
+promotion_min_sessions   = 3      # distinct sessions a fact must appear in before promotion (>= 2)
+similarity_threshold     = 0.92   # cosine similarity threshold for clustering episodic duplicates
+sweep_interval_secs      = 3600   # how often the background sweep runs (seconds)
+sweep_batch_size         = 100    # messages evaluated per sweep cycle (>= 1)
+```
+
+### MemScene Consolidation
+
+MemScene is a second-pass sweep that consolidates groups of semantically related *semantic-tier* messages into scene-level summaries. A scene covers a coherent sub-topic: its embedding captures the collective meaning of its member messages, compressing the vector space without discarding information. Scene summaries are indexed and searchable in future sessions.
+
+MemScene is configured alongside the tier system:
+
+```toml
+[memory.tiers]
+enabled                       = true
+scene_enabled                 = true
+scene_similarity_threshold    = 0.80   # cosine similarity threshold for scene grouping (in [0.5, 1.0])
+scene_batch_size              = 50     # unassigned semantic messages processed per sweep (>= 1)
+scene_provider                = "fast" # [[llm.providers]] name for scene label/summary generation
+scene_sweep_interval_secs     = 7200   # how often the scene consolidation sweep runs (seconds)
+```
+
+`scene_provider` must reference a `[[llm.providers]]` entry. When unset, the default provider is used. Scenes are stored in SQLite alongside their member message IDs and can be inspected with `zeph memory stats`.
+
+> [!NOTE]
+> `scene_similarity_threshold` is validated to be in `[0.5, 1.0]` and `scene_batch_size` must be `>= 1`. Invalid values are rejected at startup.
+
 ## Next Steps
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

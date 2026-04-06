@@ -118,3 +118,55 @@ RAG injection is a no-op when the collection is empty — no error is raised, th
 
 > [!TIP]
 > Run `zeph ingest ./docs/` once to populate the knowledge base. Subsequent agent sessions will automatically retrieve and inject relevant chunks without any additional setup.
+
+## Configuration Reference
+
+All document RAG settings live under `[memory.documents]`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `rag_enabled` | `bool` | `false` | Enable retrieval injection into the agent context |
+| `collection` | `string` | `"zeph_documents"` | Target Qdrant collection for document chunks |
+| `chunk_size` | `usize` | `1000` | Maximum tokens per chunk; controls retrieval granularity |
+| `chunk_overlap` | `usize` | `100` | Overlap between adjacent chunks in tokens; reduces boundary information loss |
+| `top_k` | `usize` | `3` | Number of chunks injected per turn |
+
+### Embedding Provider
+
+Set `embed_provider` on `[memory.semantic]` to use a dedicated `[[llm.providers]]` entry for generating document embeddings. This avoids contention with the main chat provider (especially relevant for Ollama, which serialises requests per model):
+
+```toml
+[[llm.providers]]
+name  = "ollama-embed"
+type  = "ollama"
+model = "nomic-embed-text"
+embed = true
+
+[memory.semantic]
+enabled        = true
+embed_provider = "ollama-embed"
+
+[memory.documents]
+rag_enabled   = true
+collection    = "zeph_documents"
+chunk_size    = 1000
+chunk_overlap = 100
+top_k         = 5
+```
+
+### Retrieval Quality
+
+Two parameters control how retrieved content is filtered and budgeted during context assembly. These are part of `[index]` (code indexer), but apply similarly to document retrieval when both are active:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `score_threshold` | `0.25` | Minimum cosine similarity score for a chunk to be injected |
+| `budget_ratio` | `0.40` | Fraction of the context token budget allocated to retrieved results |
+
+```toml
+[index]
+score_threshold = 0.25   # drop chunks below this similarity score
+budget_ratio    = 0.40   # allocate up to 40% of context budget to index/doc results
+```
+
+Lower `score_threshold` values increase recall but may inject weakly relevant chunks. Raise it (e.g. `0.4`) for stricter relevance filtering. Adjust `budget_ratio` to balance document context against conversation history within the token budget.
