@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Surface compaction failure as user-visible message** (`#2718`): when context compaction fails to persist to the database (SQLite or Qdrant), a user-visible message is now sent: "Context compaction failed — response quality may be affected in long sessions." When the compaction probe rejects a summary as too lossy (recoverable), "Context compaction skipped this turn — will retry." is sent instead. Previously both cases were silent (tracing::warn only). Changes in `crates/zeph-core/src/agent/context/summarization.rs`.
+
 - **Thread leak in `store::compression_predictor` tests** (`#2716`): `#[tokio::test]` tests in `store::compression_predictor::tests` now call `store.pool().close().await` before returning, ensuring all sqlx-sqlite background connection threads fully exit before nextest measures the thread count. Previously, pool drop only signalled threads to stop without waiting, causing nextest to attribute lingering connection threads as a LEAK for the concurrently-running pure `compression_predictor::tests::training_on_high_ratio_improves_high_ratio_prediction` test.
 
 ### Added

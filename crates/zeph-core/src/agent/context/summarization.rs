@@ -936,6 +936,7 @@ impl<C: Channel> Agent<C> {
             let ids = sqlite
                 .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
                 .await;
+            let mut persist_failed = false;
             match ids {
                 Ok(ids) if ids.len() >= 2 => {
                     // ids[0] is the system prompt; compact ids[1..=compacted_count]
@@ -946,14 +947,17 @@ impl<C: Channel> Agent<C> {
                         .await
                     {
                         tracing::warn!("failed to persist compaction in sqlite: {e:#}");
+                        persist_failed = true;
                     } else if let Err(e) = memory.store_session_summary(cid, &summary).await {
                         tracing::warn!("failed to store session summary in Qdrant: {e:#}");
+                        persist_failed = true;
                     }
                 }
                 Ok(_) => {
                     // Not enough messages in DB — fall back to legacy summary storage
                     if let Err(e) = memory.store_session_summary(cid, &summary).await {
                         tracing::warn!("failed to store session summary: {e:#}");
+                        persist_failed = true;
                     }
                 }
                 Err(e) => {
@@ -961,7 +965,17 @@ impl<C: Channel> Agent<C> {
                     if let Err(e) = memory.store_session_summary(cid, &summary).await {
                         tracing::warn!("failed to store session summary: {e:#}");
                     }
+                    persist_failed = true;
                 }
+            }
+            if persist_failed {
+                let _ = self
+                    .channel
+                    .send(
+                        "Context compaction failed — response quality may be affected in long \
+                         sessions.",
+                    )
+                    .await;
             }
         }
 
@@ -2024,6 +2038,10 @@ impl<C: Channel> Agent<C> {
                             crate::agent::context_manager::CompactionState::CompactedThisTurn {
                                 cooldown: self.context_manager.compaction_cooldown_turns,
                             };
+                        let _ = self
+                            .channel
+                            .send("Context compaction skipped this turn — will retry.")
+                            .await;
                     }
                     CompactionOutcome::Compacted => {
                         // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all
@@ -2251,6 +2269,7 @@ impl<C: Channel> Agent<C> {
             let ids = sqlite
                 .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
                 .await;
+            let mut persist_failed = false;
             match ids {
                 Ok(ids) if ids.len() >= 2 => {
                     let start = ids[1];
@@ -2260,13 +2279,16 @@ impl<C: Channel> Agent<C> {
                         .await
                     {
                         tracing::warn!("failed to persist compaction in sqlite: {e:#}");
+                        persist_failed = true;
                     } else if let Err(e) = memory.store_session_summary(cid, &summary).await {
                         tracing::warn!("failed to store session summary in Qdrant: {e:#}");
+                        persist_failed = true;
                     }
                 }
                 Ok(_) => {
                     if let Err(e) = memory.store_session_summary(cid, &summary).await {
                         tracing::warn!("failed to store session summary: {e:#}");
+                        persist_failed = true;
                     }
                 }
                 Err(e) => {
@@ -2274,7 +2296,17 @@ impl<C: Channel> Agent<C> {
                     if let Err(e) = memory.store_session_summary(cid, &summary).await {
                         tracing::warn!("failed to store session summary: {e:#}");
                     }
+                    persist_failed = true;
                 }
+            }
+            if persist_failed {
+                let _ = self
+                    .channel
+                    .send(
+                        "Context compaction failed — response quality may be affected in long \
+                         sessions.",
+                    )
+                    .await;
             }
         }
 
