@@ -10,7 +10,7 @@
 /// `PostgreSQL`: `plainto_tsquery` handles most sanitization; strip obvious
 /// injection attempts (single quotes).
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn sanitize_fts_query(query: &str) -> String {
     query
         .split(|c: char| !c.is_alphanumeric())
@@ -34,7 +34,7 @@ pub fn sanitize_fts_query(query: &str) -> String {
 /// `SQLite`: `messages_fts MATCH ?`
 /// `PostgreSQL`: `m.tsv @@ plainto_tsquery('english', $1)`
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn messages_fts_where() -> &'static str {
     "messages_fts MATCH ?"
 }
@@ -50,7 +50,7 @@ pub fn messages_fts_where() -> &'static str {
 /// `SQLite`: `JOIN messages_fts f ON f.rowid = m.id`
 /// `PostgreSQL`: empty string (tsv column is on messages directly)
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn messages_fts_join() -> &'static str {
     "JOIN messages_fts f ON f.rowid = m.id"
 }
@@ -66,7 +66,7 @@ pub fn messages_fts_join() -> &'static str {
 /// `SQLite`: `-rank AS score` (FTS5 `rank` is negative; negate for positive-is-better)
 /// `PostgreSQL`: `ts_rank(m.tsv, plainto_tsquery('english', $1)) AS score`
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn messages_fts_rank_select() -> &'static str {
     "-rank AS score"
 }
@@ -82,7 +82,7 @@ pub fn messages_fts_rank_select() -> &'static str {
 /// `SQLite`: `rank` (ascending — FTS5 rank is negative so ASC = best first)
 /// `PostgreSQL`: `score DESC` (`ts_rank` is positive so DESC = best first)
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn messages_fts_order_by() -> &'static str {
     "rank"
 }
@@ -100,7 +100,7 @@ pub fn messages_fts_order_by() -> &'static str {
 /// `SQLite`: `graph_entities_fts MATCH ?`
 /// `PostgreSQL`: `e.tsv @@ plainto_tsquery('english', $1)`
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn graph_entities_fts_where() -> &'static str {
     "graph_entities_fts MATCH ?"
 }
@@ -116,7 +116,7 @@ pub fn graph_entities_fts_where() -> &'static str {
 /// `SQLite`: `JOIN graph_entities_fts fts ON fts.rowid = e.id`
 /// `PostgreSQL`: empty string (tsv column lives on `graph_entities`)
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn graph_entities_fts_join() -> &'static str {
     "JOIN graph_entities_fts fts ON fts.rowid = e.id"
 }
@@ -134,7 +134,7 @@ pub fn graph_entities_fts_join() -> &'static str {
 /// `PostgreSQL`: `ts_rank(ARRAY[0,0,1,10], e.tsv, plainto_tsquery('english', $1)) AS fts_rank`
 ///   (weight array: [D, C, B, A]; A=name weight 10, B=summary weight 1)
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn graph_entities_fts_rank_select() -> &'static str {
     "-bm25(graph_entities_fts, 10.0, 1.0) AS fts_rank"
 }
@@ -149,7 +149,7 @@ pub fn graph_entities_fts_rank_select() -> &'static str {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
     mod sqlite {
         use super::*;
 

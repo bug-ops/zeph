@@ -370,6 +370,13 @@ pub(crate) async fn run_daemon(
 
     let (loopback_channel, loopback_handle) = zeph_core::LoopbackChannel::pair(64);
 
+    // Pre-resolve RL embed dim before embedding_provider is moved into the agent builder.
+    let rl_embed_dim_resolved = if config.skills.rl_routing_enabled {
+        Some(crate::runner::resolve_rl_embed_dim(&config.skills, &embedding_provider).await)
+    } else {
+        None
+    };
+
     let agent = Box::pin(
         Agent::new_with_registry_arc(
             provider.clone(),
@@ -421,8 +428,7 @@ pub(crate) async fn run_daemon(
     };
 
     // SkillOrchestra: load persisted RL routing head weights if enabled.
-    let agent = if config.skills.rl_routing_enabled {
-        let dim = config.skills.rl_embed_dim.unwrap_or(1536);
+    let agent = if let Some(dim) = rl_embed_dim_resolved {
         let head = crate::runner::load_rl_head(&memory)
             .await
             .unwrap_or_else(|| {

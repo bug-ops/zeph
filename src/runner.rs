@@ -1300,6 +1300,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
 
+    // Pre-resolve RL embed dim before embedding_provider is moved into the agent builder.
+    let rl_embed_dim_resolved = if config.skills.rl_routing_enabled {
+        Some(resolve_rl_embed_dim(&config.skills, &embedding_provider).await)
+    } else {
+        None
+    };
+
     let agent = Agent::new_with_registry_arc(
         provider.clone(),
         embedding_provider.clone(),
@@ -1377,8 +1384,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     // SkillOrchestra: load persisted RL routing head weights if enabled.
-    let agent = if config.skills.rl_routing_enabled {
-        let dim = config.skills.rl_embed_dim.unwrap_or(1536);
+    let agent = if let Some(dim) = rl_embed_dim_resolved {
         let head = load_rl_head(&memory).await.unwrap_or_else(|| {
             // Cold start: no persisted weights yet, initialize a fresh head.
             // Dimension must match the configured embedding provider output.
@@ -2040,6 +2046,33 @@ pub(crate) async fn load_rl_head(
         Err(e) => {
             tracing::debug!("rl_head: failed to load weights: {e:#}");
             None
+        }
+    }
+}
+
+/// Resolve the RL routing head embedding dimension.
+///
+/// Uses the explicit `rl_embed_dim` config value when set. Otherwise probes the
+/// embedding provider with a single empty-string call to determine the actual
+/// output dimension at runtime. Falls back to 1536 with a WARN when the probe
+/// also fails, instructing the operator to set `skills.rl_embed_dim` explicitly.
+pub(crate) async fn resolve_rl_embed_dim(
+    skills_config: &zeph_core::config::SkillsConfig,
+    embedding_provider: &LlmAnyProvider,
+) -> usize {
+    if let Some(dim) = skills_config.rl_embed_dim {
+        return dim;
+    }
+    match embedding_provider.embed(" ").await {
+        Ok(v) if !v.is_empty() => v.len(),
+        Ok(_) | Err(_) => {
+            const FALLBACK: usize = 1536;
+            tracing::warn!(
+                fallback = FALLBACK,
+                "rl_head: could not probe embedding dimension from provider; \
+                 set `skills.rl_embed_dim` in config to avoid this fallback"
+            );
+            FALLBACK
         }
     }
 }
