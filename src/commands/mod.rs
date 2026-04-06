@@ -8,6 +8,8 @@ pub(crate) mod ingest;
 pub(crate) mod memory;
 pub(crate) mod migrate;
 pub(crate) mod router;
+#[cfg(feature = "scheduler")]
+pub(crate) mod schedule;
 #[cfg(feature = "acp")]
 pub(crate) mod sessions;
 pub(crate) mod skill;

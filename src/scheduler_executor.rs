@@ -323,6 +323,7 @@ impl SchedulerExecutor {
                 &params.kind,
                 "oneshot",
                 Some(&run_at.to_rfc3339()),
+                "",
             )
             .await
             .map_err(|e| ToolError::InvalidParams {
@@ -736,6 +737,7 @@ mod tests {
                 "custom",
                 "oneshot",
                 Some("2030-01-01T10:00:00Z"),
+                "",
             )
             .await
             .unwrap();

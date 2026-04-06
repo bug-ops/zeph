@@ -36,6 +36,8 @@ use crate::commands::agents::handle_agents_command;
 use crate::commands::classifiers::handle_classifiers_command;
 use crate::commands::memory::handle_memory_command;
 use crate::commands::router::handle_router_command;
+#[cfg(feature = "scheduler")]
+use crate::commands::schedule::handle_schedule_command;
 #[cfg(feature = "acp")]
 use crate::commands::sessions::handle_sessions_command;
 use crate::commands::skill::handle_skill_command;
@@ -364,6 +366,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 cli.config.as_deref(),
             )
             .await;
+        }
+        #[cfg(feature = "scheduler")]
+        Some(Command::Schedule { command: sched_cmd }) => {
+            return handle_schedule_command(sched_cmd, cli.config.as_deref()).await;
         }
         #[cfg(feature = "acp")]
         Some(Command::Sessions { command: sess_cmd }) => {

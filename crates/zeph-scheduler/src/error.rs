@@ -13,4 +13,6 @@ pub enum SchedulerError {
     Db(#[from] zeph_db::DbError),
     #[error("task execution failed: {0}")]
     TaskFailed(String),
+    #[error("job '{0}' already exists")]
+    DuplicateJob(String),
 }

@@ -92,6 +92,7 @@ impl Scheduler {
                             task.kind.as_str(),
                             "periodic",
                             None,
+                            "",
                         )
                         .await?;
                     // Always set next_run for periodic tasks if not already persisted.
@@ -119,6 +120,7 @@ impl Scheduler {
                             task.kind.as_str(),
                             "oneshot",
                             Some(&run_at.to_rfc3339()),
+                            "",
                         )
                         .await?;
                 }
@@ -205,6 +207,7 @@ impl Scheduler {
                         desc.kind.as_str(),
                         "periodic",
                         None,
+                        "",
                     )
                     .await
                 {
@@ -227,6 +230,7 @@ impl Scheduler {
                         desc.kind.as_str(),
                         "oneshot",
                         Some(&run_at.to_rfc3339()),
+                        "",
                     )
                     .await
                 {

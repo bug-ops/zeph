@@ -187,7 +187,7 @@ tui = ["dep:zeph-tui"]
 discord = ["zeph-channels/discord"]
 slack = ["zeph-channels/slack"]
 gateway = ["dep:zeph-gateway"]
-scheduler = ["dep:zeph-scheduler", "dep:cron", "dep:schemars", "dep:chrono", "zeph-core/scheduler"]
+scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "dep:chrono", "zeph-core/scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
@@ -200,6 +200,7 @@ postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "env"] }
 cron = { workspace = true, optional = true }

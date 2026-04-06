@@ -226,6 +226,12 @@ pub(crate) enum Command {
         #[arg(long, default_value = "zeph_documents")]
         collection: String,
     },
+    /// Manage scheduled jobs
+    #[cfg(feature = "scheduler")]
+    Schedule {
+        #[command(subcommand)]
+        command: ScheduleCommand,
+    },
     /// Manage ACP session history
     #[cfg(feature = "acp")]
     Sessions {
@@ -371,6 +377,36 @@ pub(crate) enum SkillCommand {
     },
 }
 
+#[cfg(feature = "scheduler")]
+#[derive(Subcommand)]
+pub(crate) enum ScheduleCommand {
+    /// List all active scheduled jobs
+    List,
+    /// Add a new periodic cron job
+    Add {
+        /// Cron expression (5 or 6 fields, e.g. "0 * * * *")
+        cron: String,
+        /// Task prompt to execute on each trigger
+        prompt: String,
+        /// Job name (auto-generated from prompt if omitted)
+        #[arg(long)]
+        name: Option<String>,
+        /// Task kind (default: "custom")
+        #[arg(long, default_value = "custom")]
+        kind: String,
+    },
+    /// Remove a scheduled job by name
+    Remove {
+        /// Job name to remove
+        name: String,
+    },
+    /// Show details of a scheduled job
+    Show {
+        /// Job name to inspect
+        name: String,
+    },
+}
+
 #[cfg(feature = "acp")]
 #[derive(Subcommand)]
 pub(crate) enum SessionsCommand {
@@ -437,6 +473,59 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn cli_parses_schedule_list() {
+        use super::{Command, ScheduleCommand};
+        let cli = Cli::try_parse_from(["zeph", "schedule", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Schedule {
+                command: ScheduleCommand::List
+            })
+        ));
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn cli_parses_schedule_add() {
+        use super::{Command, ScheduleCommand};
+        let cli =
+            Cli::try_parse_from(["zeph", "schedule", "add", "0 * * * *", "run report"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Schedule {
+                command: ScheduleCommand::Add { .. }
+            })
+        ));
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn cli_parses_schedule_remove() {
+        use super::{Command, ScheduleCommand};
+        let cli = Cli::try_parse_from(["zeph", "schedule", "remove", "my-job"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Schedule {
+                command: ScheduleCommand::Remove { .. }
+            })
+        ));
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn cli_parses_schedule_show() {
+        use super::{Command, ScheduleCommand};
+        let cli = Cli::try_parse_from(["zeph", "schedule", "show", "my-job"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Schedule {
+                command: ScheduleCommand::Show { .. }
+            })
+        ));
+    }
 
     #[test]
     fn cli_parses_extended_context_flag() {

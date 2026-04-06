@@ -16,6 +16,8 @@ pub struct ScheduledTaskInfo {
     pub cron_expr: String,
     /// Next scheduled run time as an ISO 8601 string, or empty if unknown.
     pub next_run: String,
+    /// Stored task prompt (empty for config-driven tasks).
+    pub task_data: String,
 }
 
 pub struct JobStore {
@@ -69,11 +71,11 @@ impl JobStore {
         cron_expr: &str,
         kind: &str,
     ) -> Result<(), SchedulerError> {
-        self.upsert_job_with_mode(name, cron_expr, kind, "periodic", None)
+        self.upsert_job_with_mode(name, cron_expr, kind, "periodic", None, "")
             .await
     }
 
-    /// Upsert a job definition with explicit `task_mode` and optional `run_at`.
+    /// Upsert a job definition with explicit `task_mode`, optional `run_at`, and `task_data`.
     ///
     /// # Errors
     ///
@@ -85,24 +87,66 @@ impl JobStore {
         kind: &str,
         task_mode: &str,
         run_at: Option<&str>,
+        task_data: &str,
     ) -> Result<(), SchedulerError> {
         zeph_db::query(sql!(
-            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at, task_data)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(name) DO UPDATE SET
                cron_expr = excluded.cron_expr,
                kind = excluded.kind,
                task_mode = excluded.task_mode,
-               run_at = excluded.run_at"
+               run_at = excluded.run_at,
+               task_data = excluded.task_data"
         ))
         .bind(name)
         .bind(cron_expr)
         .bind(kind)
         .bind(task_mode)
         .bind(run_at)
+        .bind(task_data)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Insert a new job. Returns [`SchedulerError::DuplicateJob`] if a job with this name exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::DuplicateJob`] on unique constraint violation,
+    /// or [`SchedulerError::Database`] on other SQL errors.
+    pub async fn insert_job(
+        &self,
+        name: &str,
+        cron_expr: &str,
+        kind: &str,
+        task_mode: &str,
+        run_at: Option<&str>,
+        task_data: &str,
+    ) -> Result<(), SchedulerError> {
+        let result = zeph_db::query(sql!(
+            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at, task_data)
+             VALUES (?, ?, ?, ?, ?, ?)"
+        ))
+        .bind(name)
+        .bind(cron_expr)
+        .bind(kind)
+        .bind(task_mode)
+        .bind(run_at)
+        .bind(task_data)
+        .execute(&self.pool)
+        .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(zeph_db::SqlxError::Database(db_err))
+                if db_err.message().contains("UNIQUE constraint failed")
+                    || db_err.code().as_deref() == Some("23505") =>
+            {
+                Err(SchedulerError::DuplicateJob(name.to_string()))
+            }
+            Err(e) => Err(SchedulerError::Database(e)),
+        }
     }
 
     /// Record a job execution and persist the next scheduled run time.
@@ -222,21 +266,23 @@ impl JobStore {
     ///
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
-        let rows: Vec<(String, String, String, String, Option<String>)> = zeph_db::query_as(sql!(
-            "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at) \
-             FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(String, String, String, String, Option<String>, String)> =
+            zeph_db::query_as(sql!(
+                "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data \
+                 FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
+            ))
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(name, kind, task_mode, cron_expr, next_run)| ScheduledTaskInfo {
+                |(name, kind, task_mode, cron_expr, next_run, task_data)| ScheduledTaskInfo {
                     name,
                     kind,
                     task_mode,
                     cron_expr,
                     next_run: next_run.unwrap_or_default(),
+                    task_data,
                 },
             )
             .collect())
@@ -362,6 +408,7 @@ mod tests {
                 "health_check",
                 "oneshot",
                 Some("2026-01-01T01:00:00Z"),
+                "",
             )
             .await
             .unwrap();
@@ -387,6 +434,7 @@ mod tests {
                 "health_check",
                 "oneshot",
                 Some("2026-01-01T01:00:00Z"),
+                "",
             )
             .await
             .unwrap();
@@ -410,6 +458,7 @@ mod tests {
                 "custom",
                 "oneshot",
                 Some("2026-06-01T10:00:00Z"),
+                "",
             )
             .await
             .unwrap();
@@ -437,6 +486,7 @@ mod tests {
                 "custom",
                 "oneshot",
                 Some("2030-01-01T10:00:00Z"),
+                "",
             )
             .await
             .unwrap();
@@ -468,6 +518,7 @@ mod tests {
                 "custom",
                 "oneshot",
                 Some("2026-01-01T01:00:00Z"),
+                "",
             )
             .await
             .unwrap();
@@ -486,5 +537,77 @@ mod tests {
             .await
             .unwrap();
         assert!(store.job_exists("dup").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn insert_job_success() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .insert_job(
+                "new_job",
+                "0 * * * * *",
+                "custom",
+                "periodic",
+                None,
+                "run daily report",
+            )
+            .await
+            .unwrap();
+        assert!(store.job_exists("new_job").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn insert_job_duplicate_returns_error() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .insert_job(
+                "dup_job",
+                "0 * * * * *",
+                "custom",
+                "periodic",
+                None,
+                "first",
+            )
+            .await
+            .unwrap();
+        let result = store
+            .insert_job(
+                "dup_job",
+                "0 0 * * * *",
+                "custom",
+                "periodic",
+                None,
+                "second",
+            )
+            .await;
+        assert!(
+            matches!(result, Err(SchedulerError::DuplicateJob(ref n)) if n == "dup_job"),
+            "expected DuplicateJob, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_jobs_full_includes_task_data() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .insert_job(
+                "task_job",
+                "0 * * * * *",
+                "custom",
+                "periodic",
+                None,
+                "my prompt",
+            )
+            .await
+            .unwrap();
+        let jobs = store.list_jobs_full().await.unwrap();
+        let job = jobs.iter().find(|j| j.name == "task_job").unwrap();
+        assert_eq!(job.task_data, "my prompt");
     }
 }
