@@ -1306,7 +1306,8 @@ impl App {
     }
 
     fn format_cost_stats(&self) -> String {
-        format!(
+        use std::fmt::Write as _;
+        let mut out = format!(
             "Cost:\n  Spent: ${:.4}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
             self.metrics.cost_spent_cents / 100.0,
             self.metrics.prompt_tokens,
@@ -1314,7 +1315,38 @@ impl App {
             self.metrics.total_tokens,
             self.metrics.cache_read_tokens,
             self.metrics.cache_creation_tokens,
-        )
+        );
+        if !self.metrics.provider_cost_breakdown.is_empty() {
+            let _ = write!(out, "\n\nPer-provider breakdown:");
+            let _ = write!(
+                out,
+                "\n  {:<16} {:<28} {:>8} {:>9} {:>9} {:>8} {:>8}",
+                "Provider", "Model", "Input", "Cache-R", "Cache-W", "Output", "Cost"
+            );
+            for (name, usage) in &self.metrics.provider_cost_breakdown {
+                let model_display = if usage.model.chars().count() > 26 {
+                    format!("{}…", usage.model.chars().take(25).collect::<String>())
+                } else {
+                    usage.model.clone()
+                };
+                let _ = write!(
+                    out,
+                    "\n  {:<16} {:<28} {:>8} {:>9} {:>9} {:>8} {:>8}",
+                    name,
+                    model_display,
+                    usage.input_tokens,
+                    usage.cache_read_tokens,
+                    usage.cache_write_tokens,
+                    usage.output_tokens,
+                    format!("${:.4}", usage.cost_cents / 100.0),
+                );
+            }
+            let _ = write!(
+                out,
+                "\n\n  Note: excludes subsystem calls (compaction, graph extraction, planning)"
+            );
+        }
+        out
     }
 
     fn format_tool_list(&self) -> String {
