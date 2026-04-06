@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`build_skill_matcher` now uses embedding provider** (`#2686`): `runner.rs`, `acp.rs`, and `daemon.rs` were passing the main chat provider to `build_skill_matcher` instead of the configured embedding provider, causing a Qdrant dimension mismatch on every session startup and falling back to returning all skills.
+
 - **`mcp.tool_discovery.embedding_provider` config field now respected in `runner.rs`** (`#2684`): `create_mcp_registry` was always called with the main chat provider instead of the configured embed provider. The runner now resolves `config.mcp.tool_discovery.embedding_provider` via `create_named_provider`, matching the pattern used by the agent setup path. Falls back to the main provider when the field is empty or resolution fails.
 
 ## [0.18.4] - 2026-04-06

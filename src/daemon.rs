@@ -242,7 +242,7 @@ pub(crate) async fn run_daemon(
         .collect();
     let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
     let matcher = app
-        .build_skill_matcher(&provider, &all_meta_refs, &memory)
+        .build_skill_matcher(&embedding_provider, &all_meta_refs, &memory)
         .await;
     let skill_count = all_meta_owned.len();
     tracing::info!("skills loaded: {skill_count}");

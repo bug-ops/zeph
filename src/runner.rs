@@ -777,7 +777,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     tui_status!("Loading skills...");
     let (matcher, cli_history) = tokio::join!(
-        app.build_skill_matcher(&provider, &all_meta_refs, &memory),
+        app.build_skill_matcher(&embedding_provider, &all_meta_refs, &memory),
         build_cli_history(&memory),
     );
     if matcher.is_some() {
