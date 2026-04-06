@@ -13,12 +13,8 @@
 //! # Feature Flags
 //!
 //! Exactly one of `sqlite` or `postgres` must be enabled. The root workspace
-//! default includes `zeph-db/sqlite`. Enabling both simultaneously triggers a
-//! `compile_error!`. Using `--all-features` is intentionally unsupported;
-//! use `--features full` or `--features full,postgres` instead.
-
-#[cfg(all(feature = "sqlite", feature = "postgres"))]
-compile_error!("features `sqlite` and `postgres` are mutually exclusive; enable exactly one");
+//! default includes `zeph-db/sqlite`. When both are enabled simultaneously,
+//! `postgres` takes priority. Use `--features full` for the standard `SQLite` build.
 
 #[cfg(not(any(feature = "sqlite", feature = "postgres")))]
 compile_error!("exactly one of `sqlite` or `postgres` must be enabled for `zeph-db`");
@@ -49,7 +45,7 @@ pub use sqlx;
 // --- Active driver type alias ---
 
 /// The active database driver, selected at compile time.
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub type ActiveDriver = driver::SqliteDriver;
 #[cfg(feature = "postgres")]
 pub type ActiveDriver = driver::PostgresDriver;
@@ -96,7 +92,7 @@ pub type ActiveDialect = <ActiveDriver as DatabaseDriver>::Dialect;
 ///     .fetch_all(&pool)
 ///     .await?;
 /// ```
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 #[macro_export]
 macro_rules! sql {
     ($query:expr) => {
@@ -158,7 +154,7 @@ pub fn rewrite_placeholders(query: &str) -> String {
 ///
 /// `SQLite`: `?N`, `PostgreSQL`: `$N`
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn numbered_placeholder(n: usize) -> String {
     format!("?{n}")
 }
@@ -211,7 +207,7 @@ mod tests {
     fn numbered_placeholder_one_based() {
         let p1 = numbered_placeholder(1);
         let p3 = numbered_placeholder(3);
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         {
             assert_eq!(p1, "?1");
             assert_eq!(p3, "?3");
@@ -226,7 +222,7 @@ mod tests {
     #[test]
     fn placeholder_list_range() {
         let list = placeholder_list(2, 3);
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         assert_eq!(list, "?2, ?3, ?4");
         #[cfg(feature = "postgres")]
         assert_eq!(list, "$2, $3, $4");

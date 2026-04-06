@@ -24,11 +24,16 @@ pub async fn begin(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Erro
 /// # Errors
 ///
 /// Returns a sqlx error if the transaction cannot be started.
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub async fn begin_write(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Error> {
     pool.begin_with("BEGIN IMMEDIATE").await
 }
 
+/// Begin a read-write transaction on `PostgreSQL`.
+///
+/// # Errors
+///
+/// Returns a sqlx error if the transaction cannot be started.
 #[cfg(feature = "postgres")]
 pub async fn begin_write(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Error> {
     pool.begin().await

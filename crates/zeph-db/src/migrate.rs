@@ -11,7 +11,7 @@ use crate::{DbPool, error::DbError};
 /// # Errors
 ///
 /// Returns [`DbError::Migration`] if any migration fails.
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub async fn run_migrations(pool: &DbPool) -> Result<(), DbError> {
     sqlx::migrate!("./migrations/sqlite")
         .run(pool)
@@ -20,6 +20,11 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Run all pending migrations for the `PostgreSQL` backend.
+///
+/// # Errors
+///
+/// Returns [`DbError::Migration`] if any migration fails.
 #[cfg(feature = "postgres")]
 pub async fn run_migrations(pool: &DbPool) -> Result<(), DbError> {
     sqlx::migrate!("./migrations/postgres")

@@ -3,7 +3,7 @@
 
 use crate::{DatabaseDriver, dialect::Postgres};
 
-/// PostgreSQL backend driver.
+/// `PostgreSQL` backend driver.
 pub struct PostgresDriver;
 
 impl DatabaseDriver for PostgresDriver {
