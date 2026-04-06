@@ -70,12 +70,19 @@ The following capabilities compile unconditionally into every build. They are **
 | `cuda` | CUDA GPU acceleration for candle on Linux — implies `candle` |
 | `discord` | Discord channel adapter with Gateway v10 WebSocket and slash commands ([guide](../advanced/channels.md#discord-channel)) |
 | `slack` | Slack channel adapter with Events API webhook and HMAC-SHA256 verification ([guide](../advanced/channels.md#slack-channel)) |
+| `acp` | ACP (Agent Client Protocol) server over stdio for IDE embedding — includes all `unstable-session-*` handlers (Zed, Helix, VS Code) ([guide](../advanced/acp.md)) |
+| `acp-http` | ACP server over HTTP+SSE and WebSocket transport — implies `acp` ([guide](../advanced/acp.md#http-transport)) |
 | `a2a` | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
 | `gateway` | HTTP gateway for webhook ingestion with bearer auth and rate limiting ([guide](../advanced/gateway.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence, including the `update_check` handler for automatic version notifications ([guide](../advanced/daemon.md#cron-scheduler)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](../advanced/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
 | `classifiers` | ML-based content classifiers via local candle inference (implies `candle`) |
+| `sqlite` | SQLite database backend via `sqlx` (enabled by default) |
+| `postgres` | PostgreSQL database backend via `sqlx` — mutually exclusive with `sqlite`; activating both causes a compile error. Use `--no-default-features --features postgres` to switch |
+
+> [!IMPORTANT]
+> `--all-features` activates both `sqlite` and `postgres` simultaneously, which triggers a `compile_error!` in `zeph-db`. Use `--features full` for local development instead.
 
 ## Crate-Level Features
 

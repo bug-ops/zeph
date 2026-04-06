@@ -266,6 +266,23 @@ max_stored_pairs = 100           # Cleanup threshold for stored failure pairs (d
 
 The feature is opt-in (`enabled = false` by default). When disabled, compression prompts are unchanged and no failure pairs are recorded. Guidelines accumulate incrementally across sessions — the agent improves its compression behavior over time.
 
+## Focus Agent
+
+The Focus Agent introduces a lightweight task-scoping mechanism using two tools injected into the LLM's tool set: `start_focus` and `complete_focus`. When the agent calls `start_focus`, it records a task goal and a Knowledge block. The Knowledge block persists across subsequent turns, keeping relevant context visible without filling the full history. When the agent calls `complete_focus`, it marks the task done and archives the Knowledge block.
+
+Focus prevents context bloat on long multi-step tasks by giving the agent an explicit workspace. The agent is prompted to start a focus after `compression_interval` turns without one, and reminded every `reminder_interval` turns if a focus is overdue.
+
+```toml
+[agent.focus]
+enabled               = false  # disable or enable focus tools
+compression_interval  = 12     # suggest focus after N turns without one
+reminder_interval     = 15     # remind every N turns when overdue
+min_messages_per_focus = 8     # minimum message count before suggesting
+max_knowledge_tokens  = 4096   # token budget for the Knowledge block
+```
+
+Enable or disable per-session with `--focus` / `--no-focus` flags.
+
 ## Two-Tier Reactive Compaction
 
 When context usage crosses predefined thresholds, a two-tier compaction strategy activates. Each tier is cheaper than the next. Tier 0 (eager deferred summaries) runs continuously during tool loops independently of these tiers.

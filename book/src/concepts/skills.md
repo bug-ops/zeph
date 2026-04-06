@@ -63,6 +63,23 @@ When multiple skills have overlapping descriptions, the matcher can confuse them
 - **Two-stage matching**: an initial broad match is followed by a disambiguation stage that compares top candidates within the same category
 - Use `/skill confusability` to generate a report showing which skills are at risk of being confused
 
+## Skill Mining
+
+Skill mining automates discovery and generation of new skills by searching GitHub for relevant repositories and extracting SKILL.md descriptions from their READMEs and documentation. Configure via `[skills.mining]`:
+
+```toml
+[skills.mining]
+queries             = ["topic:cli-tool language:rust stars:>100"]
+max_repos_per_query = 20      # capped at 100 by the GitHub API
+dedup_threshold     = 0.85    # cosine similarity threshold against existing skills
+output_dir          = ""      # target directory; defaults to managed skills dir
+generation_provider = ""      # provider for skill generation; falls back to primary
+embedding_provider  = ""      # provider for embedding dedup; falls back to primary
+rate_limit_rpm      = 25      # max GitHub search requests per minute
+```
+
+Mining searches GitHub using the configured `queries`, fetches each repo's documentation, calls the `generation_provider` to produce a SKILL.md, then deduplicates against existing skills using embedding similarity. Skills with similarity above `dedup_threshold` to an existing skill are skipped. The GitHub API caps `max_repos_per_query` at 100.
+
 ## External Skill Management
 
 Zeph includes a `SkillManager` that installs, removes, and verifies external skills. Skills can be installed from git URLs or local paths into the managed directory (`~/.config/zeph/skills/`), which is automatically appended to `skills.paths`.

@@ -18,6 +18,9 @@ zeph [OPTIONS] [COMMAND]
 | `memory` | Export and import conversation history snapshots |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 | `router` | Inspect or reset Thompson Sampling router state (see [Adaptive Inference](../advanced/adaptive-inference.md)) |
+| `ingest` | Ingest a document or directory into semantic memory (Qdrant collection) |
+| `classifiers` | Manage ML classifier models — list, download, status |
+| `sessions` | Manage ACP session history — list, show, delete (requires `acp` feature) |
 | `schedule` | Manage cron-based scheduled jobs — list, add, remove, show (requires `scheduler` feature; see [Scheduler](../concepts/scheduler.md)) |
 | `db` | Database management — run migrations, check status (see [Database Abstraction](../concepts/database.md)) |
 | `migrate-config` | Add missing config parameters as commented-out blocks and reformat the file (see [Migrate Config](../guides/migrate-config.md)) |
@@ -241,6 +244,72 @@ zeph schedule remove daily-cleanup
 
 See [Scheduler](../concepts/scheduler.md) for the full list of built-in task kinds, cron expression formats, and how jobs are persisted.
 
+### `zeph ingest`
+
+Ingest a document or directory of documents into semantic memory. Chunks the content and stores embeddings in the configured Qdrant collection.
+
+```bash
+# Ingest a single file
+zeph ingest path/to/doc.md
+
+# Ingest a directory with custom chunk settings
+zeph ingest ./docs --chunk-size 500 --chunk-overlap 50 --collection my_docs
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--chunk-size <N>` | `1000` | Chunk size in characters |
+| `--chunk-overlap <N>` | `100` | Overlap between adjacent chunks in characters |
+| `--collection <NAME>` | `zeph_documents` | Target Qdrant collection name |
+
+### `zeph classifiers`
+
+Manage ML classifier model weights. Requires the `classifiers` feature.
+
+| Subcommand | Description |
+|------------|-------------|
+| `classifiers download` | Pre-download configured model weights to the HuggingFace Hub cache |
+
+```bash
+# Download all configured classifier models
+zeph classifiers download
+
+# Download only the prompt-injection classifier
+zeph classifiers download --model injection
+
+# Download a specific HuggingFace repo
+zeph classifiers download --repo protectai/deberta-v3-base-prompt-injection-v2
+
+# Increase download timeout (default: 600 seconds)
+zeph classifiers download --timeout-secs 1200
+```
+
+`classifiers download` options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model <TYPE>` | `all` | Which model to download: `injection`, `pii`, or `all` |
+| `--repo <REPO_ID>` | from config | HuggingFace repo ID override |
+| `--timeout-secs <N>` | `600` | Download timeout in seconds |
+
+Model files are cached in `~/.cache/huggingface/hub/`. Run this before starting the agent to avoid slow first-inference downloads.
+
+### `zeph sessions`
+
+Manage ACP session history. Requires the `acp` feature.
+
+| Subcommand | Description |
+|------------|-------------|
+| `sessions list` | List recent ACP sessions with ID, timestamp, and turn count |
+| `sessions resume <ID>` | Print all events from a past session to stdout |
+| `sessions delete <ID>` | Delete a session and its events from the database |
+
+```bash
+zeph sessions list
+zeph sessions resume abc123
+zeph sessions delete abc123
+```
+
 ## Interactive Commands
 
 The following `/`-prefixed commands are available during an interactive session:
@@ -365,14 +434,32 @@ See [Debug Dump](../advanced/debug-dump.md) for the file layout and how to read 
 |------|-------------|
 | `--tui` | Run with the TUI dashboard (requires the `tui` feature) |
 | `--daemon` | Run as headless background agent with A2A endpoint (requires `a2a` feature). See [Daemon Mode](../guides/daemon-mode.md) |
+| `--acp` | Run as ACP server over stdio for IDE embedding (requires `acp` feature) |
+| `--acp-manifest` | Print ACP agent manifest JSON to stdout and exit (requires `acp` feature) |
+| `--acp-http` | Run as ACP server over HTTP+SSE and WebSocket (requires `acp-http` feature) |
+| `--acp-http-bind <ADDR>` | Bind address for the ACP HTTP server (requires `acp-http` feature) |
+| `--acp-auth-token <TOKEN>` | Bearer token for ACP HTTP/WebSocket auth, overrides `acp.auth_token` (requires `acp-http` feature) |
 | `--connect <URL>` | Connect TUI to a remote daemon via A2A SSE streaming (requires `tui` + `a2a` features). See [Daemon Mode](../guides/daemon-mode.md) |
 | `--config <PATH>` | Path to a TOML config file (overrides `ZEPH_CONFIG` env var) |
 | `--vault <BACKEND>` | Secrets backend: `env` or `age` (overrides `ZEPH_VAULT_BACKEND` env var) |
 | `--vault-key <PATH>` | Path to age identity (private key) file (default: `~/.config/zeph/vault-key.txt`, overrides `ZEPH_VAULT_KEY` env var) |
 | `--vault-path <PATH>` | Path to age-encrypted secrets file (default: `~/.config/zeph/secrets.age`, overrides `ZEPH_VAULT_PATH` env var) |
+| `--thinking <MODE>` | Enable Claude thinking mode: `extended:<budget>`, `adaptive`, or `adaptive:<effort>` (`low`/`medium`/`high`). Overrides config. Example: `--thinking extended:10000` |
+| `--guardrail` | Enable LLM-based guardrail (prompt injection pre-screening). Overrides `security.guardrail.enabled` |
 | `--graph-memory` | Enable graph-based knowledge memory for this session, overriding `memory.graph.enabled`. See [Graph Memory](../concepts/graph-memory.md) |
 | `--compression-guidelines` | Enable ACON failure-driven compression guidelines for this session, overriding `memory.compression_guidelines.enabled`. Requires `compression-guidelines` feature at compile time; silently ignored otherwise. See [Memory](../concepts/memory.md) |
 | `--lsp-context` | Enable automatic LSP context injection for this session, overriding `agent.lsp.enabled`. Injects diagnostics after file writes and hover info on reads. Requires mcpls MCP server and `lsp-context` feature. See [LSP Code Intelligence](../guides/lsp.md#lsp-context-injection) |
+| `--focus` / `--no-focus` | Enable or disable Focus Agent for this session, overriding `agent.focus.enabled` |
+| `--sidequest` / `--no-sidequest` | Enable or disable SideQuest eviction for this session, overriding `memory.sidequest.enabled` |
+| `--pruning-strategy <STRATEGY>` | Override pruning strategy: `reactive`, `task_aware`, or `mig`. Overrides `memory.compression.pruning_strategy` |
+| `--server-compaction` | Enable Claude server-side context compaction (`compact-2026-01-12` beta). Requires a Claude provider. Overrides `llm.cloud.server_compaction` |
+| `--extended-context` | Enable Claude 1M extended context window. Tokens above 200K use long-context pricing. Requires a Claude provider. Overrides `llm.cloud.enable_extended_context` |
+| `--scan-skills-on-load` | Scan skill content for prompt injection patterns on load. Advisory only — logs warnings; does not block tool calls |
+| `--no-pre-execution-verify` | Disable pre-execution verifiers for tool calls. Use in trusted environments when verifiers produce false positives |
+| `--policy-file <PATH>` | Path to external policy rules TOML file. Overrides `tools.policy.policy_file` |
+| `--dump-format <FORMAT>` | Override debug dump format: `json`, `raw`, or `trace` (OTel OTLP spans) |
+| `--scheduler-tick <SECS>` | Override scheduler tick interval in seconds (requires `scheduler` feature) |
+| `--scheduler-disable` | Disable the scheduler even if enabled in config (requires `scheduler` feature) |
 | `--experiment-run` | Run a single experiment session and exit (requires `experiments` feature). See [Experiments](../concepts/experiments.md) |
 | `--experiment-report` | Print past experiment results summary and exit (requires `experiments` feature). See [Experiments](../concepts/experiments.md) |
 | `--log-file <PATH>` | Override the log file path for this session. Set to empty string (`""`) to disable file logging. See [Logging](../concepts/logging.md) |
