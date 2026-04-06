@@ -1299,6 +1299,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let agent = Agent::new_with_registry_arc(
         provider.clone(),
+        embedding_provider.clone(),
         channel,
         registry,
         matcher,

@@ -370,6 +370,7 @@ pub(crate) async fn run_daemon(
     let agent = Box::pin(
         Agent::new_with_registry_arc(
             provider.clone(),
+            embedding_provider.clone(),
             loopback_channel,
             registry,
             matcher,

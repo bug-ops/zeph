@@ -180,8 +180,10 @@ impl<C: Channel> Agent<C> {
         tool_executor: impl ToolExecutor + 'static,
     ) -> Self {
         let registry = std::sync::Arc::new(std::sync::RwLock::new(registry));
+        let embedding_provider = provider.clone();
         Self::new_with_registry_arc(
             provider,
+            embedding_provider,
             channel,
             registry,
             matcher,
@@ -200,6 +202,7 @@ impl<C: Channel> Agent<C> {
     #[allow(clippy::too_many_lines)] // flat struct literal initializing all Agent sub-structs — one field per sub-struct, cannot be split further
     pub fn new_with_registry_arc(
         provider: AnyProvider,
+        embedding_provider: AnyProvider,
         channel: C,
         registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
         matcher: Option<SkillMatcherBackend>,
@@ -228,7 +231,6 @@ impl<C: Channel> Agent<C> {
         // select! branch in the agent loop compiles unconditionally. The sender is only
         // stored when the experiments feature is enabled (it is only used in experiment_cmd.rs).
         let (exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
-        let embedding_provider = provider.clone();
         Self {
             provider,
             embedding_provider,

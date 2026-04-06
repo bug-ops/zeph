@@ -681,6 +681,7 @@ async fn spawn_acp_agent(
     let mut agent = Box::pin(
         Agent::new_with_registry_arc(
             provider.clone(),
+            d.embedding_provider.clone(),
             channel,
             Arc::clone(&registry),
             matcher,
