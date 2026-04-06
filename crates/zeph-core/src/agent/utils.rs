@@ -169,7 +169,12 @@ impl<C: Channel> Agent<C> {
     pub(super) fn push_message(&mut self, msg: Message) {
         self.providers.cached_prompt_tokens +=
             self.metrics.token_counter.count_message_tokens(&msg) as u64;
+        if msg.role == zeph_llm::provider::Role::Assistant {
+            self.session.last_assistant_at = Some(std::time::Instant::now());
+        }
         self.msg.messages.push(msg);
+        // Detect MagicDoc headers in tool output after pushing the message.
+        self.detect_magic_docs_in_messages();
     }
 
     pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {

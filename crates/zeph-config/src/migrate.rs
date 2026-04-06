@@ -1673,6 +1673,126 @@ pub fn migrate_compression_predictor_config(
     })
 }
 
+/// Add a commented-out `[memory.microcompact]` block if absent (#2699).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    use toml_edit::{Item, Table};
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if !doc.contains_key("memory") {
+        doc.insert("memory", Item::Table(Table::new()));
+    }
+    let memory = doc
+        .get_mut("memory")
+        .and_then(Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
+
+    if memory.contains_key("microcompact") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "# Time-based microcompact (#2699). Strips stale low-value tool outputs after idle.\n\
+         # [memory.microcompact]\n\
+         # enabled = false\n\
+         # gap_threshold_minutes = 60   # idle gap before clearing stale outputs\n\
+         # keep_recent = 3              # always keep this many recent outputs intact\n";
+    append_comment_to_table_suffix(memory, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["memory.microcompact".to_owned()],
+    })
+}
+
+/// Add a commented-out `[memory.autodream]` block if absent (#2697).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    use toml_edit::{Item, Table};
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if !doc.contains_key("memory") {
+        doc.insert("memory", Item::Table(Table::new()));
+    }
+    let memory = doc
+        .get_mut("memory")
+        .and_then(Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
+
+    if memory.contains_key("autodream") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "# autoDream background memory consolidation (#2697). Disabled by default.\n\
+         # [memory.autodream]\n\
+         # enabled = false\n\
+         # min_sessions = 5             # sessions since last consolidation\n\
+         # min_hours = 8                # hours since last consolidation\n\
+         # consolidation_provider = \"\" # provider name from [[llm.providers]]; empty = primary\n\
+         # max_iterations = 5\n";
+    append_comment_to_table_suffix(memory, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["memory.autodream".to_owned()],
+    })
+}
+
+/// Add a commented-out `[magic_docs]` block if absent (#2702).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_magic_docs_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    use toml_edit::{Item, Table};
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if doc.contains_key("magic_docs") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    doc.insert("magic_docs", Item::Table(Table::new()));
+    let comment = "# MagicDocs auto-maintained markdown (#2702). Disabled by default.\n\
+         # [magic_docs]\n\
+         # enabled = false\n\
+         # min_turns_between_updates = 10\n\
+         # update_provider = \"\"         # provider name from [[llm.providers]]; empty = primary\n\
+         # max_iterations = 3\n";
+    // Remove the just-inserted empty table and replace with a comment.
+    doc.remove("magic_docs");
+    // Append as a trailing comment on the document root.
+    let raw = doc.to_string();
+    let output = format!("{raw}\n{comment}");
+
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["magic_docs".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {

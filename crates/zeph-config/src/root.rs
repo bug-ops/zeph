@@ -20,8 +20,8 @@ use crate::hooks::HooksConfig;
 use crate::learning::LearningConfig;
 use crate::logging::LoggingConfig;
 use crate::memory::{
-    CompressionConfig, DocumentConfig, GraphConfig, MemoryConfig, SemanticConfig, SessionsConfig,
-    SidequestConfig, TierConfig, VectorBackend,
+    CompressionConfig, DocumentConfig, GraphConfig, MagicDocsConfig, MemoryConfig, SemanticConfig,
+    SessionsConfig, SidequestConfig, TierConfig, VectorBackend,
 };
 use crate::providers::{
     LlmConfig, get_default_embedding_model, get_default_response_cache_ttl_secs,
@@ -93,6 +93,9 @@ pub struct Config {
     pub hooks: HooksConfig,
     #[serde(default)]
     pub lsp: LspConfig,
+    /// `MagicDocs` auto-maintained markdown (#2702).
+    #[serde(default)]
+    pub magic_docs: MagicDocsConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -222,6 +225,8 @@ impl Default for Config {
                 trajectory: crate::memory::TrajectoryConfig::default(),
                 category: crate::memory::CategoryConfig::default(),
                 tree: crate::memory::TreeConfig::default(),
+                microcompact: crate::memory::MicrocompactConfig::default(),
+                autodream: crate::memory::AutoDreamConfig::default(),
             },
             telegram: None,
             discord: None,
@@ -248,6 +253,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             lsp: LspConfig::default(),
             hooks: HooksConfig::default(),
+            magic_docs: MagicDocsConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

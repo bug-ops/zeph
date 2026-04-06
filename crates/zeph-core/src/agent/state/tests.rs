@@ -63,6 +63,7 @@ fn make_session_state() -> SessionState {
         lsp_hooks: None,
         policy_config: None,
         hooks_config: HooksConfigSnapshot::default(),
+        last_assistant_at: None,
     }
 }
 

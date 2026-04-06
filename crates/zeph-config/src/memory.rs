@@ -812,6 +812,18 @@ pub struct MemoryConfig {
     /// `TiMem` temporal-hierarchical memory tree (#2262).
     #[serde(default)]
     pub tree: TreeConfig,
+    /// Time-based microcompact (#2699).
+    ///
+    /// When `microcompact.enabled = true`, stale low-value tool outputs are cleared
+    /// from context when the session has been idle longer than `gap_threshold_minutes`.
+    #[serde(default)]
+    pub microcompact: MicrocompactConfig,
+    /// autoDream background memory consolidation (#2697).
+    ///
+    /// When `autodream.enabled = true`, a constrained consolidation subagent runs
+    /// after a session ends if both `min_sessions` and `min_hours` gates pass.
+    #[serde(default)]
+    pub autodream: AutoDreamConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -1877,6 +1889,93 @@ impl Default for TreeConfig {
             context_budget_tokens: 400,
             recall_top_k: 5,
             min_cluster_size: 2,
+        }
+    }
+}
+
+/// Time-based microcompact configuration (#2699).
+///
+/// When `enabled = true`, low-value tool outputs are cleared from context
+/// (replaced with a sentinel string) when the session gap exceeds `gap_threshold_minutes`.
+/// The most recent `keep_recent` tool messages are preserved unconditionally.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct MicrocompactConfig {
+    /// Enable time-based microcompaction. Default: `false`.
+    pub enabled: bool,
+    /// Minimum idle gap in minutes before stale tool outputs are cleared. Default: `60`.
+    pub gap_threshold_minutes: u32,
+    /// Number of most recent compactable tool messages to preserve. Default: `3`.
+    pub keep_recent: usize,
+}
+
+impl Default for MicrocompactConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gap_threshold_minutes: 60,
+            keep_recent: 3,
+        }
+    }
+}
+
+/// autoDream background memory consolidation configuration (#2697).
+///
+/// When `enabled = true`, a constrained consolidation subagent runs after
+/// a session ends if both `min_sessions` and `min_hours` gates pass.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct AutoDreamConfig {
+    /// Enable autoDream consolidation. Default: `false`.
+    pub enabled: bool,
+    /// Minimum number of sessions between consolidations. Default: `3`.
+    pub min_sessions: u32,
+    /// Minimum hours between consolidations. Default: `24`.
+    pub min_hours: u32,
+    /// Provider name from `[[llm.providers]]` for consolidation LLM calls.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub consolidation_provider: ProviderName,
+    /// Maximum agent loop iterations for the consolidation subagent. Default: `8`.
+    pub max_iterations: u8,
+}
+
+impl Default for AutoDreamConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_sessions: 3,
+            min_hours: 24,
+            consolidation_provider: ProviderName::default(),
+            max_iterations: 8,
+        }
+    }
+}
+
+/// `MagicDocs` auto-maintained markdown configuration (#2702).
+///
+/// When `enabled = true`, files read via file tools that contain a `# MAGIC DOC:` header
+/// are registered and periodically updated by a constrained subagent.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct MagicDocsConfig {
+    /// Enable `MagicDocs` auto-maintenance. Default: `false`.
+    pub enabled: bool,
+    /// Minimum turns between updates for a given doc path. Default: `5`.
+    pub min_turns_between_updates: u32,
+    /// Provider name from `[[llm.providers]]` for doc update LLM calls.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub update_provider: ProviderName,
+    /// Maximum agent loop iterations per doc update. Default: `4`.
+    pub max_iterations: u8,
+}
+
+impl Default for MagicDocsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_turns_between_updates: 5,
+            update_provider: ProviderName::default(),
+            max_iterations: 4,
         }
     }
 }

@@ -3191,6 +3191,9 @@ fn make_mem_state(
         category_config: crate::config::CategoryConfig::default(),
         tree_config: crate::config::TreeConfig::default(),
         tree_consolidation_handle: None,
+        microcompact_config: crate::config::MicrocompactConfig::default(),
+        autodream_config: crate::config::AutoDreamConfig::default(),
+        magic_docs_config: crate::config::MagicDocsConfig::default(),
     }
 }
 

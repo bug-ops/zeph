@@ -26,7 +26,8 @@ pub use zeph_config::{
 };
 
 pub use zeph_config::{
-    CategoryConfig, ContextStrategy, DigestConfig, PersonaConfig, TrajectoryConfig, TreeConfig,
+    AutoDreamConfig, CategoryConfig, ContextStrategy, DigestConfig, MagicDocsConfig,
+    MicrocompactConfig, PersonaConfig, TrajectoryConfig, TreeConfig,
 };
 pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 

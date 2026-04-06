@@ -192,6 +192,15 @@ pub(crate) struct WizardState {
     pub(crate) forgetting_enabled: bool,
     // Compression ratio predictor (#2460)
     pub(crate) compression_predictor_enabled: bool,
+    // Time-based microcompact (#2699)
+    pub(crate) microcompact_enabled: bool,
+    pub(crate) microcompact_gap_threshold_minutes: u32,
+    // autoDream background consolidation (#2697)
+    pub(crate) autodream_enabled: bool,
+    pub(crate) autodream_min_sessions: u32,
+    pub(crate) autodream_min_hours: u32,
+    // MagicDocs auto-maintained markdown (#2702)
+    pub(crate) magic_docs_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -327,6 +336,12 @@ impl Default for WizardState {
             budget_hint_enabled: true,
             forgetting_enabled: false,
             compression_predictor_enabled: false,
+            microcompact_enabled: false,
+            microcompact_gap_threshold_minutes: 60,
+            autodream_enabled: false,
+            autodream_min_sessions: 5,
+            autodream_min_hours: 8,
+            magic_docs_enabled: false,
         }
     }
 }
@@ -879,6 +894,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.memory.forgetting.enabled = state.forgetting_enabled;
     config.memory.compression.predictor.enabled = state.compression_predictor_enabled;
+    config.memory.microcompact.enabled = state.microcompact_enabled;
+    config.memory.microcompact.gap_threshold_minutes = state.microcompact_gap_threshold_minutes;
+    config.memory.autodream.enabled = state.autodream_enabled;
+    config.memory.autodream.min_sessions = state.autodream_min_sessions;
+    config.memory.autodream.min_hours = state.autodream_min_hours;
+    config.magic_docs.enabled = state.magic_docs_enabled;
 
     config
 }
@@ -1137,6 +1158,43 @@ fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
                 .interact_text()?;
         }
     }
+
+    state.microcompact_enabled = Confirm::new()
+        .with_prompt(
+            "Enable time-based microcompact? (strips stale low-value tool outputs after idle gap)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.microcompact_enabled {
+        state.microcompact_gap_threshold_minutes = Input::new()
+            .with_prompt("Idle gap in minutes before stale tool outputs are cleared")
+            .default(60u32)
+            .interact_text()?;
+    }
+
+    state.autodream_enabled = Confirm::new()
+        .with_prompt("Enable autoDream? (background memory consolidation after N sessions)")
+        .default(false)
+        .interact()?;
+
+    if state.autodream_enabled {
+        state.autodream_min_sessions = Input::new()
+            .with_prompt("Minimum completed sessions before consolidation")
+            .default(5u32)
+            .interact_text()?;
+        state.autodream_min_hours = Input::new()
+            .with_prompt("Minimum hours since last consolidation")
+            .default(8u32)
+            .interact_text()?;
+    }
+
+    state.magic_docs_enabled = Confirm::new()
+        .with_prompt(
+            "Enable MagicDocs? (auto-updates markdown files marked with '# MAGIC DOC:' header)",
+        )
+        .default(false)
+        .interact()?;
 
     println!();
     Ok(())

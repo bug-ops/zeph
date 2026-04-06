@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod accessors;
+mod autodream;
 mod builder;
 pub(crate) mod compaction_strategy;
 pub(super) mod compression_feedback;
@@ -19,9 +20,11 @@ mod learning;
 pub(crate) mod learning_engine;
 mod log_commands;
 mod lsp_commands;
+mod magic_docs;
 mod mcp;
 mod memory_commands;
 mod message_queue;
+mod microcompact;
 mod model_commands;
 mod persistence;
 mod plan;
@@ -167,6 +170,10 @@ pub struct Agent<C: Channel> {
     /// Current tool loop iteration index within the active user turn. Reset to 0 at turn start,
     /// incremented each iteration. Used to compute remaining tool call budget for `BudgetHint` (#2267).
     pub(super) current_tool_iteration: usize,
+    /// autoDream session state (#2697). Tracks session count and last consolidation time.
+    pub(super) autodream_state: autodream::AutoDreamState,
+    /// `MagicDocs` session state (#2702). Tracks registered doc paths and last update turn.
+    pub(super) magic_docs_state: magic_docs::MagicDocsState,
 }
 
 impl<C: Channel> Agent<C> {
@@ -277,6 +284,9 @@ impl<C: Channel> Agent<C> {
                 category_config: crate::config::CategoryConfig::default(),
                 tree_config: crate::config::TreeConfig::default(),
                 tree_consolidation_handle: None,
+                microcompact_config: crate::config::MicrocompactConfig::default(),
+                autodream_config: crate::config::AutoDreamConfig::default(),
+                magic_docs_config: crate::config::MagicDocsConfig::default(),
             },
             skill_state: SkillState {
                 registry,
@@ -372,6 +382,7 @@ impl<C: Channel> Agent<C> {
             },
             session: SessionState {
                 env_context: EnvironmentContext::gather(""),
+                last_assistant_at: None,
                 response_cache: None,
                 parent_tool_use_id: None,
                 status_tx: None,
@@ -492,6 +503,8 @@ impl<C: Channel> Agent<C> {
             deferred_db_summaries: Vec::new(),
             runtime_layers: Vec::new(),
             current_tool_iteration: 0,
+            autodream_state: autodream::AutoDreamState::new(),
+            magic_docs_state: magic_docs::MagicDocsState::new(),
         }
     }
 
@@ -1004,6 +1017,10 @@ impl<C: Channel> Agent<C> {
             self.process_user_message(text, image_parts).await?;
         }
 
+        // autoDream: run background memory consolidation if conditions are met (#2697).
+        // Runs with a timeout — partial state is acceptable for MVP.
+        self.maybe_autodream().await;
+
         // Flush trace collector on normal exit (C-04: Drop handles error/panic paths).
         if let Some(ref mut tc) = self.debug_state.trace_collector {
             tc.finish();
@@ -1298,6 +1315,9 @@ impl<C: Channel> Agent<C> {
             self.msg.messages.pop();
             self.recompute_prompt_tokens();
             self.channel.flush_chunks().await?;
+        } else {
+            // MagicDocs: spawn background doc updates if any are due (#2702).
+            self.maybe_update_magic_docs();
         }
 
         Ok(())
@@ -1402,6 +1422,10 @@ impl<C: Channel> Agent<C> {
                 self.maybe_sidequest_eviction();
             }
         }
+
+        // Time-based microcompact (#2699): strip stale low-value tool outputs before compaction.
+        // Zero-LLM-cost; runs only when session gap exceeds configured threshold.
+        self.maybe_time_based_microcompact();
 
         // Tier 0: batch-apply deferred tool summaries when approaching context limit.
         // This is a pure in-memory operation (no LLM call) — summaries were pre-computed

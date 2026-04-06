@@ -52,7 +52,8 @@ pub use compression_predictor::{
     CompressionFeatures, CompressionModelWeights, CompressionPredictor,
 };
 pub use consolidation::{
-    ConsolidationConfig, ConsolidationResult, TopologyOp, start_consolidation_loop,
+    ConsolidationConfig, ConsolidationResult, TopologyOp, run_consolidation_sweep,
+    start_consolidation_loop,
 };
 #[cfg(feature = "pdf")]
 pub use document::PdfLoader;

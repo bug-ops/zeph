@@ -6,8 +6,9 @@ use std::path::Path;
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
     ConfigMigrator, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_compression_predictor_config, migrate_database_url, migrate_forgetting_config,
-    migrate_mcp_trust_levels, migrate_planner_model_to_provider, migrate_shell_transactional,
+    migrate_autodream_config, migrate_compression_predictor_config, migrate_database_url,
+    migrate_forgetting_config, migrate_magic_docs_config, migrate_mcp_trust_levels,
+    migrate_microcompact_config, migrate_planner_model_to_provider, migrate_shell_transactional,
     migrate_stt_to_provider,
 };
 
@@ -65,9 +66,21 @@ pub(crate) fn handle_migrate_config(
     let predictor_result = migrate_compression_predictor_config(&after_forgetting)?;
     let after_predictor = predictor_result.output;
 
-    // Step 10: add missing default keys as commented-out entries.
+    // Step 10: add commented-out [memory.microcompact] block if absent (#2699).
+    let microcompact_result = migrate_microcompact_config(&after_predictor)?;
+    let after_microcompact = microcompact_result.output;
+
+    // Step 11: add commented-out [memory.autodream] block if absent (#2697).
+    let autodream_result = migrate_autodream_config(&after_microcompact)?;
+    let after_autodream = autodream_result.output;
+
+    // Step 12: add commented-out [magic_docs] block if absent (#2702).
+    let magic_docs_result = migrate_magic_docs_config(&after_autodream)?;
+    let after_magic_docs = magic_docs_result.output;
+
+    // Step 13: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_predictor)?;
+    let result = migrator.migrate(&after_magic_docs)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -106,6 +119,15 @@ pub(crate) fn handle_migrate_config(
             eprintln!(
                 "Predictor migration: added commented-out [memory.compression.predictor] block."
             );
+        }
+        if microcompact_result.added_count > 0 {
+            eprintln!("Microcompact migration: added commented-out [memory.microcompact] block.");
+        }
+        if autodream_result.added_count > 0 {
+            eprintln!("autoDream migration: added commented-out [memory.autodream] block.");
+        }
+        if magic_docs_result.added_count > 0 {
+            eprintln!("MagicDocs migration: added commented-out [magic_docs] block.");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

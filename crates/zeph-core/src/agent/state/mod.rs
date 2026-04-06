@@ -84,6 +84,12 @@ pub(crate) struct MemoryState {
     pub(crate) category_config: zeph_config::CategoryConfig,
     /// `TiMem` temporal-hierarchical memory tree configuration (#2262).
     pub(crate) tree_config: zeph_config::TreeConfig,
+    /// Time-based microcompact configuration (#2699).
+    pub(crate) microcompact_config: zeph_config::MicrocompactConfig,
+    /// autoDream configuration (#2697).
+    pub(crate) autodream_config: zeph_config::AutoDreamConfig,
+    /// `MagicDocs` configuration (#2702).
+    pub(crate) magic_docs_config: zeph_config::MagicDocsConfig,
     /// Background tree consolidation loop handle — kept alive for the agent's lifetime (#2262).
     /// `None` when tree consolidation is disabled or memory is not initialized.
     pub(crate) tree_consolidation_handle: Option<tokio::task::JoinHandle<()>>,
@@ -461,6 +467,10 @@ pub(crate) struct CompressionState {
 /// Groups per-session I/O and policy state.
 pub(crate) struct SessionState {
     pub(crate) env_context: EnvironmentContext,
+    /// Timestamp of the last assistant message appended to context.
+    /// Used by time-based microcompact to compute session idle gap (#2699).
+    /// `None` before the first assistant response.
+    pub(crate) last_assistant_at: Option<Instant>,
     pub(crate) response_cache: Option<std::sync::Arc<zeph_memory::ResponseCache>>,
     /// Parent tool call ID when this agent runs as a subagent inside another agent session.
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build

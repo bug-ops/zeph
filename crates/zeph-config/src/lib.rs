@@ -57,12 +57,12 @@ pub use hooks::{FileChangedConfig, HooksConfig};
 pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{
-    AdmissionConfig, AdmissionStrategy, AdmissionWeights, BeliefRevisionConfig, CategoryConfig,
-    CompressionConfig, CompressionPredictorConfig, CompressionStrategy, ContextStrategy,
-    DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, MemoryConfig, NoteLinkingConfig,
-    PersonaConfig, PruningStrategy, RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig,
-    StoreRoutingConfig, StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig,
-    VectorBackend,
+    AdmissionConfig, AdmissionStrategy, AdmissionWeights, AutoDreamConfig, BeliefRevisionConfig,
+    CategoryConfig, CompressionConfig, CompressionPredictorConfig, CompressionStrategy,
+    ContextStrategy, DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, MagicDocsConfig,
+    MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig, PruningStrategy, RpeConfig,
+    SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy,
+    TierConfig, TrajectoryConfig, TreeConfig, VectorBackend,
 };
 pub use providers::{
     BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,

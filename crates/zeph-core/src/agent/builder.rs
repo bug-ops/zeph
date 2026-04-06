@@ -353,6 +353,24 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    #[must_use]
+    pub fn with_microcompact_config(mut self, config: crate::config::MicrocompactConfig) -> Self {
+        self.memory_state.microcompact_config = config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_autodream_config(mut self, config: crate::config::AutoDreamConfig) -> Self {
+        self.memory_state.autodream_config = config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_magic_docs_config(mut self, config: crate::config::MagicDocsConfig) -> Self {
+        self.memory_state.magic_docs_config = config;
+        self
+    }
+
     /// Start the `TiMem` tree consolidation background loop and store the handle.
     ///
     /// Call after memory and tree configuration have been applied so that both the `SQLite`
@@ -1496,6 +1514,7 @@ impl<C: Channel> Agent<C> {
     /// Per-session wiring (`cancel_signal`, `provider_override`, `memory`, `debug_dumper`, etc.)
     /// must still be applied separately after this call, since those depend on runtime state.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // flat struct literal — adding three small config fields crossed the 100-line limit
     pub fn apply_session_config(mut self, cfg: AgentSessionConfig) -> Self {
         let AgentSessionConfig {
             max_tool_iterations,
@@ -1531,6 +1550,9 @@ impl<C: Channel> Agent<C> {
             trajectory_config,
             category_config,
             tree_config,
+            microcompact_config,
+            autodream_config,
+            magic_docs_config,
             anomaly_config,
             result_cache_config,
             utility_config,
@@ -1581,6 +1603,9 @@ impl<C: Channel> Agent<C> {
             .with_trajectory_config(trajectory_config)
             .with_category_config(category_config)
             .with_tree_config(tree_config)
+            .with_microcompact_config(microcompact_config)
+            .with_autodream_config(autodream_config)
+            .with_magic_docs_config(magic_docs_config)
             .with_orchestration_config(orchestration_config)
             .with_budget_hint_enabled(budget_hint_enabled);
 
