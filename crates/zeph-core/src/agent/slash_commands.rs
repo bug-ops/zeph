@@ -712,6 +712,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             orch_completed,
             orch_failed,
             orch_skipped,
+            provider_breakdown,
         ) = if let Some(ref tx) = self.metrics.metrics_tx {
             let m = tx.borrow();
             (
@@ -725,9 +726,10 @@ impl<C: crate::channel::Channel> Agent<C> {
                 m.orchestration.tasks_completed,
                 m.orchestration.tasks_failed,
                 m.orchestration.tasks_skipped,
+                m.provider_cost_breakdown.clone(),
             )
         } else {
-            (0, 0, 0, 0.0, 0, 0, 0, 0, 0, 0)
+            (0, 0, 0, 0.0, 0, 0, 0, 0, 0, 0, vec![])
         };
 
         let skill_count = self
@@ -772,6 +774,24 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
         if cost_cents > 0.0 {
             let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
+            if !provider_breakdown.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "  {:<16} {:>8} {:>8} {:>8}",
+                    "Provider", "Requests", "Tokens", "Cost"
+                );
+                for (name, usage) in &provider_breakdown {
+                    let total_tokens = usage.input_tokens + usage.output_tokens;
+                    let _ = writeln!(
+                        out,
+                        "  {:<16} {:>8} {:>8} {:>8}",
+                        name,
+                        usage.request_count,
+                        total_tokens,
+                        format!("${:.4}", usage.cost_cents / 100.0),
+                    );
+                }
+            }
         }
         if orch_plans > 0 {
             let _ = writeln!(out);

@@ -177,20 +177,34 @@ impl<C: Channel> Agent<C> {
         self.detect_magic_docs_in_messages();
     }
 
-    pub(crate) fn record_cost(&self, prompt_tokens: u64, completion_tokens: u64) {
+    pub(crate) fn record_cost_and_cache(&self, input_tokens: u64, output_tokens: u64) {
+        let (cache_write, cache_read) = self.provider.last_cache_usage().unwrap_or((0, 0));
+
         if let Some(ref tracker) = self.metrics.cost_tracker {
-            tracker.record_usage(&self.runtime.model_name, prompt_tokens, completion_tokens);
+            let provider_name = if self.runtime.active_provider_name.is_empty() {
+                self.provider.name()
+            } else {
+                self.runtime.active_provider_name.as_str()
+            };
+            tracker.record_usage(
+                provider_name,
+                &self.runtime.model_name,
+                input_tokens,
+                cache_read,
+                cache_write,
+                output_tokens,
+            );
+            let breakdown = tracker.provider_breakdown();
             self.update_metrics(|m| {
                 m.cost_spent_cents = tracker.current_spend();
+                m.cache_creation_tokens += cache_write;
+                m.cache_read_tokens += cache_read;
+                m.provider_cost_breakdown = breakdown;
             });
-        }
-    }
-
-    pub(crate) fn record_cache_usage(&self) {
-        if let Some((creation, read)) = self.provider.last_cache_usage() {
+        } else if cache_write > 0 || cache_read > 0 {
             self.update_metrics(|m| {
-                m.cache_creation_tokens += creation;
-                m.cache_read_tokens += read;
+                m.cache_creation_tokens += cache_write;
+                m.cache_read_tokens += cache_read;
             });
         }
     }

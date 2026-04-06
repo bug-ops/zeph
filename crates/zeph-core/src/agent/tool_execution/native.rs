@@ -523,8 +523,7 @@ impl<C: Channel> Agent<C> {
                 m.router_thompson_stats = router_stats;
             }
         });
-        self.record_cache_usage();
-        self.record_cost(final_prompt, final_completion);
+        self.record_cost_and_cache(final_prompt, final_completion);
 
         if let Some((input_tokens, output_tokens)) = self.provider.last_usage() {
             let context_window =

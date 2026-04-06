@@ -393,12 +393,11 @@ impl<C: Channel> Agent<C> {
             }
             m.total_tokens = m.prompt_tokens + m.completion_tokens;
         });
-        self.record_cache_usage();
         let cost_completion = final_completion_opt.unwrap_or_else(|| {
             r.as_ref()
                 .map_or(0, |s| u64::try_from(s.len()).unwrap_or(0) / 4)
         });
-        self.record_cost(final_prompt, cost_completion);
+        self.record_cost_and_cache(final_prompt, cost_completion);
         let raw = r?;
         if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
             d.dump_response(id, &raw);
@@ -458,8 +457,7 @@ impl<C: Channel> Agent<C> {
                     m.completion_tokens += final_completion;
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
-                self.record_cache_usage();
-                self.record_cost(final_prompt, final_completion);
+                self.record_cost_and_cache(final_prompt, final_completion);
                 // RV-1: response verification before delivery.
                 if self.run_response_verification(&resp) {
                     let _ = self

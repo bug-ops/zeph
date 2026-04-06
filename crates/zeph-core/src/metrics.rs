@@ -251,6 +251,8 @@ pub struct MetricsSnapshot {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,
+    /// Per-provider cost breakdown, sorted by cost descending.
+    pub provider_cost_breakdown: Vec<(String, crate::cost::ProviderUsage)>,
     pub filter_raw_tokens: u64,
     pub filter_saved_tokens: u64,
     pub filter_applications: u64,

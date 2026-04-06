@@ -199,8 +199,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             m.orchestration.tasks_total += task_count;
             m.orchestration_graph = Some(snapshot);
         });
-        self.record_cost(planner_prompt, planner_completion);
-        self.record_cache_usage();
+        self.record_cost_and_cache(planner_prompt, planner_completion);
 
         if confirm_before_execute {
             let summary = format_plan_summary(&graph);
@@ -573,8 +572,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                             m.completion_tokens += aggr_completion;
                             m.total_tokens = m.prompt_tokens + m.completion_tokens;
                         });
-                        self.record_cost(aggr_prompt, aggr_completion);
-                        self.record_cache_usage();
+                        self.record_cost_and_cache(aggr_prompt, aggr_completion);
                         self.channel.send(&synthesis).await?;
                     }
                     Err(e) => {
