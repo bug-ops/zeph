@@ -79,12 +79,27 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 |-----|--------|
 | `Enter` | Submit input to agent |
 | `Shift+Enter` | Insert newline (multiline input) |
+| `/` | Open slash-command autocomplete (when input is empty) |
 | `@` | Open file picker (fuzzy file search) |
 | `Escape` | Switch to Normal mode |
 | `Ctrl+C` | Quit application |
 | `Ctrl+U` | Clear input line |
 | `Ctrl+K` | Clear message queue |
 | `Ctrl+P` | Open command palette |
+
+### Slash-Command Autocomplete
+
+Typing `/` on an empty input line opens an inline autocomplete dropdown above the input area. The dropdown shows up to 8 matching commands and filters in real time as you type more characters.
+
+| Key | Action |
+|-----|--------|
+| Any character | Narrow the command list |
+| `Up` / `Down` or `Tab` | Move selection |
+| `Enter` | Accept selected command and insert into input |
+| `Backspace` | Remove last query character (dismisses when query is empty) |
+| `Escape` | Dismiss without inserting |
+
+The autocomplete reuses the same command registry as the command palette (`Ctrl+P`). All 51 slash commands are searchable by prefix or keyword.
 
 ### File Picker
 

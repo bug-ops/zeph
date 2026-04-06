@@ -476,6 +476,111 @@ Kumiho implements belief revision for the graph memory store. When new informati
 
 This is paired with D-MEM RPE (Reward Prediction Error) routing for graph memory, which uses prediction errors from graph queries to adaptively weight the graph store's contribution to hybrid recall.
 
+## Persona Memory
+
+Persona memory extracts persistent user-preference and domain-knowledge facts from conversation history. Extracted facts are injected into context at assembly time, giving the agent a stable model of user expertise, goals, and preferences across sessions.
+
+Facts are extracted by a fast LLM provider after the session accumulates enough user messages (controlled by `min_messages`). A self-referential heuristic gate skips extraction for agent-to-agent sessions. When conflicting facts are detected, the newer entry marks the older one via `supersedes_id`, preserving history without duplication.
+
+```toml
+[memory.persona]
+enabled                 = false
+persona_provider        = "fast"   # cheap extraction model; falls back to primary
+min_confidence          = 0.6      # facts below this threshold are discarded
+min_messages            = 3        # minimum user messages before first extraction
+max_messages            = 10       # messages fed to LLM per extraction pass
+extraction_timeout_secs = 10
+context_budget_tokens   = 500
+```
+
+## Trajectory Memory
+
+Trajectory memory captures procedural ("how to do X") and episodic ("what happened in turn N") entries from tool-call turns. Procedural entries are injected as "past experience" during context assembly, helping the agent reuse successful tool patterns across sessions.
+
+Extraction runs after every turn that contains tool calls, using a fast LLM provider to classify and summarise each tool sequence. Only entries above `min_confidence` are stored.
+
+```toml
+[memory.trajectory]
+enabled                 = false
+trajectory_provider     = "fast"   # cheap extraction model; falls back to primary
+context_budget_tokens   = 400      # token budget for trajectory hints in context
+recall_top_k            = 5        # procedural entries retrieved per turn
+min_confidence          = 0.6
+max_messages            = 10
+extraction_timeout_secs = 10
+```
+
+## Category-Aware Memory
+
+When enabled, messages are tagged with a category derived from the active skill or tool context. The category is stored in the `messages.category` column and used as a payload filter during Qdrant recall, scoping semantic search to the relevant topic area.
+
+```toml
+[memory.category]
+enabled  = false
+auto_tag = true    # derive category from active skill or tool type automatically
+```
+
+## TiMem — Temporal-Hierarchical Memory Tree
+
+TiMem organises memories as leaf nodes and periodically consolidates them into hierarchical summaries. Each sweep clusters similar leaves by cosine similarity and asks a fast LLM to produce a parent-level summary. Context assembly uses tree traversal for complex queries, returning a mix of leaf-level detail and higher-level summaries within the token budget.
+
+```toml
+[memory.tree]
+enabled                = false
+consolidation_provider = "fast"  # falls back to primary
+sweep_interval_secs    = 300     # background consolidation interval
+batch_size             = 20      # leaves processed per sweep
+similarity_threshold   = 0.8     # cosine threshold for clustering
+max_level              = 3       # maximum tree depth above leaves
+context_budget_tokens  = 400
+recall_top_k           = 5
+min_cluster_size       = 2       # minimum cluster size to trigger LLM consolidation
+```
+
+## Time-Based Microcompact
+
+Microcompact clears stale low-value tool outputs from context when the session has been idle longer than `gap_threshold_minutes`. This is a zero-LLM-cost in-memory operation that reduces context pressure before compaction runs.
+
+Cleared tool types: `bash`, `shell`, `grep`, `rg`, `find`, `web_fetch`, `web_search`, `read`, `cat`, `list_directory`. The `keep_recent` most recent entries from these tools are always preserved.
+
+```toml
+[memory.microcompact]
+enabled               = false
+gap_threshold_minutes = 60   # idle gap in minutes before clearing stale outputs
+keep_recent           = 3    # most recent low-value tool outputs to preserve
+```
+
+## autoDream Background Consolidation
+
+autoDream runs a background memory consolidation sweep after a session ends, once both gates pass: at least `min_sessions` sessions have completed and at least `min_hours` have elapsed since the last consolidation. The sweep merges duplicate memories, updates stale facts, and removes redundant entries.
+
+Gates are in-process only — they reset on restart. The first consolidation always passes the hours gate (no prior timestamp).
+
+```toml
+[memory.autodream]
+enabled                = false
+min_sessions           = 3     # sessions since last consolidation
+min_hours              = 24    # hours since last consolidation
+consolidation_provider = ""    # provider name; falls back to primary
+max_iterations         = 8     # safety bound for the consolidation sweep
+```
+
+## MagicDocs — Auto-Maintained Markdown
+
+MagicDocs detects files containing a `# MAGIC DOC:` header when they are read by file tools, registers them in a per-session list, and periodically rewrites them via a background LLM call to keep them accurate.
+
+Updates run every `min_turns_between_updates` tool-call turns. Only one background update runs at a time; if the previous update is still running the current trigger is skipped. The TUI status bar shows "Updating N magic doc(s)…" while an update is in progress.
+
+To mark a file as auto-maintained, add `# MAGIC DOC: <description>` as the first line.
+
+```toml
+[memory.magic_docs]
+enabled                   = false
+min_turns_between_updates = 5    # turns between updates for the same file
+update_provider           = ""   # provider name; falls back to primary
+max_iterations            = 4    # max iterations per update call
+```
+
 ## Next Steps
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide

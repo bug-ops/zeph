@@ -346,6 +346,22 @@ interval_secs    = 3600     # sweep interval
 forgetting_floor = 0.15     # messages below this importance score are soft-deleted
 ```
 
+## Persona memory
+
+Extracts user-preference and domain-knowledge facts from conversation history via a fast LLM provider. Facts are persisted in the `persona_memory` table and injected into context assembly within a configurable token budget. Conflicting facts are linked via `supersedes_id` rather than deleted. Configure via `[memory.persona]`.
+
+## Trajectory memory
+
+Captures procedural ("how to do X") and episodic ("what happened in turn N") entries from tool-call turns. Procedural entries are injected as "past experience" during context assembly, helping the agent reuse successful tool patterns. Configure via `[memory.trajectory]`.
+
+## Category-aware memory
+
+Tags messages with a category derived from the active skill or tool context. The category is stored in `messages.category` and used as a Qdrant payload filter during recall to scope search to the relevant topic area. Configure via `[memory.category]`.
+
+## TiMem temporal-hierarchical memory tree
+
+Organises memories as leaf nodes and periodically consolidates similar clusters into parent summaries via a background sweep. Context assembly traverses the tree for complex queries, mixing leaf-level detail with higher-level summaries. Configure via `[memory.tree]`.
+
 ## Features
 
 | Feature | Description |

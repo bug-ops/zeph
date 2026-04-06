@@ -161,6 +161,17 @@ Zeph implements the MCP Roots protocol, which allows MCP servers to discover the
 
 Tool descriptions from MCP servers are capped at a configurable limit to prevent oversized prompt injection from servers with verbose tool descriptions.
 
+## Server Instructions
+
+MCP servers can provide a plain-text `instructions` field in their `initialize` response. When present, Zeph injects these instructions as a dedicated block in the system prompt so the LLM understands how to use the server's tools effectively.
+
+Instructions from all connected servers are concatenated (sorted by server ID for determinism) and injected once per turn. Each server's instructions are separated by a blank line.
+
+> [!NOTE]
+> Without server instructions the LLM must infer tool behavior from schema descriptions alone, which can lead to incorrect parameter choices or missed capabilities. Well-written server instructions significantly improve tool selection accuracy.
+
+Instructions are sanitized at registration using the same 17-pattern injection scanner applied to tool descriptions. Patterns are replaced with `[sanitized]` — the instructions are still injected, but malicious payloads are neutralised.
+
 ## Tool Call Quota
 
 Limit the total number of tool calls the agent may make in a single session:
