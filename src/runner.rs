@@ -1357,6 +1357,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     )
     .with_focus_config(config.agent.focus.clone())
     .with_sidequest_config(config.memory.sidequest.clone())
+    .with_trajectory_config(config.memory.trajectory.clone())
+    .with_category_config(config.memory.category.clone())
     .with_embedding_provider(embedding_provider)
     .with_tree_consolidation_loop(
         app.build_tree_consolidation_provider()

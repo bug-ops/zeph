@@ -404,6 +404,8 @@ pub(crate) async fn run_daemon(
         )
         .with_focus_config(config.agent.focus.clone())
         .with_sidequest_config(config.memory.sidequest.clone())
+        .with_trajectory_config(config.memory.trajectory.clone())
+        .with_category_config(config.memory.category.clone())
         .with_embedding_provider(embedding_provider)
         .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider),
     )

@@ -141,6 +141,8 @@ struct SharedAgentDeps {
     session_config: zeph_core::AgentSessionConfig,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
+    trajectory_config: zeph_core::config::TrajectoryConfig,
+    category_config: zeph_core::config::CategoryConfig,
     tool_filter_config: zeph_core::config::ToolFilterConfig,
 
     hooks_config: zeph_core::config::HooksConfig,
@@ -474,6 +476,8 @@ async fn build_acp_deps(
         session_config,
         focus_config: config.agent.focus.clone(),
         sidequest_config: config.memory.sidequest.clone(),
+        trajectory_config: config.memory.trajectory.clone(),
+        category_config: config.memory.category.clone(),
         tool_filter_config: config.agent.tool_filter.clone(),
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
@@ -703,6 +707,8 @@ async fn spawn_acp_agent(
         .with_mcp_shared_tools(mcp_shared_tools)
         .with_focus_config(d.focus_config.clone())
         .with_sidequest_config(d.sidequest_config.clone())
+        .with_trajectory_config(d.trajectory_config.clone())
+        .with_category_config(d.category_config.clone())
         .with_embedding_provider(d.embedding_provider.clone())
         .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider),
     )
