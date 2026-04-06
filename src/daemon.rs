@@ -308,6 +308,9 @@ pub(crate) async fn run_daemon(
     .await;
     let mcp_manager = std::sync::Arc::new(mcp_manager_builder);
     let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
+    // Retain a reference for explicit pre-shutdown so child processes are killed while the
+    // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
+    let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
     let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
@@ -573,6 +576,9 @@ pub(crate) async fn run_daemon(
         () = supervisor.run() => {}
     }
 
+    // Explicitly shut down MCP connections before agent.shutdown() so that child processes
+    // are killed while the tokio runtime is still active (#2693).
+    shutdown_mcp_manager.shutdown_all_shared().await;
     agent.shutdown().await;
 
     if let Err(e) = remove_pid_file(&pid_file) {

@@ -1215,6 +1215,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let mcp_elicitation_rx = tool_setup.mcp_elicitation_rx;
     // Clone the Arc before it is consumed by with_mcp so LSP hooks can share it.
     let lsp_mcp_manager = std::sync::Arc::clone(&mcp_manager);
+    // Retain a reference for explicit pre-shutdown so child processes are killed while the
+    // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
+    let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
     #[cfg(feature = "tui")]
     let shell_executor_for_tui = tool_setup.tool_event_rx;
     #[cfg(not(feature = "tui"))]
@@ -1999,6 +2002,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
     tokio::spawn(forward_status_to_stderr(status_rx));
     let result = Box::pin(agent.run()).await;
+    // Explicitly shut down MCP connections before agent.shutdown() so that child processes
+    // are killed while the tokio runtime is still active (#2693).
+    shutdown_mcp_manager.shutdown_all_shared().await;
     agent.shutdown().await;
     Ok(result?)
 }

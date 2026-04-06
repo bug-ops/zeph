@@ -825,6 +825,8 @@ async fn spawn_acp_agent(
         tracing::error!("ACP agent loop error: {e:#}");
     }
 
+    agent.shutdown().await;
+
     // Ensure the adapter cancellation token is dropped/cancelled after the agent loop exits,
     // which terminates the broadcast forwarding tasks for this session.
     adapter_cancel.cancel();
