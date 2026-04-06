@@ -283,10 +283,33 @@ let (shutdown_tx, shutdown_rx) = watch::channel(false);
 let _ = shutdown_tx.send(true); // signal shutdown
 ```
 
+## CLI Subcommand
+
+Manage scheduled jobs outside the agent session using the `zeph schedule` subcommand (requires the `scheduler` feature). All commands operate on the same SQLite database used by the running agent.
+
+```bash
+# List all jobs
+zeph schedule list
+
+# Add a recurring job (cron expression + prompt)
+zeph schedule add "0 3 * * *" "run memory cleanup" --name daily-cleanup --kind memory_cleanup
+
+# Show details of a single job
+zeph schedule show daily-cleanup
+
+# Remove a job
+zeph schedule remove daily-cleanup
+```
+
+`schedule add` accepts any valid 5-field or 6-field cron expression. The `--kind` flag defaults to `custom` if omitted. The `--name` flag is optional — if omitted, a name is auto-generated from the BLAKE3 hash of the prompt.
+
+See [CLI Reference — zeph schedule](../reference/cli.md#zeph-schedule) for the full flag list.
+
 ## Listing Tasks
 
 Use any of the following to view all scheduled tasks:
 
+- **CLI subcommand**: `zeph schedule list` — prints a table with NAME, KIND, MODE, NEXT RUN, and CRON columns. Works outside of an agent session.
 - **CLI / slash command**: `/scheduler list` (or `/scheduler` with no subcommand) — prints a table with NAME, KIND, MODE, and NEXT RUN columns.
 - **LLM tool**: ask the agent "list my scheduled tasks" — the `list_tasks` tool is called automatically.
 - **TUI command palette**: open the palette with `:`, type `scheduler`, and select `scheduler:list`.

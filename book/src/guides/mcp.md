@@ -161,6 +161,58 @@ Zeph implements the MCP Roots protocol, which allows MCP servers to discover the
 
 Tool descriptions from MCP servers are capped at a configurable limit to prevent oversized prompt injection from servers with verbose tool descriptions.
 
+## Tool Call Quota
+
+Limit the total number of tool calls the agent may make in a single session:
+
+```toml
+[tools]
+max_tool_calls_per_session = 100   # default: unlimited
+```
+
+When the quota is exhausted, further tool calls are blocked and the agent is informed via a `quota_blocked` error. Retries of a failed call do not consume additional quota — only the first attempt counts. Set to `null` or omit the field to disable the limit.
+
+## OAP Authorization
+
+On-Arrival Processing (OAP) is a declarative authorization layer that evaluates tool calls against capability-based rules before execution. OAP rules are appended after `[tools.policy]` rules using first-match-wins semantics, so existing deny rules in `[tools.policy]` always take precedence.
+
+```toml
+[tools.authorization]
+enabled = true
+
+[[tools.authorization.rules]]
+action = "allow"
+tools = ["read_file", "list_directory"]
+comment = "Read-only filesystem access"
+
+[[tools.authorization.rules]]
+action = "deny"
+tools = ["shell"]
+comment = "Shell execution not permitted in this deployment"
+```
+
+OAP is disabled by default (`enabled = false`). Rules are merged into `PolicyEnforcer` at startup. Use `[tools.policy]` for safety-critical deny rules; use `[tools.authorization]` for capability grants that layer on top.
+
+## Structured Error Codes
+
+MCP tool call failures include a typed `McpErrorCode` that the agent uses for retry and recovery decisions:
+
+| Code | Meaning | Retryable |
+|------|---------|-----------|
+| `transient` | Temporary failure; retry likely succeeds | Yes |
+| `rate_limited` | Back off and retry | Yes |
+| `server_error` | Server-side error; retry with backoff | Yes |
+| `invalid_input` | Do not retry without changing parameters | No |
+| `auth_failure` | Re-authenticate or escalate | No |
+| `not_found` | Tool or resource does not exist | No |
+| `policy_blocked` | Blocked by policy or OAP authorization rule | No |
+
+Timeouts and connection errors automatically map to `transient`. Policy violations (SSRF, command blocklist, OAP deny) map to `policy_blocked`. The error code is surfaced in logs and debug dumps alongside the server ID and tool name.
+
+## Caller Identity Propagation
+
+Tool calls carry an optional `caller_id` field that identifies the originating agent or sub-agent. This field is set automatically when a sub-agent dispatches a tool call and is recorded in the tool audit log. Operators can use `caller_id` to trace which agent issued a specific tool call in multi-agent deployments.
+
 ## How Matching Works
 
 MCP tools are embedded in Qdrant (`zeph_mcp_tools` collection) with BLAKE3 content-hash delta sync. Unified matching injects both skills and MCP tools into the system prompt by relevance score — keeping prompt size O(K) instead of O(N) where N is total tools across all servers.

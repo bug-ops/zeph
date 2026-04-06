@@ -153,6 +153,33 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
 
 `task_mode` is `'periodic'` or `'oneshot'`. `run_at` holds the ISO 8601 UTC timestamp for one-shot tasks. The `init()` method applies `ALTER TABLE` migrations for older schemas that lack `task_mode` and `run_at`.
 
+## CLI subcommand
+
+The `zeph schedule` subcommand (requires the `scheduler` feature) manages scheduled jobs from the command line — no running agent required. It reads and writes the same SQLite database used by the agent.
+
+```bash
+# List all active jobs
+zeph schedule list
+
+# Add a periodic job (5-field or 6-field cron expression)
+zeph schedule add "0 3 * * *" "run memory cleanup" --name daily-cleanup --kind memory_cleanup
+
+# Show details for a single job
+zeph schedule show daily-cleanup
+
+# Remove a job
+zeph schedule remove daily-cleanup
+```
+
+`schedule add` options:
+
+| Flag | Description |
+|------|-------------|
+| `--name <NAME>` | Job name — auto-generated from BLAKE3 hash of prompt if omitted |
+| `--kind <KIND>` | Task kind string — defaults to `custom` |
+
+The cron expression is validated via `normalize_cron_expr` before insertion. Invalid expressions are rejected immediately. The prompt is sanitized via `sanitize_task_prompt` (same rules as the LLM tool path).
+
 ## Installation
 
 ```bash

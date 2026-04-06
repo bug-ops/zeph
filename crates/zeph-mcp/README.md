@@ -16,11 +16,11 @@ Implements the Model Context Protocol client for Zeph, managing connections to m
 - **client** — low-level MCP transport and session handling; `ToolListChangedHandler` receives `tools/list_changed` notifications, applies `sanitize_tools()` (rate-limited to once per 5 s per server, capped at 100 tools), and forwards the sanitized list to `McpManager` via a refresh channel
 - **manager** — `McpManager`, `McpTransport`, `ServerEntry` for multi-server lifecycle; command allowlist validation (npx, uvx, node, python3, docker, mcpls, etc.), env var blocklist (LD_PRELOAD, DYLD_*, NODE_OPTIONS, etc.), and path separator rejection; statically configured servers (from `[[mcp.servers]]`) bypass SSRF validation to allow connections to `localhost` and private IPs — dynamically added servers retain full SSRF protection
 - **sanitize** — `sanitize_tools()` applied to all tool definitions at registration time and again on every `tools/list_changed` refresh; strips 17 injection-detection patterns, Unicode Cf-category characters, and caps descriptions at 1024 bytes; fields triggering a pattern are replaced with `"[sanitized]"` — tool registration is never blocked
-- **executor** — `McpToolExecutor` bridging MCP tools into the `ToolExecutor` trait
+- **executor** — `McpToolExecutor` bridging MCP tools into the `ToolExecutor` trait; propagates `caller_id` from sub-agent dispatches to the audit log
 - **registry** — `McpToolRegistry` for tool lookup and optional Qdrant-backed search
 - **tool** — `McpTool` wrapper with schema and metadata
 - **prompt** — MCP prompt template support
-- **error** — `McpError` error types
+- **error** — `McpError` error types with typed `McpErrorCode` for retry classification (`Transient`, `RateLimited`, `InvalidInput`, `AuthFailure`, `ServerError`, `NotFound`, `PolicyBlocked`)
 
 ## MCP Roots protocol
 
@@ -113,6 +113,52 @@ decay_half_life_secs  = 3600   # half-life for trust score recovery
 
 **Tip:**
 > View per-server trust scores in the TUI with `mcp:list` from the command palette — the trust column shows the current score and a coloured indicator (green ≥ 0.7, yellow ≥ 0.4, red < 0.4).
+
+## Structured error codes
+
+Every `McpError::ToolCall` carries a typed `McpErrorCode` that the agent uses to decide whether to retry:
+
+| Code | Retryable | When |
+|------|-----------|------|
+| `Transient` | Yes | Temporary failure; connection drops, timeouts |
+| `RateLimited` | Yes | Server asked to back off |
+| `ServerError` | Yes | Internal server error |
+| `InvalidInput` | No | Bad parameters — retrying unchanged will fail again |
+| `AuthFailure` | No | Token invalid or expired |
+| `NotFound` | No | Tool or resource does not exist |
+| `PolicyBlocked` | No | Blocked by policy rule or OAP authorization |
+
+Errors that do not carry an explicit code (timeouts, connection failures, SSRF blocks) are mapped automatically. `McpErrorCode::is_retryable()` is the authoritative retry gate used by the agent loop.
+
+## OAP authorization
+
+Tool calls can be authorized declaratively via `[tools.authorization]` in config. Rules are appended after `[tools.policy]` rules using first-match-wins semantics. OAP is disabled by default.
+
+```toml
+[tools.authorization]
+enabled = true
+
+[[tools.authorization.rules]]
+action = "allow"
+tools  = ["read_file", "list_directory"]
+
+[[tools.authorization.rules]]
+action = "deny"
+tools  = ["shell"]
+```
+
+Denied calls return `McpErrorCode::PolicyBlocked` and are not retried.
+
+## Tool call quota
+
+Limit the total number of tool calls per agent session:
+
+```toml
+[tools]
+max_tool_calls_per_session = 100   # None = unlimited (default)
+```
+
+Only the first attempt counts against the quota — retries of a failed call are free.
 
 ## Configuration
 

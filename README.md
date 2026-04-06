@@ -6,7 +6,7 @@
   [![Crates.io](https://img.shields.io/crates/v/zeph)](https://crates.io/crates/zeph)
   [![docs](https://img.shields.io/badge/docs-book-blue)](https://bug-ops.github.io/zeph/)
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
-  [![Tests](https://img.shields.io/badge/tests-7917-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-7942-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![Crates](https://img.shields.io/badge/crates-21-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
   [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
@@ -44,7 +44,7 @@ zeph               # start the agent
 - [x] **Hybrid inference** -- Ollama, Claude, OpenAI, Gemini, any OpenAI-compatible API, or fully local via Candle (GGUF)
 - [x] **Skills-first architecture** -- YAML+Markdown skill files with BM25+cosine hybrid retrieval, Bayesian re-ranking, self-learning evolution
 - [x] **Semantic memory** -- SQLite or PostgreSQL + Qdrant, MMR re-ranking, temporal decay, graph memory with SYNAPSE spreading activation
-- [x] **MCP client** -- full tool exposure, 17-pattern injection detection, elicitation support, tool-list locking
+- [x] **MCP client** -- full tool exposure, 17-pattern injection detection, elicitation support, tool-list locking, structured error codes, per-session tool quota, OAP authorization
 - [x] **A2A protocol** -- agent-to-agent delegation over JSON-RPC 2.0 with IBCT capability tokens
 - [x] **ACP server** -- stdio, HTTP+SSE, WebSocket transports for IDE integration (Zed, VS Code, Helix)
 - [x] **TUI dashboard** -- ratatui-based with real-time metrics, security panel, plan view, command palette

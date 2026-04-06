@@ -18,6 +18,7 @@ zeph [OPTIONS] [COMMAND]
 | `memory` | Export and import conversation history snapshots |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 | `router` | Inspect or reset Thompson Sampling router state (see [Adaptive Inference](../advanced/adaptive-inference.md)) |
+| `schedule` | Manage cron-based scheduled jobs — list, add, remove, show (requires `scheduler` feature; see [Scheduler](../concepts/scheduler.md)) |
 | `db` | Database management — run migrations, check status (see [Database Abstraction](../concepts/database.md)) |
 | `migrate-config` | Add missing config parameters as commented-out blocks and reformat the file (see [Migrate Config](../guides/migrate-config.md)) |
 
@@ -202,6 +203,43 @@ zeph router stats
 zeph router reset
 zeph router stats --state-path /custom/path.json
 ```
+
+### `zeph schedule`
+
+Manage cron-based scheduled jobs from the command line. Requires the `scheduler` feature. All commands read the same SQLite database used by the running agent.
+
+| Subcommand | Description |
+|------------|-------------|
+| `schedule list` | List all active scheduled jobs with NAME, KIND, MODE, NEXT RUN, and CRON columns |
+| `schedule add <CRON> <PROMPT>` | Add a new periodic job with a cron expression and task prompt |
+| `schedule remove <NAME>` | Remove a scheduled job by name |
+| `schedule show <NAME>` | Show full details for a single job |
+
+```bash
+# List all scheduled jobs
+zeph schedule list
+
+# Add a daily cleanup job at 03:00 UTC
+zeph schedule add "0 3 * * *" "run memory cleanup"
+
+# Add with an explicit name and task kind
+zeph schedule add "0 3 * * *" "run memory cleanup" --name daily-cleanup --kind memory_cleanup
+
+# Show details of a job
+zeph schedule show daily-cleanup
+
+# Remove a job
+zeph schedule remove daily-cleanup
+```
+
+`schedule add` options:
+
+| Flag | Description |
+|------|-------------|
+| `--name <NAME>` | Job name (auto-generated from prompt hash if omitted) |
+| `--kind <KIND>` | Task kind string (default: `custom`) |
+
+See [Scheduler](../concepts/scheduler.md) for the full list of built-in task kinds, cron expression formats, and how jobs are persisted.
 
 ## Interactive Commands
 

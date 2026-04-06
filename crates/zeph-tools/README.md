@@ -36,7 +36,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `adversarial_gate` | `AdversarialPolicyGateExecutor` — executor wrapper that routes tool calls through the adversarial policy agent before execution |
 | `policy_gate` | Policy-based tool access control gate |
 | `error_taxonomy` | Tool invocation phase taxonomy — classifies errors by execution phase for structured diagnostics |
-| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block); `TafcConfig` for `[tools.tafc]` section; `ResultCacheConfig` for `[tools.result_cache]`; `DependencyConfig` + `ToolDependency` for `[tools.dependencies]`; `FileConfig` for `[tools.file]` section (deny_read/allow_read glob lists) |
+| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block); `TafcConfig` for `[tools.tafc]` section; `ResultCacheConfig` for `[tools.result_cache]`; `DependencyConfig` + `ToolDependency` for `[tools.dependencies]`; `FileConfig` for `[tools.file]` section (deny_read/allow_read glob lists); `AuthorizationConfig` for `[tools.authorization]` (OAP declarative authorization rules); `max_tool_calls_per_session: Option<u32>` on `ToolsConfig` |
 
 **Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`, `ToolResultCache`, `CacheKey`, `ToolSchemaFilter`, `ToolDependencyGraph`, `ToolFilter`
 
@@ -126,6 +126,40 @@ TAFC injects a reasoning step before tool selection, allowing the LLM to evaluat
 ## Tool dependency graph
 
 `ToolDependencyGraph` enforces execution ordering: a tool with declared `requires` dependencies cannot execute until all prerequisites have completed. Unmet dependencies produce a `DependencyExclusion` that gates the tool from the LLM tool set until requirements are satisfied. Configure via `[tools.dependencies]`.
+
+## Tool call quota
+
+Limit the total number of tool call attempts per agent session:
+
+```toml
+[tools]
+max_tool_calls_per_session = 100   # Option<u32>; omit or set null for unlimited (default)
+```
+
+Only the first attempt counts — retries of a failed call do not consume quota. When the quota is exhausted the executor returns a `quota_blocked` error.
+
+## OAP authorization
+
+`[tools.authorization]` provides a declarative capability-based authorization layer evaluated after `[tools.policy]` rules (first-match-wins). Disabled by default.
+
+```toml
+[tools.authorization]
+enabled = true
+
+[[tools.authorization.rules]]
+action = "allow"
+tools  = ["read_file", "list_directory"]
+
+[[tools.authorization.rules]]
+action = "deny"
+tools  = ["shell"]
+```
+
+Rules are merged into `PolicyEnforcer` at startup. `[tools.policy]` rules always take precedence — use `policy` for safety-critical deny rules and `authorization` for capability grants.
+
+## Caller identity
+
+`ToolCall::caller_id: Option<String>` carries the originating agent or sub-agent identifier. Set automatically by the orchestrator for sub-agent dispatches; `None` for the primary agent. Recorded in audit log entries.
 
 ## Features
 
