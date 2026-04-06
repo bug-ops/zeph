@@ -2255,9 +2255,8 @@ impl GraphStore {
         entity_id: i64,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
-            "INSERT INTO graph_episode_entities (episode_id, entity_id)
-             VALUES (?, ?)
-             ON CONFLICT(episode_id, entity_id) DO NOTHING"
+            "INSERT OR IGNORE INTO graph_episode_entities (episode_id, entity_id)
+             VALUES (?, ?)"
         ))
         .bind(episode_id)
         .bind(entity_id)

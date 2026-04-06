@@ -1203,8 +1203,8 @@ mod tests {
         drop(result);
     }
 
-    #[test]
-    fn apply_summary_provider_none_returns_agent_unchanged() {
+    #[tokio::test]
+    async fn apply_summary_provider_none_returns_agent_unchanged() {
         let agent = make_agent();
         let result = apply_summary_provider(agent, None);
         drop(result);
