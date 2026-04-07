@@ -31,6 +31,15 @@ pub(crate) const SESSION_SUMMARIES_COLLECTION: &str = "zeph_session_summaries";
 pub(crate) const KEY_FACTS_COLLECTION: &str = "zeph_key_facts";
 pub(crate) const CORRECTIONS_COLLECTION: &str = "zeph_corrections";
 
+/// Progress state for embed backfill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackfillProgress {
+    /// Number of messages processed so far (including failures).
+    pub done: usize,
+    /// Total number of unembedded messages at backfill start.
+    pub total: usize,
+}
+
 pub use algorithms::{apply_mmr, apply_temporal_decay};
 pub use cross_session::SessionSummaryResult;
 pub use graph::{

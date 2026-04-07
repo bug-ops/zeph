@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use zeph_llm::provider::{LlmProvider as _, Message};
 
 /// Approximate characters per token (conservative estimate for mixed content).
@@ -1133,10 +1133,12 @@ impl SemanticMemory {
 
     /// Embed all messages that do not yet have embeddings.
     ///
-    /// Streams up to 1 000 unembedded rows from `SQLite` one at a time, embedding and storing
-    /// each before advancing the cursor. This avoids loading all message content into memory
-    /// at once, which can cause a significant RAM spike when messages contain large tool output
-    /// or code blocks.
+    /// Processes unembedded messages in micro-batches of 32, using `buffer_unordered(4)` for
+    /// concurrent embedding within each batch. Bounded peak memory: at most 32 messages of content
+    /// plus their embedding vectors are live at any time.
+    ///
+    /// When `progress_tx` is `Some`, sends `Some(BackfillProgress)` after each message and
+    /// `None` on completion (or on timeout/error in the caller).
     ///
     /// Returns the count of successfully embedded messages.
     ///
@@ -1144,36 +1146,78 @@ impl SemanticMemory {
     ///
     /// Returns an error if collection initialization or the streaming query setup fails.
     /// Individual embedding failures are logged but do not stop processing.
-    pub async fn embed_missing(&self) -> Result<usize, MemoryError> {
+    pub async fn embed_missing(
+        &self,
+        progress_tx: Option<tokio::sync::watch::Sender<Option<super::BackfillProgress>>>,
+    ) -> Result<usize, MemoryError> {
         if self.qdrant.is_none() || !self.effective_embed_provider().supports_embeddings() {
             return Ok(0);
         }
 
-        let mut stream = std::pin::pin!(self.sqlite.stream_unembedded_messages(1000));
+        let total = self.sqlite.count_unembedded_messages().await?;
+        if total == 0 {
+            return Ok(0);
+        }
 
-        let mut count = 0usize;
-        let mut total = 0usize;
-        while let Some(row) = stream.next().await {
-            let (msg_id, conversation_id, role, content) = match row {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("embed_missing: failed to read row: {e:#}");
-                    continue;
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(Some(super::BackfillProgress { done: 0, total }));
+        }
+
+        let mut done = 0usize;
+        let mut succeeded = 0usize;
+
+        loop {
+            const BATCH_SIZE: usize = 32;
+            const BATCH_SIZE_I64: i64 = 32;
+            let rows: Vec<_> = self
+                .sqlite
+                .stream_unembedded_messages(BATCH_SIZE_I64)
+                .try_collect()
+                .await?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            let batch_len = rows.len();
+
+            let results: Vec<bool> = futures::stream::iter(rows)
+                .map(|(msg_id, conv_id, role, content)| async move {
+                    self.embed_and_store_regular(msg_id, conv_id, &role, &content)
+                        .await
+                })
+                .buffer_unordered(4)
+                .collect()
+                .await;
+
+            for ok in &results {
+                done += 1;
+                if *ok {
+                    succeeded += 1;
                 }
-            };
-            total += 1;
-            if self
-                .embed_and_store_regular(msg_id, conversation_id, &role, &content)
-                .await
-            {
-                count += 1;
+                if let Some(tx) = &progress_tx {
+                    let _ = tx.send(Some(super::BackfillProgress { done, total }));
+                }
+            }
+
+            let batch_succeeded = results.iter().filter(|&&b| b).count();
+            if batch_succeeded > 0 {
+                tracing::debug!("Backfill batch: {batch_succeeded}/{batch_len} embedded");
+            }
+
+            if batch_len < BATCH_SIZE {
+                break;
             }
         }
 
-        if total > 0 {
-            tracing::info!("Embedded {count}/{total} missing messages");
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(None);
         }
-        Ok(count)
+
+        if done > 0 {
+            tracing::info!("Embedded {succeeded}/{total} missing messages");
+        }
+        Ok(succeeded)
     }
 }
 

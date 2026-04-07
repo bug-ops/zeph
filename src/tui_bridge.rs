@@ -28,10 +28,10 @@ pub(crate) struct TuiRunParams<'a> {
     /// Set when TUI rendering was started early via `start_tui_early`.
     /// When `Some`, `run_tui_agent` skips creating a new TUI task and uses the existing one.
     pub(crate) early_tui: Option<EarlyTuiHandle>,
-    /// Watch receiver for embed backfill state: `true` while running, `false` when done.
-    /// After warmup completes and the init status is cleared, the TUI shows a persistent
-    /// "Backfilling embeddings..." status until this transitions to `false`.
-    pub(crate) backfill_rx: tokio::sync::watch::Receiver<bool>,
+    /// Watch receiver for embed backfill progress.
+    /// `None` = idle/done; `Some(p)` = backfill running with progress `p`.
+    pub(crate) backfill_rx:
+        tokio::sync::watch::Receiver<Option<zeph_memory::semantic::BackfillProgress>>,
 }
 
 /// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
@@ -94,7 +94,7 @@ pub(crate) fn start_tui_early(
 #[cfg(feature = "tui")]
 async fn spawn_warmup_with_backfill_status(
     provider: AnyProvider,
-    mut backfill_rx: tokio::sync::watch::Receiver<bool>,
+    mut backfill_rx: tokio::sync::watch::Receiver<Option<zeph_memory::semantic::BackfillProgress>>,
     warmup_tx: tokio::sync::watch::Sender<bool>,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
@@ -109,19 +109,27 @@ async fn spawn_warmup_with_backfill_status(
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
     // After init status clears, show backfill progress until it finishes.
-    if *backfill_rx.borrow() {
-        let _ = tx
-            .send(zeph_tui::AgentEvent::Status(
-                "Backfilling embeddings...".into(),
-            ))
-            .await;
-        // Wait for backfill to complete (watch transitions to false).
-        while *backfill_rx.borrow_and_update() {
-            if backfill_rx.changed().await.is_err() {
-                break;
-            }
+    loop {
+        let progress = *backfill_rx.borrow_and_update();
+        if let Some(p) = progress {
+            let pct = if p.total > 0 {
+                p.done * 100 / p.total
+            } else {
+                0
+            };
+            let _ = tx
+                .send(zeph_tui::AgentEvent::Status(format!(
+                    "Backfilling embeddings: {}/{} ({}%)",
+                    p.done, p.total, pct
+                )))
+                .await;
+        } else {
+            let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+            break;
         }
-        let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+        if backfill_rx.changed().await.is_err() {
+            break;
+        }
     }
 }
 

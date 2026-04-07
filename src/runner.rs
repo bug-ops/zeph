@@ -669,25 +669,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     tui_status!("Loading memory...");
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
-    // backfill_tx/rx: signals whether embed backfill is still running.
-    // The TUI warmup completion handler uses this to show "Backfilling embeddings..."
-    // after init status clears, without being overwritten by subsequent init steps.
+    // backfill_rx: progress tracking for embed backfill.
+    // None = idle/done, Some(progress) = in progress.
     #[cfg(feature = "tui")]
-    let (backfill_tx, backfill_rx) = tokio::sync::watch::channel(true);
+    let (backfill_tx, backfill_rx) =
+        tokio::sync::watch::channel::<Option<zeph_memory::semantic::BackfillProgress>>(None);
     {
         let memory_arc = std::sync::Arc::clone(&memory);
         #[cfg(feature = "tui")]
-        let tx_for_spawn = backfill_tx;
+        let _backfill_handle =
+            zeph_core::bootstrap::spawn_embed_backfill(memory_arc, 300, Some(backfill_tx));
         #[cfg(not(feature = "tui"))]
-        let tx_for_spawn = {
-            let (tx, _rx) = tokio::sync::watch::channel(true);
-            tx
-        };
-        tokio::spawn(async move {
-            let handle = zeph_core::bootstrap::spawn_embed_backfill(memory_arc, 300);
-            handle.await.ok();
-            let _ = tx_for_spawn.send(false);
-        });
+        let _backfill_handle = zeph_core::bootstrap::spawn_embed_backfill(memory_arc, 300, None);
     }
     #[cfg(feature = "tui")]
     tui_status!("Connecting tools...");

@@ -616,6 +616,22 @@ impl SqliteStore {
         Ok(rows)
     }
 
+    /// Count messages that have no embedding yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn count_unembedded_messages(&self) -> Result<usize, MemoryError> {
+        let row: (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM messages m \
+             LEFT JOIN embeddings_metadata em ON m.id = em.message_id \
+             WHERE em.id IS NULL AND m.deleted_at IS NULL"
+        ))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(usize::try_from(row.0).unwrap_or(usize::MAX))
+    }
+
     /// Stream message IDs and content for messages without embeddings, one row at a time.
     ///
     /// Executes the same query as [`Self::unembedded_message_ids`] but returns a streaming

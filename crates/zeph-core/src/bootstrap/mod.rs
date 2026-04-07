@@ -377,11 +377,14 @@ impl AppBuilder {
 pub fn spawn_embed_backfill(
     memory: Arc<SemanticMemory>,
     timeout_secs: u64,
+    progress_tx: Option<
+        tokio::sync::watch::Sender<Option<zeph_memory::semantic::BackfillProgress>>,
+    >,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            memory.embed_missing(),
+            memory.embed_missing(progress_tx.clone()),
         )
         .await;
         match result {
@@ -389,6 +392,10 @@ pub fn spawn_embed_backfill(
             Ok(Ok(_)) => {}
             Ok(Err(e)) => tracing::warn!("embed_missing failed: {e:#}"),
             Err(_) => tracing::warn!("embed_missing timed out after {timeout_secs}s"),
+        }
+        // Ensure progress signals done on timeout/error.
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(None);
         }
     })
 }

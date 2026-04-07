@@ -103,7 +103,7 @@ async fn embed_missing_without_embedding_support_returns_zero() {
         .await
         .unwrap();
 
-    let count = memory.embed_missing().await.unwrap();
+    let count = memory.embed_missing(None).await.unwrap();
     assert_eq!(count, 0);
 }
 

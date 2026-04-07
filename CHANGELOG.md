@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Embed backfill progress tracking with bounded memory and concurrency** (`#2765`): `embed_missing` now accepts a `watch::Sender<Option<BackfillProgress>>` and reports `done/total` progress after each message. Messages are processed in micro-batches of 32 with `buffer_unordered(4)` concurrency, reducing peak memory from all-at-once to ~32 messages worth of content and cutting wall-clock time 3-4x via parallel HTTP embedding calls. The TUI status bar shows `Backfilling embeddings: N/M (X%)` during backfill and clears on completion.
+
 ### Fixed
 
 - **LSP `after_tool` blocks agent loop up to 160s** (`#2750`): wrap the entire LSP hover hook loop in a single 30s `tokio::time::timeout` instead of blocking sequentially per file. Combined with `max_symbols` reduction (10 → 5, `#2752`), worst-case blocking drops from ~160s to 30s.

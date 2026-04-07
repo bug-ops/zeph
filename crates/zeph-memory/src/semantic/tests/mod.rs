@@ -114,7 +114,7 @@ async fn has_embedding_without_qdrant() {
 async fn embed_missing_without_qdrant() {
     let memory = test_semantic_memory(true).await;
 
-    let count = memory.embed_missing().await.unwrap();
+    let count = memory.embed_missing(None).await.unwrap();
     assert_eq!(count, 0);
 }
 
@@ -158,7 +158,7 @@ async fn embed_missing_returns_zero_when_embeddings_not_supported() {
         .await
         .unwrap();
 
-    let count = memory.embed_missing().await.unwrap();
+    let count = memory.embed_missing(None).await.unwrap();
     assert_eq!(count, 0);
 }
 
