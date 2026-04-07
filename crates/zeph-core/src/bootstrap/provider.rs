@@ -142,6 +142,10 @@ fn apply_routing_signals(router: RouterProvider, config: &Config) -> RouterProvi
         }
     }
 
+    // Embed concurrency semaphore.
+    let embed_concurrency = router_cfg.map_or(4, |r| r.embed_concurrency);
+    router = router.with_embed_concurrency(embed_concurrency);
+
     router
 }
 
@@ -560,8 +564,15 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 .and_then(|r| r.cascade.clone())
                 .unwrap_or_default();
             let router_cascade_cfg = build_cascade_router_config(&cascade_cfg, config);
+            let embed_concurrency = config
+                .llm
+                .router
+                .as_ref()
+                .map_or(4, |r| r.embed_concurrency);
             Ok(AnyProvider::Router(Box::new(
-                RouterProvider::new(providers).with_cascade(router_cascade_cfg),
+                RouterProvider::new(providers)
+                    .with_cascade(router_cascade_cfg)
+                    .with_embed_concurrency(embed_concurrency),
             )))
         }
         LlmRoutingStrategy::Bandit => {
@@ -609,12 +620,15 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 );
                 None
             };
+            let embed_concurrency = config
+                .llm
+                .router
+                .as_ref()
+                .map_or(4, |r| r.embed_concurrency);
             Ok(AnyProvider::Router(Box::new(
-                RouterProvider::new(providers).with_bandit(
-                    router_bandit_cfg,
-                    state_path,
-                    embed_provider,
-                ),
+                RouterProvider::new(providers)
+                    .with_bandit(router_bandit_cfg, state_path, embed_provider)
+                    .with_embed_concurrency(embed_concurrency),
             )))
         }
         LlmRoutingStrategy::Task => {

@@ -2069,14 +2069,29 @@ impl<C: Channel> Agent<C> {
         // `lsp_tool_calls` collects (name, params, output) tuples built during the
         // results loop above. They are captured into a separate Vec so we can call
         // `&mut self.session.lsp_hooks` without conflicting borrows.
+        //
+        // The entire batch is capped at 30s to prevent stalls when many files are
+        // modified in one tool batch (#2750). Per the critic review, a single outer
+        // timeout is more effective than per-call timeouts because it bounds total
+        // blocking time regardless of N.
         if self.session.lsp_hooks.is_some() {
             let tc_arc = std::sync::Arc::clone(&self.metrics.token_counter);
             let sanitizer = self.security.sanitizer.clone();
-            for (name, input, output) in lsp_tool_calls {
-                if let Some(ref mut lsp) = self.session.lsp_hooks {
-                    lsp.after_tool(&name, &input, &output, &tc_arc, &sanitizer)
-                        .await;
+            let _ = self.channel.send_status("Analyzing changes...").await;
+            // TODO: cooperative MCP cancellation — dropped futures here may leave
+            // in-flight MCP JSON-RPC requests pending until the server-side timeout.
+            let lsp_result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                for (name, input, output) in lsp_tool_calls {
+                    if let Some(ref mut lsp) = self.session.lsp_hooks {
+                        lsp.after_tool(&name, &input, &output, &tc_arc, &sanitizer)
+                            .await;
+                    }
                 }
+            })
+            .await;
+            let _ = self.channel.send_status("").await;
+            if lsp_result.is_err() {
+                tracing::warn!("LSP after_tool batch timed out (30s)");
             }
         }
 

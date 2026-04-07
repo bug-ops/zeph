@@ -501,6 +501,17 @@ pub struct RouterConfig {
     /// Agent Stability Index configuration. Disabled by default.
     #[serde(default)]
     pub asi: Option<AsiConfig>,
+    /// Maximum number of concurrent `embed_batch` calls through the router.
+    ///
+    /// Limits simultaneous embedding HTTP requests to prevent provider rate-limiting
+    /// and memory pressure during indexing or high-frequency recall. Default: 4.
+    /// Set to 0 to disable the semaphore (unlimited concurrency).
+    #[serde(default = "default_embed_concurrency")]
+    pub embed_concurrency: usize,
+}
+
+fn default_embed_concurrency() -> usize {
+    4
 }
 
 /// Configuration for Bayesian reputation scoring (RAPS — Reputation-Adjusted Provider Selection).

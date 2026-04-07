@@ -213,14 +213,33 @@ impl SqliteStore {
         agent_visible: bool,
         user_visible: bool,
     ) -> Result<MessageId, MemoryError> {
-        let importance_score = crate::semantic::importance::compute_importance(content, role);
+        const MAX_BYTES: usize = 100 * 1024;
+
+        // Truncate plain-text content only. `parts_json` is skipped because a
+        // mid-byte cut produces invalid JSON that breaks downstream deserialization.
+        let content_cow: std::borrow::Cow<'_, str> = if content.len() > MAX_BYTES {
+            let boundary = content.floor_char_boundary(MAX_BYTES);
+            tracing::debug!(
+                original_bytes = content.len(),
+                "save_message: content exceeds 100KB, truncating"
+            );
+            std::borrow::Cow::Owned(format!(
+                "{}... [truncated, {} bytes total]",
+                &content[..boundary],
+                content.len()
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(content)
+        };
+
+        let importance_score = crate::semantic::importance::compute_importance(&content_cow, role);
         let row: (MessageId,) = zeph_db::query_as(
             sql!("INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible, importance_score) \
              VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"),
         )
         .bind(conversation_id)
         .bind(role)
-        .bind(content)
+        .bind(content_cow.as_ref())
         .bind(parts_json)
         .bind(i64::from(agent_visible))
         .bind(i64::from(user_visible))

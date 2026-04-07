@@ -373,7 +373,6 @@ fn raw_dump(request: &RequestDebugDump<'_>) -> String {
     } else {
         serde_json::json!({})
     };
-    let generic = messages_to_api_value(request.messages);
     if let Some(obj) = payload.as_object_mut() {
         obj.entry("model")
             .or_insert_with(|| extract_model(&request.provider_request, request.model_name));
@@ -395,12 +394,12 @@ fn raw_dump(request: &RequestDebugDump<'_>) -> String {
                 .cloned()
                 .unwrap_or(serde_json::Value::Null)
         });
-        if !obj.contains_key("messages")
-            && !obj.contains_key("system")
-            && let Some(generic_obj) = generic.as_object()
-        {
-            for (key, value) in generic_obj {
-                obj.insert(key.clone(), value.clone());
+        if !obj.contains_key("messages") && !obj.contains_key("system") {
+            let generic = messages_to_api_value(request.messages);
+            if let Some(generic_obj) = generic.as_object() {
+                for (key, value) in generic_obj {
+                    obj.insert(key.clone(), value.clone());
+                }
             }
         }
     }

@@ -248,6 +248,8 @@ pub struct RouterProvider {
     /// Turn ID of the last ASI embedding update. Used to debounce `spawn_asi_update` so that
     /// only one embed call fires per turn even when `chat()` is invoked N times concurrently.
     asi_last_turn: Arc<AtomicU64>,
+    /// Semaphore limiting concurrent `embed_batch` calls. `None` = unlimited.
+    embed_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl RouterProvider {
@@ -284,7 +286,21 @@ impl RouterProvider {
             quality_gate: None,
             turn_counter: Arc::new(AtomicU64::new(0)),
             asi_last_turn: Arc::new(AtomicU64::new(u64::MAX)),
+            embed_semaphore: None,
         }
+    }
+
+    /// Set the maximum number of concurrent `embed_batch` calls.
+    ///
+    /// A value of 0 disables the semaphore (unlimited). Default is no semaphore.
+    #[must_use]
+    pub fn with_embed_concurrency(mut self, limit: usize) -> Self {
+        self.embed_semaphore = if limit > 0 {
+            Some(Arc::new(tokio::sync::Semaphore::new(limit)))
+        } else {
+            None
+        };
+        self
     }
 
     /// Set the MAR (Memory-Augmented Routing) signal for the current turn.
@@ -1455,7 +1471,14 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let owned = owned_strs(texts);
         let router = self.clone();
+        let semaphore = self.embed_semaphore.clone();
         Box::pin(async move {
+            // Acquire embed semaphore permit before any HTTP work to cap concurrency.
+            let _permit = if let Some(ref sem) = semaphore {
+                Some(sem.acquire().await.map_err(|_| LlmError::NoProviders)?)
+            } else {
+                None
+            };
             let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
             for p in &providers {
                 if !p.supports_embeddings() {
@@ -3246,5 +3269,58 @@ mod tests {
 
         // Both clones share the same Arc<AtomicU64>
         assert_eq!(t1, t0 + 1, "cloned router shares turn_counter");
+    }
+
+    #[test]
+    fn with_embed_concurrency_zero_means_no_semaphore() {
+        let r = RouterProvider::new(vec![]).with_embed_concurrency(0);
+        assert!(r.embed_semaphore.is_none(), "0 should disable semaphore");
+    }
+
+    #[test]
+    fn with_embed_concurrency_positive_creates_semaphore() {
+        let r = RouterProvider::new(vec![]).with_embed_concurrency(4);
+        let sem = r.embed_semaphore.as_ref().expect("semaphore should exist");
+        assert_eq!(sem.available_permits(), 4);
+    }
+
+    #[tokio::test]
+    async fn embed_semaphore_limits_concurrency() {
+        use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering as AO};
+
+        // Use a semaphore with 2 permits. Verify that at most 2 concurrent
+        // tasks can hold the permit at the same time.
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let concurrent_peak = StdArc::new(AtomicUsize::new(0));
+        let active = StdArc::new(AtomicUsize::new(0));
+
+        let mut handles = vec![];
+        for _ in 0..6 {
+            let sem_clone = sem.clone();
+            let peak = concurrent_peak.clone();
+            let active = active.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = sem_clone.acquire().await.unwrap();
+                let cur = active.fetch_add(1, AO::SeqCst) + 1;
+                // Track peak concurrent usage.
+                let mut p = peak.load(AO::SeqCst);
+                while p < cur {
+                    match peak.compare_exchange(p, cur, AO::SeqCst, AO::SeqCst) {
+                        Ok(_) => break,
+                        Err(new) => p = new,
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                active.fetch_sub(1, AO::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert!(
+            concurrent_peak.load(AO::SeqCst) <= 2,
+            "peak concurrency should not exceed semaphore limit"
+        );
     }
 }

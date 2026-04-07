@@ -66,7 +66,7 @@ fn default_lsp_max_per_file() -> usize {
     20
 }
 fn default_lsp_max_symbols() -> usize {
-    10
+    5
 }
 fn default_lsp_call_timeout_secs() -> u64 {
     5

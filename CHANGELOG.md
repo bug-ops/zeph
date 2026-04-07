@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **LSP `after_tool` blocks agent loop up to 160s** (`#2750`): wrap the entire LSP hover hook loop in a single 30s `tokio::time::timeout` instead of blocking sequentially per file. Combined with `max_symbols` reduction (10 → 5, `#2752`), worst-case blocking drops from ~160s to 30s.
+
+- **No TUI status during LLM inference** (`#2747`): add `send_status("Analyzing changes...")` around the LSP hook loop so the status bar reflects background work instead of appearing frozen.
+
+- **`find_path` returns unbounded results, inflates LLM context** (`#2746`): add `max_results` parameter (default 200) with lazy `.take(limit + 1)` during glob iteration to prevent OOM on pathological patterns. Truncated output appends `"... and N more"`.
+
+- **`messages_to_api_value` called unconditionally in debug dump** (`#2751`): move the expensive serialization inside the conditional guard so it only runs when the provider request lacks a `messages` key (never for OpenAI/Claude). Saves ~300KB heap allocation per LLM call.
+
+- **`persist_message` stores tool output without content size cap** (`#2748`): truncate message content to 100KB before SQLite write, preserving UTF-8 boundary via `floor_char_boundary`. `parts_json` is not truncated to avoid producing invalid JSON.
+
+### Changed
+
+- **Embed concurrency cap** (`#2749`): add `embed_concurrency` config field (default 4, 0 = unlimited) backed by `Arc<Semaphore>` in the router. Prevents indexer, backfill, and graph extraction from saturating Ollama embed slots simultaneously.
+
 ## [0.18.5] - 2026-04-07
 
 ### Performance

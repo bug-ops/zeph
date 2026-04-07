@@ -44,6 +44,8 @@ struct EditParams {
 struct FindPathParams {
     /// Glob pattern
     pattern: String,
+    /// Maximum number of results to return. Defaults to 200.
+    max_results: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -340,7 +342,8 @@ impl FileExecutor {
     }
 
     fn handle_find_path(&self, params: &FindPathParams) -> Result<Option<ToolOutput>, ToolError> {
-        let matches: Vec<String> = glob::glob(&params.pattern)
+        let limit = params.max_results.unwrap_or(200).max(1);
+        let mut matches: Vec<String> = glob::glob(&params.pattern)
             .map_err(|e| {
                 ToolError::Execution(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -353,12 +356,23 @@ impl FileExecutor {
                 self.allowed_paths.iter().any(|a| canonical.starts_with(a))
             })
             .map(|p| p.display().to_string())
+            .take(limit + 1)
             .collect();
+
+        let truncated = matches.len() > limit;
+        if truncated {
+            matches.truncate(limit);
+        }
 
         Ok(Some(ToolOutput {
             tool_name: "find_path".to_owned(),
             summary: if matches.is_empty() {
                 format!("No files matching: {}", params.pattern)
+            } else if truncated {
+                format!(
+                    "{}\n... and more results (showing first {limit})",
+                    matches.join("\n")
+                )
             } else {
                 matches.join("\n")
             },
@@ -1687,5 +1701,59 @@ mod tests {
             "should not match in denied .env: {}",
             result.summary
         );
+    }
+
+    #[test]
+    fn find_path_truncates_at_default_limit() {
+        let dir = temp_dir();
+        // Create 205 files.
+        for i in 0..205u32 {
+            fs::write(dir.path().join(format!("file_{i:04}.txt")), "").unwrap();
+        }
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let pattern = dir.path().join("*.txt").to_str().unwrap().to_owned();
+        let params = make_params(&[("pattern", serde_json::json!(pattern))]);
+        let result = exec
+            .execute_file_tool("find_path", &params)
+            .unwrap()
+            .unwrap();
+        // Default limit is 200; summary should mention truncation.
+        assert!(
+            result.summary.contains("and more results"),
+            "expected truncation notice: {}",
+            &result.summary[..100.min(result.summary.len())]
+        );
+        // Should contain exactly 200 lines before the truncation notice.
+        let lines: Vec<&str> = result.summary.lines().collect();
+        assert_eq!(lines.len(), 201, "expected 200 paths + 1 truncation line");
+    }
+
+    #[test]
+    fn find_path_respects_max_results() {
+        let dir = temp_dir();
+        for i in 0..10u32 {
+            fs::write(dir.path().join(format!("f_{i}.txt")), "").unwrap();
+        }
+        let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
+        let pattern = dir.path().join("*.txt").to_str().unwrap().to_owned();
+        let params = make_params(&[
+            ("pattern", serde_json::json!(pattern)),
+            ("max_results", serde_json::json!(5)),
+        ]);
+        let result = exec
+            .execute_file_tool("find_path", &params)
+            .unwrap()
+            .unwrap();
+        assert!(result.summary.contains("and more results"));
+        let paths: Vec<&str> = result
+            .summary
+            .lines()
+            .filter(|l| {
+                std::path::Path::new(l)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("txt"))
+            })
+            .collect();
+        assert_eq!(paths.len(), 5);
     }
 }

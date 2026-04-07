@@ -1600,3 +1600,52 @@ async fn apply_consolidation_update_skips_below_threshold() {
         "content must not change when update is skipped"
     );
 }
+
+#[tokio::test]
+async fn save_message_truncates_large_content() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    // Create content just over 100 KB.
+    let large_content = "x".repeat(110 * 1024);
+    let mid = store
+        .save_message(cid, "user", &large_content)
+        .await
+        .unwrap();
+
+    let row: (String,) = sqlx::query_as(sql!("SELECT content FROM messages WHERE id = ?"))
+        .bind(mid)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+    assert!(
+        row.0.len() < large_content.len(),
+        "stored content should be smaller than original"
+    );
+    assert!(
+        row.0.contains("[truncated"),
+        "stored content should contain truncation marker"
+    );
+    assert!(
+        row.0.len() <= 102 * 1024,
+        "stored content should not exceed ~102KB"
+    );
+}
+
+#[tokio::test]
+async fn save_message_does_not_truncate_small_content() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    let content = "hello world";
+    let mid = store.save_message(cid, "user", content).await.unwrap();
+
+    let row: (String,) = sqlx::query_as(sql!("SELECT content FROM messages WHERE id = ?"))
+        .bind(mid)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(row.0, content);
+}
