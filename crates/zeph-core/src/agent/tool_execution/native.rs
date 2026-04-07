@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use futures::FutureExt as _;
+use zeph_common::text::estimate_tokens;
 use zeph_llm::provider::{
     ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
     ToolDefinition,
@@ -498,16 +499,16 @@ impl<C: Channel> Agent<C> {
         let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let prompt_estimate = self.providers.cached_prompt_tokens;
         let completion_heuristic = match result {
-            ChatResponse::Text(t) => u64::try_from(t.len()).unwrap_or(0) / 4,
+            ChatResponse::Text(t) => estimate_tokens(t) as u64,
             ChatResponse::ToolUse {
                 text, tool_calls, ..
             } => {
-                let text_len = text.as_deref().map_or(0, str::len);
-                let calls_len: usize = tool_calls
+                let text_tokens = estimate_tokens(text.as_deref().unwrap_or(""));
+                let calls_tokens: usize = tool_calls
                     .iter()
-                    .map(|c| c.name.len() + c.input.to_string().len())
+                    .map(|c| estimate_tokens(&c.name) + estimate_tokens(&c.input.to_string()))
                     .sum();
-                u64::try_from(text_len + calls_len).unwrap_or(0) / 4
+                (text_tokens + calls_tokens) as u64
             }
         };
         let (final_prompt, final_completion) = self
@@ -2396,7 +2397,7 @@ impl<C: Channel> Agent<C> {
 
         let tokens_freed = to_compress
             .iter()
-            .map(|m| m.content.len() / 4)
+            .map(|m| estimate_tokens(&m.content))
             .sum::<usize>();
 
         // Append summary to Knowledge block (LLM-authored via compress_context).

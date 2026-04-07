@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use zeph_common::text::truncate_chars;
+use zeph_common::text::{estimate_tokens, truncate_chars};
 
 use crate::any::AnyProvider;
 use crate::embed::owned_strs;
@@ -500,7 +500,7 @@ impl LlmProvider for TriageRouter {
         let router = self.clone();
         let messages = messages.to_vec();
         Box::pin(async move {
-            let context_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
+            let context_tokens: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
             let idx = router.classify(&messages).await;
             let idx = router.maybe_escalate_for_context(idx, context_tokens);
             let (tier, provider) = &router.tier_providers[idx];
@@ -524,7 +524,7 @@ impl LlmProvider for TriageRouter {
         let router = self.clone();
         let messages = messages.to_vec();
         Box::pin(async move {
-            let context_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
+            let context_tokens: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
             let idx = router.classify(&messages).await;
             let idx = router.maybe_escalate_for_context(idx, context_tokens);
             let (tier, provider) = &router.tier_providers[idx];
@@ -550,7 +550,7 @@ impl LlmProvider for TriageRouter {
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         Box::pin(async move {
-            let context_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
+            let context_tokens: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
             let idx = router.classify(&messages).await;
             let idx = router.maybe_escalate_for_context(idx, context_tokens);
             let (tier, provider) = &router.tier_providers[idx];

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_common::text::estimate_tokens;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, MessagePart, Role};
 use zeph_tools::executor::{ToolError, ToolOutput};
 
@@ -391,18 +392,13 @@ impl<C: Channel> Agent<C> {
             if let Some(final_completion) = final_completion_opt {
                 m.completion_tokens = m
                     .completion_tokens
-                    .saturating_sub(
-                        r.as_ref()
-                            .map_or(0, |s| u64::try_from(s.len()).unwrap_or(0) / 4),
-                    )
+                    .saturating_sub(r.as_ref().map_or(0, |s| estimate_tokens(s) as u64))
                     .saturating_add(final_completion);
             }
             m.total_tokens = m.prompt_tokens + m.completion_tokens;
         });
-        let cost_completion = final_completion_opt.unwrap_or_else(|| {
-            r.as_ref()
-                .map_or(0, |s| u64::try_from(s.len()).unwrap_or(0) / 4)
-        });
+        let cost_completion = final_completion_opt
+            .unwrap_or_else(|| r.as_ref().map_or(0, |s| estimate_tokens(s) as u64));
         self.record_cost_and_cache(final_prompt, cost_completion);
         let raw = r?;
         if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
@@ -450,7 +446,7 @@ impl<C: Channel> Agent<C> {
         match result {
             Ok(Ok(resp)) => {
                 let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let completion_heuristic = u64::try_from(resp.len()).unwrap_or(0) / 4;
+                let completion_heuristic = estimate_tokens(&resp) as u64;
                 let (final_prompt, final_completion) = self
                     .provider
                     .last_usage()
@@ -853,7 +849,7 @@ impl<C: Channel> Agent<C> {
 
         // For streaming paths, last_usage() is None (providers don't return usage in streams),
         // so the heuristic is the fallback. For non-streaming via this path, use real counts.
-        let completion_heuristic = u64::try_from(response.len()).unwrap_or(0) / 4;
+        let completion_heuristic = estimate_tokens(&response) as u64;
         let completion_tokens = self
             .provider
             .last_usage()

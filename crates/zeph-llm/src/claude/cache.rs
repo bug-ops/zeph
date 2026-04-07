@@ -3,6 +3,8 @@
 
 //! Prompt caching utilities for the Claude provider.
 
+use zeph_common::text::estimate_tokens;
+
 use crate::provider::ToolDefinition;
 
 use super::types::{
@@ -62,7 +64,7 @@ pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemC
                 // when it is below the cache minimum threshold. This ensures
                 // the block gets cache_control and avoids silent cache misses.
                 let text = if first_block {
-                    let estimated = before.len() / 4;
+                    let estimated = estimate_tokens(before);
                     if estimated < min_tokens {
                         tracing::debug!(
                             estimated_tokens = estimated,
@@ -77,7 +79,7 @@ pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemC
                 } else {
                     before.to_owned()
                 };
-                let estimated_tokens = text.len() / 4;
+                let estimated_tokens = estimate_tokens(&text);
                 let cc = if estimated_tokens >= min_tokens {
                     Some(CacheControl {
                         cache_type: CacheType::Ephemeral,
@@ -108,7 +110,7 @@ pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemC
         // last explicit cacheable block). When no markers exist, `remaining` equals the
         // full system prompt — apply the same min-token threshold as the fallback path.
         let had_markers = remaining.len() < cacheable_part.trim().len();
-        let estimated_tokens = zeph_common::text::estimate_tokens(remaining);
+        let estimated_tokens = estimate_tokens(remaining);
         let cc = if had_markers || estimated_tokens >= min_tokens {
             Some(CacheControl {
                 cache_type: CacheType::Ephemeral,

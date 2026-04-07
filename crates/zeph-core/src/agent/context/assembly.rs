@@ -41,49 +41,50 @@ impl<C: Channel> Agent<C> {
         self.recompute_prompt_tokens();
     }
 
-    pub(in crate::agent) fn remove_recall_messages(&mut self) {
+    fn remove_by_prefix(&mut self, role: Role, prefix: &str) {
+        self.msg
+            .messages
+            .retain(|m| m.role != role || !m.content.starts_with(prefix));
+    }
+
+    fn remove_by_part_or_prefix(
+        &mut self,
+        prefix: &str,
+        part_matches: impl Fn(&MessagePart) -> bool,
+    ) {
         self.msg.messages.retain(|m| {
             if m.role != Role::System {
                 return true;
             }
-            if m.parts
-                .first()
-                .is_some_and(|p| matches!(p, MessagePart::Recall { .. }))
-            {
+            if m.parts.first().is_some_and(&part_matches) {
                 return false;
             }
-            !m.content.starts_with(RECALL_PREFIX)
+            !m.content.starts_with(prefix)
         });
+    }
+
+    pub(in crate::agent) fn remove_recall_messages(&mut self) {
+        self.remove_by_part_or_prefix(RECALL_PREFIX, |p| matches!(p, MessagePart::Recall { .. }));
     }
 
     pub(in crate::agent) fn remove_correction_messages(&mut self) {
-        self.msg
-            .messages
-            .retain(|m| m.role != Role::System || !m.content.starts_with(CORRECTIONS_PREFIX));
+        self.remove_by_prefix(Role::System, CORRECTIONS_PREFIX);
     }
 
     pub(in crate::agent) fn remove_graph_facts_messages(&mut self) {
-        self.msg
-            .messages
-            .retain(|m| m.role != Role::System || !m.content.starts_with(GRAPH_FACTS_PREFIX));
+        self.remove_by_prefix(Role::System, GRAPH_FACTS_PREFIX);
     }
 
     pub(in crate::agent) fn remove_persona_facts_messages(&mut self) {
-        self.msg
-            .messages
-            .retain(|m| m.role != Role::System || !m.content.starts_with(super::PERSONA_PREFIX));
+        self.remove_by_prefix(Role::System, super::PERSONA_PREFIX);
     }
 
     pub(in crate::agent) fn remove_trajectory_hints_messages(&mut self) {
-        self.msg
-            .messages
-            .retain(|m| m.role != Role::System || !m.content.starts_with(super::TRAJECTORY_PREFIX));
+        self.remove_by_prefix(Role::System, super::TRAJECTORY_PREFIX);
     }
 
     pub(in crate::agent) fn remove_tree_memory_messages(&mut self) {
-        self.msg.messages.retain(|m| {
-            m.role != Role::System || !m.content.starts_with(super::TREE_MEMORY_PREFIX)
-        });
+        self.remove_by_prefix(Role::System, super::TREE_MEMORY_PREFIX);
     }
 
     /// Remove previously injected LSP context notes from the message history.
@@ -93,9 +94,7 @@ impl<C: Channel> Agent<C> {
     /// LSP notes use `Role::System` (consistent with graph facts and recall),
     /// so they are skipped by tool-pair summarization automatically.
     pub(in crate::agent) fn remove_lsp_messages(&mut self) {
-        self.msg
-            .messages
-            .retain(|m| m.role != Role::System || !m.content.starts_with(LSP_NOTE_PREFIX));
+        self.remove_by_prefix(Role::System, LSP_NOTE_PREFIX);
     }
 
     fn effective_recall_timeout_ms(configured: u64) -> u64 {
@@ -485,60 +484,27 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(in crate::agent) fn remove_code_context_messages(&mut self) {
-        self.msg.messages.retain(|m| {
-            if m.role != Role::System {
-                return true;
-            }
-            if m.parts
-                .first()
-                .is_some_and(|p| matches!(p, MessagePart::CodeContext { .. }))
-            {
-                return false;
-            }
-            !m.content.starts_with(CODE_CONTEXT_PREFIX)
+        self.remove_by_part_or_prefix(CODE_CONTEXT_PREFIX, |p| {
+            matches!(p, MessagePart::CodeContext { .. })
         });
     }
 
     pub(super) fn remove_summary_messages(&mut self) {
-        self.msg.messages.retain(|m| {
-            if m.role != Role::System {
-                return true;
-            }
-            if m.parts
-                .first()
-                .is_some_and(|p| matches!(p, MessagePart::Summary { .. }))
-            {
-                return false;
-            }
-            !m.content.starts_with(SUMMARY_PREFIX)
-        });
+        self.remove_by_part_or_prefix(SUMMARY_PREFIX, |p| matches!(p, MessagePart::Summary { .. }));
     }
 
     pub(super) fn remove_cross_session_messages(&mut self) {
-        self.msg.messages.retain(|m| {
-            if m.role != Role::System {
-                return true;
-            }
-            if m.parts
-                .first()
-                .is_some_and(|p| matches!(p, MessagePart::CrossSession { .. }))
-            {
-                return false;
-            }
-            !m.content.starts_with(CROSS_SESSION_PREFIX)
+        self.remove_by_part_or_prefix(CROSS_SESSION_PREFIX, |p| {
+            matches!(p, MessagePart::CrossSession { .. })
         });
     }
 
     fn remove_document_rag_messages(&mut self) {
-        self.msg
-            .messages
-            .retain(|m| m.role != Role::System || !m.content.starts_with(DOCUMENT_RAG_PREFIX));
+        self.remove_by_prefix(Role::System, DOCUMENT_RAG_PREFIX);
     }
 
     pub(in crate::agent) fn remove_session_digest_message(&mut self) {
-        self.msg
-            .messages
-            .retain(|m| m.role != Role::User || !m.content.starts_with(SESSION_DIGEST_PREFIX));
+        self.remove_by_prefix(Role::User, SESSION_DIGEST_PREFIX);
     }
 
     /// Spawn a fire-and-forget background task to generate and persist a session digest for

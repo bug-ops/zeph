@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 use dashmap::DashMap;
 use tiktoken_rs::CoreBPE;
+use zeph_common::text::estimate_tokens;
 use zeph_llm::provider::{Message, MessagePart};
 
 static BPE: OnceLock<Option<CoreBPE>> = OnceLock::new();
@@ -162,7 +163,9 @@ impl TokenCounter {
             } => THINKING_OVERHEAD + self.count_tokens(thinking) + self.count_tokens(signature),
 
             // RedactedThinkingBlock is an opaque base64 blob — BPE is not meaningful here.
-            MessagePart::RedactedThinkingBlock { data } => THINKING_OVERHEAD + data.len() / 4,
+            MessagePart::RedactedThinkingBlock { data } => {
+                THINKING_OVERHEAD + estimate_tokens(data)
+            }
 
             // Compaction summary is sent back verbatim to the API.
             MessagePart::Compaction { summary } => self.count_tokens(summary),

@@ -67,6 +67,7 @@ use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
 use crate::context::{
     ContextBudget, EnvironmentContext, build_system_prompt, build_system_prompt_with_instructions,
 };
+use zeph_common::text::estimate_tokens;
 use zeph_sanitizer::ContentSanitizer;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
@@ -231,7 +232,7 @@ impl<C: Channel> Agent<C> {
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
 
-        let initial_prompt_tokens = u64::try_from(system_prompt.len()).unwrap_or(0) / 4;
+        let initial_prompt_tokens = estimate_tokens(&system_prompt) as u64;
         let (_tx, rx) = watch::channel(false);
         let token_counter = Arc::new(TokenCounter::new());
         // Always create the receiver side of the experiment notification channel so the

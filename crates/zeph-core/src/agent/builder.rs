@@ -22,6 +22,7 @@ use crate::context::ContextBudget;
 use crate::cost::CostTracker;
 use crate::instructions::{InstructionEvent, InstructionReloadState};
 use crate::metrics::MetricsSnapshot;
+use zeph_common::text::estimate_tokens;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
@@ -1278,7 +1279,7 @@ impl<C: Channel> Agent<C> {
             .msg
             .messages
             .first()
-            .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
+            .map_or(0, |m| estimate_tokens(&m.content) as u64);
         let mcp_tool_count = self.mcp.tools.len();
         let mcp_server_count = if self.mcp.server_outcomes.is_empty() {
             // Fallback: count unique server IDs from connected tools

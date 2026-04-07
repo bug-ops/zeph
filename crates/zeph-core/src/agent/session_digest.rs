@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use regex::Regex;
+use zeph_common::text::estimate_tokens;
 use zeph_llm::provider::{Message, MessageMetadata, Role};
 use zeph_memory::TokenCounter;
 
@@ -291,8 +292,8 @@ impl<C: Channel> Agent<C> {
 
         match memory.sqlite().load_session_digest(conversation_id).await {
             Ok(Some(digest)) => {
-                let token_count =
-                    usize::try_from(digest.token_count).unwrap_or(digest.digest.len() / 4);
+                let token_count = usize::try_from(digest.token_count)
+                    .unwrap_or_else(|_| estimate_tokens(&digest.digest));
                 tracing::debug!(
                     conversation_id = conversation_id.0,
                     tokens = token_count,

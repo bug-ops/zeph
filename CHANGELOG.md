@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Refactored
+
+- **Replace inline `len()/4` token estimation with `estimate_tokens()`** (`#2778`): 15 call sites across `zeph-core`, `zeph-llm`, and `zeph-memory` now use the centralized `zeph_common::text::estimate_tokens()` function, which counts Unicode scalars (`chars().count() / 4`) instead of bytes — more accurate for non-ASCII content and trivial to improve later from a single location.
+
+- **Extract shared `remove_system_messages` helpers in context assembly** (`#2779`): 11 nearly-identical `remove_*_messages()` methods in `ContextAssembly` now delegate to two private helpers (`remove_by_prefix`, `remove_by_part_or_prefix`), reducing ~80 lines of duplicated retain logic to one-liner delegates.
+
 ### Added
 
 - **Embed backfill progress tracking with bounded memory and concurrency** (`#2765`): `embed_missing` now accepts a `watch::Sender<Option<BackfillProgress>>` and reports `done/total` progress after each message. Messages are processed in micro-batches of 32 with `buffer_unordered(4)` concurrency, reducing peak memory from all-at-once to ~32 messages worth of content and cutting wall-clock time 3-4x via parallel HTTP embedding calls. The TUI status bar shows `Backfilling embeddings: N/M (X%)` during backfill and clears on completion.

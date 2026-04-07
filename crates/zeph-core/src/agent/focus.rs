@@ -13,6 +13,7 @@ use uuid::Uuid;
 use zeph_llm::provider::{Message, MessageMetadata, Role, ToolDefinition};
 
 use crate::config::FocusConfig;
+use zeph_common::text::estimate_tokens;
 
 /// Build tool definitions for `start_focus` and `complete_focus` (#1850).
 ///
@@ -204,9 +205,11 @@ impl FocusState {
             if self.knowledge_blocks.len() <= 1 {
                 break;
             }
-            let total_chars: usize = self.knowledge_blocks.iter().map(|b| b.content.len()).sum();
-            #[allow(clippy::integer_division)]
-            let approx_tokens = total_chars / 4;
+            let approx_tokens: usize = self
+                .knowledge_blocks
+                .iter()
+                .map(|b| estimate_tokens(&b.content))
+                .sum();
             if approx_tokens <= self.config.max_knowledge_tokens {
                 break;
             }

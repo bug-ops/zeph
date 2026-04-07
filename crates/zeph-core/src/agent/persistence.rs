@@ -3627,10 +3627,10 @@ mod tests {
 
     #[test]
     fn trajectory_extraction_slice_handles_few_messages() {
-        let max_messages: u64 = 20;
+        let max_messages: usize = 20;
         let total_messages = 5usize;
 
-        let tail_start = total_messages.saturating_sub(max_messages as usize);
+        let tail_start = total_messages.saturating_sub(max_messages);
         let window = total_messages - tail_start;
 
         assert_eq!(window, 5, "should return all messages when fewer than max");
