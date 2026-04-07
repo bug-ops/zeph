@@ -4,7 +4,9 @@
 //! Per-provider EMA tracker for latency-aware [`super::router::RouterProvider`] ordering.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 /// Per-provider EMA statistics used for routing decisions.
 #[derive(Debug, Clone)]
@@ -46,10 +48,7 @@ impl EmaTracker {
 
     /// Record the outcome of a provider call.
     pub fn record(&self, provider_name: &str, success: bool, latency_ms: u64) {
-        let mut stats = self
-            .stats
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut stats = self.stats.lock();
         let entry = stats.entry(provider_name.to_owned()).or_default();
         let success_val = if success { 1.0 } else { 0.0 };
         entry.success_ema = self.alpha * success_val + (1.0 - self.alpha) * entry.success_ema;
@@ -64,19 +63,13 @@ impl EmaTracker {
     /// Returns `None` if the interval has not been reached yet.
     #[must_use]
     pub fn maybe_reorder(&self, current_order: &[String]) -> Option<Vec<String>> {
-        let mut counter = self
-            .call_counter
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut counter = self.call_counter.lock();
         *counter += 1;
         if self.reorder_interval == 0 || !(*counter).is_multiple_of(self.reorder_interval) {
             return None;
         }
 
-        let stats = self
-            .stats
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stats = self.stats.lock();
         let mut scored: Vec<(String, f64)> = current_order
             .iter()
             .map(|name| {
@@ -93,10 +86,7 @@ impl EmaTracker {
     /// Return a snapshot of current stats for all tracked providers.
     #[must_use]
     pub fn snapshot(&self) -> HashMap<String, ProviderStats> {
-        self.stats
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.stats.lock().clone()
     }
 }
 

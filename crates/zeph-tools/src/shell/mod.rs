@@ -12,6 +12,8 @@ use serde::Deserialize;
 
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ShellConfig;
 use crate::executor::{
@@ -107,7 +109,7 @@ pub struct ShellExecutor {
     permission_policy: Option<PermissionPolicy>,
     output_filter_registry: Option<OutputFilterRegistry>,
     cancel_token: Option<CancellationToken>,
-    skill_env: std::sync::RwLock<Option<std::collections::HashMap<String, String>>>,
+    skill_env: RwLock<Option<std::collections::HashMap<String, String>>>,
     transactional: bool,
     auto_rollback: bool,
     auto_rollback_exit_codes: Vec<i32>,
@@ -161,7 +163,7 @@ impl ShellExecutor {
             permission_policy: None,
             output_filter_registry: None,
             cancel_token: None,
-            skill_env: std::sync::RwLock::new(None),
+            skill_env: RwLock::new(None),
             transactional: config.transactional,
             auto_rollback: config.auto_rollback,
             auto_rollback_exit_codes: config.auto_rollback_exit_codes.clone(),
@@ -173,10 +175,7 @@ impl ShellExecutor {
 
     /// Set environment variables to inject when executing the active skill's bash blocks.
     pub fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
-        match self.skill_env.write() {
-            Ok(mut guard) => *guard = env,
-            Err(e) => tracing::error!("skill_env RwLock poisoned: {e}"),
-        }
+        *self.skill_env.write() = env;
     }
 
     #[must_use]
@@ -329,7 +328,7 @@ impl ShellExecutor {
 
         let start = Instant::now();
         let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
-            self.skill_env.read().ok().and_then(|g| g.clone());
+            self.skill_env.read().clone();
         let (mut envelope, out) = execute_bash(
             block,
             self.timeout,

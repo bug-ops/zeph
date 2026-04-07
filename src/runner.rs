@@ -17,6 +17,7 @@ use crate::tui_bridge::{
     TuiRunParams, forward_index_progress_to_tui, run_tui_agent, start_tui_early,
 };
 
+use parking_lot::RwLock;
 use zeph_channels::AnyChannel;
 use zeph_core::agent::Agent;
 use zeph_core::bootstrap::resolve_config_path;
@@ -693,14 +694,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     )
     .await;
 
-    let registry = std::sync::Arc::new(std::sync::RwLock::new(registry));
-    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
-        .read()
-        .expect("registry read lock")
-        .all_meta()
-        .into_iter()
-        .cloned()
-        .collect();
+    let registry = std::sync::Arc::new(RwLock::new(registry));
+    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
+        registry.read().all_meta().into_iter().cloned().collect();
     let skill_count = all_meta_owned.len();
 
     // Populate trust DB for all loaded skills.
@@ -1180,7 +1176,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             match zeph_tools::PolicyEnforcer::compile(&effective_policy) {
                 Ok(enforcer) => {
                     let policy_context =
-                        std::sync::Arc::new(std::sync::RwLock::new(zeph_tools::PolicyContext {
+                        std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
                             trust_level: zeph_tools::SkillTrustLevel::Trusted,
                             env: std::env::vars().collect(),
                         }));
@@ -1212,9 +1208,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .iter()
             .map(zeph_mcp::McpTool::sanitized_id)
             .collect();
-        *mcp_ids_handle
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ids;
+        *mcp_ids_handle.write() = ids;
     }
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;

@@ -672,11 +672,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
         let active_skills: Vec<Skill> = {
-            let reg = self
-                .skill_state
-                .registry
-                .read()
-                .expect("registry read lock");
+            let reg = self.skill_state.registry.read();
             self.skill_state
                 .active_skill_names
                 .iter()

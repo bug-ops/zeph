@@ -13,6 +13,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use parking_lot::Mutex;
+
 use crate::error::LlmError;
 use crate::usage::UsageTracker;
 
@@ -54,7 +56,7 @@ pub struct ClaudeProvider {
     cache_user_messages: bool,
     usage: UsageTracker,
     /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
-    tool_cache: std::sync::Mutex<Option<(u64, Vec<serde_json::Value>)>>,
+    tool_cache: Mutex<Option<(u64, Vec<serde_json::Value>)>>,
     generation_overrides: Option<GenerationOverrides>,
     /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
     server_compaction: bool,
@@ -62,7 +64,7 @@ pub struct ClaudeProvider {
     /// (e.g. header deprecated/removed). Shared via `Arc` so clones observe the same state.
     server_compaction_rejected: Arc<AtomicBool>,
     /// Most recent compaction summary received from the API, if any.
-    last_compaction: std::sync::Mutex<Option<String>>,
+    last_compaction: Mutex<Option<String>>,
     enable_extended_context: bool,
 }
 
@@ -79,11 +81,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("usage", &self.usage)
             .field(
                 "tool_cache",
-                &self
-                    .tool_cache
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.as_ref().map(|(hash, _)| *hash)),
+                &self.tool_cache.lock().as_ref().map(|(hash, _)| *hash),
             )
             .field("generation_overrides", &self.generation_overrides)
             .field("server_compaction", &self.server_compaction)
@@ -93,11 +91,7 @@ impl fmt::Debug for ClaudeProvider {
             )
             .field(
                 "last_compaction",
-                &self
-                    .last_compaction
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.as_ref().map(String::len)),
+                &self.last_compaction.lock().as_ref().map(String::len),
             )
             .field("enable_extended_context", &self.enable_extended_context)
             .finish()
@@ -115,11 +109,11 @@ impl Clone for ClaudeProvider {
             status_tx: self.status_tx.clone(),
             cache_user_messages: self.cache_user_messages,
             usage: UsageTracker::default(),
-            tool_cache: std::sync::Mutex::new(None),
+            tool_cache: Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
             server_compaction: self.server_compaction,
             server_compaction_rejected: Arc::clone(&self.server_compaction_rejected),
-            last_compaction: std::sync::Mutex::new(None),
+            last_compaction: Mutex::new(None),
             enable_extended_context: self.enable_extended_context,
         }
     }
@@ -146,11 +140,11 @@ impl ClaudeProvider {
             status_tx: None,
             cache_user_messages: true,
             usage: UsageTracker::default(),
-            tool_cache: std::sync::Mutex::new(None),
+            tool_cache: Mutex::new(None),
             generation_overrides: None,
             server_compaction: false,
             server_compaction_rejected: Arc::new(AtomicBool::new(false)),
-            last_compaction: std::sync::Mutex::new(None),
+            last_compaction: Mutex::new(None),
             enable_extended_context: false,
         }
     }
@@ -208,10 +202,7 @@ impl ClaudeProvider {
     /// Return the compaction summary from the most recent API call, if a compaction occurred.
     /// Clears the stored value after reading.
     pub fn take_compaction_summary(&self) -> Option<String> {
-        self.last_compaction
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        self.last_compaction.lock().take()
     }
 
     /// Return `true` if the `compact-2026-01-12` beta header was rejected by the API
@@ -481,10 +472,7 @@ impl ClaudeProvider {
 
     fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
         let key = tool_cache_key(tools);
-        let mut guard = self
-            .tool_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.tool_cache.lock();
         if let Some((cached_key, ref cached_values)) = *guard
             && cached_key == key
         {
@@ -1101,9 +1089,7 @@ impl LlmProvider for ClaudeProvider {
                 summary_len = summary.len(),
                 "storing server compaction summary"
             );
-            if let Ok(mut guard) = self.last_compaction.lock() {
-                *guard = compaction_summary;
-            }
+            *self.last_compaction.lock() = compaction_summary;
         }
         tracing::debug!(?parsed, "parsed ChatResponse");
         Ok(parsed)

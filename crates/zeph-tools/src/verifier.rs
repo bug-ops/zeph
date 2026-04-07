@@ -23,7 +23,9 @@
 //! Overlap (3 entries: `rm -rf /`, `mkfs`, `dd if=`) is intentional — belt-and-suspenders.
 
 use std::collections::HashSet;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock};
+
+use parking_lot::RwLock;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -754,10 +756,7 @@ impl PreExecutionVerifier for UrlGroundingVerifier {
             return VerificationResult::Allow;
         };
 
-        let Ok(urls) = self.user_provided_urls.read() else {
-            // Poisoned lock: fail open to avoid blocking legitimate tool calls.
-            return VerificationResult::Allow;
-        };
+        let urls = self.user_provided_urls.read();
 
         if Self::is_grounded(url, &urls) {
             return VerificationResult::Allow;

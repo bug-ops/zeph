@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
 use zeph_tools::registry::{InvocationHint, ToolDef};
@@ -36,20 +38,14 @@ impl McpToolExecutor {
                 );
             }
         }
-        let mut guard = self
-            .tools
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.tools.write();
         *guard = tools;
     }
 }
 
 impl ToolExecutor for McpToolExecutor {
     fn tool_definitions(&self) -> Vec<ToolDef> {
-        let tools = self
-            .tools
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tools = self.tools.read();
         tools
             .iter()
             .map(|t| ToolDef {
@@ -70,10 +66,7 @@ impl ToolExecutor for McpToolExecutor {
         // content by checking tool_name.contains(':').  Breaking this invariant would silently
         // route MCP responses through the local/trusted pipeline, bypassing quarantine.
         let found = {
-            let tools = self
-                .tools
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tools = self.tools.read();
             tools
                 .iter()
                 .find(|t| t.sanitized_id() == call.tool_id)
@@ -138,10 +131,7 @@ impl ToolExecutor for McpToolExecutor {
             // SECURITY: Validate server:tool against the registered tool list before dispatch.
             // This prevents a prompt injection from routing calls to unregistered servers or tools.
             let found = {
-                let tools = self
-                    .tools
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let tools = self.tools.read();
                 tools
                     .iter()
                     .find(|t| t.server_id == instruction.server && t.name == instruction.tool)

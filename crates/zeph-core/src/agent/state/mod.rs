@@ -8,7 +8,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
@@ -97,7 +99,7 @@ pub(crate) struct MemoryState {
 }
 
 pub(crate) struct SkillState {
-    pub(crate) registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
+    pub(crate) registry: Arc<RwLock<SkillRegistry>>,
     pub(crate) skill_paths: Vec<PathBuf>,
     pub(crate) managed_dir: Option<PathBuf>,
     pub(crate) trust_config: crate::config::TrustConfig,
@@ -153,7 +155,7 @@ pub(crate) struct McpState {
     /// change events call `sync_mcp_executor_tools` (inside `check_tool_refresh`,
     /// `handle_mcp_add`, `handle_mcp_remove`), and pruning runs later inside
     /// `rebuild_system_prompt`.  See also: `apply_pruned_mcp_tools`.
-    pub(crate) shared_tools: Option<std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>>,
+    pub(crate) shared_tools: Option<Arc<RwLock<Vec<zeph_mcp::McpTool>>>>,
     /// Receives full flattened tool list after any `tools/list_changed` notification.
     pub(crate) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
     /// Per-server connection outcomes from the initial `connect_all()` call.
@@ -352,7 +354,7 @@ pub struct ProviderConfigSnapshot {
 pub(crate) struct ProviderState {
     pub(crate) summary_provider: Option<AnyProvider>,
     /// Shared slot for runtime model switching; set by external caller (e.g. ACP).
-    pub(crate) provider_override: Option<Arc<std::sync::RwLock<Option<AnyProvider>>>>,
+    pub(crate) provider_override: Option<Arc<RwLock<Option<AnyProvider>>>>,
     pub(crate) judge_provider: Option<AnyProvider>,
     /// Dedicated provider for compaction probe LLM calls. Falls back to `summary_provider`
     /// (or primary) when `None`.

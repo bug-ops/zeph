@@ -488,11 +488,9 @@ fn name_referenced_in(text: &str, tool_name: &str) -> bool {
 
     if tool_name.contains('-') {
         // Custom word boundaries for hyphenated names.
-        static CACHE: OnceLock<std::sync::Mutex<HashMap<String, Regex>>> = OnceLock::new();
-        let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-        let mut guard = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        static CACHE: OnceLock<parking_lot::Mutex<HashMap<String, Regex>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+        let mut guard = cache.lock();
         let re = guard.entry(lower_name.clone()).or_insert_with(|| {
             let escaped = regex::escape(&lower_name);
             let pattern =
@@ -502,11 +500,9 @@ fn name_referenced_in(text: &str, tool_name: &str) -> bool {
         re.is_match(&lower_text)
     } else {
         // Plain word boundary is fine for non-hyphenated names.
-        static CACHE: OnceLock<std::sync::Mutex<HashMap<String, Regex>>> = OnceLock::new();
-        let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-        let mut guard = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        static CACHE: OnceLock<parking_lot::Mutex<HashMap<String, Regex>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+        let mut guard = cache.lock();
         let re = guard.entry(lower_name.clone()).or_insert_with(|| {
             let escaped = regex::escape(&lower_name);
             let pattern = format!(r"\b{escaped}\b");

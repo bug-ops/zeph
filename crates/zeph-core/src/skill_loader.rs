@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -51,9 +53,7 @@ impl ToolExecutor for SkillLoaderExecutor {
         let params: LoadSkillParams = deserialize_params(&call.params)?;
         let skill_name: String = params.skill_name.chars().take(128).collect();
         let body = {
-            let guard = self.registry.read().map_err(|_| ToolError::InvalidParams {
-                message: "registry lock poisoned".into(),
-            })?;
+            let guard = self.registry.read();
             guard.get_body(&skill_name).map(str::to_owned)
         };
 

@@ -370,9 +370,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         if trimmed == "/clear" {
             self.clear_history();
             self.tool_orchestrator.clear_cache();
-            if let Ok(mut urls) = self.security.user_provided_urls.write() {
-                urls.clear();
-            }
+            self.security.user_provided_urls.write().clear();
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));
         }
@@ -380,9 +378,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         if trimmed == "/reset" {
             self.clear_history();
             self.tool_orchestrator.clear_cache();
-            if let Ok(mut urls) = self.security.user_provided_urls.write() {
-                urls.clear();
-            }
+            self.security.user_provided_urls.write().clear();
             self.channel.send("Conversation history reset.").await?;
             let _ = self.channel.flush_chunks().await;
             return Ok(Some(false));
@@ -451,10 +447,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
 
         let slash_urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
-        if !slash_urls.is_empty()
-            && let Ok(mut set) = self.security.user_provided_urls.write()
-        {
-            set.extend(slash_urls);
+        if !slash_urls.is_empty() {
+            self.security.user_provided_urls.write().extend(slash_urls);
         }
 
         if trimmed == "/help" {
@@ -732,12 +726,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             (0, 0, 0, 0.0, 0, 0, 0, 0, 0, 0, vec![])
         };
 
-        let skill_count = self
-            .skill_state
-            .registry
-            .read()
-            .map(|r| r.all_meta().len())
-            .unwrap_or(0);
+        let skill_count = self.skill_state.registry.read().all_meta().len();
 
         let mut out = String::from("Session status:\n\n");
         let _ = writeln!(out, "Provider:  {}", self.provider.name());
@@ -910,7 +899,6 @@ impl<C: crate::channel::Channel> Agent<C> {
             .skill_state
             .registry
             .read()
-            .expect("registry read lock")
             .all_meta()
             .into_iter()
             .cloned()
@@ -1002,7 +990,6 @@ impl<C: crate::channel::Channel> Agent<C> {
             .skill_state
             .registry
             .read()
-            .expect("registry read lock")
             .all_meta()
             .into_iter()
             .cloned()

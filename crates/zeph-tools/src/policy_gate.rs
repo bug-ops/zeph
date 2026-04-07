@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use parking_lot::RwLock;
 use tracing::debug;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
@@ -28,7 +29,7 @@ use crate::registry::ToolDef;
 pub struct PolicyGateExecutor<T: ToolExecutor> {
     inner: T,
     enforcer: Arc<PolicyEnforcer>,
-    context: Arc<std::sync::RwLock<PolicyContext>>,
+    context: Arc<RwLock<PolicyContext>>,
     audit: Option<Arc<AuditLogger>>,
 }
 
@@ -46,7 +47,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
     pub fn new(
         inner: T,
         enforcer: Arc<PolicyEnforcer>,
-        context: Arc<std::sync::RwLock<PolicyContext>>,
+        context: Arc<RwLock<PolicyContext>>,
     ) -> Self {
         Self {
             inner,
@@ -64,26 +65,12 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
     }
 
     fn read_context(&self) -> PolicyContext {
-        // parking_lot::RwLock would be preferable to avoid poisoning, but we handle
-        // it gracefully here by falling back to a permissive default context.
-        match self.context.read() {
-            Ok(ctx) => ctx.clone(),
-            Err(poisoned) => {
-                tracing::warn!("PolicyContext RwLock poisoned; using poisoned value");
-                poisoned.into_inner().clone()
-            }
-        }
+        self.context.read().clone()
     }
 
     /// Write the current context (called by the agent loop when trust level changes).
     pub fn update_context(&self, new_ctx: PolicyContext) {
-        match self.context.write() {
-            Ok(mut ctx) => *ctx = new_ctx,
-            Err(poisoned) => {
-                tracing::warn!("PolicyContext RwLock poisoned on write; overwriting");
-                *poisoned.into_inner() = new_ctx;
-            }
-        }
+        *self.context.write() = new_ctx;
     }
 
     async fn check_policy(&self, call: &ToolCall) -> Result<(), ToolError> {
@@ -230,13 +217,7 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
     }
 
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
-        match self.context.write() {
-            Ok(mut ctx) => ctx.trust_level = level,
-            Err(poisoned) => {
-                tracing::warn!("PolicyContext RwLock poisoned on trust update; overwriting");
-                poisoned.into_inner().trust_level = level;
-            }
-        }
+        self.context.write().trust_level = level;
         self.inner.set_effective_trust(level);
     }
 
@@ -294,7 +275,7 @@ mod tests {
 
     fn make_gate(config: &PolicyConfig) -> PolicyGateExecutor<MockExecutor> {
         let enforcer = Arc::new(PolicyEnforcer::compile(config).unwrap());
-        let context = Arc::new(std::sync::RwLock::new(PolicyContext {
+        let context = Arc::new(RwLock::new(PolicyContext {
             trust_level: SkillTrustLevel::Trusted,
             env: HashMap::new(),
         }));

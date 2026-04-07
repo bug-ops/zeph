@@ -45,6 +45,7 @@ dashmap = { workspace = true, optional = true }
 dirs.workspace = true
 futures.workspace = true
 glob.workspace = true
+parking_lot.workspace = true
 reqwest = { workspace = true, features = ["rustls", "stream"] }
 rmcp.workspace = true
 schemars.workspace = true

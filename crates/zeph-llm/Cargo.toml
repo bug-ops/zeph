@@ -32,6 +32,7 @@ hex = { workspace = true, optional = true }
 futures-core.workspace = true
 hf-hub = { workspace = true, optional = true, features = ["tokio", "rustls-tls", "ureq"] }
 ollama-rs = { workspace = true, features = ["rustls", "stream"] }
+parking_lot.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
 reqwest = { workspace = true, features = ["json", "multipart", "rustls", "stream"] }

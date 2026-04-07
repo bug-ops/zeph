@@ -5,6 +5,9 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "acp")]
+use parking_lot::RwLock;
+
+#[cfg(feature = "acp")]
 use crate::agent_setup;
 #[cfg(feature = "acp")]
 use zeph_core::agent::Agent;
@@ -92,7 +95,7 @@ struct SharedAgentDeps {
     provider: zeph_llm::any::AnyProvider,
     /// Dedicated embedding provider. Never replaced by `/provider switch`.
     embedding_provider: zeph_llm::any::AnyProvider,
-    registry: std::sync::Arc<std::sync::RwLock<zeph_skills::registry::SkillRegistry>>,
+    registry: std::sync::Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
     /// Shared skill matcher: `Clone` is cheap for Qdrant (connection-pool sharing), and
     /// involves copying in-memory embedding vectors only for the `InMemory` variant.
     matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
@@ -115,7 +118,7 @@ struct SharedAgentDeps {
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
-    mcp_shared_tools: std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
+    mcp_shared_tools: std::sync::Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
     mcp_config: zeph_core::config::McpConfig,
 
     // Optional runtime providers (contain HTTP client pools; excluded from session_config)
@@ -153,7 +156,7 @@ struct SharedAgentDeps {
     acp_max_sessions: usize,
     acp_session_idle_timeout_secs: u64,
     acp_permission_file: Option<std::path::PathBuf>,
-    acp_available_models: std::sync::Arc<std::sync::RwLock<Vec<String>>>,
+    acp_available_models: std::sync::Arc<RwLock<Vec<String>>>,
     acp_auth_bearer_token: Option<String>,
     acp_discovery_enabled: bool,
     /// Maximum characters for auto-generated session titles.
@@ -237,7 +240,7 @@ async fn build_acp_deps(
     let embedding_provider =
         zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
-    let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
+    let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
 
     {
@@ -315,7 +318,7 @@ async fn build_acp_deps(
         std::sync::Arc::new(builder)
     };
     let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
-    let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
+    let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let cwd_executor = zeph_tools::SetCwdExecutor;
@@ -484,7 +487,7 @@ async fn build_acp_deps(
         acp_max_sessions: config.acp.max_sessions,
         acp_session_idle_timeout_secs: config.acp.session_idle_timeout_secs,
         acp_permission_file: config.acp.permission_file.clone(),
-        acp_available_models: std::sync::Arc::new(std::sync::RwLock::new(
+        acp_available_models: std::sync::Arc::new(RwLock::new(
             if config.acp.available_models.is_empty() {
                 discover_models_from_config(config)
             } else {
@@ -879,14 +882,12 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
 #[cfg(feature = "acp")]
 async fn warm_model_caches(
     provider: zeph_llm::any::AnyProvider,
-    available_models: std::sync::Arc<std::sync::RwLock<Vec<String>>>,
+    available_models: std::sync::Arc<RwLock<Vec<String>>>,
 ) {
     use zeph_llm::model_cache::ModelCache;
 
     let provider_count = {
-        let models = available_models
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let models = available_models.read();
         models
             .iter()
             .filter_map(|k| k.split_once(':').map(|(slug, _)| slug))
@@ -917,9 +918,7 @@ async fn warm_model_caches(
 
     // Collect unique provider slugs from the current available_models list.
     let slugs: Vec<String> = {
-        let models = available_models
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let models = available_models.read();
         models
             .iter()
             .filter_map(|k| k.split_once(':').map(|(s, _)| s.to_owned()))
@@ -942,19 +941,14 @@ async fn warm_model_caches(
                 .map(|m| format!("{slug}:{}", m.id))
                 .collect();
             let count = new_keys.len();
-            let mut models = available_models
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut models = available_models.write();
             models.retain(|k| !k.starts_with(&format!("{slug}:")));
             models.extend(new_keys);
             models.dedup();
             tracing::info!(provider = %slug, models = count, "model cache ready");
         }
     }
-    let total_models = available_models
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
+    let total_models = available_models.read().len();
     tracing::info!(models = total_models, "model cache warming finished");
 }
 
@@ -1253,7 +1247,7 @@ pub(crate) async fn run_acp_http_server(
         session_idle_timeout_secs: app.config().acp.session_idle_timeout_secs,
         permission_file: app.config().acp.permission_file.clone(),
         provider_factory: Some(build_acp_provider_factory(app.config())),
-        available_models: std::sync::Arc::new(std::sync::RwLock::new(
+        available_models: std::sync::Arc::new(RwLock::new(
             if app.config().acp.available_models.is_empty() {
                 discover_models_from_config(app.config())
             } else {

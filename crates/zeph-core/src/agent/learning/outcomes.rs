@@ -28,13 +28,7 @@ impl<C: Channel> Agent<C> {
             return Ok(false);
         }
 
-        let Ok(skill) = self
-            .skill_state
-            .registry
-            .read()
-            .expect("registry read lock")
-            .get_skill(&name)
-        else {
+        let Ok(skill) = self.skill_state.registry.read().get_skill(&name) else {
             return Ok(false);
         };
 
@@ -132,12 +126,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         };
 
-        let skill = self
-            .skill_state
-            .registry
-            .read()
-            .expect("registry read lock")
-            .get_skill(skill_name)?;
+        let skill = self.skill_state.registry.read().get_skill(skill_name)?;
 
         memory
             .sqlite()

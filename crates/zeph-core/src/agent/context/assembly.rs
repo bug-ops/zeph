@@ -645,9 +645,7 @@ impl<C: Channel> Agent<C> {
         self.msg.pending_image_parts.clear();
 
         // --- Step 7: reset security URL sets ---
-        if let Ok(mut urls) = self.security.user_provided_urls.write() {
-            urls.clear();
-        }
+        self.security.user_provided_urls.write().clear();
         self.security.flagged_urls.clear();
 
         // --- Step 8: reset compaction and compression states ---
@@ -1441,7 +1439,6 @@ impl<C: Channel> Agent<C> {
             .skill_state
             .registry
             .read()
-            .expect("registry read lock")
             .all_meta()
             .into_iter()
             .cloned()
@@ -1659,11 +1656,7 @@ impl<C: Channel> Agent<C> {
         self.update_skill_confidence_metrics().await;
 
         let (all_skills, active_skills): (Vec<Skill>, Vec<Skill>) = {
-            let reg = self
-                .skill_state
-                .registry
-                .read()
-                .expect("registry read lock");
+            let reg = self.skill_state.registry.read();
             let all: Vec<Skill> = reg
                 .all_meta()
                 .iter()

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use zeph_core::channel::Channel;
 use zeph_core::config::Config;
 use zeph_tools::{
@@ -30,7 +32,7 @@ pub(crate) struct ToolSetup {
     pub(crate) mcp_tools: Vec<zeph_mcp::McpTool>,
     pub(crate) mcp_outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
     pub(crate) mcp_manager: Arc<zeph_mcp::McpManager>,
-    pub(crate) mcp_shared_tools: Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
+    pub(crate) mcp_shared_tools: Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
     pub(crate) tool_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
     /// Watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     pub(crate) mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
@@ -421,7 +423,7 @@ pub(crate) async fn build_tool_setup(
     // Spawn the background task that processes tools/list_changed events.
     mcp_manager.spawn_refresh_task();
 
-    let mcp_shared_tools = Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
+    let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let cwd_executor = zeph_tools::SetCwdExecutor;

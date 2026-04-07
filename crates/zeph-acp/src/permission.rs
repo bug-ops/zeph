@@ -3,7 +3,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use acp::Client as _;
 use agent_client_protocol as acp;
@@ -284,7 +286,8 @@ impl AcpPermissionGate {
         // Fast path: check session-scoped key first, then tool-name-only (persisted).
         // For patterned tools (e.g. "bash"), also check the per-binary pattern key.
         // The binary name is extracted from raw_input["command"] when present.
-        if let Ok(guard) = self.cache.read() {
+        {
+            let guard = self.cache.read();
             // Check session-scoped key first.
             if let Some(d) = guard.get(session_cache_key.as_str()) {
                 return Ok(matches!(d, PermissionDecision::AllowAlways));
@@ -394,7 +397,8 @@ async fn run_permission_handler<C>(
                         "reject_always" => Some(PermissionDecision::RejectAlways),
                         _ => None,
                     };
-                    if let (Some(d), Ok(mut guard)) = (decision, cache.write()) {
+                    if let Some(d) = decision {
+                        let mut guard = cache.write();
                         // Insert session-scoped key for fast in-process lookup.
                         guard.insert(session_cache_key, d);
                         // For patterned tools, cache at binary granularity.

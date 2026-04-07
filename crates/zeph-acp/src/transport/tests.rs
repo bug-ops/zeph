@@ -19,7 +19,7 @@ use crate::transport::router::acp_router;
 use crate::transport::{AcpServerConfig, SharedAvailableModels};
 
 fn shared_models(models: Vec<String>) -> SharedAvailableModels {
-    std::sync::Arc::new(std::sync::RwLock::new(models))
+    std::sync::Arc::new(parking_lot::RwLock::new(models))
 }
 
 fn noop_spawner() -> SendAgentSpawner {
@@ -460,7 +460,7 @@ async fn health_returns_503_when_not_ready() {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            available_models: std::sync::Arc::new(parking_lot::RwLock::new(Vec::new())),
             mcp_manager: None,
             auth_bearer_token: Some("secret".into()),
             discovery_enabled: true,
@@ -499,7 +499,7 @@ async fn acp_post_returns_503_when_server_not_ready() {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            available_models: std::sync::Arc::new(parking_lot::RwLock::new(Vec::new())),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,

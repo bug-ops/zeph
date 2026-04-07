@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use tokio::sync::{Notify, mpsc, watch};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
@@ -22,7 +24,6 @@ use crate::context::ContextBudget;
 use crate::cost::CostTracker;
 use crate::instructions::{InstructionEvent, InstructionReloadState};
 use crate::metrics::MetricsSnapshot;
-use zeph_common::text::estimate_tokens;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
@@ -504,16 +505,11 @@ impl<C: Channel> Agent<C> {
 
     /// # Panics
     ///
-    /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
     pub fn with_hybrid_search(mut self, enabled: bool) -> Self {
         self.skill_state.hybrid_search = enabled;
         if enabled {
-            let reg = self
-                .skill_state
-                .registry
-                .read()
-                .expect("registry read lock");
+            let reg = self.skill_state.registry.read();
             let all_meta = reg.all_meta();
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
             self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
@@ -662,10 +658,7 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_mcp_shared_tools(
-        mut self,
-        shared: std::sync::Arc<std::sync::RwLock<Vec<zeph_mcp::McpTool>>>,
-    ) -> Self {
+    pub fn with_mcp_shared_tools(mut self, shared: Arc<RwLock<Vec<zeph_mcp::McpTool>>>) -> Self {
         self.mcp.shared_tools = Some(shared);
         self
     }
@@ -1255,9 +1248,6 @@ impl<C: Channel> Agent<C> {
         self.add_tool_executor(server)
     }
 
-    /// # Panics
-    ///
-    /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
         let provider_name = if self.runtime.active_provider_name.is_empty() {
@@ -1266,20 +1256,14 @@ impl<C: Channel> Agent<C> {
             self.runtime.active_provider_name.clone()
         };
         let model_name = self.runtime.model_name.clone();
-        let total_skills = self
-            .skill_state
-            .registry
-            .read()
-            .expect("registry read lock")
-            .all_meta()
-            .len();
+        let total_skills = self.skill_state.registry.read().all_meta().len();
         let qdrant_available = false;
         let conversation_id = self.memory_state.conversation_id;
         let prompt_estimate = self
             .msg
             .messages
             .first()
-            .map_or(0, |m| estimate_tokens(&m.content) as u64);
+            .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
         let mcp_tool_count = self.mcp.tools.len();
         let mcp_server_count = if self.mcp.server_outcomes.is_empty() {
             // Fallback: count unique server IDs from connected tools
@@ -1404,10 +1388,7 @@ impl<C: Channel> Agent<C> {
     /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
     /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
     #[must_use]
-    pub fn with_provider_override(
-        mut self,
-        slot: Arc<std::sync::RwLock<Option<AnyProvider>>>,
-    ) -> Self {
+    pub fn with_provider_override(mut self, slot: Arc<RwLock<Option<AnyProvider>>>) -> Self {
         self.providers.provider_override = Some(slot);
         self
     }

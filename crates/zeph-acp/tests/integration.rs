@@ -14,7 +14,7 @@ use zeph_acp::{AcpServerConfig, AgentSpawner, SessionContext, serve_connection};
 use zeph_core::channel::LoopbackChannel;
 
 fn shared_models(models: Vec<String>) -> zeph_acp::transport::SharedAvailableModels {
-    std::sync::Arc::new(std::sync::RwLock::new(models))
+    std::sync::Arc::new(parking_lot::RwLock::new(models))
 }
 
 /// No-op ACP client for testing.

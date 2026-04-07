@@ -7,7 +7,9 @@ pub(crate) mod declarative;
 pub mod security;
 
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
+
+use parking_lot::Mutex;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -391,25 +393,21 @@ impl OutputFilterRegistry {
     }
 
     fn record_metrics(&self, result: &FilterResult) {
-        if let Ok(mut m) = self.metrics.lock() {
-            m.record(result);
-            if m.total_commands % 50 == 0 {
-                tracing::debug!(
-                    total = m.total_commands,
-                    filtered = m.filtered_commands,
-                    savings_pct = format!("{:.1}", m.savings_pct()),
-                    "filter metrics"
-                );
-            }
+        let mut m = self.metrics.lock();
+        m.record(result);
+        if m.total_commands.is_multiple_of(50) {
+            tracing::debug!(
+                total = m.total_commands,
+                filtered = m.filtered_commands,
+                savings_pct = format!("{:.1}", m.savings_pct()),
+                "filter metrics"
+            );
         }
     }
 
     #[must_use]
     pub fn metrics(&self) -> FilterMetrics {
-        self.metrics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.metrics.lock().clone()
     }
 }
 

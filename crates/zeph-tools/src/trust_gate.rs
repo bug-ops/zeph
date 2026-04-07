@@ -5,9 +5,11 @@
 
 use std::collections::HashSet;
 use std::sync::{
-    Arc, RwLock,
+    Arc,
     atomic::{AtomicU8, Ordering},
 };
+
+use parking_lot::RwLock;
 
 use crate::SkillTrustLevel;
 
@@ -122,10 +124,7 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
     }
 
     fn is_mcp_tool(&self, tool_id: &str) -> bool {
-        self.mcp_tool_ids
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(tool_id)
+        self.mcp_tool_ids.read().contains(tool_id)
     }
 
     fn check_trust(&self, tool_id: &str, input: &str) -> Result<(), ToolError> {
@@ -728,7 +727,7 @@ mod tests {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         let handle = gate.mcp_tool_ids_handle();
         let set: std::collections::HashSet<String> = ids.iter().map(ToString::to_string).collect();
-        *handle.write().unwrap() = set;
+        *handle.write() = set;
         gate
     }
 
@@ -792,7 +791,7 @@ mod tests {
     fn mcp_tool_ids_handle_shared_arc() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         let handle = gate.mcp_tool_ids_handle();
-        handle.write().unwrap().insert("test_tool".to_owned());
+        handle.write().insert("test_tool".to_owned());
         assert!(gate.is_mcp_tool("test_tool"));
         assert!(!gate.is_mcp_tool("other_tool"));
     }

@@ -17,6 +17,7 @@ readme = "README.md"
 dirs.workspace = true
 glob.workspace = true
 globset.workspace = true
+parking_lot.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
 schemars.workspace = true

@@ -18,8 +18,10 @@ pub mod triage;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 
 use crate::any::AnyProvider;
 use crate::ema::EmaTracker;
@@ -309,9 +311,7 @@ impl RouterProvider {
     /// Must be called before `chat` / `chat_stream` to influence bandit provider selection.
     /// Pass `None` to disable MAR for this turn.
     pub fn set_memory_confidence(&self, confidence: Option<f32>) {
-        if let Ok(mut guard) = self.last_memory_confidence.lock() {
-            *guard = confidence;
-        }
+        *self.last_memory_confidence.lock() = confidence;
     }
 
     /// Enable EMA-based adaptive provider ordering.
@@ -442,9 +442,7 @@ impl RouterProvider {
         let (Some(bandit), Some(path)) = (&self.bandit, &self.bandit_state_path) else {
             return;
         };
-        let state = bandit
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = bandit.lock();
         if let Err(e) = state.save(path) {
             tracing::warn!(error = %e, "failed to save bandit state");
         }
@@ -458,9 +456,7 @@ impl RouterProvider {
         let Some(ref bandit) = self.bandit else {
             return vec![];
         };
-        let state = bandit
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = bandit.lock();
         state.stats()
     }
 
@@ -527,17 +523,11 @@ impl RouterProvider {
         let Some(ref reputation) = self.reputation else {
             return;
         };
-        let active = self
-            .last_active_provider
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let active = self.last_active_provider.lock().clone();
         let Some(provider_name) = active else {
             return;
         };
-        let mut tracker = reputation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tracker = reputation.lock();
         tracker.record_quality(&provider_name, success);
     }
 
@@ -546,9 +536,7 @@ impl RouterProvider {
         let (Some(reputation), Some(path)) = (&self.reputation, &self.reputation_state_path) else {
             return;
         };
-        let state = reputation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = reputation.lock();
         if let Err(e) = state.save(path) {
             tracing::warn!(error = %e, "failed to save reputation state");
         }
@@ -560,9 +548,7 @@ impl RouterProvider {
         let Some(ref reputation) = self.reputation else {
             return vec![];
         };
-        let tracker = reputation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tracker = reputation.lock();
         tracker.stats()
     }
 
@@ -631,9 +617,7 @@ impl RouterProvider {
         let (Some(thompson), Some(path)) = (&self.thompson, &self.thompson_state_path) else {
             return;
         };
-        let state = thompson
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = thompson.lock();
         if let Err(e) = state.save(path) {
             tracing::warn!(error = %e, "failed to save Thompson router state");
         }
@@ -659,10 +643,7 @@ impl RouterProvider {
 
         // Check cache first (no async needed).
         {
-            let cache = self
-                .bandit_embed_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cache = self.bandit_embed_cache.lock();
             if let Some(cached) = cache.get(key) {
                 return Some(cached.clone());
             }
@@ -690,10 +671,7 @@ impl RouterProvider {
 
         // Insert into cache.
         {
-            let mut cache = self
-                .bandit_embed_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut cache = self.bandit_embed_cache.lock();
             cache.insert(key, features.clone());
         }
         Some(features)
@@ -714,16 +692,9 @@ impl RouterProvider {
 
         // Try LinUCB selection with feature vector.
         if let Some(features) = self.bandit_features(query).await {
-            let memory_confidence = self
-                .last_memory_confidence
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .copied();
+            let memory_confidence = self.last_memory_confidence.lock().as_ref().copied();
             let selected = {
-                let state = bandit_arc
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let state = bandit_arc.lock();
                 state.select(
                     &names,
                     &features,
@@ -749,9 +720,7 @@ impl RouterProvider {
 
         // Fallback: Thompson sampling.
         if let Some(ref thompson) = self.thompson {
-            let mut state = thompson
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = thompson.lock();
             if let Some(sel) = state.select(&names) {
                 tracing::debug!(
                     provider = %sel.provider,
@@ -790,9 +759,7 @@ impl RouterProvider {
         #[allow(clippy::cast_possible_truncation)]
         let reward = (quality_score as f32) - cfg.cost_weight * (cost_fraction as f32);
         let reward = reward.clamp(-1.0, 1.0);
-        let mut state = bandit_arc
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = bandit_arc.lock();
         state.update(provider_name, features, reward);
         tracing::debug!(
             provider = provider_name,
@@ -814,10 +781,7 @@ impl RouterProvider {
     }
 
     fn ema_ordered_providers(&self) -> Vec<AnyProvider> {
-        let order = self
-            .provider_order
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let order = self.provider_order.lock();
         let mut ordered: Vec<AnyProvider> = order
             .iter()
             .filter_map(|&i| self.providers.get(i).cloned())
@@ -832,9 +796,7 @@ impl RouterProvider {
         if let Some(ref reputation) = self.reputation
             && let Some(ref ema) = self.ema
         {
-            let rep = reputation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let rep = reputation.lock();
             let w = self.reputation_weight;
             let snap = ema.snapshot();
             let mut scored: Vec<(usize, f64)> = ordered
@@ -864,9 +826,7 @@ impl RouterProvider {
 
         // ASI: re-score by down-weighting providers with low coherence.
         if let (Some(asi_arc), Some(asi_cfg)) = (&self.asi, &self.asi_config) {
-            let asi: std::sync::MutexGuard<'_, AsiState> = asi_arc
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let asi: parking_lot::MutexGuard<'_, AsiState> = asi_arc.lock();
             let snap = self.ema.as_ref().map(EmaTracker::snapshot);
             let mut scored: Vec<(usize, f64)> = ordered
                 .iter()
@@ -914,9 +874,7 @@ impl RouterProvider {
         let Some(ref thompson) = self.thompson else {
             return self.providers.to_vec();
         };
-        let mut state = thompson
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = thompson.lock();
         let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
 
         // Compute per-provider prior overrides: start from base Beta distribution, apply
@@ -926,14 +884,9 @@ impl RouterProvider {
 
         let selected = if has_reputation || has_asi {
             // Build overrides by composing reputation and ASI adjustments.
-            let rep_guard = self
-                .reputation
-                .as_ref()
-                .map(|r| r.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-            let asi_guard: Option<std::sync::MutexGuard<'_, AsiState>> = self
-                .asi
-                .as_ref()
-                .map(|a| a.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            let rep_guard = self.reputation.as_ref().map(|r| r.lock());
+            let asi_guard: Option<parking_lot::MutexGuard<'_, AsiState>> =
+                self.asi.as_ref().map(|a| a.lock());
             let w = self.reputation_weight;
 
             let overrides: std::collections::HashMap<String, (f64, f64)> = names
@@ -1001,9 +954,7 @@ impl RouterProvider {
         match self.strategy {
             RouterStrategy::Thompson => {
                 if let Some(ref thompson) = self.thompson {
-                    let mut state = thompson
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut state = thompson.lock();
                     state.update(provider_name, success);
                 }
             }
@@ -1035,10 +986,7 @@ impl RouterProvider {
                 .iter()
                 .filter_map(|n| name_to_idx.get(n.as_str()).copied())
                 .collect();
-            let mut order = self
-                .provider_order
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut order = self.provider_order.lock();
             *order = new_order;
         }
     }
@@ -1051,9 +999,7 @@ impl RouterProvider {
         let Some(ref thompson) = self.thompson else {
             return vec![];
         };
-        let state = thompson
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = thompson.lock();
         state.provider_stats()
     }
 
@@ -1183,9 +1129,7 @@ impl RouterProvider {
         tokio::spawn(async move {
             match router.embed(&response).await {
                 Ok(emb) => {
-                    let mut state = asi
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut state = asi.lock();
                     state.push_embedding(&provider_name, emb, window_size);
                 }
                 Err(e) => {
@@ -1605,11 +1549,7 @@ impl LlmProvider for RouterProvider {
                 }
                 let result = p.chat_with_tools(&messages, &tools).await;
                 if result.is_ok() {
-                    *router
-                        .last_active_provider
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(p.name().to_owned());
+                    *router.last_active_provider.lock() = Some(p.name().to_owned());
                 }
                 return result;
             }
@@ -1632,11 +1572,7 @@ impl LlmProvider for RouterProvider {
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
                         // Track which sub-provider served this tool call for reputation attribution.
-                        *router
-                            .last_active_provider
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            Some(p.name().to_owned());
+                        *router.last_active_provider.lock() = Some(p.name().to_owned());
                         return Ok(r);
                     }
                     Err(e) => {
@@ -1770,9 +1706,7 @@ async fn cascade_evaluate_response(
     .await;
 
     {
-        let mut state = cascade_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = cascade_state.lock();
         state.record(provider_name, verdict.score);
     }
 

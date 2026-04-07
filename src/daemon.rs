@@ -5,6 +5,8 @@
 
 use std::path::PathBuf;
 
+use parking_lot::RwLock;
+
 use crate::agent_setup;
 #[cfg(feature = "gateway")]
 use crate::gateway_spawn::spawn_gateway_server;
@@ -231,7 +233,7 @@ pub(crate) async fn run_daemon(
         zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
 
-    let registry = std::sync::Arc::new(std::sync::RwLock::new(app.build_registry()));
+    let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
         .read()
@@ -311,7 +313,7 @@ pub(crate) async fn run_daemon(
     // Retain a reference for explicit pre-shutdown so child processes are killed while the
     // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
     let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
-    let mcp_shared_tools = std::sync::Arc::new(std::sync::RwLock::new(mcp_tools.clone()));
+    let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let cwd_executor = zeph_tools::SetCwdExecutor;

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- **Replace `std::sync::RwLock`/`Mutex` with `parking_lot` across workspace** (`#2780`): migrated all synchronous lock usages in `zeph-acp`, `zeph-core`, `zeph-llm`, `zeph-mcp`, `zeph-memory`, `zeph-tools`, and the binary crate to `parking_lot::RwLock`/`Mutex`. Removed all poison-handling boilerplate (`.unwrap()`, `.expect()`, `.map_err()`, `.unwrap_or_else(PoisonError::into_inner)` on lock results) and rewrote `if let Ok(guard) = lock.read()` patterns to direct guard assignment. `tokio::sync` async locks are not affected. Net: 45 files changed, ~400 lines removed.
+
 - **Replace inline `len()/4` token estimation with `estimate_tokens()`** (`#2778`): 15 call sites across `zeph-core`, `zeph-llm`, and `zeph-memory` now use the centralized `zeph_common::text::estimate_tokens()` function, which counts Unicode scalars (`chars().count() / 4`) instead of bytes — more accurate for non-ASCII content and trivial to improve later from a single location.
 
 - **Extract shared `remove_system_messages` helpers in context assembly** (`#2779`): 11 nearly-identical `remove_*_messages()` methods in `ContextAssembly` now delegate to two private helpers (`remove_by_prefix`, `remove_by_part_or_prefix`), reducing ~80 lines of duplicated retain logic to one-liner delegates.

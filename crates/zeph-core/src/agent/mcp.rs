@@ -426,10 +426,7 @@ impl<C: Channel> Agent<C> {
     /// See also: `McpState::shared_tools` doc comment.
     pub(super) fn sync_mcp_executor_tools(&self) {
         if let Some(ref shared) = self.mcp.shared_tools {
-            let mut guard = shared
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.clone_from(&self.mcp.tools);
+            shared.write().clone_from(&self.mcp.tools);
         }
     }
 
@@ -457,10 +454,7 @@ impl<C: Channel> Agent<C> {
             "pruned set must be a subset of self.mcp.tools"
         );
         if let Some(ref shared) = self.mcp.shared_tools {
-            let mut guard = shared
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = pruned;
+            *shared.write() = pruned;
         }
     }
 

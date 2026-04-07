@@ -7,6 +7,8 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use agent_client_protocol as acp;
 use futures::StreamExt as _;
 use tokio::sync::{mpsc, oneshot};
@@ -229,7 +231,7 @@ pub struct AcpContext {
     pub cancel_signal: std::sync::Arc<tokio::sync::Notify>,
     /// Shared slot for runtime model switching via `set_session_config_option`.
     /// When `Some`, the agent should swap its provider before the next turn.
-    pub provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+    pub provider_override: Arc<RwLock<Option<AnyProvider>>>,
     /// Tool call ID of the parent agent's tool call that spawned this subagent session.
     /// `None` for top-level (non-subagent) sessions.
     pub parent_tool_use_id: Option<String>,
@@ -237,7 +239,7 @@ pub struct AcpContext {
     pub lsp_provider: Option<crate::lsp::AcpLspProvider>,
     /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
     /// and read by the agent loop context builder to inject diagnostics into the system prompt.
-    pub diagnostics_cache: Arc<std::sync::RwLock<DiagnosticsCache>>,
+    pub diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
 }
 
 /// Factory: receives a [`LoopbackChannel`], optional [`AcpContext`], and [`SessionContext`],
@@ -276,7 +278,7 @@ pub(crate) struct SessionEntry {
     pub(crate) created_at: chrono::DateTime<chrono::Utc>,
     pub(crate) working_dir: RefCell<Option<std::path::PathBuf>>,
     /// Shared provider override slot; written by `set_session_config_option`, read by agent loop.
-    provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+    provider_override: Arc<RwLock<Option<AnyProvider>>>,
     /// Currently selected model identifier (display / tracking only).
     current_model: RefCell<String>,
     /// Current session mode (ask / architect / code).
@@ -325,7 +327,7 @@ pub struct ZephAcpAgent {
     /// LSP extension configuration (from `[acp.lsp]`).
     lsp_config: zeph_core::config::AcpLspConfig,
     /// Per-agent diagnostics cache, shared between the agent (writer) and `AcpContext` (reader).
-    diagnostics_cache: Arc<std::sync::RwLock<DiagnosticsCache>>,
+    diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
 }
 
 impl ZephAcpAgent {
@@ -352,15 +354,13 @@ impl ZephAcpAgent {
             permission_file,
             client_caps: RefCell::new(acp::ClientCapabilities::default()),
             provider_factory: None,
-            available_models: Arc::new(std::sync::RwLock::new(Vec::new())),
+            available_models: Arc::new(RwLock::new(Vec::new())),
             mcp_manager: None,
             project_rules: Vec::new(),
             title_max_chars: 60,
             max_history: 100,
             lsp_config,
-            diagnostics_cache: Arc::new(std::sync::RwLock::new(DiagnosticsCache::new(
-                max_diag_files,
-            ))),
+            diagnostics_cache: Arc::new(RwLock::new(DiagnosticsCache::new(max_diag_files))),
         }
     }
 
@@ -369,7 +369,7 @@ impl ZephAcpAgent {
     pub fn with_lsp_config(mut self, config: zeph_core::config::AcpLspConfig) -> Self {
         let max_files = config.max_diagnostic_files;
         self.lsp_config = config;
-        self.diagnostics_cache = Arc::new(std::sync::RwLock::new(DiagnosticsCache::new(max_files)));
+        self.diagnostics_cache = Arc::new(RwLock::new(DiagnosticsCache::new(max_files)));
         self
     }
 
@@ -398,10 +398,7 @@ impl ZephAcpAgent {
     }
 
     fn available_models_snapshot(&self) -> Vec<String> {
-        self.available_models
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.available_models.read().clone()
     }
 
     fn initial_model(&self) -> String {
@@ -471,7 +468,7 @@ impl ZephAcpAgent {
         &self,
         session_id: &acp::SessionId,
         cancel_signal: std::sync::Arc<tokio::sync::Notify>,
-        provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+        provider_override: Arc<RwLock<Option<AnyProvider>>>,
         cwd: PathBuf,
     ) -> Option<AcpContext> {
         let conn_guard = self.conn_slot.borrow();
@@ -560,10 +557,7 @@ impl ZephAcpAgent {
                     count = diags.len(),
                     "lsp/publishDiagnostics: cached"
                 );
-                self.diagnostics_cache
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .update(p.uri, diags);
+                self.diagnostics_cache.write().update(p.uri, diags);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "lsp/publishDiagnostics: failed to parse params");
@@ -619,10 +613,7 @@ impl ZephAcpAgent {
                             count = diags.len(),
                             "lsp/didSave: fetched diagnostics"
                         );
-                        self.diagnostics_cache
-                            .write()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .update(uri, diags);
+                        self.diagnostics_cache.write().update(uri, diags);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "lsp/didSave: failed to parse diagnostics response");
@@ -838,8 +829,7 @@ impl acp::Agent for ZephAcpAgent {
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         // Clone once for build_acp_context; ownership of the original moves into SessionEntry.
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
-        let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
-            Arc::new(std::sync::RwLock::new(None));
+        let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
 
         let session_cwd = args.cwd.clone();
@@ -1069,8 +1059,7 @@ impl acp::Agent for ZephAcpAgent {
         // Rebuild agent loop for the restored session.
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
-        let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
-            Arc::new(std::sync::RwLock::new(None));
+        let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let acp_ctx = self.build_acp_context(
             &args.session_id,
@@ -1230,8 +1219,7 @@ impl acp::Agent for ZephAcpAgent {
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
-        let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
-            Arc::new(std::sync::RwLock::new(None));
+        let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let acp_ctx = self.build_acp_context(
             &new_id,
@@ -1329,8 +1317,7 @@ impl acp::Agent for ZephAcpAgent {
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
         let cancel_signal = std::sync::Arc::clone(&handle.cancel_signal);
-        let provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>> =
-            Arc::new(std::sync::RwLock::new(None));
+        let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let acp_ctx = self.build_acp_context(
             &args.session_id,
@@ -1490,10 +1477,7 @@ impl acp::Agent for ZephAcpAgent {
         let entry = sessions
             .get(&args.session_id)
             .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
-        *entry
-            .provider_override
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+        *entry.provider_override.write() = Some(new_provider);
         model_id.clone_into(&mut entry.current_model.borrow_mut());
 
         tracing::debug!(
@@ -1536,10 +1520,7 @@ impl ZephAcpAgent {
                 let Some(new_provider) = factory(value) else {
                     return Err(acp::Error::invalid_request().data("unknown model"));
                 };
-                *entry
-                    .provider_override
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+                *entry.provider_override.write() = Some(new_provider);
                 value.clone_into(&mut entry.current_model.borrow_mut());
                 tracing::debug!(session_id = %session_id, model = %value, "ACP model switched");
             }
@@ -1749,10 +1730,7 @@ impl ZephAcpAgent {
         let entry = sessions
             .get(session_id)
             .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
-        *entry
-            .provider_override
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_provider);
+        *entry.provider_override.write() = Some(new_provider);
         resolved.clone_into(&mut entry.current_model.borrow_mut());
         Ok(format!("Switched to model: {resolved}"))
     }
@@ -2072,7 +2050,7 @@ impl ZephAcpAgent {
         initial_model: String,
         cwd: PathBuf,
         shell_executor: Option<AcpShellExecutor>,
-        provider_override: Arc<std::sync::RwLock<Option<AnyProvider>>>,
+        provider_override: Arc<RwLock<Option<AnyProvider>>>,
     ) -> SessionEntry {
         SessionEntry {
             input_tx: handle.input_tx,

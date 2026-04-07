@@ -155,10 +155,8 @@ impl<C: Channel> Agent<C> {
                 );
 
                 // C3: Clear ACP provider override so the explicit switch takes effect.
-                if let Some(ref override_slot) = self.providers.provider_override
-                    && let Ok(mut slot) = override_slot.write()
-                {
-                    *slot = None;
+                if let Some(ref override_slot) = self.providers.provider_override {
+                    *override_slot.write() = None;
                 }
 
                 // C5: Update instruction file list for the new provider's kind.

@@ -128,7 +128,7 @@ impl<C: Channel> Agent<C> {
         if let Some(ref matcher) = self.skill_state.matcher {
             let skill_text = format!("{} {}", generated.meta.description, generated.content);
             let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = {
-                let registry = self.skill_state.registry.read().unwrap();
+                let registry = self.skill_state.registry.read();
                 registry.all_meta().into_iter().cloned().collect()
             };
             let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> =
@@ -230,14 +230,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         };
         // SEC-PH1-001: validate skill exists in registry before writing to DB
-        if self
-            .skill_state
-            .registry
-            .read()
-            .expect("registry read lock")
-            .get_skill(name)
-            .is_err()
-        {
+        if self.skill_state.registry.read().get_skill(name).is_err() {
             self.channel
                 .send(&format!("Unknown skill: \"{name}\"."))
                 .await?;

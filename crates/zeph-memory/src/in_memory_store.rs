@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+
+use parking_lot::RwLock;
 
 use crate::vector_store::{
     BoxFuture, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,
@@ -80,10 +81,7 @@ impl VectorStore for InMemoryVectorStore {
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let mut cols = self
-                .collections
-                .write()
-                .map_err(|e| VectorStoreError::Collection(e.to_string()))?;
+            let mut cols = self.collections.write();
             cols.entry(collection)
                 .or_insert_with(|| InMemoryCollection {
                     points: HashMap::new(),
@@ -95,10 +93,7 @@ impl VectorStore for InMemoryVectorStore {
     fn collection_exists(&self, collection: &str) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let cols = self
-                .collections
-                .read()
-                .map_err(|e| VectorStoreError::Collection(e.to_string()))?;
+            let cols = self.collections.read();
             Ok(cols.contains_key(&collection))
         })
     }
@@ -106,10 +101,7 @@ impl VectorStore for InMemoryVectorStore {
     fn delete_collection(&self, collection: &str) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let mut cols = self
-                .collections
-                .write()
-                .map_err(|e| VectorStoreError::Collection(e.to_string()))?;
+            let mut cols = self.collections.write();
             cols.remove(&collection);
             Ok(())
         })
@@ -122,10 +114,7 @@ impl VectorStore for InMemoryVectorStore {
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let mut cols = self
-                .collections
-                .write()
-                .map_err(|e| VectorStoreError::Upsert(e.to_string()))?;
+            let mut cols = self.collections.write();
             let col = cols.get_mut(&collection).ok_or_else(|| {
                 VectorStoreError::Upsert(format!("collection {collection} not found"))
             })?;
@@ -151,10 +140,7 @@ impl VectorStore for InMemoryVectorStore {
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let cols = self
-                .collections
-                .read()
-                .map_err(|e| VectorStoreError::Search(e.to_string()))?;
+            let cols = self.collections.read();
             let col = cols.get(&collection).ok_or_else(|| {
                 VectorStoreError::Search(format!("collection {collection} not found"))
             })?;
@@ -194,10 +180,7 @@ impl VectorStore for InMemoryVectorStore {
             if ids.is_empty() {
                 return Ok(());
             }
-            let mut cols = self
-                .collections
-                .write()
-                .map_err(|e| VectorStoreError::Delete(e.to_string()))?;
+            let mut cols = self.collections.write();
             let col = cols.get_mut(&collection).ok_or_else(|| {
                 VectorStoreError::Delete(format!("collection {collection} not found"))
             })?;
@@ -216,10 +199,7 @@ impl VectorStore for InMemoryVectorStore {
         let collection = collection.to_owned();
         let key_field = key_field.to_owned();
         Box::pin(async move {
-            let cols = self
-                .collections
-                .read()
-                .map_err(|e| VectorStoreError::Scroll(e.to_string()))?;
+            let cols = self.collections.read();
             let col = cols.get(&collection).ok_or_else(|| {
                 VectorStoreError::Scroll(format!("collection {collection} not found"))
             })?;

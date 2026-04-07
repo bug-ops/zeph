@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
+
 use dashmap::DashMap;
 use rmcp::model::CallToolResult;
 use tokio::sync::RwLock;
@@ -163,7 +165,7 @@ pub struct McpManager {
     configs: Vec<ServerEntry>,
     allowed_commands: Vec<String>,
     clients: Arc<RwLock<HashMap<String, McpClient>>>,
-    connected_server_ids: std::sync::RwLock<HashSet<String>>,
+    connected_server_ids: SyncRwLock<HashSet<String>>,
     enforcer: Arc<PolicyEnforcer>,
     suppress_stderr: bool,
     /// Per-server tool lists; updated by the refresh task.
@@ -171,9 +173,9 @@ pub struct McpManager {
     /// Sender half of the refresh event channel; cloned into each `ToolListChangedHandler`.
     /// Wrapped in Mutex<Option<...>> so `shutdown_all_shared()` can drop it while holding `&self`.
     /// When this sender and all handler senders are dropped, the refresh task terminates.
-    refresh_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<ToolRefreshEvent>>>,
+    refresh_tx: SyncMutex<Option<mpsc::UnboundedSender<ToolRefreshEvent>>>,
     /// Receiver half; taken once by `spawn_refresh_task()`.
-    refresh_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<ToolRefreshEvent>>>,
+    refresh_rx: SyncMutex<Option<mpsc::UnboundedReceiver<ToolRefreshEvent>>>,
     /// Broadcasts the full flattened tool list after any server refresh.
     tools_watch_tx: watch::Sender<Vec<McpTool>>,
     /// Shared rate-limit state across all `ToolListChangedHandler` instances.
@@ -205,9 +207,9 @@ pub struct McpManager {
     server_instructions: Arc<RwLock<HashMap<String, String>>>,
     /// Sender half of the bounded elicitation event channel; cloned into each
     /// `ToolListChangedHandler` that has elicitation enabled.
-    elicitation_tx: std::sync::Mutex<Option<mpsc::Sender<ElicitationEvent>>>,
+    elicitation_tx: SyncMutex<Option<mpsc::Sender<ElicitationEvent>>>,
     /// Receiver half; taken once by `take_elicitation_rx()` and wired into the agent loop.
-    elicitation_rx: std::sync::Mutex<Option<mpsc::Receiver<ElicitationEvent>>>,
+    elicitation_rx: SyncMutex<Option<mpsc::Receiver<ElicitationEvent>>>,
     /// Per-server elicitation enabled flags (populated from `ServerEntry`).
     server_elicitation: HashMap<String, bool>,
     /// Per-server elicitation timeout in seconds.
@@ -283,12 +285,12 @@ impl McpManager {
             configs,
             allowed_commands,
             clients: Arc::new(RwLock::new(HashMap::new())),
-            connected_server_ids: std::sync::RwLock::new(HashSet::new()),
+            connected_server_ids: SyncRwLock::new(HashSet::new()),
             enforcer: Arc::new(enforcer),
             suppress_stderr: false,
             server_tools: Arc::new(RwLock::new(HashMap::new())),
-            refresh_tx: std::sync::Mutex::new(Some(refresh_tx)),
-            refresh_rx: std::sync::Mutex::new(Some(refresh_rx)),
+            refresh_tx: SyncMutex::new(Some(refresh_tx)),
+            refresh_rx: SyncMutex::new(Some(refresh_rx)),
             tools_watch_tx,
             last_refresh: Arc::new(DashMap::new()),
             oauth_credentials: HashMap::new(),
@@ -301,8 +303,8 @@ impl McpManager {
             max_description_bytes: crate::sanitize::DEFAULT_MAX_TOOL_DESCRIPTION_BYTES,
             max_instructions_bytes: 2048,
             server_instructions: Arc::new(RwLock::new(HashMap::new())),
-            elicitation_tx: std::sync::Mutex::new(Some(elicitation_tx)),
-            elicitation_rx: std::sync::Mutex::new(Some(elicitation_rx)),
+            elicitation_tx: SyncMutex::new(Some(elicitation_tx)),
+            elicitation_rx: SyncMutex::new(Some(elicitation_rx)),
             server_elicitation,
             server_elicitation_timeout,
             lock_tool_list: false,
@@ -315,10 +317,7 @@ impl McpManager {
     /// May only be called once. Returns `None` if already taken.
     #[must_use]
     pub fn take_elicitation_rx(&self) -> Option<mpsc::Receiver<ElicitationEvent>> {
-        self.elicitation_rx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        self.elicitation_rx.lock().take()
     }
 
     /// Enable tool-list locking after initial connect.
@@ -401,11 +400,7 @@ impl McpManager {
     ///
     /// Returns `None` if the manager has already been shut down.
     fn clone_refresh_tx(&self) -> Option<mpsc::UnboundedSender<ToolRefreshEvent>> {
-        self.refresh_tx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned()
+        self.refresh_tx.lock().as_ref().cloned()
     }
 
     /// Clone the elicitation sender for a specific server, if elicitation is enabled for it.
@@ -429,11 +424,7 @@ impl McpManager {
         if !enabled {
             return None;
         }
-        self.elicitation_tx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned()
+        self.elicitation_tx.lock().as_ref().cloned()
     }
 
     /// Elicitation timeout for a specific server.
@@ -483,7 +474,6 @@ impl McpManager {
         let rx = self
             .refresh_rx
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .expect("spawn_refresh_task must only be called once");
 
@@ -575,7 +565,6 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    /// Panics if the internal `connected_server_ids` lock is poisoned.
     #[allow(clippy::too_many_lines)]
     pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
         let allowed = self.allowed_commands.clone();
@@ -664,7 +653,6 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    /// Panics if the internal `connected_server_ids` lock is poisoned.
     #[allow(clippy::too_many_lines)]
     pub async fn connect_oauth_deferred(&self) {
         let last_refresh = Arc::clone(&self.last_refresh);
@@ -941,10 +929,7 @@ impl McpManager {
                     state.server_tools.insert(server_id.clone(), tools.clone());
                     state.all_tools.extend(tools);
                     state.clients.insert(server_id.clone(), client);
-                    self.connected_server_ids
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(server_id.clone());
+                    self.connected_server_ids.write().insert(server_id.clone());
                     state.outcomes.push(ServerConnectOutcome {
                         id: server_id,
                         connected: true,
@@ -1051,7 +1036,6 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    /// Panics if the internal `connected_server_ids` lock is poisoned.
     #[allow(clippy::too_many_lines)]
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         // Early check under read lock (fast path for duplicates)
@@ -1147,10 +1131,7 @@ impl McpManager {
             });
         }
         clients.insert(entry.id.clone(), client);
-        self.connected_server_ids
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(entry.id.clone());
+        self.connected_server_ids.write().insert(entry.id.clone());
 
         // Register trust config for the refresh task.
         self.server_trust.write().await.insert(
@@ -1194,7 +1175,6 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    /// Panics if the internal `connected_server_ids` lock is poisoned.
     pub async fn remove_server(&self, server_id: &str) -> Result<(), McpError> {
         let client = {
             let mut clients = self.clients.write().await;
@@ -1206,10 +1186,7 @@ impl McpManager {
         };
 
         tracing::info!(server_id, "shutting down dynamically removed MCP server");
-        self.connected_server_ids
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(server_id);
+        self.connected_server_ids.write().remove(server_id);
         // Clean up per-server state.
         self.server_tools.write().await.remove(server_id);
         self.last_refresh.remove(server_id);
@@ -1240,13 +1217,9 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    /// Panics if the internal `connected_server_ids` lock is poisoned.
     #[must_use]
     pub fn is_server_connected(&self, server_id: &str) -> bool {
-        self.connected_server_ids
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(server_id)
+        self.connected_server_ids.read().contains(server_id)
     }
 
     /// Graceful shutdown of all connections (takes ownership).
@@ -1261,22 +1234,14 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    /// Panics if the internal `connected_server_ids` lock is poisoned.
     pub async fn shutdown_all_shared(&self) {
         // Drop the manager's sender so the refresh task can terminate once
         // all ToolListChangedHandler senders are also dropped (via client shutdown).
-        let _ = self
-            .refresh_tx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let _ = self.refresh_tx.lock().take();
 
         let mut clients = self.clients.write().await;
         let drained: Vec<(String, McpClient)> = clients.drain().collect();
-        self.connected_server_ids
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        self.connected_server_ids.write().clear();
         self.server_tools.write().await.clear();
         self.last_refresh.clear();
         for (id, client) in drained {
@@ -1911,7 +1876,6 @@ mod tests {
         fn mark_server_connected_for_test(&self, server_id: &str) {
             self.connected_server_ids
                 .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(server_id.to_owned());
         }
     }

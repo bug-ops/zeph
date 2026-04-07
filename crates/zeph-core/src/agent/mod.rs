@@ -47,6 +47,8 @@ mod utils;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+
+use parking_lot::RwLock;
 use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
@@ -187,7 +189,7 @@ impl<C: Channel> Agent<C> {
         max_active_skills: usize,
         tool_executor: impl ToolExecutor + 'static,
     ) -> Self {
-        let registry = std::sync::Arc::new(std::sync::RwLock::new(registry));
+        let registry = Arc::new(RwLock::new(registry));
         let embedding_provider = provider.clone();
         Self::new_with_registry_arc(
             provider,
@@ -212,14 +214,14 @@ impl<C: Channel> Agent<C> {
         provider: AnyProvider,
         embedding_provider: AnyProvider,
         channel: C,
-        registry: std::sync::Arc<std::sync::RwLock<SkillRegistry>>,
+        registry: Arc<RwLock<SkillRegistry>>,
         matcher: Option<SkillMatcherBackend>,
         max_active_skills: usize,
         tool_executor: impl ToolExecutor + 'static,
     ) -> Self {
         debug_assert!(max_active_skills > 0, "max_active_skills must be > 0");
         let all_skills: Vec<Skill> = {
-            let reg = registry.read().expect("registry read lock poisoned");
+            let reg = registry.read();
             reg.all_meta()
                 .iter()
                 .filter_map(|m| reg.get_skill(&m.name).ok())
@@ -404,9 +406,7 @@ impl<C: Channel> Agent<C> {
                     zeph_sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
                 ),
                 flagged_urls: std::collections::HashSet::new(),
-                user_provided_urls: std::sync::Arc::new(std::sync::RwLock::new(
-                    std::collections::HashSet::new(),
-                )),
+                user_provided_urls: Arc::new(RwLock::new(std::collections::HashSet::new())),
                 pii_filter: zeph_sanitizer::pii::PiiFilter::new(
                     zeph_sanitizer::pii::PiiFilterConfig::default(),
                 ),
@@ -925,10 +925,7 @@ impl<C: Channel> Agent<C> {
         loop {
             // Apply any pending provider override (from ACP set_session_config_option).
             if let Some(ref slot) = self.providers.provider_override
-                && let Some(new_provider) = slot
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
+                && let Some(new_provider) = slot.write().take()
             {
                 tracing::debug!(provider = new_provider.name(), "ACP model override applied");
                 self.provider = new_provider;
@@ -1301,15 +1298,11 @@ impl<C: Channel> Agent<C> {
 
         // Clear URLs from the previous turn before re-populating for this turn.
         // The set is per-turn context; accumulating across turns causes unbounded growth (#2737).
-        if let Ok(mut set) = self.security.user_provided_urls.write() {
-            set.clear();
-        }
+        self.security.user_provided_urls.write().clear();
         // Extract URLs from user input and add to user_provided_urls for grounding checks.
         let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
-        if !urls.is_empty()
-            && let Ok(mut set) = self.security.user_provided_urls.write()
-        {
-            set.extend(urls);
+        if !urls.is_empty() {
+            self.security.user_provided_urls.write().extend(urls);
         }
 
         // Capture raw user input as goal text for A-MAC goal-conditioned write gating (#2483).
@@ -1819,11 +1812,7 @@ impl<C: Channel> Agent<C> {
     fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
         let mgr = self.orchestration.subagent_manager.as_ref()?;
         let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
-        let reg = self
-            .skill_state
-            .registry
-            .read()
-            .expect("registry read lock");
+        let reg = self.skill_state.registry.read();
         match crate::subagent::filter_skills(&reg, &def.skills) {
             Ok(skills) => {
                 let bodies: Vec<String> = skills.into_iter().map(|s| s.body.clone()).collect();
@@ -2017,28 +2006,16 @@ impl<C: Channel> Agent<C> {
 
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
-        if new_registry.fingerprint()
-            == self
-                .skill_state
-                .registry
-                .read()
-                .expect("registry read lock")
-                .fingerprint()
-        {
+        if new_registry.fingerprint() == self.skill_state.registry.read().fingerprint() {
             return;
         }
         let _ = self.channel.send_status("reloading skills...").await;
-        *self
-            .skill_state
-            .registry
-            .write()
-            .expect("registry write lock") = new_registry;
+        *self.skill_state.registry.write() = new_registry;
 
         let all_meta = self
             .skill_state
             .registry
             .read()
-            .expect("registry read lock")
             .all_meta()
             .into_iter()
             .cloned()
@@ -2050,11 +2027,7 @@ impl<C: Channel> Agent<C> {
         self.rebuild_skill_matcher(&all_meta_refs).await;
 
         let all_skills: Vec<Skill> = {
-            let reg = self
-                .skill_state
-                .registry
-                .read()
-                .expect("registry read lock");
+            let reg = self.skill_state.registry.read();
             reg.all_meta()
                 .iter()
                 .filter_map(|m| reg.get_skill(&m.name).ok())
@@ -2074,12 +2047,7 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
         tracing::info!(
             "reloaded {} skill(s)",
-            self.skill_state
-                .registry
-                .read()
-                .expect("registry read lock")
-                .all_meta()
-                .len()
+            self.skill_state.registry.read().all_meta().len()
         );
     }
 

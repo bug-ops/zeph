@@ -156,11 +156,7 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn handle_skill_scan(&mut self) -> Result<(), super::error::AgentError> {
         // Scope the lock guard so it is dropped before the first await point.
         let findings = {
-            let registry = self
-                .skill_state
-                .registry
-                .read()
-                .expect("registry read lock");
+            let registry = self.skill_state.registry.read();
             registry.scan_loaded()
         };
 

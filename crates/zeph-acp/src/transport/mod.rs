@@ -36,7 +36,7 @@ pub struct ReadyNotification {
 /// Shared slot populated after `AgentSideConnection::new` so `new_session` can access
 /// the connection to build ACP tool adapters.
 pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
-pub type SharedAvailableModels = std::sync::Arc<std::sync::RwLock<Vec<String>>>;
+pub type SharedAvailableModels = std::sync::Arc<parking_lot::RwLock<Vec<String>>>;
 
 /// Configuration for the ACP server passed through to the agent.
 pub struct AcpServerConfig {
@@ -103,7 +103,7 @@ impl Default for AcpServerConfig {
             session_idle_timeout_secs: 1800,
             permission_file: None,
             provider_factory: None,
-            available_models: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            available_models: std::sync::Arc::new(parking_lot::RwLock::new(Vec::new())),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,

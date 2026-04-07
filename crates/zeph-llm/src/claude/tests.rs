@@ -1286,7 +1286,7 @@ async fn chat_with_tools_cache_hit_does_not_re_serialize() {
     assert_eq!(first[1]["name"], "tool_b");
 
     // Verify cache is populated
-    let guard = provider.tool_cache.lock().unwrap();
+    let guard = provider.tool_cache.lock();
     let (hash, values) = guard.as_ref().unwrap();
     assert_ne!(*hash, 0);
     assert_eq!(values.len(), 2);
@@ -1323,7 +1323,7 @@ async fn chat_with_tools_cache_partial_tool_set_change_invalidates() {
     assert_eq!(v2[1]["name"], "browse");
 
     // Cache now reflects v2
-    let guard = provider.tool_cache.lock().unwrap();
+    let guard = provider.tool_cache.lock();
     let (hash, values) = guard.as_ref().unwrap();
     assert_ne!(*hash, 0);
     assert_eq!(values.len(), 2);
@@ -2496,12 +2496,7 @@ fn tool_cache_hits_on_same_tools() {
     let second = provider.get_or_build_api_tools(&tools);
     assert_eq!(first, second);
     let expected = tool_cache_key(&tools);
-    let cached_hash = provider
-        .tool_cache
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|(h, _)| *h);
+    let cached_hash = provider.tool_cache.lock().as_ref().map(|(h, _)| *h);
     assert_eq!(cached_hash, Some(expected));
 }
 
@@ -2708,7 +2703,7 @@ fn take_compaction_summary_empty_when_none() {
 #[test]
 fn take_compaction_summary_returns_and_clears() {
     let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
-    *provider.last_compaction.lock().unwrap() = Some("Summary text".to_owned());
+    *provider.last_compaction.lock() = Some("Summary text".to_owned());
     let result = provider.take_compaction_summary();
     assert_eq!(result.as_deref(), Some("Summary text"));
     // Second call must return None (consumed).

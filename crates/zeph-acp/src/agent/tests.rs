@@ -10,6 +10,7 @@
 use super::helpers::*;
 use super::*;
 use agent_client_protocol::{self as acp, Agent as _};
+use parking_lot::{Mutex, RwLock};
 use zeph_core::channel::{ToolOutputData, ToolStartData};
 
 fn make_spawner() -> AgentSpawner {
@@ -17,7 +18,7 @@ fn make_spawner() -> AgentSpawner {
 }
 
 fn shared_models(models: Vec<String>) -> crate::transport::SharedAvailableModels {
-    Arc::new(std::sync::RwLock::new(models))
+    Arc::new(RwLock::new(models))
 }
 
 fn make_agent() -> (
@@ -69,9 +70,7 @@ async fn new_session_reads_latest_available_models_from_shared_state() {
                 .with_provider_factory(factory, Arc::clone(&models));
 
             {
-                let mut guard = models
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = models.write();
                 guard.push("openai:gpt-5".to_owned());
             }
             let resp = agent
@@ -122,9 +121,7 @@ async fn new_session_freezes_initial_model_for_existing_session() {
                 .unwrap();
 
             {
-                let mut guard = models
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = models.write();
                 guard[0] = "openai:gpt-5".to_owned();
             }
 
@@ -321,15 +318,13 @@ async fn prompt_image_block_does_not_error() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -349,11 +344,7 @@ async fn prompt_image_block_does_not_error() {
             assert!(result.is_ok());
 
             // Spawner received the message with one image attachment
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap();
+            let msg = received.lock().clone().unwrap();
             assert_eq!(msg.attachments.len(), 1);
             assert_eq!(
                 msg.attachments[0].kind,
@@ -370,15 +361,13 @@ async fn prompt_resource_block_appends_text() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -400,11 +389,7 @@ async fn prompt_resource_block_appends_text() {
                 acp::PromptRequest::new(resp.session_id.to_string(), vec![text_block, res_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap();
+            let msg = received.lock().clone().unwrap();
             assert!(msg.text.contains("hello"));
             assert!(
                 msg.text
@@ -1087,15 +1072,13 @@ async fn prompt_oversized_image_base64_skipped() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -1114,11 +1097,7 @@ async fn prompt_oversized_image_base64_skipped() {
             let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![img_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap();
+            let msg = received.lock().clone().unwrap();
             assert!(
                 msg.attachments.is_empty(),
                 "oversized image must be skipped"
@@ -1134,15 +1113,13 @@ async fn prompt_unsupported_mime_image_skipped() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -1160,11 +1137,7 @@ async fn prompt_unsupported_mime_image_skipped() {
             let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![img_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap();
+            let msg = received.lock().clone().unwrap();
             assert!(
                 msg.attachments.is_empty(),
                 "unsupported MIME type must be skipped"
@@ -1179,15 +1152,13 @@ async fn prompt_resource_text_wrapped_in_markers() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -1207,11 +1178,7 @@ async fn prompt_resource_text_wrapped_in_markers() {
             let req = acp::PromptRequest::new(resp.session_id.to_string(), vec![res_block]);
             agent.prompt(req).await.unwrap();
 
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap();
+            let msg = received.lock().clone().unwrap();
             assert!(
                 msg.text
                     .contains("<resource name=\"file:///secret.txt\">injected content</resource>"),
@@ -2123,15 +2090,13 @@ async fn slash_unknown_command_forwarded_to_agent_loop() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -2152,10 +2117,7 @@ async fn slash_unknown_command_forwarded_to_agent_loop() {
                 ))
                 .await;
             assert!(result.is_ok());
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            let msg = received.lock().clone();
             assert!(msg.is_some(), "agent loop should have received the message");
             assert_eq!(msg.unwrap().text, "/nonexistent");
         })
@@ -2881,16 +2843,14 @@ async fn slash_review_prompt_contains_read_only_constraint() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     use zeph_core::Channel as _;
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -2913,11 +2873,7 @@ async fn slash_review_prompt_contains_read_only_constraint() {
                 .unwrap();
             // Yield again to allow spawner task to process the received message.
             tokio::task::yield_now().await;
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap();
+            let msg = received.lock().clone().unwrap();
             assert!(
                 msg.text.contains("Do not execute any commands"),
                 "review prompt must contain read-only constraint, got: {}",
@@ -2937,16 +2893,14 @@ async fn slash_review_with_path_prompt_contains_path() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let received = Arc::new(std::sync::Mutex::new(None::<ChannelMessage>));
+            let received = Arc::new(Mutex::new(None::<ChannelMessage>));
             let received_clone = Arc::clone(&received);
             let spawner: AgentSpawner = Arc::new(move |mut channel, _ctx, _session_ctx| {
                 let received_clone = Arc::clone(&received_clone);
                 Box::pin(async move {
                     use zeph_core::Channel as _;
                     if let Ok(Some(msg)) = channel.recv().await {
-                        *received_clone
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+                        *received_clone.lock() = Some(msg);
                     }
                 })
             });
@@ -2969,11 +2923,7 @@ async fn slash_review_with_path_prompt_contains_path() {
                 .await
                 .unwrap();
             tokio::task::yield_now().await;
-            let msg = received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap();
+            let msg = received.lock().clone().unwrap();
             assert!(
                 msg.text.contains("crates/zeph-acp"),
                 "review prompt with path must include the path, got: {}",
@@ -3215,10 +3165,7 @@ async fn ext_notification_lsp_publish_diagnostics_caches_diagnostics() {
                     .into(),
             );
             agent.ext_notification(notif).await.unwrap();
-            let cache = agent
-                .diagnostics_cache
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cache = agent.diagnostics_cache.read();
             let diags = cache
                 .peek("file:///src/main.rs")
                 .expect("diagnostics should be cached");
@@ -3244,13 +3191,7 @@ async fn ext_notification_lsp_publish_diagnostics_malformed_json_is_ok() {
             let result = agent.ext_notification(notif).await;
             assert!(result.is_ok());
             // Cache should remain empty.
-            assert!(
-                agent
-                    .diagnostics_cache
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .is_empty()
-            );
+            assert!(agent.diagnostics_cache.read().is_empty());
         })
         .await;
 }
@@ -3288,10 +3229,7 @@ async fn ext_notification_lsp_publish_diagnostics_truncates_at_max() {
                     .into(),
             );
             agent.ext_notification(notif).await.unwrap();
-            let cache = agent
-                .diagnostics_cache
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cache = agent.diagnostics_cache.read();
             let diags = cache
                 .peek("file:///a.rs")
                 .expect("diagnostics should be cached");
@@ -3330,13 +3268,7 @@ async fn ext_notification_lsp_did_save_disabled_is_noop() {
             let result = agent.ext_notification(notif).await;
             assert!(result.is_ok());
             // Cache untouched.
-            assert!(
-                agent
-                    .diagnostics_cache
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .is_empty()
-            );
+            assert!(agent.diagnostics_cache.read().is_empty());
         })
         .await;
 }

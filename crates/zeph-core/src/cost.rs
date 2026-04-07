@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use thiserror::Error;
 
@@ -172,10 +174,7 @@ impl CostTracker {
             + pricing.cache_read_cents_per_1k * (cache_read_tokens as f64) / 1000.0
             + pricing.cache_write_cents_per_1k * (cache_write_tokens as f64) / 1000.0;
 
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock();
         reset_if_new_day(&mut state);
         state.spent_cents += cost;
 
@@ -196,10 +195,7 @@ impl CostTracker {
         if !self.enabled {
             return Ok(());
         }
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock();
         reset_if_new_day(&mut state);
         if self.max_daily_cents > 0.0 && state.spent_cents >= self.max_daily_cents {
             return Err(BudgetExhausted {
@@ -218,20 +214,14 @@ impl CostTracker {
 
     #[must_use]
     pub fn current_spend(&self) -> f64 {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.lock();
         state.spent_cents
     }
 
     /// Returns per-provider breakdown sorted by cost descending.
     #[must_use]
     pub fn provider_breakdown(&self) -> Vec<(String, ProviderUsage)> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.lock();
         let mut breakdown: Vec<(String, ProviderUsage)> = state
             .providers
             .iter()
@@ -284,7 +274,7 @@ mod tests {
         assert!(tracker.current_spend() > 0.0);
         // Simulate day change
         {
-            let mut state = tracker.state.lock().unwrap();
+            let mut state = tracker.state.lock();
             state.day = 0; // force a past day
         }
         // check_budget should reset
@@ -299,7 +289,7 @@ mod tests {
         assert!(!tracker.provider_breakdown().is_empty());
         // Simulate day change
         {
-            let mut state = tracker.state.lock().unwrap();
+            let mut state = tracker.state.lock();
             state.day = 0;
         }
         assert!(tracker.check_budget().is_ok());
