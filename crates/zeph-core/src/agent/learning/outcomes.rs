@@ -427,8 +427,19 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::cast_precision_loss)]
     pub(crate) async fn check_rollback(&self, skill_name: &str) {
+        if let Err(_elapsed) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.check_rollback_inner(skill_name),
+        )
+        .await
+        {
+            tracing::warn!(skill = skill_name, "check_rollback timed out after 2s");
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    async fn check_rollback_inner(&self, skill_name: &str) {
         if !self.is_learning_enabled() {
             return;
         }

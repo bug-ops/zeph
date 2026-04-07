@@ -16,6 +16,15 @@ mod tests;
 
 use super::{Agent, Channel};
 
+/// Accumulated skill outcome for a single tool result within a batch.
+/// Used by `flush_skill_outcomes` to collapse N per-tool-result `record_skill_outcomes`
+/// calls into a single pass after the tool batch completes.
+pub(crate) struct PendingSkillOutcome {
+    pub outcome: String,
+    pub error_context: Option<String>,
+    pub outcome_detail: Option<String>,
+}
+
 impl<C: Channel> Agent<C> {
     pub(crate) fn is_learning_enabled(&self) -> bool {
         self.learning_engine.is_enabled()
@@ -83,6 +92,91 @@ impl<C: Channel> Agent<C> {
         // ARISE + STEM + ERL background tasks (fire-and-forget, never block response).
         self.spawn_stem_detection(outcome);
         if outcome == "success" {
+            for name in &names {
+                self.spawn_arise_trace_improvement(name);
+                self.spawn_erl_reflection(name);
+            }
+        }
+    }
+
+    /// Flush all accumulated skill outcomes from a tool batch in a single pass.
+    ///
+    /// Replaces N sequential `record_skill_outcomes` calls (one per tool result) with one
+    /// batched write + one rollback/trust check per skill. This eliminates the N×M×13
+    /// sequential `SQLite` awaits that stalled the agent loop (#2770).
+    ///
+    /// # Dominant outcome for RL/ARISE/ERL signals
+    ///
+    /// Mixed batches (successes + failures) are collapsed to a single "dominant" outcome:
+    /// any failure in the batch → `"tool_failure"`, otherwise `"success"`. This trades
+    /// per-tool RL signal granularity for loop latency — acceptable because the RL head
+    /// operates at turn granularity anyway.
+    pub(crate) async fn flush_skill_outcomes(&mut self, outcomes: Vec<PendingSkillOutcome>) {
+        if outcomes.is_empty() || self.skill_state.active_skill_names.is_empty() {
+            return;
+        }
+        let Some(memory) = &self.memory_state.memory else {
+            return;
+        };
+
+        // Batch-insert each outcome entry (one DB call per entry, but only once per tool —
+        // not once per tool × skill as was the case before batching).
+        for o in &outcomes {
+            let batch_result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                memory.sqlite().record_skill_outcomes_batch(
+                    &self.skill_state.active_skill_names,
+                    self.memory_state.conversation_id,
+                    &o.outcome,
+                    o.error_context.as_deref(),
+                    o.outcome_detail.as_deref(),
+                ),
+            )
+            .await;
+            match batch_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("failed to record skill outcomes: {e:#}"),
+                Err(_) => {
+                    tracing::warn!("record_skill_outcomes: timed out after 5s");
+                    break;
+                }
+            }
+        }
+
+        let had_failure = outcomes.iter().any(|o| o.outcome != "success");
+
+        // Run rollback + trust checks ONCE per skill (not once per tool result).
+        if had_failure {
+            for name in &self.skill_state.active_skill_names.clone() {
+                self.check_rollback(name).await;
+            }
+        }
+        let names: Vec<String> = self.skill_state.active_skill_names.clone();
+        for name in &names {
+            self.check_trust_transition(name).await;
+        }
+
+        // update_skill_confidence_metrics does one SQLite read + one watch::Sender::send_modify.
+        // Wrap with a timeout to prevent stalling the loop if SQLite is slow.
+        if let Err(_elapsed) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.update_skill_confidence_metrics(),
+        )
+        .await
+        {
+            tracing::warn!("update_skill_confidence_metrics timed out after 2s");
+        }
+
+        // Determine dominant outcome: any failure → "tool_failure", else "success".
+        let dominant = if had_failure {
+            "tool_failure"
+        } else {
+            "success"
+        };
+
+        self.spawn_rl_head_update(dominant);
+        self.spawn_stem_detection(dominant);
+        if !had_failure {
             for name in &names {
                 self.spawn_arise_trace_improvement(name);
                 self.spawn_erl_reflection(name);

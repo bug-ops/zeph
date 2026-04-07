@@ -4,8 +4,22 @@
 use super::super::{Agent, Channel};
 
 impl<C: Channel> Agent<C> {
-    #[allow(clippy::too_many_lines)]
     pub(crate) async fn check_trust_transition(&self, skill_name: &str) {
+        if let Err(_elapsed) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.check_trust_transition_inner(skill_name),
+        )
+        .await
+        {
+            tracing::warn!(
+                skill = skill_name,
+                "check_trust_transition timed out after 2s"
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn check_trust_transition_inner(&self, skill_name: &str) {
         let Some(memory) = &self.memory_state.memory else {
             return;
         };

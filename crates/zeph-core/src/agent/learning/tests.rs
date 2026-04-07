@@ -1358,13 +1358,13 @@ async fn inject_learned_preferences_sanitizes_newlines() {
 
 #[tokio::test]
 async fn learning_tasks_bounded_skips_at_capacity() {
+    use crate::agent::learning_engine::MAX_LEARNING_TASKS;
+
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-    use crate::agent::learning_engine::MAX_LEARNING_TASKS;
 
     // Fill the JoinSet to capacity with tasks that never complete.
     for _ in 0..MAX_LEARNING_TASKS {

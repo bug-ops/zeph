@@ -1744,6 +1744,9 @@ impl<C: Channel> Agent<C> {
         // Deferred self-reflection: set to the sanitized error output of the first failing tool
         // that is eligible for reflection. Consumed after user_msg is pushed to history.
         let mut pending_reflection: Option<String> = None;
+        // Accumulate skill outcomes during the tool loop; flushed once after the loop via
+        // flush_skill_outcomes to avoid N×M×13 sequential SQLite awaits (#2770).
+        let mut pending_outcomes: Vec<crate::agent::learning::PendingSkillOutcome> = Vec::new();
         for idx in 0..tool_calls.len() {
             let tc = &tool_calls[idx];
             let tool_call_id = &tool_call_ids[idx];
@@ -1879,10 +1882,11 @@ impl<C: Channel> Agent<C> {
                 let kind = tool_err_category
                     .take()
                     .map_or_else(|| FailureKind::from_error(&output), FailureKind::from);
-                tracing::debug!(tool = %tc.name, "tool_result: recording skill outcomes");
-                self.record_skill_outcomes("tool_failure", Some(&output), Some(kind.as_str()))
-                    .await;
-                tracing::debug!(tool = %tc.name, "tool_result: skill outcomes recorded");
+                pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
+                    outcome: "tool_failure".into(),
+                    error_context: Some(output.clone()),
+                    outcome_detail: Some(kind.as_str().into()),
+                });
                 // Record quality failure for reputation scoring only when the model produced
                 // invalid tool arguments (semantic failure). Network errors and transient
                 // failures are not attributable to model quality.
@@ -1909,9 +1913,11 @@ impl<C: Channel> Agent<C> {
                     pending_reflection = Some(sanitized_out);
                 }
             } else {
-                tracing::debug!(tool = %tc.name, "tool_result: recording skill outcomes");
-                self.record_skill_outcomes("success", None, None).await;
-                tracing::debug!(tool = %tc.name, "tool_result: skill outcomes recorded");
+                pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
+                    outcome: "success".into(),
+                    error_context: None,
+                    outcome_detail: None,
+                });
                 // Record quality success for reputation scoring.
                 self.provider
                     .record_quality_outcome(self.provider.name(), true);
@@ -1965,6 +1971,11 @@ impl<C: Channel> Agent<C> {
                 is_error,
             });
         }
+
+        // Flush all accumulated skill outcomes from the tool batch in a single pass.
+        // This replaces the per-tool record_skill_outcomes calls that caused N×M sequential
+        // SQLite awaits (#2770).
+        self.flush_skill_outcomes(pending_outcomes).await;
 
         // Causal IPI post-probe: compare behavioral state after tool batch results.
         // Uses tool output snippets (first 200 chars each) — never the full sanitized content.

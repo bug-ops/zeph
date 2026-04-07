@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Performance
 
+- **Batch `record_skill_outcomes` per tool batch, add per-query timeouts** (`#2770`): `record_skill_outcomes` was called once per tool result inside the batch loop, triggering N×M×13 sequential SQLite queries (10 tools × 2 skills × 13 queries × ~50ms ≈ 13s stall). Three changes: (1) accumulate `PendingSkillOutcome` during the tool loop and flush once via `flush_skill_outcomes` after; (2) wrap `check_rollback` and `check_trust_transition` bodies in a 2s `tokio::time::timeout` (outer delegates to `_inner`; timeout logs a warning and returns the safe default); (3) wrap `update_skill_confidence_metrics` in a 2s timeout instead of spawning (metrics field is `watch::Sender`, not `Clone`).
+
 - **Skip `debug_request_json` when dump format is Trace** (`#2757`): add `is_trace_format()` to `DebugDumper` and guard the `convert_messages_structured` call in `native.rs` and `legacy.rs` — eliminates ~400KB transient allocation per LLM call in the default Trace-format configuration.
 
 - **Truncate graph extraction context messages to 2KB** (`#2759`): cap each cloned message content at `floor_char_boundary(2048)` bytes before passing to `maybe_spawn_graph_extraction`, bounding context allocation to ≤8KB regardless of message size.

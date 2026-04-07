@@ -520,6 +520,10 @@ impl<C: Channel> Agent<C> {
         unreachable!("loop covers all attempts")
     }
 
+    // Note: the legacy path processes one tool result at a time (no batch) because providers
+    // that reach this path do not support native tool_use. Batching outcomes (as done in
+    // native.rs via flush_skill_outcomes, see #2770) is not applicable here — each call
+    // already represents one outcome for the turn.
     pub(super) async fn handle_tool_result(
         &mut self,
         response: &str,
