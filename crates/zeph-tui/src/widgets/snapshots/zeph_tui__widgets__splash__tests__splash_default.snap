@@ -1,6 +1,5 @@
 ---
 source: crates/zeph-tui/src/widgets/splash.rs
-assertion_line: 79
 expression: output
 ---
 ┌──────────────────────────────────────────────────────────┐
@@ -15,7 +14,7 @@ expression: output
 │              ███████╗███████╗██║     ██║  ██║            │
 │              ╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝            │
 │                                                          │
-│                          v0.18.4                         │
+│                          v0.18.5                         │
 │                                                          │
 │                  Type a message to start.                │
 │                                                          │

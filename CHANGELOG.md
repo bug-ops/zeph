@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-04-07
+
 ### Performance
 
 - perf(core): cache BPE data in `OnceLock` to avoid repeated disk loads on `TokenCounter` construction (`#2741`)
@@ -3402,7 +3404,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.4...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.5...HEAD
+[0.18.5]: https://github.com/bug-ops/zeph/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/bug-ops/zeph/compare/v0.18.3...v0.18.4
 [0.18.3]: https://github.com/bug-ops/zeph/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/bug-ops/zeph/compare/v0.18.1...v0.18.2

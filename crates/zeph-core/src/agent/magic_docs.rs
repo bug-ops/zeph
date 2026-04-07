@@ -498,15 +498,12 @@ mod tests {
                         content,
                         ..
                     } = part
+                        && let Some((tool_name, file_path)) = id_map.get(tool_use_id)
+                        && is_file_read_tool(tool_name)
+                        && content.contains(MAGIC_DOC_HEADER)
+                        && let Some(path_str) = file_path
                     {
-                        if let Some((tool_name, file_path)) = id_map.get(tool_use_id) {
-                            if is_file_read_tool(tool_name)
-                                && content.contains(MAGIC_DOC_HEADER)
-                                && let Some(path_str) = file_path
-                            {
-                                detected.push(PathBuf::from(path_str));
-                            }
-                        }
+                        detected.push(PathBuf::from(path_str));
                     }
                 }
             }
@@ -540,15 +537,12 @@ mod tests {
                         content,
                         ..
                     } = part
+                        && let Some((tool_name, file_path)) = id_map.get(tool_use_id)
+                        && is_file_read_tool(tool_name)
+                        && content.contains(MAGIC_DOC_HEADER)
+                        && let Some(path_str) = file_path
                     {
-                        if let Some((tool_name, file_path)) = id_map.get(tool_use_id) {
-                            if is_file_read_tool(tool_name)
-                                && content.contains(MAGIC_DOC_HEADER)
-                                && let Some(path_str) = file_path
-                            {
-                                detected.push(PathBuf::from(path_str));
-                            }
-                        }
+                        detected.push(PathBuf::from(path_str));
                     }
                 }
             }

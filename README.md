@@ -1,12 +1,12 @@
 <div align="center">
   <img src="book/src/assets/zeph_v8_github.png" alt="Zeph" width="800">
 
-  **A Rust AI agent that makes every token in the context window earn its place.**
+  **A Rust AI agent that learns from every session and remembers the reasoning behind every decision.**
 
   [![Crates.io](https://img.shields.io/crates/v/zeph)](https://crates.io/crates/zeph)
   [![docs](https://img.shields.io/badge/docs-book-blue)](https://bug-ops.github.io/zeph/)
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
-  [![Tests](https://img.shields.io/badge/tests-7942-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-7720-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![Crates](https://img.shields.io/badge/crates-21-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
   [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
@@ -17,11 +17,12 @@
 
 ## Why Zeph
 
-- **Adaptive skill routing** -- LinUCB contextual bandit and RL-based routing learn which skills and providers work best for each query type, improving over time without manual tuning.
-- **Automatic memory management** -- SleepGate admission control, graph memory with SYNAPSE spreading activation, and goal-conditioned writes keep long-term memory relevant without user intervention.
-- **Multi-model orchestration** -- declare providers once, route by complexity tier (Simple/Medium/Complex/Expert). Thompson Sampling, cascade routing, and PILOT bandit selection minimize cost while maximizing quality.
-- **21-crate modular architecture** -- every subsystem is a standalone crate with a clean trait boundary. Feature-gate what you need: TUI, ACP, A2A, MCP, Telegram, Discord, Slack, gateway, scheduler, PDF, STT, Candle inference.
-- **Context engineering, not prompt engineering** -- three-tier compaction pipeline, HiAgent subgoal-aware eviction, failure-driven compression guidelines (ACON), and Memex tool-output archival keep the context window efficient under any load.
+- **Gets smarter with every task** — Wilson score Bayesian confidence tracks which skills actually work in practice. Underperforming skills lose priority; successful ones surface first. When repeated failures cluster around a skill, the agent generates an improved version autonomously — no configuration required.
+- **Remembers why, not just what** — Five-typed graph memory (Causal, Temporal, Semantic, CoOccurrence, Hierarchical) with SYNAPSE spreading activation. "Why did we choose PostgreSQL?" traverses causal edges through the decision graph — not keyword search through chat logs.
+- **Preserves working memory mid-task** — HiAgent subgoal-aware compaction identifies the current task goal before evicting context. Unlike FIFO trimming, information relevant to the active subgoal is never dropped mid-execution.
+- **Routes smarter, spends less** — declare providers once, route by complexity tier (Simple/Medium/Complex/Expert). Thompson Sampling and LinUCB bandit learn which provider wins per query type. Plan template caching reuses successful DAG plans to cut repeated-task cost.
+- **Security-first architecture** — age-encrypted vault for all secrets, 17-pattern MCP injection detection, OAP tool authorization, per-session tool quota, SSRF guards, and exfiltration detection — built into the core, not bolted on.
+
 
 ---
 
@@ -41,23 +42,26 @@ zeph               # start the agent
 
 ## Feature Highlights
 
-- [x] **Hybrid inference** -- Ollama, Claude, OpenAI, Gemini, any OpenAI-compatible API, or fully local via Candle (GGUF)
-- [x] **Skills-first architecture** -- YAML+Markdown skill files with BM25+cosine hybrid retrieval, Bayesian re-ranking, self-learning evolution
-- [x] **Semantic memory** -- SQLite or PostgreSQL + Qdrant, MMR re-ranking, temporal decay, graph memory with SYNAPSE spreading activation
-- [x] **MCP client** -- full tool exposure, 17-pattern injection detection, elicitation support, tool-list locking, structured error codes, per-session tool quota, OAP authorization
-- [x] **A2A protocol** -- agent-to-agent delegation over JSON-RPC 2.0 with IBCT capability tokens
-- [x] **ACP server** -- stdio, HTTP+SSE, WebSocket transports for IDE integration (Zed, VS Code, Helix)
-- [x] **TUI dashboard** -- ratatui-based with real-time metrics, security panel, plan view, command palette
-- [x] **Multi-channel I/O** -- CLI, Telegram, TUI, Discord, Slack — all with streaming, voice, and vision input
-- [x] **Multi-model orchestration** -- complexity triage routing, Thompson Sampling, cascade cost tiers, PILOT LinUCB bandit
-- [x] **Security sandbox** -- shell sandbox with structured output, file read sandbox, SSRF protection, PII filter, rate limiter, exfiltration guards
-- [x] **Self-learning** -- Agent-as-a-Judge feedback detection, skill evolution from real usage, RL admission control for memory writes
-- [x] **Task orchestration** -- DAG-based task graphs with LLM goal decomposition, parallel execution, plan template caching
-- [x] **Sub-agents** -- isolated agents with scoped tools, zero-trust secret delegation, persistent transcripts
-- [x] **Code indexing** -- tree-sitter AST-based indexing (Rust, Python, JS, TS, Go), semantic search, repo map generation
-- [x] **Document RAG** -- ingest `.txt`, `.md`, `.pdf` into Qdrant with automatic retrieval per turn
-- [x] **Self-experimentation** -- autonomous LLM config tuning via grid sweep, random sampling, neighborhood search
-- [x] **Config migration** -- `zeph migrate-config --diff` previews and applies config upgrades after version bumps
+- [x] **[Self-learning skills](https://bug-ops.github.io/zeph/advanced/self-learning.html)** — Agent-as-a-Judge feedback detection (fast regex path + rate-limited LLM path), Wilson score Bayesian ranking promotes skills that actually work, autonomous skill evolution triggered by clustered failures, RL-based SleepGate admission control prevents noise from polluting long-term memory
+- [x] **[Graph memory with SYNAPSE](https://bug-ops.github.io/zeph/concepts/graph-memory.html)** — five typed edge categories (Causal, Temporal, Semantic, CoOccurrence, Hierarchical) via MAGMA; spreading activation retrieval with hop-by-hop decay and lateral inhibition surfaces multi-hop connections; community detection clusters entities by topic; BFS recall injected alongside vector results each turn
+- [x] **[Skills-first architecture](https://bug-ops.github.io/zeph/concepts/skills.html)** — YAML+Markdown skill files, hot-reload on edit, BM25+cosine hybrid retrieval with RRF fusion, Bayesian re-ranking
+- [x] **[Context engineering](https://bug-ops.github.io/zeph/advanced/context.html)** — three-tier compaction pipeline, HiAgent subgoal-aware eviction, failure-driven compression guidelines (ACON, ICLR 2026), Memex tool-output archival
+- [x] **[Semantic memory](https://bug-ops.github.io/zeph/concepts/memory.html)** — SQLite or PostgreSQL + Qdrant, MMR re-ranking, temporal decay, semantic response cache
+- [x] **[Multi-model orchestration](https://bug-ops.github.io/zeph/advanced/complexity-triage.html)** — complexity triage routing (Simple/Medium/Complex/Expert), Thompson Sampling, cascade cost tiers, PILOT LinUCB bandit
+- [x] **[Hybrid inference](https://bug-ops.github.io/zeph/concepts/providers.html)** — Ollama, Claude, OpenAI, Gemini, any OpenAI-compatible API, or fully local via Candle (GGUF)
+- [x] **[Task orchestration](https://bug-ops.github.io/zeph/concepts/task-orchestration.html)** — DAG-based task graphs with LLM goal decomposition, parallel execution, plan template caching
+- [x] **[MCP client](https://bug-ops.github.io/zeph/guides/mcp.html)** — full tool exposure, OAuth 2.1 + PKCE for remote servers, 17-pattern injection detection, per-session tool quota, OAP authorization
+- [x] **[Security sandbox](https://bug-ops.github.io/zeph/reference/security.html)** — age-encrypted vault, shell sandbox, file read sandbox, SSRF protection, PII filter, exfiltration guards
+- [x] **[ACP server](https://bug-ops.github.io/zeph/advanced/acp.html)** — stdio, HTTP+SSE, WebSocket transports for IDE integration (Zed, VS Code, Helix)
+- [x] **[A2A protocol](https://bug-ops.github.io/zeph/advanced/a2a.html)** — agent-to-agent delegation over JSON-RPC 2.0 with IBCT capability tokens
+- [x] **[Sub-agents](https://bug-ops.github.io/zeph/advanced/sub-agents.html)** — isolated agents with scoped tools, zero-trust secret delegation, persistent transcripts
+- [x] **[TUI dashboard](https://bug-ops.github.io/zeph/advanced/tui.html)** — ratatui-based with real-time metrics, security panel, plan view, command palette
+- [x] **[Multi-channel I/O](https://bug-ops.github.io/zeph/advanced/channels.html)** — CLI, Telegram, TUI, Discord, Slack — all with streaming, voice, and vision input
+- [x] **[LSP integration](https://bug-ops.github.io/zeph/guides/lsp.html)** — compiler-level code intelligence via rust-analyzer, pyright, gopls and others: type info, diagnostics, call hierarchy, safe rename, references — injected automatically into context after file writes and reads
+- [x] **[Code indexing](https://bug-ops.github.io/zeph/advanced/code-indexing.html)** — tree-sitter AST-based indexing (Rust, Python, JS, TS, Go), semantic search, repo map generation
+- [x] **[Document RAG](https://bug-ops.github.io/zeph/advanced/document-loaders.html)** — ingest `.txt`, `.md`, `.pdf` into Qdrant with automatic retrieval per turn
+- [x] **[Self-experimentation](https://bug-ops.github.io/zeph/concepts/experiments.html)** — autonomous LLM config tuning via grid sweep, random sampling, neighborhood search
+- [x] **[Config migration](https://bug-ops.github.io/zeph/guides/migrate-config.html)** — `zeph migrate-config --diff` previews and applies config upgrades after version bumps
 - [x] **Single binary** -- ~15 MB, no runtime dependencies, ~50 ms startup, ~20 MB idle memory
 
 ---
