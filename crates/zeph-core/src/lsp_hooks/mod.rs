@@ -88,10 +88,20 @@ impl LspHookRunner {
     /// hot path; individual MCP call failures are logged at `debug` level and
     /// silently ignored.
     pub async fn is_available(&self) -> bool {
-        self.manager
-            .list_servers()
-            .await
-            .contains(&self.config.mcp_server_id)
+        tracing::debug!("lsp_hooks: checking is_available");
+        let result = if let Ok(servers) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.manager.list_servers(),
+        )
+        .await
+        {
+            servers.contains(&self.config.mcp_server_id)
+        } else {
+            tracing::warn!("lsp_hooks: is_available check timed out after 2s");
+            false
+        };
+        tracing::debug!(available = result, "lsp_hooks: is_available check complete");
+        result
     }
 
     /// Called after a native tool completes.
@@ -113,7 +123,14 @@ impl LspHookRunner {
             tracing::debug!(tool = tool_name, "LSP hook: skipped (disabled)");
             return;
         }
-        if !self.is_available().await {
+        tracing::debug!(tool = tool_name, "LSP after_tool: checking availability");
+        let avail = self.is_available().await;
+        tracing::debug!(
+            tool = tool_name,
+            available = avail,
+            "LSP after_tool: availability checked"
+        );
+        if !avail {
             tracing::debug!(tool = tool_name, "LSP hook: skipped (server unavailable)");
             return;
         }

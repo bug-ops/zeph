@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Agent stall after tool batch: add timeouts and tracing** (`#2767`): wrap `check_summarization` (30s), `maybe_spawn_graph_extraction` (10s), `record_skill_outcomes_batch` (5s), `is_available` LSP check (2s), and guardrail check (10s) in `tokio::time::timeout`; add `tracing::debug!` checkpoints to `tool_batch` and `persist_message` to make stalls observable.
+
 - **LSP `after_tool` blocks agent loop up to 160s** (`#2750`): wrap the entire LSP hover hook loop in a single 30s `tokio::time::timeout` instead of blocking sequentially per file. Combined with `max_symbols` reduction (10 → 5, `#2752`), worst-case blocking drops from ~160s to 30s.
 
 - **No TUI status during LLM inference** (`#2747`): add `send_status("Analyzing changes...")` around the LSP hook loop so the status bar reflects background work instead of appearing frozen.

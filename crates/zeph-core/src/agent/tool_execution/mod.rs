@@ -405,7 +405,16 @@ impl<C: Channel> Agent<C> {
         if !guardrail.scan_tool_output() {
             return body;
         }
-        let verdict = guardrail.check(&body).await;
+        let verdict = if let Ok(v) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), guardrail.check(&body)).await
+        {
+            v
+        } else {
+            tracing::warn!(tool = %tool_name, "tool guardrail check timed out after 10s");
+            zeph_sanitizer::guardrail::GuardrailVerdict::Error {
+                error: "timeout".into(),
+            }
+        };
         if let GuardrailVerdict::Flagged { reason, .. } = &verdict {
             tracing::warn!(
                 tool = %tool_name,

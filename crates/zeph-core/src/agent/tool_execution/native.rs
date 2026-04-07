@@ -1879,8 +1879,10 @@ impl<C: Channel> Agent<C> {
                 let kind = tool_err_category
                     .take()
                     .map_or_else(|| FailureKind::from_error(&output), FailureKind::from);
+                tracing::debug!(tool = %tc.name, "tool_result: recording skill outcomes");
                 self.record_skill_outcomes("tool_failure", Some(&output), Some(kind.as_str()))
                     .await;
+                tracing::debug!(tool = %tc.name, "tool_result: skill outcomes recorded");
                 // Record quality failure for reputation scoring only when the model produced
                 // invalid tool arguments (semantic failure). Network errors and transient
                 // failures are not attributable to model quality.
@@ -1907,7 +1909,9 @@ impl<C: Channel> Agent<C> {
                     pending_reflection = Some(sanitized_out);
                 }
             } else {
+                tracing::debug!(tool = %tc.name, "tool_result: recording skill outcomes");
                 self.record_skill_outcomes("success", None, None).await;
+                tracing::debug!(tool = %tc.name, "tool_result: skill outcomes recorded");
                 // Record quality success for reputation scoring.
                 self.provider
                     .record_quality_outcome(self.provider.name(), true);
@@ -2028,6 +2032,7 @@ impl<C: Channel> Agent<C> {
         // result, which would change message history structure.
         let tool_results_have_flags =
             has_any_injection_flags || !self.security.flagged_urls.is_empty();
+        tracing::debug!("tool_batch: calling persist_message for tool results");
         self.persist_message(
             Role::User,
             &user_msg.content,
@@ -2035,7 +2040,9 @@ impl<C: Channel> Agent<C> {
             tool_results_have_flags,
         )
         .await;
+        tracing::debug!("tool_batch: persist_message done, pushing message");
         self.push_message(user_msg);
+        tracing::debug!("tool_batch: message pushed, starting LSP hooks");
         if let (Some(id), Some(last)) =
             (self.last_persisted_message_id, self.msg.messages.last_mut())
         {
@@ -2096,6 +2103,7 @@ impl<C: Channel> Agent<C> {
             if lsp_result.is_err() {
                 tracing::warn!("LSP after_tool batch timed out (30s)");
             }
+            tracing::debug!("tool_batch: LSP hooks done");
         }
 
         // Defense-in-depth: check if process cwd changed during this tool batch.

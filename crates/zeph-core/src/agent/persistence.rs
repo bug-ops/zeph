@@ -549,7 +549,11 @@ impl<C: Channel> Agent<C> {
             }
         });
 
+        tracing::debug!("persist_message: db insert complete");
+
+        tracing::debug!("persist_message: calling check_summarization");
         self.check_summarization().await;
+        tracing::debug!("persist_message: check_summarization complete");
 
         // FIX-1: skip graph extraction for tool result messages — they contain raw structured
         // output (TOML, JSON, code) that pollutes the entity graph with noise.
@@ -557,17 +561,23 @@ impl<C: Channel> Agent<C> {
             .iter()
             .any(|p| matches!(p, MessagePart::ToolResult { .. }));
 
+        tracing::debug!("persist_message: calling maybe_spawn_graph_extraction");
         self.maybe_spawn_graph_extraction(content, has_injection_flags, has_tool_result_parts)
             .await;
+        tracing::debug!("persist_message: maybe_spawn_graph_extraction complete");
 
         // Persona extraction: run only for user messages that are not tool results and not injected.
         if role == Role::User && !has_tool_result_parts && !has_injection_flags {
+            tracing::debug!("persist_message: calling persona extraction");
             self.maybe_spawn_persona_extraction().await;
+            tracing::debug!("persist_message: persona extraction complete");
         }
 
         // Trajectory extraction: run after turns that contained tool results.
         if has_tool_result_parts {
+            tracing::debug!("persist_message: calling trajectory extraction");
             self.maybe_spawn_trajectory_extraction();
+            tracing::debug!("persist_message: trajectory extraction complete");
         }
     }
 
@@ -705,8 +715,17 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
         self.sync_community_detection_failures();
         self.sync_graph_extraction_metrics();
-        self.sync_graph_counts().await;
-        self.sync_guidelines_status().await;
+        match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            self.sync_graph_counts().await;
+            self.sync_guidelines_status().await;
+        })
+        .await
+        {
+            Ok(()) => {}
+            Err(_) => {
+                tracing::warn!("persist_message: maybe_spawn_graph_extraction timed out after 10s");
+            }
+        }
     }
 
     async fn maybe_spawn_persona_extraction(&mut self) {
@@ -893,19 +912,27 @@ impl<C: Channel> Agent<C> {
         if self.memory_state.unsummarized_count > self.memory_state.summarization_threshold {
             let _ = self.channel.send_status("summarizing...").await;
             let batch_size = self.memory_state.summarization_threshold / 2;
-            match memory.summarize(cid, batch_size).await {
-                Ok(Some(summary_id)) => {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                memory.summarize(cid, batch_size),
+            )
+            .await
+            {
+                Ok(Ok(Some(summary_id))) => {
                     tracing::info!("created summary {summary_id} for conversation {cid}");
                     self.memory_state.unsummarized_count = 0;
                     self.update_metrics(|m| {
                         m.summaries_count += 1;
                     });
                 }
-                Ok(None) => {
+                Ok(Ok(None)) => {
                     tracing::debug!("no summarization needed");
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::error!("summarization failed: {e:#}");
+                }
+                Err(_) => {
+                    tracing::warn!("persist_message: check_summarization timed out after 30s");
                 }
             }
             let _ = self.channel.send_status("").await;

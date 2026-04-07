@@ -43,18 +43,26 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = &self.memory_state.memory else {
             return;
         };
-        if let Err(e) = memory
-            .sqlite()
-            .record_skill_outcomes_batch(
+        let batch_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            memory.sqlite().record_skill_outcomes_batch(
                 &self.skill_state.active_skill_names,
                 self.memory_state.conversation_id,
                 outcome,
                 error_context,
                 outcome_detail,
-            )
-            .await
-        {
-            tracing::warn!("failed to record skill outcomes: {e:#}");
+            ),
+        )
+        .await;
+        match batch_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!("failed to record skill outcomes: {e:#}");
+            }
+            Err(_) => {
+                tracing::warn!("record_skill_outcomes: timed out after 5s");
+                return;
+            }
         }
 
         if outcome != "success" {
