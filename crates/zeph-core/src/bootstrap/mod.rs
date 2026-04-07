@@ -215,15 +215,24 @@ impl AppBuilder {
     }
 
     pub fn auto_budget_tokens(&self, provider: &AnyProvider) -> usize {
-        if self.config.memory.auto_budget && self.config.memory.context_budget_tokens == 0 {
-            if let Some(ctx_size) = provider.context_window() {
-                tracing::info!(model_context = ctx_size, "auto-configured context budget");
-                ctx_size
+        let tokens =
+            if self.config.memory.auto_budget && self.config.memory.context_budget_tokens == 0 {
+                if let Some(ctx_size) = provider.context_window() {
+                    tracing::info!(model_context = ctx_size, "auto-configured context budget");
+                    ctx_size
+                } else {
+                    0
+                }
             } else {
-                0
-            }
+                self.config.memory.context_budget_tokens
+            };
+        if tokens == 0 {
+            tracing::warn!(
+                "context_budget_tokens resolved to 0 — using fallback of 128000 tokens to ensure compaction runs"
+            );
+            128_000
         } else {
-            self.config.memory.context_budget_tokens
+            tokens
         }
     }
 
@@ -1054,6 +1063,17 @@ impl AppBuilder {
                 );
                 None
             }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn for_test(config: crate::config::Config) -> Self {
+        Self {
+            config,
+            config_path: std::path::PathBuf::new(),
+            vault: Box::new(crate::vault::EnvVaultProvider),
+            age_vault: None,
+            qdrant_ops: None,
         }
     }
 }

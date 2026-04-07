@@ -543,13 +543,14 @@ impl App {
 
     /// Evict oldest messages when the buffer exceeds `MAX_TUI_MESSAGES` (#2737).
     ///
-    /// Render-cache indices shift after a drain, so the entire cache is cleared.
-    /// The cache is rebuilt on the next render — this is cheaper than re-indexing.
+    /// Shifts the render cache to match the drained messages, preserving cached renders
+    /// for the remaining entries and avoiding a full re-render stall (#2775).
     fn trim_messages(&mut self) {
         if self.messages.len() > MAX_TUI_MESSAGES {
             let excess = self.messages.len() - MAX_TUI_MESSAGES;
             self.messages.drain(0..excess);
-            self.render_cache.clear();
+            self.render_cache.shift(excess);
+            self.scroll_offset = self.scroll_offset.saturating_sub(excess);
         }
     }
 
@@ -4544,5 +4545,48 @@ mod tests {
             assert!(app.slash_autocomplete.is_none());
             assert!(app.input().is_empty());
         }
+    }
+
+    // ── trim_messages scroll adjustment (#2775) ──────────────────────────────
+
+    #[test]
+    fn trim_messages_no_trim_when_within_limit() {
+        let (mut app, _rx, _tx) = make_app();
+        for i in 0..10 {
+            app.messages
+                .push(ChatMessage::new(MessageRole::User, format!("msg {i}")));
+        }
+        app.scroll_offset = 5;
+        app.trim_messages();
+        assert_eq!(app.messages.len(), 10);
+        assert_eq!(app.scroll_offset, 5);
+    }
+
+    #[test]
+    fn trim_messages_evicts_excess_and_adjusts_scroll() {
+        let (mut app, _rx, _tx) = make_app();
+        let over = MAX_TUI_MESSAGES + 10;
+        for i in 0..over {
+            app.messages
+                .push(ChatMessage::new(MessageRole::User, format!("msg {i}")));
+        }
+        app.scroll_offset = 20;
+        app.trim_messages();
+        assert_eq!(app.messages.len(), MAX_TUI_MESSAGES);
+        assert_eq!(app.scroll_offset, 10); // 20 - 10 excess = 10
+    }
+
+    #[test]
+    fn trim_messages_scroll_saturates_at_zero() {
+        let (mut app, _rx, _tx) = make_app();
+        let over = MAX_TUI_MESSAGES + 50;
+        for i in 0..over {
+            app.messages
+                .push(ChatMessage::new(MessageRole::User, format!("msg {i}")));
+        }
+        app.scroll_offset = 10; // less than excess (50)
+        app.trim_messages();
+        assert_eq!(app.messages.len(), MAX_TUI_MESSAGES);
+        assert_eq!(app.scroll_offset, 0); // saturates at 0
     }
 }

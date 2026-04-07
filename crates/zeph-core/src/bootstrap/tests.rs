@@ -618,3 +618,36 @@ fn create_embedding_provider_falls_back_to_primary_when_no_embedding_entry() {
     assert!(matches!(embed_provider, AnyProvider::Ollama(_)));
     assert_eq!(embed_provider.name(), primary.name());
 }
+
+// ── auto_budget_tokens fallback (#2773) ──────────────────────────────────────
+
+#[test]
+fn auto_budget_tokens_returns_configured_value() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.auto_budget = false;
+    config.memory.context_budget_tokens = 65536;
+    let builder = super::AppBuilder::for_test(config);
+    let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+    assert_eq!(builder.auto_budget_tokens(&provider), 65536);
+}
+
+#[test]
+fn auto_budget_tokens_auto_budget_no_window_falls_back_to_128k() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.auto_budget = true;
+    config.memory.context_budget_tokens = 0;
+    let builder = super::AppBuilder::for_test(config);
+    // MockProvider::context_window() returns None — triggers fallback
+    let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+    assert_eq!(builder.auto_budget_tokens(&provider), 128_000);
+}
+
+#[test]
+fn auto_budget_tokens_explicit_zero_falls_back_to_128k() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.auto_budget = false;
+    config.memory.context_budget_tokens = 0;
+    let builder = super::AppBuilder::for_test(config);
+    let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+    assert_eq!(builder.auto_budget_tokens(&provider), 128_000);
+}

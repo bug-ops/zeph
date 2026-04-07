@@ -2161,6 +2161,12 @@ impl<C: Channel> Agent<C> {
                     .with_graph_enabled(config.memory.graph.enabled),
             );
         } else {
+            if self.msg.messages.len() >= 200 {
+                tracing::warn!(
+                    message_count = self.msg.messages.len(),
+                    "no context budget set — messages growing without compaction"
+                );
+            }
             self.context_manager.budget = None;
         }
 
