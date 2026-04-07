@@ -58,6 +58,15 @@ impl DebugDumper {
         &self.dir
     }
 
+    /// Returns `true` when the dump format is [`DumpFormat::Trace`].
+    ///
+    /// In Trace mode `dump_request` returns early without using `provider_request`, so callers
+    /// can skip the expensive `debug_request_json` serialization.
+    #[must_use]
+    pub fn is_trace_format(&self) -> bool {
+        self.format == DumpFormat::Trace
+    }
+
     fn next_id(&self) -> u32 {
         self.counter.fetch_add(1, Ordering::Relaxed)
     }

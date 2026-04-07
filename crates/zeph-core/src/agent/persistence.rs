@@ -649,7 +649,13 @@ impl<C: Channel> Agent<C> {
                         .any(|p| matches!(p, MessagePart::ToolResult { .. }))
             })
             .take(4)
-            .map(|m| m.content.clone())
+            .map(|m| {
+                if m.content.len() > 2048 {
+                    m.content[..m.content.floor_char_boundary(2048)].to_owned()
+                } else {
+                    m.content.clone()
+                }
+            })
             .collect();
 
         let _ = self.channel.send_status("saving to graph...").await;

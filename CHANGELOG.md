@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`persist_message` stores tool output without content size cap** (`#2748`): truncate message content to 100KB before SQLite write, preserving UTF-8 boundary via `floor_char_boundary`. `parts_json` is not truncated to avoid producing invalid JSON.
 
+### Performance
+
+- **Skip `debug_request_json` when dump format is Trace** (`#2757`): add `is_trace_format()` to `DebugDumper` and guard the `convert_messages_structured` call in `native.rs` and `legacy.rs` — eliminates ~400KB transient allocation per LLM call in the default Trace-format configuration.
+
+- **Truncate graph extraction context messages to 2KB** (`#2759`): cap each cloned message content at `floor_char_boundary(2048)` bytes before passing to `maybe_spawn_graph_extraction`, bounding context allocation to ≤8KB regardless of message size.
+
 ### Changed
 
 - **Embed concurrency cap** (`#2749`): add `embed_concurrency` config field (default 4, 0 = unlimited) backed by `Arc<Semaphore>` in the router. Prevents indexer, backfill, and graph extraction from saturating Ollama embed slots simultaneously.

@@ -279,15 +279,21 @@ impl<C: Channel> Agent<C> {
                 .debug_dumper
                 .as_ref()
                 .map(|d: &crate::debug_dump::DebugDumper| {
+                    // Skip expensive serialization when Trace format returns early without using it.
+                    let provider_request = if d.is_trace_format() {
+                        serde_json::Value::Null
+                    } else {
+                        self.provider.debug_request_json(
+                            &self.msg.messages,
+                            &[],
+                            self.provider.supports_streaming(),
+                        )
+                    };
                     d.dump_request(&crate::debug_dump::RequestDebugDump {
                         model_name: &self.runtime.model_name,
                         messages: &self.msg.messages,
                         tools: &[],
-                        provider_request: self.provider.debug_request_json(
-                            &self.msg.messages,
-                            &[],
-                            self.provider.supports_streaming(),
-                        ),
+                        provider_request,
                     })
                 });
 
