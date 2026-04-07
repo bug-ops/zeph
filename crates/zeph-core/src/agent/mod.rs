@@ -2127,6 +2127,7 @@ impl<C: Channel> Agent<C> {
             }
         };
 
+        let budget_tokens = resolve_context_budget(&config, &self.provider);
         self.runtime.security = config.security;
         self.runtime.timeouts = config.timeouts;
         self.runtime.redact_credentials = config.memory.redact_credentials;
@@ -2156,20 +2157,9 @@ impl<C: Channel> Agent<C> {
                 }
             });
 
-        if config.memory.context_budget_tokens > 0 {
-            self.context_manager.budget = Some(
-                ContextBudget::new(config.memory.context_budget_tokens, 0.20)
-                    .with_graph_enabled(config.memory.graph.enabled),
-            );
-        } else {
-            if self.msg.messages.len() >= 200 {
-                tracing::warn!(
-                    message_count = self.msg.messages.len(),
-                    "no context budget set — messages growing without compaction"
-                );
-            }
-            self.context_manager.budget = None;
-        }
+        self.context_manager.budget = Some(
+            ContextBudget::new(budget_tokens, 0.20).with_graph_enabled(config.memory.graph.enabled),
+        );
 
         {
             let graph_cfg = &config.memory.graph;
@@ -2516,6 +2506,35 @@ pub(crate) async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Opti
             }
         }
         None => std::future::pending().await,
+    }
+}
+
+/// Resolve the effective context budget from config, applying the `auto_budget` fallback.
+///
+/// Mirrors `AppBuilder::auto_budget_tokens` so hot-reload and initial startup use the same
+/// logic: if `auto_budget = true` and `context_budget_tokens == 0`, query the provider's
+/// context window; if still 0, fall back to 128 000 tokens.
+pub(crate) fn resolve_context_budget(config: &Config, provider: &AnyProvider) -> usize {
+    let tokens = if config.memory.auto_budget && config.memory.context_budget_tokens == 0 {
+        if let Some(ctx_size) = provider.context_window() {
+            tracing::info!(
+                model_context = ctx_size,
+                "auto-configured context budget on reload"
+            );
+            ctx_size
+        } else {
+            0
+        }
+    } else {
+        config.memory.context_budget_tokens
+    };
+    if tokens == 0 {
+        tracing::warn!(
+            "context_budget_tokens resolved to 0 on reload — using fallback of 128000 tokens"
+        );
+        128_000
+    } else {
+        tokens
     }
 }
 

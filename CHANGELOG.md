@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`reload_config()` bypasses `auto_budget_tokens()` fallback** (`#2793`): extract `resolve_context_budget()` free function that mirrors the startup `auto_budget_tokens()` logic (auto-detect from provider context window, fallback to 128k). `reload_config()` now always sets a valid budget instead of reading the raw config value.
+
 - **Unbounded memory growth when `context_budget_tokens = 0`** (`#2773`): `auto_budget_tokens()` now falls back to 128k tokens when the resolved budget is 0, preventing silent compaction bypass that let messages accumulate without bound. Defence-in-depth WARN fires when message count exceeds 200 without a budget.
 
 - **TUI `RenderCache::clear()` does not release backing Vec** (`#2774`): replace entry-nulling loop with `Vec::new()` to release heap allocation on trim cycles instead of retaining capacity indefinitely.

@@ -5124,3 +5124,49 @@ mod flush_orphaned_tests {
         );
     }
 }
+
+// ── resolve_context_budget (#2793) ───────────────────────────────────────────
+
+#[cfg(test)]
+mod resolve_context_budget_tests {
+    use std::path::Path;
+
+    use crate::config::Config;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+
+    use super::super::resolve_context_budget;
+
+    #[test]
+    fn explicit_budget_returned_as_is() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.memory.auto_budget = false;
+        config.memory.context_budget_tokens = 65536;
+        let provider = AnyProvider::Mock(MockProvider::default());
+        assert_eq!(resolve_context_budget(&config, &provider), 65536);
+    }
+
+    #[test]
+    fn auto_budget_true_budget_zero_no_window_falls_back_to_128k() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.memory.auto_budget = true;
+        config.memory.context_budget_tokens = 0;
+        // MockProvider::context_window() returns None — triggers 128k fallback.
+        let provider = AnyProvider::Mock(MockProvider::default());
+        assert_ne!(
+            resolve_context_budget(&config, &provider),
+            0,
+            "budget must not be zero when auto_budget=true and context_budget_tokens=0"
+        );
+        assert_eq!(resolve_context_budget(&config, &provider), 128_000);
+    }
+
+    #[test]
+    fn auto_budget_false_budget_zero_falls_back_to_128k() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.memory.auto_budget = false;
+        config.memory.context_budget_tokens = 0;
+        let provider = AnyProvider::Mock(MockProvider::default());
+        assert_eq!(resolve_context_budget(&config, &provider), 128_000);
+    }
+}
