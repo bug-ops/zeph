@@ -724,6 +724,7 @@ impl<C: Channel> Agent<C> {
         };
 
         // Collect recent user messages for extraction.
+        // Cap at 8 messages and 2 KiB per message to bound LLM prompt size.
         let user_messages: Vec<String> = self
             .msg
             .messages
@@ -735,7 +736,14 @@ impl<C: Channel> Agent<C> {
                         .iter()
                         .any(|p| matches!(p, MessagePart::ToolResult { .. }))
             })
-            .map(|m| m.content.clone())
+            .take(8)
+            .map(|m| {
+                if m.content.len() > 2048 {
+                    m.content[..m.content.floor_char_boundary(2048)].to_owned()
+                } else {
+                    m.content.clone()
+                }
+            })
             .collect();
 
         if user_messages.len() < cfg.min_messages {
@@ -1713,6 +1721,78 @@ mod tests {
                 !calls.is_empty(),
                 "happy-path: provider.chat() must be called when extraction completes"
             );
+        }
+
+        #[tokio::test]
+        async fn messages_capped_at_eight() {
+            // More than 8 user messages → only 8 are passed to extraction.
+            // Each message contains "I" so self-referential gate passes.
+            use zeph_llm::mock::MockProvider;
+            let (mock, recorded) = MockProvider::default().with_recording();
+            let provider = AnyProvider::Mock(mock);
+            let mut agent = agent_with_persona(&provider, enabled_persona_config()).await;
+
+            for i in 0..12u32 {
+                agent.msg.messages.push(zeph_llm::provider::Message {
+                    role: Role::User,
+                    content: format!("I like message {i}"),
+                    parts: vec![],
+                    metadata: MessageMetadata::default(),
+                });
+            }
+
+            agent.maybe_spawn_persona_extraction().await;
+
+            // Verify extraction ran (provider was called).
+            let calls = recorded.lock().unwrap();
+            assert!(
+                !calls.is_empty(),
+                "extraction must run when enough messages present"
+            );
+            // Verify the prompt sent to the provider does not contain messages beyond the 8th.
+            let prompt = &calls[0];
+            let user_text = prompt
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            // Messages 8..11 ("I like message 8".."I like message 11") must not appear.
+            assert!(
+                !user_text.contains("I like message 8"),
+                "message index 8 must be excluded from extraction input"
+            );
+        }
+
+        #[test]
+        fn long_message_truncated_at_char_boundary() {
+            // Directly verify the per-message truncation logic applied in
+            // maybe_spawn_persona_extraction: a content > 2048 bytes must be capped
+            // to exactly floor_char_boundary(2048).
+            let long_content = "x".repeat(3000);
+            let truncated = if long_content.len() > 2048 {
+                long_content[..long_content.floor_char_boundary(2048)].to_owned()
+            } else {
+                long_content.clone()
+            };
+            assert_eq!(
+                truncated.len(),
+                2048,
+                "ASCII content must be truncated to exactly 2048 bytes"
+            );
+
+            // Multi-byte boundary: build a string whose char boundary falls before 2048.
+            let multi = "é".repeat(1500); // each 'é' is 2 bytes → 3000 bytes total
+            let truncated_multi = if multi.len() > 2048 {
+                multi[..multi.floor_char_boundary(2048)].to_owned()
+            } else {
+                multi.clone()
+            };
+            assert!(
+                truncated_multi.len() <= 2048,
+                "multi-byte content must not exceed 2048 bytes"
+            );
+            assert!(truncated_multi.is_char_boundary(truncated_multi.len()));
         }
     }
 
